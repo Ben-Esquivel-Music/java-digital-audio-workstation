@@ -229,3 +229,17 @@ This document catalogs professional mastering techniques and maps them to potent
 - [Berklee Online — Advanced Audio/Music Mastering: Theory and Practice](https://online.berklee.edu/courses/advanced-audio-music-mastering-theory-and-practice)
 - [Berklee Online — Audio Mastering Techniques Course](https://online.berklee.edu/courses/audio-mastering-techniques)
 - Jonathan Wyner, *Audio Mastering — Essential Practices*, 2nd Edition, Berklee Press
+
+### AES Conference Papers
+
+The following AES papers provide additional research supporting mastering techniques and workflows. Full analysis is available in [AES Research Papers](aes-research-papers.md).
+
+| Paper | Relevance to Mastering |
+|-------|----------------------|
+| [Automatic Audio Equalization with Semantic Embeddings](AES/Automatic_Audio_Equalization_with_Semantic_Embeddings.pdf) | Data-driven auto-EQ using semantic embeddings; applicable to intelligent mastering EQ |
+| [Application of Low-Complexity Neural Equalizer](AES/Application_of_Low-Complexity_Neural_Equalizer_for_Adaptive_Sound_Equalization_in_Wireless_Earbuds..pdf) | Lightweight neural EQ using 6 biquad filters; applicable to adaptive monitoring EQ |
+| [Modular, Shippable Acoustic Treatments for High-End Mastering Rooms](AES/Modular,_Shippable_Acoustic_Treatments_for_High-End_Mastering_Rooms__A_Case_Study_with_Adam_Ayan.pdf) | Room treatment best practices for mastering environments |
+| [Exploring Perceptual Audio Quality Measurement on Stereo Processing](AES/Exploring_Perceptual_Audio_Quality_Measurement_on_Stereo_Processing_using_the_Open_Dataset_of_Audio_Quality.pdf) | Validated framework for evaluating Mid/Side and stereo processing quality |
+| [Establishing a Virtual Listener Panel for audio characterisation](AES/Establishing_a_Virtual_Listener_Panel_for_audio_characterisation.pdf) | CNN-based virtual listener for automated quality assessment in mastering |
+| [Spectral and Spatial Discrepancies Between Stereo and Binaural Spatial Masters](AES/Spectral_and_Spatial_Discrepancies_Between_Stereo_and_Binaural_Spatial_Masters_in_Headphone_Playback__A_Perceptual_and_Technical_Analysis.pdf) | Measurable differences between stereo and binaural masters; critical for immersive mastering |
+| [Total Sound Power Estimation for Automatic In-Room Equalization](AES/Total_Sound_Power_Estimation_of_Simultaneous_Loudspeakers_using_Near-Field_Pressure_for_Automatic_In-Room_Equalization.pdf) | Automatic room EQ from near-field measurements; relevant to monitoring calibration |

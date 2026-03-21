@@ -228,3 +228,18 @@ While this is a Java desktop application, web audio tools provide useful algorit
 - [TarsosDSP](https://github.com/JorenSix/TarsosDSP) — Java audio processing library
 - [FluidSynth](https://www.fluidsynth.org/) — SoundFont synthesizer
 - [Spatial Audio Framework](https://github.com/leomccormack/Spatial_Audio_Framework) — Spatial audio library
+
+### AES Conference Papers
+
+The following AES papers complement this tool catalog with research on audio processing algorithms, AI/ML techniques, and open-source frameworks. Full analysis is available in [AES Research Papers](aes-research-papers.md).
+
+| Paper | Relevance to Audio Development Tools |
+|-------|-------------------------------------|
+| [NablAFx: Differentiable Black-box and Gray-box Modeling of Audio Effects](AES/NablAFx__A_Framework_for_Differentiable_Black-box_and_Gray-box_Modeling_of_Audio_Effects.pdf) | Open-source PyTorch framework for training neural audio effect models; complement to DSP tools |
+| [RoomAcoustiC++: Open-source room acoustic model](AES/RoomAcoustiC++__An_open-source_room_acoustic_model_for_real-time_audio_simulations.pdf) | Open-source C++ library for real-time room acoustics (hybrid geometric/FDN); JNI candidate |
+| [Adaptive Neural Audio Mixing with Human-in-the-Loop Feedback](AES/Adaptive_Neural_Audio_Mixing_with_Human-in-the-Loop_Feedback__A_Reinforcement_Learning_Approach.pdf) | RLHF architecture for AI-assisted mixing; extends ML audio tools catalog |
+| [Physical Modeling of a Spring Reverb Tank](AES/Physical_Modeling_of_a_Spring_Reverb_Tank_Incorporating_Helix_Angle,_Damping,_and_Magnetic_Bead_Coupling.pdf) | Physical modeling algorithms for spring reverb; complements Cloud Seed reverb reference |
+| [Analog Pseudo Leslie Effect](AES/Analog_Pseudo_Leslie_Effect_with_High_Grade_of_Repeatability.pdf) | Physical modeling approach for rotary speaker effects; algorithm reference for chorus/modulation |
+| [Sound Matching an Analogue Levelling Amplifier](AES/Sound_Matching_an_Analogue_Levelling_Amplifier_Using_the_Newton-Raphson_Method.pdf) | Differentiable DSP with Newton-Raphson optimization for analog emulation |
+| [Real-Time Audio Pattern Detection for Smart Musical Instruments](AES/Real-Time_Audio_Pattern_Detection_for_Smart_Musical_Instruments.pdf) | Real-time audio analysis; applicable to live input monitoring features |
+| [An audio quality metrics toolbox](AES/An_audio_quality_metrics_toolbox_for_media_assets_management,_content_exchange,_and_dataset_alignment.pdf) | Automated audio quality assessment toolkit; reference for metering and analysis tools |

@@ -188,3 +188,15 @@ Most successful open source DAWs separate concerns into layers:
 - [Yuan-ManX/audio-development-tools](https://github.com/Yuan-ManX/audio-development-tools) — Comprehensive audio development tools catalog
 - [DAWproject Format](https://github.com/bitwig/dawproject) — Open DAW session interchange format
 - [CLAP Plugin Standard](https://github.com/free-audio/clap) — Modern open audio plugin standard
+
+### AES Conference Papers
+
+The following AES papers provide additional research relevant to DAW architecture, real-time processing, and mixing workflows. Full analysis is available in [AES Research Papers](aes-research-papers.md).
+
+| Paper | Relevance to DAW Design |
+|-------|------------------------|
+| [Reverse Engineering of Music Mixing Graphs With Differentiable Processors](AES/Reverse_Engineering_of_Music_Mixing_Graphs_With_Differentiable_Processors_and_Iterative_Pruning.pdf) | Techniques for reconstructing mixing chains; informs DAW mix analysis and AI-assisted mixing architecture |
+| [Adaptive Neural Audio Mixing with Human-in-the-Loop Feedback](AES/Adaptive_Neural_Audio_Mixing_with_Human-in-the-Loop_Feedback__A_Reinforcement_Learning_Approach.pdf) | RLHF-based adaptive mixing architecture; reference for integrating AI mixing into the DAW mixer |
+| [RoomAcoustiC++: Open-source room acoustic model](AES/RoomAcoustiC++__An_open-source_room_acoustic_model_for_real-time_audio_simulations.pdf) | Open-source C++ real-time room acoustics; demonstrates hybrid geometric/FDN architecture pattern |
+| [Improved Real-Time 6DoF Dynamic Auralization](AES/Improved_Real-Time_Six-Degrees-of-Freedom_Dynamic_Auralization_Through_Nonuniformly_Partitioned_Convolution.pdf) | Nonuniformly partitioned convolution for efficient real-time audio rendering |
+| [NablAFx: Differentiable Black-box and Gray-box Modeling](AES/NablAFx__A_Framework_for_Differentiable_Black-box_and_Gray-box_Modeling_of_Audio_Effects.pdf) | Open-source modular framework for audio effects; informs plugin architecture design patterns |
