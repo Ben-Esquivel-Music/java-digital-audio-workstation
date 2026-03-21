@@ -81,6 +81,26 @@ public class MyReverbPlugin implements DawPlugin {
 
 Then create a `META-INF/services/com.benesquivelmusic.daw.sdk.plugin.DawPlugin` file listing your implementation class.
 
+## Contributing
+
+Contributions are welcome! Here's how to get started:
+
+1. **Fork** this repository and clone your fork locally.
+2. **Create a branch** for your change: `git checkout -b feature/my-feature`.
+3. **Make your changes**, following the existing code style and conventions.
+4. **Run the tests** to make sure everything passes: `mvn clean verify`.
+5. **Commit** your changes with a clear, descriptive message.
+6. **Push** your branch and open a **Pull Request** against the `main` branch.
+
+### Guidelines
+
+- Keep pull requests focused — one feature or fix per PR.
+- Write or update tests for any code you change.
+- Update documentation (including this README) if your change affects behavior visible to users or plugin developers.
+- Be respectful and constructive in reviews and discussions. This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md).
+
+For larger changes, please open an issue first to discuss your proposal before investing time in implementation.
+
 ## Releasing
 
 Releases are automated via GitHub Actions. Push a version tag to trigger a release build:
