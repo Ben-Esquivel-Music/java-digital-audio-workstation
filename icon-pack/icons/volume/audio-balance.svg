@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <line x1="8" y1="24" x2="40" y2="24" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="24" cy="24" r="5" fill="#FF9100" stroke="#FF9100" stroke-width="1"/>
+  <text x="8" y="16" font-family="sans-serif" font-size="8" font-weight="bold" fill="#FFFFFF">L</text>
+  <text x="37" y="16" font-family="sans-serif" font-size="8" font-weight="bold" fill="#FFFFFF">R</text>
+</svg>
