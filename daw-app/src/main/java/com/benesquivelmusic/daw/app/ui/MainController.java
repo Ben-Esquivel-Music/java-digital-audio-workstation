@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
@@ -21,10 +22,12 @@ public class MainController {
     @FXML private Label tempoLabel;
 
     private DawProject project;
+    private PluginRegistry pluginRegistry;
 
     @FXML
     private void initialize() {
         project = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
+        pluginRegistry = new PluginRegistry();
         updateStatus();
         updateTempoDisplay();
     }
@@ -45,6 +48,12 @@ public class MainController {
     private void onRecord() {
         project.getTransport().record();
         updateStatus();
+    }
+
+    @FXML
+    private void onManagePlugins() {
+        var dialog = new PluginManagerDialog(pluginRegistry);
+        dialog.showAndWait();
     }
 
     private void updateStatus() {

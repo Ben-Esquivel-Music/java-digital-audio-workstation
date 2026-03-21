@@ -4,8 +4,10 @@ package com.benesquivelmusic.daw.sdk.plugin;
  * Service provider interface for DAW plugins.
  *
  * <p>Plugin developers implement this interface to create custom audio effects,
- * instruments, and analyzers. Plugins are discovered at runtime via the
- * {@link java.util.ServiceLoader} mechanism.</p>
+ * instruments, and analyzers. Plugins can be discovered at runtime via the
+ * {@link java.util.ServiceLoader} mechanism, or loaded directly from external
+ * JAR files through the DAW's plugin manager UI—no {@code META-INF/services}
+ * configuration required.</p>
  *
  * <h2>Lifecycle</h2>
  * <ol>
