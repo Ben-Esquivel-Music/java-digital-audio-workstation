@@ -1,0 +1,87 @@
+/*
+ * Digital Audio Workstation — Main Stylesheet
+ */
+
+.root-pane {
+    -fx-background-color: #1e1e2e;
+}
+
+/* Transport Bar */
+.transport-bar {
+    -fx-background-color: #2b2b3d;
+}
+
+.transport-button {
+    -fx-background-color: #3a3a5c;
+    -fx-text-fill: #cdd6f4;
+    -fx-font-size: 13px;
+    -fx-padding: 6 16;
+    -fx-background-radius: 4;
+    -fx-cursor: hand;
+}
+
+.transport-button:hover {
+    -fx-background-color: #505080;
+}
+
+.transport-button:disabled {
+    -fx-opacity: 0.5;
+}
+
+.record-button {
+    -fx-text-fill: #f38ba8;
+}
+
+.tempo-label {
+    -fx-text-fill: #a6adc8;
+    -fx-font-size: 14px;
+    -fx-font-weight: bold;
+}
+
+.status-label {
+    -fx-text-fill: #a6adc8;
+    -fx-font-size: 13px;
+}
+
+/* Track List Panel */
+.track-list-panel {
+    -fx-background-color: #181825;
+}
+
+.panel-header {
+    -fx-text-fill: #cdd6f4;
+    -fx-font-size: 14px;
+    -fx-font-weight: bold;
+}
+
+/* Arrangement Panel */
+.arrangement-panel {
+    -fx-background-color: #1e1e2e;
+}
+
+.placeholder-label {
+    -fx-text-fill: #585b70;
+    -fx-font-size: 16px;
+}
+
+/* Main Split Pane */
+.main-split > .split-pane-divider {
+    -fx-background-color: #313244;
+    -fx-padding: 0 1 0 1;
+}
+
+/* Status Bar */
+.status-bar {
+    -fx-background-color: #181825;
+}
+
+.status-bar-label {
+    -fx-text-fill: #6c7086;
+    -fx-font-size: 12px;
+}
+
+/* Separator */
+.separator > .line {
+    -fx-border-color: #313244;
+    -fx-border-width: 1 0 0 0;
+}
