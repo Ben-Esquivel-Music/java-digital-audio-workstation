@@ -7,6 +7,7 @@
 <?import javafx.scene.control.SplitPane?>
 <?import javafx.scene.layout.BorderPane?>
 <?import javafx.scene.layout.HBox?>
+<?import javafx.scene.layout.Region?>
 <?import javafx.scene.layout.StackPane?>
 <?import javafx.scene.layout.VBox?>
 
@@ -18,19 +19,50 @@
     <!-- Top: Transport Controls -->
     <top>
         <VBox>
-            <HBox alignment="CENTER" spacing="10" styleClass="transport-bar">
+            <HBox alignment="CENTER" spacing="8" styleClass="transport-bar">
                 <padding>
                     <Insets top="8" right="16" bottom="8" left="16"/>
                 </padding>
-                <Button fx:id="playButton" text="▶ Play" onAction="#onPlay" styleClass="transport-button"/>
-                <Button fx:id="stopButton" text="■ Stop" onAction="#onStop" styleClass="transport-button"/>
-                <Button fx:id="recordButton" text="● Record" onAction="#onRecord" styleClass="transport-button, record-button"/>
+
+                <!-- Transport -->
+                <Button fx:id="playButton" text="▶ Play" onAction="#onPlay"
+                        styleClass="transport-button, play-button"/>
+                <Button fx:id="stopButton" text="■ Stop" onAction="#onStop"
+                        styleClass="transport-button, stop-button"/>
+                <Button fx:id="recordButton" text="● Record" onAction="#onRecord"
+                        styleClass="transport-button, record-button"/>
+
                 <Separator orientation="VERTICAL"/>
-                <Button text="🔌 Plugins" onAction="#onManagePlugins" styleClass="transport-button"/>
+
+                <!-- Time display -->
+                <Label fx:id="timeDisplay" text="00:00:00.0" styleClass="time-display"/>
+
                 <Separator orientation="VERTICAL"/>
+
+                <!-- Tempo -->
                 <Label fx:id="tempoLabel" text="120.0 BPM" styleClass="tempo-label"/>
+
                 <Separator orientation="VERTICAL"/>
-                <Label fx:id="statusLabel" text="Status: STOPPED" styleClass="status-label"/>
+
+                <!-- Track controls -->
+                <Button text="＋ Audio Track" onAction="#onAddAudioTrack"
+                        styleClass="transport-button"/>
+                <Button text="＋ MIDI Track" onAction="#onAddMidiTrack"
+                        styleClass="transport-button"/>
+
+                <Separator orientation="VERTICAL"/>
+
+                <!-- Project / Plugins -->
+                <Button text="💾 Save" onAction="#onSaveProject"
+                        styleClass="transport-button, project-button"/>
+                <Button text="🔌 Plugins" onAction="#onManagePlugins"
+                        styleClass="transport-button, plugin-button"/>
+
+                <!-- Spacer -->
+                <Region HBox.hgrow="ALWAYS"/>
+
+                <!-- Status -->
+                <Label fx:id="statusLabel" text="STOPPED" styleClass="status-label"/>
             </HBox>
             <Separator/>
         </VBox>
@@ -38,31 +70,51 @@
 
     <!-- Center: Track Area / Arrangement View -->
     <center>
-        <SplitPane dividerPositions="0.2" styleClass="main-split">
+        <SplitPane dividerPositions="0.22" styleClass="main-split">
             <!-- Left: Track List -->
-            <VBox styleClass="track-list-panel">
+            <VBox fx:id="trackListPanel" styleClass="track-list-panel">
                 <padding>
                     <Insets top="8" right="8" bottom="8" left="8"/>
                 </padding>
-                <Label text="Tracks" styleClass="panel-header"/>
+                <Label text="🎚 TRACKS" styleClass="panel-header"/>
             </VBox>
 
             <!-- Right: Arrangement Timeline -->
-            <StackPane styleClass="arrangement-panel">
-                <Label text="Arrangement View" styleClass="placeholder-label"/>
-            </StackPane>
+            <VBox styleClass="arrangement-panel">
+                <HBox styleClass="timeline-header" alignment="CENTER_LEFT" spacing="20">
+                    <Label text="1" styleClass="timeline-label"/>
+                    <Label text="2" styleClass="timeline-label"/>
+                    <Label text="3" styleClass="timeline-label"/>
+                    <Label text="4" styleClass="timeline-label"/>
+                    <Label text="5" styleClass="timeline-label"/>
+                    <Label text="6" styleClass="timeline-label"/>
+                    <Label text="7" styleClass="timeline-label"/>
+                    <Label text="8" styleClass="timeline-label"/>
+                </HBox>
+                <StackPane VBox.vgrow="ALWAYS">
+                    <Label fx:id="arrangementPlaceholder"
+                           text="🎵  Add tracks to begin your session"
+                           styleClass="placeholder-label"/>
+                </StackPane>
+            </VBox>
         </SplitPane>
     </center>
 
-    <!-- Bottom: Mixer / Status Bar -->
+    <!-- Bottom: Status Bar -->
     <bottom>
         <VBox>
             <Separator/>
-            <HBox alignment="CENTER_LEFT" spacing="10" styleClass="status-bar">
+            <HBox alignment="CENTER_LEFT" spacing="16" styleClass="status-bar">
                 <padding>
                     <Insets top="4" right="16" bottom="4" left="16"/>
                 </padding>
-                <Label text="Ready" styleClass="status-bar-label"/>
+                <Label fx:id="projectInfoLabel" text="Untitled Project  ·  96 kHz / 24-bit"
+                       styleClass="project-info-label"/>
+                <Region HBox.hgrow="ALWAYS"/>
+                <Label fx:id="checkpointLabel" text="Auto-save: ON"
+                       styleClass="checkpoint-label"/>
+                <Separator orientation="VERTICAL"/>
+                <Label fx:id="statusBarLabel" text="Ready" styleClass="status-bar-label"/>
             </HBox>
         </VBox>
     </bottom>
