@@ -2,7 +2,10 @@ package com.benesquivelmusic.daw.core.project;
 
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
+import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
 import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 
 import java.util.ArrayList;
@@ -14,7 +17,8 @@ import java.util.Objects;
  * Represents an entire DAW project/session.
  *
  * <p>A project aggregates all tracks, the mixer, the transport,
- * and the audio format configuration.</p>
+ * the audio format configuration, and project metadata. When a track
+ * is added, a corresponding mixer channel is automatically created.</p>
  */
 public final class DawProject {
 
@@ -23,6 +27,7 @@ public final class DawProject {
     private final List<Track> tracks = new ArrayList<>();
     private final Mixer mixer;
     private final Transport transport;
+    private ProjectMetadata metadata;
 
     /**
      * Creates a new DAW project.
@@ -35,6 +40,7 @@ public final class DawProject {
         this.format = Objects.requireNonNull(format, "format must not be null");
         this.mixer = new Mixer();
         this.transport = new Transport();
+        this.metadata = ProjectMetadata.createNew(name);
     }
 
     /** Returns the project name. */
@@ -45,6 +51,7 @@ public final class DawProject {
     /** Sets the project name. */
     public void setName(String name) {
         this.name = Objects.requireNonNull(name, "name must not be null");
+        this.metadata = metadata.withName(name);
     }
 
     /** Returns the audio format. */
@@ -53,13 +60,38 @@ public final class DawProject {
     }
 
     /**
-     * Adds a track to the project.
+     * Adds a track to the project and creates a corresponding mixer channel.
      *
      * @param track the track to add
      */
     public void addTrack(Track track) {
         Objects.requireNonNull(track, "track must not be null");
         tracks.add(track);
+        mixer.addChannel(new MixerChannel(track.getName()));
+    }
+
+    /**
+     * Creates and adds a new audio track with the given name.
+     *
+     * @param name the track name
+     * @return the newly created track
+     */
+    public Track createAudioTrack(String name) {
+        var track = new Track(name, TrackType.AUDIO);
+        addTrack(track);
+        return track;
+    }
+
+    /**
+     * Creates and adds a new MIDI track with the given name.
+     *
+     * @param name the track name
+     * @return the newly created track
+     */
+    public Track createMidiTrack(String name) {
+        var track = new Track(name, TrackType.MIDI);
+        addTrack(track);
+        return track;
     }
 
     /**
@@ -89,5 +121,15 @@ public final class DawProject {
     /** Returns the transport. */
     public Transport getTransport() {
         return transport;
+    }
+
+    /** Returns the project metadata. */
+    public ProjectMetadata getMetadata() {
+        return metadata;
+    }
+
+    /** Sets the project metadata. */
+    public void setMetadata(ProjectMetadata metadata) {
+        this.metadata = Objects.requireNonNull(metadata, "metadata must not be null");
     }
 }

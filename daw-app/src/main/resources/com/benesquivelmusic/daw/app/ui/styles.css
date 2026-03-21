@@ -1,87 +1,374 @@
 /*
  * Digital Audio Workstation — Main Stylesheet
+ * Color palette: Black, White, Green, Red, Purple, Orange
+ */
+
+/* ── Color Variables (applied via literal values) ──
+ *  Black:   #0d0d0d, #1a1a1a, #242424, #2e2e2e
+ *  White:   #ffffff, #e0e0e0, #b0b0b0, #808080
+ *  Green:   #00e676, #00c853, #1b5e20
+ *  Red:     #ff1744, #d50000, #b71c1c
+ *  Purple:  #e040fb, #aa00ff, #7c4dff, #4a148c
+ *  Orange:  #ff9100, #ff6d00, #e65100
  */
 
 .root-pane {
-    -fx-background-color: #1e1e2e;
+    -fx-background-color: #0d0d0d;
 }
 
-/* Transport Bar */
+/* ── Transport Bar ── */
 .transport-bar {
-    -fx-background-color: #2b2b3d;
+    -fx-background-color: linear-gradient(to bottom, #242424, #1a1a1a);
+    -fx-border-color: transparent transparent #2e2e2e transparent;
+    -fx-border-width: 0 0 1 0;
 }
 
 .transport-button {
-    -fx-background-color: #3a3a5c;
-    -fx-text-fill: #cdd6f4;
+    -fx-background-color: #2e2e2e;
+    -fx-text-fill: #e0e0e0;
     -fx-font-size: 13px;
-    -fx-padding: 6 16;
-    -fx-background-radius: 4;
+    -fx-font-weight: bold;
+    -fx-padding: 6 18;
+    -fx-background-radius: 6;
     -fx-cursor: hand;
+    -fx-border-color: #3d3d3d;
+    -fx-border-width: 1;
+    -fx-border-radius: 6;
 }
 
 .transport-button:hover {
-    -fx-background-color: #505080;
+    -fx-background-color: #3d3d3d;
+    -fx-border-color: #7c4dff;
+}
+
+.transport-button:pressed {
+    -fx-background-color: #4a148c;
+    -fx-border-color: #e040fb;
 }
 
 .transport-button:disabled {
-    -fx-opacity: 0.5;
+    -fx-opacity: 0.35;
 }
 
+/* Play button — green accent */
+.play-button {
+    -fx-text-fill: #00e676;
+    -fx-border-color: #1b5e20;
+}
+
+.play-button:hover {
+    -fx-border-color: #00e676;
+    -fx-background-color: #1b3a1b;
+}
+
+/* Record button — red accent */
 .record-button {
-    -fx-text-fill: #f38ba8;
+    -fx-text-fill: #ff1744;
+    -fx-border-color: #b71c1c;
 }
 
+.record-button:hover {
+    -fx-border-color: #ff1744;
+    -fx-background-color: #3a1a1a;
+}
+
+/* Stop button — orange accent */
+.stop-button {
+    -fx-text-fill: #ff9100;
+    -fx-border-color: #e65100;
+}
+
+.stop-button:hover {
+    -fx-border-color: #ff9100;
+    -fx-background-color: #3a2a1a;
+}
+
+/* Plugin button — purple accent */
+.plugin-button {
+    -fx-text-fill: #e040fb;
+    -fx-border-color: #4a148c;
+}
+
+.plugin-button:hover {
+    -fx-border-color: #e040fb;
+    -fx-background-color: #2a1a3a;
+}
+
+/* Project button — orange accent */
+.project-button {
+    -fx-text-fill: #ff9100;
+    -fx-border-color: #e65100;
+}
+
+.project-button:hover {
+    -fx-border-color: #ff9100;
+    -fx-background-color: #3a2a1a;
+}
+
+/* ── Labels ── */
 .tempo-label {
-    -fx-text-fill: #a6adc8;
-    -fx-font-size: 14px;
+    -fx-text-fill: #ff9100;
+    -fx-font-size: 15px;
     -fx-font-weight: bold;
+    -fx-font-family: "Monospaced";
 }
 
 .status-label {
-    -fx-text-fill: #a6adc8;
+    -fx-text-fill: #b0b0b0;
     -fx-font-size: 13px;
 }
 
-/* Track List Panel */
-.track-list-panel {
-    -fx-background-color: #181825;
-}
-
-.panel-header {
-    -fx-text-fill: #cdd6f4;
-    -fx-font-size: 14px;
+.status-recording {
+    -fx-text-fill: #ff1744;
     -fx-font-weight: bold;
 }
 
-/* Arrangement Panel */
+.status-playing {
+    -fx-text-fill: #00e676;
+    -fx-font-weight: bold;
+}
+
+.status-stopped {
+    -fx-text-fill: #808080;
+}
+
+/* ── Time Display ── */
+.time-display {
+    -fx-text-fill: #00e676;
+    -fx-font-size: 18px;
+    -fx-font-weight: bold;
+    -fx-font-family: "Monospaced";
+}
+
+/* ── Track List Panel ── */
+.track-list-panel {
+    -fx-background-color: #1a1a1a;
+    -fx-border-color: transparent #2e2e2e transparent transparent;
+    -fx-border-width: 0 1 0 0;
+}
+
+.panel-header {
+    -fx-text-fill: #e040fb;
+    -fx-font-size: 14px;
+    -fx-font-weight: bold;
+    -fx-padding: 0 0 6 0;
+}
+
+.track-item {
+    -fx-background-color: #242424;
+    -fx-border-color: #2e2e2e;
+    -fx-border-width: 0 0 1 0;
+    -fx-padding: 8;
+}
+
+.track-item:hover {
+    -fx-background-color: #2e2e2e;
+}
+
+.track-name {
+    -fx-text-fill: #e0e0e0;
+    -fx-font-size: 13px;
+    -fx-font-weight: bold;
+}
+
+.track-type-label {
+    -fx-text-fill: #7c4dff;
+    -fx-font-size: 11px;
+}
+
+/* Track control mini-buttons */
+.track-mute-button {
+    -fx-background-color: #2e2e2e;
+    -fx-text-fill: #ff9100;
+    -fx-font-size: 10px;
+    -fx-font-weight: bold;
+    -fx-padding: 2 6;
+    -fx-background-radius: 3;
+    -fx-cursor: hand;
+}
+
+.track-mute-button:hover {
+    -fx-background-color: #ff9100;
+    -fx-text-fill: #0d0d0d;
+}
+
+.track-solo-button {
+    -fx-background-color: #2e2e2e;
+    -fx-text-fill: #00e676;
+    -fx-font-size: 10px;
+    -fx-font-weight: bold;
+    -fx-padding: 2 6;
+    -fx-background-radius: 3;
+    -fx-cursor: hand;
+}
+
+.track-solo-button:hover {
+    -fx-background-color: #00e676;
+    -fx-text-fill: #0d0d0d;
+}
+
+.track-arm-button {
+    -fx-background-color: #2e2e2e;
+    -fx-text-fill: #ff1744;
+    -fx-font-size: 10px;
+    -fx-font-weight: bold;
+    -fx-padding: 2 6;
+    -fx-background-radius: 3;
+    -fx-cursor: hand;
+}
+
+.track-arm-button:hover {
+    -fx-background-color: #ff1744;
+    -fx-text-fill: #ffffff;
+}
+
+/* ── Arrangement Panel ── */
 .arrangement-panel {
-    -fx-background-color: #1e1e2e;
+    -fx-background-color: #0d0d0d;
 }
 
 .placeholder-label {
-    -fx-text-fill: #585b70;
-    -fx-font-size: 16px;
+    -fx-text-fill: #3d3d3d;
+    -fx-font-size: 18px;
+    -fx-font-style: italic;
 }
 
-/* Main Split Pane */
+/* ── Timeline Header ── */
+.timeline-header {
+    -fx-background-color: #1a1a1a;
+    -fx-border-color: transparent transparent #2e2e2e transparent;
+    -fx-border-width: 0 0 1 0;
+    -fx-padding: 4 8;
+}
+
+.timeline-label {
+    -fx-text-fill: #808080;
+    -fx-font-size: 11px;
+    -fx-font-family: "Monospaced";
+}
+
+/* ── Mixer Panel ── */
+.mixer-panel {
+    -fx-background-color: #1a1a1a;
+    -fx-border-color: #2e2e2e transparent transparent transparent;
+    -fx-border-width: 1 0 0 0;
+    -fx-padding: 8;
+}
+
+.mixer-channel {
+    -fx-background-color: #242424;
+    -fx-border-color: #2e2e2e;
+    -fx-border-width: 1;
+    -fx-border-radius: 4;
+    -fx-background-radius: 4;
+    -fx-padding: 6;
+    -fx-min-width: 70;
+}
+
+.mixer-channel-name {
+    -fx-text-fill: #b0b0b0;
+    -fx-font-size: 10px;
+    -fx-alignment: center;
+}
+
+.mixer-fader {
+    -fx-background-color: #2e2e2e;
+}
+
+.mixer-fader .track {
+    -fx-background-color: #2e2e2e;
+}
+
+.mixer-fader .thumb {
+    -fx-background-color: #7c4dff;
+}
+
+/* ── Main Split Pane ── */
 .main-split > .split-pane-divider {
-    -fx-background-color: #313244;
+    -fx-background-color: #2e2e2e;
     -fx-padding: 0 1 0 1;
 }
 
-/* Status Bar */
+/* ── Status Bar ── */
 .status-bar {
-    -fx-background-color: #181825;
+    -fx-background-color: #1a1a1a;
+    -fx-border-color: #2e2e2e transparent transparent transparent;
+    -fx-border-width: 1 0 0 0;
 }
 
 .status-bar-label {
-    -fx-text-fill: #6c7086;
-    -fx-font-size: 12px;
+    -fx-text-fill: #808080;
+    -fx-font-size: 11px;
 }
 
-/* Separator */
+.checkpoint-label {
+    -fx-text-fill: #00c853;
+    -fx-font-size: 11px;
+    -fx-font-weight: bold;
+}
+
+.project-info-label {
+    -fx-text-fill: #7c4dff;
+    -fx-font-size: 11px;
+}
+
+/* ── Separator ── */
 .separator > .line {
-    -fx-border-color: #313244;
+    -fx-border-color: #2e2e2e;
     -fx-border-width: 1 0 0 0;
+}
+
+/* ── Scroll Bars ── */
+.scroll-bar {
+    -fx-background-color: #1a1a1a;
+}
+
+.scroll-bar .thumb {
+    -fx-background-color: #3d3d3d;
+    -fx-background-radius: 3;
+}
+
+.scroll-bar .thumb:hover {
+    -fx-background-color: #7c4dff;
+}
+
+.scroll-bar .increment-button,
+.scroll-bar .decrement-button {
+    -fx-background-color: transparent;
+}
+
+.scroll-bar .increment-arrow,
+.scroll-bar .decrement-arrow {
+    -fx-background-color: transparent;
+    -fx-shape: "";
+    -fx-padding: 0;
+}
+
+/* ── Auto-Save Indicator ── */
+.autosave-active {
+    -fx-text-fill: #00e676;
+}
+
+.autosave-saving {
+    -fx-text-fill: #ff9100;
+}
+
+/* ── Level Meters ── */
+.level-meter {
+    -fx-background-color: #1a1a1a;
+    -fx-border-color: #2e2e2e;
+    -fx-border-width: 1;
+    -fx-border-radius: 2;
+}
+
+.level-meter-fill-green {
+    -fx-background-color: linear-gradient(to top, #1b5e20, #00e676);
+}
+
+.level-meter-fill-orange {
+    -fx-background-color: linear-gradient(to top, #e65100, #ff9100);
+}
+
+.level-meter-fill-red {
+    -fx-background-color: linear-gradient(to top, #b71c1c, #ff1744);
 }
