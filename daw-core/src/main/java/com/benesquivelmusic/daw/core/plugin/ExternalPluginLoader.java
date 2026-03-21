@@ -54,33 +54,47 @@ public final class ExternalPluginLoader {
             throw new PluginLoadException("Path is not a regular file: " + jarPath);
         }
 
+        URLClassLoader classLoader = null;
         try {
             URL jarUrl = jarPath.toUri().toURL();
-            URLClassLoader classLoader = new URLClassLoader(
+            classLoader = new URLClassLoader(
                     new URL[]{jarUrl},
                     ExternalPluginLoader.class.getClassLoader());
 
             Class<?> pluginClass = classLoader.loadClass(className);
 
             if (!DawPlugin.class.isAssignableFrom(pluginClass)) {
-                classLoader.close();
                 throw new PluginLoadException(
                         "Class " + className + " does not implement DawPlugin");
             }
 
-            Object instance = pluginClass.getDeclaredConstructor().newInstance();
+            Object instance = pluginClass.getConstructor().newInstance();
             return (DawPlugin) instance;
         } catch (PluginLoadException e) {
+            closeQuietly(classLoader);
             throw e;
         } catch (ClassNotFoundException e) {
+            closeQuietly(classLoader);
             throw new PluginLoadException(
                     "Class not found in JAR: " + className, e);
         } catch (NoSuchMethodException e) {
+            closeQuietly(classLoader);
             throw new PluginLoadException(
                     "Plugin class has no public no-arg constructor: " + className, e);
         } catch (ReflectiveOperationException | IOException e) {
+            closeQuietly(classLoader);
             throw new PluginLoadException(
                     "Failed to load plugin from " + jarPath + ": " + e.getMessage(), e);
+        }
+    }
+
+    private static void closeQuietly(URLClassLoader classLoader) {
+        if (classLoader != null) {
+            try {
+                classLoader.close();
+            } catch (IOException ignored) {
+                // best-effort cleanup
+            }
         }
     }
 }
