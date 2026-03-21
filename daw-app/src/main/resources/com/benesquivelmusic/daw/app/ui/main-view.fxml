@@ -26,6 +26,8 @@
                 <Button fx:id="stopButton" text="■ Stop" onAction="#onStop" styleClass="transport-button"/>
                 <Button fx:id="recordButton" text="● Record" onAction="#onRecord" styleClass="transport-button, record-button"/>
                 <Separator orientation="VERTICAL"/>
+                <Button text="🔌 Plugins" onAction="#onManagePlugins" styleClass="transport-button"/>
+                <Separator orientation="VERTICAL"/>
                 <Label fx:id="tempoLabel" text="120.0 BPM" styleClass="tempo-label"/>
                 <Separator orientation="VERTICAL"/>
                 <Label fx:id="statusLabel" text="Status: STOPPED" styleClass="status-label"/>
