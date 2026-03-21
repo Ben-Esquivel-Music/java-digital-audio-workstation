@@ -24,44 +24,44 @@
                     <Insets top="8" right="16" bottom="8" left="16"/>
                 </padding>
 
-                <!-- Transport -->
-                <Button fx:id="playButton" text="▶ Play" onAction="#onPlay"
+                <!-- Transport (icons applied programmatically via IconNode) -->
+                <Button fx:id="playButton" text="Play" onAction="#onPlay"
                         styleClass="transport-button, play-button"/>
-                <Button fx:id="stopButton" text="■ Stop" onAction="#onStop"
+                <Button fx:id="stopButton" text="Stop" onAction="#onStop"
                         styleClass="transport-button, stop-button"/>
-                <Button fx:id="recordButton" text="● Record" onAction="#onRecord"
+                <Button fx:id="recordButton" text="Record" onAction="#onRecord"
                         styleClass="transport-button, record-button"/>
 
                 <Separator orientation="VERTICAL"/>
 
-                <!-- Time display -->
+                <!-- Time display (icon applied programmatically) -->
                 <Label fx:id="timeDisplay" text="00:00:00.0" styleClass="time-display"/>
 
                 <Separator orientation="VERTICAL"/>
 
-                <!-- Tempo -->
+                <!-- Tempo (icon applied programmatically) -->
                 <Label fx:id="tempoLabel" text="120.0 BPM" styleClass="tempo-label"/>
 
                 <Separator orientation="VERTICAL"/>
 
-                <!-- Track controls -->
-                <Button text="＋ Audio Track" onAction="#onAddAudioTrack"
+                <!-- Track controls (icons applied programmatically) -->
+                <Button fx:id="addAudioTrackButton" text="Audio Track" onAction="#onAddAudioTrack"
                         styleClass="transport-button"/>
-                <Button text="＋ MIDI Track" onAction="#onAddMidiTrack"
+                <Button fx:id="addMidiTrackButton" text="MIDI Track" onAction="#onAddMidiTrack"
                         styleClass="transport-button"/>
 
                 <Separator orientation="VERTICAL"/>
 
-                <!-- Project / Plugins -->
-                <Button text="💾 Save" onAction="#onSaveProject"
+                <!-- Project / Plugins (icons applied programmatically) -->
+                <Button fx:id="saveButton" text="Save" onAction="#onSaveProject"
                         styleClass="transport-button, project-button"/>
-                <Button text="🔌 Plugins" onAction="#onManagePlugins"
+                <Button fx:id="pluginsButton" text="Plugins" onAction="#onManagePlugins"
                         styleClass="transport-button, plugin-button"/>
 
                 <!-- Spacer -->
                 <Region HBox.hgrow="ALWAYS"/>
 
-                <!-- Status -->
+                <!-- Status (icon applied programmatically) -->
                 <Label fx:id="statusLabel" text="STOPPED" styleClass="status-label"/>
             </HBox>
             <Separator/>
@@ -76,7 +76,7 @@
                 <padding>
                     <Insets top="8" right="8" bottom="8" left="8"/>
                 </padding>
-                <Label text="🎚 TRACKS" styleClass="panel-header"/>
+                <Label fx:id="tracksPanelHeader" text="TRACKS" styleClass="panel-header"/>
             </VBox>
 
             <!-- Right: Arrangement Timeline -->
@@ -93,7 +93,7 @@
                 </HBox>
                 <StackPane VBox.vgrow="ALWAYS">
                     <Label fx:id="arrangementPlaceholder"
-                           text="🎵  Add tracks to begin your session"
+                           text="Add tracks to begin your session"
                            styleClass="placeholder-label"/>
                 </StackPane>
             </VBox>

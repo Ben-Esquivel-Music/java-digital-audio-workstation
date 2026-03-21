@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
+import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.plugin.ExternalPluginEntry;
 import com.benesquivelmusic.daw.core.plugin.PluginLoadException;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
@@ -31,8 +33,13 @@ import java.nio.file.Path;
  * <p>Allows users to add plugins by specifying the path to a pre-compiled JAR file
  * and the fully qualified class name of their plugin implementation. This eliminates
  * the need for users to manually create {@code META-INF/services} files.</p>
+ *
+ * <p>Uses the {@link DawIcon} icon pack for all button graphics.</p>
  */
 public final class PluginManagerDialog extends Dialog<Void> {
+
+    private static final double BUTTON_ICON_SIZE = 16;
+    private static final double HEADER_ICON_SIZE = 18;
 
     private final PluginRegistry registry;
     private final ObservableList<ExternalPluginEntry> entryList;
@@ -61,6 +68,7 @@ public final class PluginManagerDialog extends Dialog<Void> {
                 super.updateItem(entry, empty);
                 if (empty || entry == null) {
                     setText(null);
+                    setGraphic(null);
                 } else {
                     DawPlugin plugin = registry.getPlugin(entry);
                     if (plugin != null) {
@@ -69,6 +77,7 @@ public final class PluginManagerDialog extends Dialog<Void> {
                     } else {
                         setText(entry.className() + " — " + entry.jarPath().getFileName());
                     }
+                    setGraphic(IconNode.of(DawIcon.SETTINGS, 14));
                 }
             }
         });
@@ -79,9 +88,13 @@ public final class PluginManagerDialog extends Dialog<Void> {
         HBox.setHgrow(jarPathField, Priority.ALWAYS);
 
         Button browseButton = new Button("Browse…");
+        browseButton.setGraphic(IconNode.of(DawIcon.FOLDER, BUTTON_ICON_SIZE));
         browseButton.setOnAction(_ -> browseForJar());
 
-        HBox jarPathRow = new HBox(8, new Label("JAR Path:"), jarPathField, browseButton);
+        var jarLabel = new Label("JAR Path:");
+        jarLabel.setGraphic(IconNode.of(DawIcon.LINK, 14));
+
+        HBox jarPathRow = new HBox(8, jarLabel, jarPathField, browseButton);
         jarPathRow.setPadding(new Insets(4, 0, 4, 0));
 
         // --- Class name input ---
@@ -89,22 +102,30 @@ public final class PluginManagerDialog extends Dialog<Void> {
         classNameField.setPromptText("e.g. com.example.MyReverbPlugin");
         HBox.setHgrow(classNameField, Priority.ALWAYS);
 
-        HBox classNameRow = new HBox(8, new Label("Plugin Class:"), classNameField);
+        var classLabel = new Label("Plugin Class:");
+        classLabel.setGraphic(IconNode.of(DawIcon.INFO, 14));
+
+        HBox classNameRow = new HBox(8, classLabel, classNameField);
         classNameRow.setPadding(new Insets(4, 0, 4, 0));
 
         // --- Action buttons ---
         Button addButton = new Button("Add Plugin");
+        addButton.setGraphic(IconNode.of(DawIcon.UPLOAD, BUTTON_ICON_SIZE));
         addButton.setOnAction(_ -> addPlugin());
 
         Button removeButton = new Button("Remove Selected");
+        removeButton.setGraphic(IconNode.of(DawIcon.DELETE, BUTTON_ICON_SIZE));
         removeButton.setOnAction(_ -> removeSelectedPlugin());
 
         HBox buttonRow = new HBox(8, addButton, removeButton);
         buttonRow.setPadding(new Insets(8, 0, 0, 0));
 
         // --- Layout ---
+        var headerLabel = new Label("Loaded Plugins:");
+        headerLabel.setGraphic(IconNode.of(DawIcon.LIBRARY, HEADER_ICON_SIZE));
+
         VBox content = new VBox(8,
-                new Label("Loaded Plugins:"),
+                headerLabel,
                 listView,
                 jarPathRow,
                 classNameRow,
