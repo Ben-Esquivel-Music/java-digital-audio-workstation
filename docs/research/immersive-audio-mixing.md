@@ -205,3 +205,21 @@ Composing and producing directly for a 3D spatial environment from the start. Th
 - [Berklee Online — Immersive Audio Post Production and Mixing Techniques](https://online.berklee.edu/courses/immersive-audio-post-production-and-mixing-techniques.408)
 - [Berklee College — Introduction to Immersive Audio (MP-345)](https://college.berklee.edu/courses/mp-345)
 - [Dolby Professional — Getting Started with Atmos](https://professional.dolby.com/music/getting-started/)
+
+### AES Conference Papers
+
+The following AES papers provide additional research supporting immersive audio techniques. Full analysis is available in [AES Research Papers](aes-research-papers.md).
+
+| Paper | Relevance to Immersive Audio |
+|-------|----------------------------|
+| [Ambisonic Spatial Decomposition Method with salient/diffuse separation](AES/Ambisonic_Spatial_Decomposition_Method_with_salient___diffuse_separation.pdf) | Algorithm for enhancing FOA spatial resolution via salient/diffuse stream separation |
+| [Spatial Composition and What It Means for Immersive Audio Production](AES/Spatial_Composition_and_What_It_Means_for_Immersive_Audio_Production.pdf) | Framework for spatial audio as compositional tool; Ambisonics, WFS, and object-based approaches |
+| [Differentiating Sensations of Sound Envelopment in Spatial Sound Synthesis](AES/Differentiating_Sensations_of_Sound_Envelopment_in_Spatial_Sound_Synthesis_Approaches__an_Explorative_Study.pdf) | Perceptual evaluation of spectral, temporal, and angular velocity spatialization methods |
+| [Spectral and Spatial Discrepancies Between Stereo and Binaural Spatial Masters](AES/Spectral_and_Spatial_Discrepancies_Between_Stereo_and_Binaural_Spatial_Masters_in_Headphone_Playback__A_Perceptual_and_Technical_Analysis.pdf) | Measurable frequency, imaging, and loudness shifts in binaural rendering vs. stereo |
+| [Extending Realism for Digital Piano Players: 3DoF and 6DoF Head-Tracked Binaural Audio](AES/Extending_Realism_for_Digital_Piano_Players__A_Perceptual_Comparison_of_3DoF_and_6DoF_Head-Tracked_Binaural_Audio.pdf) | Perceptual benefits of 6DoF over 3DoF head-tracked binaural monitoring |
+| [Perceptual Quality-Preserving Neural Audio Compression for Low-Bandwidth VR](AES/Perceptual_Quality-Preserving_Neural_Audio_Compression_for_Low-Bandwidth_VR.pdf) | Neural codec preserving spatial cues at low bitrates for immersive applications |
+| [Improved Real-Time 6DoF Dynamic Auralization](AES/Improved_Real-Time_Six-Degrees-of-Freedom_Dynamic_Auralization_Through_Nonuniformly_Partitioned_Convolution.pdf) | Nonuniformly partitioned convolution for efficient real-time 6DoF spatial rendering |
+| [Detection of individual reflections in a binaural presentation](AES/Detection_of_individual_reflections_in_a_binaural_presentation_of_a_typical_listening_room.pdf) | Validates binaural room acoustic comparison for room simulation accuracy |
+| [Direct vs. Rendered Binaural Capture of Guitar Amplifier](AES/Direct_vs._Rendered_Binaural_Capture_of_Guitar_Amplifier__A_Comparative_Study.pdf) | Comparison of binaural capture methods; validates IR-based binaural rendering |
+| [Optimized Loudspeaker Panning for Adaptive Sound-Field Correction](AES/Optimized_Loudspeaker_Panning_for_Adaptive_Sound-Field_Correction_and_Non-stationary_Listening_Areas.pdf) | Bayesian panning optimization for non-standard speaker layouts |
+| [Increasing the Sweet Spot Size in Multi-channel Crosstalk Cancellation](AES/Increasing_the_Sweet_Spot_Size_in_Multi-channel_Crosstalk_Cancellation_Systems.pdf) | Sweet spot expansion using weighted contrast control for multi-speaker playback |
