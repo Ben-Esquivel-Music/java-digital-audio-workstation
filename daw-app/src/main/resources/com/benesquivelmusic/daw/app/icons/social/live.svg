@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <circle cx="24" cy="24" r="6" fill="#FF1744"/>
+  <text x="24" y="42" font-family="sans-serif" font-size="8" font-weight="bold" fill="#FF1744" text-anchor="middle">LIVE</text>
+  <path d="M14,16 Q8,20 8,24 Q8,28 14,32" fill="none" stroke="#FF1744" stroke-width="2" stroke-linecap="round"/>
+  <path d="M34,16 Q40,20 40,24 Q40,28 34,32" fill="none" stroke="#FF1744" stroke-width="2" stroke-linecap="round"/>
+</svg>
