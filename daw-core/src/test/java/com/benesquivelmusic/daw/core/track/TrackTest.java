@@ -1,0 +1,72 @@
+package com.benesquivelmusic.daw.core.track;
+
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+class TrackTest {
+
+    @Test
+    void shouldCreateTrackWithDefaults() {
+        var track = new Track("Vocals", TrackType.AUDIO);
+
+        assertThat(track.getName()).isEqualTo("Vocals");
+        assertThat(track.getType()).isEqualTo(TrackType.AUDIO);
+        assertThat(track.getId()).isNotBlank();
+        assertThat(track.getVolume()).isEqualTo(1.0);
+        assertThat(track.getPan()).isEqualTo(0.0);
+        assertThat(track.isMuted()).isFalse();
+        assertThat(track.isSolo()).isFalse();
+    }
+
+    @Test
+    void shouldSetVolume() {
+        var track = new Track("Track", TrackType.AUDIO);
+        track.setVolume(0.5);
+        assertThat(track.getVolume()).isEqualTo(0.5);
+    }
+
+    @Test
+    void shouldRejectInvalidVolume() {
+        var track = new Track("Track", TrackType.AUDIO);
+        assertThatThrownBy(() -> track.setVolume(-0.1))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> track.setVolume(1.1))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void shouldSetPan() {
+        var track = new Track("Track", TrackType.AUDIO);
+        track.setPan(-1.0);
+        assertThat(track.getPan()).isEqualTo(-1.0);
+        track.setPan(1.0);
+        assertThat(track.getPan()).isEqualTo(1.0);
+    }
+
+    @Test
+    void shouldRejectInvalidPan() {
+        var track = new Track("Track", TrackType.AUDIO);
+        assertThatThrownBy(() -> track.setPan(-1.1))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> track.setPan(1.1))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void shouldToggleMuteAndSolo() {
+        var track = new Track("Track", TrackType.MIDI);
+        track.setMuted(true);
+        assertThat(track.isMuted()).isTrue();
+        track.setSolo(true);
+        assertThat(track.isSolo()).isTrue();
+    }
+
+    @Test
+    void shouldGenerateUniqueIds() {
+        var a = new Track("A", TrackType.AUDIO);
+        var b = new Track("B", TrackType.AUDIO);
+        assertThat(a.getId()).isNotEqualTo(b.getId());
+    }
+}
