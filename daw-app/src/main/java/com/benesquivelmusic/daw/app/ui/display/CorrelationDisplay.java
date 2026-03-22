@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
 import com.benesquivelmusic.daw.sdk.visualization.CorrelationData;
+import com.benesquivelmusic.daw.sdk.visualization.GoniometerData;
 
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
@@ -18,6 +19,7 @@ import javafx.scene.text.TextAlignment;
  *   <li>Mid/side level balance</li>
  *   <li>Stereo balance indicator</li>
  *   <li>Phase correlation history</li>
+ *   <li>Goniometer (Lissajous XY) visualization</li>
  * </ul>
  *
  * <p>Supports the stereo imaging monitoring described in the
@@ -33,6 +35,8 @@ public final class CorrelationDisplay extends Region {
     private static final Color NEGATIVE_COLOR = Color.web("#ff1744");
     private static final Color TEXT_COLOR = Color.web("#ffffff", 0.5);
     private static final Color BALANCE_COLOR = Color.web("#00e5ff");
+    private static final Color GONIOMETER_DOT_COLOR = Color.web("#00e5ff", 0.6);
+    private static final Color GONIOMETER_AXIS_COLOR = Color.web("#ffffff", 0.1);
 
     private static final int HISTORY_SIZE = 120;
 
@@ -45,6 +49,9 @@ public final class CorrelationDisplay extends Region {
     private double midLevel = -120.0;
     private double sideLevel = -120.0;
     private double stereoBalance = 0.0;
+
+    private boolean goniometerMode;
+    private GoniometerData goniometerData;
 
     /**
      * Creates a new correlation display.
@@ -81,6 +88,31 @@ public final class CorrelationDisplay extends Region {
     }
 
     /**
+     * Updates the display with new goniometer data.
+     *
+     * @param data the latest goniometer data for Lissajous display
+     */
+    public void updateGoniometer(GoniometerData data) {
+        this.goniometerData = data;
+        render();
+    }
+
+    /**
+     * Sets whether to show the goniometer (Lissajous) overlay.
+     *
+     * @param enabled {@code true} to show goniometer visualization
+     */
+    public void setGoniometerMode(boolean enabled) {
+        this.goniometerMode = enabled;
+        render();
+    }
+
+    /** Returns whether goniometer mode is active. */
+    public boolean isGoniometerMode() {
+        return goniometerMode;
+    }
+
+    /**
      * Renders the correlation display.
      */
     private void render() {
@@ -93,6 +125,10 @@ public final class CorrelationDisplay extends Region {
         // Background
         gc.setFill(BACKGROUND);
         gc.fillRect(0, 0, w, h);
+
+        if (goniometerMode && goniometerData != null && goniometerData.pointCount() > 0) {
+            renderGoniometer(gc, w, h);
+        }
 
         double centerX = w / 2;
         double topSection = h * 0.6;
@@ -175,6 +211,37 @@ public final class CorrelationDisplay extends Region {
                 gc.fillRect(x, historyY + histH - barH, Math.max(colW - 0.5, 0.5), barH);
             }
         }
+    }
+
+    private void renderGoniometer(GraphicsContext gc, double w, double h) {
+        double centerX = w / 2;
+        double centerY = h * 0.3;
+        double radius = Math.min(centerX - 10, h * 0.25);
+
+        // Draw crosshair axes
+        gc.setStroke(GONIOMETER_AXIS_COLOR);
+        gc.setLineWidth(1);
+        gc.strokeLine(centerX - radius, centerY, centerX + radius, centerY);
+        gc.strokeLine(centerX, centerY - radius, centerX, centerY + radius);
+
+        // Draw goniometer points
+        gc.setFill(GONIOMETER_DOT_COLOR);
+        float[] xPts = goniometerData.xPoints();
+        float[] yPts = goniometerData.yPoints();
+        int count = goniometerData.pointCount();
+
+        for (int i = 0; i < count; i++) {
+            double px = centerX + xPts[i] * radius;
+            double py = centerY - yPts[i] * radius;
+            gc.fillOval(px - 1, py - 1, 2, 2);
+        }
+
+        // Labels
+        gc.setFill(TEXT_COLOR);
+        gc.setFont(Font.font(9));
+        gc.setTextAlign(TextAlignment.CENTER);
+        gc.fillText("M", centerX, centerY - radius - 4);
+        gc.fillText("S", centerX + radius + 8, centerY + 3);
     }
 
     private Color getCorrelationColor(double c) {
