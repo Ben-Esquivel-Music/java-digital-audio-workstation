@@ -7,7 +7,7 @@
 
 This document catalogs and analyzes 43 peer-reviewed papers from AES conferences, organized by research area. Each paper is assessed for its relevance to implementing features in this Java-based Digital Audio Workstation.
 
-The `AES/` subdirectory contains **345 papers** spanning from 1967 to 2026. For a complete listing organized by publication decade, see the [AES PDF Catalog by Decade](aes-pdf-catalog.md).
+The `AES/` subdirectory contains **345 papers** spanning from 1949 to 2026, including foundational papers from the AES's earliest publication *AUDIO ENGINEERING* magazine (1949–1952). For a complete listing organized by publication decade, see the [AES PDF Catalog by Decade](aes-pdf-catalog.md).
 
 ---
 
@@ -235,7 +235,8 @@ Papers involving neural networks, reinforcement learning, and AI-driven audio pr
 
 All papers are located in `AES/` and are published by the [Audio Engineering Society](https://www.aes.org/).
 
-- AES Convention Papers and Engineering Briefs (1967–2026)
+- AES Convention Papers and Engineering Briefs (1949–2026)
+- *AUDIO ENGINEERING* magazine — AES monthly publication (1949–1952 papers)
 - AES International Conference Proceedings
 - AES Journal of the Audio Engineering Society
 

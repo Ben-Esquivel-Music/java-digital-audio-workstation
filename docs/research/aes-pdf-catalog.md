@@ -1,31 +1,70 @@
 # AES Research Papers — Full PDF Catalog by Decade
 
 > Complete catalog of all **345** PDF files in the `AES/` subdirectory, organized by publication decade.
-> Publication years are sourced from PDF metadata (`/CreationDate` field). Papers without embedded
-> metadata dates have been dated by content analysis of their first pages (AES convention number, date text).
+> Publication years are sourced from paper text content — AUDIO ENGINEERING magazine footers,
+> AES convention presentation headers, and JAES journal volume/issue citations.
+> PDF metadata (`/CreationDate`) was used only for modern born-digital papers where it matches
+> the publication year. For scanned vintage papers, metadata reflects *digitization* date (typically
+> 2006–2007), not the original publication date.
 
 ## Decade Summary
 
 | Decade | Papers | Period Coverage |
 |--------|--------|-----------------|
+| 1940s | 2 | 1949 |
+| 1950s | 8 | 1950–1952 |
 | 1960s | 2 | 1967–1968 |
 | 1970s | 1 | 1976 |
 | 1980s | 3 | 1980–1986 |
 | 1990s | 2 | 1992–1995 |
-| 2000s | 14 | 2001–2007 |
+| 2000s | 4 | 2001–2005 |
 | 2010s | 88 | 2010–2019 |
 | 2020s | 235 | 2020–2026 |
-| **Total** | **345** | **1967–2026** |
+| **Total** | **345** | **1949–2026** |
 
 ## Table of Contents
 
+- [The 1940s (2 papers)](#the-1940s)
+- [The 1950s (8 papers)](#the-1950s)
 - [The 1960s (2 papers)](#the-1960s)
 - [The 1970s (1 paper)](#the-1970s)
 - [The 1980s (3 papers)](#the-1980s)
 - [The 1990s (2 papers)](#the-1990s)
-- [The 2000s (14 papers)](#the-2000s)
+- [The 2000s (4 papers)](#the-2000s)
 - [The 2010s (88 papers)](#the-2010s)
 - [The 2020s (235 papers)](#the-2020s)
+
+---
+
+## The 1940s
+
+The earliest AES publications, from the Audio Engineering Society's formative years. These papers from the monthly *AUDIO ENGINEERING* magazine (the precursor to the JAES) represent some of the first documented research from AES members, covering feedback recording techniques and audio signal generation.
+
+**2 papers**
+
+| Year | Paper |
+|------|-------|
+| 1949 | [A New Electronic Audio Sweep-Frequency Generator](AES/A_New_Electronic_Audio_Sweep-Frequency_Generator.pdf) |
+| 1949 | [Lateral Feedback Disk Recorder](AES/Lateral_Feedback_Disk_Recorder.pdf) |
+
+---
+
+## The 1950s
+
+AES papers from the 1950s — the first full decade of the Audio Engineering Society, published in the *AUDIO ENGINEERING* magazine. Topics span loudspeaker enclosure design, circuit noise, signal measurement, and magnetic amplifier fundamentals, establishing the foundational engineering knowledge of the field.
+
+**8 papers**
+
+| Year | Paper |
+|------|-------|
+| 1950 | [Longitudinal Noise in Audio Circuits, Part 1](AES/Longitudinal_Noise_in_Audio_Circuits,_Part_1.pdf) |
+| 1950 | [Longitudinal Noise in Audio Circuits, Part 2](AES/Longitudinal_Noise_in_Audio_Circuits,_Part_2.pdf) |
+| 1951 | [Direct Radiator Loudspeaker Enclosures](AES/Direct_Radiator_Loudspeaker_Enclosures.pdf) |
+| 1951 | [Loudspeaker Damping, Part 2](AES/Loudspeaker_Damping,_Part_2.pdf) |
+| 1951 | [New Method of Measuring and Analyzing Intermodulation](AES/New_Method_of_Measuring_and_Analyzing_Intermodulation.pdf) |
+| 1951 | [The Measurement of Audio Volume, Part 2](AES/The_Measurement_of_Audio_Volume,_Part_2.pdf) |
+| 1951 | [Toward a More Realistic Audio](AES/Toward_a_More_Realistic_Audio.pdf) |
+| 1952 | [Magnetic Audio Frequency [Amplifier] Fundamentals](AES/Magnetic_Audio_Frequency_[Amplifier]_Fundamentals.pdf) |
 
 ---
 
@@ -85,7 +124,7 @@ AES papers from the 1990s covering early digital signal processing for spatial a
 
 AES papers from the 2000s covering wavefront sculpture technology for line arrays, jitter performance analysis, microphone array design, and the early development of immersive and multi-channel audio systems.
 
-**14 papers**
+**4 papers**
 
 | Year | Paper |
 |------|-------|
@@ -93,16 +132,6 @@ AES papers from the 2000s covering wavefront sculpture technology for line array
 | 2002 | [Specifying the Jitter Performance of Audio Components](AES/Specifying_the_Jitter_Performance_of_Audio_Components.pdf) |
 | 2003 | [Wavefront Sculpture Technology (1)](AES/Wavefront_Sculpture_Technology%20(1).pdf) |
 | 2005 | [The Whys and Wherefores of Microphone Array Crosstalk in Multichannel Microphone Array Design](AES/The_Whys_and_Wherefores_of_Microphone_Array_Crosstalk_in_Multichannel_Microphone_Array_Design.pdf) |
-| 2006 | [A New Electronic Audio Sweep-Frequency Generator](AES/A_New_Electronic_Audio_Sweep-Frequency_Generator.pdf) |
-| 2006 | [Longitudinal Noise in Audio Circuits, Part 1](AES/Longitudinal_Noise_in_Audio_Circuits,_Part_1.pdf) |
-| 2006 | [Longitudinal Noise in Audio Circuits, Part 2](AES/Longitudinal_Noise_in_Audio_Circuits,_Part_2.pdf) |
-| 2007 | [Direct Radiator Loudspeaker Enclosures](AES/Direct_Radiator_Loudspeaker_Enclosures.pdf) |
-| 2007 | [Lateral Feedback Disk Recorder](AES/Lateral_Feedback_Disk_Recorder.pdf) |
-| 2007 | [Loudspeaker Damping, Part 2](AES/Loudspeaker_Damping,_Part_2.pdf) |
-| 2007 | [Magnetic Audio Frequency [Amplifier] Fundamentals](AES/Magnetic_Audio_Frequency_[Amplifier]_Fundamentals.pdf) |
-| 2007 | [New Method of Measuring and Analyzing Intermodulation](AES/New_Method_of_Measuring_and_Analyzing_Intermodulation.pdf) |
-| 2007 | [The Measurement of Audio Volume, Part 2](AES/The_Measurement_of_Audio_Volume,_Part_2.pdf) |
-| 2007 | [Toward a More Realistic Audio](AES/Toward_a_More_Realistic_Audio.pdf) |
 
 ---
 
@@ -453,13 +482,19 @@ AES papers from the 2020s covering the current state of the art: AI-driven mixin
 
 ## Methodology
 
-Publication years were determined using the following approach:
+Publication years were determined using text content analysis of each PDF, in priority order:
 
-1. **PDF Metadata** — The `/CreationDate` field from PDF XMP/Info metadata was parsed for all files.
-   This provided reliable dates for 337 of 345 files.
-2. **Content Analysis** — For the 8 files without creation date metadata, the first two pages were
-   scanned for AES convention numbers, session dates, and year references. The AES convention
-   calendar was used to map convention numbers to calendar years.
+1. **AES Convention headers** — Lines like `Presented at the AES 157th Convention 2024 October...`
+   provide the exact convention year (used for most papers from the 2010s–2020s).
+2. **JAES journal citations** — Lines like `J. Audio Eng. Soc., vol. 70, no. 5, pp. 373–391, (2022 May)`
+   give the publication volume/year (used for JAES papers).
+3. **AUDIO ENGINEERING magazine footers** — Early papers in the AES's monthly *AUDIO ENGINEERING*
+   magazine (precursor to JAES) include running footers like `AUDIO ENGINEERING JANUARY, 1950`.
+   These were used to date all vintage 1940s–1950s papers correctly.
+4. **Presentation text** — Lines like `Presented October 27, 1950` in AES preprints.
+5. **PDF metadata (`/CreationDate`)** — Used as fallback for modern papers where metadata year
+   matches expected publication year. **Not used for vintage scanned papers**, where metadata
+   reflects the digitization year (typically 2006–2007), not the original publication date.
 
 All papers are published by the [Audio Engineering Society](https://www.aes.org/).
-See also: [AES Research Papers Analysis](aes-research-papers.md) for a topic-based catalog of 43 selected papers.
+See also: [AES Research Papers Analysis](aes-research-papers.md) for a topic-based analysis of 43 selected papers.
