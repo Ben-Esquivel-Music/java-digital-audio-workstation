@@ -101,4 +101,26 @@ class ClapBindingsTest {
         assertThat(ClapBindings.PARAMS_COUNT_DESC).isNotNull();
         assertThat(ClapBindings.LATENCY_GET_DESC).isNotNull();
     }
+
+    @Test
+    void shouldDefineEventConstants() {
+        assertThat(ClapBindings.CLAP_CORE_EVENT_SPACE_ID).isEqualTo(0);
+        assertThat(ClapBindings.CLAP_EVENT_PARAM_VALUE).isEqualTo(5);
+        assertThat(ClapBindings.CLAP_EVENT_IS_LIVE).isEqualTo(1);
+    }
+
+    @Test
+    void shouldHavePositiveEventLayoutSize() {
+        assertThat(ClapBindings.CLAP_EVENT_PARAM_VALUE_LAYOUT.byteSize()).isGreaterThan(0);
+        assertThat(ClapBindings.CLAP_OSTREAM_LAYOUT.byteSize()).isGreaterThan(0);
+        assertThat(ClapBindings.CLAP_ISTREAM_LAYOUT.byteSize()).isGreaterThan(0);
+    }
+
+    @Test
+    void shouldHaveStateAndStreamFunctionDescriptors() {
+        assertThat(ClapBindings.STATE_SAVE_DESC).isNotNull();
+        assertThat(ClapBindings.STATE_LOAD_DESC).isNotNull();
+        assertThat(ClapBindings.OSTREAM_WRITE_DESC).isNotNull();
+        assertThat(ClapBindings.ISTREAM_READ_DESC).isNotNull();
+    }
 }

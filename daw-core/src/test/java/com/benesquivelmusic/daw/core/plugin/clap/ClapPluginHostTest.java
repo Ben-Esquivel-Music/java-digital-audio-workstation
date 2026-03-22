@@ -170,6 +170,45 @@ class ClapPluginHostTest {
         host.deactivate();
     }
 
+    // --- Parameter validation and queuing ---
+
+    @Test
+    void shouldRejectSetParameterWhenPluginDoesNotSupportParams() {
+        var host = new ClapPluginHost(Path.of("/test.clap"));
+        // getParameters() returns empty list when not initialized — setParameterValue
+        // should throw because the parameter does not exist.
+        assertThatThrownBy(() -> host.setParameterValue(0, 0.5))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Parameter not found");
+    }
+
+    @Test
+    void shouldAcceptLoadStateWithEmptyArrayWithoutError() {
+        var host = new ClapPluginHost(Path.of("/test.clap"));
+        // Empty state should be silently ignored (nothing to restore).
+        host.loadState(new byte[0]);
+    }
+
+    @Test
+    void shouldReturnEmptyStateBeforeInitialize() {
+        var host = new ClapPluginHost(Path.of("/test.clap"));
+        // Before initialize(), there is no state extension — should return empty array.
+        assertThat(host.saveState()).isEmpty();
+    }
+
+    @Test
+    void shouldPassThroughWithPendingParamChangesWhenNotProcessing() {
+        var host = new ClapPluginHost(Path.of("/test.clap"));
+
+        float[][] input = {{0.8f, -0.3f}};
+        float[][] output = {{0.0f, 0.0f}};
+
+        // process() in pass-through mode must not be affected by any internal state.
+        host.process(input, output, 2);
+
+        assertThat(output[0]).containsExactly(0.8f, -0.3f);
+    }
+
     // --- Test helper ---
 
     private static class TestPluginContext implements com.benesquivelmusic.daw.sdk.plugin.PluginContext {
