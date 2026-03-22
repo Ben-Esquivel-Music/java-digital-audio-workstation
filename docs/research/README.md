@@ -12,6 +12,7 @@ This directory contains research documentation analyzing open source tools and t
 | [Audio Development Tools](audio-development-tools.md) | Comprehensive tool catalog: DSP, synthesis, spatial audio, ML, I/O | [Yuan-ManX/audio-development-tools](https://github.com/Yuan-ManX/audio-development-tools) |
 | [AES Research Papers](aes-research-papers.md) | 43 AES conference papers analyzed by topic: spatial audio, DSP, mixing, ML, acoustics | [Audio Engineering Society](https://www.aes.org/) |
 | [AES PDF Catalog by Decade](aes-pdf-catalog.md) | Complete catalog of all 345 AES PDFs organized by publication decade (1949–2026) | [Audio Engineering Society](https://www.aes.org/) |
+| [AES Feature Enhancements](aes-feature-enhancements.md) | 27 pure-Java feature enhancement issues derived from AES research analysis | [Audio Engineering Society](https://www.aes.org/) |
 
 ## Key Findings Summary
 
