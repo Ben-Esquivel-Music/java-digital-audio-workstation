@@ -1,0 +1,643 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Digital Audio Workstation — Mixer & Recording View (HD Application Screenshot)
+  Size: 1440 × 900  |  Theme: Black / Neon  |  State: Recording
+-->
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1440" height="900" viewBox="0 0 1440 900"
+     font-family="'Courier New', 'Lucida Console', monospace">
+
+  <defs>
+    <linearGradient id="transportGrad2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#200808"/>
+      <stop offset="100%" stop-color="#100404"/>
+    </linearGradient>
+    <linearGradient id="meterGrad2" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%"   stop-color="#1b5e20"/>
+      <stop offset="60%"  stop-color="#00e676"/>
+      <stop offset="80%"  stop-color="#ff9100"/>
+      <stop offset="100%" stop-color="#ff1744"/>
+    </linearGradient>
+    <linearGradient id="faderGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#2e2e2e"/>
+      <stop offset="100%" stop-color="#1a1a1a"/>
+    </linearGradient>
+    <filter id="recGlow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="tileShadow2" x="-5%" y="-5%" width="110%" height="115%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000000" flood-opacity="0.6"/>
+    </filter>
+    <linearGradient id="spectrumGrad2" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%"   stop-color="#b71c1c"/>
+      <stop offset="50%"  stop-color="#ff1744"/>
+      <stop offset="100%" stop-color="#ff9100"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ═══ ROOT BACKGROUND ═══ -->
+  <rect width="1440" height="900" fill="#000000"/>
+
+  <!-- ═══════════════════════════════════════════════════════
+       TRANSPORT BAR — RECORDING STATE (red tint)
+       ═══════════════════════════════════════════════════════ -->
+  <rect x="0" y="0" width="1440" height="52" fill="url(#transportGrad2)"/>
+  <!-- Recording pulse border -->
+  <rect x="0" y="0" width="1440" height="52" fill="none" stroke="#ff1744" stroke-width="1.5" opacity="0.4"/>
+
+  <!-- Play button -->
+  <rect x="16" y="8" width="78" height="36" rx="6" fill="#2e2e2e" stroke="#3d3d3d" stroke-width="1"/>
+  <text x="55" y="31" fill="#e0e0e0" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">▶  Play</text>
+
+  <!-- Pause button -->
+  <rect x="100" y="8" width="78" height="36" rx="6" fill="#2e2e2e" stroke="#3d3d3d" stroke-width="1"/>
+  <text x="139" y="31" fill="#e0e0e0" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">⏸  Pause</text>
+
+  <!-- Stop button -->
+  <rect x="184" y="8" width="78" height="36" rx="6" fill="#2e2e2e" stroke="#3d3d3d" stroke-width="1"/>
+  <text x="223" y="31" fill="#e0e0e0" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">⏹  Stop</text>
+
+  <!-- Record button — ACTIVE (red glow) -->
+  <rect x="268" y="8" width="88" height="36" rx="6" fill="#4a0d0d" stroke="#ff1744" stroke-width="2"
+        filter="url(#recGlow)"/>
+  <text x="312" y="31" fill="#ff1744" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">⏺  Record</text>
+
+  <line x1="366" y1="10" x2="366" y2="42" stroke="#2a2a2a" stroke-width="1"/>
+
+  <!-- Time display (recording time) -->
+  <text x="390" y="33" fill="#ff1744" font-size="18" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace" filter="url(#recGlow)">00:01:43.2</text>
+
+  <line x1="508" y1="10" x2="508" y2="42" stroke="#2a2a2a" stroke-width="1"/>
+
+  <!-- Tempo -->
+  <text x="524" y="33" fill="#ff9100" font-size="15" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace">♩ 120.0 BPM</text>
+
+  <line x1="658" y1="10" x2="658" y2="42" stroke="#2a2a2a" stroke-width="1"/>
+
+  <rect x="672" y="8" width="108" height="36" rx="6" fill="#2e2e2e" stroke="#3d3d3d" stroke-width="1"/>
+  <text x="726" y="31" fill="#e0e0e0" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">+ Audio Track</text>
+  <rect x="786" y="8" width="106" height="36" rx="6" fill="#2e2e2e" stroke="#3d3d3d" stroke-width="1"/>
+  <text x="839" y="31" fill="#e0e0e0" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">+ MIDI Track</text>
+
+  <line x1="902" y1="10" x2="902" y2="42" stroke="#2a2a2a" stroke-width="1"/>
+
+  <rect x="916" y="8" width="72" height="36" rx="6" fill="#2e2e2e" stroke="#3d3d3d" stroke-width="1"/>
+  <text x="952" y="31" fill="#e0e0e0" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">↩ Undo</text>
+  <rect x="994" y="8" width="72" height="36" rx="6" fill="#2e2e2e" stroke="#3d3d3d" stroke-width="1"/>
+  <text x="1030" y="31" fill="#e0e0e0" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">↪ Redo</text>
+
+  <line x1="1076" y1="10" x2="1076" y2="42" stroke="#2a2a2a" stroke-width="1"/>
+
+  <rect x="1090" y="8" width="70" height="36" rx="6" fill="#2e2e2e" stroke="#e65100" stroke-width="1"/>
+  <text x="1125" y="31" fill="#ff9100" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">💾 Save</text>
+  <rect x="1166" y="8" width="82" height="36" rx="6" fill="#2e2e2e" stroke="#4a148c" stroke-width="1"/>
+  <text x="1207" y="31" fill="#e040fb" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">🔌 Plugins</text>
+
+  <!-- Recording status (pulsing red) -->
+  <circle cx="1370" cy="26" r="7" fill="#ff1744" filter="url(#recGlow)" opacity="0.9"/>
+  <text x="1424" y="33" fill="#ff1744" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="end">● RECORDING</text>
+
+  <line x1="0" y1="52" x2="1440" y2="52" stroke="#ff1744" stroke-width="1" opacity="0.3"/>
+
+  <!-- ═══════════════════════════════════════════════════════
+       CONTENT AREA — MIXER LAYOUT
+       ═══════════════════════════════════════════════════════ -->
+
+  <!-- ── TRACK LIST PANEL (x=6, y=59, w=310, h=400) ── -->
+  <rect x="6" y="59" width="310" height="400" rx="10" fill="#111111"
+        stroke="#2a2a2a" stroke-width="1" filter="url(#tileShadow2)"/>
+  <text x="22" y="85" fill="#e040fb" font-size="14" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="2">⊞  TRACKS</text>
+
+  <!-- Track 1: Lead Vocal (recording / armed = red border) -->
+  <rect x="14" y="96" width="294" height="82" rx="6" fill="#1a0000" stroke="#ff1744" stroke-width="1.5"/>
+  <rect x="14" y="96" width="6" height="82" rx="3" fill="#ff1744"/>
+  <!-- Recording pulse indicator -->
+  <circle cx="296" cy="108" r="5" fill="#ff1744" filter="url(#recGlow)" opacity="0.9"/>
+  <text x="30" y="117" fill="#e0e0e0" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">Lead Vocal</text>
+  <text x="30" y="133" fill="#ff1744" font-size="11" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">AUDIO  ·  Mono  ·  REC</text>
+  <rect x="30" y="146" width="180" height="4" rx="2" fill="#2e2e2e"/>
+  <rect x="30" y="146" width="160" height="4" rx="2" fill="#7c4dff"/>
+  <circle cx="190" cy="148" r="6" fill="#7c4dff"/>
+  <rect x="222" y="100" width="22" height="18" rx="3" fill="#2e2e2e"/>
+  <text x="233" y="113" fill="#ff9100" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">M</text>
+  <rect x="248" y="100" width="22" height="18" rx="3" fill="#2e2e2e"/>
+  <text x="259" y="113" fill="#00e676" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">S</text>
+  <rect x="274" y="100" width="22" height="18" rx="3" fill="#ff1744"/>
+  <text x="285" y="113" fill="#ffffff" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">A</text>
+
+  <!-- Track 2: Guitar -->
+  <rect x="14" y="184" width="294" height="82" rx="6" fill="#1a1a1a" stroke="#2a2a2a" stroke-width="1"/>
+  <rect x="14" y="184" width="6" height="82" rx="3" fill="#ff9100"/>
+  <text x="30" y="205" fill="#e0e0e0" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">Guitar</text>
+  <text x="30" y="221" fill="#7c4dff" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">AUDIO  ·  Mono</text>
+  <rect x="30" y="234" width="180" height="4" rx="2" fill="#2e2e2e"/>
+  <rect x="30" y="234" width="130" height="4" rx="2" fill="#7c4dff"/>
+  <circle cx="160" cy="236" r="6" fill="#7c4dff"/>
+  <rect x="222" y="192" width="22" height="18" rx="3" fill="#2e2e2e"/>
+  <text x="233" y="205" fill="#ff9100" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">M</text>
+  <rect x="248" y="192" width="22" height="18" rx="3" fill="#2e2e2e"/>
+  <text x="259" y="205" fill="#00e676" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">S</text>
+  <rect x="274" y="192" width="22" height="18" rx="3" fill="#2e2e2e"/>
+  <text x="285" y="205" fill="#ff1744" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">A</text>
+
+  <!-- Track 3: Drums -->
+  <rect x="14" y="272" width="294" height="82" rx="6" fill="#1a1a1a" stroke="#2a2a2a" stroke-width="1"/>
+  <rect x="14" y="272" width="6" height="82" rx="3" fill="#00e5ff"/>
+  <text x="30" y="293" fill="#e0e0e0" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">Drum Bus</text>
+  <text x="30" y="309" fill="#7c4dff" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">AUDIO  ·  Stereo</text>
+  <rect x="30" y="322" width="180" height="4" rx="2" fill="#2e2e2e"/>
+  <rect x="30" y="322" width="148" height="4" rx="2" fill="#7c4dff"/>
+  <circle cx="178" cy="324" r="6" fill="#7c4dff"/>
+  <rect x="222" y="280" width="22" height="18" rx="3" fill="#ff9100"/>
+  <text x="233" y="293" fill="#0d0d0d" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">M</text>
+  <rect x="248" y="280" width="22" height="18" rx="3" fill="#2e2e2e"/>
+  <text x="259" y="293" fill="#00e676" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">S</text>
+  <rect x="274" y="280" width="22" height="18" rx="3" fill="#2e2e2e"/>
+  <text x="285" y="293" fill="#ff1744" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">A</text>
+
+  <!-- Track 4: Master Bus -->
+  <rect x="14" y="360" width="294" height="82" rx="6" fill="#181818" stroke="#7c4dff" stroke-width="1"/>
+  <rect x="14" y="360" width="6" height="82" rx="3" fill="#7c4dff"/>
+  <text x="30" y="381" fill="#e0e0e0" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">Master Bus</text>
+  <text x="30" y="397" fill="#7c4dff" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">OUTPUT  ·  Stereo</text>
+  <rect x="30" y="410" width="180" height="4" rx="2" fill="#2e2e2e"/>
+  <rect x="30" y="410" width="180" height="4" rx="2" fill="#7c4dff"/>
+  <circle cx="210" cy="412" r="6" fill="#e040fb"/>
+  <rect x="222" y="368" width="22" height="18" rx="3" fill="#2e2e2e"/>
+  <text x="233" y="381" fill="#ff9100" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">M</text>
+
+
+  <!-- ═══════════════════════════════════════════════════════
+       MIXER PANEL (x=322, y=59, w=1112, h=400)
+       ═══════════════════════════════════════════════════════ -->
+  <rect x="322" y="59" width="1112" height="400" rx="10" fill="#111111"
+        stroke="#2a2a2a" stroke-width="1" filter="url(#tileShadow2)"/>
+
+  <!-- Mixer header -->
+  <rect x="322" y="59" width="1112" height="30" rx="10" fill="#161616"/>
+  <rect x="322" y="79" width="1112" height="10" fill="#161616"/>
+  <line x1="322" y1="89" x2="1434" y2="89" stroke="#2a2a2a" stroke-width="1"/>
+  <text x="340" y="80" fill="#e040fb" font-size="11" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="2">MIXER</text>
+
+  <!-- dB scale on the left side of mixer -->
+  <text x="326" y="106" fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">+6</text>
+  <text x="326" y="130" fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace"> 0</text>
+  <text x="323" y="154" fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">-6</text>
+  <text x="320" y="178" fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">-12</text>
+  <text x="320" y="202" fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">-18</text>
+  <text x="320" y="230" fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">-24</text>
+  <text x="320" y="270" fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">-36</text>
+  <text x="320" y="330" fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">-∞</text>
+
+  <!-- dB guide lines -->
+  <line x1="342" y1="128" x2="1428" y2="128" stroke="#1e1e1e" stroke-width="1" stroke-dasharray="2,4"/>
+  <line x1="342" y1="152" x2="1428" y2="152" stroke="#1e1e1e" stroke-width="1" stroke-dasharray="2,4"/>
+  <line x1="342" y1="176" x2="1428" y2="176" stroke="#1e1e1e" stroke-width="1" stroke-dasharray="2,4"/>
+  <line x1="342" y1="200" x2="1428" y2="200" stroke="#1e1e1e" stroke-width="1" stroke-dasharray="2,4"/>
+  <line x1="342" y1="228" x2="1428" y2="228" stroke="#1e1e1e" stroke-width="1" stroke-dasharray="2,4"/>
+
+  <!-- ── Channel strips (8 channels + master) ── -->
+  <!-- Channel strip width: (1112 - 48) / 9 ≈ 118px -->
+
+  <!-- Ch 1: Lead Vocal — RECORDING (red accent) -->
+  <rect x="350" y="92" width="108" height="350" rx="6" fill="#180000" stroke="#ff1744" stroke-width="1.5"/>
+  <!-- Meter: L+R side by side -->
+  <rect x="358" y="100" width="18" height="220" rx="2" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="358" y="140" width="18" height="180" rx="2" fill="url(#meterGrad2)"/>
+  <rect x="358" y="100" width="18" height="5"   fill="#ff1744" opacity="0.9"/>
+  <rect x="382" y="100" width="18" height="220" rx="2" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="382" y="144" width="18" height="176" rx="2" fill="url(#meterGrad2)"/>
+  <rect x="382" y="100" width="18" height="5"   fill="#ff1744" opacity="0.9"/>
+  <!-- Fader track + thumb -->
+  <rect x="394" y="100" width="8" height="220" rx="4" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="392" y="200" width="12" height="24" rx="3" fill="#ff1744" stroke="#ff1744" stroke-width="1"/>
+  <!-- Channel name -->
+  <text x="404" y="336" fill="#ff1744" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle"
+        transform="rotate(90,404,336)">Lead Vocal</text>
+  <!-- Mini controls -->
+  <rect x="356" y="334" width="18" height="14" rx="2" fill="#2e2e2e"/>
+  <text x="365" y="344" fill="#ff9100" font-size="8" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">M</text>
+  <rect x="378" y="334" width="18" height="14" rx="2" fill="#2e2e2e"/>
+  <text x="387" y="344" fill="#00e676" font-size="8" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">S</text>
+  <rect x="400" y="334" width="18" height="14" rx="2" fill="#ff1744"/>
+  <text x="409" y="344" fill="#fff" font-size="8" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">A</text>
+  <!-- Pan knob -->
+  <circle cx="432" cy="344" r="10" fill="#1a1a1a" stroke="#3d3d3d"/>
+  <line x1="432" y1="344" x2="432" y2="334" stroke="#ff9100" stroke-width="2" stroke-linecap="round"/>
+  <!-- Level reading -->
+  <text x="404" y="372" fill="#ff1744" font-size="9" font-weight="bold"
+        font-family="'Courier New',monospace" text-anchor="middle">-2.1 dB</text>
+  <text x="404" y="384" fill="#ff9100" font-size="8"
+        font-family="'Courier New',monospace" text-anchor="middle">Peak</text>
+  <text x="404" y="396" fill="#808080" font-size="8"
+        font-family="'Courier New',monospace" text-anchor="middle">-14 RMS</text>
+  <!-- Channel divider -->
+  <line x1="464" y1="92" x2="464" y2="442" stroke="#1e1e1e" stroke-width="1"/>
+
+  <!-- Ch 2: Guitar -->
+  <rect x="468" y="92" width="108" height="350" rx="6" fill="#1a1000" stroke="#ff9100" stroke-width="1"/>
+  <rect x="476" y="100" width="18" height="220" rx="2" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="476" y="168" width="18" height="152" rx="2" fill="url(#meterGrad2)"/>
+  <rect x="476" y="104" width="18" height="3"   fill="#ff9100" opacity="0.7"/>
+  <rect x="500" y="100" width="18" height="220" rx="2" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="500" y="172" width="18" height="148" rx="2" fill="url(#meterGrad2)"/>
+  <rect x="500" y="106" width="18" height="3"   fill="#ff9100" opacity="0.7"/>
+  <rect x="512" y="100" width="8" height="220" rx="4" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="510" y="185" width="12" height="24" rx="3" fill="#ff9100" stroke="#ff9100" stroke-width="1"/>
+  <text x="522" y="336" fill="#ff9100" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle"
+        transform="rotate(90,522,336)">Guitar</text>
+  <rect x="474" y="334" width="18" height="14" rx="2" fill="#2e2e2e"/>
+  <text x="483" y="344" fill="#ff9100" font-size="8" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">M</text>
+  <rect x="496" y="334" width="18" height="14" rx="2" fill="#2e2e2e"/>
+  <text x="505" y="344" fill="#00e676" font-size="8" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">S</text>
+  <rect x="518" y="334" width="18" height="14" rx="2" fill="#2e2e2e"/>
+  <text x="527" y="344" fill="#ff1744" font-size="8" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">A</text>
+  <circle cx="550" cy="344" r="10" fill="#1a1a1a" stroke="#3d3d3d"/>
+  <line x1="550" y1="344" x2="545" y2="335" stroke="#ff9100" stroke-width="2" stroke-linecap="round"/>
+  <text x="522" y="372" fill="#808080" font-size="9" font-family="'Courier New',monospace" text-anchor="middle">-8.4 dB</text>
+  <line x1="582" y1="92" x2="582" y2="442" stroke="#1e1e1e" stroke-width="1"/>
+
+  <!-- Ch 3: Drum Bus -->
+  <rect x="586" y="92" width="108" height="350" rx="6" fill="#001218" stroke="#00e5ff" stroke-width="1"/>
+  <rect x="594" y="100" width="18" height="220" rx="2" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="594" y="120" width="18" height="200" rx="2" fill="url(#meterGrad2)"/>
+  <rect x="594" y="100" width="18" height="4"   fill="#ff1744" opacity="0.8"/>
+  <rect x="618" y="100" width="18" height="220" rx="2" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="618" y="124" width="18" height="196" rx="2" fill="url(#meterGrad2)"/>
+  <rect x="618" y="100" width="18" height="4"   fill="#ff1744" opacity="0.8"/>
+  <rect x="630" y="100" width="8" height="220" rx="4" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="628" y="175" width="12" height="24" rx="3" fill="#00e5ff" stroke="#00e5ff" stroke-width="1"/>
+  <text x="640" y="336" fill="#00e5ff" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle"
+        transform="rotate(90,640,336)">Drum Bus</text>
+  <rect x="592" y="334" width="18" height="14" rx="2" fill="#2e2e2e"/>
+  <text x="601" y="344" fill="#ff9100" font-size="8" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">M</text>
+  <rect x="614" y="334" width="18" height="14" rx="2" fill="#2e2e2e"/>
+  <text x="623" y="344" fill="#00e676" font-size="8" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">S</text>
+  <rect x="636" y="334" width="18" height="14" rx="2" fill="#2e2e2e"/>
+  <text x="645" y="344" fill="#ff1744" font-size="8" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">A</text>
+  <circle cx="668" cy="344" r="10" fill="#1a1a1a" stroke="#3d3d3d"/>
+  <line x1="668" y1="344" x2="668" y2="334" stroke="#00e5ff" stroke-width="2" stroke-linecap="round"/>
+  <text x="640" y="372" fill="#808080" font-size="9" font-family="'Courier New',monospace" text-anchor="middle">-5.2 dB</text>
+  <line x1="700" y1="92" x2="700" y2="442" stroke="#1e1e1e" stroke-width="1"/>
+
+  <!-- Ch 4: Synth Bus -->
+  <rect x="704" y="92" width="108" height="350" rx="6" fill="#1a0022" stroke="#e040fb" stroke-width="1"/>
+  <rect x="712" y="100" width="18" height="220" rx="2" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="712" y="156" width="18" height="164" rx="2" fill="url(#meterGrad2)"/>
+  <rect x="712" y="104" width="18" height="3"   fill="#e040fb" opacity="0.7"/>
+  <rect x="736" y="100" width="18" height="220" rx="2" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="736" y="162" width="18" height="158" rx="2" fill="url(#meterGrad2)"/>
+  <rect x="736" y="106" width="18" height="3"   fill="#e040fb" opacity="0.7"/>
+  <rect x="748" y="100" width="8" height="220" rx="4" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="746" y="193" width="12" height="24" rx="3" fill="#e040fb" stroke="#e040fb" stroke-width="1"/>
+  <text x="758" y="336" fill="#e040fb" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle"
+        transform="rotate(90,758,336)">Synth Bus</text>
+  <rect x="710" y="334" width="18" height="14" rx="2" fill="#2e2e2e"/>
+  <text x="719" y="344" fill="#ff9100" font-size="8" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">M</text>
+  <rect x="732" y="334" width="18" height="14" rx="2" fill="#2e2e2e"/>
+  <text x="741" y="344" fill="#00e676" font-size="8" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">S</text>
+  <rect x="754" y="334" width="18" height="14" rx="2" fill="#2e2e2e"/>
+  <text x="763" y="344" fill="#ff1744" font-size="8" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">A</text>
+  <circle cx="786" cy="344" r="10" fill="#1a1a1a" stroke="#3d3d3d"/>
+  <line x1="786" y1="344" x2="792" y2="335" stroke="#e040fb" stroke-width="2" stroke-linecap="round"/>
+  <text x="758" y="372" fill="#808080" font-size="9" font-family="'Courier New',monospace" text-anchor="middle">-9.7 dB</text>
+  <line x1="818" y1="92" x2="818" y2="442" stroke="#1e1e1e" stroke-width="1"/>
+
+  <!-- Ch 5: Reverb Return -->
+  <rect x="822" y="92" width="108" height="350" rx="6" fill="#001000" stroke="#00e676" stroke-width="1"/>
+  <rect x="830" y="100" width="18" height="220" rx="2" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="830" y="200" width="18" height="120" rx="2" fill="url(#meterGrad2)"/>
+  <rect x="854" y="100" width="18" height="220" rx="2" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="854" y="206" width="18" height="114" rx="2" fill="url(#meterGrad2)"/>
+  <rect x="866" y="100" width="8" height="220" rx="4" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="864" y="208" width="12" height="24" rx="3" fill="#00e676" stroke="#00e676" stroke-width="1"/>
+  <text x="876" y="336" fill="#00e676" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle"
+        transform="rotate(90,876,336)">Reverb</text>
+  <rect x="828" y="334" width="18" height="14" rx="2" fill="#2e2e2e"/>
+  <text x="837" y="344" fill="#ff9100" font-size="8" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">M</text>
+  <rect x="850" y="334" width="18" height="14" rx="2" fill="#2e2e2e"/>
+  <text x="859" y="344" fill="#00e676" font-size="8" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">S</text>
+  <rect x="872" y="334" width="18" height="14" rx="2" fill="#2e2e2e"/>
+  <text x="881" y="344" fill="#ff1744" font-size="8" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">A</text>
+  <circle cx="904" cy="344" r="10" fill="#1a1a1a" stroke="#3d3d3d"/>
+  <line x1="904" y1="344" x2="904" y2="334" stroke="#00e676" stroke-width="2" stroke-linecap="round"/>
+  <text x="876" y="372" fill="#808080" font-size="9" font-family="'Courier New',monospace" text-anchor="middle">-18.3 dB</text>
+  <line x1="936" y1="92" x2="936" y2="442" stroke="#1e1e1e" stroke-width="1"/>
+
+  <!-- Ch 6: Delay Return -->
+  <rect x="940" y="92" width="108" height="350" rx="6" fill="#18100a" stroke="#ff9100" stroke-width="0.5"/>
+  <rect x="948" y="100" width="18" height="220" rx="2" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="948" y="218" width="18" height="102" rx="2" fill="url(#meterGrad2)"/>
+  <rect x="972" y="100" width="18" height="220" rx="2" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="972" y="222" width="18" height="98"  rx="2" fill="url(#meterGrad2)"/>
+  <rect x="984" y="100" width="8" height="220" rx="4" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="982" y="215" width="12" height="24" rx="3" fill="#ff9100" stroke="#ff9100" stroke-width="1"/>
+  <text x="994" y="336" fill="#ff9100" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle"
+        transform="rotate(90,994,336)">Delay</text>
+  <rect x="946" y="334" width="18" height="14" rx="2" fill="#2e2e2e"/>
+  <text x="955" y="344" fill="#ff9100" font-size="8" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">M</text>
+  <rect x="968" y="334" width="18" height="14" rx="2" fill="#2e2e2e"/>
+  <text x="977" y="344" fill="#00e676" font-size="8" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">S</text>
+  <rect x="990" y="334" width="18" height="14" rx="2" fill="#2e2e2e"/>
+  <text x="999" y="344" fill="#ff1744" font-size="8" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">A</text>
+  <circle cx="1022" cy="344" r="10" fill="#1a1a1a" stroke="#3d3d3d"/>
+  <line x1="1022" y1="344" x2="1016" y2="335" stroke="#ff9100" stroke-width="2" stroke-linecap="round"/>
+  <text x="994" y="372" fill="#808080" font-size="9" font-family="'Courier New',monospace" text-anchor="middle">-22.1 dB</text>
+  <line x1="1054" y1="92" x2="1054" y2="442" stroke="#1e1e1e" stroke-width="1"/>
+
+  <!-- Ch 7: Compressor Side-chain (empty) -->
+  <rect x="1058" y="92" width="108" height="350" rx="6" fill="#111111" stroke="#2a2a2a" stroke-width="1"/>
+  <rect x="1066" y="100" width="18" height="220" rx="2" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="1066" y="260" width="18" height="60" rx="2" fill="url(#meterGrad2)" opacity="0.5"/>
+  <rect x="1090" y="100" width="18" height="220" rx="2" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="1090" y="262" width="18" height="58" rx="2" fill="url(#meterGrad2)" opacity="0.5"/>
+  <rect x="1102" y="100" width="8" height="220" rx="4" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="1100" y="222" width="12" height="24" rx="3" fill="#7c4dff" stroke="#7c4dff" stroke-width="1"/>
+  <text x="1112" y="336" fill="#7c4dff" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle"
+        transform="rotate(90,1112,336)">Aux Send 1</text>
+  <text x="1112" y="372" fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace" text-anchor="middle">-30.0 dB</text>
+  <line x1="1172" y1="92" x2="1172" y2="442" stroke="#1e1e1e" stroke-width="1"/>
+
+  <!-- Master channel (wider) -->
+  <rect x="1176" y="92" width="248" height="350" rx="6" fill="#0d0d18" stroke="#7c4dff" stroke-width="2"/>
+  <text x="1300" y="110" fill="#7c4dff" font-size="12" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle" letter-spacing="2">MASTER</text>
+  <!-- Wide stereo meters -->
+  <rect x="1184" y="118" width="36" height="220" rx="2" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="1184" y="130" width="36" height="208" rx="2" fill="url(#meterGrad2)"/>
+  <rect x="1184" y="118" width="36" height="4"   fill="#ff1744" opacity="0.9"/>
+  <text x="1202" y="348" fill="#b0b0b0" font-size="9" font-family="'Courier New',monospace" text-anchor="middle">L</text>
+  <rect x="1228" y="118" width="36" height="220" rx="2" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="1228" y="130" width="36" height="208" rx="2" fill="url(#meterGrad2)"/>
+  <rect x="1228" y="118" width="36" height="4"   fill="#ff1744" opacity="0.9"/>
+  <text x="1246" y="348" fill="#b0b0b0" font-size="9" font-family="'Courier New',monospace" text-anchor="middle">R</text>
+  <!-- Master fader (tall) -->
+  <rect x="1272" y="118" width="12" height="220" rx="6" fill="#0a0a0a" stroke="#1e1e1e"/>
+  <rect x="1270" y="200" width="16" height="28" rx="4" fill="#e040fb" stroke="#e040fb" stroke-width="1.5"/>
+  <text x="1300" y="356" fill="#e040fb" font-size="16" font-weight="bold"
+        font-family="'Courier New',monospace" text-anchor="middle">0.0 dB</text>
+  <!-- Master pan -->
+  <circle cx="1340" cy="200" r="16" fill="#1a1a1a" stroke="#3d3d3d"/>
+  <circle cx="1340" cy="200" r="12" fill="#111111"/>
+  <line x1="1340" y1="200" x2="1340" y2="188" stroke="#7c4dff" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="1340" y="225" fill="#3d3d3d" font-size="9"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">PAN</text>
+  <!-- Master peak readings -->
+  <text x="1380" y="135" fill="#ff1744" font-size="11" font-weight="bold"
+        font-family="'Courier New',monospace">Peak  -0.3</text>
+  <text x="1380" y="152" fill="#ff9100" font-size="10"
+        font-family="'Courier New',monospace">RMS  -12.8</text>
+  <text x="1380" y="169" fill="#00e676" font-size="10"
+        font-family="'Courier New',monospace">LUFS -14.1</text>
+  <text x="1380" y="186" fill="#7c4dff" font-size="10"
+        font-family="'Courier New',monospace">LRA    9.4</text>
+  <!-- Clip indicator (red =cliping) -->
+  <rect x="1380" y="200" width="46" height="18" rx="3" fill="#ff1744"/>
+  <text x="1403" y="213" fill="#ffffff" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">CLIP!</text>
+  <!-- Master controls -->
+  <rect x="1290" y="334" width="30" height="16" rx="3" fill="#2e2e2e"/>
+  <text x="1305" y="345" fill="#ff9100" font-size="9" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">MONO</text>
+  <rect x="1326" y="334" width="30" height="16" rx="3" fill="#00e676"/>
+  <text x="1341" y="345" fill="#0d0d0d" font-size="9" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">DIM</text>
+  <rect x="1362" y="334" width="30" height="16" rx="3" fill="#2e2e2e" stroke="#ff1744"/>
+  <text x="1377" y="345" fill="#ff1744" font-size="9" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">MUTE</text>
+  <!-- Channel labels at bottom -->
+  <text x="404"  y="452" fill="#ff1744" font-size="9" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">VOCAL</text>
+  <text x="522"  y="452" fill="#ff9100" font-size="9"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">GUITAR</text>
+  <text x="640"  y="452" fill="#00e5ff" font-size="9"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">DRUMS</text>
+  <text x="758"  y="452" fill="#e040fb" font-size="9"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">SYNTH</text>
+  <text x="876"  y="452" fill="#00e676" font-size="9"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">REVERB</text>
+  <text x="994"  y="452" fill="#ff9100" font-size="9"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">DELAY</text>
+  <text x="1112" y="452" fill="#7c4dff" font-size="9"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">AUX 1</text>
+  <text x="1300" y="452" fill="#e040fb" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">MASTER</text>
+
+
+  <!-- ═══════════════════════════════════════════════════════
+       BOTTOM VISUALIZATION TILES (y=468, h=175)
+       ═══════════════════════════════════════════════════════ -->
+
+  <!-- Tile 1: Live Recording Waveform (incoming signal) -->
+  <rect x="6"   y="468" width="276" height="175" rx="10" fill="#111111" stroke="#2a2a2a" stroke-width="1" filter="url(#tileShadow2)"/>
+  <text x="18"  y="486" fill="#ff1744" font-size="11" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">INPUT MONITOR</text>
+  <rect x="14"   y="491" width="264" height="142" rx="4" fill="#0a0a0a"/>
+  <!-- Input signal (new incoming recording) -->
+  <path d="M14,562 C20,545 24,580 30,562 C34,540 38,584 44,562
+           C50,532 54,592 60,562 C66,540 70,585 76,562
+           C80,544 84,581 90,562 C96,538 100,586 106,562
+           C112,530 116,594 122,562 C128,540 132,584 138,562
+           C144,535 148,590 154,562 C160,540 164,584 170,562
+           C176,535 180,590 186,562 C192,540 196,584 202,562
+           C208,535 212,590 218,562 C224,540 228,584 234,562
+           C240,535 244,589 250,562 C256,541 260,583 266,562
+           C270,543 274,581 278,563"
+        fill="none" stroke="#ff1744" stroke-width="1.8" opacity="0.9"/>
+  <!-- Fill under waveform (red) -->
+  <path d="M14,562 C20,545 24,580 30,562 C34,540 38,584 44,562
+           C50,532 54,592 60,562 C66,540 70,585 76,562
+           C80,544 84,581 90,562 C96,538 100,586 106,562
+           C112,530 116,594 122,562 C128,540 132,584 138,562
+           C144,535 148,590 154,562 C160,540 164,584 170,562
+           C176,535 180,590 186,562 C192,540 196,584 202,562
+           C208,535 212,590 218,562 C224,540 228,584 234,562
+           C240,535 244,589 250,562 C256,541 260,583 266,562
+           C270,543 274,581 278,563 L278,633 L14,633 Z"
+        fill="#ff1744" opacity="0.06"/>
+  <!-- Recording label in waveform area -->
+  <circle cx="248" cy="503" r="5" fill="#ff1744" filter="url(#recGlow)"/>
+  <text x="258" y="507" fill="#ff1744" font-size="9" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">REC</text>
+  <!-- Input level: -8.4 dB -->
+  <text x="18" y="625" fill="#ff9100" font-size="10"
+        font-family="'Courier New',monospace">IN: -8.4 dB</text>
+  <text x="130" y="625" fill="#808080" font-size="10"
+        font-family="'Courier New',monospace">44.1kHz / 24-bit</text>
+
+  <!-- Tile 2: Spectrum (red→orange for recording) -->
+  <rect x="288"  y="468" width="276" height="175" rx="10" fill="#111111" stroke="#2a2a2a" stroke-width="1" filter="url(#tileShadow2)"/>
+  <text x="300" y="486" fill="#e040fb" font-size="11" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">SPECTRUM</text>
+  <rect x="296"  y="491" width="264" height="142" rx="4" fill="#0a0a0a"/>
+  <!-- Spectrum bars -->
+  <rect x="300" y="576" width="5" height="57"  fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="306" y="562" width="5" height="71"  fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="312" y="548" width="5" height="85"  fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="318" y="536" width="5" height="97"  fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="324" y="524" width="5" height="109" fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="330" y="510" width="5" height="123" fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="336" y="498" width="5" height="135" fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="342" y="504" width="5" height="129" fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="348" y="512" width="5" height="121" fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="354" y="518" width="5" height="115" fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="360" y="528" width="5" height="105" fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="366" y="536" width="5" height="97"  fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="372" y="546" width="5" height="87"  fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="378" y="558" width="5" height="75"  fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="384" y="568" width="5" height="65"  fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="390" y="578" width="5" height="55"  fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="396" y="586" width="5" height="47"  fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="402" y="594" width="5" height="39"  fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="408" y="600" width="5" height="33"  fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="414" y="607" width="5" height="26"  fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="420" y="612" width="5" height="21"  fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="426" y="617" width="5" height="16"  fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="432" y="620" width="5" height="13"  fill="url(#spectrumGrad2)" opacity="0.9"/>
+  <rect x="438" y="623" width="5" height="10"  fill="url(#spectrumGrad2)" opacity="0.7"/>
+  <rect x="444" y="626" width="5" height="7"   fill="url(#spectrumGrad2)" opacity="0.6"/>
+  <rect x="450" y="628" width="5" height="5"   fill="url(#spectrumGrad2)" opacity="0.5"/>
+  <rect x="456" y="629" width="5" height="4"   fill="url(#spectrumGrad2)" opacity="0.4"/>
+  <rect x="462" y="630" width="5" height="3"   fill="url(#spectrumGrad2)" opacity="0.3"/>
+
+  <!-- Tile 3: Level Meters -->
+  <rect x="570"  y="468" width="276" height="175" rx="10" fill="#111111" stroke="#2a2a2a" stroke-width="1" filter="url(#tileShadow2)"/>
+  <text x="582" y="486" fill="#00e676" font-size="11" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">LEVEL  L / R</text>
+  <rect x="578"  y="491" width="264" height="142" rx="4" fill="#0a0a0a"/>
+  <text x="582" y="504"  fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">0</text>
+  <text x="582" y="527"  fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">-6</text>
+  <text x="575" y="550"  fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">-12</text>
+  <text x="575" y="573"  fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">-18</text>
+  <text x="575" y="596"  fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">-24</text>
+  <text x="575" y="622"  fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">-∞</text>
+  <rect x="610" y="500" width="40" height="124" rx="2" fill="#111111" stroke="#2a2a2a"/>
+  <rect x="610" y="500" width="40" height="122" rx="2" fill="url(#meterGrad2)"/>
+  <rect x="610" y="500" width="40" height="3" fill="#ff1744" opacity="0.9"/>
+  <text x="630" y="638" fill="#808080" font-size="9" font-family="'Courier New',monospace" text-anchor="middle">L</text>
+  <rect x="662" y="500" width="40" height="124" rx="2" fill="#111111" stroke="#2a2a2a"/>
+  <rect x="662" y="502" width="40" height="120" rx="2" fill="url(#meterGrad2)"/>
+  <rect x="662" y="500" width="40" height="3" fill="#ff1744" opacity="0.9"/>
+  <text x="682" y="638" fill="#808080" font-size="9" font-family="'Courier New',monospace" text-anchor="middle">R</text>
+  <text x="718" y="518" fill="#ff1744" font-size="11" font-weight="bold"
+        font-family="'Courier New',monospace">-0.3 dBFS</text>
+  <text x="718" y="536" fill="#ff9100" font-size="10"
+        font-family="'Courier New',monospace">Peak:  0.0</text>
+  <text x="718" y="554" fill="#00e676" font-size="10"
+        font-family="'Courier New',monospace">RMS: -12.8</text>
+
+  <!-- Tile 4: Loudness -->
+  <rect x="852"  y="468" width="276" height="175" rx="10" fill="#111111" stroke="#2a2a2a" stroke-width="1" filter="url(#tileShadow2)"/>
+  <text x="864" y="486" fill="#ff9100" font-size="11" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">LOUDNESS</text>
+  <rect x="860"  y="491" width="264" height="142" rx="4" fill="#0a0a0a"/>
+  <path d="M994,590 m-80,0 a80,80 0 0 1 160,0" fill="none" stroke="#1e1e1e" stroke-width="16"/>
+  <path d="M994,590 m-80,0 a80,80 0 0 1 80,-80" fill="none" stroke="#00e676" stroke-width="16" opacity="0.4"/>
+  <path d="M914,590 a80,80 0 0 1 78,-18" fill="none" stroke="#ff1744" stroke-width="16" stroke-linecap="round"/>
+  <text x="994" y="582" fill="#ff1744" font-size="22" font-weight="bold"
+        font-family="'Courier New',monospace" text-anchor="middle">-11.4</text>
+  <text x="994" y="600" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">LUFS  Integrated</text>
+  <text x="874" y="598" fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">-30</text>
+  <text x="1098" y="598" fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">0</text>
+  <text x="866" y="622" fill="#b0b0b0" font-size="10" font-family="'Courier New',monospace">S: -10.8</text>
+  <text x="930" y="622" fill="#b0b0b0" font-size="10" font-family="'Courier New',monospace">M: -10.2</text>
+  <text x="998" y="622" fill="#ff1744" font-size="10" font-family="'Courier New',monospace">TP: -0.3</text>
+  <text x="1068" y="622" fill="#b0b0b0" font-size="10" font-family="'Courier New',monospace">LRA: 7.1</text>
+
+  <!-- Tile 5: Correlation -->
+  <rect x="1134" y="468" width="300" height="175" rx="10" fill="#111111" stroke="#2a2a2a" stroke-width="1" filter="url(#tileShadow2)"/>
+  <text x="1146" y="486" fill="#00e5ff" font-size="11" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">CORRELATION</text>
+  <rect x="1142" y="491" width="284" height="142" rx="4" fill="#0a0a0a"/>
+  <line x1="1150" y1="530" x2="1418" y2="530" stroke="#1e1e1e" stroke-width="1"/>
+  <text x="1152" y="545" fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">-1</text>
+  <text x="1278" y="545" fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">0</text>
+  <text x="1406" y="545" fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">+1</text>
+  <rect x="1162" y="520" width="256" height="16" rx="3" fill="#111111" stroke="#2a2a2a"/>
+  <!-- Correlation +0.88 (very good mono compatibility) -->
+  <rect x="1290" y="520" width="116" height="16" rx="0" fill="#00e676" opacity="0.85"/>
+  <line x1="1290" y1="518" x2="1290" y2="538" stroke="#808080" stroke-width="1.5"/>
+  <text x="1284" y="567" fill="#00e676" font-size="18" font-weight="bold"
+        font-family="'Courier New',monospace" text-anchor="middle">+0.88</text>
+  <text x="1284" y="584" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">Stereo Correlation</text>
+  <!-- Lissajous (good stereo = wider ellipse) -->
+  <ellipse cx="1284" cy="612" rx="26" ry="16" fill="none" stroke="#00e5ff" stroke-width="1.5"
+           transform="rotate(-28,1284,612)" opacity="0.7"/>
+  <line x1="1262" y1="612" x2="1306" y2="612" stroke="#2a2a2a" stroke-width="1"/>
+  <line x1="1284" y1="595" x2="1284" y2="629" stroke="#2a2a2a" stroke-width="1"/>
+
+
+  <!-- ═══ STATUS BAR ═══ -->
+  <line x1="0" y1="851" x2="1440" y2="851" stroke="#ff1744" stroke-width="1" opacity="0.3"/>
+  <rect x="0" y="852" width="1440" height="48" fill="#0a0a0a"/>
+  <text x="16" y="880" fill="#7c4dff" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Session: Untitled  ·  44.1 kHz / 24-bit  ·  4 tracks  ·  120.0 BPM</text>
+  <text x="860" y="880" fill="#ff9100" font-size="11" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">Auto-save: ON</text>
+  <line x1="1060" y1="856" x2="1060" y2="895" stroke="#2a2a2a" stroke-width="1"/>
+  <circle cx="1080" cy="876" r="5" fill="#ff1744" filter="url(#recGlow)"/>
+  <text x="1424" y="880" fill="#ff1744" font-size="11" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="end">● Recording  ·  00:01:43</text>
+
+</svg>
