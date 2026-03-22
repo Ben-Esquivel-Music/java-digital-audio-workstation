@@ -18,7 +18,16 @@ import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.visualization.LevelData;
+import com.benesquivelmusic.daw.sdk.visualization.SpectrumData;
 
+import javafx.animation.AnimationTimer;
+import javafx.animation.FadeTransition;
+import javafx.animation.Interpolator;
+import javafx.animation.ParallelTransition;
+import javafx.animation.ScaleTransition;
+import javafx.animation.Timeline;
+import javafx.animation.TranslateTransition;
 import javafx.fxml.FXML;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -35,6 +44,7 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
+import javafx.util.Duration;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -96,6 +106,28 @@ public final class MainController {
     private int audioTrackCounter;
     private int midiTrackCounter;
 
+    // ── Animation state ──────────────────────────────────────────────────────
+    /** Drives all continuous frame-by-frame animations at ~60 fps. */
+    private AnimationTimer mainAnimTimer;
+    /** Accumulated phase (seconds) for the idle visualization waveform simulation. */
+    private double idleAnimPhase;
+    /** Accumulated phase (seconds) for the transport-state glow animations. */
+    private double glowAnimPhase;
+    /** Nanosecond timestamp when playback/recording started; used for time display. */
+    private long timeTickerStartNanos;
+    /** Whether the time ticker is actively counting up. */
+    private boolean timeTickerRunning;
+    /** Cached elapsed nanoseconds before the last pause (for correct resume). */
+    private long timeTickerPausedElapsedNanos;
+
+    /** Reference kept for the idle demo animation. */
+    private SpectrumDisplay spectrumDisplay;
+    /** Reference kept for the idle demo animation. */
+    private LevelMeterDisplay levelMeterDisplay;
+    /** Reusable bin buffer for the idle spectrum animation — avoids per-frame heap allocation. */
+    private static final int IDLE_FFT_SIZE = 1024;
+    private final float[] idleSpectrumBins = new float[IDLE_FFT_SIZE / 2];
+
     @FXML
     private void initialize() {
         project = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
@@ -110,6 +142,7 @@ public final class MainController {
 
         applyIcons();
         applyTooltips();
+        applyButtonPressAnimations();
         buildVisualizationTiles();
         setupTempoEditor();
         updateStatus();
@@ -117,6 +150,7 @@ public final class MainController {
         updateProjectInfo();
         updateCheckpointStatus();
         updateUndoRedoState();
+        startMainAnimTimer();
 
         // Register keyboard shortcuts after the scene is available
         playButton.sceneProperty().addListener((_, _, scene) -> {
@@ -320,9 +354,9 @@ public final class MainController {
         vizTileRow.setPrefHeight(120);
         vizTileRow.setMinHeight(100);
 
+        spectrumDisplay    = new SpectrumDisplay();
+        levelMeterDisplay  = new LevelMeterDisplay();
         WaveformDisplay waveformDisplay   = new WaveformDisplay();
-        SpectrumDisplay spectrumDisplay   = new SpectrumDisplay();
-        LevelMeterDisplay levelMeterDisplay = new LevelMeterDisplay();
         LoudnessDisplay loudnessDisplay   = new LoudnessDisplay();
         CorrelationDisplay correlationDisplay = new CorrelationDisplay();
 
@@ -359,6 +393,7 @@ public final class MainController {
     @FXML
     private void onPlay() {
         project.getTransport().play();
+        startTimeTicker();
         updateStatus();
         statusBarLabel.setText("Playing...");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.PLAY, 12));
@@ -367,15 +402,20 @@ public final class MainController {
     @FXML
     private void onStop() {
         project.getTransport().stop();
+        stopTimeTicker();
         updateStatus();
         timeDisplay.setText("00:00:00.0");
         statusBarLabel.setText("Stopped");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.STOP, 12));
+        // Restore button appearance in case the record blink was active
+        recordButton.setOpacity(1.0);
+        recordButton.setStyle("");
     }
 
     @FXML
     private void onPause() {
         project.getTransport().pause();
+        pauseTimeTicker();
         updateStatus();
         statusBarLabel.setText("Paused");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.PAUSE, 12));
@@ -384,6 +424,7 @@ public final class MainController {
     @FXML
     private void onRecord() {
         project.getTransport().record();
+        startTimeTicker();
         updateStatus();
         statusBarLabel.setText("Recording — auto-save active");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.RECORD, 12));
@@ -615,6 +656,17 @@ public final class MainController {
                 typeIcon, nameLabel, volumeSlider, spacer,
                 muteBtn, soloBtn, armBtn, removeBtn);
         trackListPanel.getChildren().add(trackItem);
+
+        // Slide-fade entry animation: item slides in from the left and fades in
+        trackItem.setTranslateX(-24);
+        trackItem.setOpacity(0.0);
+        TranslateTransition slide = new TranslateTransition(Duration.millis(200), trackItem);
+        slide.setToX(0.0);
+        slide.setInterpolator(Interpolator.EASE_OUT);
+        FadeTransition fade = new FadeTransition(Duration.millis(200), trackItem);
+        fade.setToValue(1.0);
+        new ParallelTransition(slide, fade).play();
+
         return trackItem;
     }
 
@@ -667,6 +719,187 @@ public final class MainController {
         editor.selectAll();
     }
 
+    // ── Animation helpers ────────────────────────────────────────────────────
+
+    /**
+     * Starts the single {@link AnimationTimer} that drives all continuous
+     * frame-by-frame animations: idle visualization demo, transport glow, and
+     * the time-display ticker.
+     */
+    private void startMainAnimTimer() {
+        mainAnimTimer = new AnimationTimer() {
+            private long lastNanos = 0;
+
+            @Override
+            public void handle(long now) {
+                if (lastNanos == 0) {
+                    lastNanos = now;
+                    return;
+                }
+                double delta = (now - lastNanos) / 1_000_000_000.0;
+                lastNanos = now;
+
+                // Advance animation phases
+                idleAnimPhase += delta;
+                glowAnimPhase += delta;
+
+                TransportState state = project.getTransport().getState();
+
+                // Time ticker: update time display while playing or recording
+                if (timeTickerRunning) {
+                    long elapsedNanos = timeTickerPausedElapsedNanos + (now - timeTickerStartNanos);
+                    refreshTimeDisplay(elapsedNanos);
+                }
+
+                // Transport glow on play and record buttons
+                applyTransportGlow(state);
+
+                // Idle visualization (always runs to keep displays alive)
+                tickIdleVisualization(delta);
+            }
+        };
+        mainAnimTimer.start();
+    }
+
+    /**
+     * Applies a pulsing glow to the play button while playing and a blink
+     * to the record button while recording.
+     */
+    private void applyTransportGlow(TransportState state) {
+        if (state == TransportState.PLAYING) {
+            double pulse = 0.5 + 0.5 * Math.sin(glowAnimPhase * Math.PI * 1.4);
+            double radius = 8 + pulse * 14;
+            double spread = 0.05 + pulse * 0.25;
+            playButton.setStyle(String.format(
+                    "-fx-effect: dropshadow(gaussian, #00e676, %.1f, %.2f, 0, 0);",
+                    radius, spread));
+            recordButton.setStyle("");
+        } else if (state == TransportState.RECORDING) {
+            // Blink record button: full opacity <-> dim, at ~2 Hz
+            double blink = 0.5 + 0.5 * Math.sin(glowAnimPhase * Math.PI * 4.0);
+            double opacity = 0.4 + blink * 0.6;
+            recordButton.setOpacity(opacity);
+            double glowRadius = 8 + blink * 16;
+            double glowSpread = 0.1 + blink * 0.3;
+            recordButton.setStyle(String.format(
+                    "-fx-effect: dropshadow(gaussian, #ff1744, %.1f, %.2f, 0, 0);",
+                    glowRadius, glowSpread));
+            playButton.setStyle("");
+        } else {
+            playButton.setStyle("");
+            recordButton.setOpacity(1.0);
+            recordButton.setStyle("");
+        }
+    }
+
+    /**
+     * Generates synthetic spectrum and level data for the idle demo animation so
+     * the visualization displays stay visually alive when no audio is being processed.
+     */
+    private void tickIdleVisualization(double deltaSeconds) {
+        if (spectrumDisplay == null || levelMeterDisplay == null) {
+            return;
+        }
+
+        // ── Spectrum: pink-noise shape with gentle wobble ──────────────────
+        int binCount = idleSpectrumBins.length;
+        for (int i = 1; i < binCount; i++) {
+            // Logarithmic position: 0.0 (low) → 1.0 (high)
+            double t = Math.log((double) i / binCount + 1.0) / Math.log(2.0);
+            // Pink-noise baseline: gentle downward slope
+            double base = -28.0 - t * 30.0;
+            // Slow wobble across the frequency range
+            double wobble = 7.0 * Math.sin(idleAnimPhase * 0.9 + t * 5.5);
+            // Low-mid bump that breathes
+            double bump = 5.0 * Math.exp(-Math.pow((t - 0.25), 2) / 0.01)
+                    * (0.5 + 0.5 * Math.sin(idleAnimPhase * 0.6));
+            idleSpectrumBins[i] = (float) Math.max(-90.0, base + wobble + bump);
+        }
+        idleSpectrumBins[0] = idleSpectrumBins[1];
+        spectrumDisplay.updateSpectrum(new SpectrumData(idleSpectrumBins, IDLE_FFT_SIZE, 44100.0));
+
+        // ── Level meter: gentle breathing RMS with occasional peaks ──────
+        double rmsLinear = 0.18 + 0.12 * Math.abs(Math.sin(idleAnimPhase * 0.75));
+        double peakBoost = 1.0 + 0.25 * Math.abs(Math.sin(idleAnimPhase * 1.8));
+        double peakLinear = Math.min(rmsLinear * peakBoost * 1.3, 0.85);
+        double dbRms = 20.0 * Math.log10(Math.max(rmsLinear, 1e-9));
+        double dbPeak = 20.0 * Math.log10(Math.max(peakLinear, 1e-9));
+        levelMeterDisplay.update(
+                new LevelData(peakLinear, rmsLinear, dbPeak, dbRms, false),
+                (long) (deltaSeconds * 1_000_000_000L));
+    }
+
+    /** Updates the time display label from the given elapsed nanosecond count. */
+    private void refreshTimeDisplay(long elapsedNanos) {
+        long elapsedMs = elapsedNanos / 1_000_000L;
+        long tenths = (elapsedMs % 1000) / 100;
+        long totalSeconds = elapsedMs / 1000;
+        long minutes = totalSeconds / 60;
+        long hours = minutes / 60;
+        timeDisplay.setText(String.format("%02d:%02d:%02d.%d",
+                hours, minutes % 60, totalSeconds % 60, tenths));
+    }
+
+    /** Starts the time ticker from zero (or resumes from a paused position). */
+    private void startTimeTicker() {
+        timeTickerStartNanos = System.nanoTime();
+        timeTickerPausedElapsedNanos = 0;
+        timeTickerRunning = true;
+    }
+
+    /** Pauses the time ticker, preserving elapsed time for clean resume. */
+    private void pauseTimeTicker() {
+        if (timeTickerRunning) {
+            timeTickerPausedElapsedNanos += System.nanoTime() - timeTickerStartNanos;
+            timeTickerRunning = false;
+        }
+    }
+
+    /** Stops and resets the time ticker. */
+    private void stopTimeTicker() {
+        timeTickerRunning = false;
+        timeTickerPausedElapsedNanos = 0;
+    }
+
+    /**
+     * Adds a scale-bounce press/release animation to every transport button so
+     * clicks feel tactile and immediate.
+     */
+    private void applyButtonPressAnimations() {
+        for (Button btn : new Button[]{
+                playButton, pauseButton, stopButton, recordButton,
+                addAudioTrackButton, addMidiTrackButton,
+                undoButton, redoButton, saveButton, pluginsButton}) {
+            applyPressAnimation(btn);
+        }
+    }
+
+    /**
+     * Attaches a subtle scale-down-then-spring-back animation to a single button.
+     */
+    private void applyPressAnimation(Button btn) {
+        ScaleTransition pressDown = new ScaleTransition(Duration.millis(70), btn);
+        pressDown.setToX(0.90);
+        pressDown.setToY(0.90);
+        pressDown.setInterpolator(Interpolator.EASE_IN);
+
+        ScaleTransition springBack = new ScaleTransition(Duration.millis(130), btn);
+        springBack.setToX(1.0);
+        springBack.setToY(1.0);
+        springBack.setInterpolator(Interpolator.EASE_OUT);
+
+        btn.setOnMousePressed(_ -> {
+            springBack.stop();
+            pressDown.playFromStart();
+        });
+        btn.setOnMouseReleased(_ -> {
+            pressDown.stop();
+            springBack.playFromStart();
+        });
+    }
+
+    // ── Status update ────────────────────────────────────────────────────────
+
     private void updateStatus() {
         Transport transport = project.getTransport();
         TransportState state = transport.getState();
@@ -692,6 +925,13 @@ public final class MainController {
                 statusLabel.setGraphic(IconNode.of(DawIcon.STOP, 12));
             }
         }
+
+        // Smooth fade-in so the status label change feels polished
+        statusLabel.setOpacity(0.0);
+        FadeTransition fadeIn = new FadeTransition(Duration.millis(200), statusLabel);
+        fadeIn.setFromValue(0.0);
+        fadeIn.setToValue(1.0);
+        fadeIn.play();
 
         playButton.setDisable(state == TransportState.PLAYING);
         pauseButton.setDisable(state == TransportState.STOPPED || state == TransportState.PAUSED);
