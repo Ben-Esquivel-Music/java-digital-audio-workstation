@@ -15,6 +15,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.offset;
 
 class WavExporterTest {
@@ -283,6 +284,57 @@ class WavExporterTest {
 
         buf.position(34);
         assertThat(buf.getShort()).isEqualTo((short) 32);
+    }
+
+    @Test
+    void shouldRejectInvalidBitDepth() {
+        float[][] audio = generateStereoSine(44100, 0.1, 440.0);
+        Path outputPath = tempDir.resolve("bad.wav");
+
+        assertThatThrownBy(() -> WavExporter.write(audio, 44100, 7,
+                DitherType.NONE, AudioMetadata.EMPTY, outputPath))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("bitDepth");
+
+        assertThatThrownBy(() -> WavExporter.write(audio, 44100, 64,
+                DitherType.NONE, AudioMetadata.EMPTY, outputPath))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("bitDepth");
+    }
+
+    @Test
+    void shouldRejectNonPositiveSampleRate() {
+        float[][] audio = generateStereoSine(44100, 0.1, 440.0);
+        Path outputPath = tempDir.resolve("bad.wav");
+
+        assertThatThrownBy(() -> WavExporter.write(audio, 0, 16,
+                DitherType.NONE, AudioMetadata.EMPTY, outputPath))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sampleRate");
+
+        assertThatThrownBy(() -> WavExporter.write(audio, -44100, 16,
+                DitherType.NONE, AudioMetadata.EMPTY, outputPath))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sampleRate");
+    }
+
+    @Test
+    void shouldRejectNullAudioData() {
+        Path outputPath = tempDir.resolve("null.wav");
+
+        assertThatThrownBy(() -> WavExporter.write(null, 44100, 16,
+                DitherType.NONE, AudioMetadata.EMPTY, outputPath))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void shouldRejectEmptyAudioData() {
+        Path outputPath = tempDir.resolve("empty.wav");
+
+        assertThatThrownBy(() -> WavExporter.write(new float[0][0], 44100, 16,
+                DitherType.NONE, AudioMetadata.EMPTY, outputPath))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("channel");
     }
 
     private static float[][] generateStereoSine(int sampleRate, double duration, double freq) {

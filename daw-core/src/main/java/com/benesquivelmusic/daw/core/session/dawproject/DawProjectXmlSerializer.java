@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.sdk.session.SessionData;
 import com.benesquivelmusic.daw.sdk.session.SessionData.SessionClip;
 import com.benesquivelmusic.daw.sdk.session.SessionData.SessionTrack;
 
+import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
 import javax.xml.transform.OutputKeys;
@@ -41,12 +42,17 @@ public final class DawProjectXmlSerializer {
             throws IOException {
         try {
             var factory = DocumentBuilderFactory.newInstance();
+            factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
             var builder = factory.newDocumentBuilder();
             var document = builder.newDocument();
 
             buildDocument(document, sessionData, warnings);
 
             var transformerFactory = TransformerFactory.newInstance();
+            transformerFactory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            transformerFactory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+            transformerFactory.setAttribute(XMLConstants.ACCESS_EXTERNAL_STYLESHEET, "");
             var transformer = transformerFactory.newTransformer();
             transformer.setOutputProperty(OutputKeys.INDENT, "yes");
             transformer.setOutputProperty(OutputKeys.ENCODING, "UTF-8");
