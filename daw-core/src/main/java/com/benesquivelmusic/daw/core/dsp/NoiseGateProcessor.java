@@ -111,7 +111,7 @@ public final class NoiseGateProcessor implements AudioProcessor {
                 case RELEASE -> {
                     envelope *= releaseCoeff;
                     if (envelope <= rangeLinear + 0.001) {
-                        envelope = rangeLinear;
+                        envelope = 0.0;
                         state = GateState.CLOSED;
                     }
                     if (peak >= thresholdLinear) {

@@ -91,6 +91,36 @@ class NoiseGateProcessorTest {
         assertThat(gate.getRangeDb()).isEqualTo(-60.0);
     }
 
+    @Test
+    void closedStateShouldAttenuateByExactlyRangeDb() {
+        var gate = new NoiseGateProcessor(1, 44100.0);
+        gate.setThresholdDb(-10.0);
+        gate.setRangeDb(-6.0);   // −6 dB range (linear ≈ 0.5)
+        gate.setAttackMs(0.01);
+        gate.setReleaseMs(1.0);
+        gate.setHoldMs(0.01);
+
+        float amplitude = 0.001f; // well below threshold
+        float[][] input = new float[1][8192];
+        float[][] output = new float[1][8192];
+        for (int i = 0; i < input[0].length; i++) {
+            input[0][i] = amplitude;
+        }
+
+        // Process enough samples for the gate to fully close
+        gate.process(input, output, input[0].length);
+
+        // In closed state, the gain should be exactly rangeLinear ≈ 0.5012
+        double rangeLinear = Math.pow(10.0, -6.0 / 20.0);
+        float expected = (float) (amplitude * rangeLinear);
+
+        // Check the last samples where the gate is definitely closed
+        for (int i = input[0].length - 100; i < input[0].length; i++) {
+            assertThat((double) output[0][i]).isCloseTo(expected,
+                    org.assertj.core.data.Offset.offset(expected * 0.05));
+        }
+    }
+
     private static double rms(float[] buffer, int start, int end) {
         double sum = 0;
         for (int i = start; i < end; i++) {

@@ -161,6 +161,40 @@ class WavExporterTest {
         }
     }
 
+    @Test
+    void shouldWriteNoiseShaped16BitWav() throws IOException {
+        float[][] audio = generateStereoSine(44100, 0.5, 440.0);
+        Path outputPath = tempDir.resolve("noise_shaped.wav");
+
+        WavExporter.write(audio, 44100, 16, DitherType.NOISE_SHAPED,
+                AudioMetadata.EMPTY, outputPath);
+
+        assertThat(outputPath).exists();
+
+        // Read back and verify L and R channels have the same quantization
+        // characteristics (per-channel ditherers produce independent noise)
+        byte[] data = Files.readAllBytes(outputPath);
+        var buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+        buf.position(44);
+
+        int numSamples = audio[0].length;
+        double errorL = 0, errorR = 0;
+        for (int i = 0; i < numSamples; i++) {
+            short sL = buf.getShort();
+            short sR = buf.getShort();
+            double origL = audio[0][i];
+            double origR = audio[1][i];
+            errorL += Math.abs(sL / 32767.0 - origL);
+            errorR += Math.abs(sR / 32767.0 - origR);
+        }
+
+        // Both channels should have similar quantization error (same signal, independent ditherers)
+        double avgErrorL = errorL / numSamples;
+        double avgErrorR = errorR / numSamples;
+        assertThat(avgErrorL).isLessThan(0.001);
+        assertThat(avgErrorR).isLessThan(0.001);
+    }
+
     private static float[][] generateStereoSine(int sampleRate, double duration, double freq) {
         int numSamples = (int) (sampleRate * duration);
         float[][] audio = new float[2][numSamples];

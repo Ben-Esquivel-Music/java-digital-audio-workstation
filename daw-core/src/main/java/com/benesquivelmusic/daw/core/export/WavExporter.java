@@ -104,8 +104,13 @@ final class WavExporter {
                                      boolean isFloat, DitherType ditherType) throws IOException {
 
         TpdfDitherer tpdf = (ditherType == DitherType.TPDF) ? new TpdfDitherer() : null;
-        NoiseShapedDitherer noiseShaped = (ditherType == DitherType.NOISE_SHAPED)
-                ? new NoiseShapedDitherer() : null;
+        NoiseShapedDitherer[] noiseShaped = null;
+        if (ditherType == DitherType.NOISE_SHAPED) {
+            noiseShaped = new NoiseShapedDitherer[channels];
+            for (int ch = 0; ch < channels; ch++) {
+                noiseShaped[ch] = new NoiseShapedDitherer();
+            }
+        }
 
         int bytesPerSample = bitDepth / 8;
         var buf = ByteBuffer.allocate(bytesPerSample).order(ByteOrder.LITTLE_ENDIAN);
@@ -122,17 +127,13 @@ final class WavExporter {
                 if (isFloat) {
                     buf.putFloat((float) sample);
                 } else {
-                    long quantized = quantize(sample, bitDepth, tpdf, noiseShaped);
+                    long quantized = quantize(sample, bitDepth, tpdf,
+                            noiseShaped != null ? noiseShaped[ch] : null);
                     writeIntSample(buf, quantized, bitDepth);
                 }
 
                 out.write(buf.array(), 0, bytesPerSample);
             }
-        }
-
-        // Reset noise-shaped ditherer state between channels if needed
-        if (noiseShaped != null) {
-            noiseShaped.reset();
         }
     }
 
