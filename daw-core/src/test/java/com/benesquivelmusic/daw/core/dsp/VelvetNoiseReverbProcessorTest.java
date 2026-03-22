@@ -261,6 +261,65 @@ class VelvetNoiseReverbProcessorTest {
         assertThat(differs).isTrue();
     }
 
+    @Test
+    void shouldProduceLateReverbViaParallelSegments() {
+        // With high decay time the late reverb uses parallel segment processing
+        // via virtual threads; verify the late tail has energy
+        VelvetNoiseReverbProcessor reverb = new VelvetNoiseReverbProcessor(1, 44100.0);
+        reverb.setMix(1.0);
+        reverb.setDecayTime(0.9);
+        reverb.setEarlyLateMix(1.0); // only late reverb
+        reverb.setDamping(0.0);
+
+        int len = 44100; // 1 second
+        float[][] input = new float[1][len];
+        float[][] output = new float[1][len];
+        input[0][0] = 1.0f;
+        reverb.process(input, output, len);
+
+        // Late reverb tail should have energy in the mid-to-late region
+        double midRms = rms(output[0], len / 4, len / 2);
+        assertThat(midRms).isGreaterThan(0.0);
+    }
+
+    @Test
+    void shouldProduceConsistentResultsAcrossBufferSizes() {
+        // Process the same signal with different buffer sizes and verify
+        // the results are identical, confirming segment processing is correct
+        VelvetNoiseReverbProcessor reverb1 = new VelvetNoiseReverbProcessor(1, 44100.0);
+        reverb1.setMix(1.0);
+        reverb1.setDecayTime(0.8);
+        reverb1.setDamping(0.0);
+
+        VelvetNoiseReverbProcessor reverb2 = new VelvetNoiseReverbProcessor(1, 44100.0);
+        reverb2.setMix(1.0);
+        reverb2.setDecayTime(0.8);
+        reverb2.setDamping(0.0);
+
+        // Process in one large block
+        float[][] input = new float[1][4096];
+        input[0][0] = 1.0f;
+        float[][] output1 = new float[1][4096];
+        reverb1.process(input, output1, 4096);
+
+        // Process in small blocks
+        float[][] output2 = new float[1][4096];
+        int blockSize = 256;
+        for (int offset = 0; offset < 4096; offset += blockSize) {
+            float[][] blockIn = new float[1][blockSize];
+            float[][] blockOut = new float[1][blockSize];
+            System.arraycopy(input[0], offset, blockIn[0], 0, blockSize);
+            reverb2.process(blockIn, blockOut, blockSize);
+            System.arraycopy(blockOut[0], 0, output2[0], offset, blockSize);
+        }
+
+        // Results should be identical
+        for (int i = 0; i < 4096; i++) {
+            assertThat(output1[0][i]).isCloseTo(output2[0][i],
+                    org.assertj.core.data.Offset.offset(1e-5f));
+        }
+    }
+
     private static double rms(float[] buffer, int start, int end) {
         double sum = 0;
         for (int i = start; i < end; i++) {

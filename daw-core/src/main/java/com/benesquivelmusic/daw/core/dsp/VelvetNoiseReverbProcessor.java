@@ -4,30 +4,34 @@ import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.Arrays;
 import java.util.Random;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 /**
- * Velvet-noise reverb processor.
+ * Reverb processor based on velvet-noise sequences.
  *
- * <p>Implements a reverb based on sparse velvet-noise impulse responses, where
- * pulse values are restricted to {−1, 0, +1}. Convolution with such a sequence
- * requires only additions and subtractions at the non-zero pulse positions,
- * yielding reverb quality perceptually comparable to full convolution reverb
- * at a fraction of the computational cost.</p>
+ * <p>Velvet noise is a sparse random signal restricted to {−1, 0, +1}, enabling
+ * convolution via simple additions and subtractions instead of multiplications.
+ * This yields reverb with the perceptual quality of convolution reverb at a
+ * fraction of the computational cost — critical for real-time use with virtual
+ * threads.</p>
  *
- * <p>Features:
+ * <p>The impulse response is split into two regions:</p>
  * <ul>
- *   <li>Configurable pulse density (pulses per second)</li>
- *   <li>Exponential decay envelope for natural-sounding reverb tails</li>
- *   <li>Early/late reflection balance control</li>
- *   <li>High-frequency damping via one-pole lowpass on the wet signal</li>
- *   <li>Wet/dry mix control</li>
- *   <li>Segment-based architecture suitable for parallel processing</li>
- *   <li>Stereo-decorrelated velvet-noise sequences per channel</li>
+ *   <li><b>Early reflections</b> (first ~80 ms) — sparse pulses with individual
+ *       per-pulse decay gains, processed sequentially</li>
+ *   <li><b>Late reverb tail</b> — divided into segments that are processed in
+ *       parallel using {@link Executors#newVirtualThreadPerTaskExecutor()}.
+ *       Within each segment, convolution uses only additions and subtractions
+ *       (no per-pulse multiplications); a single per-segment gain encodes the
+ *       exponential decay envelope.</li>
  * </ul>
  *
- * <p>Based on AES research on efficient velvet-noise convolution. Complements
- * the Schroeder–Moorer {@link ReverbProcessor} and the physically modeled
- * {@link SpringReverbProcessor} as a third reverb algorithm.</p>
+ * <p>Based on AES research: "Efficient Velvet-Noise Convolution in Multicore
+ * Processors" (2024). Complements the Schroeder–Moorer {@link ReverbProcessor}
+ * and the physically modeled {@link SpringReverbProcessor} as a third reverb
+ * algorithm.</p>
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
@@ -37,34 +41,46 @@ public final class VelvetNoiseReverbProcessor implements AudioProcessor {
     private static final double MAX_DECAY_SECONDS = 3.0;
     private static final double MIN_DENSITY_PPS = 500.0;
     private static final double MAX_DENSITY_PPS = 4000.0;
-    private static final double EARLY_REFLECTION_MS = 50.0;
+    private static final double EARLY_REFLECTION_MS = 80.0;
+    private static final int NUM_LATE_SEGMENTS = 8;
+    private static final int PARALLEL_SEGMENT_THRESHOLD = 4;
+    private static final int INITIAL_WORK_BUFFER_SIZE = 4096;
+    private static final long BASE_SEED = 42L;
 
     private final int channels;
     private final double sampleRate;
 
-    // Parameters
+    // Parameters (all normalized to [0, 1])
     private double decayTime;
     private double density;
     private double earlyLateMix;
     private double damping;
     private double mix;
 
-    // Sparse velvet-noise impulse response per channel
-    private int[][] pulsePositions;   // [channel][pulseIndex]
-    private float[][] pulseWeights;   // [channel][pulseIndex] (sign × envelope)
-    private int[] pulseCount;         // [channel]
-    private int[] earlyPulseCount;    // [channel] — number of pulses in early region
+    // Circular input buffer per channel
+    private float[][] ringBuffer;
+    private int[] writePos;
+    private int ringLength;
 
-    // Circular input history buffer for sparse convolution
-    private float[][] inputHistory;   // [channel][historyLength]
-    private int[] writePositions;     // [channel]
-    private int historyLength;
+    // Early reflection pulse data per channel
+    private int[][] earlyDelays;       // [ch][pulse] — delay in samples
+    private int[][] earlyPolarities;   // [ch][pulse] — +1 or -1
+    private float[][] earlyGains;      // [ch][pulse] — decay gain (includes normalization)
+    private int earlyPulseCount;
 
-    // Per-channel damping filter state (one-pole lowpass)
-    private float[] dampingState;     // [channel]
+    // Late reverb segment data per channel
+    private int[][][] lateDelays;      // [ch][seg][pulse] — delay in samples
+    private int[][][] latePolarities;  // [ch][seg][pulse] — +1 or -1
+    private float[] lateSegmentGains;  // [seg] — constant gain per segment (decay + norm)
+    private int[] latePulseCounts;     // [seg] — pulse count per segment
+    private int lateSegmentCount;
 
-    // Seed for reproducible velvet-noise generation
-    private final long seed;
+    // Pre-allocated work buffers for segment processing
+    private float[][] segmentWorkBuffers;
+    private int workBufferSize;
+
+    // One-pole lowpass damping state per channel
+    private final float[] dampState;
 
     /**
      * Creates a velvet-noise reverb processor with default settings.
@@ -86,14 +102,12 @@ public final class VelvetNoiseReverbProcessor implements AudioProcessor {
         this.earlyLateMix = 0.5;
         this.damping = 0.5;
         this.mix = 0.3;
-        this.seed = 42L;
 
-        pulsePositions = new int[channels][];
-        pulseWeights = new float[channels][];
-        pulseCount = new int[channels];
-        earlyPulseCount = new int[channels];
-        writePositions = new int[channels];
-        dampingState = new float[channels];
+        this.writePos = new int[channels];
+        this.dampState = new float[channels];
+
+        this.workBufferSize = INITIAL_WORK_BUFFER_SIZE;
+        this.segmentWorkBuffers = new float[NUM_LATE_SEGMENTS][workBufferSize];
 
         generateVelvetNoiseSequence();
     }
@@ -102,52 +116,57 @@ public final class VelvetNoiseReverbProcessor implements AudioProcessor {
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         int activeCh = Math.min(channels, inputBuffer.length);
         double dampCoeff = damping;
-        double earlyGain = 1.0 - earlyLateMix;
-        double lateGain = earlyLateMix;
+        double earlyWeight = 1.0 - earlyLateMix;
+        double lateWeight = earlyLateMix;
 
-        for (int frame = 0; frame < numFrames; frame++) {
-            for (int ch = 0; ch < activeCh; ch++) {
-                float input = inputBuffer[ch][frame];
+        ensureWorkBufferSize(numFrames);
 
-                // Write input to circular history buffer
-                inputHistory[ch][writePositions[ch]] = input;
+        for (int ch = 0; ch < activeCh; ch++) {
+            int baseWritePos = writePos[ch];
 
-                // Sparse convolution: sum contributions at non-zero pulse positions
+            // Write all input samples to the circular buffer
+            for (int frame = 0; frame < numFrames; frame++) {
+                ringBuffer[ch][(baseWritePos + frame) % ringLength] = inputBuffer[ch][frame];
+            }
+
+            // Process late reverb segments (parallel for large segment counts)
+            processLateSegments(ch, baseWritePos, numFrames);
+
+            // Per-frame: early reflections + late reverb sum + damping + mix
+            for (int frame = 0; frame < numFrames; frame++) {
+                int currentPos = (baseWritePos + frame) % ringLength;
+
+                // Early reflections (sparse convolution with per-pulse gains)
                 float earlyWet = 0.0f;
+                for (int p = 0; p < earlyPulseCount; p++) {
+                    int readPos = (currentPos - earlyDelays[ch][p] + ringLength) % ringLength;
+                    float sample = ringBuffer[ch][readPos];
+                    if (earlyPolarities[ch][p] == 1) {
+                        earlyWet += sample * earlyGains[ch][p];
+                    } else {
+                        earlyWet -= sample * earlyGains[ch][p];
+                    }
+                }
+
+                // Sum pre-computed late reverb segment contributions
                 float lateWet = 0.0f;
-                int earlyCount = earlyPulseCount[ch];
-                int totalCount = pulseCount[ch];
-                int[] positions = pulsePositions[ch];
-                float[] weights = pulseWeights[ch];
-                int wp = writePositions[ch];
-                int hLen = historyLength;
-
-                // Early reflections
-                for (int p = 0; p < earlyCount; p++) {
-                    int readPos = (wp - positions[p] + hLen) % hLen;
-                    earlyWet += weights[p] * inputHistory[ch][readPos];
+                for (int seg = 0; seg < lateSegmentCount; seg++) {
+                    lateWet += segmentWorkBuffers[seg][frame] * lateSegmentGains[seg];
                 }
 
-                // Late reflections
-                for (int p = earlyCount; p < totalCount; p++) {
-                    int readPos = (wp - positions[p] + hLen) % hLen;
-                    lateWet += weights[p] * inputHistory[ch][readPos];
-                }
+                // Combine early and late
+                float wet = (float) (earlyWet * earlyWeight + lateWet * lateWeight);
 
-                // Blend early and late
-                float wet = (float) (earlyGain * earlyWet + lateGain * lateWet);
-
-                // Apply damping (one-pole lowpass on wet signal)
-                dampingState[ch] = (float) (wet * (1.0 - dampCoeff)
-                        + dampingState[ch] * dampCoeff);
-                wet = dampingState[ch];
-
-                // Advance write position
-                writePositions[ch] = (wp + 1) % hLen;
+                // Apply damping (one-pole lowpass)
+                dampState[ch] = (float) (wet * (1.0 - dampCoeff) + dampState[ch] * dampCoeff);
+                wet = dampState[ch];
 
                 // Mix dry and wet
-                outputBuffer[ch][frame] = (float) (input * (1.0 - mix) + wet * mix);
+                outputBuffer[ch][frame] = (float) (inputBuffer[ch][frame] * (1.0 - mix)
+                        + wet * mix);
             }
+
+            writePos[ch] = (baseWritePos + numFrames) % ringLength;
         }
     }
 
@@ -204,9 +223,9 @@ public final class VelvetNoiseReverbProcessor implements AudioProcessor {
     @Override
     public void reset() {
         for (int ch = 0; ch < channels; ch++) {
-            Arrays.fill(inputHistory[ch], 0.0f);
-            writePositions[ch] = 0;
-            dampingState[ch] = 0.0f;
+            Arrays.fill(ringBuffer[ch], 0.0f);
+            writePos[ch] = 0;
+            dampState[ch] = 0.0f;
         }
     }
 
@@ -216,79 +235,190 @@ public final class VelvetNoiseReverbProcessor implements AudioProcessor {
     @Override
     public int getOutputChannelCount() { return channels; }
 
+    // --- Private methods ---
+
     /**
-     * Generates the sparse velvet-noise impulse response for all channels.
+     * Ensures the pre-allocated work buffers are large enough for the given frame count.
+     */
+    private void ensureWorkBufferSize(int numFrames) {
+        if (numFrames > workBufferSize) {
+            workBufferSize = numFrames;
+            int bufferCount = Math.max(lateSegmentCount, NUM_LATE_SEGMENTS);
+            segmentWorkBuffers = new float[bufferCount][workBufferSize];
+        }
+    }
+
+    /**
+     * Processes all late-reverb segments using sparse velvet-noise convolution.
+     * When enough segments exist, processing is parallelized across virtual threads
+     * using {@link Executors#newVirtualThreadPerTaskExecutor()}.
+     */
+    private void processLateSegments(int ch, int baseWritePos, int numFrames) {
+        for (int seg = 0; seg < lateSegmentCount; seg++) {
+            Arrays.fill(segmentWorkBuffers[seg], 0, numFrames, 0.0f);
+        }
+
+        if (lateSegmentCount >= PARALLEL_SEGMENT_THRESHOLD) {
+            try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                Future<?>[] futures = new Future<?>[lateSegmentCount];
+                for (int seg = 0; seg < lateSegmentCount; seg++) {
+                    int segIdx = seg;
+                    futures[seg] = executor.submit(() ->
+                            computeSegment(ch, segIdx, baseWritePos, numFrames));
+                }
+                for (int seg = 0; seg < lateSegmentCount; seg++) {
+                    try {
+                        futures[seg].get();
+                    } catch (Exception e) {
+                        // Segment work buffer remains zeroed on failure
+                    }
+                }
+            }
+        } else {
+            for (int seg = 0; seg < lateSegmentCount; seg++) {
+                computeSegment(ch, seg, baseWritePos, numFrames);
+            }
+        }
+    }
+
+    /**
+     * Computes a single late-reverb segment using sparse velvet-noise convolution.
+     * Within a segment, all operations are additions and subtractions — no
+     * per-pulse multiplications are required.
+     */
+    private void computeSegment(int ch, int seg, int baseWritePos, int numFrames) {
+        int pulseCount = latePulseCounts[seg];
+        float[] output = segmentWorkBuffers[seg];
+        int[] delays = lateDelays[ch][seg];
+        int[] polarities = latePolarities[ch][seg];
+        float[] ring = ringBuffer[ch];
+
+        for (int frame = 0; frame < numFrames; frame++) {
+            int currentPos = (baseWritePos + frame) % ringLength;
+            float sum = 0.0f;
+            for (int p = 0; p < pulseCount; p++) {
+                int readPos = (currentPos - delays[p] + ringLength) % ringLength;
+                float sample = ring[readPos];
+                // Pure addition or subtraction — no multiplication per pulse
+                if (polarities[p] == 1) {
+                    sum += sample;
+                } else {
+                    sum -= sample;
+                }
+            }
+            output[frame] = sum;
+        }
+    }
+
+    /**
+     * Generates the velvet-noise impulse response as sparse pulse sequences.
      *
-     * <p>The sequence is generated with configurable density (pulses per second)
-     * and an exponential decay envelope. Each pulse is placed at a random
-     * position within its grid interval and assigned a sign of +1 or −1.
-     * Different channels receive different random sequences for stereo
-     * decorrelation.</p>
+     * <p>The response is split into early reflections (first ~80 ms) with
+     * individual per-pulse decay gains, and late reverb segments with constant
+     * per-segment gains for efficient parallel processing. Pulse values are
+     * restricted to {−1, 0, +1} with positions placed randomly within grid
+     * intervals determined by the pulse density. Different channels receive
+     * different random sequences for stereo decorrelation.</p>
      */
     private void generateVelvetNoiseSequence() {
-        // Map normalized parameters to physical values
-        double reverbLengthSeconds = MIN_DECAY_SECONDS
+        double reverbSeconds = MIN_DECAY_SECONDS
                 + decayTime * (MAX_DECAY_SECONDS - MIN_DECAY_SECONDS);
         double pulsesPerSecond = MIN_DENSITY_PPS
                 + density * (MAX_DENSITY_PPS - MIN_DENSITY_PPS);
 
-        int totalSamples = (int) (reverbLengthSeconds * sampleRate);
-        totalSamples = Math.max(totalSamples, 1);
-        historyLength = totalSamples + 1;
+        int reverbSamples = Math.max(1, (int) (reverbSeconds * sampleRate));
+        ringLength = reverbSamples + 1;
+        ringBuffer = new float[channels][ringLength];
+        writePos = new int[channels];
 
-        int earlySamples = (int) (EARLY_REFLECTION_MS * 0.001 * sampleRate);
+        int earlyBoundary = Math.min(
+                (int) (EARLY_REFLECTION_MS * 0.001 * sampleRate), reverbSamples);
 
-        // Grid interval: average samples between pulses
-        double gridInterval = sampleRate / pulsesPerSecond;
-        int totalPulses = (int) (reverbLengthSeconds * pulsesPerSecond);
-        totalPulses = Math.max(totalPulses, 1);
+        // --- Early reflections ---
+        double earlyDurationSec = earlyBoundary / sampleRate;
+        earlyPulseCount = Math.max(1, (int) (pulsesPerSecond * earlyDurationSec * 0.3));
+        earlyDelays = new int[channels][earlyPulseCount];
+        earlyPolarities = new int[channels][earlyPulseCount];
+        earlyGains = new float[channels][earlyPulseCount];
+
+        double earlyNorm = 1.0 / Math.sqrt(Math.max(1, earlyPulseCount));
 
         // Decay rate: -60dB over reverb length (ln(0.001) ≈ -6.908)
-        double decayRate = -6.908 / totalSamples;
-
-        // Re-allocate input history buffers
-        inputHistory = new float[channels][historyLength];
-        writePositions = new int[channels];
+        double decayRate = -6.908 / reverbSamples;
 
         for (int ch = 0; ch < channels; ch++) {
-            Random rng = new Random(seed + ch);
-
-            int[] positions = new int[totalPulses];
-            float[] weights = new float[totalPulses];
-            int count = 0;
-            int earlyCount = 0;
-
-            for (int p = 0; p < totalPulses; p++) {
-                // Place pulse at random position within grid interval
-                int gridStart = (int) (p * gridInterval);
-                int gridEnd = (int) ((p + 1) * gridInterval);
-                gridEnd = Math.min(gridEnd, totalSamples);
-                if (gridStart >= totalSamples) {
-                    break;
-                }
-
+            Random rng = new Random(BASE_SEED + ch * 31L);
+            double gridSize = (double) earlyBoundary / earlyPulseCount;
+            for (int p = 0; p < earlyPulseCount; p++) {
+                int gridStart = (int) (p * gridSize);
+                int gridEnd = (int) ((p + 1) * gridSize);
+                gridEnd = Math.min(gridEnd, earlyBoundary);
                 int pos = gridStart + rng.nextInt(Math.max(1, gridEnd - gridStart));
-                pos = Math.min(pos, totalSamples - 1);
+                pos = Math.max(1, Math.min(pos, earlyBoundary - 1));
+                earlyDelays[ch][p] = pos;
+                earlyPolarities[ch][p] = rng.nextBoolean() ? 1 : -1;
 
-                // Random sign: +1 or −1
-                float sign = rng.nextBoolean() ? 1.0f : -1.0f;
-
-                // Exponential decay envelope
                 float envelope = (float) Math.exp(decayRate * pos);
-
-                positions[count] = pos;
-                weights[count] = sign * envelope;
-                if (pos < earlySamples) {
-                    earlyCount = count + 1;
-                }
-                count++;
+                earlyGains[ch][p] = (float) (envelope * earlyNorm);
             }
+        }
 
-            // Trim to actual count
-            pulsePositions[ch] = Arrays.copyOf(positions, count);
-            pulseWeights[ch] = Arrays.copyOf(weights, count);
-            pulseCount[ch] = count;
-            earlyPulseCount[ch] = earlyCount;
+        // --- Late reverb segments ---
+        int lateStart = earlyBoundary;
+        int lateDuration = reverbSamples - lateStart;
+        if (lateDuration <= 0) {
+            lateSegmentCount = 0;
+            lateDelays = new int[channels][0][];
+            latePolarities = new int[channels][0][];
+            lateSegmentGains = new float[0];
+            latePulseCounts = new int[0];
+            return;
+        }
+
+        lateSegmentCount = Math.min(NUM_LATE_SEGMENTS,
+                Math.max(1, lateDuration / Math.max(1, (int) (sampleRate * 0.05))));
+        int samplesPerSeg = lateDuration / lateSegmentCount;
+
+        lateDelays = new int[channels][lateSegmentCount][];
+        latePolarities = new int[channels][lateSegmentCount][];
+        lateSegmentGains = new float[lateSegmentCount];
+        latePulseCounts = new int[lateSegmentCount];
+
+        for (int seg = 0; seg < lateSegmentCount; seg++) {
+            int segStart = lateStart + seg * samplesPerSeg;
+            int segEnd = (seg == lateSegmentCount - 1)
+                    ? reverbSamples : segStart + samplesPerSeg;
+            double segDurationSec = (segEnd - segStart) / sampleRate;
+            int segPulses = Math.max(1, (int) (pulsesPerSecond * segDurationSec));
+            latePulseCounts[seg] = segPulses;
+
+            // Segment gain: exponential decay at midpoint, normalized by pulse count
+            double segMidSample = (segStart + segEnd) / 2.0;
+            float envelope = (float) Math.exp(decayRate * segMidSample);
+            double segNorm = 1.0 / Math.sqrt(Math.max(1, segPulses));
+            lateSegmentGains[seg] = (float) (envelope * segNorm);
+
+            for (int ch = 0; ch < channels; ch++) {
+                Random rng = new Random(BASE_SEED + ch * 31L + seg * 97L);
+                lateDelays[ch][seg] = new int[segPulses];
+                latePolarities[ch][seg] = new int[segPulses];
+
+                double grid = (double) (segEnd - segStart) / segPulses;
+                for (int p = 0; p < segPulses; p++) {
+                    int gridStart = segStart + (int) (p * grid);
+                    int gridEnd = segStart + (int) ((p + 1) * grid);
+                    gridEnd = Math.min(gridEnd, segEnd);
+                    int pos = gridStart + rng.nextInt(Math.max(1, gridEnd - gridStart));
+                    pos = Math.max(segStart, Math.min(pos, segEnd - 1));
+                    lateDelays[ch][seg][p] = pos;
+                    latePolarities[ch][seg][p] = rng.nextBoolean() ? 1 : -1;
+                }
+            }
+        }
+
+        // Ensure work buffers match segment count
+        if (segmentWorkBuffers.length < lateSegmentCount) {
+            segmentWorkBuffers = new float[lateSegmentCount][workBufferSize];
         }
     }
 }
