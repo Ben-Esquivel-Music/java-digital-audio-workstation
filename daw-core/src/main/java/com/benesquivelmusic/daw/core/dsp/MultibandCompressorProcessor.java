@@ -147,10 +147,7 @@ public final class MultibandCompressorProcessor implements AudioProcessor {
         // Process each band through its compressor
         for (int band = 0; band < bandCount; band++) {
             if (bandBypassed[band]) {
-                // Bypass: copy band input directly to output (no compression)
-                for (int ch = 0; ch < channels; ch++) {
-                    System.arraycopy(bandBuffers[band][ch], 0, bandBuffers[band][ch], 0, numFrames);
-                }
+                // Bypass: band data from splitBands() passes through uncompressed
             } else {
                 float[][] bandInput = bandBuffers[band];
                 float[][] bandOutput = new float[channels][numFrames];
