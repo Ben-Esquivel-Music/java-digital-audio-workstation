@@ -11,6 +11,8 @@ import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
+import com.benesquivelmusic.daw.core.undo.UndoManager;
+import com.benesquivelmusic.daw.core.undo.UndoableAction;
 
 import javafx.fxml.FXML;
 import javafx.geometry.Insets;
@@ -65,6 +67,8 @@ public final class MainController {
     @FXML private Button recordButton;
     @FXML private Button addAudioTrackButton;
     @FXML private Button addMidiTrackButton;
+    @FXML private Button undoButton;
+    @FXML private Button redoButton;
     @FXML private Button saveButton;
     @FXML private Button pluginsButton;
     @FXML private Label statusLabel;
@@ -81,6 +85,7 @@ public final class MainController {
     private DawProject project;
     private PluginRegistry pluginRegistry;
     private ProjectManager projectManager;
+    private UndoManager undoManager;
     private int audioTrackCounter;
     private int midiTrackCounter;
 
@@ -88,6 +93,7 @@ public final class MainController {
     private void initialize() {
         project = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
         pluginRegistry = new PluginRegistry();
+        undoManager = new UndoManager();
 
         var checkpointManager = new CheckpointManager(AutoSaveConfig.DEFAULT);
         projectManager = new ProjectManager(checkpointManager);
@@ -103,6 +109,7 @@ public final class MainController {
         updateTempoDisplay();
         updateProjectInfo();
         updateCheckpointStatus();
+        updateUndoRedoState();
 
         // Register keyboard shortcuts after the scene is available
         playButton.sceneProperty().addListener((_, _, scene) -> {
@@ -127,6 +134,8 @@ public final class MainController {
         // Toolbar buttons
         addAudioTrackButton.setGraphic(IconNode.of(DawIcon.MICROPHONE, TOOLBAR_ICON_SIZE));
         addMidiTrackButton.setGraphic(IconNode.of(DawIcon.MIDI, TOOLBAR_ICON_SIZE));
+        undoButton.setGraphic(IconNode.of(DawIcon.UNDO, TOOLBAR_ICON_SIZE));
+        redoButton.setGraphic(IconNode.of(DawIcon.REDO, TOOLBAR_ICON_SIZE));
         saveButton.setGraphic(IconNode.of(DawIcon.DOWNLOAD, TOOLBAR_ICON_SIZE));
         pluginsButton.setGraphic(IconNode.of(DawIcon.SETTINGS, TOOLBAR_ICON_SIZE));
 
@@ -156,6 +165,8 @@ public final class MainController {
         recordButton.setTooltip(new Tooltip("Record (R)"));
         addAudioTrackButton.setTooltip(new Tooltip("Add Audio Track (Ctrl+Shift+A)"));
         addMidiTrackButton.setTooltip(new Tooltip("Add MIDI Track (Ctrl+Shift+M)"));
+        undoButton.setTooltip(new Tooltip("Undo (Ctrl+Z)"));
+        redoButton.setTooltip(new Tooltip("Redo (Ctrl+Shift+Z)"));
         saveButton.setTooltip(new Tooltip("Save Project (Ctrl+S)"));
         pluginsButton.setTooltip(new Tooltip("Manage Plugins"));
     }
@@ -211,6 +222,16 @@ public final class MainController {
                 new KeyCodeCombination(KeyCode.M, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN),
                 this::onAddMidiTrack);
 
+        // Ctrl+Z — undo
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.Z, KeyCombination.SHORTCUT_DOWN),
+                this::onUndo);
+
+        // Ctrl+Shift+Z — redo
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.Z, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN),
+                this::onRedo);
+
         LOG.fine("Registered keyboard shortcuts");
     }
 
@@ -259,7 +280,21 @@ public final class MainController {
     private void commitTempoEdit(TextField editor, HBox hbox, int index) {
         try {
             double newTempo = Double.parseDouble(editor.getText().strip());
-            project.getTransport().setTempo(newTempo);
+            double oldTempo = project.getTransport().getTempo();
+            if (Double.compare(newTempo, oldTempo) != 0) {
+                undoManager.execute(new UndoableAction() {
+                    @Override public String description() {
+                        return String.format("Set Tempo to %.1f BPM", newTempo);
+                    }
+                    @Override public void execute() {
+                        project.getTransport().setTempo(newTempo);
+                    }
+                    @Override public void undo() {
+                        project.getTransport().setTempo(oldTempo);
+                    }
+                });
+                updateUndoRedoState();
+            }
             statusBarLabel.setText(String.format("Tempo set to %.1f BPM", newTempo));
             statusBarLabel.setGraphic(IconNode.of(DawIcon.METRONOME, 12));
         } catch (IllegalArgumentException e) {
@@ -346,9 +381,22 @@ public final class MainController {
     private void onAddAudioTrack() {
         audioTrackCounter++;
         String name = "Audio " + audioTrackCounter;
-        Track track = project.createAudioTrack(name);
-        addTrackToUI(track);
-        updateArrangementPlaceholder();
+        undoManager.execute(new UndoableAction() {
+            private Track track;
+            private HBox trackItem;
+            @Override public String description() { return "Add Audio Track: " + name; }
+            @Override public void execute() {
+                track = project.createAudioTrack(name);
+                trackItem = addTrackToUI(track);
+                updateArrangementPlaceholder();
+            }
+            @Override public void undo() {
+                project.removeTrack(track);
+                trackListPanel.getChildren().remove(trackItem);
+                updateArrangementPlaceholder();
+            }
+        });
+        updateUndoRedoState();
         statusBarLabel.setText("Added audio track: " + name);
         statusBarLabel.setGraphic(IconNode.of(DawIcon.MICROPHONE, 12));
         LOG.fine(() -> "Added audio track: " + name);
@@ -358,9 +406,22 @@ public final class MainController {
     private void onAddMidiTrack() {
         midiTrackCounter++;
         String name = "MIDI " + midiTrackCounter;
-        Track track = project.createMidiTrack(name);
-        addTrackToUI(track);
-        updateArrangementPlaceholder();
+        undoManager.execute(new UndoableAction() {
+            private Track track;
+            private HBox trackItem;
+            @Override public String description() { return "Add MIDI Track: " + name; }
+            @Override public void execute() {
+                track = project.createMidiTrack(name);
+                trackItem = addTrackToUI(track);
+                updateArrangementPlaceholder();
+            }
+            @Override public void undo() {
+                project.removeTrack(track);
+                trackListPanel.getChildren().remove(trackItem);
+                updateArrangementPlaceholder();
+            }
+        });
+        updateUndoRedoState();
         statusBarLabel.setText("Added MIDI track: " + name);
         statusBarLabel.setGraphic(IconNode.of(DawIcon.MIDI, 12));
         LOG.fine(() -> "Added MIDI track: " + name);
@@ -393,7 +454,33 @@ public final class MainController {
         dialog.showAndWait();
     }
 
-    private void addTrackToUI(Track track) {
+    @FXML
+    private void onUndo() {
+        if (undoManager.undo()) {
+            statusBarLabel.setText("Undo: " + undoManager.redoDescription());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.UNDO, 12));
+            updateTempoDisplay();
+        } else {
+            statusBarLabel.setText("Nothing to undo");
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO, 12));
+        }
+        updateUndoRedoState();
+    }
+
+    @FXML
+    private void onRedo() {
+        if (undoManager.redo()) {
+            statusBarLabel.setText("Redo: " + undoManager.undoDescription());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.REDO, 12));
+            updateTempoDisplay();
+        } else {
+            statusBarLabel.setText("Nothing to redo");
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO, 12));
+        }
+        updateUndoRedoState();
+    }
+
+    private HBox addTrackToUI(Track track) {
         var trackItem = new HBox(8);
         trackItem.getStyleClass().add("track-item");
         trackItem.setPadding(new Insets(6, 8, 6, 8));
@@ -411,6 +498,14 @@ public final class MainController {
 
         var nameLabel = new Label(track.getName());
         nameLabel.getStyleClass().add("track-name");
+
+        // Double-click to rename the track
+        nameLabel.setOnMouseClicked(event -> {
+            if (event.getClickCount() == 2) {
+                startTrackRename(track, nameLabel, trackItem);
+            }
+        });
+        nameLabel.setTooltip(new Tooltip("Double-click to rename"));
 
         // Volume slider
         var volumeSlider = new Slider(0.0, 1.0, track.getVolume());
@@ -454,15 +549,31 @@ public final class MainController {
                     ? "-fx-background-color: #ff1744; -fx-text-fill: #ffffff;" : "");
         });
 
-        // Remove button
+        // Remove button (undoable)
         var removeBtn = new Button();
         removeBtn.setGraphic(IconNode.of(DawIcon.DELETE, TRACK_CONTROL_ICON_SIZE));
         removeBtn.getStyleClass().add("track-remove-button");
         removeBtn.setTooltip(new Tooltip("Remove Track"));
         removeBtn.setOnAction(_ -> {
-            project.removeTrack(track);
-            trackListPanel.getChildren().remove(trackItem);
-            updateArrangementPlaceholder();
+            int uiIndex = trackListPanel.getChildren().indexOf(trackItem);
+            undoManager.execute(new UndoableAction() {
+                @Override public String description() { return "Remove Track: " + track.getName(); }
+                @Override public void execute() {
+                    project.removeTrack(track);
+                    trackListPanel.getChildren().remove(trackItem);
+                    updateArrangementPlaceholder();
+                }
+                @Override public void undo() {
+                    project.addTrack(track);
+                    if (uiIndex >= 0 && uiIndex < trackListPanel.getChildren().size()) {
+                        trackListPanel.getChildren().add(uiIndex, trackItem);
+                    } else {
+                        trackListPanel.getChildren().add(trackItem);
+                    }
+                    updateArrangementPlaceholder();
+                }
+            });
+            updateUndoRedoState();
             statusBarLabel.setText("Removed track: " + track.getName());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.DELETE, 12));
             LOG.fine(() -> "Removed track: " + track.getName());
@@ -476,6 +587,56 @@ public final class MainController {
                 typeIcon, nameLabel, volumeSlider, spacer,
                 muteBtn, soloBtn, armBtn, removeBtn);
         trackListPanel.getChildren().add(trackItem);
+        return trackItem;
+    }
+
+    /**
+     * Replaces the track name label with a text field for inline renaming.
+     */
+    private void startTrackRename(Track track, Label nameLabel, HBox trackItem) {
+        int labelIndex = trackItem.getChildren().indexOf(nameLabel);
+        if (labelIndex < 0) {
+            return;
+        }
+
+        var editor = new TextField(track.getName());
+        editor.getStyleClass().add("tempo-editor");
+        editor.setPrefWidth(120);
+
+        Runnable commit = () -> {
+            String newName = editor.getText().strip();
+            if (!newName.isEmpty() && !newName.equals(track.getName())) {
+                String oldName = track.getName();
+                undoManager.execute(new UndoableAction() {
+                    @Override public String description() {
+                        return "Rename Track: " + oldName + " → " + newName;
+                    }
+                    @Override public void execute() {
+                        track.setName(newName);
+                        nameLabel.setText(newName);
+                    }
+                    @Override public void undo() {
+                        track.setName(oldName);
+                        nameLabel.setText(oldName);
+                    }
+                });
+                updateUndoRedoState();
+                statusBarLabel.setText("Renamed track: " + oldName + " → " + newName);
+                statusBarLabel.setGraphic(IconNode.of(DawIcon.CUT, 12));
+            }
+            trackItem.getChildren().set(labelIndex, nameLabel);
+        };
+
+        editor.setOnAction(_ -> commit.run());
+        editor.focusedProperty().addListener((_, _, focused) -> {
+            if (!focused) {
+                commit.run();
+            }
+        });
+
+        trackItem.getChildren().set(labelIndex, editor);
+        editor.requestFocus();
+        editor.selectAll();
     }
 
     private void updateStatus() {
@@ -530,5 +691,19 @@ public final class MainController {
 
     private void updateArrangementPlaceholder() {
         arrangementPlaceholder.setVisible(project.getTracks().isEmpty());
+    }
+
+    private void updateUndoRedoState() {
+        undoButton.setDisable(!undoManager.canUndo());
+        redoButton.setDisable(!undoManager.canRedo());
+
+        String undoTip = undoManager.canUndo()
+                ? "Undo: " + undoManager.undoDescription() + " (Ctrl+Z)"
+                : "Nothing to undo";
+        String redoTip = undoManager.canRedo()
+                ? "Redo: " + undoManager.redoDescription() + " (Ctrl+Shift+Z)"
+                : "Nothing to redo";
+        undoButton.setTooltip(new Tooltip(undoTip));
+        redoButton.setTooltip(new Tooltip(redoTip));
     }
 }

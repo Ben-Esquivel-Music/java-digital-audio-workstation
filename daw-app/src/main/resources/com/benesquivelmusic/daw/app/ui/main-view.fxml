@@ -54,6 +54,14 @@
 
                 <Separator orientation="VERTICAL"/>
 
+                <!-- Undo / Redo (icons applied programmatically) -->
+                <Button fx:id="undoButton" text="Undo" onAction="#onUndo"
+                        styleClass="transport-button"/>
+                <Button fx:id="redoButton" text="Redo" onAction="#onRedo"
+                        styleClass="transport-button"/>
+
+                <Separator orientation="VERTICAL"/>
+
                 <!-- Project / Plugins (icons applied programmatically) -->
                 <Button fx:id="saveButton" text="Save" onAction="#onSaveProject"
                         styleClass="transport-button, project-button"/>
