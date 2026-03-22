@@ -54,4 +54,56 @@ class DawProjectTest {
         assertThatThrownBy(() -> new DawProject(null, AudioFormat.CD_QUALITY))
                 .isInstanceOf(NullPointerException.class);
     }
+
+    @Test
+    void shouldAddMixerChannelWhenTrackIsAdded() {
+        var project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        var track = new Track("Bass", TrackType.AUDIO);
+
+        project.addTrack(track);
+
+        assertThat(project.getMixer().getChannelCount()).isEqualTo(1);
+        assertThat(project.getMixer().getChannels().get(0).getName()).isEqualTo("Bass");
+    }
+
+    @Test
+    void shouldRemoveMixerChannelWhenTrackIsRemoved() {
+        var project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        var track = new Track("Drums", TrackType.AUDIO);
+
+        project.addTrack(track);
+        assertThat(project.getMixer().getChannelCount()).isEqualTo(1);
+
+        project.removeTrack(track);
+
+        assertThat(project.getMixer().getChannelCount()).isZero();
+    }
+
+    @Test
+    void shouldNotDuplicateMixerChannelOnUndoRedoCycle() {
+        var project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        var track = new Track("Guitar", TrackType.AUDIO);
+
+        // Simulate add → undo (remove) → redo (add again)
+        project.addTrack(track);
+        assertThat(project.getMixer().getChannelCount()).isEqualTo(1);
+
+        project.removeTrack(track);
+        assertThat(project.getMixer().getChannelCount()).isZero();
+
+        project.addTrack(track);
+        assertThat(project.getMixer().getChannelCount()).isEqualTo(1);
+    }
+
+    @Test
+    void shouldCreateAudioTrackWithMixerChannel() {
+        var project = new DawProject("Test", AudioFormat.CD_QUALITY);
+
+        var track = project.createAudioTrack("Lead Synth");
+
+        assertThat(project.getTracks()).hasSize(1);
+        assertThat(project.getMixer().getChannelCount()).isEqualTo(1);
+        assertThat(project.getMixer().getChannels().get(0).getName()).isEqualTo("Lead Synth");
+        assertThat(track.getName()).isEqualTo("Lead Synth");
+    }
 }

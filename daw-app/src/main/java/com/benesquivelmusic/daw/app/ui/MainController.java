@@ -1,5 +1,10 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.display.CorrelationDisplay;
+import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
+import com.benesquivelmusic.daw.app.ui.display.LoudnessDisplay;
+import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplay;
+import com.benesquivelmusic.daw.app.ui.display.WaveformDisplay;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
@@ -29,7 +34,6 @@ import javafx.scene.input.KeyCombination;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
-import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 
 import java.io.IOException;
@@ -307,36 +311,41 @@ public final class MainController {
 
     /**
      * Builds the visualization tile row at the bottom of the main content area.
-     * Each tile is a styled card containing a labeled display placeholder.
+     * Each tile is a styled card containing a live display component.
      */
     private void buildVisualizationTiles() {
         vizTileRow.setPrefHeight(120);
         vizTileRow.setMinHeight(100);
 
+        var waveformDisplay   = new WaveformDisplay();
+        var spectrumDisplay   = new SpectrumDisplay();
+        var levelMeterDisplay = new LevelMeterDisplay();
+        var loudnessDisplay   = new LoudnessDisplay();
+        var correlationDisplay = new CorrelationDisplay();
+
         vizTileRow.getChildren().addAll(
-                createVizTile("WAVEFORM", DawIcon.WAVEFORM, "tile-header-accent-cyan"),
-                createVizTile("SPECTRUM", DawIcon.SPECTRUM, "tile-header-accent-green"),
-                createVizTile("LEVELS", DawIcon.VU_METER, "tile-header-accent-orange"),
-                createVizTile("LOUDNESS", DawIcon.LOUDNESS_METER, "tile-header-accent-purple"),
-                createVizTile("CORRELATION", DawIcon.CORRELATION, "tile-header-accent-red")
+                createVizTile("WAVEFORM",    DawIcon.WAVEFORM,       "tile-header-accent-cyan",   waveformDisplay),
+                createVizTile("SPECTRUM",    DawIcon.SPECTRUM,        "tile-header-accent-green",  spectrumDisplay),
+                createVizTile("LEVELS",      DawIcon.VU_METER,        "tile-header-accent-orange", levelMeterDisplay),
+                createVizTile("LOUDNESS",    DawIcon.LOUDNESS_METER,  "tile-header-accent-purple", loudnessDisplay),
+                createVizTile("CORRELATION", DawIcon.CORRELATION,     "tile-header-accent-red",    correlationDisplay)
         );
 
         LOG.fine("Built visualization tile row with 5 display tiles");
     }
 
     /**
-     * Creates a single visualization tile with a header label and display area.
+     * Creates a single visualization tile with a header label and a live display component.
      */
-    private VBox createVizTile(String title, DawIcon icon, String accentClass) {
+    private VBox createVizTile(String title, DawIcon icon, String accentClass, Region displayComponent) {
         var header = new Label(title);
         header.getStyleClass().addAll("viz-tile-label", accentClass);
         header.setGraphic(IconNode.of(icon, 12));
 
-        var displayArea = new StackPane();
-        displayArea.setStyle("-fx-background-color: #0a0a0a; -fx-background-radius: 6;");
-        VBox.setVgrow(displayArea, Priority.ALWAYS);
+        displayComponent.setMinHeight(0);
+        VBox.setVgrow(displayComponent, Priority.ALWAYS);
 
-        var tile = new VBox(4, header, displayArea);
+        var tile = new VBox(4, header, displayComponent);
         tile.getStyleClass().add("viz-tile");
         tile.setPadding(new Insets(8));
         HBox.setHgrow(tile, Priority.ALWAYS);
@@ -384,15 +393,23 @@ public final class MainController {
         undoManager.execute(new UndoableAction() {
             private Track track;
             private HBox trackItem;
+            private boolean initialExecute = true;
             @Override public String description() { return "Add Audio Track: " + name; }
             @Override public void execute() {
-                track = project.createAudioTrack(name);
-                trackItem = addTrackToUI(track);
+                if (initialExecute) {
+                    track = project.createAudioTrack(name);
+                    trackItem = addTrackToUI(track);
+                    initialExecute = false;
+                } else {
+                    project.addTrack(track);
+                    trackListPanel.getChildren().add(trackItem);
+                }
                 updateArrangementPlaceholder();
             }
             @Override public void undo() {
                 project.removeTrack(track);
                 trackListPanel.getChildren().remove(trackItem);
+                audioTrackCounter--;
                 updateArrangementPlaceholder();
             }
         });
@@ -409,15 +426,23 @@ public final class MainController {
         undoManager.execute(new UndoableAction() {
             private Track track;
             private HBox trackItem;
+            private boolean initialExecute = true;
             @Override public String description() { return "Add MIDI Track: " + name; }
             @Override public void execute() {
-                track = project.createMidiTrack(name);
-                trackItem = addTrackToUI(track);
+                if (initialExecute) {
+                    track = project.createMidiTrack(name);
+                    trackItem = addTrackToUI(track);
+                    initialExecute = false;
+                } else {
+                    project.addTrack(track);
+                    trackListPanel.getChildren().add(trackItem);
+                }
                 updateArrangementPlaceholder();
             }
             @Override public void undo() {
                 project.removeTrack(track);
                 trackListPanel.getChildren().remove(trackItem);
+                midiTrackCounter--;
                 updateArrangementPlaceholder();
             }
         });
