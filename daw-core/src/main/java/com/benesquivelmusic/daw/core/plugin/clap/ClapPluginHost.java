@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.plugin.clap;
 
+import com.benesquivelmusic.daw.core.audio.ringbuffer.LockFreeRingBuffer;
 import com.benesquivelmusic.daw.sdk.plugin.ExternalPluginFormat;
 import com.benesquivelmusic.daw.sdk.plugin.ExternalPluginHost;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
@@ -7,6 +8,7 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
+import java.io.ByteArrayOutputStream;
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.MemoryLayout;
@@ -70,6 +72,8 @@ public final class ClapPluginHost implements ExternalPluginHost {
     private MethodHandle paramsGetInfo;
     private MethodHandle paramsGetValue;
     private MethodHandle latencyGet;
+    private MethodHandle stateSave;
+    private MethodHandle stateLoad;
 
     // Descriptor
     private PluginDescriptor descriptor;
@@ -97,6 +101,18 @@ public final class ClapPluginHost implements ExternalPluginHost {
     private MemorySegment outputChannelPtrs;
     private MemorySegment[] outputChannelData;
     private int allocatedFrames;
+
+    // Maximum number of parameter change events that can be queued per process block.
+    private static final int MAX_PARAM_EVENTS = 64;
+
+    // Lock-free ring buffer for pending parameter changes (SPSC: control-thread producer,
+    // audio-thread consumer). Each entry encodes {paramId, Double.doubleToRawLongBits(value)}.
+    private final LockFreeRingBuffer<long[]> pendingParamChanges =
+            new LockFreeRingBuffer<>(MAX_PARAM_EVENTS);
+
+    // Pre-allocated native event segments (one per slot) — populated and passed to the
+    // plugin's clap_input_events_t during each process() call.
+    private MemorySegment[] preallocEventSegments;
 
     /**
      * Creates a CLAP plugin host for the plugin at the given index within
@@ -250,6 +266,9 @@ public final class ClapPluginHost implements ExternalPluginHost {
             activated = false;
             processing = false;
             cachedParameters = null;
+            stateSave = null;
+            stateLoad = null;
+            preallocEventSegments = null;
             if (arena != null) {
                 arena.close();
                 arena = null;
@@ -265,6 +284,23 @@ public final class ClapPluginHost implements ExternalPluginHost {
             return;
         }
 
+        // Drain pending parameter changes into pre-allocated event segments and expose
+        // them via the ThreadLocal so the static input-events callbacks can deliver them.
+        int activeEventCount = 0;
+        if (preallocEventSegments != null) {
+            while (activeEventCount < MAX_PARAM_EVENTS) {
+                long[] change = pendingParamChanges.read();
+                if (change == null) {
+                    break;
+                }
+                fillParamValueEvent(preallocEventSegments[activeEventCount],
+                        (int) change[0], Double.longBitsToDouble(change[1]));
+                activeEventCount++;
+            }
+        }
+        CURRENT_EVENT_SEGMENTS.set(preallocEventSegments);
+        CURRENT_EVENT_COUNT.set(new int[]{activeEventCount});
+
         try {
             writeInputToNative(inputBuffer, numFrames);
             setupProcessStruct(numFrames);
@@ -279,6 +315,9 @@ public final class ClapPluginHost implements ExternalPluginHost {
         } catch (Throwable e) {
             // On error, pass through
             copyBuffer(inputBuffer, outputBuffer, numFrames);
+        } finally {
+            CURRENT_EVENT_SEGMENTS.remove();
+            CURRENT_EVENT_COUNT.remove();
         }
     }
 
@@ -381,7 +420,10 @@ public final class ClapPluginHost implements ExternalPluginHost {
                             .formatted(value, param.minValue(), param.maxValue(), param.name()));
         }
 
-        // TODO: Queue parameter change event for next process() call
+        // Queue a parameter change event to be delivered on the next process() call.
+        // The long[] is allocated on the control thread (not the audio thread), so
+        // GC pressure here does not affect real-time processing safety.
+        pendingParamChanges.write(new long[]{parameterId, Double.doubleToRawLongBits(value)});
     }
 
     @Override
@@ -398,16 +440,68 @@ public final class ClapPluginHost implements ExternalPluginHost {
 
     @Override
     public byte[] saveState() {
-        // State save requires implementing clap_ostream_t with FFM upcall stubs.
-        // Returns empty array until the full stream implementation is added.
-        return new byte[0];
+        if (stateSave == null || pluginSegment == null) {
+            // Plugin does not support the state extension, or is not initialized.
+            return new byte[0];
+        }
+
+        var output = new ByteArrayOutputStream();
+        CURRENT_WRITE_TARGET.set(output);
+        try (var callArena = Arena.ofConfined()) {
+            MemorySegment ostream = callArena.allocate(ClapBindings.CLAP_OSTREAM_LAYOUT);
+            ostream.set(ValueLayout.ADDRESS,
+                    ClapBindings.CLAP_OSTREAM_LAYOUT.byteOffset(
+                            MemoryLayout.PathElement.groupElement("ctx")),
+                    MemorySegment.NULL);
+            MemorySegment writeStub = ClapBindings.linker().upcallStub(
+                    OSTREAM_WRITE_HANDLE, ClapBindings.OSTREAM_WRITE_DESC, callArena);
+            ostream.set(ValueLayout.ADDRESS,
+                    ClapBindings.CLAP_OSTREAM_LAYOUT.byteOffset(
+                            MemoryLayout.PathElement.groupElement("write")),
+                    writeStub);
+            try {
+                boolean ok = (boolean) stateSave.invoke(pluginSegment, ostream);
+                return ok ? output.toByteArray() : new byte[0];
+            } catch (Throwable e) {
+                return new byte[0];
+            }
+        } finally {
+            CURRENT_WRITE_TARGET.remove();
+        }
     }
 
     @Override
     public void loadState(byte[] state) {
         Objects.requireNonNull(state, "state must not be null");
-        // State load requires implementing clap_istream_t with FFM upcall stubs.
-        // No-op until the full stream implementation is added.
+        if (stateLoad == null || pluginSegment == null || state.length == 0) {
+            // Plugin does not support the state extension, is not initialized,
+            // or there is nothing to restore.
+            return;
+        }
+
+        CURRENT_READ_SOURCE.set(state);
+        CURRENT_READ_POSITION.set(new int[]{0});
+        try (var callArena = Arena.ofConfined()) {
+            MemorySegment istream = callArena.allocate(ClapBindings.CLAP_ISTREAM_LAYOUT);
+            istream.set(ValueLayout.ADDRESS,
+                    ClapBindings.CLAP_ISTREAM_LAYOUT.byteOffset(
+                            MemoryLayout.PathElement.groupElement("ctx")),
+                    MemorySegment.NULL);
+            MemorySegment readStub = ClapBindings.linker().upcallStub(
+                    ISTREAM_READ_HANDLE, ClapBindings.ISTREAM_READ_DESC, callArena);
+            istream.set(ValueLayout.ADDRESS,
+                    ClapBindings.CLAP_ISTREAM_LAYOUT.byteOffset(
+                            MemoryLayout.PathElement.groupElement("read")),
+                    readStub);
+            try {
+                stateLoad.invoke(pluginSegment, istream);
+            } catch (Throwable e) {
+                throw new ClapException("Failed to load plugin state: " + e.getMessage(), e);
+            }
+        } finally {
+            CURRENT_READ_SOURCE.remove();
+            CURRENT_READ_POSITION.remove();
+        }
     }
 
     /**
@@ -668,6 +762,23 @@ public final class ClapPluginHost implements ExternalPluginHost {
                 latencyGet = ClapBindings.downcallHandle(getFn, ClapBindings.LATENCY_GET_DESC);
             }
         }
+
+        // Query state extension
+        MemorySegment stateId = arena.allocateFrom(ClapBindings.CLAP_EXT_STATE);
+        MemorySegment stateExt = (MemorySegment) pluginGetExtension.invoke(
+                pluginSegment, stateId);
+        if (!stateExt.equals(MemorySegment.NULL)) {
+            MemorySegment stateStruct = stateExt.reinterpret(
+                    ClapBindings.CLAP_PLUGIN_STATE_LAYOUT.byteSize());
+            MemorySegment saveFn = (MemorySegment) ClapBindings.STATE_SAVE.get(stateStruct, 0L);
+            MemorySegment loadFn = (MemorySegment) ClapBindings.STATE_LOAD.get(stateStruct, 0L);
+            if (!saveFn.equals(MemorySegment.NULL)) {
+                stateSave = ClapBindings.downcallHandle(saveFn, ClapBindings.STATE_SAVE_DESC);
+            }
+            if (!loadFn.equals(MemorySegment.NULL)) {
+                stateLoad = ClapBindings.downcallHandle(loadFn, ClapBindings.STATE_LOAD_DESC);
+            }
+        }
     }
 
     private void allocateProcessBuffers() {
@@ -703,15 +814,21 @@ public final class ClapPluginHost implements ExternalPluginHost {
         // Allocate empty input events (no events)
         inputEventsStruct = arena.allocate(ClapBindings.CLAP_INPUT_EVENTS_LAYOUT);
         MemorySegment sizeStub = ClapBindings.linker().upcallStub(
-                EVENTS_SIZE_ZERO, ClapBindings.EVENTS_SIZE_DESC, arena);
+                PENDING_EVENTS_SIZE, ClapBindings.EVENTS_SIZE_DESC, arena);
         MemorySegment getStub = ClapBindings.linker().upcallStub(
-                EVENTS_GET_NULL, ClapBindings.EVENTS_GET_DESC, arena);
+                PENDING_EVENTS_GET, ClapBindings.EVENTS_GET_DESC, arena);
         long sizeOffset = ClapBindings.CLAP_INPUT_EVENTS_LAYOUT
                 .byteOffset(MemoryLayout.PathElement.groupElement("size"));
         long getOffset = ClapBindings.CLAP_INPUT_EVENTS_LAYOUT
                 .byteOffset(MemoryLayout.PathElement.groupElement("get"));
         inputEventsStruct.set(ValueLayout.ADDRESS, sizeOffset, sizeStub);
         inputEventsStruct.set(ValueLayout.ADDRESS, getOffset, getStub);
+
+        // Pre-allocate native event segments for parameter changes
+        preallocEventSegments = new MemorySegment[MAX_PARAM_EVENTS];
+        for (int i = 0; i < MAX_PARAM_EVENTS; i++) {
+            preallocEventSegments[i] = arena.allocate(ClapBindings.CLAP_EVENT_PARAM_VALUE_LAYOUT);
+        }
 
         // Allocate empty output events
         outputEventsStruct = arena.allocate(ClapBindings.CLAP_OUTPUT_EVENTS_LAYOUT);
@@ -794,6 +911,27 @@ public final class ClapPluginHost implements ExternalPluginHost {
         }
     }
 
+    /**
+     * Populates a pre-allocated {@code clap_event_param_value_t} segment with a
+     * parameter value change targeting all notes (note_id/port/channel/key = -1).
+     */
+    private static void fillParamValueEvent(MemorySegment segment, int paramId, double value) {
+        long size = ClapBindings.CLAP_EVENT_PARAM_VALUE_LAYOUT.byteSize();
+        ClapBindings.PARAM_EVENT_SIZE.set(segment, 0L, (int) size);
+        ClapBindings.PARAM_EVENT_SPACE_ID.set(segment, 0L,
+                (short) ClapBindings.CLAP_CORE_EVENT_SPACE_ID);
+        ClapBindings.PARAM_EVENT_TYPE.set(segment, 0L,
+                (short) ClapBindings.CLAP_EVENT_PARAM_VALUE);
+        ClapBindings.PARAM_EVENT_FLAGS.set(segment, 0L, ClapBindings.CLAP_EVENT_IS_LIVE);
+        ClapBindings.PARAM_EVENT_PARAM_ID.set(segment, 0L, paramId);
+        ClapBindings.PARAM_EVENT_COOKIE.set(segment, 0L, MemorySegment.NULL);
+        ClapBindings.PARAM_EVENT_NOTE_ID.set(segment, 0L, -1);
+        ClapBindings.PARAM_EVENT_PORT_INDEX.set(segment, 0L, (short) -1);
+        ClapBindings.PARAM_EVENT_CHANNEL.set(segment, 0L, (short) -1);
+        ClapBindings.PARAM_EVENT_KEY.set(segment, 0L, (short) -1);
+        ClapBindings.PARAM_EVENT_VALUE.set(segment, 0L, value);
+    }
+
     // -----------------------------------------------------------------------
     // Upcall targets for host callbacks and events
     // -----------------------------------------------------------------------
@@ -804,16 +942,28 @@ public final class ClapPluginHost implements ExternalPluginHost {
         // No-op — host requests are not yet handled
     }
 
-    /** Empty input events: always returns size 0. */
+    /**
+     * Input events size callback: returns the number of pending parameter events
+     * queued for the current process() call via the ThreadLocal.
+     */
     @SuppressWarnings("unused")
-    private static int eventsSizeZero(MemorySegment events) {
-        return 0;
+    private static int pendingEventsSize(MemorySegment events) {
+        int[] count = CURRENT_EVENT_COUNT.get();
+        return count != null ? count[0] : 0;
     }
 
-    /** Empty input events: always returns NULL. */
+    /**
+     * Input events get callback: returns the pending parameter event at {@code index}
+     * for the current process() call via the ThreadLocal.
+     */
     @SuppressWarnings("unused")
-    private static MemorySegment eventsGetNull(MemorySegment events, int index) {
-        return MemorySegment.NULL;
+    private static MemorySegment pendingEventsGet(MemorySegment events, int index) {
+        int[] count = CURRENT_EVENT_COUNT.get();
+        MemorySegment[] segs = CURRENT_EVENT_SEGMENTS.get();
+        if (count == null || segs == null || index < 0 || index >= count[0]) {
+            return MemorySegment.NULL;
+        }
+        return segs[index];
     }
 
     /** Empty output events: always returns false (discard events). */
@@ -822,25 +972,88 @@ public final class ClapPluginHost implements ExternalPluginHost {
         return false;
     }
 
+    /**
+     * Output-stream write callback for {@code saveState()}: appends the native buffer
+     * contents to the {@link ByteArrayOutputStream} stored in the ThreadLocal.
+     */
+    @SuppressWarnings("unused")
+    private static long ostreamWrite(MemorySegment stream, MemorySegment buffer, long size) {
+        ByteArrayOutputStream target = CURRENT_WRITE_TARGET.get();
+        if (target == null || size <= 0) {
+            return size <= 0 ? 0L : -1L;
+        }
+        byte[] bytes = buffer.reinterpret(size).toArray(ValueLayout.JAVA_BYTE);
+        target.write(bytes, 0, bytes.length);
+        return size;
+    }
+
+    /**
+     * Input-stream read callback for {@code loadState()}: copies bytes from the
+     * state array stored in the ThreadLocal into the native buffer.
+     */
+    @SuppressWarnings("unused")
+    private static long istreamRead(MemorySegment stream, MemorySegment buffer, long size) {
+        byte[] source = CURRENT_READ_SOURCE.get();
+        int[] pos = CURRENT_READ_POSITION.get();
+        if (source == null || pos == null || size <= 0) {
+            return size <= 0 ? 0L : -1L;
+        }
+        int available = source.length - pos[0];
+        if (available <= 0) {
+            return 0L; // end of stream
+        }
+        int toRead = (int) Math.min(size, available);
+        MemorySegment.copy(source, pos[0], buffer, ValueLayout.JAVA_BYTE, 0, toRead);
+        pos[0] += toRead;
+        return toRead;
+    }
+
+    // -----------------------------------------------------------------------
+    // ThreadLocals for passing per-call state to static upcall callbacks
+    // -----------------------------------------------------------------------
+
+    /** Active parameter-event segments for the current process() call. */
+    private static final ThreadLocal<MemorySegment[]> CURRENT_EVENT_SEGMENTS = new ThreadLocal<>();
+
+    /** Active parameter-event count for the current process() call (wrapped in int[]). */
+    private static final ThreadLocal<int[]> CURRENT_EVENT_COUNT = new ThreadLocal<>();
+
+    /** ByteArrayOutputStream target for the current saveState() call. */
+    private static final ThreadLocal<ByteArrayOutputStream> CURRENT_WRITE_TARGET = new ThreadLocal<>();
+
+    /** Source byte array for the current loadState() call. */
+    private static final ThreadLocal<byte[]> CURRENT_READ_SOURCE = new ThreadLocal<>();
+
+    /** Read position (wrapped in int[]) for the current loadState() call. */
+    private static final ThreadLocal<int[]> CURRENT_READ_POSITION = new ThreadLocal<>();
+
     // MethodHandles for upcall targets
     private static final MethodHandle NO_OP_HOST_CALLBACK;
-    private static final MethodHandle EVENTS_SIZE_ZERO;
-    private static final MethodHandle EVENTS_GET_NULL;
+    private static final MethodHandle PENDING_EVENTS_SIZE;
+    private static final MethodHandle PENDING_EVENTS_GET;
     private static final MethodHandle EVENTS_TRY_PUSH_FALSE;
+    private static final MethodHandle OSTREAM_WRITE_HANDLE;
+    private static final MethodHandle ISTREAM_READ_HANDLE;
 
     static {
         try {
             var lookup = java.lang.invoke.MethodHandles.lookup();
             NO_OP_HOST_CALLBACK = lookup.findStatic(ClapPluginHost.class, "noOpHostCallback",
                     java.lang.invoke.MethodType.methodType(void.class, MemorySegment.class));
-            EVENTS_SIZE_ZERO = lookup.findStatic(ClapPluginHost.class, "eventsSizeZero",
+            PENDING_EVENTS_SIZE = lookup.findStatic(ClapPluginHost.class, "pendingEventsSize",
                     java.lang.invoke.MethodType.methodType(int.class, MemorySegment.class));
-            EVENTS_GET_NULL = lookup.findStatic(ClapPluginHost.class, "eventsGetNull",
+            PENDING_EVENTS_GET = lookup.findStatic(ClapPluginHost.class, "pendingEventsGet",
                     java.lang.invoke.MethodType.methodType(MemorySegment.class,
                             MemorySegment.class, int.class));
             EVENTS_TRY_PUSH_FALSE = lookup.findStatic(ClapPluginHost.class, "eventsTryPushFalse",
                     java.lang.invoke.MethodType.methodType(boolean.class,
                             MemorySegment.class, MemorySegment.class));
+            OSTREAM_WRITE_HANDLE = lookup.findStatic(ClapPluginHost.class, "ostreamWrite",
+                    java.lang.invoke.MethodType.methodType(long.class,
+                            MemorySegment.class, MemorySegment.class, long.class));
+            ISTREAM_READ_HANDLE = lookup.findStatic(ClapPluginHost.class, "istreamRead",
+                    java.lang.invoke.MethodType.methodType(long.class,
+                            MemorySegment.class, MemorySegment.class, long.class));
         } catch (ReflectiveOperationException e) {
             throw new ExceptionInInitializerError(e);
         }

@@ -389,6 +389,90 @@ public final class ClapBindings {
             CLAP_PLUGIN_STATE_LAYOUT.varHandle(MemoryLayout.PathElement.groupElement("load"));
 
     // -----------------------------------------------------------------------
+    // clap_ostream_t / clap_istream_t layouts
+    //   { void *ctx; int64_t (*write/read)(const stream*, const void*, uint64_t); }
+    // -----------------------------------------------------------------------
+
+    /** Memory layout for {@code clap_ostream_t}. */
+    public static final MemoryLayout CLAP_OSTREAM_LAYOUT = MemoryLayout.structLayout(
+            ValueLayout.ADDRESS.withName("ctx"),
+            ValueLayout.ADDRESS.withName("write")
+    );
+
+    /** Memory layout for {@code clap_istream_t}. */
+    public static final MemoryLayout CLAP_ISTREAM_LAYOUT = MemoryLayout.structLayout(
+            ValueLayout.ADDRESS.withName("ctx"),
+            ValueLayout.ADDRESS.withName("read")
+    );
+
+    // -----------------------------------------------------------------------
+    // clap_event_header_t / clap_event_param_value_t layouts (CLAP 1.2+)
+    // -----------------------------------------------------------------------
+
+    /** Core event space for standard CLAP events. */
+    public static final int CLAP_CORE_EVENT_SPACE_ID = 0;
+
+    /** Event type: parameter value change. */
+    public static final int CLAP_EVENT_PARAM_VALUE = 5;
+
+    /** Event flag: the change was caused by user interaction (live). */
+    public static final int CLAP_EVENT_IS_LIVE = 1;
+
+    /**
+     * Memory layout for {@code clap_event_param_value_t} (CLAP 1.2+).
+     *
+     * <pre>{@code
+     * // clap_event_header_t embedded fields:
+     * uint32_t size; uint32_t time; uint16_t space_id; uint16_t type; uint32_t flags;
+     * // param value fields:
+     * clap_id param_id; [padding 4]; void *cookie;
+     * int32_t note_id; int16_t port_index; int16_t channel; int16_t key; [padding 6];
+     * double value;
+     * }</pre>
+     */
+    public static final MemoryLayout CLAP_EVENT_PARAM_VALUE_LAYOUT = MemoryLayout.structLayout(
+            // clap_event_header_t (16 bytes)
+            ValueLayout.JAVA_INT.withName("size"),
+            ValueLayout.JAVA_INT.withName("time"),
+            ValueLayout.JAVA_SHORT.withName("space_id"),
+            ValueLayout.JAVA_SHORT.withName("type"),
+            ValueLayout.JAVA_INT.withName("flags"),
+            // param value payload
+            ValueLayout.JAVA_INT.withName("param_id"),
+            MemoryLayout.paddingLayout(4),  // align cookie (void*) to 8 bytes
+            ValueLayout.ADDRESS.withName("cookie"),
+            ValueLayout.JAVA_INT.withName("note_id"),
+            ValueLayout.JAVA_SHORT.withName("port_index"),
+            ValueLayout.JAVA_SHORT.withName("channel"),
+            ValueLayout.JAVA_SHORT.withName("key"),
+            MemoryLayout.paddingLayout(6),  // align value (double) to 8 bytes
+            ValueLayout.JAVA_DOUBLE.withName("value")
+    );
+
+    static final VarHandle PARAM_EVENT_SIZE =
+            CLAP_EVENT_PARAM_VALUE_LAYOUT.varHandle(MemoryLayout.PathElement.groupElement("size"));
+    static final VarHandle PARAM_EVENT_SPACE_ID =
+            CLAP_EVENT_PARAM_VALUE_LAYOUT.varHandle(MemoryLayout.PathElement.groupElement("space_id"));
+    static final VarHandle PARAM_EVENT_TYPE =
+            CLAP_EVENT_PARAM_VALUE_LAYOUT.varHandle(MemoryLayout.PathElement.groupElement("type"));
+    static final VarHandle PARAM_EVENT_FLAGS =
+            CLAP_EVENT_PARAM_VALUE_LAYOUT.varHandle(MemoryLayout.PathElement.groupElement("flags"));
+    static final VarHandle PARAM_EVENT_PARAM_ID =
+            CLAP_EVENT_PARAM_VALUE_LAYOUT.varHandle(MemoryLayout.PathElement.groupElement("param_id"));
+    static final VarHandle PARAM_EVENT_COOKIE =
+            CLAP_EVENT_PARAM_VALUE_LAYOUT.varHandle(MemoryLayout.PathElement.groupElement("cookie"));
+    static final VarHandle PARAM_EVENT_NOTE_ID =
+            CLAP_EVENT_PARAM_VALUE_LAYOUT.varHandle(MemoryLayout.PathElement.groupElement("note_id"));
+    static final VarHandle PARAM_EVENT_PORT_INDEX =
+            CLAP_EVENT_PARAM_VALUE_LAYOUT.varHandle(MemoryLayout.PathElement.groupElement("port_index"));
+    static final VarHandle PARAM_EVENT_CHANNEL =
+            CLAP_EVENT_PARAM_VALUE_LAYOUT.varHandle(MemoryLayout.PathElement.groupElement("channel"));
+    static final VarHandle PARAM_EVENT_KEY =
+            CLAP_EVENT_PARAM_VALUE_LAYOUT.varHandle(MemoryLayout.PathElement.groupElement("key"));
+    static final VarHandle PARAM_EVENT_VALUE =
+            CLAP_EVENT_PARAM_VALUE_LAYOUT.varHandle(MemoryLayout.PathElement.groupElement("value"));
+
+    // -----------------------------------------------------------------------
     // clap_input_events_t / clap_output_events_t layouts
     // -----------------------------------------------------------------------
 
@@ -504,6 +588,30 @@ public final class ClapBindings {
     /** {@code bool try_push(const clap_output_events_t*, const clap_event_header_t*)} */
     public static final FunctionDescriptor EVENTS_TRY_PUSH_DESC =
             FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS);
+
+    /** {@code bool save(const clap_plugin_t*, const clap_ostream_t*)} */
+    public static final FunctionDescriptor STATE_SAVE_DESC =
+            FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS);
+
+    /** {@code bool load(const clap_plugin_t*, const clap_istream_t*)} */
+    public static final FunctionDescriptor STATE_LOAD_DESC =
+            FunctionDescriptor.of(ValueLayout.JAVA_BOOLEAN, ValueLayout.ADDRESS, ValueLayout.ADDRESS);
+
+    /**
+     * {@code int64_t write(const clap_ostream_t*, const void* buffer, uint64_t size)}
+     * Returns number of bytes written, or -1 on error.
+     */
+    public static final FunctionDescriptor OSTREAM_WRITE_DESC =
+            FunctionDescriptor.of(ValueLayout.JAVA_LONG,
+                    ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG);
+
+    /**
+     * {@code int64_t read(const clap_istream_t*, void* buffer, uint64_t size)}
+     * Returns number of bytes read, 0 on end-of-stream, or -1 on error.
+     */
+    public static final FunctionDescriptor ISTREAM_READ_DESC =
+            FunctionDescriptor.of(ValueLayout.JAVA_LONG,
+                    ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG);
 
     private static final Linker LINKER = Linker.nativeLinker();
 
