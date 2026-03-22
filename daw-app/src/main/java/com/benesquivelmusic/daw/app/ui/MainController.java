@@ -401,10 +401,12 @@ public final class MainController {
 
         // Track type icon
         Node typeIcon = switch (track.getType()) {
-            case AUDIO  -> IconNode.of(DawIcon.MICROPHONE, TRACK_TYPE_ICON_SIZE);
-            case MIDI   -> IconNode.of(DawIcon.KEYBOARD, TRACK_TYPE_ICON_SIZE);
-            case AUX    -> IconNode.of(DawIcon.MIXER, TRACK_TYPE_ICON_SIZE);
-            case MASTER -> IconNode.of(DawIcon.SPEAKER, TRACK_TYPE_ICON_SIZE);
+            case AUDIO        -> IconNode.of(DawIcon.MICROPHONE, TRACK_TYPE_ICON_SIZE);
+            case MIDI         -> IconNode.of(DawIcon.KEYBOARD, TRACK_TYPE_ICON_SIZE);
+            case AUX          -> IconNode.of(DawIcon.MIXER, TRACK_TYPE_ICON_SIZE);
+            case MASTER       -> IconNode.of(DawIcon.SPEAKER, TRACK_TYPE_ICON_SIZE);
+            case BED_CHANNEL  -> IconNode.of(DawIcon.SURROUND, TRACK_TYPE_ICON_SIZE);
+            case AUDIO_OBJECT -> IconNode.of(DawIcon.PAN, TRACK_TYPE_ICON_SIZE);
         };
 
         var nameLabel = new Label(track.getName());
