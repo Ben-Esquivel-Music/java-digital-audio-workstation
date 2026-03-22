@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.audio;
 
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
+import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
 
 import java.util.Arrays;
 import java.util.Objects;
@@ -16,6 +17,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * {@link #processBlock(float[][], float[][], int)}. All processing buffers
  * are pre-allocated during {@link #start()} so that the audio callback
  * performs zero heap allocations — making it real-time-safe.</p>
+ *
+ * <p>An optional {@link NativeAudioBackend} can be attached to provide
+ * low-latency audio I/O via PortAudio FFM bindings or Java Sound API.
+ * Use {@link AudioBackendFactory} to obtain a backend instance.</p>
  */
 public final class AudioEngine {
 
@@ -24,6 +29,7 @@ public final class AudioEngine {
 
     private final EffectsChain masterChain;
     private AudioBufferPool bufferPool;
+    private NativeAudioBackend audioBackend;
 
     // Pre-allocated mix buffer used by processBlock
     private float[][] mixBuffer;
@@ -109,6 +115,31 @@ public final class AudioEngine {
      */
     public AudioBufferPool getBufferPool() {
         return bufferPool;
+    }
+
+    /**
+     * Sets the audio backend for native I/O.
+     *
+     * <p>Must be called before {@link #start()}. The backend provides
+     * low-latency audio input/output via PortAudio FFM bindings or the
+     * Java Sound API fallback.</p>
+     *
+     * @param backend the audio backend, or {@code null} to use no backend
+     */
+    public void setAudioBackend(NativeAudioBackend backend) {
+        if (running.get()) {
+            throw new IllegalStateException("Cannot change audio backend while engine is running");
+        }
+        this.audioBackend = backend;
+    }
+
+    /**
+     * Returns the currently configured audio backend, or {@code null} if none is set.
+     *
+     * @return the audio backend
+     */
+    public NativeAudioBackend getAudioBackend() {
+        return audioBackend;
     }
 
     /**
