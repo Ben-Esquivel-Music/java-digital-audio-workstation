@@ -27,6 +27,8 @@
                 <!-- Transport (icons applied programmatically via IconNode) -->
                 <Button fx:id="playButton" text="Play" onAction="#onPlay"
                         styleClass="transport-button, play-button"/>
+                <Button fx:id="pauseButton" text="Pause" onAction="#onPause"
+                        styleClass="transport-button, pause-button"/>
                 <Button fx:id="stopButton" text="Stop" onAction="#onStop"
                         styleClass="transport-button, stop-button"/>
                 <Button fx:id="recordButton" text="Record" onAction="#onRecord"

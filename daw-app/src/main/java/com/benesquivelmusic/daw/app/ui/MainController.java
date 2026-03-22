@@ -18,8 +18,15 @@ import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.control.Slider;
+import javafx.scene.control.TextField;
+import javafx.scene.control.Tooltip;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyCodeCombination;
+import javafx.scene.input.KeyCombination;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 
@@ -53,6 +60,7 @@ public final class MainController {
     private static final double PANEL_ICON_SIZE = 16;
 
     @FXML private Button playButton;
+    @FXML private Button pauseButton;
     @FXML private Button stopButton;
     @FXML private Button recordButton;
     @FXML private Button addAudioTrackButton;
@@ -88,11 +96,20 @@ public final class MainController {
         midiTrackCounter = 0;
 
         applyIcons();
+        applyTooltips();
         buildVisualizationTiles();
+        setupTempoEditor();
         updateStatus();
         updateTempoDisplay();
         updateProjectInfo();
         updateCheckpointStatus();
+
+        // Register keyboard shortcuts after the scene is available
+        playButton.sceneProperty().addListener((_, _, scene) -> {
+            if (scene != null) {
+                registerKeyboardShortcuts();
+            }
+        });
 
         LOG.info("DAW initialized with studio quality format");
     }
@@ -103,6 +120,7 @@ public final class MainController {
     private void applyIcons() {
         // Transport controls
         playButton.setGraphic(IconNode.of(DawIcon.PLAY, TRANSPORT_ICON_SIZE));
+        pauseButton.setGraphic(IconNode.of(DawIcon.PAUSE, TRANSPORT_ICON_SIZE));
         stopButton.setGraphic(IconNode.of(DawIcon.STOP, TRANSPORT_ICON_SIZE));
         recordButton.setGraphic(IconNode.of(DawIcon.RECORD, TRANSPORT_ICON_SIZE));
 
@@ -126,6 +144,130 @@ public final class MainController {
         checkpointLabel.setGraphic(IconNode.of(DawIcon.SYNC, 12));
 
         LOG.fine("Applied SVG icons from DAW icon pack");
+    }
+
+    /**
+     * Applies descriptive tooltips with keyboard shortcut hints to all UI controls.
+     */
+    private void applyTooltips() {
+        playButton.setTooltip(new Tooltip("Play (Space)"));
+        pauseButton.setTooltip(new Tooltip("Pause (P)"));
+        stopButton.setTooltip(new Tooltip("Stop (Escape)"));
+        recordButton.setTooltip(new Tooltip("Record (R)"));
+        addAudioTrackButton.setTooltip(new Tooltip("Add Audio Track (Ctrl+Shift+A)"));
+        addMidiTrackButton.setTooltip(new Tooltip("Add MIDI Track (Ctrl+Shift+M)"));
+        saveButton.setTooltip(new Tooltip("Save Project (Ctrl+S)"));
+        pluginsButton.setTooltip(new Tooltip("Manage Plugins"));
+    }
+
+    /**
+     * Registers global keyboard shortcuts for transport and project actions.
+     */
+    private void registerKeyboardShortcuts() {
+        var scene = playButton.getScene();
+        if (scene == null) {
+            return;
+        }
+        var accelerators = scene.getAccelerators();
+
+        // Space — toggle play/stop
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.SPACE),
+                () -> {
+                    if (project.getTransport().getState() == TransportState.PLAYING) {
+                        onStop();
+                    } else {
+                        onPlay();
+                    }
+                });
+
+        // Escape — stop
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.ESCAPE),
+                this::onStop);
+
+        // P — pause
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.P),
+                this::onPause);
+
+        // R — record
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.R),
+                this::onRecord);
+
+        // Ctrl+S — save
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.S, KeyCombination.SHORTCUT_DOWN),
+                this::onSaveProject);
+
+        // Ctrl+Shift+A — add audio track
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.A, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN),
+                this::onAddAudioTrack);
+
+        // Ctrl+Shift+M — add MIDI track
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.M, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN),
+                this::onAddMidiTrack);
+
+        LOG.fine("Registered keyboard shortcuts");
+    }
+
+    /**
+     * Configures the tempo label to become editable on double-click,
+     * allowing users to type a new BPM value.
+     */
+    private void setupTempoEditor() {
+        tempoLabel.setOnMouseClicked(event -> {
+            if (event.getClickCount() == 2) {
+                startTempoEdit();
+            }
+        });
+        tempoLabel.setTooltip(new Tooltip("Double-click to edit tempo"));
+    }
+
+    private void startTempoEdit() {
+        var parent = tempoLabel.getParent();
+        if (!(parent instanceof HBox hbox)) {
+            return;
+        }
+        int index = hbox.getChildren().indexOf(tempoLabel);
+        if (index < 0) {
+            return;
+        }
+
+        var editor = new TextField(String.format("%.1f", project.getTransport().getTempo()));
+        editor.getStyleClass().add("tempo-editor");
+        editor.setPrefWidth(80);
+
+        // Commit on Enter
+        editor.setOnAction(_ -> commitTempoEdit(editor, hbox, index));
+
+        // Commit on focus loss
+        editor.focusedProperty().addListener((_, _, focused) -> {
+            if (!focused) {
+                commitTempoEdit(editor, hbox, index);
+            }
+        });
+
+        hbox.getChildren().set(index, editor);
+        editor.requestFocus();
+        editor.selectAll();
+    }
+
+    private void commitTempoEdit(TextField editor, HBox hbox, int index) {
+        try {
+            double newTempo = Double.parseDouble(editor.getText().strip());
+            project.getTransport().setTempo(newTempo);
+            statusBarLabel.setText(String.format("Tempo set to %.1f BPM", newTempo));
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.METRONOME, 12));
+        } catch (IllegalArgumentException e) {
+            statusBarLabel.setText("Invalid tempo — must be 20–999 BPM");
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+        }
+        updateTempoDisplay();
+        hbox.getChildren().set(index, tempoLabel);
     }
 
     /**
@@ -182,6 +324,14 @@ public final class MainController {
         timeDisplay.setText("00:00:00.0");
         statusBarLabel.setText("Stopped");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.STOP, 12));
+    }
+
+    @FXML
+    private void onPause() {
+        project.getTransport().pause();
+        updateStatus();
+        statusBarLabel.setText("Paused");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.PAUSE, 12));
     }
 
     @FXML
@@ -260,10 +410,20 @@ public final class MainController {
         var nameLabel = new Label(track.getName());
         nameLabel.getStyleClass().add("track-name");
 
+        // Volume slider
+        var volumeSlider = new Slider(0.0, 1.0, track.getVolume());
+        volumeSlider.getStyleClass().add("track-volume-slider");
+        volumeSlider.setPrefWidth(80);
+        volumeSlider.setTooltip(new Tooltip("Volume"));
+        volumeSlider.valueProperty().addListener((_, _, newVal) -> {
+            track.setVolume(newVal.doubleValue());
+        });
+
         // Mute button with icon
         var muteBtn = new Button();
         muteBtn.setGraphic(IconNode.of(DawIcon.MUTE, TRACK_CONTROL_ICON_SIZE));
         muteBtn.getStyleClass().add("track-mute-button");
+        muteBtn.setTooltip(new Tooltip("Mute"));
         muteBtn.setOnAction(_ -> {
             track.setMuted(!track.isMuted());
             muteBtn.setStyle(track.isMuted()
@@ -274,18 +434,45 @@ public final class MainController {
         var soloBtn = new Button();
         soloBtn.setGraphic(IconNode.of(DawIcon.SOLO, TRACK_CONTROL_ICON_SIZE));
         soloBtn.getStyleClass().add("track-solo-button");
+        soloBtn.setTooltip(new Tooltip("Solo"));
         soloBtn.setOnAction(_ -> {
             track.setSolo(!track.isSolo());
             soloBtn.setStyle(track.isSolo()
                     ? "-fx-background-color: #00e676; -fx-text-fill: #0d0d0d;" : "");
         });
 
-        // Arm button with icon
+        // Arm button with icon and toggle action
         var armBtn = new Button();
         armBtn.setGraphic(IconNode.of(DawIcon.ARM_TRACK, TRACK_CONTROL_ICON_SIZE));
         armBtn.getStyleClass().add("track-arm-button");
+        armBtn.setTooltip(new Tooltip("Arm for Recording"));
+        armBtn.setOnAction(_ -> {
+            track.setArmed(!track.isArmed());
+            armBtn.setStyle(track.isArmed()
+                    ? "-fx-background-color: #ff1744; -fx-text-fill: #ffffff;" : "");
+        });
 
-        trackItem.getChildren().addAll(typeIcon, nameLabel, muteBtn, soloBtn, armBtn);
+        // Remove button
+        var removeBtn = new Button();
+        removeBtn.setGraphic(IconNode.of(DawIcon.DELETE, TRACK_CONTROL_ICON_SIZE));
+        removeBtn.getStyleClass().add("track-remove-button");
+        removeBtn.setTooltip(new Tooltip("Remove Track"));
+        removeBtn.setOnAction(_ -> {
+            project.removeTrack(track);
+            trackListPanel.getChildren().remove(trackItem);
+            updateArrangementPlaceholder();
+            statusBarLabel.setText("Removed track: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.DELETE, 12));
+            LOG.fine(() -> "Removed track: " + track.getName());
+        });
+
+        // Spacer pushes controls to the right
+        var spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+
+        trackItem.getChildren().addAll(
+                typeIcon, nameLabel, volumeSlider, spacer,
+                muteBtn, soloBtn, armBtn, removeBtn);
         trackListPanel.getChildren().add(trackItem);
     }
 
@@ -294,7 +481,8 @@ public final class MainController {
         TransportState state = transport.getState();
 
         statusLabel.setText(state.name());
-        statusLabel.getStyleClass().removeAll("status-recording", "status-playing", "status-stopped");
+        statusLabel.getStyleClass().removeAll(
+                "status-recording", "status-playing", "status-stopped", "status-paused");
         switch (state) {
             case RECORDING -> {
                 statusLabel.getStyleClass().add("status-recording");
@@ -304,6 +492,10 @@ public final class MainController {
                 statusLabel.getStyleClass().add("status-playing");
                 statusLabel.setGraphic(IconNode.of(DawIcon.PLAY, 12));
             }
+            case PAUSED -> {
+                statusLabel.getStyleClass().add("status-paused");
+                statusLabel.setGraphic(IconNode.of(DawIcon.PAUSE, 12));
+            }
             default -> {
                 statusLabel.getStyleClass().add("status-stopped");
                 statusLabel.setGraphic(IconNode.of(DawIcon.STOP, 12));
@@ -311,6 +503,7 @@ public final class MainController {
         }
 
         playButton.setDisable(state == TransportState.PLAYING);
+        pauseButton.setDisable(state == TransportState.STOPPED || state == TransportState.PAUSED);
         recordButton.setDisable(state == TransportState.RECORDING);
         stopButton.setDisable(state == TransportState.STOPPED);
     }

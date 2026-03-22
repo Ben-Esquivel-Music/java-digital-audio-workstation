@@ -18,6 +18,7 @@ class TrackTest {
         assertThat(track.getPan()).isEqualTo(0.0);
         assertThat(track.isMuted()).isFalse();
         assertThat(track.isSolo()).isFalse();
+        assertThat(track.isArmed()).isFalse();
     }
 
     @Test
@@ -61,6 +62,16 @@ class TrackTest {
         assertThat(track.isMuted()).isTrue();
         track.setSolo(true);
         assertThat(track.isSolo()).isTrue();
+    }
+
+    @Test
+    void shouldToggleArmed() {
+        var track = new Track("Track", TrackType.AUDIO);
+        assertThat(track.isArmed()).isFalse();
+        track.setArmed(true);
+        assertThat(track.isArmed()).isTrue();
+        track.setArmed(false);
+        assertThat(track.isArmed()).isFalse();
     }
 
     @Test
