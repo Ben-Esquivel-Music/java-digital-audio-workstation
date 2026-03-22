@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.export;
 
 import com.benesquivelmusic.daw.core.spatial.objectbased.AudioObject;
+import com.benesquivelmusic.daw.sdk.spatial.ObjectMetadata;
 import com.benesquivelmusic.daw.core.spatial.objectbased.BedChannel;
 import com.benesquivelmusic.daw.sdk.export.AudioMetadata;
 import com.benesquivelmusic.daw.sdk.spatial.SpeakerLabel;
@@ -92,7 +93,7 @@ public final class AdmBwfExporter {
         int riffSize = 4 + 24 + 8 + dataSize + axmlChunkSize;
 
         try (OutputStream out = Files.newOutputStream(outputPath)) {
-            var header = ByteBuffer.allocate(12 + 24 + 8).order(ByteOrder.LITTLE_ENDIAN);
+            ByteBuffer header = ByteBuffer.allocate(12 + 24 + 8).order(ByteOrder.LITTLE_ENDIAN);
 
             // RIFF header
             header.put("RIFF".getBytes(StandardCharsets.US_ASCII));
@@ -120,7 +121,7 @@ public final class AdmBwfExporter {
                     bitDepth, isFloat);
 
             // Write axml chunk
-            var axmlHeader = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN);
+            ByteBuffer axmlHeader = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN);
             axmlHeader.put("axml".getBytes(StandardCharsets.US_ASCII));
             axmlHeader.putInt(axmlPaddedSize);
             out.write(axmlHeader.array());
@@ -138,7 +139,7 @@ public final class AdmBwfExporter {
                                List<AudioObject> audioObjects,
                                SpeakerLayout layout,
                                int sampleRate, int numSamples) {
-        var sb = new StringBuilder();
+        StringBuilder sb = new StringBuilder();
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         sb.append("<audioFormatExtended version=\"ITU-R_BS.2076-2\">\n");
 
@@ -173,8 +174,8 @@ public final class AdmBwfExporter {
         // Audio objects
         int trackOffset = bedChannels.size();
         for (int i = 0; i < audioObjects.size(); i++) {
-            var obj = audioObjects.get(i);
-            var meta = obj.getMetadata();
+            AudioObject obj = audioObjects.get(i);
+            ObjectMetadata meta = obj.getMetadata();
             sb.append("  <audioObject audioObjectID=\"AO_%04d\" audioObjectName=\"Object %d\">\n"
                     .formatted(1002 + i, i + 1));
             sb.append("    <audioPackFormatIDRef>AP_00031001</audioPackFormatIDRef>\n");
@@ -193,7 +194,7 @@ public final class AdmBwfExporter {
 
         // Channel formats for bed channels
         for (int i = 0; i < bedChannels.size(); i++) {
-            var bed = bedChannels.get(i);
+            BedChannel bed = bedChannels.get(i);
             sb.append("  <audioChannelFormat audioChannelFormatID=\"AC_%04d\" " +
                       "audioChannelFormatName=\"%s\">\n".formatted(i + 1, bed.speakerLabel().name()));
             sb.append("    <speakerLabel>%s</speakerLabel>\n".formatted(
@@ -238,7 +239,7 @@ public final class AdmBwfExporter {
         int bytesPerSample = bitDepth / 8;
         int bytesPerFrame = totalChannels * bytesPerSample;
 
-        try (var arena = Arena.ofConfined()) {
+        try (Arena arena = Arena.ofConfined()) {
             int chunkByteCount = CHUNK_FRAMES * bytesPerFrame;
             MemorySegment chunk = arena.allocate(chunkByteCount);
             byte[] ioBuffer = new byte[chunkByteCount];

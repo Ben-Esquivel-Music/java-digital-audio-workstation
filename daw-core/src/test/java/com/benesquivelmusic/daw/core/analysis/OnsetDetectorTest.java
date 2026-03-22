@@ -11,7 +11,7 @@ class OnsetDetectorTest {
 
     @Test
     void shouldCreateWithDefaults() {
-        var detector = new OnsetDetector(1024, 44100.0);
+        OnsetDetector detector = new OnsetDetector(1024, 44100.0);
         assertThat(detector.getFftSize()).isEqualTo(1024);
         assertThat(detector.getHopSize()).isEqualTo(512);
         assertThat(detector.getSampleRate()).isEqualTo(44100.0);
@@ -20,7 +20,7 @@ class OnsetDetectorTest {
 
     @Test
     void shouldCreateWithCustomParameters() {
-        var detector = new OnsetDetector(2048, 256, 48000.0, 2.0);
+        OnsetDetector detector = new OnsetDetector(2048, 256, 48000.0, 2.0);
         assertThat(detector.getFftSize()).isEqualTo(2048);
         assertThat(detector.getHopSize()).isEqualTo(256);
         assertThat(detector.getSampleRate()).isEqualTo(48000.0);
@@ -31,7 +31,7 @@ class OnsetDetectorTest {
     void shouldDetectOnsetInSilenceToBurst() {
         double sampleRate = 44100.0;
         int fftSize = 1024;
-        var detector = new OnsetDetector(fftSize, fftSize / 4, sampleRate, 1.5);
+        OnsetDetector detector = new OnsetDetector(fftSize, fftSize / 4, sampleRate, 1.5);
 
         // Create signal: silence followed by a loud sine burst
         int totalSamples = 44100; // 1 second
@@ -58,7 +58,7 @@ class OnsetDetectorTest {
     void shouldDetectMultipleOnsets() {
         double sampleRate = 44100.0;
         int fftSize = 1024;
-        var detector = new OnsetDetector(fftSize, fftSize / 4, sampleRate, 1.5);
+        OnsetDetector detector = new OnsetDetector(fftSize, fftSize / 4, sampleRate, 1.5);
 
         // Create signal with two bursts separated by silence
         int totalSamples = 88200; // 2 seconds
@@ -76,7 +76,7 @@ class OnsetDetectorTest {
 
     @Test
     void shouldReturnNoOnsetsForSilence() {
-        var detector = new OnsetDetector(1024, 44100.0);
+        OnsetDetector detector = new OnsetDetector(1024, 44100.0);
         float[] silence = new float[44100];
 
         List<OnsetDetector.Onset> onsets = detector.detect(silence);
@@ -87,7 +87,7 @@ class OnsetDetectorTest {
     @Test
     void shouldReturnNoOnsetsForConstantTone() {
         double sampleRate = 44100.0;
-        var detector = new OnsetDetector(1024, 256, sampleRate, 1.5);
+        OnsetDetector detector = new OnsetDetector(1024, 256, sampleRate, 1.5);
 
         // Constant sine wave with no onset
         float[] samples = new float[44100];
@@ -103,7 +103,7 @@ class OnsetDetectorTest {
 
     @Test
     void shouldConvertFrameIndexToSeconds() {
-        var detector = new OnsetDetector(1024, 256, 44100.0, 1.5);
+        OnsetDetector detector = new OnsetDetector(1024, 256, 44100.0, 1.5);
         double seconds = detector.frameIndexToSeconds(10);
         assertThat(seconds).isCloseTo(10.0 * 256 / 44100.0,
                 org.assertj.core.data.Offset.offset(1e-6));
@@ -111,7 +111,7 @@ class OnsetDetectorTest {
 
     @Test
     void shouldReturnEmptyForTooShortBuffer() {
-        var detector = new OnsetDetector(1024, 44100.0);
+        OnsetDetector detector = new OnsetDetector(1024, 44100.0);
         float[] tooShort = new float[512];
 
         List<OnsetDetector.Onset> onsets = detector.detect(tooShort);
@@ -148,7 +148,7 @@ class OnsetDetectorTest {
     @Test
     void onsetStrengthShouldBePositive() {
         double sampleRate = 44100.0;
-        var detector = new OnsetDetector(1024, 256, sampleRate, 1.5);
+        OnsetDetector detector = new OnsetDetector(1024, 256, sampleRate, 1.5);
 
         float[] samples = new float[44100];
         int onset = 22050;
@@ -157,7 +157,7 @@ class OnsetDetectorTest {
         }
 
         List<OnsetDetector.Onset> onsets = detector.detect(samples);
-        for (var o : onsets) {
+        for (OnsetDetector.Onset o : onsets) {
             assertThat(o.strength()).isGreaterThan(0);
         }
     }

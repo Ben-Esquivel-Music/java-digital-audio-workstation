@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.session.dawproject;
 
+import com.benesquivelmusic.daw.sdk.session.SessionData;
 import com.benesquivelmusic.daw.sdk.session.SessionImportResult;
 import com.benesquivelmusic.daw.sdk.session.SessionImporter;
 
@@ -8,6 +9,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 /**
@@ -37,7 +39,7 @@ public final class DawProjectSessionImporter implements SessionImporter {
             throw new IOException("File does not exist: " + file);
         }
 
-        var warnings = new ArrayList<String>();
+        ArrayList<String> warnings = new ArrayList<String>();
 
         // Try ZIP first, fall back to plain XML
         if (isZipFile(file)) {
@@ -48,13 +50,13 @@ public final class DawProjectSessionImporter implements SessionImporter {
     }
 
     private SessionImportResult importFromZip(Path file, ArrayList<String> warnings) throws IOException {
-        try (var zip = new ZipFile(file.toFile())) {
-            var entry = zip.getEntry(PROJECT_XML_ENTRY);
+        try (ZipFile zip = new ZipFile(file.toFile())) {
+            ZipEntry entry = zip.getEntry(PROJECT_XML_ENTRY);
             if (entry == null) {
                 throw new IOException("DAWproject archive does not contain " + PROJECT_XML_ENTRY);
             }
             try (InputStream is = zip.getInputStream(entry)) {
-                var sessionData = parser.parse(is, warnings);
+                SessionData sessionData = parser.parse(is, warnings);
                 return new SessionImportResult(sessionData, warnings);
             }
         }
@@ -62,7 +64,7 @@ public final class DawProjectSessionImporter implements SessionImporter {
 
     private SessionImportResult importFromXml(Path file, ArrayList<String> warnings) throws IOException {
         try (InputStream is = Files.newInputStream(file)) {
-            var sessionData = parser.parse(is, warnings);
+            SessionData sessionData = parser.parse(is, warnings);
             return new SessionImportResult(sessionData, warnings);
         }
     }

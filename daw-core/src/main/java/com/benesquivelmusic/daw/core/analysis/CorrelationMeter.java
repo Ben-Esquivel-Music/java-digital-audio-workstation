@@ -207,13 +207,13 @@ public final class CorrelationMeter implements VisualizationProvider<Correlation
         System.arraycopy(right, 0, remainingR, 0, numFrames);
 
         for (int b = 0; b < bandEdges.length; b++) {
-            var lpL = BiquadFilter.create(
+            BiquadFilter lpL = BiquadFilter.create(
                     BiquadFilter.FilterType.LOW_PASS, sampleRate, bandEdges[b], 0.707, 0);
-            var lpR = BiquadFilter.create(
+            BiquadFilter lpR = BiquadFilter.create(
                     BiquadFilter.FilterType.LOW_PASS, sampleRate, bandEdges[b], 0.707, 0);
-            var hpL = BiquadFilter.create(
+            BiquadFilter hpL = BiquadFilter.create(
                     BiquadFilter.FilterType.HIGH_PASS, sampleRate, bandEdges[b], 0.707, 0);
-            var hpR = BiquadFilter.create(
+            BiquadFilter hpR = BiquadFilter.create(
                     BiquadFilter.FilterType.HIGH_PASS, sampleRate, bandEdges[b], 0.707, 0);
 
             float[] nextRemainL = new float[numFrames];

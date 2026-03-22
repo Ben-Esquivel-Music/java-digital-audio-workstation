@@ -9,8 +9,8 @@ class MicrophonePlacementTest {
 
     @Test
     void shouldCreateWithValidParameters() {
-        var pos = new Position3D(2.0, 3.0, 1.5);
-        var mic = new MicrophonePlacement("Overhead", pos, 90.0, 0.0);
+        Position3D pos = new Position3D(2.0, 3.0, 1.5);
+        MicrophonePlacement mic = new MicrophonePlacement("Overhead", pos, 90.0, 0.0);
 
         assertThat(mic.name()).isEqualTo("Overhead");
         assertThat(mic.position()).isEqualTo(pos);
@@ -52,10 +52,10 @@ class MicrophonePlacementTest {
 
     @Test
     void shouldAllowBoundaryElevation() {
-        var mic90 = new MicrophonePlacement("Up", new Position3D(0, 0, 0), 0, 90);
+        MicrophonePlacement mic90 = new MicrophonePlacement("Up", new Position3D(0, 0, 0), 0, 90);
         assertThat(mic90.elevation()).isEqualTo(90);
 
-        var micNeg90 = new MicrophonePlacement("Down", new Position3D(0, 0, 0), 0, -90);
+        MicrophonePlacement micNeg90 = new MicrophonePlacement("Down", new Position3D(0, 0, 0), 0, -90);
         assertThat(micNeg90.elevation()).isEqualTo(-90);
     }
 }

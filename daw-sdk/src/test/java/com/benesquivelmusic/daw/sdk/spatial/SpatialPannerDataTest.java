@@ -11,14 +11,14 @@ class SpatialPannerDataTest {
 
     @Test
     void shouldCreateValidData() {
-        var pos = new SpatialPosition(0, 0, 1.0);
-        var speakers = List.of(
+        SpatialPosition pos = new SpatialPosition(0, 0, 1.0);
+        List<SpatialPosition> speakers = List.of(
                 new SpatialPosition(30, 0, 1.0),
                 new SpatialPosition(330, 0, 1.0)
         );
-        var gains = new double[]{0.7, 0.7};
+        double[] gains = new double[]{0.7, 0.7};
 
-        var data = new SpatialPannerData(pos, speakers, gains, 0.0, 1.0, 1.0, 0.0,
+        SpatialPannerData data = new SpatialPannerData(pos, speakers, gains, 0.0, 1.0, 1.0, 0.0,
                 PositioningMode.FREE_FORM);
 
         assertThat(data.sourcePosition()).isEqualTo(pos);
@@ -38,8 +38,8 @@ class SpatialPannerDataTest {
 
     @Test
     void shouldMakeDefensiveCopyOfGains() {
-        var gains = new double[]{0.5, 0.5};
-        var data = new SpatialPannerData(
+        double[] gains = new double[]{0.5, 0.5};
+        SpatialPannerData data = new SpatialPannerData(
                 new SpatialPosition(0, 0, 1.0),
                 List.of(new SpatialPosition(30, 0, 1.0), new SpatialPosition(330, 0, 1.0)),
                 gains, 0, 1, 1, 0, PositioningMode.FREE_FORM);

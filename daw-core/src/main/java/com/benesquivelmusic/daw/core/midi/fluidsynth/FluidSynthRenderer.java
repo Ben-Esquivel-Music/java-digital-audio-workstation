@@ -79,12 +79,12 @@ public final class FluidSynthRenderer implements SoundFontRenderer {
         }
 
         // Set sample rate
-        var sampleRateKey = renderArena.allocateFrom("synth.sample-rate");
+        MemorySegment sampleRateKey = renderArena.allocateFrom("synth.sample-rate");
         bindings.settingsSetNum(settings, sampleRateKey, sampleRate);
 
         // Disable audio driver (we render manually via write_float)
-        var audioDriverKey = renderArena.allocateFrom("audio.driver");
-        var noneValue = renderArena.allocateFrom("none");
+        MemorySegment audioDriverKey = renderArena.allocateFrom("audio.driver");
+        MemorySegment noneValue = renderArena.allocateFrom("none");
         bindings.settingsSetStr(settings, audioDriverKey, noneValue);
 
         // Create synth
@@ -107,13 +107,13 @@ public final class FluidSynthRenderer implements SoundFontRenderer {
         ensureInitialized();
         Objects.requireNonNull(path, "path must not be null");
 
-        var filenameSeg = renderArena.allocateFrom(path.toAbsolutePath().toString());
+        MemorySegment filenameSeg = renderArena.allocateFrom(path.toAbsolutePath().toString());
         int sfId = bindings.synthSfload(synth, filenameSeg, 1);
         FluidSynthException.checkResult(sfId, "fluid_synth_sfload");
 
         // Enumerate presets
         List<SoundFontPreset> presets = enumeratePresets(sfId);
-        var info = new SoundFontInfo(sfId, path, presets);
+        SoundFontInfo info = new SoundFontInfo(sfId, path, presets);
         loadedSoundFonts.add(info);
         return info;
     }

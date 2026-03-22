@@ -11,13 +11,13 @@ class RoomTelemetryDataTest {
 
     @Test
     void shouldCreateWithValidData() {
-        var dims = new RoomDimensions(10, 8, 3);
-        var path = new SoundWavePath("Src", "Mic",
+        RoomDimensions dims = new RoomDimensions(10, 8, 3);
+        SoundWavePath path = new SoundWavePath("Src", "Mic",
                 List.of(new Position3D(0, 0, 0), new Position3D(5, 4, 1.5)),
                 6.7, 19.5, -16.5, false);
-        var suggestion = new TelemetrySuggestion.AddDampening("walls", "too much reverb");
+        TelemetrySuggestion.AddDampening suggestion = new TelemetrySuggestion.AddDampening("walls", "too much reverb");
 
-        var data = new RoomTelemetryData(dims, List.of(path), 0.45, List.of(suggestion));
+        RoomTelemetryData data = new RoomTelemetryData(dims, List.of(path), 0.45, List.of(suggestion));
 
         assertThat(data.roomDimensions()).isEqualTo(dims);
         assertThat(data.wavePaths()).hasSize(1);
@@ -40,8 +40,8 @@ class RoomTelemetryDataTest {
 
     @Test
     void shouldReturnDefensiveCopyOfPaths() {
-        var dims = new RoomDimensions(10, 8, 3);
-        var data = new RoomTelemetryData(dims, List.of(), 0.5, List.of());
+        RoomDimensions dims = new RoomDimensions(10, 8, 3);
+        RoomTelemetryData data = new RoomTelemetryData(dims, List.of(), 0.5, List.of());
 
         assertThatThrownBy(() -> data.wavePaths().add(null))
                 .isInstanceOf(UnsupportedOperationException.class);
@@ -49,8 +49,8 @@ class RoomTelemetryDataTest {
 
     @Test
     void shouldReturnDefensiveCopyOfSuggestions() {
-        var dims = new RoomDimensions(10, 8, 3);
-        var data = new RoomTelemetryData(dims, List.of(), 0.5, List.of());
+        RoomDimensions dims = new RoomDimensions(10, 8, 3);
+        RoomTelemetryData data = new RoomTelemetryData(dims, List.of(), 0.5, List.of());
 
         assertThatThrownBy(() -> data.suggestions().add(null))
                 .isInstanceOf(UnsupportedOperationException.class);

@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.core.mastering;
 
 import com.benesquivelmusic.daw.sdk.mastering.MasteringChainPreset;
+import com.benesquivelmusic.daw.sdk.mastering.MasteringStageConfig;
+import java.util.List;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringStageType;
 
 import org.junit.jupiter.api.Test;
@@ -53,7 +55,7 @@ class MasteringChainPresetsTest {
 
     @Test
     void shouldReturnAllDefaults() {
-        var all = MasteringChainPresets.allDefaults();
+        List<MasteringChainPreset> all = MasteringChainPresets.allDefaults();
 
         assertThat(all).hasSize(4);
         assertThat(all).extracting(MasteringChainPreset::genre)
@@ -79,7 +81,7 @@ class MasteringChainPresetsTest {
     @Test
     void shouldHaveNonEmptyParametersForEachStage() {
         for (MasteringChainPreset preset : MasteringChainPresets.allDefaults()) {
-            for (var stage : preset.stages()) {
+            for (MasteringStageConfig stage : preset.stages()) {
                 assertThat(stage.parameters())
                         .as("Stage %s in preset %s should have parameters",
                                 stage.name(), preset.name())

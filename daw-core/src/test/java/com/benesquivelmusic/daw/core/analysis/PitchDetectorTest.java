@@ -9,7 +9,7 @@ class PitchDetectorTest {
 
     @Test
     void shouldCreateWithDefaults() {
-        var detector = new PitchDetector(2048, 44100.0);
+        PitchDetector detector = new PitchDetector(2048, 44100.0);
         assertThat(detector.getBufferSize()).isEqualTo(2048);
         assertThat(detector.getSampleRate()).isEqualTo(44100.0);
         assertThat(detector.getThreshold()).isEqualTo(0.15);
@@ -17,7 +17,7 @@ class PitchDetectorTest {
 
     @Test
     void shouldCreateWithCustomThreshold() {
-        var detector = new PitchDetector(1024, 44100.0, 0.20);
+        PitchDetector detector = new PitchDetector(1024, 44100.0, 0.20);
         assertThat(detector.getThreshold()).isEqualTo(0.20);
     }
 
@@ -26,10 +26,10 @@ class PitchDetectorTest {
         double frequency = 440.0;
         double sampleRate = 44100.0;
         int bufferSize = 2048;
-        var detector = new PitchDetector(bufferSize, sampleRate);
+        PitchDetector detector = new PitchDetector(bufferSize, sampleRate);
 
         float[] samples = generateSineWave(frequency, sampleRate, bufferSize);
-        var result = detector.detect(samples);
+        PitchDetector.PitchResult result = detector.detect(samples);
 
         assertThat(result.pitched()).isTrue();
         assertThat(result.frequencyHz()).isCloseTo(frequency,
@@ -42,10 +42,10 @@ class PitchDetectorTest {
         double frequency = 261.63; // Middle C
         double sampleRate = 44100.0;
         int bufferSize = 2048;
-        var detector = new PitchDetector(bufferSize, sampleRate);
+        PitchDetector detector = new PitchDetector(bufferSize, sampleRate);
 
         float[] samples = generateSineWave(frequency, sampleRate, bufferSize);
-        var result = detector.detect(samples);
+        PitchDetector.PitchResult result = detector.detect(samples);
 
         assertThat(result.pitched()).isTrue();
         assertThat(result.frequencyHz()).isCloseTo(frequency,
@@ -57,10 +57,10 @@ class PitchDetectorTest {
         double frequency = 1000.0;
         double sampleRate = 44100.0;
         int bufferSize = 2048;
-        var detector = new PitchDetector(bufferSize, sampleRate);
+        PitchDetector detector = new PitchDetector(bufferSize, sampleRate);
 
         float[] samples = generateSineWave(frequency, sampleRate, bufferSize);
-        var result = detector.detect(samples);
+        PitchDetector.PitchResult result = detector.detect(samples);
 
         assertThat(result.pitched()).isTrue();
         assertThat(result.frequencyHz()).isCloseTo(frequency,
@@ -69,9 +69,9 @@ class PitchDetectorTest {
 
     @Test
     void shouldReturnUnpitchedForSilence() {
-        var detector = new PitchDetector(2048, 44100.0);
+        PitchDetector detector = new PitchDetector(2048, 44100.0);
         float[] silence = new float[2048];
-        var result = detector.detect(silence);
+        PitchDetector.PitchResult result = detector.detect(silence);
 
         assertThat(result.pitched()).isFalse();
         assertThat(result.frequencyHz()).isEqualTo(-1.0);
@@ -79,13 +79,13 @@ class PitchDetectorTest {
 
     @Test
     void shouldReturnUnpitchedForNoise() {
-        var detector = new PitchDetector(2048, 44100.0, 0.10);
+        PitchDetector detector = new PitchDetector(2048, 44100.0, 0.10);
         float[] noise = new float[2048];
-        var rng = new java.util.Random(42);
+        java.util.Random rng = new java.util.Random(42);
         for (int i = 0; i < noise.length; i++) {
             noise[i] = (rng.nextFloat() * 2.0f - 1.0f) * 0.5f;
         }
-        var result = detector.detect(noise);
+        PitchDetector.PitchResult result = detector.detect(noise);
 
         // Noise should either be unpitched or have very low probability
         if (result.pitched()) {
@@ -119,7 +119,7 @@ class PitchDetectorTest {
 
     @Test
     void shouldRejectTooShortSampleBuffer() {
-        var detector = new PitchDetector(2048, 44100.0);
+        PitchDetector detector = new PitchDetector(2048, 44100.0);
         assertThatThrownBy(() -> detector.detect(new float[1024]))
                 .isInstanceOf(IllegalArgumentException.class);
     }
@@ -129,10 +129,10 @@ class PitchDetectorTest {
         double frequency = 440.0;
         double sampleRate = 48000.0;
         int bufferSize = 2048;
-        var detector = new PitchDetector(bufferSize, sampleRate);
+        PitchDetector detector = new PitchDetector(bufferSize, sampleRate);
 
         float[] samples = generateSineWave(frequency, sampleRate, bufferSize);
-        var result = detector.detect(samples);
+        PitchDetector.PitchResult result = detector.detect(samples);
 
         assertThat(result.pitched()).isTrue();
         assertThat(result.frequencyHz()).isCloseTo(frequency,

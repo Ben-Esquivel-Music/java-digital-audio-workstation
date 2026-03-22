@@ -9,7 +9,7 @@ class NoiseGateProcessorTest {
 
     @Test
     void shouldCreateWithDefaults() {
-        var gate = new NoiseGateProcessor(2, 44100.0);
+        NoiseGateProcessor gate = new NoiseGateProcessor(2, 44100.0);
         assertThat(gate.getInputChannelCount()).isEqualTo(2);
         assertThat(gate.getOutputChannelCount()).isEqualTo(2);
         assertThat(gate.getThresholdDb()).isEqualTo(-40.0);
@@ -17,7 +17,7 @@ class NoiseGateProcessorTest {
 
     @Test
     void shouldAttenuateSignalBelowThreshold() {
-        var gate = new NoiseGateProcessor(1, 44100.0);
+        NoiseGateProcessor gate = new NoiseGateProcessor(1, 44100.0);
         gate.setThresholdDb(-10.0); // High threshold
         gate.setRangeDb(-80.0);
         gate.setAttackMs(0.1);
@@ -40,7 +40,7 @@ class NoiseGateProcessorTest {
 
     @Test
     void shouldPassSignalAboveThreshold() {
-        var gate = new NoiseGateProcessor(1, 44100.0);
+        NoiseGateProcessor gate = new NoiseGateProcessor(1, 44100.0);
         gate.setThresholdDb(-40.0); // Low threshold
         gate.setAttackMs(0.01);
 
@@ -60,7 +60,7 @@ class NoiseGateProcessorTest {
 
     @Test
     void shouldResetState() {
-        var gate = new NoiseGateProcessor(1, 44100.0);
+        NoiseGateProcessor gate = new NoiseGateProcessor(1, 44100.0);
         float[][] buf = {{0.9f, 0.8f}};
         gate.process(buf, new float[1][2], 2);
         gate.reset();
@@ -77,7 +77,7 @@ class NoiseGateProcessorTest {
 
     @Test
     void shouldSupportParameterChanges() {
-        var gate = new NoiseGateProcessor(1, 44100.0);
+        NoiseGateProcessor gate = new NoiseGateProcessor(1, 44100.0);
         gate.setThresholdDb(-30.0);
         gate.setAttackMs(5.0);
         gate.setHoldMs(100.0);
@@ -93,7 +93,7 @@ class NoiseGateProcessorTest {
 
     @Test
     void closedStateShouldAttenuateByExactlyRangeDb() {
-        var gate = new NoiseGateProcessor(1, 44100.0);
+        NoiseGateProcessor gate = new NoiseGateProcessor(1, 44100.0);
         gate.setThresholdDb(-10.0);
         gate.setRangeDb(-6.0);   // −6 dB range (linear ≈ 0.5)
         gate.setAttackMs(0.01);

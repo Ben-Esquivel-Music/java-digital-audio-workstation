@@ -11,7 +11,7 @@ class AutoSaveConfigTest {
 
     @Test
     void shouldCreateDefaultConfig() {
-        var config = AutoSaveConfig.DEFAULT;
+        AutoSaveConfig config = AutoSaveConfig.DEFAULT;
 
         assertThat(config.autoSaveInterval()).isEqualTo(Duration.ofMinutes(2));
         assertThat(config.maxCheckpoints()).isEqualTo(50);
@@ -20,7 +20,7 @@ class AutoSaveConfigTest {
 
     @Test
     void shouldCreateLongSessionConfig() {
-        var config = AutoSaveConfig.LONG_SESSION;
+        AutoSaveConfig config = AutoSaveConfig.LONG_SESSION;
 
         assertThat(config.autoSaveInterval()).isEqualTo(Duration.ofSeconds(30));
         assertThat(config.maxCheckpoints()).isEqualTo(200);
@@ -29,7 +29,7 @@ class AutoSaveConfigTest {
 
     @Test
     void shouldToggleEnabled() {
-        var config = AutoSaveConfig.DEFAULT.withEnabled(false);
+        AutoSaveConfig config = AutoSaveConfig.DEFAULT.withEnabled(false);
 
         assertThat(config.enabled()).isFalse();
         assertThat(config.autoSaveInterval()).isEqualTo(AutoSaveConfig.DEFAULT.autoSaveInterval());

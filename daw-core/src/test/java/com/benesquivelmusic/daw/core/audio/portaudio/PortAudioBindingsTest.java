@@ -12,7 +12,7 @@ class PortAudioBindingsTest {
     @Test
     void shouldReportAvailabilityBasedOnNativeLibrary() {
         // PortAudio is unlikely to be installed in the CI/test environment
-        var bindings = new PortAudioBindings();
+        PortAudioBindings bindings = new PortAudioBindings();
         // We don't assert true/false — just that it doesn't crash
         assertThat(bindings.isAvailable()).isIn(true, false);
     }

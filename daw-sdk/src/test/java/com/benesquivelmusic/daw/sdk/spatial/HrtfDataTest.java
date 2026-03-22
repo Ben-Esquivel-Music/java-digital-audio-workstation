@@ -11,7 +11,7 @@ class HrtfDataTest {
 
     @Test
     void shouldCreateValidHrtfData() {
-        var positions = List.of(
+        List<SphericalCoordinate> positions = List.of(
                 new SphericalCoordinate(0, 0, 1.0),
                 new SphericalCoordinate(90, 0, 1.0)
         );
@@ -21,7 +21,7 @@ class HrtfDataTest {
         };
         float[][] delays = {{0.0f, 1.0f}, {1.0f, 0.0f}};
 
-        var data = new HrtfData("Test", 44100.0, positions, ir, delays);
+        HrtfData data = new HrtfData("Test", 44100.0, positions, ir, delays);
 
         assertThat(data.profileName()).isEqualTo("Test");
         assertThat(data.sampleRate()).isEqualTo(44100.0);
@@ -32,7 +32,7 @@ class HrtfDataTest {
 
     @Test
     void shouldRejectNullProfileName() {
-        var pos = List.of(new SphericalCoordinate(0, 0, 1.0));
+        List<SphericalCoordinate> pos = List.of(new SphericalCoordinate(0, 0, 1.0));
         assertThatThrownBy(() -> new HrtfData(null, 44100, pos,
                 new float[1][2][4], new float[1][2]))
                 .isInstanceOf(NullPointerException.class);
@@ -40,7 +40,7 @@ class HrtfDataTest {
 
     @Test
     void shouldRejectNonPositiveSampleRate() {
-        var pos = List.of(new SphericalCoordinate(0, 0, 1.0));
+        List<SphericalCoordinate> pos = List.of(new SphericalCoordinate(0, 0, 1.0));
         assertThatThrownBy(() -> new HrtfData("X", 0, pos,
                 new float[1][2][4], new float[1][2]))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -57,7 +57,7 @@ class HrtfDataTest {
 
     @Test
     void shouldRejectMismatchedIrLength() {
-        var pos = List.of(new SphericalCoordinate(0, 0, 1.0));
+        List<SphericalCoordinate> pos = List.of(new SphericalCoordinate(0, 0, 1.0));
         assertThatThrownBy(() -> new HrtfData("X", 44100, pos,
                 new float[2][2][4], new float[1][2]))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -66,7 +66,7 @@ class HrtfDataTest {
 
     @Test
     void shouldRejectMismatchedDelayLength() {
-        var pos = List.of(new SphericalCoordinate(0, 0, 1.0));
+        List<SphericalCoordinate> pos = List.of(new SphericalCoordinate(0, 0, 1.0));
         assertThatThrownBy(() -> new HrtfData("X", 44100, pos,
                 new float[1][2][4], new float[2][2]))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -75,9 +75,9 @@ class HrtfDataTest {
 
     @Test
     void shouldMakeDefensiveCopyOfPositions() {
-        var mutableList = new java.util.ArrayList<>(
+        java.util.ArrayList<SphericalCoordinate> mutableList = new java.util.ArrayList<>(
                 List.of(new SphericalCoordinate(0, 0, 1.0)));
-        var data = new HrtfData("Test", 44100, mutableList,
+        HrtfData data = new HrtfData("Test", 44100, mutableList,
                 new float[1][2][4], new float[1][2]);
         mutableList.add(new SphericalCoordinate(90, 0, 1.0));
         assertThat(data.sourcePositions()).hasSize(1);

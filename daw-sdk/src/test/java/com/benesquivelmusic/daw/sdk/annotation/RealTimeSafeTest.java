@@ -14,14 +14,14 @@ class RealTimeSafeTest {
 
     @Test
     void shouldBeRetainedAtRuntime() {
-        var retention = RealTimeSafe.class.getAnnotation(Retention.class);
+        Retention retention = RealTimeSafe.class.getAnnotation(Retention.class);
         assertThat(retention).isNotNull();
         assertThat(retention.value()).isEqualTo(RetentionPolicy.RUNTIME);
     }
 
     @Test
     void shouldTargetMethodAndType() {
-        var target = RealTimeSafe.class.getAnnotation(Target.class);
+        Target target = RealTimeSafe.class.getAnnotation(Target.class);
         assertThat(target).isNotNull();
         assertThat(target.value()).containsExactlyInAnyOrder(ElementType.METHOD, ElementType.TYPE);
     }
@@ -46,7 +46,7 @@ class RealTimeSafeTest {
 
     @Test
     void shouldBeDetectableOnMethod() throws NoSuchMethodException {
-        var method = MethodHolder.class.getDeclaredMethod("process");
+        java.lang.reflect.Method method = MethodHolder.class.getDeclaredMethod("process");
         assertThat(method.isAnnotationPresent(RealTimeSafe.class)).isTrue();
     }
 }

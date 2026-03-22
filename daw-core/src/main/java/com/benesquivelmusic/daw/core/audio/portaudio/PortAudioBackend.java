@@ -14,6 +14,7 @@ import java.lang.foreign.Linker;
 import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.lang.invoke.MethodHandles;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -88,7 +89,7 @@ public final class PortAudioBackend implements NativeAudioBackend {
         int deviceCount = bindings.getDeviceCount();
         PortAudioException.checkError(deviceCount, "Pa_GetDeviceCount");
 
-        var devices = new ArrayList<AudioDeviceInfo>(deviceCount);
+        ArrayList<AudioDeviceInfo> devices = new ArrayList<AudioDeviceInfo>(deviceCount);
         for (int i = 0; i < deviceCount; i++) {
             MemorySegment infoPtr = bindings.getDeviceInfo(i);
             if (!infoPtr.equals(MemorySegment.NULL)) {
@@ -283,7 +284,7 @@ public final class PortAudioBackend implements NativeAudioBackend {
     }
 
     private AudioDeviceInfo findDevice(int index) {
-        var devices = getAvailableDevices();
+        List<AudioDeviceInfo> devices = getAvailableDevices();
         for (AudioDeviceInfo device : devices) {
             if (device.index() == index) {
                 return device;
@@ -338,7 +339,7 @@ public final class PortAudioBackend implements NativeAudioBackend {
     private MemorySegment allocateStreamParameters(Arena arena, int deviceIndex, int channels) {
         // PaStreamParameters struct: { int device, int channelCount, unsigned long sampleFormat,
         //                              double suggestedLatency, void* hostApiSpecificStreamInfo }
-        var layout = MemoryLayout.structLayout(
+        MemoryLayout layout = MemoryLayout.structLayout(
                 ValueLayout.JAVA_INT.withName("device"),
                 ValueLayout.JAVA_INT.withName("channelCount"),
                 ValueLayout.JAVA_LONG.withName("sampleFormat"),
@@ -368,7 +369,7 @@ public final class PortAudioBackend implements NativeAudioBackend {
         // int callback(const void* input, void* output, unsigned long frameCount,
         //              const PaStreamCallbackTimeInfo* timeInfo,
         //              PaStreamCallbackFlags statusFlags, void* userData)
-        var callbackDescriptor = FunctionDescriptor.of(
+        FunctionDescriptor callbackDescriptor = FunctionDescriptor.of(
                 ValueLayout.JAVA_INT,
                 ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
                 ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS
@@ -398,7 +399,7 @@ public final class PortAudioBackend implements NativeAudioBackend {
             float[][] outputBuffer = outputChannels > 0 ? new float[outputChannels][framesPerBuffer] : new float[0][];
 
             try {
-                var lookup = java.lang.invoke.MethodHandles.lookup();
+                MethodHandles.Lookup lookup = java.lang.invoke.MethodHandles.lookup();
                 return lookup.bind(
                         new CallbackInvoker(callback, inputBuffer, outputBuffer,
                                 inputChannels, outputChannels),

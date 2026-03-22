@@ -18,20 +18,20 @@ class ClapPluginScannerTest {
 
     @Test
     void shouldReturnDefaultSearchPaths() {
-        var scanner = new ClapPluginScanner();
+        ClapPluginScanner scanner = new ClapPluginScanner();
         assertThat(scanner.getSearchPaths()).isNotEmpty();
     }
 
     @Test
     void shouldAcceptCustomSearchPaths() {
-        var paths = List.of(tempDir.resolve("plugins"));
-        var scanner = new ClapPluginScanner(paths);
+        List<Path> paths = List.of(tempDir.resolve("plugins"));
+        ClapPluginScanner scanner = new ClapPluginScanner(paths);
         assertThat(scanner.getSearchPaths()).isEqualTo(paths);
     }
 
     @Test
     void shouldReturnEmptyForNonExistentDirectories() {
-        var scanner = new ClapPluginScanner(List.of(
+        ClapPluginScanner scanner = new ClapPluginScanner(List.of(
                 tempDir.resolve("nonexistent1"),
                 tempDir.resolve("nonexistent2")));
         assertThat(scanner.scan()).isEmpty();
@@ -45,8 +45,8 @@ class ClapPluginScannerTest {
         Files.createFile(pluginDir.resolve("delay.clap"));
         Files.createFile(pluginDir.resolve("readme.txt"));
 
-        var scanner = new ClapPluginScanner(List.of(pluginDir));
-        var results = scanner.scan();
+        ClapPluginScanner scanner = new ClapPluginScanner(List.of(pluginDir));
+        List<Path> results = scanner.scan();
 
         assertThat(results).hasSize(2);
         assertThat(results).extracting(Path::getFileName)
@@ -62,7 +62,7 @@ class ClapPluginScannerTest {
         Files.createFile(pluginDir.resolve("plugin.dll"));
         Files.createFile(pluginDir.resolve("plugin.so"));
 
-        var scanner = new ClapPluginScanner(List.of(pluginDir));
+        ClapPluginScanner scanner = new ClapPluginScanner(List.of(pluginDir));
         assertThat(scanner.scan()).isEmpty();
     }
 
@@ -75,7 +75,7 @@ class ClapPluginScannerTest {
         Files.createFile(dir1.resolve("a.clap"));
         Files.createFile(dir2.resolve("b.clap"));
 
-        var scanner = new ClapPluginScanner(List.of(dir1, dir2));
+        ClapPluginScanner scanner = new ClapPluginScanner(List.of(dir1, dir2));
         assertThat(scanner.scan()).hasSize(2);
     }
 
@@ -85,8 +85,8 @@ class ClapPluginScannerTest {
         Files.createDirectory(pluginDir);
         Files.createFile(pluginDir.resolve("synth.clap"));
 
-        var scanner = new ClapPluginScanner();
-        var results = scanner.scanDirectory(pluginDir);
+        ClapPluginScanner scanner = new ClapPluginScanner();
+        List<Path> results = scanner.scanDirectory(pluginDir);
 
         assertThat(results).hasSize(1);
         assertThat(results.getFirst().getFileName().toString()).isEqualTo("synth.clap");
@@ -94,7 +94,7 @@ class ClapPluginScannerTest {
 
     @Test
     void shouldReturnEmptyWhenScanningNonDirectory() {
-        var scanner = new ClapPluginScanner();
+        ClapPluginScanner scanner = new ClapPluginScanner();
         assertThat(scanner.scanDirectory(tempDir.resolve("nonexistent"))).isEmpty();
     }
 
@@ -106,14 +106,14 @@ class ClapPluginScannerTest {
 
     @Test
     void shouldRejectNullDirectory() {
-        var scanner = new ClapPluginScanner();
+        ClapPluginScanner scanner = new ClapPluginScanner();
         assertThatThrownBy(() -> scanner.scanDirectory(null))
                 .isInstanceOf(NullPointerException.class);
     }
 
     @Test
     void shouldReturnUnmodifiableSearchPaths() {
-        var scanner = new ClapPluginScanner(List.of(tempDir));
+        ClapPluginScanner scanner = new ClapPluginScanner(List.of(tempDir));
         assertThatThrownBy(() -> scanner.getSearchPaths().add(Path.of("/extra")))
                 .isInstanceOf(UnsupportedOperationException.class);
     }
@@ -124,8 +124,8 @@ class ClapPluginScannerTest {
         Files.createDirectory(pluginDir);
         Files.createFile(pluginDir.resolve("test.clap"));
 
-        var scanner = new ClapPluginScanner(List.of(pluginDir));
-        var results = scanner.scan();
+        ClapPluginScanner scanner = new ClapPluginScanner(List.of(pluginDir));
+        List<Path> results = scanner.scan();
 
         assertThatThrownBy(() -> results.add(Path.of("/fake.clap")))
                 .isInstanceOf(UnsupportedOperationException.class);
@@ -133,7 +133,7 @@ class ClapPluginScannerTest {
 
     @Test
     void shouldProvideDefaultSearchPathsStaticMethod() {
-        var defaults = ClapPluginScanner.defaultSearchPaths();
+        List<Path> defaults = ClapPluginScanner.defaultSearchPaths();
         assertThat(defaults).isNotNull();
         assertThat(defaults).isNotEmpty();
     }

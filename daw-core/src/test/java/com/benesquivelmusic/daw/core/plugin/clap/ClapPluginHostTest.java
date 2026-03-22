@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.plugin.clap;
 
 import com.benesquivelmusic.daw.sdk.plugin.ExternalPluginFormat;
+import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
 import org.junit.jupiter.api.Test;
@@ -18,7 +19,7 @@ class ClapPluginHostTest {
 
     @Test
     void shouldCreateWithValidArguments() {
-        var host = new ClapPluginHost(Path.of("/plugins/test.clap"), 0, 2, 2);
+        ClapPluginHost host = new ClapPluginHost(Path.of("/plugins/test.clap"), 0, 2, 2);
 
         assertThat(host.getLibraryPath()).isEqualTo(Path.of("/plugins/test.clap"));
         assertThat(host.getPluginIndex()).isEqualTo(0);
@@ -28,7 +29,7 @@ class ClapPluginHostTest {
 
     @Test
     void shouldCreateWithDefaultStereoSettings() {
-        var host = new ClapPluginHost(Path.of("/plugins/test.clap"));
+        ClapPluginHost host = new ClapPluginHost(Path.of("/plugins/test.clap"));
 
         assertThat(host.getPluginIndex()).isEqualTo(0);
         assertThat(host.getInputChannelCount()).isEqualTo(2);
@@ -37,14 +38,14 @@ class ClapPluginHostTest {
 
     @Test
     void shouldReportClapFormat() {
-        var host = new ClapPluginHost(Path.of("/plugins/test.clap"));
+        ClapPluginHost host = new ClapPluginHost(Path.of("/plugins/test.clap"));
         assertThat(host.getFormat()).isEqualTo(ExternalPluginFormat.CLAP);
     }
 
     @Test
     void shouldProvideDefaultDescriptorBeforeInit() {
-        var host = new ClapPluginHost(Path.of("/plugins/test.clap"));
-        var descriptor = host.getDescriptor();
+        ClapPluginHost host = new ClapPluginHost(Path.of("/plugins/test.clap"));
+        PluginDescriptor descriptor = host.getDescriptor();
 
         assertThat(descriptor).isNotNull();
         assertThat(descriptor.id()).contains("test.clap");
@@ -53,7 +54,7 @@ class ClapPluginHostTest {
 
     @Test
     void shouldNotBeInitializedByDefault() {
-        var host = new ClapPluginHost(Path.of("/plugins/test.clap"));
+        ClapPluginHost host = new ClapPluginHost(Path.of("/plugins/test.clap"));
         assertThat(host.isInitialized()).isFalse();
         assertThat(host.isActivated()).isFalse();
     }
@@ -88,7 +89,7 @@ class ClapPluginHostTest {
 
     @Test
     void shouldThrowOnInitializeWithNullContext() {
-        var host = new ClapPluginHost(Path.of("/test.clap"));
+        ClapPluginHost host = new ClapPluginHost(Path.of("/test.clap"));
         assertThatThrownBy(() -> host.initialize(null))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("context");
@@ -96,7 +97,7 @@ class ClapPluginHostTest {
 
     @Test
     void shouldThrowOnInitializeWithNonExistentLibrary() {
-        var host = new ClapPluginHost(tempDir.resolve("nonexistent.clap"));
+        ClapPluginHost host = new ClapPluginHost(tempDir.resolve("nonexistent.clap"));
 
         assertThatThrownBy(() -> host.initialize(new TestPluginContext()))
                 .isInstanceOf(ClapException.class)
@@ -105,7 +106,7 @@ class ClapPluginHostTest {
 
     @Test
     void shouldThrowOnActivateBeforeInitialize() {
-        var host = new ClapPluginHost(Path.of("/test.clap"));
+        ClapPluginHost host = new ClapPluginHost(Path.of("/test.clap"));
         assertThatThrownBy(host::activate)
                 .isInstanceOf(ClapException.class)
                 .hasMessageContaining("not initialized");
@@ -113,7 +114,7 @@ class ClapPluginHostTest {
 
     @Test
     void shouldPassThroughWhenNotProcessing() {
-        var host = new ClapPluginHost(Path.of("/test.clap"));
+        ClapPluginHost host = new ClapPluginHost(Path.of("/test.clap"));
 
         float[][] input = {{1.0f, 0.5f, -0.5f}};
         float[][] output = {{0.0f, 0.0f, 0.0f}};
@@ -124,40 +125,40 @@ class ClapPluginHostTest {
 
     @Test
     void shouldReturnZeroLatencyWhenNotInitialized() {
-        var host = new ClapPluginHost(Path.of("/test.clap"));
+        ClapPluginHost host = new ClapPluginHost(Path.of("/test.clap"));
         assertThat(host.getLatencySamples()).isEqualTo(0);
     }
 
     @Test
     void shouldReturnEmptyStateWhenNotInitialized() {
-        var host = new ClapPluginHost(Path.of("/test.clap"));
+        ClapPluginHost host = new ClapPluginHost(Path.of("/test.clap"));
         assertThat(host.saveState()).isEmpty();
     }
 
     @Test
     void shouldAcceptLoadStateWithoutError() {
-        var host = new ClapPluginHost(Path.of("/test.clap"));
+        ClapPluginHost host = new ClapPluginHost(Path.of("/test.clap"));
         host.loadState(new byte[]{1, 2, 3});
         // No exception expected
     }
 
     @Test
     void shouldRejectNullState() {
-        var host = new ClapPluginHost(Path.of("/test.clap"));
+        ClapPluginHost host = new ClapPluginHost(Path.of("/test.clap"));
         assertThatThrownBy(() -> host.loadState(null))
                 .isInstanceOf(NullPointerException.class);
     }
 
     @Test
     void shouldResetWithoutError() {
-        var host = new ClapPluginHost(Path.of("/test.clap"));
+        ClapPluginHost host = new ClapPluginHost(Path.of("/test.clap"));
         // reset() should not throw when not initialized
         host.reset();
     }
 
     @Test
     void shouldDisposeWithoutErrorWhenNotInitialized() {
-        var host = new ClapPluginHost(Path.of("/test.clap"));
+        ClapPluginHost host = new ClapPluginHost(Path.of("/test.clap"));
         // dispose() should not throw on uninitialized host
         host.dispose();
         assertThat(host.isInitialized()).isFalse();
@@ -165,7 +166,7 @@ class ClapPluginHostTest {
 
     @Test
     void shouldDeactivateWithoutErrorWhenNotActivated() {
-        var host = new ClapPluginHost(Path.of("/test.clap"));
+        ClapPluginHost host = new ClapPluginHost(Path.of("/test.clap"));
         // deactivate() should not throw when not activated
         host.deactivate();
     }
@@ -174,7 +175,7 @@ class ClapPluginHostTest {
 
     @Test
     void shouldRejectSetParameterWhenPluginDoesNotSupportParams() {
-        var host = new ClapPluginHost(Path.of("/test.clap"));
+        ClapPluginHost host = new ClapPluginHost(Path.of("/test.clap"));
         // getParameters() returns empty list when not initialized — setParameterValue
         // should throw because the parameter does not exist.
         assertThatThrownBy(() -> host.setParameterValue(0, 0.5))
@@ -184,21 +185,21 @@ class ClapPluginHostTest {
 
     @Test
     void shouldAcceptLoadStateWithEmptyArrayWithoutError() {
-        var host = new ClapPluginHost(Path.of("/test.clap"));
+        ClapPluginHost host = new ClapPluginHost(Path.of("/test.clap"));
         // Empty state should be silently ignored (nothing to restore).
         host.loadState(new byte[0]);
     }
 
     @Test
     void shouldReturnEmptyStateBeforeInitialize() {
-        var host = new ClapPluginHost(Path.of("/test.clap"));
+        ClapPluginHost host = new ClapPluginHost(Path.of("/test.clap"));
         // Before initialize(), there is no state extension — should return empty array.
         assertThat(host.saveState()).isEmpty();
     }
 
     @Test
     void shouldPassThroughWithPendingParamChangesWhenNotProcessing() {
-        var host = new ClapPluginHost(Path.of("/test.clap"));
+        ClapPluginHost host = new ClapPluginHost(Path.of("/test.clap"));
 
         float[][] input = {{0.8f, -0.3f}};
         float[][] output = {{0.0f, 0.0f}};

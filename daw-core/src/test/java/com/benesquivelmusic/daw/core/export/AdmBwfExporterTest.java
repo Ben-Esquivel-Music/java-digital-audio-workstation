@@ -42,7 +42,7 @@ class AdmBwfExporterTest {
         exportSimpleSession(output, 24);
 
         byte[] data = Files.readAllBytes(output);
-        var buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
 
         // fmt chunk at offset 12
         assertThat(new String(data, 12, 4, StandardCharsets.US_ASCII)).isEqualTo("fmt ");
@@ -109,7 +109,7 @@ class AdmBwfExporterTest {
         exportSimpleSession(output, 32);
 
         byte[] data = Files.readAllBytes(output);
-        var buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
 
         buf.position(20);
         assertThat(buf.getShort()).isEqualTo((short) 3); // IEEE float
@@ -121,7 +121,7 @@ class AdmBwfExporterTest {
         exportSimpleSession(output, 16);
 
         byte[] data = Files.readAllBytes(output);
-        var buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
 
         buf.position(20);
         assertThat(buf.getShort()).isEqualTo((short) 1); // PCM
@@ -131,10 +131,10 @@ class AdmBwfExporterTest {
 
     @Test
     void shouldBuildValidAdmXml() {
-        var beds = List.of(
+        List<BedChannel> beds = List.of(
                 new BedChannel("bed-L", SpeakerLabel.L),
                 new BedChannel("bed-R", SpeakerLabel.R));
-        var objects = List.of(
+        List<AudioObject> objects = List.of(
                 new AudioObject("obj-1", new ObjectMetadata(0.5, 0.3, 0.1, 0.2, 0.8)));
 
         byte[] xml = AdmBwfExporter.buildAdmXml(beds, objects,
@@ -155,7 +155,7 @@ class AdmBwfExporterTest {
         // 10000 frames > CHUNK_FRAMES (8192) — verifies chunked MemorySegment writing
         Path output = tempDir.resolve("multi_chunk.wav");
         int numSamples = 10000;
-        var beds = List.of(
+        List<BedChannel> beds = List.of(
                 new BedChannel("bed-L", SpeakerLabel.L),
                 new BedChannel("bed-R", SpeakerLabel.R));
         float[] bedL = new float[numSamples];
@@ -165,7 +165,7 @@ class AdmBwfExporterTest {
             bedR[i] = (float) (0.3 * Math.cos(2.0 * Math.PI * 440.0 * i / 48000));
         }
 
-        var obj = new AudioObject("obj-1", new ObjectMetadata(0.5, 0.0, 0.2, 0.1, 0.9));
+        AudioObject obj = new AudioObject("obj-1", new ObjectMetadata(0.5, 0.0, 0.2, 0.1, 0.9));
         float[] objAudio = new float[numSamples];
         Arrays.fill(objAudio, 0.1f);
 
@@ -178,7 +178,7 @@ class AdmBwfExporterTest {
         byte[] data = Files.readAllBytes(output);
         assertThat(new String(data, 0, 4, StandardCharsets.US_ASCII)).isEqualTo("RIFF");
 
-        var buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
         // Verify data chunk size: 10000 samples * 3 channels * 3 bytes
         int expectedDataSize = numSamples * 3 * 3;
         buf.position(40);
@@ -190,7 +190,7 @@ class AdmBwfExporterTest {
         // Exactly 8192 frames = one full chunk
         Path output = tempDir.resolve("exact_chunk.wav");
         int numSamples = 8192;
-        var beds = List.of(new BedChannel("bed-L", SpeakerLabel.L));
+        List<BedChannel> beds = List.of(new BedChannel("bed-L", SpeakerLabel.L));
         float[] bedL = new float[numSamples];
         Arrays.fill(bedL, 0.4f);
 
@@ -200,14 +200,14 @@ class AdmBwfExporterTest {
                 AudioMetadata.EMPTY, output);
 
         byte[] data = Files.readAllBytes(output);
-        var buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
         int expectedDataSize = numSamples * 1 * 2;
         buf.position(40);
         assertThat(buf.getInt()).isEqualTo(expectedDataSize);
     }
 
     private void exportSimpleSession(Path output, int bitDepth) throws IOException {
-        var beds = List.of(
+        List<BedChannel> beds = List.of(
                 new BedChannel("bed-L", SpeakerLabel.L),
                 new BedChannel("bed-R", SpeakerLabel.R));
         float[] bedL = new float[1024];
@@ -215,7 +215,7 @@ class AdmBwfExporterTest {
         Arrays.fill(bedL, 0.5f);
         Arrays.fill(bedR, 0.3f);
 
-        var obj = new AudioObject("obj-1", new ObjectMetadata(0.5, 0.0, 0.2, 0.1, 0.9));
+        AudioObject obj = new AudioObject("obj-1", new ObjectMetadata(0.5, 0.0, 0.2, 0.1, 0.9));
         float[] objAudio = new float[1024];
         Arrays.fill(objAudio, 0.1f);
 

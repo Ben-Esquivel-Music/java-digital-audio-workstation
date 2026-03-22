@@ -12,8 +12,8 @@ class SessionExportResultTest {
 
     @Test
     void shouldCreateWithOutputPathAndWarnings() {
-        var path = Path.of("/tmp/output/session.dawproject");
-        var result = new SessionExportResult(path, List.of("Automation not exported"));
+        Path path = Path.of("/tmp/output/session.dawproject");
+        SessionExportResult result = new SessionExportResult(path, List.of("Automation not exported"));
 
         assertThat(result.outputPath()).isEqualTo(path);
         assertThat(result.warnings()).containsExactly("Automation not exported");
@@ -21,8 +21,8 @@ class SessionExportResultTest {
 
     @Test
     void shouldCreateWithEmptyWarnings() {
-        var path = Path.of("/tmp/session.dawproject");
-        var result = new SessionExportResult(path, List.of());
+        Path path = Path.of("/tmp/session.dawproject");
+        SessionExportResult result = new SessionExportResult(path, List.of());
 
         assertThat(result.warnings()).isEmpty();
     }
@@ -41,7 +41,7 @@ class SessionExportResultTest {
 
     @Test
     void shouldReturnDefensiveCopyOfWarnings() {
-        var result = new SessionExportResult(Path.of("/tmp/x"), List.of("warn1"));
+        SessionExportResult result = new SessionExportResult(Path.of("/tmp/x"), List.of("warn1"));
 
         assertThatThrownBy(() -> result.warnings().add("mutation"))
                 .isInstanceOf(UnsupportedOperationException.class);

@@ -11,7 +11,7 @@ class EffectsChainTest {
 
     @Test
     void shouldStartEmpty() {
-        var chain = new EffectsChain();
+        EffectsChain chain = new EffectsChain();
 
         assertThat(chain.isEmpty()).isTrue();
         assertThat(chain.size()).isZero();
@@ -20,7 +20,7 @@ class EffectsChainTest {
 
     @Test
     void shouldAddProcessor() {
-        var chain = new EffectsChain();
+        EffectsChain chain = new EffectsChain();
         chain.addProcessor(new PassthroughProcessor());
 
         assertThat(chain.size()).isEqualTo(1);
@@ -29,9 +29,9 @@ class EffectsChainTest {
 
     @Test
     void shouldInsertProcessorAtIndex() {
-        var chain = new EffectsChain();
-        var p1 = new PassthroughProcessor();
-        var p2 = new GainProcessor(0.5f);
+        EffectsChain chain = new EffectsChain();
+        PassthroughProcessor p1 = new PassthroughProcessor();
+        GainProcessor p2 = new GainProcessor(0.5f);
         chain.addProcessor(p1);
         chain.insertProcessor(0, p2);
 
@@ -40,8 +40,8 @@ class EffectsChainTest {
 
     @Test
     void shouldRemoveProcessor() {
-        var chain = new EffectsChain();
-        var p = new PassthroughProcessor();
+        EffectsChain chain = new EffectsChain();
+        PassthroughProcessor p = new PassthroughProcessor();
         chain.addProcessor(p);
 
         assertThat(chain.removeProcessor(p)).isTrue();
@@ -50,18 +50,18 @@ class EffectsChainTest {
 
     @Test
     void shouldRemoveProcessorByIndex() {
-        var chain = new EffectsChain();
-        var p = new PassthroughProcessor();
+        EffectsChain chain = new EffectsChain();
+        PassthroughProcessor p = new PassthroughProcessor();
         chain.addProcessor(p);
 
-        var removed = chain.removeProcessor(0);
+        AudioProcessor removed = chain.removeProcessor(0);
         assertThat(removed).isSameAs(p);
         assertThat(chain.isEmpty()).isTrue();
     }
 
     @Test
     void shouldCopyInputToOutputWhenBypassed() {
-        var chain = new EffectsChain();
+        EffectsChain chain = new EffectsChain();
         chain.addProcessor(new GainProcessor(0.0f));
         chain.setBypassed(true);
 
@@ -74,7 +74,7 @@ class EffectsChainTest {
 
     @Test
     void shouldCopyInputToOutputWhenEmpty() {
-        var chain = new EffectsChain();
+        EffectsChain chain = new EffectsChain();
 
         float[][] input = {{0.7f, -0.3f}};
         float[][] output = {{0.0f, 0.0f}};
@@ -85,7 +85,7 @@ class EffectsChainTest {
 
     @Test
     void shouldProcessThroughSingleProcessor() {
-        var chain = new EffectsChain();
+        EffectsChain chain = new EffectsChain();
         chain.addProcessor(new GainProcessor(0.5f));
 
         float[][] input = {{1.0f, -1.0f}};
@@ -97,7 +97,7 @@ class EffectsChainTest {
 
     @Test
     void shouldProcessThroughChainedProcessors() {
-        var chain = new EffectsChain();
+        EffectsChain chain = new EffectsChain();
         chain.addProcessor(new GainProcessor(0.5f));
         chain.addProcessor(new GainProcessor(0.5f));
 
@@ -110,9 +110,9 @@ class EffectsChainTest {
 
     @Test
     void shouldResetAllProcessors() {
-        var chain = new EffectsChain();
-        var p1 = new PassthroughProcessor();
-        var p2 = new PassthroughProcessor();
+        EffectsChain chain = new EffectsChain();
+        PassthroughProcessor p1 = new PassthroughProcessor();
+        PassthroughProcessor p2 = new PassthroughProcessor();
         chain.addProcessor(p1);
         chain.addProcessor(p2);
 
@@ -124,7 +124,7 @@ class EffectsChainTest {
 
     @Test
     void shouldReturnUnmodifiableProcessorList() {
-        var chain = new EffectsChain();
+        EffectsChain chain = new EffectsChain();
         chain.addProcessor(new PassthroughProcessor());
 
         assertThatThrownBy(() -> chain.getProcessors().clear())
@@ -133,7 +133,7 @@ class EffectsChainTest {
 
     @Test
     void shouldRejectNullProcessor() {
-        var chain = new EffectsChain();
+        EffectsChain chain = new EffectsChain();
 
         assertThatThrownBy(() -> chain.addProcessor(null))
                 .isInstanceOf(NullPointerException.class);
@@ -141,7 +141,7 @@ class EffectsChainTest {
 
     @Test
     void shouldProcessWithPreAllocatedIntermediateBuffers() {
-        var chain = new EffectsChain();
+        EffectsChain chain = new EffectsChain();
         chain.addProcessor(new GainProcessor(0.5f));
         chain.addProcessor(new GainProcessor(0.5f));
         chain.allocateIntermediateBuffers(1, 4);
@@ -156,7 +156,7 @@ class EffectsChainTest {
 
     @Test
     void shouldWorkWithThreeProcessorsAndPreAllocatedBuffers() {
-        var chain = new EffectsChain();
+        EffectsChain chain = new EffectsChain();
         chain.addProcessor(new GainProcessor(0.5f));
         chain.addProcessor(new GainProcessor(0.5f));
         chain.addProcessor(new GainProcessor(0.5f));

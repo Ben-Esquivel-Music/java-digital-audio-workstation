@@ -10,6 +10,7 @@ import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.VarHandle;
 import java.nio.file.Path;
+import java.util.Optional;
 
 /**
  * Raw FFM (Foreign Function &amp; Memory API — JEP 454) bindings for the
@@ -636,7 +637,7 @@ public final class ClapBindings {
 
         try {
             tempLookup = SymbolLookup.libraryLookup(libraryPath, tempArena);
-            var entryOpt = tempLookup.find("clap_entry");
+            Optional<MemorySegment> entryOpt = tempLookup.find("clap_entry");
             if (entryOpt.isPresent()) {
                 tempEntry = entryOpt.get().reinterpret(CLAP_PLUGIN_ENTRY_LAYOUT.byteSize());
                 tempAvailable = true;
@@ -715,8 +716,8 @@ public final class ClapBindings {
      * @return the Java string
      */
     public static String readFixedString(MemorySegment segment, long offset, int maxLen) {
-        var slice = segment.asSlice(offset, maxLen);
-        var bytes = slice.toArray(ValueLayout.JAVA_BYTE);
+        MemorySegment slice = segment.asSlice(offset, maxLen);
+        byte[] bytes = slice.toArray(ValueLayout.JAVA_BYTE);
         int len = 0;
         while (len < bytes.length && bytes[len] != 0) {
             len++;

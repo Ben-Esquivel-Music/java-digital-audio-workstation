@@ -44,7 +44,7 @@ public final class AtmosSessionValidator {
         Objects.requireNonNull(audioObjects, "audioObjects must not be null");
         Objects.requireNonNull(layout, "layout must not be null");
 
-        var errors = new ArrayList<String>();
+        ArrayList<String> errors = new ArrayList<String>();
 
         int totalTracks = bedChannels.size() + audioObjects.size();
         if (totalTracks > MAX_TOTAL_TRACKS) {
@@ -58,8 +58,8 @@ public final class AtmosSessionValidator {
         }
 
         // Validate bed channels are assigned to speakers present in the layout
-        var assignedSpeakers = new java.util.HashSet<com.benesquivelmusic.daw.sdk.spatial.SpeakerLabel>();
-        for (var bed : bedChannels) {
+        java.util.HashSet<com.benesquivelmusic.daw.sdk.spatial.SpeakerLabel> assignedSpeakers = new java.util.HashSet<com.benesquivelmusic.daw.sdk.spatial.SpeakerLabel>();
+        for (BedChannel bed : bedChannels) {
             if (!layout.contains(bed.speakerLabel())) {
                 errors.add("Bed channel '%s' is assigned to speaker %s which is not in layout '%s'"
                         .formatted(bed.trackId(), bed.speakerLabel(), layout.name()));

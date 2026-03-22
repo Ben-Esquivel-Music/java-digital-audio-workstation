@@ -9,7 +9,7 @@ class CompressorProcessorTest {
 
     @Test
     void shouldCreateWithDefaults() {
-        var comp = new CompressorProcessor(2, 44100.0);
+        CompressorProcessor comp = new CompressorProcessor(2, 44100.0);
         assertThat(comp.getInputChannelCount()).isEqualTo(2);
         assertThat(comp.getOutputChannelCount()).isEqualTo(2);
         assertThat(comp.getThresholdDb()).isEqualTo(-20.0);
@@ -18,7 +18,7 @@ class CompressorProcessorTest {
 
     @Test
     void shouldPassThroughBelowThreshold() {
-        var comp = new CompressorProcessor(1, 44100.0);
+        CompressorProcessor comp = new CompressorProcessor(1, 44100.0);
         comp.setThresholdDb(0.0); // Threshold at 0 dB — nothing should compress
 
         float[][] input = new float[1][256];
@@ -37,7 +37,7 @@ class CompressorProcessorTest {
 
     @Test
     void shouldReduceGainAboveThreshold() {
-        var comp = new CompressorProcessor(1, 44100.0);
+        CompressorProcessor comp = new CompressorProcessor(1, 44100.0);
         comp.setThresholdDb(-20.0);
         comp.setRatio(10.0);
         comp.setAttackMs(0.01); // Very fast attack
@@ -59,7 +59,7 @@ class CompressorProcessorTest {
 
     @Test
     void shouldReportGainReduction() {
-        var comp = new CompressorProcessor(1, 44100.0);
+        CompressorProcessor comp = new CompressorProcessor(1, 44100.0);
         comp.setThresholdDb(-20.0);
         comp.setRatio(4.0);
         comp.setAttackMs(0.01);
@@ -76,7 +76,7 @@ class CompressorProcessorTest {
 
     @Test
     void shouldApplyMakeupGain() {
-        var comp = new CompressorProcessor(1, 44100.0);
+        CompressorProcessor comp = new CompressorProcessor(1, 44100.0);
         comp.setThresholdDb(-60.0); // Very low threshold
         comp.setRatio(10.0);
         comp.setMakeupGainDb(20.0);
@@ -94,7 +94,7 @@ class CompressorProcessorTest {
 
     @Test
     void shouldResetState() {
-        var comp = new CompressorProcessor(1, 44100.0);
+        CompressorProcessor comp = new CompressorProcessor(1, 44100.0);
         float[][] buf = new float[1][128];
         java.util.Arrays.fill(buf[0], 0.9f);
         comp.process(buf, new float[1][128], 128);
@@ -105,14 +105,14 @@ class CompressorProcessorTest {
 
     @Test
     void shouldRejectInvalidRatio() {
-        var comp = new CompressorProcessor(1, 44100.0);
+        CompressorProcessor comp = new CompressorProcessor(1, 44100.0);
         assertThatThrownBy(() -> comp.setRatio(0.5))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void shouldSupportDetectionModes() {
-        var comp = new CompressorProcessor(1, 44100.0);
+        CompressorProcessor comp = new CompressorProcessor(1, 44100.0);
         comp.setDetectionMode(CompressorProcessor.DetectionMode.RMS);
         assertThat(comp.getDetectionMode()).isEqualTo(CompressorProcessor.DetectionMode.RMS);
     }

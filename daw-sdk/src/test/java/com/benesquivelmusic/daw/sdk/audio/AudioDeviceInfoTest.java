@@ -10,7 +10,7 @@ class AudioDeviceInfoTest {
 
     @Test
     void shouldReportInputSupport() {
-        var device = new AudioDeviceInfo(0, "Mic", "ALSA", 2, 0, 44100.0,
+        AudioDeviceInfo device = new AudioDeviceInfo(0, "Mic", "ALSA", 2, 0, 44100.0,
                 List.of(SampleRate.HZ_44100), 5.0, 0.0);
         assertThat(device.supportsInput()).isTrue();
         assertThat(device.supportsOutput()).isFalse();
@@ -18,7 +18,7 @@ class AudioDeviceInfoTest {
 
     @Test
     void shouldReportOutputSupport() {
-        var device = new AudioDeviceInfo(1, "Speakers", "CoreAudio", 0, 2, 48000.0,
+        AudioDeviceInfo device = new AudioDeviceInfo(1, "Speakers", "CoreAudio", 0, 2, 48000.0,
                 List.of(SampleRate.HZ_48000), 0.0, 5.0);
         assertThat(device.supportsInput()).isFalse();
         assertThat(device.supportsOutput()).isTrue();
@@ -26,7 +26,7 @@ class AudioDeviceInfoTest {
 
     @Test
     void shouldReportFullDuplex() {
-        var device = new AudioDeviceInfo(2, "Interface", "WASAPI", 8, 8, 96000.0,
+        AudioDeviceInfo device = new AudioDeviceInfo(2, "Interface", "WASAPI", 8, 8, 96000.0,
                 List.of(SampleRate.HZ_44100, SampleRate.HZ_96000), 2.0, 2.0);
         assertThat(device.supportsInput()).isTrue();
         assertThat(device.supportsOutput()).isTrue();
@@ -34,8 +34,8 @@ class AudioDeviceInfoTest {
 
     @Test
     void shouldExposeAllFields() {
-        var rates = List.of(SampleRate.HZ_44100, SampleRate.HZ_48000);
-        var device = new AudioDeviceInfo(3, "Test", "JACK", 4, 6, 44100.0,
+        List<SampleRate> rates = List.of(SampleRate.HZ_44100, SampleRate.HZ_48000);
+        AudioDeviceInfo device = new AudioDeviceInfo(3, "Test", "JACK", 4, 6, 44100.0,
                 rates, 1.5, 2.5);
         assertThat(device.index()).isEqualTo(3);
         assertThat(device.name()).isEqualTo("Test");

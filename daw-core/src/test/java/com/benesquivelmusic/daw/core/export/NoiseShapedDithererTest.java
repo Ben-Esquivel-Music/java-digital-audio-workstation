@@ -9,7 +9,7 @@ class NoiseShapedDithererTest {
 
     @Test
     void shouldQuantizeToTargetBitDepthRange() {
-        var ditherer = new NoiseShapedDitherer(42L);
+        NoiseShapedDitherer ditherer = new NoiseShapedDitherer(42L);
 
         for (int i = 0; i < 1000; i++) {
             double sample = (i / 500.0) - 1.0;
@@ -20,7 +20,7 @@ class NoiseShapedDithererTest {
 
     @Test
     void shouldPreserveSilenceApproximately() {
-        var ditherer = new NoiseShapedDitherer(42L);
+        NoiseShapedDitherer ditherer = new NoiseShapedDitherer(42L);
         double sum = 0.0;
         int count = 100_000;
 
@@ -35,7 +35,7 @@ class NoiseShapedDithererTest {
     @Test
     void shouldShapeNoiseTowardHigherFrequencies() {
         // Process a silence signal and measure noise energy in low vs high bands
-        var ditherer = new NoiseShapedDitherer(42L);
+        NoiseShapedDitherer ditherer = new NoiseShapedDitherer(42L);
         int count = 8192;
         double[] noiseSamples = new double[count];
 
@@ -69,7 +69,7 @@ class NoiseShapedDithererTest {
 
     @Test
     void shouldWorkWith24BitTarget() {
-        var ditherer = new NoiseShapedDitherer(42L);
+        NoiseShapedDitherer ditherer = new NoiseShapedDitherer(42L);
         double maxVal24 = (1L << 23) - 1;
 
         double quantized = ditherer.dither(0.5, 24);
@@ -78,7 +78,7 @@ class NoiseShapedDithererTest {
 
     @Test
     void resetShouldClearState() {
-        var ditherer = new NoiseShapedDitherer(42L);
+        NoiseShapedDitherer ditherer = new NoiseShapedDitherer(42L);
 
         // Process some samples to build up error state
         for (int i = 0; i < 100; i++) {
@@ -89,7 +89,7 @@ class NoiseShapedDithererTest {
 
         // After reset, processing the same seed should give deterministic results
         // (the error feedback state is cleared)
-        var freshDitherer = new NoiseShapedDitherer(99L);
+        NoiseShapedDitherer freshDitherer = new NoiseShapedDitherer(99L);
         ditherer = new NoiseShapedDitherer(99L);
 
         double result1 = ditherer.dither(0.3, 16);

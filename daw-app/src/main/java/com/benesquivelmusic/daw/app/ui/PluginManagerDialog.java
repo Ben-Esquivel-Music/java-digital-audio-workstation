@@ -91,7 +91,7 @@ public final class PluginManagerDialog extends Dialog<Void> {
         browseButton.setGraphic(IconNode.of(DawIcon.FOLDER, BUTTON_ICON_SIZE));
         browseButton.setOnAction(_ -> browseForJar());
 
-        var jarLabel = new Label("JAR Path:");
+        Label jarLabel = new Label("JAR Path:");
         jarLabel.setGraphic(IconNode.of(DawIcon.LINK, 14));
 
         HBox jarPathRow = new HBox(8, jarLabel, jarPathField, browseButton);
@@ -102,7 +102,7 @@ public final class PluginManagerDialog extends Dialog<Void> {
         classNameField.setPromptText("e.g. com.example.MyReverbPlugin");
         HBox.setHgrow(classNameField, Priority.ALWAYS);
 
-        var classLabel = new Label("Plugin Class:");
+        Label classLabel = new Label("Plugin Class:");
         classLabel.setGraphic(IconNode.of(DawIcon.INFO, 14));
 
         HBox classNameRow = new HBox(8, classLabel, classNameField);
@@ -121,7 +121,7 @@ public final class PluginManagerDialog extends Dialog<Void> {
         buttonRow.setPadding(new Insets(8, 0, 0, 0));
 
         // --- Layout ---
-        var headerLabel = new Label("Loaded Plugins:");
+        Label headerLabel = new Label("Loaded Plugins:");
         headerLabel.setGraphic(IconNode.of(DawIcon.LIBRARY, HEADER_ICON_SIZE));
 
         VBox content = new VBox(8,

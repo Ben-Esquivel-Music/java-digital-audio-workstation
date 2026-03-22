@@ -34,7 +34,7 @@ public record ProjectMetadata(
      * @return fresh project metadata
      */
     public static ProjectMetadata createNew(String name) {
-        var now = Instant.now();
+        Instant now = Instant.now();
         return new ProjectMetadata(name, now, now, null);
     }
 

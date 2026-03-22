@@ -30,7 +30,7 @@ class UndoManagerTest {
 
     @Test
     void executeRunsActionAndPushesToUndoStack() {
-        var log = new ArrayList<String>();
+        ArrayList<String> log = new ArrayList<String>();
         undoManager.execute(action("Add Track", log));
 
         assertThat(log).containsExactly("execute:Add Track");
@@ -41,7 +41,7 @@ class UndoManagerTest {
 
     @Test
     void undoReversesLastAction() {
-        var log = new ArrayList<String>();
+        ArrayList<String> log = new ArrayList<String>();
         undoManager.execute(action("A", log));
         undoManager.execute(action("B", log));
 
@@ -56,7 +56,7 @@ class UndoManagerTest {
 
     @Test
     void redoReappliesUndoneAction() {
-        var log = new ArrayList<String>();
+        ArrayList<String> log = new ArrayList<String>();
         undoManager.execute(action("A", log));
         undoManager.undo();
         log.clear();
@@ -81,7 +81,7 @@ class UndoManagerTest {
 
     @Test
     void newActionClearsRedoStack() {
-        var log = new ArrayList<String>();
+        ArrayList<String> log = new ArrayList<String>();
         undoManager.execute(action("A", log));
         undoManager.execute(action("B", log));
         undoManager.undo(); // undo B, B goes to redo
@@ -95,8 +95,8 @@ class UndoManagerTest {
 
     @Test
     void historyIsTrimmedToMaxDepth() {
-        var manager = new UndoManager(3);
-        var log = new ArrayList<String>();
+        UndoManager manager = new UndoManager(3);
+        ArrayList<String> log = new ArrayList<String>();
 
         manager.execute(action("A", log));
         manager.execute(action("B", log));
@@ -113,7 +113,7 @@ class UndoManagerTest {
 
     @Test
     void clearRemovesBothStacks() {
-        var log = new ArrayList<String>();
+        ArrayList<String> log = new ArrayList<String>();
         undoManager.execute(action("A", log));
         undoManager.execute(action("B", log));
         undoManager.undo();
@@ -147,7 +147,7 @@ class UndoManagerTest {
 
     @Test
     void multipleUndoRedoCyclesWorkCorrectly() {
-        var log = new ArrayList<String>();
+        ArrayList<String> log = new ArrayList<String>();
         undoManager.execute(action("A", log));
         undoManager.execute(action("B", log));
         undoManager.execute(action("C", log));

@@ -43,7 +43,7 @@ class TruePeakCeilingPresetTest {
 
     @Test
     void allPresetsShouldHaveNonPositiveCeiling() {
-        for (var preset : TruePeakCeilingPreset.values()) {
+        for (TruePeakCeilingPreset preset : TruePeakCeilingPreset.values()) {
             assertThat(preset.getCeilingDbtp())
                     .as("Preset %s ceiling should be <= 0", preset.name())
                     .isLessThanOrEqualTo(0.0);

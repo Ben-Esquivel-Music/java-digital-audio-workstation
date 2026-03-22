@@ -44,7 +44,7 @@ public final class PluginRegistry {
         if (entries.contains(entry)) {
             throw new PluginLoadException("Plugin entry already registered: " + entry);
         }
-        var result = ExternalPluginLoader.loadWithClassLoader(entry);
+        ExternalPluginLoader.LoadResult result = ExternalPluginLoader.loadWithClassLoader(entry);
         entries.add(entry);
         loadedPlugins.put(entry, result.plugin());
         classLoaders.put(entry, result.classLoader());

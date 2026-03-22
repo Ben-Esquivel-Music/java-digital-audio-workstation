@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.spatial.binaural;
 
+import com.benesquivelmusic.daw.core.spatial.binaural.HrtfInterpolator;
+import com.benesquivelmusic.daw.core.spatial.binaural.HrtfInterpolator.InterpolatedHrtf;
 import com.benesquivelmusic.daw.sdk.spatial.HrtfData;
 import com.benesquivelmusic.daw.sdk.spatial.SphericalCoordinate;
 import org.junit.jupiter.api.BeforeEach;
@@ -44,8 +46,8 @@ class HrtfInterpolatorTest {
 
     @Test
     void shouldReturnExactMatchForMeasuredPosition() {
-        var interpolator = new HrtfInterpolator(hrtfData);
-        var result = interpolator.interpolate(new SphericalCoordinate(0, 0, 1.0));
+        HrtfInterpolator interpolator = new HrtfInterpolator(hrtfData);
+        InterpolatedHrtf result = interpolator.interpolate(new SphericalCoordinate(0, 0, 1.0));
 
         // Front position: m=0, leftAmp=0.1, rightAmp=0.4
         assertThat(result.leftIr()[0]).isCloseTo(0.1f, within(1e-6f));
@@ -54,9 +56,9 @@ class HrtfInterpolatorTest {
 
     @Test
     void shouldInterpolateBetweenNeighbors() {
-        var interpolator = new HrtfInterpolator(hrtfData, 2);
+        HrtfInterpolator interpolator = new HrtfInterpolator(hrtfData, 2);
         // 45° is exactly between front (0°) and left (90°)
-        var result = interpolator.interpolate(new SphericalCoordinate(45, 0, 1.0));
+        InterpolatedHrtf result = interpolator.interpolate(new SphericalCoordinate(45, 0, 1.0));
 
         // Should be a blend of front (m=0) and left (m=1)
         // Front: leftIr[0]=0.1, Left: leftIr[0]=0.2
@@ -67,8 +69,8 @@ class HrtfInterpolatorTest {
 
     @Test
     void shouldInterpolateDelays() {
-        var interpolator = new HrtfInterpolator(hrtfData, 2);
-        var result = interpolator.interpolate(new SphericalCoordinate(45, 0, 1.0));
+        HrtfInterpolator interpolator = new HrtfInterpolator(hrtfData, 2);
+        InterpolatedHrtf result = interpolator.interpolate(new SphericalCoordinate(45, 0, 1.0));
 
         // Front: delays[0]={0,6}, Left: delays[1]={2,4}
         // Equidistant → equal weights → leftDelay~1.0, rightDelay~5.0
@@ -78,16 +80,16 @@ class HrtfInterpolatorTest {
 
     @Test
     void shouldUseSpecifiedNeighborCount() {
-        var interpolator1 = new HrtfInterpolator(hrtfData, 1);
-        var interpolator3 = new HrtfInterpolator(hrtfData, 3);
+        HrtfInterpolator interpolator1 = new HrtfInterpolator(hrtfData, 1);
+        HrtfInterpolator interpolator3 = new HrtfInterpolator(hrtfData, 3);
 
         // With 1 neighbor, the result should be the nearest measured position
-        var result1 = interpolator1.interpolate(new SphericalCoordinate(10, 0, 1.0));
+        InterpolatedHrtf result1 = interpolator1.interpolate(new SphericalCoordinate(10, 0, 1.0));
         // Nearest to 10° is front (0°) → exact values
         assertThat(result1.leftIr()[0]).isCloseTo(0.1f, within(1e-3f));
 
         // With 3 neighbors, result is a blend
-        var result3 = interpolator3.interpolate(new SphericalCoordinate(10, 0, 1.0));
+        InterpolatedHrtf result3 = interpolator3.interpolate(new SphericalCoordinate(10, 0, 1.0));
         assertThat(result3.leftIr()[0]).isNotNull();
     }
 
@@ -110,10 +112,10 @@ class HrtfInterpolatorTest {
         );
         float[][][] ir = {{{1.0f, 0.5f}, {0.8f, 0.3f}}};
         float[][] delays = {{0.0f, 2.0f}};
-        var singleData = new HrtfData("Single", 44100, positions, ir, delays);
+        HrtfData singleData = new HrtfData("Single", 44100, positions, ir, delays);
 
-        var interpolator = new HrtfInterpolator(singleData);
-        var result = interpolator.interpolate(new SphericalCoordinate(90, 0, 1.0));
+        HrtfInterpolator interpolator = new HrtfInterpolator(singleData);
+        InterpolatedHrtf result = interpolator.interpolate(new SphericalCoordinate(90, 0, 1.0));
 
         // With only one measurement, it should return that measurement
         assertThat(result.leftIr()[0]).isCloseTo(1.0f, within(1e-6f));
@@ -122,8 +124,8 @@ class HrtfInterpolatorTest {
 
     @Test
     void shouldProduceIrOfCorrectLength() {
-        var interpolator = new HrtfInterpolator(hrtfData);
-        var result = interpolator.interpolate(new SphericalCoordinate(45, 30, 1.0));
+        HrtfInterpolator interpolator = new HrtfInterpolator(hrtfData);
+        InterpolatedHrtf result = interpolator.interpolate(new SphericalCoordinate(45, 30, 1.0));
 
         assertThat(result.leftIr()).hasSize(IR_LENGTH);
         assertThat(result.rightIr()).hasSize(IR_LENGTH);

@@ -19,14 +19,14 @@ class LoudnessMeterTest {
 
     @Test
     void shouldInitializeToSilence() {
-        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
         assertThat(meter.hasData()).isTrue();
         assertThat(meter.getLatestData()).isEqualTo(LoudnessData.SILENCE);
     }
 
     @Test
     void shouldMeasureSilenceAsVeryLow() {
-        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
         float[] silence = new float[BLOCK_SIZE];
         meter.process(silence, silence, BLOCK_SIZE);
 
@@ -36,7 +36,7 @@ class LoudnessMeterTest {
 
     @Test
     void shouldMeasureLoudSignalHigherThanSilence() {
-        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
 
         // Process silence
         float[] silence = new float[BLOCK_SIZE];
@@ -56,7 +56,7 @@ class LoudnessMeterTest {
 
     @Test
     void shouldTrackTruePeak() {
-        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
         float[] samples = new float[BLOCK_SIZE];
         samples[0] = 0.9f;
         meter.process(samples, samples, BLOCK_SIZE);
@@ -66,7 +66,7 @@ class LoudnessMeterTest {
 
     @Test
     void shouldResetAllState() {
-        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
         float[] loud = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
         for (int i = 0; i < 10; i++) {
             meter.process(loud, loud, BLOCK_SIZE);
@@ -97,7 +97,7 @@ class LoudnessMeterTest {
 
     @Test
     void shouldProvideIntegratedLoudnessOverTime() {
-        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
         float[] signal = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
 
         // Process many blocks to accumulate integrated loudness
@@ -112,7 +112,7 @@ class LoudnessMeterTest {
 
     @Test
     void shouldMeasureIndependentLeftAndRightChannels() {
-        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
 
         // Create distinct left and right signals: left loud, right silent
         float[] loudLeft = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
@@ -140,7 +140,7 @@ class LoudnessMeterTest {
 
     @Test
     void shouldRecordLoudnessHistory() {
-        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
         float[] signal = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
 
         int numBlocks = 20;
@@ -154,7 +154,7 @@ class LoudnessMeterTest {
 
     @Test
     void shouldRecordMonotonicallyIncreasingTimestamps() {
-        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
         float[] signal = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
 
         for (int i = 0; i < 10; i++) {
@@ -170,7 +170,7 @@ class LoudnessMeterTest {
 
     @Test
     void shouldClearHistoryOnReset() {
-        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
         float[] signal = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
 
         for (int i = 0; i < 10; i++) {
@@ -184,7 +184,7 @@ class LoudnessMeterTest {
 
     @Test
     void shouldReturnUnmodifiableHistory() {
-        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
         float[] signal = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
         meter.process(signal, signal, BLOCK_SIZE);
 
@@ -195,7 +195,7 @@ class LoudnessMeterTest {
 
     @Test
     void shouldRecordIntegratedLufsInHistory() {
-        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
         float[] signal = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
 
         for (int i = 0; i < 50; i++) {
@@ -214,7 +214,7 @@ class LoudnessMeterTest {
 
     @Test
     void shouldPassExportValidationWhenLoudnessMatchesTarget() {
-        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
 
         // Generate a signal and process enough blocks to get stable integrated LUFS
         float[] signal = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
@@ -233,7 +233,7 @@ class LoudnessMeterTest {
 
     @Test
     void shouldFailExportValidationForSilence() {
-        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
         float[] silence = new float[BLOCK_SIZE];
         meter.process(silence, silence, BLOCK_SIZE);
 
@@ -244,14 +244,14 @@ class LoudnessMeterTest {
 
     @Test
     void shouldRejectNullTargetInValidation() {
-        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
         assertThatThrownBy(() -> meter.validateForExport(null))
                 .isInstanceOf(NullPointerException.class);
     }
 
     @Test
     void shouldValidateAgainstMultiplePlatforms() {
-        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
         float[] signal = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
         for (int i = 0; i < 500; i++) {
             meter.process(signal, signal, BLOCK_SIZE);
@@ -267,7 +267,7 @@ class LoudnessMeterTest {
 
     @Test
     void shouldIncludePassInMessageWhenLoudnessAndPeakMatch() {
-        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
         float[] signal = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
         for (int i = 0; i < 500; i++) {
             meter.process(signal, signal, BLOCK_SIZE);
@@ -289,8 +289,8 @@ class LoudnessMeterTest {
     void shouldBoostHighFrequenciesViaKWeighting() {
         // K-weighting applies +4 dB shelf above ~1500 Hz.
         // A 4 kHz signal should measure louder than a 100 Hz signal of equal amplitude.
-        var meterHigh = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
-        var meterLow = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meterHigh = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meterLow = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
 
         float[] highFreq = generateSineWave(4000.0, SAMPLE_RATE, BLOCK_SIZE);
         float[] lowFreq = generateSineWave(100.0, SAMPLE_RATE, BLOCK_SIZE);
@@ -308,8 +308,8 @@ class LoudnessMeterTest {
     void shouldAttenuateLowFrequenciesViaKWeighting() {
         // K-weighting applies high-pass at ~60 Hz.
         // A 30 Hz signal should measure significantly lower than a 1 kHz signal.
-        var meter30 = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
-        var meter1k = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter30 = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter1k = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
 
         float[] freq30 = generateSineWave(30.0, SAMPLE_RATE, BLOCK_SIZE);
         float[] freq1k = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
@@ -330,7 +330,7 @@ class LoudnessMeterTest {
     @Test
     void shouldReportZeroLraForConstantSignal() {
         // A constant-level signal should produce very small LRA
-        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
         float[] signal = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
 
         // Process enough blocks to fill short-term window multiple times
@@ -344,7 +344,7 @@ class LoudnessMeterTest {
 
     @Test
     void shouldReportNonNegativeLra() {
-        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
         float[] signal = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
 
         for (int i = 0; i < 100; i++) {
@@ -363,7 +363,7 @@ class LoudnessMeterTest {
         // A 0 dBFS (amplitude 1.0) 1 kHz sine on both channels should measure
         // approximately −3.01 LUFS (mono power) plus K-weighting effect.
         // This is a sanity check that the result is in a reasonable range.
-        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
         float[] fullScale = new float[BLOCK_SIZE];
         for (int i = 0; i < BLOCK_SIZE; i++) {
             fullScale[i] = (float) Math.sin(2.0 * Math.PI * 1000.0 * i / SAMPLE_RATE);
@@ -381,7 +381,7 @@ class LoudnessMeterTest {
 
     @Test
     void shouldGateBlocksBelowAbsoluteThreshold() {
-        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
 
         // Process very quiet signal (should be gated out at -70 LUFS)
         float[] veryQuiet = new float[BLOCK_SIZE];

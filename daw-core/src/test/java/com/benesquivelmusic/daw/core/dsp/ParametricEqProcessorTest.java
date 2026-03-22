@@ -9,7 +9,7 @@ class ParametricEqProcessorTest {
 
     @Test
     void shouldCreateWithValidParameters() {
-        var eq = new ParametricEqProcessor(2, 44100.0);
+        ParametricEqProcessor eq = new ParametricEqProcessor(2, 44100.0);
         assertThat(eq.getInputChannelCount()).isEqualTo(2);
         assertThat(eq.getOutputChannelCount()).isEqualTo(2);
         assertThat(eq.getBands()).isEmpty();
@@ -17,7 +17,7 @@ class ParametricEqProcessorTest {
 
     @Test
     void shouldAddBands() {
-        var eq = new ParametricEqProcessor(2, 44100.0);
+        ParametricEqProcessor eq = new ParametricEqProcessor(2, 44100.0);
         eq.addBand(ParametricEqProcessor.BandConfig.of(BiquadFilter.FilterType.PEAK_EQ, 1000.0, 1.0, 6.0));
         eq.addBand(ParametricEqProcessor.BandConfig.of(BiquadFilter.FilterType.HIGH_SHELF, 8000.0, 0.707, 3.0));
 
@@ -26,7 +26,7 @@ class ParametricEqProcessorTest {
 
     @Test
     void shouldPassThroughWithNoBands() {
-        var eq = new ParametricEqProcessor(2, 44100.0);
+        ParametricEqProcessor eq = new ParametricEqProcessor(2, 44100.0);
 
         float[][] input = {{0.5f, -0.3f, 0.8f}, {0.2f, 0.1f, -0.4f}};
         float[][] output = new float[2][3];
@@ -38,7 +38,7 @@ class ParametricEqProcessorTest {
 
     @Test
     void shouldProcessWithBands() {
-        var eq = new ParametricEqProcessor(1, 44100.0);
+        ParametricEqProcessor eq = new ParametricEqProcessor(1, 44100.0);
         eq.addBand(ParametricEqProcessor.BandConfig.of(BiquadFilter.FilterType.LOW_PASS, 5000.0, 0.707, 0));
 
         float[][] input = new float[1][256];
@@ -56,7 +56,7 @@ class ParametricEqProcessorTest {
 
     @Test
     void shouldUpdateBand() {
-        var eq = new ParametricEqProcessor(2, 44100.0);
+        ParametricEqProcessor eq = new ParametricEqProcessor(2, 44100.0);
         eq.addBand(ParametricEqProcessor.BandConfig.of(BiquadFilter.FilterType.PEAK_EQ, 1000.0, 1.0, 6.0));
         eq.updateBand(0, ParametricEqProcessor.BandConfig.of(BiquadFilter.FilterType.PEAK_EQ, 2000.0, 1.0, -3.0));
 
@@ -65,7 +65,7 @@ class ParametricEqProcessorTest {
 
     @Test
     void shouldRemoveBand() {
-        var eq = new ParametricEqProcessor(2, 44100.0);
+        ParametricEqProcessor eq = new ParametricEqProcessor(2, 44100.0);
         eq.addBand(ParametricEqProcessor.BandConfig.of(BiquadFilter.FilterType.PEAK_EQ, 1000.0, 1.0, 6.0));
         eq.addBand(ParametricEqProcessor.BandConfig.of(BiquadFilter.FilterType.HIGH_SHELF, 8000.0, 0.707, 3.0));
         eq.removeBand(0);
@@ -76,7 +76,7 @@ class ParametricEqProcessorTest {
 
     @Test
     void shouldBypassDisabledBands() {
-        var eq = new ParametricEqProcessor(1, 44100.0);
+        ParametricEqProcessor eq = new ParametricEqProcessor(1, 44100.0);
         eq.addBand(new ParametricEqProcessor.BandConfig(
                 BiquadFilter.FilterType.PEAK_EQ, 1000.0, 1.0, 20.0, false));
 
@@ -93,7 +93,7 @@ class ParametricEqProcessorTest {
 
     @Test
     void shouldResetAllFilters() {
-        var eq = new ParametricEqProcessor(2, 44100.0);
+        ParametricEqProcessor eq = new ParametricEqProcessor(2, 44100.0);
         eq.addBand(ParametricEqProcessor.BandConfig.of(BiquadFilter.FilterType.PEAK_EQ, 1000.0, 1.0, 6.0));
 
         float[][] input = new float[2][64];
@@ -130,7 +130,7 @@ class ParametricEqProcessorTest {
 
     @Test
     void shouldDefaultToMinimumPhaseAndStereo() {
-        var eq = new ParametricEqProcessor(2, 44100.0);
+        ParametricEqProcessor eq = new ParametricEqProcessor(2, 44100.0);
         assertThat(eq.getFilterMode()).isEqualTo(ParametricEqProcessor.FilterMode.MINIMUM_PHASE);
         assertThat(eq.getProcessingMode()).isEqualTo(ParametricEqProcessor.ProcessingMode.STEREO);
         assertThat(eq.getLatencySamples()).isEqualTo(0);
@@ -138,7 +138,7 @@ class ParametricEqProcessorTest {
 
     @Test
     void shouldReportLatencyInLinearPhaseMode() {
-        var eq = new ParametricEqProcessor(2, 44100.0);
+        ParametricEqProcessor eq = new ParametricEqProcessor(2, 44100.0);
         eq.setFilterMode(ParametricEqProcessor.FilterMode.LINEAR_PHASE);
 
         // Default firOrder is 4095, latency = (4095-1)/2 = 2047
@@ -147,28 +147,28 @@ class ParametricEqProcessorTest {
 
     @Test
     void shouldReportZeroLatencyInMinimumPhaseMode() {
-        var eq = new ParametricEqProcessor(2, 44100.0);
+        ParametricEqProcessor eq = new ParametricEqProcessor(2, 44100.0);
         eq.setFilterMode(ParametricEqProcessor.FilterMode.MINIMUM_PHASE);
         assertThat(eq.getLatencySamples()).isEqualTo(0);
     }
 
     @Test
     void shouldSetAndGetFirOrder() {
-        var eq = new ParametricEqProcessor(2, 44100.0);
+        ParametricEqProcessor eq = new ParametricEqProcessor(2, 44100.0);
         eq.setFirOrder(1023);
         assertThat(eq.getFirOrder()).isEqualTo(1023);
     }
 
     @Test
     void shouldRejectInvalidFirOrder() {
-        var eq = new ParametricEqProcessor(2, 44100.0);
+        ParametricEqProcessor eq = new ParametricEqProcessor(2, 44100.0);
         assertThatThrownBy(() -> eq.setFirOrder(2))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void shouldProcessInLinearPhaseMode() {
-        var eq = new ParametricEqProcessor(1, 44100.0);
+        ParametricEqProcessor eq = new ParametricEqProcessor(1, 44100.0);
         eq.setFilterMode(ParametricEqProcessor.FilterMode.LINEAR_PHASE);
         eq.setFirOrder(255);
         eq.addBand(ParametricEqProcessor.BandConfig.of(
@@ -194,7 +194,7 @@ class ParametricEqProcessorTest {
 
     @Test
     void shouldPassThroughLinearPhaseWithNoBands() {
-        var eq = new ParametricEqProcessor(2, 44100.0);
+        ParametricEqProcessor eq = new ParametricEqProcessor(2, 44100.0);
         eq.setFilterMode(ParametricEqProcessor.FilterMode.LINEAR_PHASE);
 
         float[][] input = {{0.5f, -0.3f, 0.8f}, {0.2f, 0.1f, -0.4f}};
@@ -210,7 +210,7 @@ class ParametricEqProcessorTest {
 
     @Test
     void shouldManageMidAndSideBands() {
-        var eq = new ParametricEqProcessor(2, 44100.0);
+        ParametricEqProcessor eq = new ParametricEqProcessor(2, 44100.0);
         eq.setProcessingMode(ParametricEqProcessor.ProcessingMode.MID_SIDE);
 
         eq.addMidBand(ParametricEqProcessor.BandConfig.of(
@@ -226,7 +226,7 @@ class ParametricEqProcessorTest {
 
     @Test
     void shouldUpdateAndRemoveMidSideBands() {
-        var eq = new ParametricEqProcessor(2, 44100.0);
+        ParametricEqProcessor eq = new ParametricEqProcessor(2, 44100.0);
         eq.addMidBand(ParametricEqProcessor.BandConfig.of(
                 BiquadFilter.FilterType.PEAK_EQ, 1000.0, 1.0, 3.0));
         eq.addMidBand(ParametricEqProcessor.BandConfig.of(
@@ -250,7 +250,7 @@ class ParametricEqProcessorTest {
 
     @Test
     void shouldPassThroughMidSideWithNoBands() {
-        var eq = new ParametricEqProcessor(2, 44100.0);
+        ParametricEqProcessor eq = new ParametricEqProcessor(2, 44100.0);
         eq.setProcessingMode(ParametricEqProcessor.ProcessingMode.MID_SIDE);
 
         float[][] input = {{0.5f, -0.3f, 0.8f}, {0.2f, 0.1f, -0.4f}};
@@ -268,7 +268,7 @@ class ParametricEqProcessorTest {
 
     @Test
     void shouldProcessMidSideWithIndependentBands() {
-        var eq = new ParametricEqProcessor(2, 44100.0);
+        ParametricEqProcessor eq = new ParametricEqProcessor(2, 44100.0);
         eq.setProcessingMode(ParametricEqProcessor.ProcessingMode.MID_SIDE);
 
         // Apply a strong low-pass to the side channel only
@@ -298,7 +298,7 @@ class ParametricEqProcessorTest {
 
     @Test
     void shouldProcessMidSideInLinearPhaseMode() {
-        var eq = new ParametricEqProcessor(2, 44100.0);
+        ParametricEqProcessor eq = new ParametricEqProcessor(2, 44100.0);
         eq.setProcessingMode(ParametricEqProcessor.ProcessingMode.MID_SIDE);
         eq.setFilterMode(ParametricEqProcessor.FilterMode.LINEAR_PHASE);
         eq.setFirOrder(255);
@@ -331,7 +331,7 @@ class ParametricEqProcessorTest {
 
     @Test
     void shouldResetMidSideAndLinearPhaseFilters() {
-        var eq = new ParametricEqProcessor(2, 44100.0);
+        ParametricEqProcessor eq = new ParametricEqProcessor(2, 44100.0);
         eq.setProcessingMode(ParametricEqProcessor.ProcessingMode.MID_SIDE);
         eq.setFilterMode(ParametricEqProcessor.FilterMode.LINEAR_PHASE);
         eq.setFirOrder(127);

@@ -9,7 +9,7 @@ class DelayProcessorTest {
 
     @Test
     void shouldCreateWithDefaults() {
-        var delay = new DelayProcessor(2, 44100.0);
+        DelayProcessor delay = new DelayProcessor(2, 44100.0);
         assertThat(delay.getInputChannelCount()).isEqualTo(2);
         assertThat(delay.getOutputChannelCount()).isEqualTo(2);
         assertThat(delay.getFeedback()).isEqualTo(0.3);
@@ -18,7 +18,7 @@ class DelayProcessorTest {
 
     @Test
     void shouldPassDrySignalWithZeroMix() {
-        var delay = new DelayProcessor(1, 44100.0, 500.0);
+        DelayProcessor delay = new DelayProcessor(1, 44100.0, 500.0);
         delay.setDelayMs(100.0);
         delay.setMix(0.0);
         delay.setFeedback(0.0);
@@ -38,7 +38,7 @@ class DelayProcessorTest {
 
     @Test
     void shouldProduceDelayedSignalWithFullWetMix() {
-        var delay = new DelayProcessor(1, 44100.0, 500.0);
+        DelayProcessor delay = new DelayProcessor(1, 44100.0, 500.0);
         delay.setDelayMs(10.0);
         delay.setMix(1.0);
         delay.setFeedback(0.0);
@@ -64,7 +64,7 @@ class DelayProcessorTest {
 
     @Test
     void shouldProduceFeedbackRepeats() {
-        var delay = new DelayProcessor(1, 44100.0, 500.0);
+        DelayProcessor delay = new DelayProcessor(1, 44100.0, 500.0);
         delay.setDelayMs(10.0);
         delay.setMix(1.0);
         delay.setFeedback(0.5);
@@ -88,7 +88,7 @@ class DelayProcessorTest {
 
     @Test
     void shouldResetState() {
-        var delay = new DelayProcessor(1, 44100.0, 500.0);
+        DelayProcessor delay = new DelayProcessor(1, 44100.0, 500.0);
         delay.setDelayMs(10.0);
         delay.setMix(1.0);
 
@@ -122,7 +122,7 @@ class DelayProcessorTest {
 
     @Test
     void shouldRejectInvalidFeedback() {
-        var delay = new DelayProcessor(1, 44100.0);
+        DelayProcessor delay = new DelayProcessor(1, 44100.0);
         assertThatThrownBy(() -> delay.setFeedback(-0.1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> delay.setFeedback(1.0))
@@ -131,7 +131,7 @@ class DelayProcessorTest {
 
     @Test
     void shouldRejectInvalidMix() {
-        var delay = new DelayProcessor(1, 44100.0);
+        DelayProcessor delay = new DelayProcessor(1, 44100.0);
         assertThatThrownBy(() -> delay.setMix(-0.1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> delay.setMix(1.1))
@@ -140,14 +140,14 @@ class DelayProcessorTest {
 
     @Test
     void shouldRejectNegativeDelayMs() {
-        var delay = new DelayProcessor(1, 44100.0, 500.0);
+        DelayProcessor delay = new DelayProcessor(1, 44100.0, 500.0);
         assertThatThrownBy(() -> delay.setDelayMs(-1.0))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void shouldSupportParameterChanges() {
-        var delay = new DelayProcessor(1, 44100.0, 500.0);
+        DelayProcessor delay = new DelayProcessor(1, 44100.0, 500.0);
         delay.setDelayMs(200.0);
         delay.setFeedback(0.7);
         delay.setMix(0.8);

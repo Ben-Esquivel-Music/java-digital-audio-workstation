@@ -43,10 +43,10 @@ public final class DefaultQualityAnalyzer implements QualityAnalyzer {
             mono[i] = (left[i] + right[i]) * 0.5f;
         }
 
-        var signal = analyzeSignalQuality(mono, numFrames);
-        var spectral = analyzeSpectralQuality(mono, numFrames, sampleRate);
-        var stereo = analyzeStereoQuality(left, right, numFrames);
-        var dynamicRange = analyzeDynamicRange(mono, numFrames);
+        SignalQualityMetrics signal = analyzeSignalQuality(mono, numFrames);
+        SpectralQualityMetrics spectral = analyzeSpectralQuality(mono, numFrames, sampleRate);
+        StereoQualityMetrics stereo = analyzeStereoQuality(left, right, numFrames);
+        DynamicRangeMetrics dynamicRange = analyzeDynamicRange(mono, numFrames);
 
         return QualityReport.evaluate(signal, spectral, stereo, dynamicRange, thresholds);
     }

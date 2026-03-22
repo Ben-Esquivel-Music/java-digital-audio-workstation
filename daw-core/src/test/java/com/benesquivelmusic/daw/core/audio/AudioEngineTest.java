@@ -11,7 +11,7 @@ class AudioEngineTest {
 
     @Test
     void shouldStartAndStop() {
-        var engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
 
         assertThat(engine.isRunning()).isFalse();
 
@@ -30,20 +30,20 @@ class AudioEngineTest {
 
     @Test
     void shouldReturnConfiguredFormat() {
-        var engine = new AudioEngine(AudioFormat.STUDIO_QUALITY);
+        AudioEngine engine = new AudioEngine(AudioFormat.STUDIO_QUALITY);
         assertThat(engine.getFormat()).isEqualTo(AudioFormat.STUDIO_QUALITY);
     }
 
     @Test
     void shouldExposeMasterChain() {
-        var engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         assertThat(engine.getMasterChain()).isNotNull();
         assertThat(engine.getMasterChain().isEmpty()).isTrue();
     }
 
     @Test
     void shouldAllocateBufferPoolOnStart() {
-        var engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
         assertThat(engine.getBufferPool()).isNull();
 
         engine.start();
@@ -53,8 +53,8 @@ class AudioEngineTest {
 
     @Test
     void shouldProcessBlockPassthroughWhenChainEmpty() {
-        var format = new AudioFormat(44_100.0, 1, 16, 4);
-        var engine = new AudioEngine(format);
+        AudioFormat format = new AudioFormat(44_100.0, 1, 16, 4);
+        AudioEngine engine = new AudioEngine(format);
         engine.start();
 
         float[][] input = {{0.5f, -0.3f, 0.8f, -1.0f}};
@@ -66,8 +66,8 @@ class AudioEngineTest {
 
     @Test
     void shouldProcessBlockThroughMasterChain() {
-        var format = new AudioFormat(44_100.0, 1, 16, 4);
-        var engine = new AudioEngine(format);
+        AudioFormat format = new AudioFormat(44_100.0, 1, 16, 4);
+        AudioEngine engine = new AudioEngine(format);
         engine.getMasterChain().addProcessor(new HalfGainProcessor());
         engine.start();
 
@@ -80,7 +80,7 @@ class AudioEngineTest {
 
     @Test
     void shouldThrowWhenProcessingWhileNotRunning() {
-        var engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
 
         float[][] input = {{0.0f}};
         float[][] output = {{0.0f}};

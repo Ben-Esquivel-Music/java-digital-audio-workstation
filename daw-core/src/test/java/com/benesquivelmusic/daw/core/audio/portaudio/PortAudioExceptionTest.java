@@ -9,7 +9,7 @@ class PortAudioExceptionTest {
 
     @Test
     void shouldIncludeErrorCodeInMessage() {
-        var ex = new PortAudioException("Test error", -9999);
+        PortAudioException ex = new PortAudioException("Test error", -9999);
         assertThat(ex.getMessage()).contains("Test error");
         assertThat(ex.getMessage()).contains("-9999");
         assertThat(ex.getErrorCode()).isEqualTo(-9999);
@@ -17,8 +17,8 @@ class PortAudioExceptionTest {
 
     @Test
     void shouldIncludeCause() {
-        var cause = new RuntimeException("root cause");
-        var ex = new PortAudioException("Wrapper", -1, cause);
+        RuntimeException cause = new RuntimeException("root cause");
+        PortAudioException ex = new PortAudioException("Wrapper", -1, cause);
         assertThat(ex.getCause()).isEqualTo(cause);
         assertThat(ex.getErrorCode()).isEqualTo(-1);
     }

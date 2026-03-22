@@ -67,13 +67,13 @@ class ClapBindingsTest {
 
     @Test
     void shouldNotBeAvailableForNonExistentLibrary() {
-        var bindings = new ClapBindings(java.nio.file.Path.of("/nonexistent/plugin.clap"));
+        ClapBindings bindings = new ClapBindings(java.nio.file.Path.of("/nonexistent/plugin.clap"));
         assertThat(bindings.isAvailable()).isFalse();
     }
 
     @Test
     void shouldThrowWhenAccessingEntrySegmentOfUnavailableLibrary() {
-        var bindings = new ClapBindings(java.nio.file.Path.of("/nonexistent/plugin.clap"));
+        ClapBindings bindings = new ClapBindings(java.nio.file.Path.of("/nonexistent/plugin.clap"));
 
         org.assertj.core.api.Assertions.assertThatThrownBy(bindings::getEntrySegment)
                 .isInstanceOf(ClapException.class)

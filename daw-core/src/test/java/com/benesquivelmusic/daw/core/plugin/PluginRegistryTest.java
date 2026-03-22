@@ -63,19 +63,19 @@ class PluginRegistryTest {
 
     @Test
     void shouldReturnFalseWhenUnregisteringUnknownEntry() {
-        var entry = new ExternalPluginEntry(Path.of("/test.jar"), "com.example.Plugin");
+        ExternalPluginEntry entry = new ExternalPluginEntry(Path.of("/test.jar"), "com.example.Plugin");
         assertThat(registry.unregister(entry)).isFalse();
     }
 
     @Test
     void shouldReturnNullForUnknownPluginEntry() {
-        var entry = new ExternalPluginEntry(Path.of("/test.jar"), "com.example.Plugin");
+        ExternalPluginEntry entry = new ExternalPluginEntry(Path.of("/test.jar"), "com.example.Plugin");
         assertThat(registry.getPlugin(entry)).isNull();
     }
 
     @Test
     void shouldRejectRegisterWhenJarDoesNotExist(@TempDir Path tempDir) {
-        var entry = new ExternalPluginEntry(
+        ExternalPluginEntry entry = new ExternalPluginEntry(
                 tempDir.resolve("nonexistent.jar"), "com.example.Plugin");
 
         assertThatThrownBy(() -> registry.register(entry))

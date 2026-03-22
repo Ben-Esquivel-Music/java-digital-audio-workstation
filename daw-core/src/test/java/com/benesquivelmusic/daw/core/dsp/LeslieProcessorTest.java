@@ -9,7 +9,7 @@ class LeslieProcessorTest {
 
     @Test
     void shouldCreateWithDefaults() {
-        var leslie = new LeslieProcessor(2, 44100.0);
+        LeslieProcessor leslie = new LeslieProcessor(2, 44100.0);
         assertThat(leslie.getInputChannelCount()).isEqualTo(2);
         assertThat(leslie.getOutputChannelCount()).isEqualTo(2);
         assertThat(leslie.getSpeed()).isEqualTo(0.0);
@@ -21,7 +21,7 @@ class LeslieProcessorTest {
 
     @Test
     void shouldPassDrySignalWithZeroMix() {
-        var leslie = new LeslieProcessor(1, 44100.0);
+        LeslieProcessor leslie = new LeslieProcessor(1, 44100.0);
         leslie.setMix(0.0);
 
         float[][] input = new float[1][512];
@@ -39,7 +39,7 @@ class LeslieProcessorTest {
 
     @Test
     void shouldModifySignalWithDefaultSettings() {
-        var leslie = new LeslieProcessor(1, 44100.0);
+        LeslieProcessor leslie = new LeslieProcessor(1, 44100.0);
 
         float[][] input = new float[1][4096];
         float[][] output = new float[1][4096];
@@ -62,7 +62,7 @@ class LeslieProcessorTest {
     @Test
     void shouldProduceAmplitudeModulation() {
         // At full wet with distance=1, the AM should be clearly audible
-        var leslie = new LeslieProcessor(1, 44100.0);
+        LeslieProcessor leslie = new LeslieProcessor(1, 44100.0);
         leslie.setMix(1.0);
         leslie.setDistance(1.0);
         leslie.setSpeed(1.0);         // Fast speed for clear modulation
@@ -92,12 +92,12 @@ class LeslieProcessorTest {
     @Test
     void shouldRespondToSpeedChange() {
         // Different speeds should produce different outputs
-        var leslieSlow = new LeslieProcessor(1, 44100.0);
+        LeslieProcessor leslieSlow = new LeslieProcessor(1, 44100.0);
         leslieSlow.setMix(1.0);
         leslieSlow.setSpeed(0.0);
         leslieSlow.setAcceleration(1.0);
 
-        var leslieFast = new LeslieProcessor(1, 44100.0);
+        LeslieProcessor leslieFast = new LeslieProcessor(1, 44100.0);
         leslieFast.setMix(1.0);
         leslieFast.setSpeed(1.0);
         leslieFast.setAcceleration(1.0);
@@ -125,7 +125,7 @@ class LeslieProcessorTest {
 
     @Test
     void shouldResetState() {
-        var leslie = new LeslieProcessor(1, 44100.0);
+        LeslieProcessor leslie = new LeslieProcessor(1, 44100.0);
         leslie.setMix(1.0);
 
         float[][] input = new float[1][4096];
@@ -156,7 +156,7 @@ class LeslieProcessorTest {
 
     @Test
     void shouldRejectInvalidSpeed() {
-        var leslie = new LeslieProcessor(1, 44100.0);
+        LeslieProcessor leslie = new LeslieProcessor(1, 44100.0);
         assertThatThrownBy(() -> leslie.setSpeed(-0.1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> leslie.setSpeed(1.1))
@@ -165,7 +165,7 @@ class LeslieProcessorTest {
 
     @Test
     void shouldRejectInvalidAcceleration() {
-        var leslie = new LeslieProcessor(1, 44100.0);
+        LeslieProcessor leslie = new LeslieProcessor(1, 44100.0);
         assertThatThrownBy(() -> leslie.setAcceleration(-0.1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> leslie.setAcceleration(1.1))
@@ -174,7 +174,7 @@ class LeslieProcessorTest {
 
     @Test
     void shouldRejectInvalidHornDrumBalance() {
-        var leslie = new LeslieProcessor(1, 44100.0);
+        LeslieProcessor leslie = new LeslieProcessor(1, 44100.0);
         assertThatThrownBy(() -> leslie.setHornDrumBalance(-0.1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> leslie.setHornDrumBalance(1.1))
@@ -183,7 +183,7 @@ class LeslieProcessorTest {
 
     @Test
     void shouldRejectInvalidDistance() {
-        var leslie = new LeslieProcessor(1, 44100.0);
+        LeslieProcessor leslie = new LeslieProcessor(1, 44100.0);
         assertThatThrownBy(() -> leslie.setDistance(-0.1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> leslie.setDistance(1.1))
@@ -192,7 +192,7 @@ class LeslieProcessorTest {
 
     @Test
     void shouldRejectInvalidMix() {
-        var leslie = new LeslieProcessor(1, 44100.0);
+        LeslieProcessor leslie = new LeslieProcessor(1, 44100.0);
         assertThatThrownBy(() -> leslie.setMix(-0.1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> leslie.setMix(1.1))
@@ -201,7 +201,7 @@ class LeslieProcessorTest {
 
     @Test
     void shouldSupportParameterChanges() {
-        var leslie = new LeslieProcessor(1, 44100.0);
+        LeslieProcessor leslie = new LeslieProcessor(1, 44100.0);
         leslie.setSpeed(0.7);
         leslie.setAcceleration(0.8);
         leslie.setHornDrumBalance(0.6);
@@ -217,7 +217,7 @@ class LeslieProcessorTest {
 
     @Test
     void shouldProcessStereo() {
-        var leslie = new LeslieProcessor(2, 44100.0);
+        LeslieProcessor leslie = new LeslieProcessor(2, 44100.0);
         leslie.setMix(1.0);
 
         float[][] input = new float[2][4096];
@@ -235,7 +235,7 @@ class LeslieProcessorTest {
 
     @Test
     void shouldNotClipOutput() {
-        var leslie = new LeslieProcessor(1, 44100.0);
+        LeslieProcessor leslie = new LeslieProcessor(1, 44100.0);
         leslie.setMix(1.0);
 
         float[][] input = new float[1][4096];

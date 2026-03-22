@@ -2,6 +2,10 @@ package com.benesquivelmusic.daw.core.session.dawproject;
 
 import org.junit.jupiter.api.Test;
 
+import com.benesquivelmusic.daw.sdk.session.SessionData;
+import com.benesquivelmusic.daw.sdk.session.SessionData.SessionClip;
+import com.benesquivelmusic.daw.sdk.session.SessionData.SessionTrack;
+import java.util.List;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -16,7 +20,7 @@ class DawProjectXmlParserTest {
 
     @Test
     void shouldParseMinimalProject() throws IOException {
-        var xml = """
+        String xml = """
                 <?xml version="1.0" encoding="UTF-8"?>
                 <Project version="1.0" name="Minimal Song" sampleRate="48000.0">
                     <Transport>
@@ -27,8 +31,8 @@ class DawProjectXmlParserTest {
                 </Project>
                 """;
 
-        var warnings = new ArrayList<String>();
-        var result = parser.parse(toStream(xml), warnings);
+        ArrayList<String> warnings = new ArrayList<String>();
+        SessionData result = parser.parse(toStream(xml), warnings);
 
         assertThat(result.projectName()).isEqualTo("Minimal Song");
         assertThat(result.tempo()).isEqualTo(140.0);
@@ -41,7 +45,7 @@ class DawProjectXmlParserTest {
 
     @Test
     void shouldParseProjectWithTracks() throws IOException {
-        var xml = """
+        String xml = """
                 <?xml version="1.0" encoding="UTF-8"?>
                 <Project version="1.0" name="Full Song" sampleRate="44100.0">
                     <Transport>
@@ -73,13 +77,13 @@ class DawProjectXmlParserTest {
                 </Project>
                 """;
 
-        var warnings = new ArrayList<String>();
-        var result = parser.parse(toStream(xml), warnings);
+        ArrayList<String> warnings = new ArrayList<String>();
+        SessionData result = parser.parse(toStream(xml), warnings);
 
         assertThat(result.projectName()).isEqualTo("Full Song");
         assertThat(result.tracks()).hasSize(2);
 
-        var drums = result.tracks().get(0);
+        SessionData.SessionTrack drums = result.tracks().get(0);
         assertThat(drums.name()).isEqualTo("Drums");
         assertThat(drums.type()).isEqualTo("AUDIO");
         assertThat(drums.volume()).isEqualTo(0.8);
@@ -88,7 +92,7 @@ class DawProjectXmlParserTest {
         assertThat(drums.solo()).isTrue();
         assertThat(drums.clips()).hasSize(2);
 
-        var kick = drums.clips().get(0);
+        SessionData.SessionClip kick = drums.clips().get(0);
         assertThat(kick.name()).isEqualTo("Kick");
         assertThat(kick.startBeat()).isEqualTo(0.0);
         assertThat(kick.durationBeats()).isEqualTo(4.0);
@@ -96,12 +100,12 @@ class DawProjectXmlParserTest {
         assertThat(kick.sourceOffsetBeats()).isEqualTo(0.5);
         assertThat(kick.sourceFilePath()).isEqualTo("audio/kick.wav");
 
-        var snare = drums.clips().get(1);
+        SessionData.SessionClip snare = drums.clips().get(1);
         assertThat(snare.name()).isEqualTo("Snare");
         assertThat(snare.sourceFilePath()).isEqualTo("audio/snare.wav");
         assertThat(snare.gainDb()).isEqualTo(0.0);
 
-        var bass = result.tracks().get(1);
+        SessionData.SessionTrack bass = result.tracks().get(1);
         assertThat(bass.name()).isEqualTo("Bass");
         assertThat(bass.type()).isEqualTo("MIDI");
         assertThat(bass.volume()).isEqualTo(0.6);
@@ -113,30 +117,30 @@ class DawProjectXmlParserTest {
 
     @Test
     void shouldDefaultMissingProjectName() throws IOException {
-        var xml = """
+        String xml = """
                 <?xml version="1.0" encoding="UTF-8"?>
                 <Project version="1.0">
                     <Structure/>
                 </Project>
                 """;
 
-        var warnings = new ArrayList<String>();
-        var result = parser.parse(toStream(xml), warnings);
+        ArrayList<String> warnings = new ArrayList<String>();
+        SessionData result = parser.parse(toStream(xml), warnings);
 
         assertThat(result.projectName()).isEqualTo("Untitled");
     }
 
     @Test
     void shouldDefaultMissingTransport() throws IOException {
-        var xml = """
+        String xml = """
                 <?xml version="1.0" encoding="UTF-8"?>
                 <Project version="1.0" name="NoTransport">
                     <Structure/>
                 </Project>
                 """;
 
-        var warnings = new ArrayList<String>();
-        var result = parser.parse(toStream(xml), warnings);
+        ArrayList<String> warnings = new ArrayList<String>();
+        SessionData result = parser.parse(toStream(xml), warnings);
 
         assertThat(result.tempo()).isEqualTo(120.0);
         assertThat(result.timeSignatureNumerator()).isEqualTo(4);
@@ -145,7 +149,7 @@ class DawProjectXmlParserTest {
 
     @Test
     void shouldWarnAboutUnsupportedDeviceChains() throws IOException {
-        var xml = """
+        String xml = """
                 <?xml version="1.0" encoding="UTF-8"?>
                 <Project version="1.0" name="WithPlugins">
                     <Structure>
@@ -158,7 +162,7 @@ class DawProjectXmlParserTest {
                 </Project>
                 """;
 
-        var warnings = new ArrayList<String>();
+        ArrayList<String> warnings = new ArrayList<String>();
         parser.parse(toStream(xml), warnings);
 
         assertThat(warnings).hasSize(1);
@@ -167,7 +171,7 @@ class DawProjectXmlParserTest {
 
     @Test
     void shouldWarnAboutUnsupportedAutomation() throws IOException {
-        var xml = """
+        String xml = """
                 <?xml version="1.0" encoding="UTF-8"?>
                 <Project version="1.0" name="WithAutomation">
                     <Structure>
@@ -182,7 +186,7 @@ class DawProjectXmlParserTest {
                 </Project>
                 """;
 
-        var warnings = new ArrayList<String>();
+        ArrayList<String> warnings = new ArrayList<String>();
         parser.parse(toStream(xml), warnings);
 
         assertThat(warnings).hasSize(1);
@@ -191,7 +195,7 @@ class DawProjectXmlParserTest {
 
     @Test
     void shouldMapContentTypes() throws IOException {
-        var xml = """
+        String xml = """
                 <?xml version="1.0" encoding="UTF-8"?>
                 <Project version="1.0" name="Types">
                     <Structure>
@@ -207,8 +211,8 @@ class DawProjectXmlParserTest {
                 </Project>
                 """;
 
-        var warnings = new ArrayList<String>();
-        var result = parser.parse(toStream(xml), warnings);
+        ArrayList<String> warnings = new ArrayList<String>();
+        SessionData result = parser.parse(toStream(xml), warnings);
 
         assertThat(result.tracks().get(0).type()).isEqualTo("AUDIO");
         assertThat(result.tracks().get(1).type()).isEqualTo("MIDI");
@@ -222,7 +226,7 @@ class DawProjectXmlParserTest {
 
     @Test
     void shouldRejectInvalidXml() {
-        var xml = "this is not xml";
+        String xml = "this is not xml";
 
         assertThatThrownBy(() -> parser.parse(toStream(xml), new ArrayList<>()))
                 .isInstanceOf(IOException.class);

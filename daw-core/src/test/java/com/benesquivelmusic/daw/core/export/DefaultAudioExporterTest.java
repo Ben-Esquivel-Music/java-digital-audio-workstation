@@ -24,9 +24,9 @@ class DefaultAudioExporterTest {
 
     @Test
     void shouldExportWavSuccessfully() throws IOException {
-        var exporter = new DefaultAudioExporter();
+        DefaultAudioExporter exporter = new DefaultAudioExporter();
         float[][] audio = generateStereoSine(44100, 0.5, 440.0);
-        var config = new AudioExportConfig(AudioExportFormat.WAV, 44100, 16, DitherType.TPDF);
+        AudioExportConfig config = new AudioExportConfig(AudioExportFormat.WAV, 44100, 16, DitherType.TPDF);
 
         ExportResult result = exporter.export(audio, 44100, tempDir, "test", config);
 
@@ -39,9 +39,9 @@ class DefaultAudioExporterTest {
 
     @Test
     void shouldExportWithSampleRateConversion() throws IOException {
-        var exporter = new DefaultAudioExporter();
+        DefaultAudioExporter exporter = new DefaultAudioExporter();
         float[][] audio = generateStereoSine(96000, 0.5, 440.0);
-        var config = new AudioExportConfig(AudioExportFormat.WAV, 44100, 16, DitherType.TPDF);
+        AudioExportConfig config = new AudioExportConfig(AudioExportFormat.WAV, 44100, 16, DitherType.TPDF);
 
         ExportResult result = exporter.export(audio, 96000, tempDir, "downsampled", config);
 
@@ -51,10 +51,10 @@ class DefaultAudioExporterTest {
 
     @Test
     void shouldBatchExportMultipleConfigs() throws IOException {
-        var exporter = new DefaultAudioExporter();
+        DefaultAudioExporter exporter = new DefaultAudioExporter();
         float[][] audio = generateStereoSine(96000, 0.5, 440.0);
 
-        var configs = List.of(
+        List<AudioExportConfig> configs = List.of(
                 new AudioExportConfig(AudioExportFormat.WAV, 44100, 16, DitherType.TPDF),
                 new AudioExportConfig(AudioExportFormat.WAV, 96000, 24, DitherType.NONE),
                 new AudioExportConfig(AudioExportFormat.WAV, 48000, 32, DitherType.NONE)
@@ -72,9 +72,9 @@ class DefaultAudioExporterTest {
 
     @Test
     void shouldReturnFailureForUnsupportedFormat() throws IOException {
-        var exporter = new DefaultAudioExporter();
+        DefaultAudioExporter exporter = new DefaultAudioExporter();
         float[][] audio = generateStereoSine(44100, 0.1, 440.0);
-        var config = new AudioExportConfig(AudioExportFormat.FLAC, 44100, 16, DitherType.NONE);
+        AudioExportConfig config = new AudioExportConfig(AudioExportFormat.FLAC, 44100, 16, DitherType.NONE);
 
         ExportResult result = exporter.export(audio, 44100, tempDir, "test", config);
 
@@ -84,7 +84,7 @@ class DefaultAudioExporterTest {
 
     @Test
     void shouldExportUsingPresets() throws IOException {
-        var exporter = new DefaultAudioExporter();
+        DefaultAudioExporter exporter = new DefaultAudioExporter();
         float[][] audio = generateStereoSine(96000, 0.5, 440.0);
 
         ExportResult cdResult = exporter.export(audio, 96000, tempDir, "cd",
@@ -98,10 +98,10 @@ class DefaultAudioExporterTest {
 
     @Test
     void shouldCreateOutputDirectoryIfMissing() throws IOException {
-        var exporter = new DefaultAudioExporter();
+        DefaultAudioExporter exporter = new DefaultAudioExporter();
         float[][] audio = new float[1][100];
         Path nestedDir = tempDir.resolve("sub").resolve("dir");
-        var config = new AudioExportConfig(AudioExportFormat.WAV, 44100, 16, DitherType.NONE);
+        AudioExportConfig config = new AudioExportConfig(AudioExportFormat.WAV, 44100, 16, DitherType.NONE);
 
         ExportResult result = exporter.export(audio, 44100, nestedDir, "test", config);
 
@@ -111,8 +111,8 @@ class DefaultAudioExporterTest {
 
     @Test
     void shouldRejectNullAudioData() {
-        var exporter = new DefaultAudioExporter();
-        var config = new AudioExportConfig(AudioExportFormat.WAV, 44100, 16, DitherType.NONE);
+        DefaultAudioExporter exporter = new DefaultAudioExporter();
+        AudioExportConfig config = new AudioExportConfig(AudioExportFormat.WAV, 44100, 16, DitherType.NONE);
 
         assertThatThrownBy(() -> exporter.export(null, 44100, tempDir, "test", config))
                 .isInstanceOf(NullPointerException.class);
@@ -120,9 +120,9 @@ class DefaultAudioExporterTest {
 
     @Test
     void shouldRejectEmptyAudioData() {
-        var exporter = new DefaultAudioExporter();
+        DefaultAudioExporter exporter = new DefaultAudioExporter();
         float[][] audio = new float[0][];
-        var config = new AudioExportConfig(AudioExportFormat.WAV, 44100, 16, DitherType.NONE);
+        AudioExportConfig config = new AudioExportConfig(AudioExportFormat.WAV, 44100, 16, DitherType.NONE);
 
         assertThatThrownBy(() -> exporter.export(audio, 44100, tempDir, "test", config))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -130,10 +130,10 @@ class DefaultAudioExporterTest {
 
     @Test
     void shouldExportWithMetadata() throws IOException {
-        var exporter = new DefaultAudioExporter();
+        DefaultAudioExporter exporter = new DefaultAudioExporter();
         float[][] audio = generateStereoSine(44100, 0.1, 440.0);
-        var metadata = new AudioMetadata("My Song", "My Artist", "My Album", "US1234567890");
-        var config = new AudioExportConfig(
+        AudioMetadata metadata = new AudioMetadata("My Song", "My Artist", "My Album", "US1234567890");
+        AudioExportConfig config = new AudioExportConfig(
                 AudioExportFormat.WAV, 44100, 16, DitherType.TPDF, metadata, 0.8);
 
         ExportResult result = exporter.export(audio, 44100, tempDir, "with_meta", config);
@@ -144,9 +144,9 @@ class DefaultAudioExporterTest {
 
     @Test
     void shouldRejectEmptyBaseName() {
-        var exporter = new DefaultAudioExporter();
+        DefaultAudioExporter exporter = new DefaultAudioExporter();
         float[][] audio = generateStereoSine(44100, 0.1, 440.0);
-        var config = new AudioExportConfig(AudioExportFormat.WAV, 44100, 16, DitherType.NONE);
+        AudioExportConfig config = new AudioExportConfig(AudioExportFormat.WAV, 44100, 16, DitherType.NONE);
 
         assertThatThrownBy(() -> exporter.export(audio, 44100, tempDir, "", config))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -155,9 +155,9 @@ class DefaultAudioExporterTest {
 
     @Test
     void shouldRejectPathTraversalInBaseName() {
-        var exporter = new DefaultAudioExporter();
+        DefaultAudioExporter exporter = new DefaultAudioExporter();
         float[][] audio = generateStereoSine(44100, 0.1, 440.0);
-        var config = new AudioExportConfig(AudioExportFormat.WAV, 44100, 16, DitherType.NONE);
+        AudioExportConfig config = new AudioExportConfig(AudioExportFormat.WAV, 44100, 16, DitherType.NONE);
 
         assertThatThrownBy(() -> exporter.export(audio, 44100, tempDir, "../escape", config))
                 .isInstanceOf(IllegalArgumentException.class)

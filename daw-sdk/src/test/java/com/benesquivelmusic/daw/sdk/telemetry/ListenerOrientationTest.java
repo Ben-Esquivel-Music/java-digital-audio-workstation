@@ -9,8 +9,8 @@ class ListenerOrientationTest {
 
     @Test
     void shouldCreateWithValidParameters() {
-        var pos = new Position3D(3.0, 4.0, 1.2);
-        var orientation = new ListenerOrientation(pos, 45.0, 10.0);
+        Position3D pos = new Position3D(3.0, 4.0, 1.2);
+        ListenerOrientation orientation = new ListenerOrientation(pos, 45.0, 10.0);
 
         assertThat(orientation.position()).isEqualTo(pos);
         assertThat(orientation.yawDegrees()).isEqualTo(45.0);
@@ -19,7 +19,7 @@ class ListenerOrientationTest {
 
     @Test
     void shouldAcceptZeroYawAndPitch() {
-        var orientation = new ListenerOrientation(new Position3D(0, 0, 0), 0.0, 0.0);
+        ListenerOrientation orientation = new ListenerOrientation(new Position3D(0, 0, 0), 0.0, 0.0);
 
         assertThat(orientation.yawDegrees()).isEqualTo(0.0);
         assertThat(orientation.pitchDegrees()).isEqualTo(0.0);
@@ -27,17 +27,17 @@ class ListenerOrientationTest {
 
     @Test
     void shouldAcceptBoundaryValues() {
-        var pos = new Position3D(1, 1, 1);
+        Position3D pos = new Position3D(1, 1, 1);
 
         // Max valid yaw (just below 360)
-        var atMaxYaw = new ListenerOrientation(pos, 359.9, 0.0);
+        ListenerOrientation atMaxYaw = new ListenerOrientation(pos, 359.9, 0.0);
         assertThat(atMaxYaw.yawDegrees()).isEqualTo(359.9);
 
         // Extreme pitch values
-        var atMaxPitch = new ListenerOrientation(pos, 0.0, 90.0);
+        ListenerOrientation atMaxPitch = new ListenerOrientation(pos, 0.0, 90.0);
         assertThat(atMaxPitch.pitchDegrees()).isEqualTo(90.0);
 
-        var atMinPitch = new ListenerOrientation(pos, 0.0, -90.0);
+        ListenerOrientation atMinPitch = new ListenerOrientation(pos, 0.0, -90.0);
         assertThat(atMinPitch.pitchDegrees()).isEqualTo(-90.0);
     }
 

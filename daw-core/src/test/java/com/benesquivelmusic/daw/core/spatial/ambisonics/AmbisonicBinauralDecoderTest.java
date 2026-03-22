@@ -17,7 +17,7 @@ class AmbisonicBinauralDecoderTest {
 
     @Test
     void shouldCreateWithDefaultVirtualSpeakers() {
-        var decoder = new AmbisonicBinauralDecoder(AmbisonicOrder.FIRST);
+        AmbisonicBinauralDecoder decoder = new AmbisonicBinauralDecoder(AmbisonicOrder.FIRST);
         assertThat(decoder.getInputChannelCount()).isEqualTo(4);
         assertThat(decoder.getOutputChannelCount()).isEqualTo(2);
     }
@@ -26,10 +26,10 @@ class AmbisonicBinauralDecoderTest {
 
     @Test
     void shouldProduceStereoOutput() {
-        var decoder = new AmbisonicBinauralDecoder(AmbisonicOrder.FIRST);
+        AmbisonicBinauralDecoder decoder = new AmbisonicBinauralDecoder(AmbisonicOrder.FIRST);
 
         // Encode a front source
-        var encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
+        AmbisonicEncoder encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
         encoder.setDirection(0, 0);
         float[][] monoInput = {constantBuffer(1.0f, NUM_FRAMES)};
         float[][] foaBuffer = new float[4][NUM_FRAMES];
@@ -45,9 +45,9 @@ class AmbisonicBinauralDecoderTest {
 
     @Test
     void shouldPanLeftSourceToLeftEar() {
-        var decoder = new AmbisonicBinauralDecoder(AmbisonicOrder.FIRST);
+        AmbisonicBinauralDecoder decoder = new AmbisonicBinauralDecoder(AmbisonicOrder.FIRST);
 
-        var encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
+        AmbisonicEncoder encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
         encoder.setDirection(Math.PI / 2.0, 0); // left
         float[][] monoInput = {constantBuffer(1.0f, NUM_FRAMES)};
         float[][] foaBuffer = new float[4][NUM_FRAMES];
@@ -62,9 +62,9 @@ class AmbisonicBinauralDecoderTest {
 
     @Test
     void shouldPanRightSourceToRightEar() {
-        var decoder = new AmbisonicBinauralDecoder(AmbisonicOrder.FIRST);
+        AmbisonicBinauralDecoder decoder = new AmbisonicBinauralDecoder(AmbisonicOrder.FIRST);
 
-        var encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
+        AmbisonicEncoder encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
         encoder.setDirection(-Math.PI / 2.0, 0); // right (= 3π/2)
         float[][] monoInput = {constantBuffer(1.0f, NUM_FRAMES)};
         float[][] foaBuffer = new float[4][NUM_FRAMES];
@@ -79,9 +79,9 @@ class AmbisonicBinauralDecoderTest {
 
     @Test
     void frontSourceShouldProduceBalancedOutput() {
-        var decoder = new AmbisonicBinauralDecoder(AmbisonicOrder.FIRST);
+        AmbisonicBinauralDecoder decoder = new AmbisonicBinauralDecoder(AmbisonicOrder.FIRST);
 
-        var encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
+        AmbisonicEncoder encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
         encoder.setDirection(0, 0); // front center
         float[][] monoInput = {constantBuffer(1.0f, NUM_FRAMES)};
         float[][] foaBuffer = new float[4][NUM_FRAMES];
@@ -98,7 +98,7 @@ class AmbisonicBinauralDecoderTest {
 
     @Test
     void shouldResetWithoutError() {
-        var decoder = new AmbisonicBinauralDecoder(AmbisonicOrder.FIRST);
+        AmbisonicBinauralDecoder decoder = new AmbisonicBinauralDecoder(AmbisonicOrder.FIRST);
         decoder.reset();
     }
 

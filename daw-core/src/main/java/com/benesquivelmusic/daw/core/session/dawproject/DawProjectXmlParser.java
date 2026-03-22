@@ -15,6 +15,7 @@ import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
 import org.xml.sax.SAXException;
+import javax.xml.parsers.DocumentBuilder;
 
 /**
  * Parses DAWproject XML ({@code project.xml}) into a {@link SessionData} instance.
@@ -68,10 +69,10 @@ public final class DawProjectXmlParser {
      */
     public SessionData parse(InputStream inputStream, List<String> warnings) throws IOException {
         try {
-            var factory = DocumentBuilderFactory.newInstance();
+            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-            var builder = factory.newDocumentBuilder();
-            var document = builder.parse(inputStream);
+            DocumentBuilder builder = factory.newDocumentBuilder();
+            Document document = builder.parse(inputStream);
             document.getDocumentElement().normalize();
             return parseDocument(document, warnings);
         } catch (ParserConfigurationException | SAXException e) {
@@ -80,8 +81,8 @@ public final class DawProjectXmlParser {
     }
 
     private SessionData parseDocument(Document document, List<String> warnings) {
-        var root = document.getDocumentElement();
-        var projectName = root.getAttribute(ATTR_NAME);
+        Element root = document.getDocumentElement();
+        String projectName = root.getAttribute(ATTR_NAME);
         if (projectName.isEmpty()) {
             projectName = "Untitled";
         }
@@ -92,18 +93,18 @@ public final class DawProjectXmlParser {
         double sampleRate = 44_100.0;
 
         // Parse Transport (tempo, time signature)
-        var transportList = root.getElementsByTagName(ELEMENT_TRANSPORT);
+        NodeList transportList = root.getElementsByTagName(ELEMENT_TRANSPORT);
         if (transportList.getLength() > 0) {
-            var transport = (Element) transportList.item(0);
+            Element transport = (Element) transportList.item(0);
 
-            var tempoElements = transport.getElementsByTagName(ELEMENT_TEMPO);
+            NodeList tempoElements = transport.getElementsByTagName(ELEMENT_TEMPO);
             if (tempoElements.getLength() > 0) {
                 tempo = parseDoubleAttr((Element) tempoElements.item(0), ATTR_VALUE, 120.0);
             }
 
-            var tsElements = transport.getElementsByTagName(ELEMENT_TIME_SIGNATURE);
+            NodeList tsElements = transport.getElementsByTagName(ELEMENT_TIME_SIGNATURE);
             if (tsElements.getLength() > 0) {
-                var tsElement = (Element) tsElements.item(0);
+                Element tsElement = (Element) tsElements.item(0);
                 tsNumerator = parseIntAttr(tsElement, ATTR_NUMERATOR, 4);
                 tsDenominator = parseIntAttr(tsElement, ATTR_DENOMINATOR, 4);
             }
@@ -114,11 +115,11 @@ public final class DawProjectXmlParser {
 
         // Parse tracks
         List<SessionTrack> tracks = new ArrayList<>();
-        var structureList = root.getElementsByTagName(ELEMENT_STRUCTURE);
+        NodeList structureList = root.getElementsByTagName(ELEMENT_STRUCTURE);
         if (structureList.getLength() > 0) {
-            var structure = (Element) structureList.item(0);
-            var trackElements = getDirectChildElements(structure, ELEMENT_TRACK);
-            for (var trackElement : trackElements) {
+            Element structure = (Element) structureList.item(0);
+            List<Element> trackElements = getDirectChildElements(structure, ELEMENT_TRACK);
+            for (Element trackElement : trackElements) {
                 tracks.add(parseTrack(trackElement, warnings));
             }
         }
@@ -127,13 +128,13 @@ public final class DawProjectXmlParser {
     }
 
     private SessionTrack parseTrack(Element trackElement, List<String> warnings) {
-        var name = trackElement.getAttribute(ATTR_NAME);
+        String name = trackElement.getAttribute(ATTR_NAME);
         if (name.isEmpty()) {
             name = "Untitled Track";
         }
 
-        var contentType = trackElement.getAttribute(ATTR_CONTENT_TYPE);
-        var type = mapContentType(contentType);
+        String contentType = trackElement.getAttribute(ATTR_CONTENT_TYPE);
+        String type = mapContentType(contentType);
 
         double volume = 1.0;
         double pan = 0.0;
@@ -141,9 +142,9 @@ public final class DawProjectXmlParser {
         boolean solo = false;
 
         // Parse Channel element for mixer settings
-        var channelElements = getDirectChildElements(trackElement, ELEMENT_CHANNEL);
+        List<Element> channelElements = getDirectChildElements(trackElement, ELEMENT_CHANNEL);
         if (!channelElements.isEmpty()) {
-            var channel = channelElements.getFirst();
+            Element channel = channelElements.getFirst();
             volume = parseDoubleAttr(channel, ATTR_VOLUME, 1.0);
             pan = parseDoubleAttr(channel, ATTR_PAN, 0.0);
             muted = parseBooleanAttr(channel, ATTR_MUTE);
@@ -151,27 +152,27 @@ public final class DawProjectXmlParser {
         }
 
         // Warn about unsupported Device elements (plugin chains)
-        var deviceElements = getDirectChildElements(trackElement, ELEMENT_DEVICES);
+        List<Element> deviceElements = getDirectChildElements(trackElement, ELEMENT_DEVICES);
         if (!deviceElements.isEmpty()) {
             warnings.add("Track '" + name + "': Device/plugin chains are not yet supported and were skipped");
         }
 
         // Parse clips
         List<SessionClip> clips = new ArrayList<>();
-        var lanesElements = getDirectChildElements(trackElement, ELEMENT_LANES);
+        List<Element> lanesElements = getDirectChildElements(trackElement, ELEMENT_LANES);
         if (!lanesElements.isEmpty()) {
-            var lanes = lanesElements.getFirst();
-            var clipsElements = getDirectChildElements(lanes, ELEMENT_CLIPS);
+            Element lanes = lanesElements.getFirst();
+            List<Element> clipsElements = getDirectChildElements(lanes, ELEMENT_CLIPS);
             if (!clipsElements.isEmpty()) {
-                var clipsContainer = clipsElements.getFirst();
-                var clipElements = getDirectChildElements(clipsContainer, ELEMENT_CLIP);
-                for (var clipElement : clipElements) {
+                Element clipsContainer = clipsElements.getFirst();
+                List<Element> clipElements = getDirectChildElements(clipsContainer, ELEMENT_CLIP);
+                for (Element clipElement : clipElements) {
                     clips.add(parseClip(clipElement, warnings));
                 }
             }
 
             // Warn about automation lanes
-            var automationElements = getDirectChildElements(lanes, ELEMENT_AUTOMATION);
+            List<Element> automationElements = getDirectChildElements(lanes, ELEMENT_AUTOMATION);
             if (!automationElements.isEmpty()) {
                 warnings.add("Track '" + name + "': Automation data is not yet supported and was skipped");
             }
@@ -181,7 +182,7 @@ public final class DawProjectXmlParser {
     }
 
     private SessionClip parseClip(Element clipElement, List<String> warnings) {
-        var name = clipElement.getAttribute(ATTR_NAME);
+        String name = clipElement.getAttribute(ATTR_NAME);
         if (name.isEmpty()) {
             name = "Untitled Clip";
         }
@@ -194,13 +195,13 @@ public final class DawProjectXmlParser {
         double gain = 0.0;
 
         // Parse Audio/File reference
-        var audioElements = getDirectChildElements(clipElement, ELEMENT_AUDIO);
+        List<Element> audioElements = getDirectChildElements(clipElement, ELEMENT_AUDIO);
         if (!audioElements.isEmpty()) {
-            var audio = audioElements.getFirst();
+            Element audio = audioElements.getFirst();
             gain = parseDoubleAttr(audio, ATTR_GAIN, 0.0);
             sourceOffset = parseDoubleAttr(audio, ATTR_OFFSET, 0.0);
 
-            var fileElements = getDirectChildElements(audio, ELEMENT_FILE);
+            List<Element> fileElements = getDirectChildElements(audio, ELEMENT_FILE);
             if (!fileElements.isEmpty()) {
                 sourceFilePath = ((Element) fileElements.getFirst()).getAttribute(ATTR_PATH);
                 if (sourceFilePath.isEmpty()) {
@@ -237,7 +238,7 @@ public final class DawProjectXmlParser {
     }
 
     private static double parseDoubleAttr(Element element, String attr, double defaultValue) {
-        var value = element.getAttribute(attr);
+        String value = element.getAttribute(attr);
         if (value.isEmpty()) {
             return defaultValue;
         }
@@ -249,7 +250,7 @@ public final class DawProjectXmlParser {
     }
 
     private static int parseIntAttr(Element element, String attr, int defaultValue) {
-        var value = element.getAttribute(attr);
+        String value = element.getAttribute(attr);
         if (value.isEmpty()) {
             return defaultValue;
         }
@@ -261,7 +262,7 @@ public final class DawProjectXmlParser {
     }
 
     private static boolean parseBooleanAttr(Element element, String attr) {
-        var value = element.getAttribute(attr);
+        String value = element.getAttribute(attr);
         return "true".equalsIgnoreCase(value);
     }
 }

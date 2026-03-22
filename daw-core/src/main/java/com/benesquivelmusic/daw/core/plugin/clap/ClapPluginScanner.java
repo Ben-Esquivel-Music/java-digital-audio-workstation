@@ -64,7 +64,7 @@ public final class ClapPluginScanner {
      * @return a list of paths to discovered CLAP plugin files
      */
     public List<Path> scan() {
-        var results = new ArrayList<Path>();
+        ArrayList<Path> results = new ArrayList<Path>();
         for (Path dir : searchPaths) {
             if (Files.isDirectory(dir)) {
                 scanDirectory(dir, results);
@@ -84,7 +84,7 @@ public final class ClapPluginScanner {
         if (!Files.isDirectory(directory)) {
             return List.of();
         }
-        var results = new ArrayList<Path>();
+        ArrayList<Path> results = new ArrayList<Path>();
         scanDirectory(directory, results);
         return Collections.unmodifiableList(results);
     }
@@ -116,7 +116,7 @@ public final class ClapPluginScanner {
         } else if (os.contains("win")) {
             String localAppData = System.getenv("LOCALAPPDATA");
             String commonFiles = System.getenv("COMMONPROGRAMFILES");
-            var paths = new ArrayList<Path>();
+            ArrayList<Path> paths = new ArrayList<Path>();
             if (localAppData != null) {
                 paths.add(Path.of(localAppData, "Programs", "Common", "CLAP"));
             }

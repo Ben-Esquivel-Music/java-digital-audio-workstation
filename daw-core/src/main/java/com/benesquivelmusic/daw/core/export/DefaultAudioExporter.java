@@ -91,8 +91,8 @@ public final class DefaultAudioExporter implements AudioExporter {
                                           List<AudioExportConfig> configs) throws IOException {
         Objects.requireNonNull(configs, "configs must not be null");
 
-        var results = new ArrayList<ExportResult>(configs.size());
-        for (var config : configs) {
+        ArrayList<ExportResult> results = new ArrayList<ExportResult>(configs.size());
+        for (AudioExportConfig config : configs) {
             results.add(export(audioData, sourceSampleRate, outputDir, baseName, config));
         }
         return List.copyOf(results);

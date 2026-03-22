@@ -244,7 +244,7 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
     public ExportValidationResult validateForExport(LoudnessTarget target) {
         java.util.Objects.requireNonNull(target, "target must not be null");
 
-        var data = latestData;
+        LoudnessData data = latestData;
         double measuredLufs = data.integratedLufs();
         double measuredPeak = data.truePeakDbfs();
 
@@ -252,7 +252,7 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
         boolean loudnessPass = lufsDiff <= EXPORT_LOUDNESS_TOLERANCE_LU;
         boolean truePeakPass = measuredPeak <= target.maxTruePeakDbtp();
 
-        var sb = new StringBuilder();
+        StringBuilder sb = new StringBuilder();
         sb.append(target.displayName()).append(": ");
         if (loudnessPass && truePeakPass) {
             sb.append("PASS");
@@ -350,7 +350,7 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
         if (shortTermLufsReadings.size() < 2) {
             return 0.0;
         }
-        var sorted = new ArrayList<>(shortTermLufsReadings);
+        ArrayList<Double> sorted = new ArrayList<>(shortTermLufsReadings);
         Collections.sort(sorted);
 
         int n = sorted.size();

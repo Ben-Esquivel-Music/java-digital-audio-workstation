@@ -12,7 +12,7 @@ class ProjectMetadataTest {
 
     @Test
     void shouldCreateNewMetadata() {
-        var metadata = ProjectMetadata.createNew("My Song");
+        ProjectMetadata metadata = ProjectMetadata.createNew("My Song");
 
         assertThat(metadata.name()).isEqualTo("My Song");
         assertThat(metadata.createdAt()).isNotNull();
@@ -22,11 +22,11 @@ class ProjectMetadataTest {
 
     @Test
     void shouldTouchUpdateLastModified() throws InterruptedException {
-        var metadata = ProjectMetadata.createNew("Test");
+        ProjectMetadata metadata = ProjectMetadata.createNew("Test");
         Instant before = metadata.lastModified();
 
         Thread.sleep(10);
-        var touched = metadata.touch();
+        ProjectMetadata touched = metadata.touch();
 
         assertThat(touched.lastModified()).isAfter(before);
         assertThat(touched.name()).isEqualTo("Test");
@@ -35,8 +35,8 @@ class ProjectMetadataTest {
 
     @Test
     void shouldSetPath() {
-        var metadata = ProjectMetadata.createNew("Test");
-        var withPath = metadata.withPath(Path.of("/tmp/project"));
+        ProjectMetadata metadata = ProjectMetadata.createNew("Test");
+        ProjectMetadata withPath = metadata.withPath(Path.of("/tmp/project"));
 
         assertThat(withPath.projectPath()).isEqualTo(Path.of("/tmp/project"));
         assertThat(withPath.name()).isEqualTo("Test");
@@ -44,8 +44,8 @@ class ProjectMetadataTest {
 
     @Test
     void shouldSetName() {
-        var metadata = ProjectMetadata.createNew("Original");
-        var renamed = metadata.withName("Renamed");
+        ProjectMetadata metadata = ProjectMetadata.createNew("Original");
+        ProjectMetadata renamed = metadata.withName("Renamed");
 
         assertThat(renamed.name()).isEqualTo("Renamed");
         assertThat(renamed.createdAt()).isEqualTo(metadata.createdAt());

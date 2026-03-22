@@ -60,8 +60,8 @@ public record PanAutomationCurve(List<PanAutomationPoint> points) {
             }
         }
 
-        var p0 = points.get(lo);
-        var p1 = points.get(hi);
+        PanAutomationPoint p0 = points.get(lo);
+        PanAutomationPoint p1 = points.get(hi);
         double t = (timeBeat - p0.timeBeat()) / (p1.timeBeat() - p0.timeBeat());
 
         double az = lerp(p0.azimuthDegrees(), p1.azimuthDegrees(), t);

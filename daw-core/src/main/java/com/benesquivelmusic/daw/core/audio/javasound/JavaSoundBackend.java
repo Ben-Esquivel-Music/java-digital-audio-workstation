@@ -56,7 +56,7 @@ public final class JavaSoundBackend implements NativeAudioBackend {
             return cachedDevices;
         }
 
-        var devices = new ArrayList<AudioDeviceInfo>();
+        ArrayList<AudioDeviceInfo> devices = new ArrayList<AudioDeviceInfo>();
         Mixer.Info[] mixerInfos = AudioSystem.getMixerInfo();
 
         for (int i = 0; i < mixerInfos.length; i++) {
@@ -328,11 +328,11 @@ public final class JavaSoundBackend implements NativeAudioBackend {
 
     private static int countMaxChannels(Mixer mixer, boolean input) {
         try {
-            var lineInfos = input ? mixer.getTargetLineInfo() : mixer.getSourceLineInfo();
+            javax.sound.sampled.Line.Info[] lineInfos = input ? mixer.getTargetLineInfo() : mixer.getSourceLineInfo();
             int maxChannels = 0;
-            for (var lineInfo : lineInfos) {
+            for (javax.sound.sampled.Line.Info lineInfo : lineInfos) {
                 if (lineInfo instanceof DataLine.Info dataLineInfo) {
-                    for (var format : dataLineInfo.getFormats()) {
+                    for (javax.sound.sampled.AudioFormat format : dataLineInfo.getFormats()) {
                         maxChannels = Math.max(maxChannels, format.getChannels());
                     }
                 }

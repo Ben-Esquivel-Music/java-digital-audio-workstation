@@ -20,8 +20,8 @@ class CheckpointManagerTest {
 
     @Test
     void shouldStartAndStop() {
-        var config = new AutoSaveConfig(Duration.ofMinutes(5), 10, true);
-        var manager = new CheckpointManager(config);
+        AutoSaveConfig config = new AutoSaveConfig(Duration.ofMinutes(5), 10, true);
+        CheckpointManager manager = new CheckpointManager(config);
 
         assertThat(manager.isRunning()).isFalse();
 
@@ -34,8 +34,8 @@ class CheckpointManagerTest {
 
     @Test
     void shouldNotStartWhenDisabled() {
-        var config = new AutoSaveConfig(Duration.ofMinutes(5), 10, false);
-        var manager = new CheckpointManager(config);
+        AutoSaveConfig config = new AutoSaveConfig(Duration.ofMinutes(5), 10, false);
+        CheckpointManager manager = new CheckpointManager(config);
 
         manager.start(tempDir);
         assertThat(manager.isRunning()).isFalse();
@@ -43,8 +43,8 @@ class CheckpointManagerTest {
 
     @Test
     void shouldPerformManualCheckpoint() {
-        var config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
-        var manager = new CheckpointManager(config);
+        AutoSaveConfig config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
+        CheckpointManager manager = new CheckpointManager(config);
         manager.start(tempDir);
 
         manager.performCheckpoint();
@@ -60,8 +60,8 @@ class CheckpointManagerTest {
 
     @Test
     void shouldPerformMultipleCheckpoints() {
-        var config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
-        var manager = new CheckpointManager(config);
+        AutoSaveConfig config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
+        CheckpointManager manager = new CheckpointManager(config);
         manager.start(tempDir);
 
         manager.performCheckpoint();
@@ -76,8 +76,8 @@ class CheckpointManagerTest {
 
     @Test
     void shouldPruneOldCheckpoints() {
-        var config = new AutoSaveConfig(Duration.ofHours(1), 2, true);
-        var manager = new CheckpointManager(config);
+        AutoSaveConfig config = new AutoSaveConfig(Duration.ofHours(1), 2, true);
+        CheckpointManager manager = new CheckpointManager(config);
         manager.start(tempDir);
 
         manager.performCheckpoint();
@@ -92,8 +92,8 @@ class CheckpointManagerTest {
 
     @Test
     void shouldNotifyListeners() {
-        var config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
-        var manager = new CheckpointManager(config);
+        AutoSaveConfig config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
+        CheckpointManager manager = new CheckpointManager(config);
         manager.start(tempDir);
 
         List<String> beforeEvents = new ArrayList<>();
@@ -125,8 +125,8 @@ class CheckpointManagerTest {
 
     @Test
     void shouldCreateCheckpointDirectory() {
-        var config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
-        var manager = new CheckpointManager(config);
+        AutoSaveConfig config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
+        CheckpointManager manager = new CheckpointManager(config);
         manager.start(tempDir);
 
         manager.performCheckpoint();
@@ -138,16 +138,16 @@ class CheckpointManagerTest {
 
     @Test
     void shouldReturnConfig() {
-        var config = AutoSaveConfig.LONG_SESSION;
-        var manager = new CheckpointManager(config);
+        AutoSaveConfig config = AutoSaveConfig.LONG_SESSION;
+        CheckpointManager manager = new CheckpointManager(config);
 
         assertThat(manager.getConfig()).isSameAs(config);
     }
 
     @Test
     void shouldIgnoreCheckpointWithoutProjectDirectory() {
-        var config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
-        var manager = new CheckpointManager(config);
+        AutoSaveConfig config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
+        CheckpointManager manager = new CheckpointManager(config);
 
         manager.performCheckpoint();
 
@@ -156,8 +156,8 @@ class CheckpointManagerTest {
 
     @Test
     void shouldWriteCheckpointContent() throws Exception {
-        var config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
-        var manager = new CheckpointManager(config);
+        AutoSaveConfig config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
+        CheckpointManager manager = new CheckpointManager(config);
         manager.start(tempDir);
 
         manager.performCheckpoint();

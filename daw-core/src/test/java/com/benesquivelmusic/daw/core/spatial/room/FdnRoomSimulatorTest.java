@@ -52,7 +52,7 @@ class FdnRoomSimulatorTest {
 
     @Test
     void shouldConfigureAndGenerateImpulseResponse() {
-        var config = new RoomSimulationConfig(
+        RoomSimulationConfig config = new RoomSimulationConfig(
                 STUDIO_DIMS, Map.of(), WallMaterial.DRYWALL,
                 List.of(GUITAR), LISTENER, SAMPLE_RATE);
         simulator.configure(config);
@@ -67,7 +67,7 @@ class FdnRoomSimulatorTest {
 
     @Test
     void shouldGenerateIrWithPositiveDuration() {
-        var config = new RoomSimulationConfig(
+        RoomSimulationConfig config = new RoomSimulationConfig(
                 STUDIO_DIMS, Map.of(), WallMaterial.DRYWALL,
                 List.of(GUITAR), LISTENER, SAMPLE_RATE);
         simulator.configure(config);
@@ -78,7 +78,7 @@ class FdnRoomSimulatorTest {
 
     @Test
     void shouldReturnConfigurationAfterConfigure() {
-        var config = new RoomSimulationConfig(
+        RoomSimulationConfig config = new RoomSimulationConfig(
                 STUDIO_DIMS, Map.of(), WallMaterial.DRYWALL,
                 List.of(GUITAR), LISTENER, SAMPLE_RATE);
         simulator.configure(config);
@@ -88,12 +88,12 @@ class FdnRoomSimulatorTest {
 
     @Test
     void shouldUpdateListenerOrientation() {
-        var config = new RoomSimulationConfig(
+        RoomSimulationConfig config = new RoomSimulationConfig(
                 STUDIO_DIMS, Map.of(), WallMaterial.DRYWALL,
                 List.of(GUITAR), LISTENER, SAMPLE_RATE);
         simulator.configure(config);
 
-        var newListener = new ListenerOrientation(new Position3D(4.0, 5.0, 1.2), 90.0, 0.0);
+        ListenerOrientation newListener = new ListenerOrientation(new Position3D(4.0, 5.0, 1.2), 90.0, 0.0);
         simulator.setListenerOrientation(newListener);
 
         assertThat(simulator.getListenerOrientation()).isEqualTo(newListener);
@@ -101,12 +101,12 @@ class FdnRoomSimulatorTest {
 
     @Test
     void shouldAddAndRemoveSources() {
-        var config = new RoomSimulationConfig(
+        RoomSimulationConfig config = new RoomSimulationConfig(
                 STUDIO_DIMS, Map.of(), WallMaterial.DRYWALL,
                 List.of(GUITAR), LISTENER, SAMPLE_RATE);
         simulator.configure(config);
 
-        var drums = new SoundSource("Drums", new Position3D(4, 3, 1), 90);
+        SoundSource drums = new SoundSource("Drums", new Position3D(4, 3, 1), 90);
         simulator.addSource(drums);
 
         assertThat(simulator.removeSource("Drums")).isTrue();
@@ -115,7 +115,7 @@ class FdnRoomSimulatorTest {
 
     @Test
     void shouldUpdateSourcePosition() {
-        var config = new RoomSimulationConfig(
+        RoomSimulationConfig config = new RoomSimulationConfig(
                 STUDIO_DIMS, Map.of(), WallMaterial.DRYWALL,
                 List.of(GUITAR), LISTENER, SAMPLE_RATE);
         simulator.configure(config);
@@ -140,8 +140,8 @@ class FdnRoomSimulatorTest {
     @Test
     void shouldProcessAudioAfterConfiguration() {
         // Place source very close to listener so the direct sound arrives within a short buffer
-        var nearSource = new SoundSource("NearGuitar", new Position3D(3.0, 3.5, 1.2), 85);
-        var config = new RoomSimulationConfig(
+        SoundSource nearSource = new SoundSource("NearGuitar", new Position3D(3.0, 3.5, 1.2), 85);
+        RoomSimulationConfig config = new RoomSimulationConfig(
                 STUDIO_DIMS, Map.of(), WallMaterial.DRYWALL,
                 List.of(nearSource), LISTENER, SAMPLE_RATE);
         simulator.configure(config);
@@ -170,7 +170,7 @@ class FdnRoomSimulatorTest {
 
     @Test
     void shouldResetState() {
-        var config = new RoomSimulationConfig(
+        RoomSimulationConfig config = new RoomSimulationConfig(
                 STUDIO_DIMS, Map.of(), WallMaterial.DRYWALL,
                 List.of(GUITAR), LISTENER, SAMPLE_RATE);
         simulator.configure(config);
@@ -191,10 +191,10 @@ class FdnRoomSimulatorTest {
 
     @Test
     void shouldGenerateLongerIrForLargerRooms() {
-        var smallRoom = new RoomSimulationConfig(
+        RoomSimulationConfig smallRoom = new RoomSimulationConfig(
                 new RoomDimensions(3, 3, 2.5), Map.of(), WallMaterial.ACOUSTIC_FOAM,
                 List.of(GUITAR), LISTENER, SAMPLE_RATE);
-        var largeRoom = new RoomSimulationConfig(
+        RoomSimulationConfig largeRoom = new RoomSimulationConfig(
                 new RoomDimensions(30, 60, 25), Map.of(), WallMaterial.CONCRETE,
                 List.of(GUITAR), LISTENER, SAMPLE_RATE);
 
@@ -212,7 +212,7 @@ class FdnRoomSimulatorTest {
     void shouldEstimateRt60Correctly() {
         // Known case: 10x10x10 room with absorption=0.161 gives RT60 ≈ 1.0 sec
         // RT60 = 0.161 * V / A = 0.161 * 1000 / (600 * 0.161) ≈ 1.665
-        var dims = new RoomDimensions(10, 10, 10);
+        RoomDimensions dims = new RoomDimensions(10, 10, 10);
         double rt60 = FdnRoomSimulator.estimateRt60(dims, 0.161);
         assertThat(rt60).isCloseTo(0.161 * 1000.0 / (600.0 * 0.161), within(0.01));
     }

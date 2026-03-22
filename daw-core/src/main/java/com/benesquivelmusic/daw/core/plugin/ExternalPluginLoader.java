@@ -70,7 +70,7 @@ public final class ExternalPluginLoader {
      * @throws PluginLoadException if the plugin cannot be loaded or instantiated
      */
     public static DawPlugin load(Path jarPath, String className) throws PluginLoadException {
-        var result = loadWithClassLoader(jarPath, className);
+        ExternalPluginLoader.LoadResult result = loadWithClassLoader(jarPath, className);
         closeQuietly(result.classLoader());
         return result.plugin();
     }

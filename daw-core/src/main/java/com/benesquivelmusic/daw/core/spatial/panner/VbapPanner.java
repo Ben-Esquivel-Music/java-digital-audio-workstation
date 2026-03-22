@@ -172,7 +172,7 @@ public final class VbapPanner implements SpatialPanner {
         // Compute dot product of source direction with each speaker direction
         double[] dots = new double[numSpeakers];
         for (int i = 0; i < numSpeakers; i++) {
-            var sp = speakerPositions.get(i);
+            SpatialPosition sp = speakerPositions.get(i);
             double spX = sp.x();
             double spY = sp.y();
             double spZ = sp.z();

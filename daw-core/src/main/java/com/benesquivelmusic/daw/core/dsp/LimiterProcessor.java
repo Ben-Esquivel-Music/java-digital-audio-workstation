@@ -183,7 +183,7 @@ public final class LimiterProcessor implements AudioProcessor {
     public void resetTruePeakMetering() {
         currentTruePeakLinear = 0.0;
         currentTruePeakDbtp = -120.0;
-        for (var detector : truePeakDetectors) {
+        for (TruePeakDetector detector : truePeakDetectors) {
             detector.reset();
         }
     }
@@ -276,7 +276,7 @@ public final class LimiterProcessor implements AudioProcessor {
         for (float[] buf : delayBuffers) {
             Arrays.fill(buf, 0.0f);
         }
-        for (var detector : truePeakDetectors) {
+        for (TruePeakDetector detector : truePeakDetectors) {
             detector.reset();
         }
     }

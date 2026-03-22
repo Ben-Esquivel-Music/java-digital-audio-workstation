@@ -9,7 +9,7 @@ class FluidSynthExceptionTest {
 
     @Test
     void shouldCreateWithMessageAndErrorCode() {
-        var ex = new FluidSynthException("test failure", -1);
+        FluidSynthException ex = new FluidSynthException("test failure", -1);
         assertThat(ex.getMessage()).contains("test failure");
         assertThat(ex.getMessage()).contains("-1");
         assertThat(ex.getErrorCode()).isEqualTo(-1);
@@ -17,8 +17,8 @@ class FluidSynthExceptionTest {
 
     @Test
     void shouldCreateWithCause() {
-        var cause = new RuntimeException("root");
-        var ex = new FluidSynthException("test failure", -1, cause);
+        RuntimeException cause = new RuntimeException("root");
+        FluidSynthException ex = new FluidSynthException("test failure", -1, cause);
         assertThat(ex.getMessage()).contains("test failure");
         assertThat(ex.getCause()).isSameAs(cause);
         assertThat(ex.getErrorCode()).isEqualTo(-1);

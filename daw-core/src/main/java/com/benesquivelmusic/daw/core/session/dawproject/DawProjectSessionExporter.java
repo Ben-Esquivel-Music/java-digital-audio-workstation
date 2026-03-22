@@ -40,11 +40,11 @@ public final class DawProjectSessionExporter implements SessionExporter {
         }
 
         Files.createDirectories(outputDir);
-        var outputFile = outputDir.resolve(baseName + "." + fileExtension());
-        var warnings = new ArrayList<String>();
+        Path outputFile = outputDir.resolve(baseName + "." + fileExtension());
+        ArrayList<String> warnings = new ArrayList<String>();
 
         try (OutputStream fos = Files.newOutputStream(outputFile);
-             var zos = new ZipOutputStream(fos)) {
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
 
             zos.putNextEntry(new ZipEntry(PROJECT_XML_ENTRY));
             serializer.serialize(session, zos, warnings);

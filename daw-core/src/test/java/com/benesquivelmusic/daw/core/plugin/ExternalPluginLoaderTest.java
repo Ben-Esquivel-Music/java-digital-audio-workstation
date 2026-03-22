@@ -72,7 +72,7 @@ class ExternalPluginLoaderTest {
     void shouldThrowWhenClassNotFoundInJar() throws Exception {
         // Create a minimal valid JAR file (empty zip with JAR structure)
         Path emptyJar = tempDir.resolve("empty.jar");
-        try (var jos = new java.util.jar.JarOutputStream(Files.newOutputStream(emptyJar))) {
+        try (java.util.jar.JarOutputStream jos = new java.util.jar.JarOutputStream(Files.newOutputStream(emptyJar))) {
             // empty JAR
         }
 
@@ -84,7 +84,7 @@ class ExternalPluginLoaderTest {
     @Test
     void shouldCloseClassLoaderOnFailedLoadWithClassLoader() throws Exception {
         Path emptyJar = tempDir.resolve("empty-for-cl.jar");
-        try (var jos = new java.util.jar.JarOutputStream(Files.newOutputStream(emptyJar))) {
+        try (java.util.jar.JarOutputStream jos = new java.util.jar.JarOutputStream(Files.newOutputStream(emptyJar))) {
             // empty JAR
         }
 
@@ -97,11 +97,11 @@ class ExternalPluginLoaderTest {
     @Test
     void shouldCloseClassLoaderOnFailedLoadViaEntry() throws Exception {
         Path emptyJar = tempDir.resolve("empty-for-entry.jar");
-        try (var jos = new java.util.jar.JarOutputStream(Files.newOutputStream(emptyJar))) {
+        try (java.util.jar.JarOutputStream jos = new java.util.jar.JarOutputStream(Files.newOutputStream(emptyJar))) {
             // empty JAR
         }
 
-        var entry = new ExternalPluginEntry(emptyJar, "com.example.Missing");
+        ExternalPluginEntry entry = new ExternalPluginEntry(emptyJar, "com.example.Missing");
         assertThatThrownBy(() -> ExternalPluginLoader.load(entry))
                 .isInstanceOf(PluginLoadException.class);
     }

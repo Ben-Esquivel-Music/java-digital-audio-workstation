@@ -46,13 +46,13 @@ import java.util.Objects;
  * <h2>Usage Examples</h2>
  * <pre>{@code
  * // Linear-phase mastering EQ
- * var eq = new ParametricEqProcessor(2, 44100.0);
+ * ParametricEqProcessor eq = new ParametricEqProcessor(2, 44100.0);
  * eq.setFilterMode(ParametricEqProcessor.FilterMode.LINEAR_PHASE);
  * eq.addBand(BandConfig.of(BiquadFilter.FilterType.HIGH_SHELF, 8000, 0.707, 2.0));
  * int latency = eq.getLatencySamples(); // report to DAW for compensation
  *
  * // Mid/Side EQ for mastering
- * var msEq = new ParametricEqProcessor(2, 44100.0);
+ * ParametricEqProcessor msEq = new ParametricEqProcessor(2, 44100.0);
  * msEq.setProcessingMode(ParametricEqProcessor.ProcessingMode.MID_SIDE);
  * msEq.addMidBand(BandConfig.of(BiquadFilter.FilterType.PEAK_EQ, 3000, 1.5, -2.0));
  * msEq.addSideBand(BandConfig.of(BiquadFilter.FilterType.HIGH_SHELF, 8000, 0.707, 3.0));

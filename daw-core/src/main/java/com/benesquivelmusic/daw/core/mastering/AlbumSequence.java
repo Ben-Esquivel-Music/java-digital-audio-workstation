@@ -172,7 +172,7 @@ public final class AlbumSequence {
      * @return the PQ sheet text
      */
     public String generatePqSheet() {
-        var sb = new StringBuilder();
+        StringBuilder sb = new StringBuilder();
         sb.append("PQ Sheet: ").append(albumTitle).append('\n');
         sb.append("Artist: ").append(artist).append('\n');
         sb.append(String.format("Total Duration: %s%n", formatTime(getTotalDurationSeconds())));

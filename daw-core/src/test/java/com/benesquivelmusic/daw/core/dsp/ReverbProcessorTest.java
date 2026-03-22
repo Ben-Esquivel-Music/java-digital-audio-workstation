@@ -9,7 +9,7 @@ class ReverbProcessorTest {
 
     @Test
     void shouldCreateWithDefaults() {
-        var reverb = new ReverbProcessor(2, 44100.0);
+        ReverbProcessor reverb = new ReverbProcessor(2, 44100.0);
         assertThat(reverb.getInputChannelCount()).isEqualTo(2);
         assertThat(reverb.getOutputChannelCount()).isEqualTo(2);
         assertThat(reverb.getRoomSize()).isEqualTo(0.5);
@@ -20,7 +20,7 @@ class ReverbProcessorTest {
 
     @Test
     void shouldPassDrySignalWithZeroMix() {
-        var reverb = new ReverbProcessor(1, 44100.0);
+        ReverbProcessor reverb = new ReverbProcessor(1, 44100.0);
         reverb.setMix(0.0);
 
         float[][] input = new float[1][512];
@@ -38,7 +38,7 @@ class ReverbProcessorTest {
 
     @Test
     void shouldProduceReverbTailAfterImpulse() {
-        var reverb = new ReverbProcessor(1, 44100.0);
+        ReverbProcessor reverb = new ReverbProcessor(1, 44100.0);
         reverb.setMix(1.0);
         reverb.setDecay(0.8);
 
@@ -55,7 +55,7 @@ class ReverbProcessorTest {
 
     @Test
     void shouldDecayOverTime() {
-        var reverb = new ReverbProcessor(1, 44100.0);
+        ReverbProcessor reverb = new ReverbProcessor(1, 44100.0);
         reverb.setMix(1.0);
         reverb.setDecay(0.5);
 
@@ -73,7 +73,7 @@ class ReverbProcessorTest {
 
     @Test
     void shouldModifySignalComparedToDry() {
-        var reverb = new ReverbProcessor(1, 44100.0);
+        ReverbProcessor reverb = new ReverbProcessor(1, 44100.0);
         reverb.setMix(0.5);
 
         float[][] input = new float[1][4096];
@@ -96,7 +96,7 @@ class ReverbProcessorTest {
 
     @Test
     void shouldResetState() {
-        var reverb = new ReverbProcessor(1, 44100.0);
+        ReverbProcessor reverb = new ReverbProcessor(1, 44100.0);
         reverb.setMix(1.0);
 
         float[][] input = new float[1][4096];
@@ -127,7 +127,7 @@ class ReverbProcessorTest {
 
     @Test
     void shouldRejectInvalidRoomSize() {
-        var reverb = new ReverbProcessor(1, 44100.0);
+        ReverbProcessor reverb = new ReverbProcessor(1, 44100.0);
         assertThatThrownBy(() -> reverb.setRoomSize(-0.1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> reverb.setRoomSize(1.1))
@@ -136,7 +136,7 @@ class ReverbProcessorTest {
 
     @Test
     void shouldRejectInvalidDecay() {
-        var reverb = new ReverbProcessor(1, 44100.0);
+        ReverbProcessor reverb = new ReverbProcessor(1, 44100.0);
         assertThatThrownBy(() -> reverb.setDecay(-0.1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> reverb.setDecay(1.1))
@@ -145,7 +145,7 @@ class ReverbProcessorTest {
 
     @Test
     void shouldRejectInvalidDamping() {
-        var reverb = new ReverbProcessor(1, 44100.0);
+        ReverbProcessor reverb = new ReverbProcessor(1, 44100.0);
         assertThatThrownBy(() -> reverb.setDamping(-0.1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> reverb.setDamping(1.1))
@@ -154,7 +154,7 @@ class ReverbProcessorTest {
 
     @Test
     void shouldRejectInvalidMix() {
-        var reverb = new ReverbProcessor(1, 44100.0);
+        ReverbProcessor reverb = new ReverbProcessor(1, 44100.0);
         assertThatThrownBy(() -> reverb.setMix(-0.1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> reverb.setMix(1.1))
@@ -163,7 +163,7 @@ class ReverbProcessorTest {
 
     @Test
     void shouldSupportParameterChanges() {
-        var reverb = new ReverbProcessor(1, 44100.0);
+        ReverbProcessor reverb = new ReverbProcessor(1, 44100.0);
         reverb.setDecay(0.8);
         reverb.setDamping(0.3);
         reverb.setMix(0.6);
@@ -175,7 +175,7 @@ class ReverbProcessorTest {
 
     @Test
     void shouldProcessStereo() {
-        var reverb = new ReverbProcessor(2, 44100.0);
+        ReverbProcessor reverb = new ReverbProcessor(2, 44100.0);
         reverb.setMix(1.0);
 
         float[][] input = new float[2][4096];

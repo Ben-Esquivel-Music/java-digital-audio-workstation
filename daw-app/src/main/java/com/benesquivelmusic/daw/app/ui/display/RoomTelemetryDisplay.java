@@ -140,7 +140,7 @@ public final class RoomTelemetryDisplay extends Region {
         if (timeSinceLastRipple >= RIPPLE_INTERVAL && telemetryData != null) {
             timeSinceLastRipple -= RIPPLE_INTERVAL;
             // One ripple from each source position
-            var seen = new java.util.HashSet<String>();
+            java.util.HashSet<String> seen = new java.util.HashSet<String>();
             for (SoundWavePath path : telemetryData.wavePaths()) {
                 if (seen.add(path.sourceName())) {
                     Position3D sp = path.waypoints().getFirst();
@@ -208,7 +208,7 @@ public final class RoomTelemetryDisplay extends Region {
         }
 
         // ── Draw sound sources (with glow + pulse) ──
-        var drawnSources = new java.util.HashSet<String>();
+        java.util.HashSet<String> drawnSources = new java.util.HashSet<String>();
         for (SoundWavePath path : telemetryData.wavePaths()) {
             if (drawnSources.add(path.sourceName())) {
                 Position3D sp = path.waypoints().getFirst();
@@ -217,7 +217,7 @@ public final class RoomTelemetryDisplay extends Region {
         }
 
         // ── Draw microphones (with glow + pulse) ──
-        var drawnMics = new java.util.HashSet<String>();
+        java.util.HashSet<String> drawnMics = new java.util.HashSet<String>();
         for (SoundWavePath path : telemetryData.wavePaths()) {
             if (drawnMics.add(path.microphoneName())) {
                 Position3D mp = path.waypoints().getLast();

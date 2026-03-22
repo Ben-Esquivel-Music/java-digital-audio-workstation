@@ -15,8 +15,8 @@ class RoomConfigurationTest {
 
     @Test
     void shouldCreateWithDimensionsAndMaterial() {
-        var dims = new RoomDimensions(10, 8, 3);
-        var config = new RoomConfiguration(dims, WallMaterial.DRYWALL);
+        RoomDimensions dims = new RoomDimensions(10, 8, 3);
+        RoomConfiguration config = new RoomConfiguration(dims, WallMaterial.DRYWALL);
 
         assertThat(config.getDimensions()).isEqualTo(dims);
         assertThat(config.getWallMaterial()).isEqualTo(WallMaterial.DRYWALL);
@@ -26,8 +26,8 @@ class RoomConfigurationTest {
 
     @Test
     void shouldAddAndRemoveMicrophones() {
-        var config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
-        var mic = new MicrophonePlacement("OH-L", new Position3D(3, 4, 2.5), 180, 0);
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        MicrophonePlacement mic = new MicrophonePlacement("OH-L", new Position3D(3, 4, 2.5), 180, 0);
 
         config.addMicrophone(mic);
         assertThat(config.getMicrophones()).hasSize(1);
@@ -39,8 +39,8 @@ class RoomConfigurationTest {
 
     @Test
     void shouldAddAndRemoveSoundSources() {
-        var config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
-        var source = new SoundSource("Guitar", new Position3D(5, 2, 1), 85);
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        SoundSource source = new SoundSource("Guitar", new Position3D(5, 2, 1), 85);
 
         config.addSoundSource(source);
         assertThat(config.getSoundSources()).hasSize(1);
@@ -51,16 +51,16 @@ class RoomConfigurationTest {
 
     @Test
     void shouldReturnFalseWhenRemovingNonexistentMic() {
-        var config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
 
         assertThat(config.removeMicrophone("nonexistent")).isFalse();
     }
 
     @Test
     void shouldUpdateDimensionsAndMaterial() {
-        var config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
 
-        var newDims = new RoomDimensions(12, 10, 4);
+        RoomDimensions newDims = new RoomDimensions(12, 10, 4);
         config.setDimensions(newDims);
         config.setWallMaterial(WallMaterial.ACOUSTIC_FOAM);
 
@@ -82,7 +82,7 @@ class RoomConfigurationTest {
 
     @Test
     void shouldReturnUnmodifiableMicrophoneList() {
-        var config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
 
         assertThatThrownBy(() -> config.getMicrophones().add(
                 new MicrophonePlacement("Illegal", new Position3D(0, 0, 0), 0, 0)))
@@ -91,7 +91,7 @@ class RoomConfigurationTest {
 
     @Test
     void shouldReturnUnmodifiableSourceList() {
-        var config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
 
         assertThatThrownBy(() -> config.getSoundSources().add(
                 new SoundSource("Illegal", new Position3D(0, 0, 0), 80)))

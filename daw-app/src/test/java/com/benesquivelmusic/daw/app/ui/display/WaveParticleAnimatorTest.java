@@ -9,7 +9,7 @@ class WaveParticleAnimatorTest {
 
     @Test
     void shouldStartWithNoParticles() {
-        var animator = new WaveParticleAnimator();
+        WaveParticleAnimator animator = new WaveParticleAnimator();
 
         assertThat(animator.getParticleCount()).isZero();
         assertThat(animator.getParticles()).isEmpty();
@@ -17,7 +17,7 @@ class WaveParticleAnimatorTest {
 
     @Test
     void shouldSpawnParticleAfterInterval() {
-        var animator = new WaveParticleAnimator(0.1, 1.0, 2.0);
+        WaveParticleAnimator animator = new WaveParticleAnimator(0.1, 1.0, 2.0);
 
         // Advance past the first spawn interval
         animator.update(0.15);
@@ -27,7 +27,7 @@ class WaveParticleAnimatorTest {
 
     @Test
     void shouldSpawnMultipleParticlesOverTime() {
-        var animator = new WaveParticleAnimator(0.1, 1.0, 2.0);
+        WaveParticleAnimator animator = new WaveParticleAnimator(0.1, 1.0, 2.0);
 
         // Advance enough to spawn 3 particles
         animator.update(0.35);
@@ -37,7 +37,7 @@ class WaveParticleAnimatorTest {
 
     @Test
     void shouldAdvanceParticleProgress() {
-        var animator = new WaveParticleAnimator(0.05, 1.0, 5.0);
+        WaveParticleAnimator animator = new WaveParticleAnimator(0.05, 1.0, 5.0);
 
         animator.update(0.1); // spawn particles
         animator.update(0.3); // advance existing, may also spawn new
@@ -49,7 +49,7 @@ class WaveParticleAnimatorTest {
 
     @Test
     void shouldRemoveDeadParticles() {
-        var animator = new WaveParticleAnimator(0.1, 2.0, 0.5);
+        WaveParticleAnimator animator = new WaveParticleAnimator(0.1, 2.0, 0.5);
 
         animator.update(0.15); // spawn 1
         assertThat(animator.getParticleCount()).isEqualTo(1);
@@ -58,14 +58,14 @@ class WaveParticleAnimatorTest {
         animator.update(0.6);
 
         // Old particle died, but new ones may have spawned (6 intervals passed)
-        for (var particle : animator.getParticles()) {
+        for (WaveParticleAnimator.Particle particle : animator.getParticles()) {
             assertThat(particle.isDead()).isFalse();
         }
     }
 
     @Test
     void shouldResetAllParticles() {
-        var animator = new WaveParticleAnimator(0.1, 1.0, 2.0);
+        WaveParticleAnimator animator = new WaveParticleAnimator(0.1, 1.0, 2.0);
 
         animator.update(0.5);
         assertThat(animator.getParticleCount()).isGreaterThan(0);
@@ -76,7 +76,7 @@ class WaveParticleAnimatorTest {
 
     @Test
     void particleShouldComputeOpacity() {
-        var particle = new WaveParticleAnimator.Particle(0.5, 1.0, 0.5, 2.0);
+        WaveParticleAnimator.Particle particle = new WaveParticleAnimator.Particle(0.5, 1.0, 0.5, 2.0);
 
         assertThat(particle.opacity()).isBetween(0.0, 1.0);
     }
@@ -84,7 +84,7 @@ class WaveParticleAnimatorTest {
     @Test
     void particleShouldFadeInAtBirth() {
         // Very young particle
-        var particle = new WaveParticleAnimator.Particle(0.0, 1.0, 0.01, 2.0);
+        WaveParticleAnimator.Particle particle = new WaveParticleAnimator.Particle(0.0, 1.0, 0.01, 2.0);
 
         // Should be partially faded in
         assertThat(particle.opacity()).isLessThan(1.0);
@@ -94,29 +94,29 @@ class WaveParticleAnimatorTest {
     @Test
     void particleShouldFadeOutNearDeath() {
         // Particle near end of life
-        var particle = new WaveParticleAnimator.Particle(0.8, 1.0, 1.9, 2.0);
+        WaveParticleAnimator.Particle particle = new WaveParticleAnimator.Particle(0.8, 1.0, 1.9, 2.0);
 
         assertThat(particle.opacity()).isLessThan(0.5);
     }
 
     @Test
     void particleShouldBeDeadWhenProgressReaches1() {
-        var particle = new WaveParticleAnimator.Particle(1.0, 1.0, 0.5, 2.0);
+        WaveParticleAnimator.Particle particle = new WaveParticleAnimator.Particle(1.0, 1.0, 0.5, 2.0);
 
         assertThat(particle.isDead()).isTrue();
     }
 
     @Test
     void particleShouldBeDeadWhenAgeExceedsMaxAge() {
-        var particle = new WaveParticleAnimator.Particle(0.5, 1.0, 2.0, 2.0);
+        WaveParticleAnimator.Particle particle = new WaveParticleAnimator.Particle(0.5, 1.0, 2.0, 2.0);
 
         assertThat(particle.isDead()).isTrue();
     }
 
     @Test
     void particleAdvanceShouldIncrementProgressAndAge() {
-        var particle = new WaveParticleAnimator.Particle(0.0, 1.0, 0.0, 3.0);
-        var advanced = particle.advance(0.5);
+        WaveParticleAnimator.Particle particle = new WaveParticleAnimator.Particle(0.0, 1.0, 0.0, 3.0);
+        WaveParticleAnimator.Particle advanced = particle.advance(0.5);
 
         assertThat(advanced.progress()).isGreaterThan(0.0);
         assertThat(advanced.age()).isEqualTo(0.5);
@@ -154,10 +154,10 @@ class WaveParticleAnimatorTest {
 
     @Test
     void shouldReturnDefensiveCopyOfParticles() {
-        var animator = new WaveParticleAnimator(0.1, 1.0, 2.0);
+        WaveParticleAnimator animator = new WaveParticleAnimator(0.1, 1.0, 2.0);
         animator.update(0.15);
 
-        var particles = animator.getParticles();
+        List<WaveParticleAnimator.Particle> particles = animator.getParticles();
 
         // List.copyOf returns an unmodifiable list
         assertThatThrownBy(() -> particles.clear())
@@ -166,7 +166,7 @@ class WaveParticleAnimatorTest {
 
     @Test
     void defaultConstructorShouldCreateValidAnimator() {
-        var animator = new WaveParticleAnimator();
+        WaveParticleAnimator animator = new WaveParticleAnimator();
 
         animator.update(1.0);
         assertThat(animator.getParticleCount()).isGreaterThan(0);

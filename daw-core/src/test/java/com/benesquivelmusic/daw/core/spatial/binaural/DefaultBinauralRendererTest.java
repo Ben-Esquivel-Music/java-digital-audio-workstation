@@ -141,7 +141,7 @@ class DefaultBinauralRendererTest {
 
     @Test
     void shouldUpdateSourcePosition() {
-        var pos = new SphericalCoordinate(45, 10, 1.5);
+        SphericalCoordinate pos = new SphericalCoordinate(45, 10, 1.5);
         renderer.loadHrtfData(hrtfData);
         renderer.setSourcePosition(pos);
         assertThat(renderer.getSourcePosition()).isEqualTo(pos);

@@ -12,7 +12,7 @@ class WaveformDataTest {
         float[] min = {-0.5f, -0.3f};
         float[] max = {0.5f, 0.3f};
         float[] rms = {0.2f, 0.1f};
-        var data = new WaveformData(min, max, rms, 2);
+        WaveformData data = new WaveformData(min, max, rms, 2);
 
         // Mutating originals should not affect internal state
         min[0] = 99f;
@@ -30,7 +30,7 @@ class WaveformDataTest {
         float[] max = {0.5f, 0.3f};
         float[] rms = {0.2f, 0.1f};
 
-        var data = new WaveformData(min, max, rms, 2);
+        WaveformData data = new WaveformData(min, max, rms, 2);
 
         assertThat(data.columns()).isEqualTo(2);
         assertThat(data.minValues()).isEqualTo(min);

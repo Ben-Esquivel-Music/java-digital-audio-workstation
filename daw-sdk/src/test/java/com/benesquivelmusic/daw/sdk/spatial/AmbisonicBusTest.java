@@ -9,7 +9,7 @@ class AmbisonicBusTest {
 
     @Test
     void shouldCreateBusWithFoaFormat() {
-        var bus = new AmbisonicBus("Main", AmbisonicFormat.FOA);
+        AmbisonicBus bus = new AmbisonicBus("Main", AmbisonicFormat.FOA);
         assertThat(bus.name()).isEqualTo("Main");
         assertThat(bus.channelCount()).isEqualTo(4);
         assertThat(bus.order()).isEqualTo(AmbisonicOrder.FIRST);
@@ -17,14 +17,14 @@ class AmbisonicBusTest {
 
     @Test
     void shouldCreateBusWithThirdOrderFormat() {
-        var bus = new AmbisonicBus("HOA Bus", AmbisonicFormat.THIRD_ORDER);
+        AmbisonicBus bus = new AmbisonicBus("HOA Bus", AmbisonicFormat.THIRD_ORDER);
         assertThat(bus.channelCount()).isEqualTo(16);
         assertThat(bus.order()).isEqualTo(AmbisonicOrder.THIRD);
     }
 
     @Test
     void shouldAllocateBuffer() {
-        var bus = new AmbisonicBus("Test", AmbisonicFormat.FOA);
+        AmbisonicBus bus = new AmbisonicBus("Test", AmbisonicFormat.FOA);
         float[][] buffer = bus.allocateBuffer(256);
         assertThat(buffer).hasNumberOfRows(4);
         assertThat(buffer[0]).hasSize(256);
@@ -32,7 +32,7 @@ class AmbisonicBusTest {
 
     @Test
     void shouldAllocateZeroFrameBuffer() {
-        var bus = new AmbisonicBus("Test", AmbisonicFormat.FOA);
+        AmbisonicBus bus = new AmbisonicBus("Test", AmbisonicFormat.FOA);
         float[][] buffer = bus.allocateBuffer(0);
         assertThat(buffer).hasNumberOfRows(4);
         assertThat(buffer[0]).hasSize(0);
@@ -59,7 +59,7 @@ class AmbisonicBusTest {
 
     @Test
     void shouldRejectNegativeFrameCount() {
-        var bus = new AmbisonicBus("Test", AmbisonicFormat.FOA);
+        AmbisonicBus bus = new AmbisonicBus("Test", AmbisonicFormat.FOA);
         assertThatThrownBy(() -> bus.allocateBuffer(-1))
                 .isInstanceOf(IllegalArgumentException.class);
     }

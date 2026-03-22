@@ -12,13 +12,13 @@ class MasteringChainPresetTest {
 
     @Test
     void shouldCreatePresetWithAllFields() {
-        var stages = List.of(
+        List<MasteringStageConfig> stages = List.of(
                 MasteringStageConfig.of(MasteringStageType.GAIN_STAGING, "Gain",
                         Map.of("gainDb", 0.0)),
                 MasteringStageConfig.of(MasteringStageType.COMPRESSION, "Compressor",
                         Map.of("thresholdDb", -18.0, "ratio", 4.0))
         );
-        var preset = new MasteringChainPreset("Test Preset", "Rock", stages);
+        MasteringChainPreset preset = new MasteringChainPreset("Test Preset", "Rock", stages);
 
         assertThat(preset.name()).isEqualTo("Test Preset");
         assertThat(preset.genre()).isEqualTo("Rock");
@@ -27,7 +27,7 @@ class MasteringChainPresetTest {
 
     @Test
     void shouldPreserveStageOrder() {
-        var stages = List.of(
+        List<MasteringStageConfig> stages = List.of(
                 MasteringStageConfig.of(MasteringStageType.GAIN_STAGING, "Gain", Map.of()),
                 MasteringStageConfig.of(MasteringStageType.EQ_CORRECTIVE, "EQ1", Map.of()),
                 MasteringStageConfig.of(MasteringStageType.COMPRESSION, "Comp", Map.of()),
@@ -36,7 +36,7 @@ class MasteringChainPresetTest {
                 MasteringStageConfig.of(MasteringStageType.LIMITING, "Limiter", Map.of()),
                 MasteringStageConfig.of(MasteringStageType.DITHERING, "Dither", Map.of())
         );
-        var preset = new MasteringChainPreset("Full Chain", "Pop/EDM", stages);
+        MasteringChainPreset preset = new MasteringChainPreset("Full Chain", "Pop/EDM", stages);
 
         assertThat(preset.stages()).extracting(MasteringStageConfig::stageType)
                 .containsExactly(
@@ -52,10 +52,10 @@ class MasteringChainPresetTest {
 
     @Test
     void shouldHaveImmutableStageList() {
-        var stages = List.of(
+        List<MasteringStageConfig> stages = List.of(
                 MasteringStageConfig.of(MasteringStageType.GAIN_STAGING, "Gain", Map.of())
         );
-        var preset = new MasteringChainPreset("Test", "Genre", stages);
+        MasteringChainPreset preset = new MasteringChainPreset("Test", "Genre", stages);
 
         assertThatThrownBy(() -> preset.stages().clear())
                 .isInstanceOf(UnsupportedOperationException.class);
@@ -64,7 +64,7 @@ class MasteringChainPresetTest {
     @Test
     void shouldSerializeAndDeserializeRoundTrip() {
         // Create a preset, extract its data, rebuild it, and verify equality
-        var original = new MasteringChainPreset("Round-Trip", "Rock", List.of(
+        MasteringChainPreset original = new MasteringChainPreset("Round-Trip", "Rock", List.of(
                 MasteringStageConfig.of(MasteringStageType.COMPRESSION, "Comp",
                         Map.of("thresholdDb", -18.0, "ratio", 4.0, "attackMs", 10.0)),
                 new MasteringStageConfig(MasteringStageType.LIMITING, "Limiter",
@@ -72,7 +72,7 @@ class MasteringChainPresetTest {
         ));
 
         // Simulate serialization round-trip by reconstructing from accessors
-        var rebuilt = new MasteringChainPreset(
+        MasteringChainPreset rebuilt = new MasteringChainPreset(
                 original.name(),
                 original.genre(),
                 original.stages().stream()
@@ -87,8 +87,8 @@ class MasteringChainPresetTest {
 
     @Test
     void shouldPreserveParameterValues() {
-        var params = Map.of("thresholdDb", -18.0, "ratio", 4.0, "attackMs", 10.0);
-        var config = MasteringStageConfig.of(MasteringStageType.COMPRESSION, "Comp", params);
+        Map<String, Double> params = Map.of("thresholdDb", -18.0, "ratio", 4.0, "attackMs", 10.0);
+        MasteringStageConfig config = MasteringStageConfig.of(MasteringStageType.COMPRESSION, "Comp", params);
 
         assertThat(config.parameters()).containsEntry("thresholdDb", -18.0);
         assertThat(config.parameters()).containsEntry("ratio", 4.0);
@@ -97,9 +97,9 @@ class MasteringChainPresetTest {
 
     @Test
     void shouldPreserveBypassState() {
-        var bypassed = new MasteringStageConfig(
+        MasteringStageConfig bypassed = new MasteringStageConfig(
                 MasteringStageType.EQ_CORRECTIVE, "EQ", Map.of(), true);
-        var enabled = MasteringStageConfig.of(
+        MasteringStageConfig enabled = MasteringStageConfig.of(
                 MasteringStageType.EQ_CORRECTIVE, "EQ", Map.of());
 
         assertThat(bypassed.bypassed()).isTrue();
@@ -128,7 +128,7 @@ class MasteringChainPresetTest {
 
     @Test
     void shouldHaveImmutableParameterMap() {
-        var config = MasteringStageConfig.of(MasteringStageType.COMPRESSION, "Comp",
+        MasteringStageConfig config = MasteringStageConfig.of(MasteringStageType.COMPRESSION, "Comp",
                 Map.of("thresholdDb", -18.0));
 
         assertThatThrownBy(() -> config.parameters().put("newKey", 1.0))

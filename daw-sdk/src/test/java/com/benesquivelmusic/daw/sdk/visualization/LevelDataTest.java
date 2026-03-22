@@ -9,7 +9,7 @@ class LevelDataTest {
 
     @Test
     void shouldCreateWithValidParameters() {
-        var data = new LevelData(0.8, 0.5, -1.94, -6.02, false);
+        LevelData data = new LevelData(0.8, 0.5, -1.94, -6.02, false);
 
         assertThat(data.peakLinear()).isEqualTo(0.8);
         assertThat(data.rmsLinear()).isEqualTo(0.5);
@@ -20,7 +20,7 @@ class LevelDataTest {
 
     @Test
     void shouldCreateWithTruePeakParameters() {
-        var data = new LevelData(0.8, 0.5, -1.94, -6.02, false, 0.85, -1.41);
+        LevelData data = new LevelData(0.8, 0.5, -1.94, -6.02, false, 0.85, -1.41);
 
         assertThat(data.peakLinear()).isEqualTo(0.8);
         assertThat(data.rmsLinear()).isEqualTo(0.5);
@@ -33,7 +33,7 @@ class LevelDataTest {
 
     @Test
     void shouldDefaultTruePeakToSamplePeak() {
-        var data = new LevelData(0.8, 0.5, -1.94, -6.02, false);
+        LevelData data = new LevelData(0.8, 0.5, -1.94, -6.02, false);
 
         // Backward compatible constructor defaults true peak to sample peak
         assertThat(data.truePeakLinear()).isEqualTo(0.8);

@@ -9,7 +9,7 @@ class NativeAudioBufferTest {
 
     @Test
     void shouldCreateSilentBuffer() {
-        try (var buffer = new NativeAudioBuffer(2, 128)) {
+        try (NativeAudioBuffer buffer = new NativeAudioBuffer(2, 128)) {
             assertThat(buffer.getChannels()).isEqualTo(2);
             assertThat(buffer.getFrames()).isEqualTo(128);
             assertThat(buffer.getSample(0, 0)).isZero();
@@ -19,7 +19,7 @@ class NativeAudioBufferTest {
 
     @Test
     void shouldSetAndGetSamples() {
-        try (var buffer = new NativeAudioBuffer(1, 4)) {
+        try (NativeAudioBuffer buffer = new NativeAudioBuffer(1, 4)) {
             buffer.setSample(0, 0, 0.5f);
             buffer.setSample(0, 1, -0.5f);
             buffer.setSample(0, 2, 1.0f);
@@ -34,7 +34,7 @@ class NativeAudioBufferTest {
 
     @Test
     void shouldClearBuffer() {
-        try (var buffer = new NativeAudioBuffer(2, 4)) {
+        try (NativeAudioBuffer buffer = new NativeAudioBuffer(2, 4)) {
             buffer.setSample(0, 0, 0.9f);
             buffer.setSample(1, 3, -0.9f);
 
@@ -47,7 +47,7 @@ class NativeAudioBufferTest {
 
     @Test
     void shouldProvideChannelData() {
-        try (var buffer = new NativeAudioBuffer(2, 3)) {
+        try (NativeAudioBuffer buffer = new NativeAudioBuffer(2, 3)) {
             buffer.setSample(0, 0, 0.1f);
             buffer.setSample(0, 1, 0.2f);
             buffer.setSample(0, 2, 0.3f);
@@ -59,7 +59,7 @@ class NativeAudioBufferTest {
 
     @Test
     void shouldSetChannelData() {
-        try (var buffer = new NativeAudioBuffer(1, 3)) {
+        try (NativeAudioBuffer buffer = new NativeAudioBuffer(1, 3)) {
             buffer.setChannelData(0, new float[]{0.4f, 0.5f, 0.6f});
 
             assertThat(buffer.getSample(0, 0)).isEqualTo(0.4f);
@@ -70,7 +70,7 @@ class NativeAudioBufferTest {
 
     @Test
     void shouldReportCorrectSizeBytes() {
-        try (var buffer = new NativeAudioBuffer(2, 256)) {
+        try (NativeAudioBuffer buffer = new NativeAudioBuffer(2, 256)) {
             assertThat(buffer.sizeBytes()).isEqualTo(2L * 256 * Float.BYTES);
         }
     }
@@ -89,7 +89,7 @@ class NativeAudioBufferTest {
 
     @Test
     void shouldRejectOutOfBoundsChannel() {
-        try (var buffer = new NativeAudioBuffer(2, 4)) {
+        try (NativeAudioBuffer buffer = new NativeAudioBuffer(2, 4)) {
             assertThatThrownBy(() -> buffer.getSample(2, 0))
                     .isInstanceOf(IndexOutOfBoundsException.class);
         }
@@ -97,7 +97,7 @@ class NativeAudioBufferTest {
 
     @Test
     void shouldRejectOutOfBoundsFrame() {
-        try (var buffer = new NativeAudioBuffer(2, 4)) {
+        try (NativeAudioBuffer buffer = new NativeAudioBuffer(2, 4)) {
             assertThatThrownBy(() -> buffer.getSample(0, 4))
                     .isInstanceOf(IndexOutOfBoundsException.class);
         }
@@ -105,7 +105,7 @@ class NativeAudioBufferTest {
 
     @Test
     void shouldRejectShortChannelData() {
-        try (var buffer = new NativeAudioBuffer(1, 4)) {
+        try (NativeAudioBuffer buffer = new NativeAudioBuffer(1, 4)) {
             assertThatThrownBy(() -> buffer.setChannelData(0, new float[]{0.1f, 0.2f}))
                     .isInstanceOf(IllegalArgumentException.class);
         }
@@ -113,7 +113,7 @@ class NativeAudioBufferTest {
 
     @Test
     void shouldExposeMemorySegment() {
-        try (var buffer = new NativeAudioBuffer(1, 4)) {
+        try (NativeAudioBuffer buffer = new NativeAudioBuffer(1, 4)) {
             assertThat(buffer.segment()).isNotNull();
             assertThat(buffer.segment().byteSize()).isEqualTo(4L * Float.BYTES);
         }

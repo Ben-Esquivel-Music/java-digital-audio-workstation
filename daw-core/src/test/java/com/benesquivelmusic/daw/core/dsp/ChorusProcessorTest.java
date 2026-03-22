@@ -9,7 +9,7 @@ class ChorusProcessorTest {
 
     @Test
     void shouldCreateWithDefaults() {
-        var chorus = new ChorusProcessor(2, 44100.0);
+        ChorusProcessor chorus = new ChorusProcessor(2, 44100.0);
         assertThat(chorus.getInputChannelCount()).isEqualTo(2);
         assertThat(chorus.getOutputChannelCount()).isEqualTo(2);
         assertThat(chorus.getRateHz()).isEqualTo(1.5);
@@ -20,7 +20,7 @@ class ChorusProcessorTest {
 
     @Test
     void shouldPassDrySignalWithZeroMix() {
-        var chorus = new ChorusProcessor(1, 44100.0);
+        ChorusProcessor chorus = new ChorusProcessor(1, 44100.0);
         chorus.setMix(0.0);
 
         float[][] input = new float[1][512];
@@ -38,7 +38,7 @@ class ChorusProcessorTest {
 
     @Test
     void shouldModifySignalWithDefaultSettings() {
-        var chorus = new ChorusProcessor(1, 44100.0);
+        ChorusProcessor chorus = new ChorusProcessor(1, 44100.0);
 
         float[][] input = new float[1][4096];
         float[][] output = new float[1][4096];
@@ -60,7 +60,7 @@ class ChorusProcessorTest {
 
     @Test
     void shouldNotClipOutput() {
-        var chorus = new ChorusProcessor(1, 44100.0);
+        ChorusProcessor chorus = new ChorusProcessor(1, 44100.0);
         chorus.setMix(0.5);
 
         float[][] input = new float[1][4096];
@@ -77,7 +77,7 @@ class ChorusProcessorTest {
 
     @Test
     void shouldResetState() {
-        var chorus = new ChorusProcessor(1, 44100.0);
+        ChorusProcessor chorus = new ChorusProcessor(1, 44100.0);
 
         float[][] input = new float[1][1024];
         float[][] output = new float[1][1024];
@@ -106,7 +106,7 @@ class ChorusProcessorTest {
 
     @Test
     void shouldRejectInvalidRate() {
-        var chorus = new ChorusProcessor(1, 44100.0);
+        ChorusProcessor chorus = new ChorusProcessor(1, 44100.0);
         assertThatThrownBy(() -> chorus.setRateHz(0))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> chorus.setRateHz(11.0))
@@ -115,14 +115,14 @@ class ChorusProcessorTest {
 
     @Test
     void shouldRejectInvalidDepth() {
-        var chorus = new ChorusProcessor(1, 44100.0);
+        ChorusProcessor chorus = new ChorusProcessor(1, 44100.0);
         assertThatThrownBy(() -> chorus.setDepthMs(-1.0))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void shouldRejectInvalidMix() {
-        var chorus = new ChorusProcessor(1, 44100.0);
+        ChorusProcessor chorus = new ChorusProcessor(1, 44100.0);
         assertThatThrownBy(() -> chorus.setMix(-0.1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> chorus.setMix(1.1))
@@ -131,7 +131,7 @@ class ChorusProcessorTest {
 
     @Test
     void shouldSupportParameterChanges() {
-        var chorus = new ChorusProcessor(1, 44100.0);
+        ChorusProcessor chorus = new ChorusProcessor(1, 44100.0);
         chorus.setRateHz(2.5);
         chorus.setDepthMs(5.0);
         chorus.setBaseDelayMs(10.0);
@@ -145,7 +145,7 @@ class ChorusProcessorTest {
 
     @Test
     void shouldProcessStereoChannelsIndependently() {
-        var chorus = new ChorusProcessor(2, 44100.0);
+        ChorusProcessor chorus = new ChorusProcessor(2, 44100.0);
         chorus.setMix(1.0);
 
         float[][] input = new float[2][2048];

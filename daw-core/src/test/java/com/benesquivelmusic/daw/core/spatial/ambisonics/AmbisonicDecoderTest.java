@@ -32,7 +32,7 @@ class AmbisonicDecoderTest {
 
     @Test
     void shouldCreateBasicDecoder() {
-        var decoder = new AmbisonicDecoder(AmbisonicOrder.FIRST, STEREO_SPEAKERS, DecoderType.BASIC);
+        AmbisonicDecoder decoder = new AmbisonicDecoder(AmbisonicOrder.FIRST, STEREO_SPEAKERS, DecoderType.BASIC);
         assertThat(decoder.getInputChannelCount()).isEqualTo(4);
         assertThat(decoder.getOutputChannelCount()).isEqualTo(2);
         assertThat(decoder.getDecoderType()).isEqualTo(DecoderType.BASIC);
@@ -61,14 +61,14 @@ class AmbisonicDecoderTest {
     @Test
     void shouldReconstructSignalOnRoundTrip() {
         // Encode a front source to FOA, then decode to quad speakers
-        var encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
+        AmbisonicEncoder encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
         encoder.setDirection(0, 0); // front
 
         float[][] monoInput = {constantBuffer(1.0f, NUM_FRAMES)};
         float[][] foaBuffer = new float[4][NUM_FRAMES];
         encoder.process(monoInput, foaBuffer, NUM_FRAMES);
 
-        var decoder = new AmbisonicDecoder(AmbisonicOrder.FIRST, QUAD_SPEAKERS, DecoderType.BASIC);
+        AmbisonicDecoder decoder = new AmbisonicDecoder(AmbisonicOrder.FIRST, QUAD_SPEAKERS, DecoderType.BASIC);
         float[][] speakerOutput = new float[4][NUM_FRAMES];
         decoder.process(foaBuffer, speakerOutput, NUM_FRAMES);
 
@@ -80,14 +80,14 @@ class AmbisonicDecoderTest {
 
     @Test
     void shouldLocalizeLeftSourceToLeftSpeakers() {
-        var encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
+        AmbisonicEncoder encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
         encoder.setDirection(Math.PI / 2.0, 0); // left
 
         float[][] monoInput = {constantBuffer(1.0f, NUM_FRAMES)};
         float[][] foaBuffer = new float[4][NUM_FRAMES];
         encoder.process(monoInput, foaBuffer, NUM_FRAMES);
 
-        var decoder = new AmbisonicDecoder(AmbisonicOrder.FIRST, QUAD_SPEAKERS, DecoderType.BASIC);
+        AmbisonicDecoder decoder = new AmbisonicDecoder(AmbisonicOrder.FIRST, QUAD_SPEAKERS, DecoderType.BASIC);
         float[][] speakerOutput = new float[4][NUM_FRAMES];
         decoder.process(foaBuffer, speakerOutput, NUM_FRAMES);
 
@@ -101,7 +101,7 @@ class AmbisonicDecoderTest {
 
     @Test
     void maxReDecoderShouldProduceOutput() {
-        var decoder = new AmbisonicDecoder(AmbisonicOrder.FIRST, QUAD_SPEAKERS, DecoderType.MAX_RE);
+        AmbisonicDecoder decoder = new AmbisonicDecoder(AmbisonicOrder.FIRST, QUAD_SPEAKERS, DecoderType.MAX_RE);
 
         float[][] foaInput = createTestFoaSignal(NUM_FRAMES);
         float[][] output = new float[4][NUM_FRAMES];
@@ -112,7 +112,7 @@ class AmbisonicDecoderTest {
 
     @Test
     void inPhaseDecoderShouldProduceOutput() {
-        var decoder = new AmbisonicDecoder(AmbisonicOrder.FIRST, QUAD_SPEAKERS, DecoderType.IN_PHASE);
+        AmbisonicDecoder decoder = new AmbisonicDecoder(AmbisonicOrder.FIRST, QUAD_SPEAKERS, DecoderType.IN_PHASE);
 
         float[][] foaInput = createTestFoaSignal(NUM_FRAMES);
         float[][] output = new float[4][NUM_FRAMES];
@@ -123,7 +123,7 @@ class AmbisonicDecoderTest {
 
     @Test
     void shouldUpdateDecoderType() {
-        var decoder = new AmbisonicDecoder(AmbisonicOrder.FIRST, QUAD_SPEAKERS, DecoderType.BASIC);
+        AmbisonicDecoder decoder = new AmbisonicDecoder(AmbisonicOrder.FIRST, QUAD_SPEAKERS, DecoderType.BASIC);
         decoder.setDecoderType(DecoderType.MAX_RE);
         assertThat(decoder.getDecoderType()).isEqualTo(DecoderType.MAX_RE);
     }
@@ -132,7 +132,7 @@ class AmbisonicDecoderTest {
 
     @Test
     void decoderMatrixShouldHaveCorrectDimensions() {
-        var decoder = new AmbisonicDecoder(AmbisonicOrder.FIRST, QUAD_SPEAKERS, DecoderType.BASIC);
+        AmbisonicDecoder decoder = new AmbisonicDecoder(AmbisonicOrder.FIRST, QUAD_SPEAKERS, DecoderType.BASIC);
         double[][] matrix = decoder.getDecoderMatrix();
         assertThat(matrix).hasNumberOfRows(4); // 4 speakers
         for (double[] row : matrix) {
@@ -142,7 +142,7 @@ class AmbisonicDecoderTest {
 
     @Test
     void decoderMatrixShouldUpdateWithSpeakers() {
-        var decoder = new AmbisonicDecoder(AmbisonicOrder.FIRST, STEREO_SPEAKERS, DecoderType.BASIC);
+        AmbisonicDecoder decoder = new AmbisonicDecoder(AmbisonicOrder.FIRST, STEREO_SPEAKERS, DecoderType.BASIC);
         double[][] matrix1 = decoder.getDecoderMatrix();
         assertThat(matrix1).hasNumberOfRows(2);
 
@@ -155,7 +155,7 @@ class AmbisonicDecoderTest {
 
     @Test
     void shouldDecodeSecondOrderToSpeakers() {
-        var decoder = new AmbisonicDecoder(AmbisonicOrder.SECOND, QUAD_SPEAKERS, DecoderType.BASIC);
+        AmbisonicDecoder decoder = new AmbisonicDecoder(AmbisonicOrder.SECOND, QUAD_SPEAKERS, DecoderType.BASIC);
         assertThat(decoder.getInputChannelCount()).isEqualTo(9);
 
         float[][] hoaInput = new float[9][NUM_FRAMES];
@@ -175,7 +175,7 @@ class AmbisonicDecoderTest {
 
     @Test
     void shouldResetWithoutError() {
-        var decoder = new AmbisonicDecoder(AmbisonicOrder.FIRST, STEREO_SPEAKERS, DecoderType.BASIC);
+        AmbisonicDecoder decoder = new AmbisonicDecoder(AmbisonicOrder.FIRST, STEREO_SPEAKERS, DecoderType.BASIC);
         decoder.reset();
     }
 
@@ -189,7 +189,7 @@ class AmbisonicDecoderTest {
 
     private static float[][] createTestFoaSignal(int numFrames) {
         // Encode a front source
-        var encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
+        AmbisonicEncoder encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
         encoder.setDirection(0, 0);
         float[][] input = {constantBuffer(1.0f, numFrames)};
         float[][] foa = new float[4][numFrames];

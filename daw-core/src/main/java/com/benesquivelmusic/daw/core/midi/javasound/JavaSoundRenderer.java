@@ -92,7 +92,7 @@ public final class JavaSoundRenderer implements SoundFontRenderer {
                         patch.getBank(), patch.getProgram(), instrument.getName()));
             }
 
-            var info = new SoundFontInfo(sfId, path, presets);
+            SoundFontInfo info = new SoundFontInfo(sfId, path, presets);
             loadedSoundFonts.add(info);
             return info;
         } catch (IOException | InvalidMidiDataException e) {

@@ -16,7 +16,7 @@ class AmbisonicEncoderTest {
 
     @Test
     void shouldCreateFoaEncoder() {
-        var encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
+        AmbisonicEncoder encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
         assertThat(encoder.getInputChannelCount()).isEqualTo(1);
         assertThat(encoder.getOutputChannelCount()).isEqualTo(4);
         assertThat(encoder.getOrder()).isEqualTo(AmbisonicOrder.FIRST);
@@ -24,7 +24,7 @@ class AmbisonicEncoderTest {
 
     @Test
     void shouldCreateHoaEncoder() {
-        var encoder = new AmbisonicEncoder(AmbisonicOrder.THIRD);
+        AmbisonicEncoder encoder = new AmbisonicEncoder(AmbisonicOrder.THIRD);
         assertThat(encoder.getOutputChannelCount()).isEqualTo(16);
     }
 
@@ -38,7 +38,7 @@ class AmbisonicEncoderTest {
 
     @Test
     void shouldEncodeFrontSourceToFoa() {
-        var encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
+        AmbisonicEncoder encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
         encoder.setDirection(0, 0); // front
 
         float[][] input = {constantBuffer(1.0f, NUM_FRAMES)};
@@ -56,7 +56,7 @@ class AmbisonicEncoderTest {
 
     @Test
     void shouldEncodeLeftSourceToFoa() {
-        var encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
+        AmbisonicEncoder encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
         encoder.setDirection(Math.PI / 2.0, 0); // left
 
         float[][] input = {constantBuffer(1.0f, NUM_FRAMES)};
@@ -73,7 +73,7 @@ class AmbisonicEncoderTest {
 
     @Test
     void shouldPreserveEnergyAcrossDirections() {
-        var encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
+        AmbisonicEncoder encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
 
         for (double az = 0; az < 2 * Math.PI; az += Math.PI / 6) {
             encoder.setDirection(az, 0);
@@ -89,7 +89,7 @@ class AmbisonicEncoderTest {
 
     @Test
     void shouldUpdateDirectionBetweenProcessCalls() {
-        var encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
+        AmbisonicEncoder encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
 
         // First: front
         encoder.setDirection(0, 0);
@@ -104,7 +104,7 @@ class AmbisonicEncoderTest {
 
     @Test
     void shouldEncodeToSecondOrder() {
-        var encoder = new AmbisonicEncoder(AmbisonicOrder.SECOND);
+        AmbisonicEncoder encoder = new AmbisonicEncoder(AmbisonicOrder.SECOND);
         encoder.setDirection(Math.PI / 4.0, Math.PI / 6.0);
 
         float[][] input = {constantBuffer(0.5f, NUM_FRAMES)};
@@ -131,7 +131,7 @@ class AmbisonicEncoderTest {
 
     @Test
     void shouldResetWithoutError() {
-        var encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
+        AmbisonicEncoder encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
         encoder.reset(); // no-op, should not throw
     }
 
