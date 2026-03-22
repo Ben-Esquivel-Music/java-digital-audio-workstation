@@ -186,6 +186,23 @@ class RecordingSessionTest {
     }
 
     @Test
+    void shouldRotateSegmentWhenByteLimitExceeded() {
+        // Very small byte limit to trigger rotation
+        var session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir,
+                Duration.ofHours(1), 1000L);
+        session.start();
+        assertThat(session.getSegmentCount()).isEqualTo(1);
+
+        // Record enough cumulative bytes to exceed the limit
+        session.recordSamples(100, 400);
+        session.recordSamples(100, 400);
+        session.recordSamples(100, 400); // total: 1200 > 1000
+
+        // Should have rotated to a second segment
+        assertThat(session.getSegmentCount()).isEqualTo(2);
+    }
+
+    @Test
     void shouldReturnUnmodifiableSegments() {
         var session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
         session.start();

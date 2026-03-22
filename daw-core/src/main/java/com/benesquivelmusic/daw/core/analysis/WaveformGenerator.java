@@ -36,6 +36,7 @@ public final class WaveformGenerator {
         if (columns <= 0) {
             throw new IllegalArgumentException("columns must be positive: " + columns);
         }
+        numSamples = Math.min(numSamples, samples.length);
 
         float[] minValues = new float[columns];
         float[] maxValues = new float[columns];

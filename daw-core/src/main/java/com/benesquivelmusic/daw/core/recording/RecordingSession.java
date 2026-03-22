@@ -48,6 +48,7 @@ public final class RecordingSession {
     private boolean paused;
     private Instant sessionStartTime;
     private RecordingSegment currentSegment;
+    private long currentSegmentBytes;
 
     /**
      * Creates a new recording session.
@@ -150,8 +151,9 @@ public final class RecordingSession {
             return;
         }
         totalSamplesRecorded.addAndGet(sampleCount);
+        currentSegmentBytes += byteSize;
 
-        if (shouldRotateSegment(byteSize)) {
+        if (shouldRotateSegment()) {
             finalizeCurrentSegment();
             startNewSegment();
         }
@@ -241,7 +243,7 @@ public final class RecordingSession {
         return maxSegmentBytes;
     }
 
-    private boolean shouldRotateSegment(long newByteSize) {
+    private boolean shouldRotateSegment() {
         if (currentSegment == null) {
             return false;
         }
@@ -251,7 +253,7 @@ public final class RecordingSession {
             return true;
         }
         // Check size
-        return (currentSegment.sizeBytes() + newByteSize) > maxSegmentBytes;
+        return currentSegmentBytes > maxSegmentBytes;
     }
 
     private void startNewSegment() {
@@ -259,6 +261,7 @@ public final class RecordingSession {
         String fileName = String.format("segment-%03d.wav", index);
         Path segmentPath = outputDirectory.resolve(fileName);
         currentSegment = RecordingSegment.startNew(index, segmentPath);
+        currentSegmentBytes = 0;
         segments.add(currentSegment);
         for (RecordingListener listener : listeners) {
             listener.onNewSegmentCreated(index);
@@ -268,10 +271,10 @@ public final class RecordingSession {
     private void finalizeCurrentSegment() {
         if (currentSegment != null && currentSegment.isInProgress()) {
             long segmentSamples = estimateSegmentSamples();
-            long segmentBytes = estimateSegmentBytes(segmentSamples);
-            RecordingSegment finalized = currentSegment.complete(segmentSamples, segmentBytes);
+            RecordingSegment finalized = currentSegment.complete(segmentSamples, currentSegmentBytes);
             segments.set(finalized.index(), finalized);
             currentSegment = null;
+            currentSegmentBytes = 0;
         }
     }
 
@@ -281,9 +284,5 @@ public final class RecordingSession {
         }
         Duration segmentDuration = Duration.between(currentSegment.startTime(), Instant.now());
         return (long) (segmentDuration.toMillis() / 1000.0 * format.sampleRate());
-    }
-
-    private long estimateSegmentBytes(long samples) {
-        return samples * format.channels() * (format.bitDepth() / 8);
     }
 }

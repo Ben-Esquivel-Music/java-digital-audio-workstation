@@ -72,6 +72,15 @@ class WaveformGeneratorTest {
     }
 
     @Test
+    void shouldClampNumSamplesToArrayLength() {
+        float[] samples = new float[50];
+        samples[0] = 1.0f;
+        // numSamples (100) exceeds samples.length (50) — should not throw
+        WaveformData data = WaveformGenerator.generate(samples, 100, 10);
+        assertThat(data.columns()).isEqualTo(10);
+    }
+
+    @Test
     void shouldRejectNullSamples() {
         assertThatThrownBy(() -> WaveformGenerator.generate(null, 100, 10))
                 .isInstanceOf(IllegalArgumentException.class);

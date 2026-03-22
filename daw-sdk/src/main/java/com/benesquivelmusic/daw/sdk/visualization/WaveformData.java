@@ -28,5 +28,8 @@ public record WaveformData(float[] minValues, float[] maxValues, float[] rmsValu
             throw new IllegalArgumentException(
                     "all arrays must have length equal to columns (" + columns + ")");
         }
+        minValues = minValues.clone();
+        maxValues = maxValues.clone();
+        rmsValues = rmsValues.clone();
     }
 }

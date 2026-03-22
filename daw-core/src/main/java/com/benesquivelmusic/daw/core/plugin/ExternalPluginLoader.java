@@ -19,8 +19,29 @@ import java.util.Objects;
  */
 public final class ExternalPluginLoader {
 
+    /**
+     * Holds the loaded plugin together with the classloader that loaded it,
+     * so the classloader can be closed when the plugin is unloaded.
+     */
+    record LoadResult(DawPlugin plugin, URLClassLoader classLoader) {}
+
     private ExternalPluginLoader() {
         // utility class
+    }
+
+    /**
+     * Loads a {@link DawPlugin} instance from the given external plugin entry.
+     *
+     * <p><b>Note:</b> The caller is responsible for closing the returned
+     * {@link LoadResult#classLoader()} when the plugin is no longer needed.</p>
+     *
+     * @param entry the external plugin entry specifying JAR path and class name
+     * @return a result containing the plugin instance and its classloader
+     * @throws PluginLoadException if the plugin cannot be loaded or instantiated
+     */
+    static LoadResult loadWithClassLoader(ExternalPluginEntry entry) throws PluginLoadException {
+        Objects.requireNonNull(entry, "entry must not be null");
+        return loadWithClassLoader(entry.jarPath(), entry.className());
     }
 
     /**
@@ -44,6 +65,19 @@ public final class ExternalPluginLoader {
      * @throws PluginLoadException if the plugin cannot be loaded or instantiated
      */
     public static DawPlugin load(Path jarPath, String className) throws PluginLoadException {
+        return loadWithClassLoader(jarPath, className).plugin();
+    }
+
+    /**
+     * Loads a {@link DawPlugin} instance from the given JAR path and class name,
+     * returning both the plugin and the classloader that loaded it.
+     *
+     * @param jarPath   the filesystem path to the plugin JAR file
+     * @param className the fully qualified class name of the DawPlugin implementation
+     * @return a result containing the plugin instance and its classloader
+     * @throws PluginLoadException if the plugin cannot be loaded or instantiated
+     */
+    static LoadResult loadWithClassLoader(Path jarPath, String className) throws PluginLoadException {
         Objects.requireNonNull(jarPath, "jarPath must not be null");
         Objects.requireNonNull(className, "className must not be null");
 
@@ -69,7 +103,7 @@ public final class ExternalPluginLoader {
             }
 
             Object instance = pluginClass.getConstructor().newInstance();
-            return (DawPlugin) instance;
+            return new LoadResult((DawPlugin) instance, classLoader);
         } catch (PluginLoadException e) {
             closeQuietly(classLoader);
             throw e;

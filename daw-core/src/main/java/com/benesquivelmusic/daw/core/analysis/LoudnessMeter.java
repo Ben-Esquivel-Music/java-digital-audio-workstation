@@ -33,9 +33,11 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
     private final int momentaryFrames;
     private final int shortTermFrames;
 
-    // K-weighting filter state (two cascaded biquad stages)
-    private double kw1_x1, kw1_x2, kw1_y1, kw1_y2;
-    private double kw2_x1, kw2_x2, kw2_y1, kw2_y2;
+    // K-weighting filter state (two cascaded biquad stages, per channel)
+    private double kw1L_x1, kw1L_x2, kw1L_y1, kw1L_y2;
+    private double kw2L_x1, kw2L_x2, kw2L_y1, kw2L_y2;
+    private double kw1R_x1, kw1R_x2, kw1R_y1, kw1R_y2;
+    private double kw2R_x1, kw2R_x2, kw2R_y1, kw2R_y2;
     private final double[] kw1Coeffs;
     private final double[] kw2Coeffs;
 
@@ -109,10 +111,9 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
                 blockTruePeak = framePeak;
             }
 
-            // Apply K-weighting to left channel
-            double weightedL = applyKWeighting(sampleL);
-            // Apply K-weighting to right channel (using shared state — simplified)
-            double weightedR = applyKWeighting(sampleR);
+            // Apply K-weighting to left and right channels independently
+            double weightedL = applyKWeightingLeft(sampleL);
+            double weightedR = applyKWeightingRight(sampleR);
 
             // Mean square (equal power for L/R)
             blockMeanSquare += (weightedL * weightedL + weightedR * weightedR) / 2.0;
@@ -164,8 +165,10 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
      * Resets all meter state.
      */
     public void reset() {
-        kw1_x1 = kw1_x2 = kw1_y1 = kw1_y2 = 0;
-        kw2_x1 = kw2_x2 = kw2_y1 = kw2_y2 = 0;
+        kw1L_x1 = kw1L_x2 = kw1L_y1 = kw1L_y2 = 0;
+        kw2L_x1 = kw2L_x2 = kw2L_y1 = kw2L_y2 = 0;
+        kw1R_x1 = kw1R_x2 = kw1R_y1 = kw1R_y2 = 0;
+        kw2R_x1 = kw2R_x2 = kw2R_y1 = kw2R_y2 = 0;
         momentaryIndex = shortTermIndex = 0;
         momentaryCount = shortTermCount = 0;
         integratedSum = 0;
@@ -190,22 +193,42 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
     // K-weighting filters (simplified biquad cascade)
     // ----------------------------------------------------------------
 
-    private double applyKWeighting(double sample) {
+    private double applyKWeightingLeft(double sample) {
         // Stage 1: High shelf (+4 dB above ~1500 Hz)
-        double y1 = kw1Coeffs[0] * sample + kw1Coeffs[1] * kw1_x1 + kw1Coeffs[2] * kw1_x2
-                - kw1Coeffs[3] * kw1_y1 - kw1Coeffs[4] * kw1_y2;
-        kw1_x2 = kw1_x1;
-        kw1_x1 = sample;
-        kw1_y2 = kw1_y1;
-        kw1_y1 = y1;
+        double y1 = kw1Coeffs[0] * sample + kw1Coeffs[1] * kw1L_x1 + kw1Coeffs[2] * kw1L_x2
+                - kw1Coeffs[3] * kw1L_y1 - kw1Coeffs[4] * kw1L_y2;
+        kw1L_x2 = kw1L_x1;
+        kw1L_x1 = sample;
+        kw1L_y2 = kw1L_y1;
+        kw1L_y1 = y1;
 
         // Stage 2: High-pass (~60 Hz, 2nd order)
-        double y2 = kw2Coeffs[0] * y1 + kw2Coeffs[1] * kw2_x1 + kw2Coeffs[2] * kw2_x2
-                - kw2Coeffs[3] * kw2_y1 - kw2Coeffs[4] * kw2_y2;
-        kw2_x2 = kw2_x1;
-        kw2_x1 = y1;
-        kw2_y2 = kw2_y1;
-        kw2_y1 = y2;
+        double y2 = kw2Coeffs[0] * y1 + kw2Coeffs[1] * kw2L_x1 + kw2Coeffs[2] * kw2L_x2
+                - kw2Coeffs[3] * kw2L_y1 - kw2Coeffs[4] * kw2L_y2;
+        kw2L_x2 = kw2L_x1;
+        kw2L_x1 = y1;
+        kw2L_y2 = kw2L_y1;
+        kw2L_y1 = y2;
+
+        return y2;
+    }
+
+    private double applyKWeightingRight(double sample) {
+        // Stage 1: High shelf (+4 dB above ~1500 Hz)
+        double y1 = kw1Coeffs[0] * sample + kw1Coeffs[1] * kw1R_x1 + kw1Coeffs[2] * kw1R_x2
+                - kw1Coeffs[3] * kw1R_y1 - kw1Coeffs[4] * kw1R_y2;
+        kw1R_x2 = kw1R_x1;
+        kw1R_x1 = sample;
+        kw1R_y2 = kw1R_y1;
+        kw1R_y1 = y1;
+
+        // Stage 2: High-pass (~60 Hz, 2nd order)
+        double y2 = kw2Coeffs[0] * y1 + kw2Coeffs[1] * kw2R_x1 + kw2Coeffs[2] * kw2R_x2
+                - kw2Coeffs[3] * kw2R_y1 - kw2Coeffs[4] * kw2R_y2;
+        kw2R_x2 = kw2R_x1;
+        kw2R_x1 = y1;
+        kw2R_y2 = kw2R_y1;
+        kw2R_y1 = y2;
 
         return y2;
     }

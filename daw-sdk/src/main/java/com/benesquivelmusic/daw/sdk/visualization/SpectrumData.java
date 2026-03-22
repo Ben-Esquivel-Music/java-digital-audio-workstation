@@ -16,6 +16,7 @@ public record SpectrumData(float[] magnitudesDb, int fftSize, double sampleRate)
 
     public SpectrumData {
         Objects.requireNonNull(magnitudesDb, "magnitudesDb must not be null");
+        magnitudesDb = magnitudesDb.clone();
         if (fftSize <= 0) {
             throw new IllegalArgumentException("fftSize must be positive: " + fftSize);
         }
