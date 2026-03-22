@@ -1,14 +1,15 @@
 package com.benesquivelmusic.daw.core.analysis;
 
+import com.benesquivelmusic.daw.core.dsp.TruePeakDetector;
 import com.benesquivelmusic.daw.sdk.visualization.LevelData;
 import com.benesquivelmusic.daw.sdk.visualization.VisualizationProvider;
 
 /**
- * Real-time audio level meter producing peak and RMS measurements.
+ * Real-time audio level meter producing peak, RMS, and true peak measurements.
  *
  * <p>Processes mono audio frames and produces {@link LevelData} snapshots
- * with both linear and dB-scaled values. Supports configurable peak-hold
- * time for display purposes.</p>
+ * with linear and dB-scaled values for sample peak, RMS, and ITU-R BS.1770-4
+ * true peak. Supports configurable peak-hold time for display purposes.</p>
  *
  * <p>Implements professional metering behavior referenced in the
  * mastering-techniques research (§4 — Dynamics Processing, §8 — Loudness
@@ -20,6 +21,8 @@ public final class LevelMeter implements VisualizationProvider<LevelData> {
 
     private final double peakDecayPerFrame;
     private double heldPeak;
+    private double heldTruePeak;
+    private final TruePeakDetector truePeakDetector;
     private volatile LevelData latestData;
 
     /**
@@ -34,6 +37,8 @@ public final class LevelMeter implements VisualizationProvider<LevelData> {
         }
         this.peakDecayPerFrame = peakDecayRate;
         this.heldPeak = 0.0;
+        this.heldTruePeak = 0.0;
+        this.truePeakDetector = new TruePeakDetector();
         this.latestData = LevelData.SILENCE;
     }
 
@@ -54,6 +59,7 @@ public final class LevelMeter implements VisualizationProvider<LevelData> {
     public void process(float[] samples, int offset, int length) {
         double peak = 0.0;
         double sumSquares = 0.0;
+        double truePeak = 0.0;
 
         for (int i = offset; i < offset + length; i++) {
             double abs = Math.abs(samples[i]);
@@ -61,6 +67,11 @@ public final class LevelMeter implements VisualizationProvider<LevelData> {
                 peak = abs;
             }
             sumSquares += (double) samples[i] * samples[i];
+
+            double tp = truePeakDetector.processSample(samples[i]);
+            if (tp > truePeak) {
+                truePeak = tp;
+            }
         }
 
         double rms = Math.sqrt(sumSquares / length);
@@ -72,11 +83,20 @@ public final class LevelMeter implements VisualizationProvider<LevelData> {
             heldPeak *= peakDecayPerFrame;
         }
 
+        // True peak hold with decay
+        if (truePeak >= heldTruePeak) {
+            heldTruePeak = truePeak;
+        } else {
+            heldTruePeak *= peakDecayPerFrame;
+        }
+
         double peakDb = linearToDb(heldPeak);
         double rmsDb = linearToDb(rms);
         boolean clipping = heldPeak > 1.0;
+        double truePeakDb = linearToDb(heldTruePeak);
 
-        latestData = new LevelData(heldPeak, rms, peakDb, rmsDb, clipping);
+        latestData = new LevelData(heldPeak, rms, peakDb, rmsDb, clipping,
+                heldTruePeak, truePeakDb);
     }
 
     /**
@@ -93,6 +113,8 @@ public final class LevelMeter implements VisualizationProvider<LevelData> {
      */
     public void reset() {
         heldPeak = 0.0;
+        heldTruePeak = 0.0;
+        truePeakDetector.reset();
         latestData = LevelData.SILENCE;
     }
 

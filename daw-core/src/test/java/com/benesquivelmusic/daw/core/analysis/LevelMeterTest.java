@@ -102,4 +102,69 @@ class LevelMeterTest {
         LevelData data = meter.getLatestData();
         assertThat(data.peakDb()).isCloseTo(0.0, org.assertj.core.data.Offset.offset(0.1));
     }
+
+    // --- True Peak Metering Tests ---
+
+    @Test
+    void shouldReportTruePeakLinear() {
+        var meter = new LevelMeter(0.0);
+        float[] samples = new float[256];
+        for (int i = 0; i < samples.length; i++) {
+            samples[i] = 0.8f;
+        }
+        meter.process(samples);
+
+        LevelData data = meter.getLatestData();
+        assertThat(data.truePeakLinear()).isGreaterThanOrEqualTo(0.8);
+    }
+
+    @Test
+    void shouldReportTruePeakDbtp() {
+        var meter = new LevelMeter(0.0);
+        float[] samples = new float[256];
+        for (int i = 0; i < samples.length; i++) {
+            samples[i] = 0.8f;
+        }
+        meter.process(samples);
+
+        LevelData data = meter.getLatestData();
+        // 0.8 linear ≈ -1.94 dB
+        assertThat(data.truePeakDbtp()).isGreaterThan(-120.0);
+    }
+
+    @Test
+    void truePeakShouldBeAtLeastAsBigAsSamplePeak() {
+        var meter = new LevelMeter(0.0);
+        float[] samples = new float[512];
+        for (int i = 0; i < samples.length; i++) {
+            samples[i] = (float) (Math.sin(2 * Math.PI * i / 10.0) * 0.9);
+        }
+        meter.process(samples);
+
+        LevelData data = meter.getLatestData();
+        assertThat(data.truePeakLinear()).isGreaterThanOrEqualTo(data.peakLinear());
+    }
+
+    @Test
+    void shouldResetTruePeakOnReset() {
+        var meter = new LevelMeter(0.0);
+        meter.process(new float[]{0.9f, 0.8f, 0.7f});
+
+        LevelData dataBeforeReset = meter.getLatestData();
+        assertThat(dataBeforeReset.truePeakLinear()).isGreaterThan(0.0);
+
+        meter.reset();
+        assertThat(meter.getLatestData().truePeakLinear()).isEqualTo(0.0);
+        assertThat(meter.getLatestData().truePeakDbtp()).isEqualTo(Double.NEGATIVE_INFINITY);
+    }
+
+    @Test
+    void silenceShouldHaveZeroTruePeak() {
+        var meter = new LevelMeter(0.0);
+        float[] samples = new float[64]; // All zeros
+        meter.process(samples);
+
+        LevelData data = meter.getLatestData();
+        assertThat(data.truePeakLinear()).isEqualTo(0.0);
+    }
 }
