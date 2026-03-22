@@ -135,6 +135,17 @@ public final class JavaSoundBackend implements NativeAudioBackend {
                 inputLine.open(javaFormat, bufferBytes * 2);
             }
         } catch (Exception e) {
+            // Clean up any partially opened lines before propagating
+            if (outputLine != null) {
+                outputLine.close();
+                outputLine = null;
+            }
+            if (inputLine != null) {
+                inputLine.close();
+                inputLine = null;
+            }
+            currentConfig = null;
+            currentCallback = null;
             throw new AudioBackendException("Failed to open Java Sound stream: " + e.getMessage(), e);
         }
     }

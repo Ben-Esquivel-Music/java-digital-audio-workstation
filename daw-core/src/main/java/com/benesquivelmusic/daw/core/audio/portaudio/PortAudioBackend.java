@@ -132,36 +132,42 @@ public final class PortAudioBackend implements NativeAudioBackend {
 
         streamArena = Arena.ofConfined();
 
-        // Allocate PaStreamParameters structs
-        MemorySegment inputParams = config.hasInput()
-                ? allocateStreamParameters(streamArena, config.inputDeviceIndex(), config.inputChannels())
-                : MemorySegment.NULL;
-        MemorySegment outputParams = config.hasOutput()
-                ? allocateStreamParameters(streamArena, config.outputDeviceIndex(), config.outputChannels())
-                : MemorySegment.NULL;
+        try {
+            // Allocate PaStreamParameters structs
+            MemorySegment inputParams = config.hasInput()
+                    ? allocateStreamParameters(streamArena, config.inputDeviceIndex(), config.inputChannels())
+                    : MemorySegment.NULL;
+            MemorySegment outputParams = config.hasOutput()
+                    ? allocateStreamParameters(streamArena, config.outputDeviceIndex(), config.outputChannels())
+                    : MemorySegment.NULL;
 
-        // Allocate pointer to receive the stream handle
-        MemorySegment streamPtr = streamArena.allocate(ValueLayout.ADDRESS);
+            // Allocate pointer to receive the stream handle
+            MemorySegment streamPtr = streamArena.allocate(ValueLayout.ADDRESS);
 
-        // Create the callback upcall stub
-        MemorySegment callbackStub = createCallbackStub(streamArena, callback,
-                config.inputChannels(), config.outputChannels(), config.bufferSize().getFrames());
+            // Create the callback upcall stub
+            MemorySegment callbackStub = createCallbackStub(streamArena, callback,
+                    config.inputChannels(), config.outputChannels(), config.bufferSize().getFrames());
 
-        int result = bindings.openStream(
-                streamPtr,
-                inputParams,
-                outputParams,
-                config.sampleRate().getHz(),
-                config.bufferSize().getFrames(),
-                0L, // no special flags
-                callbackStub,
-                MemorySegment.NULL
-        );
-        PortAudioException.checkError(result, "Pa_OpenStream");
+            int result = bindings.openStream(
+                    streamPtr,
+                    inputParams,
+                    outputParams,
+                    config.sampleRate().getHz(),
+                    config.bufferSize().getFrames(),
+                    0L, // no special flags
+                    callbackStub,
+                    MemorySegment.NULL
+            );
+            PortAudioException.checkError(result, "Pa_OpenStream");
 
-        streamHandle = streamPtr.get(ValueLayout.ADDRESS, 0);
-        currentConfig = config;
-        currentCallback = callback;
+            streamHandle = streamPtr.get(ValueLayout.ADDRESS, 0);
+            currentConfig = config;
+            currentCallback = callback;
+        } catch (RuntimeException | Error e) {
+            streamArena.close();
+            streamArena = null;
+            throw e;
+        }
     }
 
     @Override

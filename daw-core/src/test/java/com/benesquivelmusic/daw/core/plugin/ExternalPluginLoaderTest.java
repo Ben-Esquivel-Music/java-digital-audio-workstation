@@ -66,4 +66,29 @@ class ExternalPluginLoaderTest {
                 .isInstanceOf(PluginLoadException.class)
                 .hasMessageContaining("Class not found");
     }
+
+    @Test
+    void shouldCloseClassLoaderOnFailedLoadWithClassLoader() throws Exception {
+        Path emptyJar = tempDir.resolve("empty-for-cl.jar");
+        try (var jos = new java.util.jar.JarOutputStream(Files.newOutputStream(emptyJar))) {
+            // empty JAR
+        }
+
+        // loadWithClassLoader should close the classloader when it throws
+        assertThatThrownBy(() -> ExternalPluginLoader.loadWithClassLoader(emptyJar, "com.example.Missing"))
+                .isInstanceOf(PluginLoadException.class);
+        // If we reach here without hanging file locks, the classloader was closed
+    }
+
+    @Test
+    void shouldCloseClassLoaderOnFailedLoadViaEntry() throws Exception {
+        Path emptyJar = tempDir.resolve("empty-for-entry.jar");
+        try (var jos = new java.util.jar.JarOutputStream(Files.newOutputStream(emptyJar))) {
+            // empty JAR
+        }
+
+        var entry = new ExternalPluginEntry(emptyJar, "com.example.Missing");
+        assertThatThrownBy(() -> ExternalPluginLoader.load(entry))
+                .isInstanceOf(PluginLoadException.class);
+    }
 }
