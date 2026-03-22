@@ -105,6 +105,30 @@ class LoudnessMeterTest {
         assertThat(data.integratedLufs()).isGreaterThan(-100.0);
     }
 
+    @Test
+    void shouldMeasureIndependentLeftAndRightChannels() {
+        var meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+
+        // Create distinct left and right signals: left loud, right silent
+        float[] loudLeft = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
+        float[] silentRight = new float[BLOCK_SIZE];
+
+        for (int i = 0; i < 50; i++) {
+            meter.process(loudLeft, silentRight, BLOCK_SIZE);
+        }
+        LoudnessData asymmetric = meter.getLatestData();
+
+        // Now process the same signal on both channels
+        meter.reset();
+        for (int i = 0; i < 50; i++) {
+            meter.process(loudLeft, loudLeft, BLOCK_SIZE);
+        }
+        LoudnessData symmetric = meter.getLatestData();
+
+        // Symmetric (both channels loud) should measure louder than asymmetric
+        assertThat(symmetric.momentaryLufs()).isGreaterThan(asymmetric.momentaryLufs());
+    }
+
     private static float[] generateSineWave(double frequency, double sampleRate, int length) {
         float[] samples = new float[length];
         for (int i = 0; i < length; i++) {

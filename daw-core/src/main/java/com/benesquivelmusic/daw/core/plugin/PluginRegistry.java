@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.core.plugin;
 
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 
+import java.io.IOException;
+import java.net.URLClassLoader;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -20,6 +22,7 @@ public final class PluginRegistry {
 
     private final List<ExternalPluginEntry> entries = new ArrayList<>();
     private final Map<ExternalPluginEntry, DawPlugin> loadedPlugins = new LinkedHashMap<>();
+    private final Map<ExternalPluginEntry, URLClassLoader> classLoaders = new LinkedHashMap<>();
 
     /**
      * Registers an external plugin entry and attempts to load it.
@@ -33,10 +36,11 @@ public final class PluginRegistry {
         if (entries.contains(entry)) {
             throw new PluginLoadException("Plugin entry already registered: " + entry);
         }
-        DawPlugin plugin = ExternalPluginLoader.load(entry);
+        var result = ExternalPluginLoader.loadWithClassLoader(entry);
         entries.add(entry);
-        loadedPlugins.put(entry, plugin);
-        return plugin;
+        loadedPlugins.put(entry, result.plugin());
+        classLoaders.put(entry, result.classLoader());
+        return result.plugin();
     }
 
     /**
@@ -54,6 +58,7 @@ public final class PluginRegistry {
         if (plugin != null) {
             plugin.dispose();
         }
+        closeClassLoader(classLoaders.remove(entry));
         return true;
     }
 
@@ -92,7 +97,21 @@ public final class PluginRegistry {
         for (DawPlugin plugin : loadedPlugins.values()) {
             plugin.dispose();
         }
+        for (URLClassLoader cl : classLoaders.values()) {
+            closeClassLoader(cl);
+        }
+        classLoaders.clear();
         loadedPlugins.clear();
         entries.clear();
+    }
+
+    private static void closeClassLoader(URLClassLoader classLoader) {
+        if (classLoader != null) {
+            try {
+                classLoader.close();
+            } catch (IOException ignored) {
+                // best-effort cleanup
+            }
+        }
     }
 }

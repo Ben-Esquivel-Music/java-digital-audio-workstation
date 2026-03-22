@@ -97,6 +97,11 @@ public final class CheckpointManager {
         }
         if (scheduler != null) {
             scheduler.shutdown();
+            try {
+                scheduler.awaitTermination(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
             scheduler = null;
         }
     }

@@ -8,6 +8,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class SpectrumDataTest {
 
     @Test
+    void shouldDefensivelyCopyMagnitudesArray() {
+        float[] magnitudes = new float[]{-60f, -40f, -20f, 0f};
+        var data = new SpectrumData(magnitudes, 8, 44100.0);
+
+        // Mutating the original array should not affect the record's internal state
+        magnitudes[0] = 99f;
+        assertThat(data.magnitudesDb()[0]).isEqualTo(-60f);
+    }
+
+    @Test
     void shouldCreateWithValidParameters() {
         float[] magnitudes = new float[]{-60f, -40f, -20f, 0f};
         var data = new SpectrumData(magnitudes, 8, 44100.0);
