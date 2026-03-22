@@ -15,5 +15,11 @@ public enum TrackType {
     AUX,
 
     /** The master output track. */
-    MASTER
+    MASTER,
+
+    /** A bed channel track assigned to a fixed speaker position (Dolby Atmos bed). */
+    BED_CHANNEL,
+
+    /** An audio object track with freely positionable 3D metadata (Dolby Atmos object). */
+    AUDIO_OBJECT
 }
