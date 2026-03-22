@@ -132,7 +132,8 @@ public final class ObjectBasedRenderer {
         // Apply size/spread: blend between panned and equal distribution
         double size = metadata.size();
         if (size > 0.0) {
-            double equalGain = metadata.gain() / Math.max(1, numSpeakers - 1); // exclude LFE
+            long nonLfeCount = speakers.stream().filter(s -> s != SpeakerLabel.LFE).count();
+            double equalGain = metadata.gain() / Math.max(1, nonLfeCount);
             for (int i = 0; i < numSpeakers; i++) {
                 if (speakers.get(i) == SpeakerLabel.LFE) {
                     continue;
