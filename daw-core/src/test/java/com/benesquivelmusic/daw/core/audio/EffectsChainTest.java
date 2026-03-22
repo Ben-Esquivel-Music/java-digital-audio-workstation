@@ -139,6 +139,37 @@ class EffectsChainTest {
                 .isInstanceOf(NullPointerException.class);
     }
 
+    @Test
+    void shouldProcessWithPreAllocatedIntermediateBuffers() {
+        var chain = new EffectsChain();
+        chain.addProcessor(new GainProcessor(0.5f));
+        chain.addProcessor(new GainProcessor(0.5f));
+        chain.allocateIntermediateBuffers(1, 4);
+
+        float[][] input = {{1.0f, 0.8f, 0.6f, 0.4f}};
+        float[][] output = {{0.0f, 0.0f, 0.0f, 0.0f}};
+        chain.process(input, output, 4);
+
+        assertThat(output[0][0]).isEqualTo(0.25f);
+        assertThat(output[0][1]).isEqualTo(0.2f);
+    }
+
+    @Test
+    void shouldWorkWithThreeProcessorsAndPreAllocatedBuffers() {
+        var chain = new EffectsChain();
+        chain.addProcessor(new GainProcessor(0.5f));
+        chain.addProcessor(new GainProcessor(0.5f));
+        chain.addProcessor(new GainProcessor(0.5f));
+        chain.allocateIntermediateBuffers(1, 2);
+
+        float[][] input = {{1.0f, -1.0f}};
+        float[][] output = {{0.0f, 0.0f}};
+        chain.process(input, output, 2);
+
+        assertThat(output[0][0]).isEqualTo(0.125f);
+        assertThat(output[0][1]).isEqualTo(-0.125f);
+    }
+
     // --- Test processors ---
 
     private static class PassthroughProcessor implements AudioProcessor {

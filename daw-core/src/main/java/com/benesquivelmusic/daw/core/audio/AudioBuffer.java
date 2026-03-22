@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
+
 import java.util.Arrays;
 import java.util.Objects;
 
@@ -8,7 +10,11 @@ import java.util.Objects;
  *
  * <p>Buffers are indexed as {@code [channel][frame]}. Sample values are
  * expected to be in the range {@code [-1.0f, 1.0f]}.</p>
+ *
+ * <p>All read/write operations on this buffer are allocation-free and
+ * safe to call on the real-time audio thread.</p>
  */
+@RealTimeSafe
 public final class AudioBuffer {
 
     private final float[][] data;
