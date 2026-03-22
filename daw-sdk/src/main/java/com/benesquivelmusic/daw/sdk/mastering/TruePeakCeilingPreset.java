@@ -1,4 +1,4 @@
-package com.benesquivelmusic.daw.core.dsp;
+package com.benesquivelmusic.daw.sdk.mastering;
 
 /**
  * Platform-specific true peak ceiling presets for streaming and broadcast compliance.

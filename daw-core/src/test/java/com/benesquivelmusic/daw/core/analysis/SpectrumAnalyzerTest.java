@@ -129,11 +129,11 @@ class SpectrumAnalyzerTest {
     }
 
     @Test
-    void fftShouldCorrectlyTransformKnownSignal() {
+    void fftUtilsShouldCorrectlyTransformKnownSignal() {
         // Test with a simple signal: DC component
         double[] real = {1.0, 1.0, 1.0, 1.0};
         double[] imag = {0.0, 0.0, 0.0, 0.0};
-        SpectrumAnalyzer.fft(real, imag);
+        FftUtils.fft(real, imag);
 
         // DC bin should have all the energy (sum = 4)
         assertThat(real[0]).isCloseTo(4.0, org.assertj.core.data.Offset.offset(1e-10));

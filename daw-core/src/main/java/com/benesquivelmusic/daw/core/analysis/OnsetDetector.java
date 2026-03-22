@@ -162,7 +162,7 @@ public final class OnsetDetector {
         }
 
         // In-place FFT
-        SpectrumAnalyzer.fft(real, imag);
+        FftUtils.fft(real, imag);
 
         // Compute positive spectral flux
         int binCount = fftSize / 2;
