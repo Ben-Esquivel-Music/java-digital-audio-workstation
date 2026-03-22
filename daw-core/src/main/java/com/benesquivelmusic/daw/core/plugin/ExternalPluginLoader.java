@@ -59,13 +59,20 @@ public final class ExternalPluginLoader {
     /**
      * Loads a {@link DawPlugin} instance from the given JAR path and class name.
      *
+     * <p>The {@link URLClassLoader} used to load the plugin is closed before
+     * returning. Already-loaded classes remain usable, but lazy class loading
+     * from the JAR will no longer work. For full classloader lifecycle control,
+     * use {@link PluginRegistry#register(ExternalPluginEntry)} instead.</p>
+     *
      * @param jarPath   the filesystem path to the plugin JAR file
      * @param className the fully qualified class name of the DawPlugin implementation
      * @return a new instance of the plugin
      * @throws PluginLoadException if the plugin cannot be loaded or instantiated
      */
     public static DawPlugin load(Path jarPath, String className) throws PluginLoadException {
-        return loadWithClassLoader(jarPath, className).plugin();
+        var result = loadWithClassLoader(jarPath, className);
+        closeQuietly(result.classLoader());
+        return result.plugin();
     }
 
     /**
