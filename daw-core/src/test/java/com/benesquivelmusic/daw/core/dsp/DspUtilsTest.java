@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.dsp;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class DspUtilsTest {
 
@@ -45,5 +46,67 @@ class DspUtilsTest {
         double expected = Math.exp(-1.0 / (timeMs * 0.001 * sampleRate));
         double actual = DspUtils.envelopeCoefficient(timeMs, sampleRate);
         assertThat(actual).isEqualTo(expected);
+    }
+
+    // --- Half-band filter design tests ---
+
+    @Test
+    void designHalfBandCoefficients_shouldReturnOddLength() {
+        double[] h = DspUtils.designHalfBandCoefficients(31);
+        assertThat(h.length).isEqualTo(31);
+    }
+
+    @Test
+    void designHalfBandCoefficients_shouldForceOddLength() {
+        double[] h = DspUtils.designHalfBandCoefficients(30);
+        assertThat(h.length % 2).isEqualTo(1);
+    }
+
+    @Test
+    void designHalfBandCoefficients_centerTapShouldBeHalf() {
+        double[] h = DspUtils.designHalfBandCoefficients(31);
+        int center = (h.length - 1) / 2;
+        assertThat(h[center]).isEqualTo(0.5);
+    }
+
+    @Test
+    void designHalfBandCoefficients_evenOffsetsShouldBeZero() {
+        double[] h = DspUtils.designHalfBandCoefficients(31);
+        int center = (h.length - 1) / 2;
+        for (int n = 0; n < h.length; n++) {
+            int k = n - center;
+            if (k != 0 && k % 2 == 0) {
+                assertThat(h[n])
+                        .as("h[%d] (offset %d from center) should be zero", n, k)
+                        .isEqualTo(0.0);
+            }
+        }
+    }
+
+    @Test
+    void designHalfBandCoefficients_shouldBeSymmetric() {
+        double[] h = DspUtils.designHalfBandCoefficients(31);
+        int center = (h.length - 1) / 2;
+        for (int n = 0; n < center; n++) {
+            assertThat(h[n]).isCloseTo(h[h.length - 1 - n],
+                    org.assertj.core.data.Offset.offset(1e-12));
+        }
+    }
+
+    @Test
+    void designHalfBandCoefficients_shouldRejectTooFewTaps() {
+        assertThatThrownBy(() -> DspUtils.designHalfBandCoefficients(2))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void besselI0_atZero_shouldReturnOne() {
+        assertThat(DspUtils.besselI0(0.0)).isEqualTo(1.0);
+    }
+
+    @Test
+    void besselI0_shouldIncreaseMonotonically() {
+        assertThat(DspUtils.besselI0(2.0)).isGreaterThan(DspUtils.besselI0(1.0));
+        assertThat(DspUtils.besselI0(5.0)).isGreaterThan(DspUtils.besselI0(2.0));
     }
 }

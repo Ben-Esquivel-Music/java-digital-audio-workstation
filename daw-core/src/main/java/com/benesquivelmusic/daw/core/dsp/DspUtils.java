@@ -51,4 +51,81 @@ final class DspUtils {
 
         return (float) (buffer[readPos0] * (1.0 - frac) + buffer[readPos1] * frac);
     }
+
+    /**
+     * Designs a half-band FIR lowpass filter using a Kaiser-windowed sinc.
+     *
+     * <p>Half-band filters are used for efficient 2× oversampling. They have the
+     * property that all even-offset coefficients from the center (except the center
+     * tap itself) are zero, enabling polyphase implementation where one phase
+     * reduces to a simple delay.</p>
+     *
+     * @param numTaps the number of filter taps (forced to odd if even)
+     * @return the filter coefficients
+     */
+    static double[] designHalfBandCoefficients(int numTaps) {
+        if (numTaps < 3) {
+            throw new IllegalArgumentException("numTaps must be >= 3: " + numTaps);
+        }
+        if (numTaps % 2 == 0) {
+            numTaps++;
+        }
+
+        int center = (numTaps - 1) / 2;
+        double[] h = new double[numTaps];
+
+        // Kaiser window parameter for ~90 dB stopband rejection
+        double beta = 8.0;
+        double i0Beta = besselI0(beta);
+
+        for (int n = 0; n < numTaps; n++) {
+            int k = n - center;
+
+            // Ideal half-band lowpass impulse response
+            double ideal;
+            if (k == 0) {
+                ideal = 0.5;
+            } else if (k % 2 == 0) {
+                ideal = 0.0;
+            } else {
+                ideal = Math.sin(Math.PI * k / 2.0) / (Math.PI * k);
+            }
+
+            // Kaiser window
+            double x = 2.0 * n / (numTaps - 1) - 1.0;
+            double window = besselI0(beta * Math.sqrt(Math.max(0.0, 1.0 - x * x))) / i0Beta;
+
+            h[n] = ideal * window;
+        }
+
+        // Force exact half-band properties
+        h[center] = 0.5;
+        for (int n = 0; n < numTaps; n++) {
+            int k = n - center;
+            if (k != 0 && k % 2 == 0) {
+                h[n] = 0.0;
+            }
+        }
+
+        return h;
+    }
+
+    /**
+     * Computes the zeroth-order modified Bessel function of the first kind (I₀).
+     *
+     * <p>Used for Kaiser window computation in FIR filter design.</p>
+     *
+     * @param x the argument
+     * @return I₀(x)
+     */
+    static double besselI0(double x) {
+        double sum = 1.0;
+        double term = 1.0;
+        for (int k = 1; k <= 25; k++) {
+            double halfXOverK = x / (2.0 * k);
+            term *= halfXOverK * halfXOverK;
+            sum += term;
+        }
+        return sum;
+    }
 }
