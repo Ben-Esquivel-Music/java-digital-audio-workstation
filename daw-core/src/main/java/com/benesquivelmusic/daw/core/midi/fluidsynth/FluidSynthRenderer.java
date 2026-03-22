@@ -96,7 +96,6 @@ public final class FluidSynthRenderer implements SoundFontRenderer {
         }
 
         // Pre-allocate render buffers
-        long bufferBytes = (long) bufferSize * ValueLayout.JAVA_FLOAT.byteSize();
         leftBuffer = renderArena.allocate(ValueLayout.JAVA_FLOAT, bufferSize);
         rightBuffer = renderArena.allocate(ValueLayout.JAVA_FLOAT, bufferSize);
 
