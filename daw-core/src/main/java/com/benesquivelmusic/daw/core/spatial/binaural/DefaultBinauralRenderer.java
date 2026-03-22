@@ -59,6 +59,13 @@ public final class DefaultBinauralRenderer implements BinauralRenderer {
     private int leftDelaySamples;
     private int rightDelaySamples;
 
+    // Pre-allocated workspace buffers (avoid allocation in process)
+    private final float[] monoWorkBuffer;
+    private final float[] leftWorkBuffer;
+    private final float[] rightWorkBuffer;
+    private final float[] prevLeftWorkBuffer;
+    private final float[] prevRightWorkBuffer;
+
     /**
      * Creates a binaural renderer.
      *
@@ -79,6 +86,11 @@ public final class DefaultBinauralRenderer implements BinauralRenderer {
         this.crossfadeDurationMs = DEFAULT_CROSSFADE_MS;
         this.leftDelayLine = new float[MAX_ITD_SAMPLES];
         this.rightDelayLine = new float[MAX_ITD_SAMPLES];
+        this.monoWorkBuffer = new float[blockSize];
+        this.leftWorkBuffer = new float[blockSize];
+        this.rightWorkBuffer = new float[blockSize];
+        this.prevLeftWorkBuffer = new float[blockSize];
+        this.prevRightWorkBuffer = new float[blockSize];
     }
 
     @Override
@@ -88,27 +100,27 @@ public final class DefaultBinauralRenderer implements BinauralRenderer {
             return;
         }
 
-        // Downmix input to mono
-        float[] monoInput = downmixToMono(inputBuffer, numFrames);
+        // Downmix input to mono (uses pre-allocated monoWorkBuffer)
+        downmixToMono(inputBuffer, numFrames);
 
-        // Convolve with left and right HRTFs
-        float[] leftOutput = new float[blockSize];
-        float[] rightOutput = new float[blockSize];
-        leftConvolver.processBlock(monoInput, leftOutput, 0, 0);
-        rightConvolver.processBlock(monoInput, rightOutput, 0, 0);
+        // Convolve with left and right HRTFs (uses pre-allocated work buffers)
+        Arrays.fill(leftWorkBuffer, 0.0f);
+        Arrays.fill(rightWorkBuffer, 0.0f);
+        leftConvolver.processBlock(monoWorkBuffer, leftWorkBuffer, 0, 0);
+        rightConvolver.processBlock(monoWorkBuffer, rightWorkBuffer, 0, 0);
 
         // Apply crossfade with previous HRTF if position recently changed
         if (crossfadeSamplesRemaining > 0 && prevLeftConvolver != null) {
-            float[] prevLeft = new float[blockSize];
-            float[] prevRight = new float[blockSize];
-            prevLeftConvolver.processBlock(monoInput, prevLeft, 0, 0);
-            prevRightConvolver.processBlock(monoInput, prevRight, 0, 0);
+            Arrays.fill(prevLeftWorkBuffer, 0.0f);
+            Arrays.fill(prevRightWorkBuffer, 0.0f);
+            prevLeftConvolver.processBlock(monoWorkBuffer, prevLeftWorkBuffer, 0, 0);
+            prevRightConvolver.processBlock(monoWorkBuffer, prevRightWorkBuffer, 0, 0);
 
             for (int i = 0; i < numFrames && crossfadeSamplesRemaining > 0; i++) {
                 float newWeight = 1.0f - (float) crossfadeSamplesRemaining / crossfadeTotalSamples;
                 float oldWeight = 1.0f - newWeight;
-                leftOutput[i] = leftOutput[i] * newWeight + prevLeft[i] * oldWeight;
-                rightOutput[i] = rightOutput[i] * newWeight + prevRight[i] * oldWeight;
+                leftWorkBuffer[i] = leftWorkBuffer[i] * newWeight + prevLeftWorkBuffer[i] * oldWeight;
+                rightWorkBuffer[i] = rightWorkBuffer[i] * newWeight + prevRightWorkBuffer[i] * oldWeight;
                 crossfadeSamplesRemaining--;
             }
 
@@ -118,20 +130,9 @@ public final class DefaultBinauralRenderer implements BinauralRenderer {
             }
         }
 
-        // Apply ITD
-        float[] leftDelayed = applyDelay(leftOutput, leftDelayLine, leftDelaySamples, numFrames);
-        float[] rightDelayed = applyDelay(rightOutput, rightDelayLine, rightDelaySamples, numFrames);
-
-        // Write to stereo output
-        int outFrames = Math.min(numFrames, blockSize);
-        if (outputBuffer.length >= 2) {
-            System.arraycopy(leftDelayed, 0, outputBuffer[0], 0, outFrames);
-            System.arraycopy(rightDelayed, 0, outputBuffer[1], 0, outFrames);
-        } else if (outputBuffer.length == 1) {
-            for (int i = 0; i < outFrames; i++) {
-                outputBuffer[0][i] = (leftDelayed[i] + rightDelayed[i]) * 0.5f;
-            }
-        }
+        // Apply ITD and write to output channels
+        applyDelay(leftWorkBuffer, leftDelayLine, leftDelaySamples, numFrames, outputBuffer, 0);
+        applyDelay(rightWorkBuffer, rightDelayLine, rightDelaySamples, numFrames, outputBuffer, 1);
     }
 
     @Override
@@ -229,20 +230,19 @@ public final class DefaultBinauralRenderer implements BinauralRenderer {
         rightDelaySamples = Math.max(0, rightDelaySamples);
     }
 
-    private float[] downmixToMono(float[][] inputBuffer, int numFrames) {
-        float[] mono = new float[blockSize];
+    private void downmixToMono(float[][] inputBuffer, int numFrames) {
+        Arrays.fill(monoWorkBuffer, 0.0f);
         int channels = inputBuffer.length;
         int frames = Math.min(numFrames, blockSize);
-        if (channels == 0) return mono;
+        if (channels == 0) return;
 
         for (int i = 0; i < frames; i++) {
             float sum = 0;
             for (int ch = 0; ch < channels; ch++) {
                 sum += inputBuffer[ch][i];
             }
-            mono[i] = sum / channels;
+            monoWorkBuffer[i] = sum / channels;
         }
-        return mono;
     }
 
     private static void passThrough(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
@@ -252,18 +252,23 @@ public final class DefaultBinauralRenderer implements BinauralRenderer {
         }
     }
 
-    private static float[] applyDelay(float[] input, float[] delayLine,
-                                      int delaySamples, int numFrames) {
-        if (delaySamples <= 0) {
-            return input;
+    private static void applyDelay(float[] input, float[] delayLine,
+                                   int delaySamples, int numFrames,
+                                   float[][] outputBuffer, int channelIndex) {
+        if (channelIndex >= outputBuffer.length) {
+            return;
         }
+        float[] output = outputBuffer[channelIndex];
 
-        float[] output = new float[input.length];
-        for (int i = 0; i < numFrames; i++) {
-            if (i < delaySamples) {
-                output[i] = delayLine[delayLine.length - delaySamples + i];
-            } else {
-                output[i] = input[i - delaySamples];
+        if (delaySamples <= 0) {
+            System.arraycopy(input, 0, output, 0, numFrames);
+        } else {
+            for (int i = 0; i < numFrames; i++) {
+                if (i < delaySamples) {
+                    output[i] = delayLine[delayLine.length - delaySamples + i];
+                } else {
+                    output[i] = input[i - delaySamples];
+                }
             }
         }
 
@@ -273,6 +278,5 @@ public final class DefaultBinauralRenderer implements BinauralRenderer {
             System.arraycopy(input, numFrames - copyLen,
                     delayLine, delayLine.length - copyLen, copyLen);
         }
-        return output;
     }
 }

@@ -31,6 +31,12 @@ public final class PartitionedConvolver {
     // Previous input block for overlap
     private final float[] prevInput;
 
+    // Pre-allocated workspace buffers (avoid allocation in processBlock)
+    private final double[] workInputReal;
+    private final double[] workInputImag;
+    private final double[] workSumReal;
+    private final double[] workSumImag;
+
     /**
      * Creates a partitioned convolver for the given impulse response.
      *
@@ -66,6 +72,12 @@ public final class PartitionedConvolver {
         fdlImag = new double[numPartitions][fftSize];
         fdlIndex = 0;
         prevInput = new float[blockSize];
+
+        // Pre-allocate workspace buffers
+        workInputReal = new double[fftSize];
+        workInputImag = new double[fftSize];
+        workSumReal = new double[fftSize];
+        workSumImag = new double[fftSize];
     }
 
     /**
@@ -81,26 +93,25 @@ public final class PartitionedConvolver {
      */
     public void processBlock(float[] input, float[] output, int inputOffset, int outputOffset) {
         // Form overlap-save input: [prevInput | currentInput]
-        double[] inputReal = new double[fftSize];
-        double[] inputImag = new double[fftSize];
+        Arrays.fill(workInputImag, 0.0);
         for (int i = 0; i < blockSize; i++) {
-            inputReal[i] = prevInput[i];
-            inputReal[i + blockSize] = input[inputOffset + i];
+            workInputReal[i] = prevInput[i];
+            workInputReal[i + blockSize] = input[inputOffset + i];
         }
 
         // Save current input as previous for next block
         System.arraycopy(input, inputOffset, prevInput, 0, blockSize);
 
         // FFT the input
-        fft(inputReal, inputImag, false);
+        fft(workInputReal, workInputImag, false);
 
         // Store in FDL
-        System.arraycopy(inputReal, 0, fdlReal[fdlIndex], 0, fftSize);
-        System.arraycopy(inputImag, 0, fdlImag[fdlIndex], 0, fftSize);
+        System.arraycopy(workInputReal, 0, fdlReal[fdlIndex], 0, fftSize);
+        System.arraycopy(workInputImag, 0, fdlImag[fdlIndex], 0, fftSize);
 
         // Accumulate: multiply each FDL entry with corresponding IR partition
-        double[] sumReal = new double[fftSize];
-        double[] sumImag = new double[fftSize];
+        Arrays.fill(workSumReal, 0.0);
+        Arrays.fill(workSumImag, 0.0);
         for (int p = 0; p < numPartitions; p++) {
             int fdlIdx = ((fdlIndex - p) % numPartitions + numPartitions) % numPartitions;
             double[] xr = fdlReal[fdlIdx];
@@ -109,17 +120,17 @@ public final class PartitionedConvolver {
             double[] hi = irPartitionsImag[p];
 
             for (int i = 0; i < fftSize; i++) {
-                sumReal[i] += xr[i] * hr[i] - xi[i] * hi[i];
-                sumImag[i] += xr[i] * hi[i] + xi[i] * hr[i];
+                workSumReal[i] += xr[i] * hr[i] - xi[i] * hi[i];
+                workSumImag[i] += xr[i] * hi[i] + xi[i] * hr[i];
             }
         }
 
         // IFFT
-        fft(sumReal, sumImag, true);
+        fft(workSumReal, workSumImag, true);
 
         // Output last blockSize samples (overlap-save)
         for (int i = 0; i < blockSize; i++) {
-            output[outputOffset + i] = (float) sumReal[i + blockSize];
+            output[outputOffset + i] = (float) workSumReal[i + blockSize];
         }
 
         // Advance FDL index
