@@ -1,6 +1,5 @@
 package com.benesquivelmusic.daw.core.export;
 
-import com.benesquivelmusic.daw.sdk.export.AudioExportConfig;
 import com.benesquivelmusic.daw.sdk.export.AudioMetadata;
 import com.benesquivelmusic.daw.sdk.export.DitherType;
 
@@ -140,19 +139,25 @@ final class WavExporter {
     private static long quantize(double sample, int bitDepth,
                                  TpdfDitherer tpdf,
                                  NoiseShapedDitherer noiseShaped) {
+        long value;
+
         if (tpdf != null) {
-            return (long) tpdf.dither(sample, bitDepth);
+            value = (long) tpdf.dither(sample, bitDepth);
         } else if (noiseShaped != null) {
-            return (long) noiseShaped.dither(sample, bitDepth);
+            value = (long) noiseShaped.dither(sample, bitDepth);
         } else {
             // Simple rounding (no dithering)
-            if (bitDepth == 8) {
-                // 8-bit WAV is unsigned: 0–255, silence at 128
-                return Math.round(sample * 127.0 + 128.0);
-            }
             double maxVal = (1L << (bitDepth - 1)) - 1;
-            return Math.round(sample * maxVal);
+            value = Math.round(sample * maxVal);
         }
+
+        // 8-bit WAV is unsigned: 0–255, silence at 128.
+        // The ditherers produce signed values in [-128, 127]; shift to unsigned.
+        if (bitDepth == 8) {
+            value = Math.max(0, Math.min(255, value + 128));
+        }
+
+        return value;
     }
 
     private static void writeIntSample(ByteBuffer buf, long value, int bitDepth) {
