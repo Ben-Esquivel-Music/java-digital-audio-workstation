@@ -31,7 +31,19 @@ public enum WallMaterial {
     CURTAINS(0.50),
 
     /** Acoustic tiles (suspended ceiling). */
-    ACOUSTIC_TILE(0.65);
+    ACOUSTIC_TILE(0.65),
+
+    /** Brick wall surface. */
+    BRICK(0.03),
+
+    /** Polished marble or stone. */
+    MARBLE(0.01),
+
+    /** Linoleum or vinyl flooring. */
+    LINOLEUM(0.03),
+
+    /** Smooth plaster wall finish. */
+    PLASTER(0.04);
 
     private final double absorptionCoefficient;
 
