@@ -1,14 +1,26 @@
 package com.benesquivelmusic.daw.core.analysis;
 
+import com.benesquivelmusic.daw.sdk.visualization.ExportValidationResult;
 import com.benesquivelmusic.daw.sdk.visualization.LoudnessData;
+import com.benesquivelmusic.daw.sdk.visualization.LoudnessHistoryPoint;
+import com.benesquivelmusic.daw.sdk.visualization.LoudnessTarget;
 import com.benesquivelmusic.daw.sdk.visualization.VisualizationProvider;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * ITU-R BS.1770-compliant loudness meter for LUFS measurement.
  *
  * <p>Implements K-frequency weighting and gated loudness measurement
  * producing momentary (400 ms), short-term (3 s), and integrated
- * loudness values in LUFS. Also tracks true-peak level.</p>
+ * loudness values in LUFS. Also tracks true-peak level and loudness
+ * range (LRA) per EBU R128.</p>
+ *
+ * <p>Provides platform-specific export validation via
+ * {@link #validateForExport(LoudnessTarget)} and time-based loudness
+ * history via {@link #getHistory()} for visualization.</p>
  *
  * <p>Directly supports the loudness standards and metering requirements
  * from the mastering-techniques research document (§8), including
@@ -28,8 +40,10 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
 
     private static final double LUFS_FLOOR = -120.0;
     private static final double GATE_ABSOLUTE = -70.0;
+    private static final double EXPORT_LOUDNESS_TOLERANCE_LU = 1.0;
 
     private final double sampleRate;
+    private final int blockSize;
     private final int momentaryFrames;
     private final int shortTermFrames;
 
@@ -54,6 +68,13 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
     private long integratedBlocks;
     private double truePeak;
 
+    // LRA: collect short-term LUFS readings for statistical analysis
+    private final List<Double> shortTermLufsReadings = new ArrayList<>();
+
+    // Loudness history for time-based visualization
+    private final List<LoudnessHistoryPoint> history = new ArrayList<>();
+    private long totalBlocksProcessed;
+
     private volatile LoudnessData latestData;
 
     /**
@@ -70,6 +91,7 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
             throw new IllegalArgumentException("blockSize must be positive: " + blockSize);
         }
         this.sampleRate = sampleRate;
+        this.blockSize = blockSize;
 
         // Calculate ring buffer sizes for momentary (400 ms) and short-term (3 s)
         double blocksPerSecond = sampleRate / blockSize;
@@ -142,6 +164,11 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
         // Calculate short-term LUFS (3 s window)
         double shortTermLufs = calculateLufs(shortTermBuffer, shortTermCount);
 
+        // Collect short-term readings for LRA calculation (only once window is full)
+        if (shortTermCount >= shortTermFrames && shortTermLufs > GATE_ABSOLUTE) {
+            shortTermLufsReadings.add(shortTermLufs);
+        }
+
         // Update integrated loudness (with absolute gating at -70 LUFS)
         double blockLufs = meanSquareToLufs(blockMeanSquare);
         if (blockLufs > GATE_ABSOLUTE) {
@@ -154,8 +181,15 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
 
         double truePeakDb = (truePeak > 0) ? 20.0 * Math.log10(truePeak) : LUFS_FLOOR;
 
-        // Loudness range (simplified — difference between short-term high and low)
-        double loudnessRange = Math.max(0, shortTermLufs - integratedLufs);
+        // Loudness range (LRA) per EBU R128 — statistical distribution of short-term readings
+        double loudnessRange = calculateLoudnessRange();
+
+        totalBlocksProcessed++;
+
+        // Record history point
+        double timestampSeconds = (totalBlocksProcessed * blockSize) / sampleRate;
+        history.add(new LoudnessHistoryPoint(timestampSeconds, momentaryLufs,
+                shortTermLufs, integratedLufs));
 
         latestData = new LoudnessData(momentaryLufs, shortTermLufs, integratedLufs,
                 loudnessRange, truePeakDb);
@@ -174,9 +208,69 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
         integratedSum = 0;
         integratedBlocks = 0;
         truePeak = 0;
+        totalBlocksProcessed = 0;
         java.util.Arrays.fill(momentaryBuffer, 0);
         java.util.Arrays.fill(shortTermBuffer, 0);
+        shortTermLufsReadings.clear();
+        history.clear();
         latestData = LoudnessData.SILENCE;
+    }
+
+    /**
+     * Returns an unmodifiable view of the loudness history recorded since
+     * the last {@link #reset()}.
+     *
+     * <p>Each entry captures the momentary, short-term, and integrated LUFS
+     * at a specific timestamp, suitable for rendering a loudness-over-time
+     * graph.</p>
+     *
+     * @return unmodifiable list of history data points
+     */
+    public List<LoudnessHistoryPoint> getHistory() {
+        return Collections.unmodifiableList(history);
+    }
+
+    /**
+     * Validates the current integrated loudness and true-peak measurements
+     * against the specified platform or genre loudness target.
+     *
+     * <p>Integrated loudness passes if it is within ±1 LU of the target.
+     * True peak passes if it does not exceed the target's maximum.</p>
+     *
+     * @param target the loudness target to validate against
+     * @return the validation result
+     * @throws NullPointerException if {@code target} is null
+     */
+    public ExportValidationResult validateForExport(LoudnessTarget target) {
+        java.util.Objects.requireNonNull(target, "target must not be null");
+
+        var data = latestData;
+        double measuredLufs = data.integratedLufs();
+        double measuredPeak = data.truePeakDbfs();
+
+        double lufsDiff = Math.abs(measuredLufs - target.targetIntegratedLufs());
+        boolean loudnessPass = lufsDiff <= EXPORT_LOUDNESS_TOLERANCE_LU;
+        boolean truePeakPass = measuredPeak <= target.maxTruePeakDbtp();
+
+        var sb = new StringBuilder();
+        sb.append(target.displayName()).append(": ");
+        if (loudnessPass && truePeakPass) {
+            sb.append("PASS");
+        } else {
+            sb.append("FAIL —");
+            if (!loudnessPass) {
+                sb.append(String.format(" integrated %.1f LUFS (target %.1f, tolerance ±%.1f LU)",
+                        measuredLufs, target.targetIntegratedLufs(), EXPORT_LOUDNESS_TOLERANCE_LU));
+            }
+            if (!truePeakPass) {
+                if (!loudnessPass) sb.append(";");
+                sb.append(String.format(" true peak %.1f dBTP (max %.1f)",
+                        measuredPeak, target.maxTruePeakDbtp()));
+            }
+        }
+
+        return new ExportValidationResult(target, measuredLufs, measuredPeak,
+                loudnessPass, truePeakPass, sb.toString());
     }
 
     @Override
@@ -245,6 +339,24 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
     private static double meanSquareToLufs(double meanSquare) {
         if (meanSquare <= 0) return LUFS_FLOOR;
         return -0.691 + 10.0 * Math.log10(meanSquare);
+    }
+
+    /**
+     * Calculates Loudness Range (LRA) per EBU R128 as the difference
+     * between the 95th and 10th percentiles of the absolute-gated
+     * short-term loudness distribution.
+     */
+    private double calculateLoudnessRange() {
+        if (shortTermLufsReadings.size() < 2) {
+            return 0.0;
+        }
+        var sorted = new ArrayList<>(shortTermLufsReadings);
+        Collections.sort(sorted);
+
+        int n = sorted.size();
+        int low = (int) Math.floor(n * 0.10);
+        int high = Math.min((int) Math.floor(n * 0.95), n - 1);
+        return Math.max(0.0, sorted.get(high) - sorted.get(low));
     }
 
     /**
