@@ -9,7 +9,7 @@ class StereoImagerProcessorTest {
 
     @Test
     void shouldCreateWithDefaults() {
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
         assertThat(imager.getInputChannelCount()).isEqualTo(2);
         assertThat(imager.getOutputChannelCount()).isEqualTo(2);
         assertThat(imager.getWidth()).isEqualTo(1.0);
@@ -17,7 +17,7 @@ class StereoImagerProcessorTest {
 
     @Test
     void shouldCollapseToMonoAtWidthZero() {
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
         imager.setWidth(0.0);
 
         float[][] input = new float[2][256];
@@ -38,7 +38,7 @@ class StereoImagerProcessorTest {
 
     @Test
     void shouldPassThroughAtWidthOne() {
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
         imager.setWidth(1.0);
 
         float[][] input = new float[2][256];
@@ -60,7 +60,7 @@ class StereoImagerProcessorTest {
 
     @Test
     void shouldWidenStereoFieldAboveOne() {
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
 
         float[][] input = new float[2][1024];
         for (int i = 0; i < 1024; i++) {
@@ -87,7 +87,7 @@ class StereoImagerProcessorTest {
 
     @Test
     void shouldHandleMonoInput() {
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
         float[][] input = new float[1][128];
         float[][] output = new float[1][128];
         for (int i = 0; i < 128; i++) input[0][i] = 0.5f;
@@ -99,7 +99,7 @@ class StereoImagerProcessorTest {
 
     @Test
     void shouldSupportMonoLowFrequency() {
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
         imager.setMonoLowFrequency(true);
         imager.setMonoLowCutoffHz(200.0);
 
@@ -123,7 +123,7 @@ class StereoImagerProcessorTest {
 
     @Test
     void shouldRejectInvalidWidth() {
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
         assertThatThrownBy(() -> imager.setWidth(-0.1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> imager.setWidth(2.1))
@@ -138,7 +138,7 @@ class StereoImagerProcessorTest {
 
     @Test
     void shouldResetState() {
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
         float[][] input = new float[2][64];
         float[][] output = new float[2][64];
         imager.process(input, output, 64);
@@ -150,7 +150,7 @@ class StereoImagerProcessorTest {
 
     @Test
     void shouldEnableMultiBandMode() {
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
         imager.setBandWidths(
                 new double[]{200.0, 5000.0},
                 new double[]{0.0, 1.0, 1.5});
@@ -162,7 +162,7 @@ class StereoImagerProcessorTest {
 
     @Test
     void shouldDisableMultiBandWithClear() {
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
         imager.setBandWidths(
                 new double[]{200.0},
                 new double[]{0.0, 1.0});
@@ -176,7 +176,7 @@ class StereoImagerProcessorTest {
 
     @Test
     void shouldNarrowLowBandInMultiBandMode() {
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
         // Low band (< 200 Hz) at width 0 (mono), high band at width 1 (normal)
         imager.setBandWidths(
                 new double[]{200.0},
@@ -202,7 +202,7 @@ class StereoImagerProcessorTest {
 
     @Test
     void shouldWidenHighBandInMultiBandMode() {
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
         // Low band normal, high band extra wide
         imager.setBandWidths(
                 new double[]{200.0},
@@ -233,7 +233,7 @@ class StereoImagerProcessorTest {
 
     @Test
     void shouldProduceFiniteOutputInMultiBandMode() {
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
         imager.setBandWidths(
                 new double[]{200.0, 2000.0, 8000.0},
                 new double[]{0.0, 0.5, 1.0, 1.5});
@@ -260,7 +260,7 @@ class StereoImagerProcessorTest {
 
     @Test
     void shouldRejectMismatchedBandWidthsLength() {
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
         assertThatThrownBy(() -> imager.setBandWidths(
                 new double[]{200.0},
                 new double[]{0.0, 1.0, 1.5})) // Should be length 2
@@ -269,14 +269,14 @@ class StereoImagerProcessorTest {
 
     @Test
     void shouldRejectNullCrossoverFrequencies() {
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
         assertThatThrownBy(() -> imager.setBandWidths(null, new double[]{1.0}))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void shouldRejectUnsortedCrossoverFrequencies() {
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
         assertThatThrownBy(() -> imager.setBandWidths(
                 new double[]{5000.0, 200.0},
                 new double[]{0.0, 1.0, 1.5}))
@@ -285,7 +285,7 @@ class StereoImagerProcessorTest {
 
     @Test
     void shouldRejectBandWidthOutOfRange() {
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
         assertThatThrownBy(() -> imager.setBandWidths(
                 new double[]{200.0},
                 new double[]{-0.1, 1.0}))
@@ -298,7 +298,7 @@ class StereoImagerProcessorTest {
 
     @Test
     void shouldRejectCrossoverAboveNyquist() {
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
         assertThatThrownBy(() -> imager.setBandWidths(
                 new double[]{25000.0},
                 new double[]{0.0, 1.0}))
@@ -307,7 +307,7 @@ class StereoImagerProcessorTest {
 
     @Test
     void shouldResetMultiBandFilterState() {
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
         imager.setBandWidths(
                 new double[]{200.0},
                 new double[]{0.0, 1.0});
@@ -324,7 +324,7 @@ class StereoImagerProcessorTest {
 
     @Test
     void shouldBeSymmetricAtWidthOne() {
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
         imager.setWidth(1.0);
 
         // Symmetric input: same signal on L and R
@@ -349,7 +349,7 @@ class StereoImagerProcessorTest {
     void shouldMaintainWidthSymmetry() {
         // Test that width N and then width 1/N are roughly inverse
         // (not exact due to mid/side math, but should be centered)
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
 
         int frames = 512;
         float[][] input = new float[2][frames];
@@ -380,7 +380,7 @@ class StereoImagerProcessorTest {
 
     @Test
     void shouldMonoSumLowFrequenciesAccurately() {
-        var imager = new StereoImagerProcessor(44100.0);
+        StereoImagerProcessor imager = new StereoImagerProcessor(44100.0);
         imager.setMonoLowFrequency(true);
         imager.setMonoLowCutoffHz(200.0);
         imager.setWidth(1.0);

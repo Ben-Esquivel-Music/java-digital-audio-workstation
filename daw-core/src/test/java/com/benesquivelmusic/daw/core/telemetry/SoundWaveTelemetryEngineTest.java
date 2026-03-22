@@ -21,8 +21,8 @@ class SoundWaveTelemetryEngineTest {
 
     @Test
     void shouldComputeDirectPath() {
-        var source = new SoundSource("Guitar", new Position3D(2, 2, 1), 85);
-        var mic = new MicrophonePlacement("Mic1", new Position3D(5, 6, 1), 0, 0);
+        SoundSource source = new SoundSource("Guitar", new Position3D(2, 2, 1), 85);
+        MicrophonePlacement mic = new MicrophonePlacement("Mic1", new Position3D(5, 6, 1), 0, 0);
 
         SoundWavePath path = SoundWaveTelemetryEngine.computeDirectPath(source, mic);
 
@@ -37,9 +37,9 @@ class SoundWaveTelemetryEngineTest {
 
     @Test
     void shouldComputeFirstOrderReflections() {
-        var dims = new RoomDimensions(10, 8, 3);
-        var source = new SoundSource("Guitar", new Position3D(3, 3, 1), 85);
-        var mic = new MicrophonePlacement("Mic1", new Position3D(7, 5, 1.5), 0, 0);
+        RoomDimensions dims = new RoomDimensions(10, 8, 3);
+        SoundSource source = new SoundSource("Guitar", new Position3D(3, 3, 1), 85);
+        MicrophonePlacement mic = new MicrophonePlacement("Mic1", new Position3D(7, 5, 1.5), 0, 0);
 
         List<SoundWavePath> reflections = SoundWaveTelemetryEngine.computeFirstOrderReflections(
                 source, mic, dims, WallMaterial.DRYWALL);
@@ -56,9 +56,9 @@ class SoundWaveTelemetryEngineTest {
 
     @Test
     void reflectedPathsShouldBeLongerThanDirectPath() {
-        var dims = new RoomDimensions(10, 8, 3);
-        var source = new SoundSource("Vocals", new Position3D(5, 4, 1.5), 75);
-        var mic = new MicrophonePlacement("Condenser", new Position3D(5.5, 4.5, 1.5), 0, 0);
+        RoomDimensions dims = new RoomDimensions(10, 8, 3);
+        SoundSource source = new SoundSource("Vocals", new Position3D(5, 4, 1.5), 75);
+        MicrophonePlacement mic = new MicrophonePlacement("Condenser", new Position3D(5.5, 4.5, 1.5), 0, 0);
 
         SoundWavePath direct = SoundWaveTelemetryEngine.computeDirectPath(source, mic);
         List<SoundWavePath> reflections = SoundWaveTelemetryEngine.computeFirstOrderReflections(
@@ -73,7 +73,7 @@ class SoundWaveTelemetryEngineTest {
 
     @Test
     void shouldEstimateRt60() {
-        var dims = new RoomDimensions(10, 8, 3);
+        RoomDimensions dims = new RoomDimensions(10, 8, 3);
 
         double rt60Concrete = SoundWaveTelemetryEngine.estimateRt60(dims, WallMaterial.CONCRETE);
         double rt60Foam = SoundWaveTelemetryEngine.estimateRt60(dims, WallMaterial.ACOUSTIC_FOAM);
@@ -87,7 +87,7 @@ class SoundWaveTelemetryEngineTest {
 
     @Test
     void shouldComputeFullTelemetry() {
-        var config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
         config.addSoundSource(new SoundSource("Guitar", new Position3D(3, 2, 1), 85));
         config.addMicrophone(new MicrophonePlacement("Mic1", new Position3D(5, 4, 1.5), 0, 0));
 
@@ -101,7 +101,7 @@ class SoundWaveTelemetryEngineTest {
 
     @Test
     void shouldComputePathsForMultipleSourceMicPairs() {
-        var config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
         config.addSoundSource(new SoundSource("Guitar", new Position3D(3, 2, 1), 85));
         config.addSoundSource(new SoundSource("Vocals", new Position3D(5, 2, 1.5), 75));
         config.addMicrophone(new MicrophonePlacement("Mic1", new Position3D(4, 5, 1.5), 0, 0));
@@ -116,7 +116,7 @@ class SoundWaveTelemetryEngineTest {
     @Test
     void shouldSuggestDampeningForReflectiveRoom() {
         // Concrete room with large volume → high RT60
-        var config = new RoomConfiguration(new RoomDimensions(15, 12, 5), WallMaterial.CONCRETE);
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(15, 12, 5), WallMaterial.CONCRETE);
         config.addSoundSource(new SoundSource("Src", new Position3D(7, 6, 1), 80));
         config.addMicrophone(new MicrophonePlacement("Mic", new Position3D(8, 6, 1.5), 0, 0));
 
@@ -129,7 +129,7 @@ class SoundWaveTelemetryEngineTest {
     @Test
     void shouldSuggestRemovingDampeningForOverlyDeadRoom() {
         // Small room with highly absorptive material → low RT60
-        var config = new RoomConfiguration(new RoomDimensions(2, 2, 2), WallMaterial.ACOUSTIC_FOAM);
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(2, 2, 2), WallMaterial.ACOUSTIC_FOAM);
         config.addSoundSource(new SoundSource("Src", new Position3D(1, 1, 1), 80));
         config.addMicrophone(new MicrophonePlacement("Mic", new Position3D(1.5, 1, 1), 0, 0));
 
@@ -141,7 +141,7 @@ class SoundWaveTelemetryEngineTest {
 
     @Test
     void shouldSuggestMicAngleAdjustment() {
-        var config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
         // Source is in front of the mic (+Y direction, azimuth ~ 0)
         config.addSoundSource(new SoundSource("Vocalist", new Position3D(5, 6, 1.5), 75));
         // Mic is aimed in the opposite direction (azimuth 180)
@@ -155,7 +155,7 @@ class SoundWaveTelemetryEngineTest {
 
     @Test
     void shouldSuggestMovingMicAwayFromWall() {
-        var config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
         config.addSoundSource(new SoundSource("Src", new Position3D(5, 4, 1), 80));
         // Mic is very close to the left wall (x = 0.1)
         config.addMicrophone(new MicrophonePlacement("WallMic", new Position3D(0.1, 4, 1.5), 0, 0));
@@ -168,7 +168,7 @@ class SoundWaveTelemetryEngineTest {
 
     @Test
     void shouldProduceNoPathsWithEmptyConfig() {
-        var config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
 
         RoomTelemetryData data = SoundWaveTelemetryEngine.compute(config);
 
@@ -183,8 +183,8 @@ class SoundWaveTelemetryEngineTest {
 
     @Test
     void shouldComputeAzimuthTowardPositiveY() {
-        var from = new Position3D(5, 5, 1);
-        var to = new Position3D(5, 10, 1); // straight +Y
+        Position3D from = new Position3D(5, 5, 1);
+        Position3D to = new Position3D(5, 10, 1); // straight +Y
 
         double azimuth = SoundWaveTelemetryEngine.computeAzimuthToward(from, to);
 
@@ -193,8 +193,8 @@ class SoundWaveTelemetryEngineTest {
 
     @Test
     void shouldComputeAzimuthTowardPositiveX() {
-        var from = new Position3D(5, 5, 1);
-        var to = new Position3D(10, 5, 1); // straight +X
+        Position3D from = new Position3D(5, 5, 1);
+        Position3D to = new Position3D(10, 5, 1); // straight +X
 
         double azimuth = SoundWaveTelemetryEngine.computeAzimuthToward(from, to);
 
@@ -203,8 +203,8 @@ class SoundWaveTelemetryEngineTest {
 
     @Test
     void shouldComputeElevationForSameHeight() {
-        var from = new Position3D(0, 0, 1);
-        var to = new Position3D(5, 0, 1);
+        Position3D from = new Position3D(0, 0, 1);
+        Position3D to = new Position3D(5, 0, 1);
 
         double elevation = SoundWaveTelemetryEngine.computeElevationToward(from, to);
 
@@ -213,8 +213,8 @@ class SoundWaveTelemetryEngineTest {
 
     @Test
     void shouldComputeElevationForAbove() {
-        var from = new Position3D(0, 0, 0);
-        var to = new Position3D(0, 0, 5); // straight up
+        Position3D from = new Position3D(0, 0, 0);
+        Position3D to = new Position3D(0, 0, 5); // straight up
 
         double elevation = SoundWaveTelemetryEngine.computeElevationToward(from, to);
 

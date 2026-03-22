@@ -9,7 +9,7 @@ class CorrelationDataTest {
 
     @Test
     void shouldCreateWithValidParameters() {
-        var data = new CorrelationData(0.95, -6.0, -20.0, 0.1);
+        CorrelationData data = new CorrelationData(0.95, -6.0, -20.0, 0.1);
 
         assertThat(data.correlation()).isEqualTo(0.95);
         assertThat(data.midLevel()).isEqualTo(-6.0);
@@ -39,7 +39,7 @@ class CorrelationDataTest {
 
     @Test
     void shouldAcceptBoundaryValues() {
-        var data = new CorrelationData(-1.0, -120.0, -120.0, -1.0);
+        CorrelationData data = new CorrelationData(-1.0, -120.0, -120.0, -1.0);
         assertThat(data.correlation()).isEqualTo(-1.0);
         assertThat(data.stereoBalance()).isEqualTo(-1.0);
     }

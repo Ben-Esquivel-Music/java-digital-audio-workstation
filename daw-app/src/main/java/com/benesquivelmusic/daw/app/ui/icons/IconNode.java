@@ -19,6 +19,7 @@ import javafx.scene.text.FontWeight;
 import javafx.scene.text.Text;
 import javafx.scene.text.TextAlignment;
 
+import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
 
@@ -108,11 +109,11 @@ public final class IconNode {
 
     static Group parseSvg(InputStream svgStream) {
         try {
-            var factory = DocumentBuilderFactory.newInstance();
+            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
             factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
             factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-            var builder = factory.newDocumentBuilder();
+            DocumentBuilder builder = factory.newDocumentBuilder();
             Document doc = builder.parse(svgStream);
             Element root = doc.getDocumentElement();
             List<Node> children = parseChildren(root);
@@ -123,7 +124,7 @@ public final class IconNode {
     }
 
     private static List<Node> parseChildren(Element parent) {
-        var nodes = new ArrayList<Node>();
+        ArrayList<Node> nodes = new ArrayList<Node>();
         NodeList childNodes = parent.getChildNodes();
         for (int i = 0; i < childNodes.getLength(); i++) {
             if (childNodes.item(i) instanceof Element child) {
@@ -156,7 +157,7 @@ public final class IconNode {
     // ----------------------------------------------------------------
 
     private static Line convertLine(Element el) {
-        var line = new Line(
+        Line line = new Line(
                 doubleAttr(el, "x1"),
                 doubleAttr(el, "y1"),
                 doubleAttr(el, "x2"),
@@ -167,7 +168,7 @@ public final class IconNode {
     }
 
     private static Circle convertCircle(Element el) {
-        var circle = new Circle(
+        Circle circle = new Circle(
                 doubleAttr(el, "cx"),
                 doubleAttr(el, "cy"),
                 doubleAttr(el, "r"));
@@ -177,7 +178,7 @@ public final class IconNode {
     }
 
     private static Ellipse convertEllipse(Element el) {
-        var ellipse = new Ellipse(
+        Ellipse ellipse = new Ellipse(
                 doubleAttr(el, "cx"),
                 doubleAttr(el, "cy"),
                 doubleAttr(el, "rx"),
@@ -188,7 +189,7 @@ public final class IconNode {
     }
 
     private static Rectangle convertRect(Element el) {
-        var rect = new Rectangle(
+        Rectangle rect = new Rectangle(
                 doubleAttr(el, "x"),
                 doubleAttr(el, "y"),
                 doubleAttr(el, "width"),
@@ -209,7 +210,7 @@ public final class IconNode {
     }
 
     private static SVGPath convertPath(Element el) {
-        var path = new SVGPath();
+        SVGPath path = new SVGPath();
         path.setContent(el.getAttribute("d"));
         applyStroke(el, path);
         applyFill(el, path);
@@ -217,21 +218,21 @@ public final class IconNode {
     }
 
     private static Polygon convertPolygon(Element el) {
-        var polygon = new Polygon(parsePoints(el.getAttribute("points")));
+        Polygon polygon = new Polygon(parsePoints(el.getAttribute("points")));
         applyStroke(el, polygon);
         applyFill(el, polygon);
         return polygon;
     }
 
     private static Polyline convertPolyline(Element el) {
-        var polyline = new Polyline(parsePoints(el.getAttribute("points")));
+        Polyline polyline = new Polyline(parsePoints(el.getAttribute("points")));
         applyStroke(el, polyline);
         applyFill(el, polyline);
         return polyline;
     }
 
     private static Text convertText(Element el) {
-        var text = new Text(el.getTextContent().trim());
+        Text text = new Text(el.getTextContent().trim());
         text.setX(doubleAttr(el, "x"));
         text.setY(doubleAttr(el, "y"));
 
@@ -323,7 +324,7 @@ public final class IconNode {
 
     private static double[] parsePoints(String points) {
         String[] tokens = points.trim().split("[,\\s]+");
-        var result = new double[tokens.length];
+        double[] result = new double[tokens.length];
         for (int i = 0; i < tokens.length; i++) {
             result[i] = Double.parseDouble(tokens[i]);
         }

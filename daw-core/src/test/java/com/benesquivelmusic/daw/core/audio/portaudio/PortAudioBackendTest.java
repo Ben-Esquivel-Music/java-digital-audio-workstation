@@ -11,26 +11,26 @@ class PortAudioBackendTest {
 
     @Test
     void shouldReportPortAudioBackendName() {
-        var backend = new PortAudioBackend();
+        PortAudioBackend backend = new PortAudioBackend();
         assertThat(backend.getBackendName()).isEqualTo("PortAudio");
     }
 
     @Test
     void shouldReportAvailability() {
-        var backend = new PortAudioBackend();
+        PortAudioBackend backend = new PortAudioBackend();
         // Just check that it runs without error
         assertThat(backend.isAvailable()).isIn(true, false);
     }
 
     @Test
     void shouldReportStreamInactiveBeforeStart() {
-        var backend = new PortAudioBackend();
+        PortAudioBackend backend = new PortAudioBackend();
         assertThat(backend.isStreamActive()).isFalse();
     }
 
     @Test
     void shouldThrowOnInitializeWhenUnavailable() {
-        var backend = new PortAudioBackend();
+        PortAudioBackend backend = new PortAudioBackend();
         if (!backend.isAvailable()) {
             assertThatThrownBy(backend::initialize)
                     .isInstanceOf(AudioBackendException.class)
@@ -40,7 +40,7 @@ class PortAudioBackendTest {
 
     @Test
     void shouldThrowWhenNotInitialized() {
-        var backend = new PortAudioBackend();
+        PortAudioBackend backend = new PortAudioBackend();
         assertThatThrownBy(backend::getAvailableDevices)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("not initialized");
@@ -48,7 +48,7 @@ class PortAudioBackendTest {
 
     @Test
     void shouldThrowWhenNoStreamOpenForLatency() {
-        var backend = new PortAudioBackend();
+        PortAudioBackend backend = new PortAudioBackend();
         // Even without initialization, streamHandle is null
         assertThatThrownBy(backend::getLatencyInfo)
                 .isInstanceOf(IllegalStateException.class);
@@ -56,26 +56,26 @@ class PortAudioBackendTest {
 
     @Test
     void shouldThrowWhenNoStreamOpenForStart() {
-        var backend = new PortAudioBackend();
+        PortAudioBackend backend = new PortAudioBackend();
         assertThatThrownBy(backend::startStream)
                 .isInstanceOf(IllegalStateException.class);
     }
 
     @Test
     void shouldAllowCloseWithoutInitialization() {
-        var backend = new PortAudioBackend();
+        PortAudioBackend backend = new PortAudioBackend();
         backend.close(); // should not throw
     }
 
     @Test
     void shouldAllowCloseStreamWithoutOpenStream() {
-        var backend = new PortAudioBackend();
+        PortAudioBackend backend = new PortAudioBackend();
         backend.closeStream(); // should not throw
     }
 
     @Test
     void shouldAllowStopStreamWithoutStart() {
-        var backend = new PortAudioBackend();
+        PortAudioBackend backend = new PortAudioBackend();
         backend.stopStream(); // should not throw
     }
 }

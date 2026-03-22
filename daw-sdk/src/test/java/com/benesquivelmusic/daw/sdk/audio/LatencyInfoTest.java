@@ -9,7 +9,7 @@ class LatencyInfoTest {
 
     @Test
     void shouldComputeRoundTripLatency() {
-        var info = LatencyInfo.of(5.0, 7.0, 256, 44100.0);
+        LatencyInfo info = LatencyInfo.of(5.0, 7.0, 256, 44100.0);
         assertThat(info.inputLatencyMs()).isEqualTo(5.0);
         assertThat(info.outputLatencyMs()).isEqualTo(7.0);
         assertThat(info.roundTripLatencyMs()).isEqualTo(12.0);
@@ -37,7 +37,7 @@ class LatencyInfoTest {
 
     @Test
     void shouldAllowZeroLatency() {
-        var info = LatencyInfo.of(0.0, 0.0, 64, 96000.0);
+        LatencyInfo info = LatencyInfo.of(0.0, 0.0, 64, 96000.0);
         assertThat(info.roundTripLatencyMs()).isEqualTo(0.0);
     }
 }

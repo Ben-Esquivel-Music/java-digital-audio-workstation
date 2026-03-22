@@ -52,7 +52,7 @@ public final class BiquadFilter {
 
         record RawCoeffs(double b0, double b1, double b2, double a0, double a1, double a2) {}
 
-        var raw = switch (type) {
+        RawCoeffs raw = switch (type) {
             case LOW_PASS -> new RawCoeffs(
                     (1.0 - cosW0) / 2.0, 1.0 - cosW0, (1.0 - cosW0) / 2.0,
                     1.0 + alpha, -2.0 * cosW0, 1.0 - alpha);

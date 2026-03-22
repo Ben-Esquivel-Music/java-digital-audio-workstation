@@ -1,7 +1,9 @@
 package com.benesquivelmusic.daw.core.spatial.room;
 
 import com.benesquivelmusic.daw.sdk.spatial.RoomSimulationConfig;
+import com.benesquivelmusic.daw.sdk.telemetry.ListenerOrientation;
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
+import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomPreset;
 import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
 import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
@@ -29,8 +31,8 @@ class RoomPresetLibraryTest {
     void shouldPlaceListenerAtRoomCenter() {
         RoomSimulationConfig config = RoomPresetLibrary.fromPreset(RoomPreset.STUDIO);
 
-        var listener = config.listener();
-        var dims = config.dimensions();
+        ListenerOrientation listener = config.listener();
+        RoomDimensions dims = config.dimensions();
 
         assertThat(listener.position().x()).isEqualTo(dims.width() / 2.0);
         assertThat(listener.position().y()).isEqualTo(dims.length() / 2.0);
@@ -40,8 +42,8 @@ class RoomPresetLibraryTest {
 
     @Test
     void shouldCreateConfigWithSources() {
-        var guitar = new SoundSource("Guitar", new Position3D(2, 2, 1), 85);
-        var drums = new SoundSource("Drums", new Position3D(4, 3, 1), 90);
+        SoundSource guitar = new SoundSource("Guitar", new Position3D(2, 2, 1), 85);
+        SoundSource drums = new SoundSource("Drums", new Position3D(4, 3, 1), 90);
 
         RoomSimulationConfig config = RoomPresetLibrary.fromPreset(
                 RoomPreset.STUDIO, List.of(guitar, drums), 48000);

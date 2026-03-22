@@ -10,12 +10,12 @@ class QualityReportTest {
 
     @Test
     void shouldPassWhenAllMetricsAboveThresholds() {
-        var signal = new SignalQualityMetrics(60.0, 0.1, -60.0, 10.0);
-        var spectral = new SpectralQualityMetrics(0.5, 3000.0, 0.5);
-        var stereo = new StereoQualityMetrics(0.9, 0.8, 0.95);
-        var dynamicRange = new DynamicRangeMetrics(10.0, 12.0);
+        SignalQualityMetrics signal = new SignalQualityMetrics(60.0, 0.1, -60.0, 10.0);
+        SpectralQualityMetrics spectral = new SpectralQualityMetrics(0.5, 3000.0, 0.5);
+        StereoQualityMetrics stereo = new StereoQualityMetrics(0.9, 0.8, 0.95);
+        DynamicRangeMetrics dynamicRange = new DynamicRangeMetrics(10.0, 12.0);
 
-        var report = QualityReport.evaluate(signal, spectral, stereo,
+        QualityReport report = QualityReport.evaluate(signal, spectral, stereo,
                 dynamicRange, QualityThresholds.DEFAULT);
 
         assertThat(report.passed()).isTrue();
@@ -24,12 +24,12 @@ class QualityReportTest {
 
     @Test
     void shouldFailWhenSnrBelowThreshold() {
-        var signal = new SignalQualityMetrics(10.0, 0.1, -60.0, 10.0);
-        var spectral = new SpectralQualityMetrics(0.5, 3000.0, 0.5);
-        var stereo = new StereoQualityMetrics(0.9, 0.8, 0.95);
-        var dynamicRange = new DynamicRangeMetrics(10.0, 12.0);
+        SignalQualityMetrics signal = new SignalQualityMetrics(10.0, 0.1, -60.0, 10.0);
+        SpectralQualityMetrics spectral = new SpectralQualityMetrics(0.5, 3000.0, 0.5);
+        StereoQualityMetrics stereo = new StereoQualityMetrics(0.9, 0.8, 0.95);
+        DynamicRangeMetrics dynamicRange = new DynamicRangeMetrics(10.0, 12.0);
 
-        var report = QualityReport.evaluate(signal, spectral, stereo,
+        QualityReport report = QualityReport.evaluate(signal, spectral, stereo,
                 dynamicRange, QualityThresholds.DEFAULT);
 
         assertThat(report.passed()).isFalse();
@@ -38,12 +38,12 @@ class QualityReportTest {
 
     @Test
     void shouldFailWhenThdAboveThreshold() {
-        var signal = new SignalQualityMetrics(60.0, 5.0, -26.0, 10.0);
-        var spectral = new SpectralQualityMetrics(0.5, 3000.0, 0.5);
-        var stereo = new StereoQualityMetrics(0.9, 0.8, 0.95);
-        var dynamicRange = new DynamicRangeMetrics(10.0, 12.0);
+        SignalQualityMetrics signal = new SignalQualityMetrics(60.0, 5.0, -26.0, 10.0);
+        SpectralQualityMetrics spectral = new SpectralQualityMetrics(0.5, 3000.0, 0.5);
+        StereoQualityMetrics stereo = new StereoQualityMetrics(0.9, 0.8, 0.95);
+        DynamicRangeMetrics dynamicRange = new DynamicRangeMetrics(10.0, 12.0);
 
-        var report = QualityReport.evaluate(signal, spectral, stereo,
+        QualityReport report = QualityReport.evaluate(signal, spectral, stereo,
                 dynamicRange, QualityThresholds.DEFAULT);
 
         assertThat(report.passed()).isFalse();
@@ -52,12 +52,12 @@ class QualityReportTest {
 
     @Test
     void shouldFailWhenCorrelationBelowThreshold() {
-        var signal = new SignalQualityMetrics(60.0, 0.1, -60.0, 10.0);
-        var spectral = new SpectralQualityMetrics(0.5, 3000.0, 0.5);
-        var stereo = new StereoQualityMetrics(-0.8, 0.8, 0.1);
-        var dynamicRange = new DynamicRangeMetrics(10.0, 12.0);
+        SignalQualityMetrics signal = new SignalQualityMetrics(60.0, 0.1, -60.0, 10.0);
+        SpectralQualityMetrics spectral = new SpectralQualityMetrics(0.5, 3000.0, 0.5);
+        StereoQualityMetrics stereo = new StereoQualityMetrics(-0.8, 0.8, 0.1);
+        DynamicRangeMetrics dynamicRange = new DynamicRangeMetrics(10.0, 12.0);
 
-        var report = QualityReport.evaluate(signal, spectral, stereo,
+        QualityReport report = QualityReport.evaluate(signal, spectral, stereo,
                 dynamicRange, QualityThresholds.DEFAULT);
 
         assertThat(report.passed()).isFalse();
@@ -66,12 +66,12 @@ class QualityReportTest {
 
     @Test
     void shouldFailWhenDynamicRangeBelowThreshold() {
-        var signal = new SignalQualityMetrics(60.0, 0.1, -60.0, 10.0);
-        var spectral = new SpectralQualityMetrics(0.5, 3000.0, 0.5);
-        var stereo = new StereoQualityMetrics(0.9, 0.8, 0.95);
-        var dynamicRange = new DynamicRangeMetrics(10.0, 1.0);
+        SignalQualityMetrics signal = new SignalQualityMetrics(60.0, 0.1, -60.0, 10.0);
+        SpectralQualityMetrics spectral = new SpectralQualityMetrics(0.5, 3000.0, 0.5);
+        StereoQualityMetrics stereo = new StereoQualityMetrics(0.9, 0.8, 0.95);
+        DynamicRangeMetrics dynamicRange = new DynamicRangeMetrics(10.0, 1.0);
 
-        var report = QualityReport.evaluate(signal, spectral, stereo,
+        QualityReport report = QualityReport.evaluate(signal, spectral, stereo,
                 dynamicRange, QualityThresholds.DEFAULT);
 
         assertThat(report.passed()).isFalse();
@@ -80,12 +80,12 @@ class QualityReportTest {
 
     @Test
     void shouldCollectMultipleFailures() {
-        var signal = new SignalQualityMetrics(10.0, 5.0, -26.0, 1.0);
-        var spectral = new SpectralQualityMetrics(0.5, 3000.0, 0.5);
-        var stereo = new StereoQualityMetrics(-0.8, 0.1, 0.1);
-        var dynamicRange = new DynamicRangeMetrics(1.0, 1.0);
+        SignalQualityMetrics signal = new SignalQualityMetrics(10.0, 5.0, -26.0, 1.0);
+        SpectralQualityMetrics spectral = new SpectralQualityMetrics(0.5, 3000.0, 0.5);
+        StereoQualityMetrics stereo = new StereoQualityMetrics(-0.8, 0.1, 0.1);
+        DynamicRangeMetrics dynamicRange = new DynamicRangeMetrics(1.0, 1.0);
 
-        var report = QualityReport.evaluate(signal, spectral, stereo,
+        QualityReport report = QualityReport.evaluate(signal, spectral, stereo,
                 dynamicRange, QualityThresholds.DEFAULT);
 
         assertThat(report.passed()).isFalse();
@@ -94,12 +94,12 @@ class QualityReportTest {
 
     @Test
     void shouldPreserveMetricValues() {
-        var signal = new SignalQualityMetrics(60.0, 0.1, -60.0, 10.0);
-        var spectral = new SpectralQualityMetrics(0.5, 3000.0, 0.5);
-        var stereo = new StereoQualityMetrics(0.9, 0.8, 0.95);
-        var dynamicRange = new DynamicRangeMetrics(10.0, 12.0);
+        SignalQualityMetrics signal = new SignalQualityMetrics(60.0, 0.1, -60.0, 10.0);
+        SpectralQualityMetrics spectral = new SpectralQualityMetrics(0.5, 3000.0, 0.5);
+        StereoQualityMetrics stereo = new StereoQualityMetrics(0.9, 0.8, 0.95);
+        DynamicRangeMetrics dynamicRange = new DynamicRangeMetrics(10.0, 12.0);
 
-        var report = QualityReport.evaluate(signal, spectral, stereo,
+        QualityReport report = QualityReport.evaluate(signal, spectral, stereo,
                 dynamicRange, QualityThresholds.DEFAULT);
 
         assertThat(report.signalMetrics()).isEqualTo(signal);
@@ -111,7 +111,7 @@ class QualityReportTest {
 
     @Test
     void failuresListShouldBeUnmodifiable() {
-        var report = QualityReport.evaluate(
+        QualityReport report = QualityReport.evaluate(
                 SignalQualityMetrics.SILENCE,
                 SpectralQualityMetrics.SILENCE,
                 StereoQualityMetrics.SILENCE,
@@ -125,14 +125,14 @@ class QualityReportTest {
 
     @Test
     void shouldUseCustomThresholds() {
-        var lenient = new QualityThresholds(
+        QualityThresholds lenient = new QualityThresholds(
                 0.0, 100.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0);
-        var signal = new SignalQualityMetrics(1.0, 50.0, -6.0, 0.5);
-        var spectral = new SpectralQualityMetrics(0.0, 100.0, 0.0);
-        var stereo = new StereoQualityMetrics(-0.9, 0.0, 0.05);
-        var dynamicRange = new DynamicRangeMetrics(0.5, 0.5);
+        SignalQualityMetrics signal = new SignalQualityMetrics(1.0, 50.0, -6.0, 0.5);
+        SpectralQualityMetrics spectral = new SpectralQualityMetrics(0.0, 100.0, 0.0);
+        StereoQualityMetrics stereo = new StereoQualityMetrics(-0.9, 0.0, 0.05);
+        DynamicRangeMetrics dynamicRange = new DynamicRangeMetrics(0.5, 0.5);
 
-        var report = QualityReport.evaluate(signal, spectral, stereo,
+        QualityReport report = QualityReport.evaluate(signal, spectral, stereo,
                 dynamicRange, lenient);
 
         assertThat(report.passed()).isTrue();

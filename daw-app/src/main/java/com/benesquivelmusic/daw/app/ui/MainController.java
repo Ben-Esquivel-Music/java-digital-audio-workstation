@@ -41,6 +41,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import javafx.scene.Scene;
+import javafx.scene.Parent;
+import javafx.collections.ObservableMap;
 
 /**
  * Controller for the main DAW window.
@@ -99,7 +102,7 @@ public final class MainController {
         pluginRegistry = new PluginRegistry();
         undoManager = new UndoManager();
 
-        var checkpointManager = new CheckpointManager(AutoSaveConfig.DEFAULT);
+        CheckpointManager checkpointManager = new CheckpointManager(AutoSaveConfig.DEFAULT);
         projectManager = new ProjectManager(checkpointManager);
 
         audioTrackCounter = 0;
@@ -179,11 +182,11 @@ public final class MainController {
      * Registers global keyboard shortcuts for transport and project actions.
      */
     private void registerKeyboardShortcuts() {
-        var scene = playButton.getScene();
+        Scene scene = playButton.getScene();
         if (scene == null) {
             return;
         }
-        var accelerators = scene.getAccelerators();
+        ObservableMap<KeyCombination, Runnable> accelerators = scene.getAccelerators();
 
         // Space — toggle play/stop
         accelerators.put(
@@ -253,7 +256,7 @@ public final class MainController {
     }
 
     private void startTempoEdit() {
-        var parent = tempoLabel.getParent();
+        Parent parent = tempoLabel.getParent();
         if (!(parent instanceof HBox hbox)) {
             return;
         }
@@ -262,7 +265,7 @@ public final class MainController {
             return;
         }
 
-        var editor = new TextField(String.format("%.1f", project.getTransport().getTempo()));
+        TextField editor = new TextField(String.format("%.1f", project.getTransport().getTempo()));
         editor.getStyleClass().add("tempo-editor");
         editor.setPrefWidth(80);
 
@@ -317,11 +320,11 @@ public final class MainController {
         vizTileRow.setPrefHeight(120);
         vizTileRow.setMinHeight(100);
 
-        var waveformDisplay   = new WaveformDisplay();
-        var spectrumDisplay   = new SpectrumDisplay();
-        var levelMeterDisplay = new LevelMeterDisplay();
-        var loudnessDisplay   = new LoudnessDisplay();
-        var correlationDisplay = new CorrelationDisplay();
+        WaveformDisplay waveformDisplay   = new WaveformDisplay();
+        SpectrumDisplay spectrumDisplay   = new SpectrumDisplay();
+        LevelMeterDisplay levelMeterDisplay = new LevelMeterDisplay();
+        LoudnessDisplay loudnessDisplay   = new LoudnessDisplay();
+        CorrelationDisplay correlationDisplay = new CorrelationDisplay();
 
         vizTileRow.getChildren().addAll(
                 createVizTile("WAVEFORM",    DawIcon.WAVEFORM,       "tile-header-accent-cyan",   waveformDisplay),
@@ -338,14 +341,14 @@ public final class MainController {
      * Creates a single visualization tile with a header label and a live display component.
      */
     private VBox createVizTile(String title, DawIcon icon, String accentClass, Region displayComponent) {
-        var header = new Label(title);
+        Label header = new Label(title);
         header.getStyleClass().addAll("viz-tile-label", accentClass);
         header.setGraphic(IconNode.of(icon, 12));
 
         displayComponent.setMinHeight(0);
         VBox.setVgrow(displayComponent, Priority.ALWAYS);
 
-        var tile = new VBox(4, header, displayComponent);
+        VBox tile = new VBox(4, header, displayComponent);
         tile.getStyleClass().add("viz-tile");
         tile.setPadding(new Insets(8));
         HBox.setHgrow(tile, Priority.ALWAYS);
@@ -475,7 +478,7 @@ public final class MainController {
 
     @FXML
     private void onManagePlugins() {
-        var dialog = new PluginManagerDialog(pluginRegistry);
+        PluginManagerDialog dialog = new PluginManagerDialog(pluginRegistry);
         dialog.showAndWait();
     }
 
@@ -506,7 +509,7 @@ public final class MainController {
     }
 
     private HBox addTrackToUI(Track track) {
-        var trackItem = new HBox(8);
+        HBox trackItem = new HBox(8);
         trackItem.getStyleClass().add("track-item");
         trackItem.setPadding(new Insets(6, 8, 6, 8));
         trackItem.setAlignment(Pos.CENTER_LEFT);
@@ -521,7 +524,7 @@ public final class MainController {
             case AUDIO_OBJECT -> IconNode.of(DawIcon.PAN, TRACK_TYPE_ICON_SIZE);
         };
 
-        var nameLabel = new Label(track.getName());
+        Label nameLabel = new Label(track.getName());
         nameLabel.getStyleClass().add("track-name");
 
         // Double-click to rename the track
@@ -533,7 +536,7 @@ public final class MainController {
         nameLabel.setTooltip(new Tooltip("Double-click to rename"));
 
         // Volume slider
-        var volumeSlider = new Slider(0.0, 1.0, track.getVolume());
+        Slider volumeSlider = new Slider(0.0, 1.0, track.getVolume());
         volumeSlider.getStyleClass().add("track-volume-slider");
         volumeSlider.setPrefWidth(80);
         volumeSlider.setTooltip(new Tooltip("Volume"));
@@ -542,7 +545,7 @@ public final class MainController {
         });
 
         // Mute button with icon
-        var muteBtn = new Button();
+        Button muteBtn = new Button();
         muteBtn.setGraphic(IconNode.of(DawIcon.MUTE, TRACK_CONTROL_ICON_SIZE));
         muteBtn.getStyleClass().add("track-mute-button");
         muteBtn.setTooltip(new Tooltip("Mute"));
@@ -553,7 +556,7 @@ public final class MainController {
         });
 
         // Solo button with icon
-        var soloBtn = new Button();
+        Button soloBtn = new Button();
         soloBtn.setGraphic(IconNode.of(DawIcon.SOLO, TRACK_CONTROL_ICON_SIZE));
         soloBtn.getStyleClass().add("track-solo-button");
         soloBtn.setTooltip(new Tooltip("Solo"));
@@ -564,7 +567,7 @@ public final class MainController {
         });
 
         // Arm button with icon and toggle action
-        var armBtn = new Button();
+        Button armBtn = new Button();
         armBtn.setGraphic(IconNode.of(DawIcon.ARM_TRACK, TRACK_CONTROL_ICON_SIZE));
         armBtn.getStyleClass().add("track-arm-button");
         armBtn.setTooltip(new Tooltip("Arm for Recording"));
@@ -575,7 +578,7 @@ public final class MainController {
         });
 
         // Remove button (undoable)
-        var removeBtn = new Button();
+        Button removeBtn = new Button();
         removeBtn.setGraphic(IconNode.of(DawIcon.DELETE, TRACK_CONTROL_ICON_SIZE));
         removeBtn.getStyleClass().add("track-remove-button");
         removeBtn.setTooltip(new Tooltip("Remove Track"));
@@ -605,7 +608,7 @@ public final class MainController {
         });
 
         // Spacer pushes controls to the right
-        var spacer = new Region();
+        Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
         trackItem.getChildren().addAll(
@@ -624,7 +627,7 @@ public final class MainController {
             return;
         }
 
-        var editor = new TextField(track.getName());
+        TextField editor = new TextField(track.getName());
         editor.getStyleClass().add("tempo-editor");
         editor.setPrefWidth(120);
 

@@ -17,7 +17,7 @@ class MasteringChainTest {
 
     @Test
     void shouldStartEmpty() {
-        var chain = new MasteringChain();
+        MasteringChain chain = new MasteringChain();
 
         assertThat(chain.isEmpty()).isTrue();
         assertThat(chain.size()).isZero();
@@ -26,7 +26,7 @@ class MasteringChainTest {
 
     @Test
     void shouldAddStages() {
-        var chain = new MasteringChain();
+        MasteringChain chain = new MasteringChain();
         chain.addStage(MasteringStageType.GAIN_STAGING, "Gain", new PassthroughProcessor());
         chain.addStage(MasteringStageType.COMPRESSION, "Comp", new GainProcessor(0.5f));
 
@@ -37,7 +37,7 @@ class MasteringChainTest {
 
     @Test
     void shouldInsertStageAtIndex() {
-        var chain = new MasteringChain();
+        MasteringChain chain = new MasteringChain();
         chain.addStage(MasteringStageType.GAIN_STAGING, "Gain", new PassthroughProcessor());
         chain.addStage(MasteringStageType.LIMITING, "Limiter", new PassthroughProcessor());
         chain.insertStage(1, MasteringStageType.COMPRESSION, "Comp", new GainProcessor(0.5f));
@@ -47,18 +47,18 @@ class MasteringChainTest {
 
     @Test
     void shouldRemoveStage() {
-        var chain = new MasteringChain();
+        MasteringChain chain = new MasteringChain();
         chain.addStage(MasteringStageType.GAIN_STAGING, "Gain", new PassthroughProcessor());
         chain.addStage(MasteringStageType.COMPRESSION, "Comp", new GainProcessor(0.5f));
 
-        var removed = chain.removeStage(0);
+        MasteringChain.Stage removed = chain.removeStage(0);
         assertThat(removed.getType()).isEqualTo(MasteringStageType.GAIN_STAGING);
         assertThat(chain.size()).isEqualTo(1);
     }
 
     @Test
     void shouldProcessThroughChain() {
-        var chain = new MasteringChain();
+        MasteringChain chain = new MasteringChain();
         chain.addStage(MasteringStageType.GAIN_STAGING, "Gain", new GainProcessor(0.5f));
         chain.addStage(MasteringStageType.LIMITING, "Limiter", new GainProcessor(0.5f));
 
@@ -72,7 +72,7 @@ class MasteringChainTest {
 
     @Test
     void shouldBypassEntireChainForAbComparison() {
-        var chain = new MasteringChain();
+        MasteringChain chain = new MasteringChain();
         chain.addStage(MasteringStageType.LIMITING, "Limiter", new GainProcessor(0.5f));
         chain.setChainBypassed(true);
 
@@ -86,7 +86,7 @@ class MasteringChainTest {
 
     @Test
     void shouldApplyReferenceGainDuringBypass() {
-        var chain = new MasteringChain();
+        MasteringChain chain = new MasteringChain();
         chain.addStage(MasteringStageType.LIMITING, "Limiter", new GainProcessor(0.5f));
         chain.setChainBypassed(true);
         chain.setReferenceGainDb(-6.0); // approximately 0.5× gain
@@ -101,7 +101,7 @@ class MasteringChainTest {
 
     @Test
     void shouldBypassIndividualStage() {
-        var chain = new MasteringChain();
+        MasteringChain chain = new MasteringChain();
         chain.addStage(MasteringStageType.GAIN_STAGING, "Gain", new GainProcessor(0.5f));
         chain.addStage(MasteringStageType.LIMITING, "Limiter", new GainProcessor(0.5f));
 
@@ -118,7 +118,7 @@ class MasteringChainTest {
 
     @Test
     void shouldSoloIndividualStage() {
-        var chain = new MasteringChain();
+        MasteringChain chain = new MasteringChain();
         chain.addStage(MasteringStageType.GAIN_STAGING, "Gain", new GainProcessor(0.5f));
         chain.addStage(MasteringStageType.COMPRESSION, "Comp", new GainProcessor(0.25f));
         chain.addStage(MasteringStageType.LIMITING, "Limiter", new GainProcessor(0.1f));
@@ -136,7 +136,7 @@ class MasteringChainTest {
 
     @Test
     void shouldPassThroughWhenEmpty() {
-        var chain = new MasteringChain();
+        MasteringChain chain = new MasteringChain();
         float[][] input = {{0.7f, -0.3f}};
         float[][] output = {{0.0f, 0.0f}};
         chain.process(input, output, 2);
@@ -146,9 +146,9 @@ class MasteringChainTest {
 
     @Test
     void shouldResetAllProcessors() {
-        var p1 = new PassthroughProcessor();
-        var p2 = new PassthroughProcessor();
-        var chain = new MasteringChain();
+        PassthroughProcessor p1 = new PassthroughProcessor();
+        PassthroughProcessor p2 = new PassthroughProcessor();
+        MasteringChain chain = new MasteringChain();
         chain.addStage(MasteringStageType.GAIN_STAGING, "Gain", p1);
         chain.addStage(MasteringStageType.LIMITING, "Limiter", p2);
 
@@ -160,7 +160,7 @@ class MasteringChainTest {
 
     @Test
     void shouldProcessWithPreAllocatedBuffers() {
-        var chain = new MasteringChain();
+        MasteringChain chain = new MasteringChain();
         chain.addStage(MasteringStageType.GAIN_STAGING, "Gain", new GainProcessor(0.5f));
         chain.addStage(MasteringStageType.LIMITING, "Limiter", new GainProcessor(0.5f));
         chain.allocateIntermediateBuffers(1, 4);
@@ -175,7 +175,7 @@ class MasteringChainTest {
 
     @Test
     void shouldSavePresetWithParameters() {
-        var chain = new MasteringChain();
+        MasteringChain chain = new MasteringChain();
         chain.addStage(MasteringStageType.COMPRESSION, "Comp", new GainProcessor(0.5f));
         chain.getStages().get(0).setBypassed(true);
 
@@ -195,7 +195,7 @@ class MasteringChainTest {
 
     @Test
     void shouldSavePresetWithoutExtractor() {
-        var chain = new MasteringChain();
+        MasteringChain chain = new MasteringChain();
         chain.addStage(MasteringStageType.GAIN_STAGING, "Gain", new PassthroughProcessor());
 
         MasteringChainPreset preset = chain.savePreset("Simple", "Pop/EDM");
@@ -206,7 +206,7 @@ class MasteringChainTest {
 
     @Test
     void shouldRoundTripPresetData() {
-        var chain = new MasteringChain();
+        MasteringChain chain = new MasteringChain();
         chain.addStage(MasteringStageType.GAIN_STAGING, "Input Gain",
                 new GainProcessor(1.0f));
         chain.addStage(MasteringStageType.COMPRESSION, "Glue Comp",
@@ -232,7 +232,7 @@ class MasteringChainTest {
         assertThat(preset.stages().get(1).bypassed()).isTrue();
 
         // Rebuild from preset and verify equality
-        var rebuilt = new MasteringChainPreset(
+        MasteringChainPreset rebuilt = new MasteringChainPreset(
                 preset.name(), preset.genre(),
                 preset.stages().stream()
                         .map(s -> new MasteringStageConfig(
@@ -243,7 +243,7 @@ class MasteringChainTest {
 
     @Test
     void shouldReturnUnmodifiableStageList() {
-        var chain = new MasteringChain();
+        MasteringChain chain = new MasteringChain();
         chain.addStage(MasteringStageType.GAIN_STAGING, "Gain", new PassthroughProcessor());
 
         assertThatThrownBy(() -> chain.getStages().clear())

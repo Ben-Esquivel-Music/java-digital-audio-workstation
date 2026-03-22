@@ -9,33 +9,33 @@ class BiquadFilterTest {
 
     @Test
     void shouldCreateLowPassFilter() {
-        var filter = BiquadFilter.create(BiquadFilter.FilterType.LOW_PASS, 44100.0, 1000.0, 0.707, 0);
+        BiquadFilter filter = BiquadFilter.create(BiquadFilter.FilterType.LOW_PASS, 44100.0, 1000.0, 0.707, 0);
         assertThat(filter).isNotNull();
     }
 
     @Test
     void shouldCreateHighPassFilter() {
-        var filter = BiquadFilter.create(BiquadFilter.FilterType.HIGH_PASS, 44100.0, 1000.0, 0.707, 0);
+        BiquadFilter filter = BiquadFilter.create(BiquadFilter.FilterType.HIGH_PASS, 44100.0, 1000.0, 0.707, 0);
         assertThat(filter).isNotNull();
     }
 
     @Test
     void shouldCreatePeakEqFilter() {
-        var filter = BiquadFilter.create(BiquadFilter.FilterType.PEAK_EQ, 44100.0, 1000.0, 1.0, 6.0);
+        BiquadFilter filter = BiquadFilter.create(BiquadFilter.FilterType.PEAK_EQ, 44100.0, 1000.0, 1.0, 6.0);
         assertThat(filter).isNotNull();
     }
 
     @Test
     void shouldCreateShelfFilters() {
-        var lowShelf = BiquadFilter.create(BiquadFilter.FilterType.LOW_SHELF, 44100.0, 100.0, 0.707, 3.0);
-        var highShelf = BiquadFilter.create(BiquadFilter.FilterType.HIGH_SHELF, 44100.0, 8000.0, 0.707, -3.0);
+        BiquadFilter lowShelf = BiquadFilter.create(BiquadFilter.FilterType.LOW_SHELF, 44100.0, 100.0, 0.707, 3.0);
+        BiquadFilter highShelf = BiquadFilter.create(BiquadFilter.FilterType.HIGH_SHELF, 44100.0, 8000.0, 0.707, -3.0);
         assertThat(lowShelf).isNotNull();
         assertThat(highShelf).isNotNull();
     }
 
     @Test
     void shouldPassDcThroughLowPass() {
-        var filter = BiquadFilter.create(BiquadFilter.FilterType.LOW_PASS, 44100.0, 10000.0, 0.707, 0);
+        BiquadFilter filter = BiquadFilter.create(BiquadFilter.FilterType.LOW_PASS, 44100.0, 10000.0, 0.707, 0);
 
         // Feed a DC signal (well below cutoff) — should pass through
         float output = 0;
@@ -49,7 +49,7 @@ class BiquadFilterTest {
     @Test
     void shouldAttenuateHighFrequenciesWithLowPass() {
         double sampleRate = 44100.0;
-        var filter = BiquadFilter.create(BiquadFilter.FilterType.LOW_PASS, sampleRate, 100.0, 0.707, 0);
+        BiquadFilter filter = BiquadFilter.create(BiquadFilter.FilterType.LOW_PASS, sampleRate, 100.0, 0.707, 0);
 
         // Generate a high-frequency sine (10 kHz) well above the 100 Hz cutoff
         float[] input = new float[4096];
@@ -70,7 +70,7 @@ class BiquadFilterTest {
 
     @Test
     void shouldProcessBuffer() {
-        var filter = BiquadFilter.create(BiquadFilter.FilterType.LOW_PASS, 44100.0, 5000.0, 0.707, 0);
+        BiquadFilter filter = BiquadFilter.create(BiquadFilter.FilterType.LOW_PASS, 44100.0, 5000.0, 0.707, 0);
         float[] buffer = {0.5f, -0.3f, 0.8f, -0.1f};
         filter.process(buffer, 0, buffer.length);
         // Just verify it runs without error and modifies the buffer
@@ -79,7 +79,7 @@ class BiquadFilterTest {
 
     @Test
     void shouldResetState() {
-        var filter = BiquadFilter.create(BiquadFilter.FilterType.LOW_PASS, 44100.0, 1000.0, 0.707, 0);
+        BiquadFilter filter = BiquadFilter.create(BiquadFilter.FilterType.LOW_PASS, 44100.0, 1000.0, 0.707, 0);
         filter.processSample(1.0f);
         filter.processSample(0.5f);
         filter.reset();
@@ -93,7 +93,7 @@ class BiquadFilterTest {
 
     @Test
     void shouldRecalculateCoefficients() {
-        var filter = BiquadFilter.create(BiquadFilter.FilterType.LOW_PASS, 44100.0, 1000.0, 0.707, 0);
+        BiquadFilter filter = BiquadFilter.create(BiquadFilter.FilterType.LOW_PASS, 44100.0, 1000.0, 0.707, 0);
         filter.recalculate(BiquadFilter.FilterType.HIGH_PASS, 44100.0, 5000.0, 0.707, 0);
         // Should not throw and should produce a valid filter
         float output = filter.processSample(1.0f);
@@ -102,7 +102,7 @@ class BiquadFilterTest {
 
     @Test
     void shouldCreateNotchFilter() {
-        var filter = BiquadFilter.create(BiquadFilter.FilterType.NOTCH, 44100.0, 1000.0, 1.0, 0);
+        BiquadFilter filter = BiquadFilter.create(BiquadFilter.FilterType.NOTCH, 44100.0, 1000.0, 1.0, 0);
         assertThat(filter).isNotNull();
     }
 

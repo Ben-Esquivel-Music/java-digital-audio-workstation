@@ -14,7 +14,7 @@ class CrossoverFilterTest {
     void shouldSplitAndSumToOriginalSignal() {
         // The defining property of a Linkwitz-Riley crossover: low + high ≈ original
         // (small deviations are expected in the digital domain due to bilinear warping)
-        var crossover = new CrossoverFilter(SAMPLE_RATE, 1000.0);
+        CrossoverFilter crossover = new CrossoverFilter(SAMPLE_RATE, 1000.0);
 
         int numFrames = 16384;
         float[] input = new float[numFrames];
@@ -44,7 +44,7 @@ class CrossoverFilterTest {
 
     @Test
     void shouldSplitAndSumToOriginalWithImpulse() {
-        var crossover = new CrossoverFilter(SAMPLE_RATE, 2000.0);
+        CrossoverFilter crossover = new CrossoverFilter(SAMPLE_RATE, 2000.0);
 
         int numFrames = 4096;
         float[] input = new float[numFrames];
@@ -71,7 +71,7 @@ class CrossoverFilterTest {
 
     @Test
     void shouldProcessSampleBySample() {
-        var crossover = new CrossoverFilter(SAMPLE_RATE, 1000.0);
+        CrossoverFilter crossover = new CrossoverFilter(SAMPLE_RATE, 1000.0);
         float[] output = new float[2];
 
         // Process several samples and verify low and high outputs are produced
@@ -86,7 +86,7 @@ class CrossoverFilterTest {
 
     @Test
     void shouldPassLowFrequenciesToLowBand() {
-        var crossover = new CrossoverFilter(SAMPLE_RATE, 4000.0);
+        CrossoverFilter crossover = new CrossoverFilter(SAMPLE_RATE, 4000.0);
 
         int numFrames = 8192;
         float[] input = new float[numFrames];
@@ -109,7 +109,7 @@ class CrossoverFilterTest {
 
     @Test
     void shouldPassHighFrequenciesToHighBand() {
-        var crossover = new CrossoverFilter(SAMPLE_RATE, 1000.0);
+        CrossoverFilter crossover = new CrossoverFilter(SAMPLE_RATE, 1000.0);
 
         int numFrames = 8192;
         float[] input = new float[numFrames];
@@ -132,7 +132,7 @@ class CrossoverFilterTest {
 
     @Test
     void shouldResetState() {
-        var crossover = new CrossoverFilter(SAMPLE_RATE, 1000.0);
+        CrossoverFilter crossover = new CrossoverFilter(SAMPLE_RATE, 1000.0);
         float[] output = new float[2];
 
         // Process some samples
@@ -143,7 +143,7 @@ class CrossoverFilterTest {
         crossover.reset();
 
         // After reset, processing the same input should give same result as a fresh filter
-        var fresh = new CrossoverFilter(SAMPLE_RATE, 1000.0);
+        CrossoverFilter fresh = new CrossoverFilter(SAMPLE_RATE, 1000.0);
         float[] freshOutput = new float[2];
 
         crossover.processSample(1.0f, output);

@@ -11,7 +11,7 @@ class MidiEventTest {
 
     @Test
     void shouldCreateNoteOnEvent() {
-        var event = MidiEvent.noteOn(0, 60, 100);
+        MidiEvent event = MidiEvent.noteOn(0, 60, 100);
         assertThat(event.type()).isEqualTo(MidiEvent.Type.NOTE_ON);
         assertThat(event.channel()).isZero();
         assertThat(event.data1()).isEqualTo(60);
@@ -20,7 +20,7 @@ class MidiEventTest {
 
     @Test
     void shouldCreateNoteOffEvent() {
-        var event = MidiEvent.noteOff(1, 72);
+        MidiEvent event = MidiEvent.noteOff(1, 72);
         assertThat(event.type()).isEqualTo(MidiEvent.Type.NOTE_OFF);
         assertThat(event.channel()).isEqualTo(1);
         assertThat(event.data1()).isEqualTo(72);
@@ -29,7 +29,7 @@ class MidiEventTest {
 
     @Test
     void shouldCreateControlChangeEvent() {
-        var event = MidiEvent.controlChange(5, 1, 64);
+        MidiEvent event = MidiEvent.controlChange(5, 1, 64);
         assertThat(event.type()).isEqualTo(MidiEvent.Type.CONTROL_CHANGE);
         assertThat(event.channel()).isEqualTo(5);
         assertThat(event.data1()).isEqualTo(1);
@@ -38,7 +38,7 @@ class MidiEventTest {
 
     @Test
     void shouldCreateProgramChangeEvent() {
-        var event = MidiEvent.programChange(9, 25);
+        MidiEvent event = MidiEvent.programChange(9, 25);
         assertThat(event.type()).isEqualTo(MidiEvent.Type.PROGRAM_CHANGE);
         assertThat(event.channel()).isEqualTo(9);
         assertThat(event.data1()).isEqualTo(25);
@@ -47,7 +47,7 @@ class MidiEventTest {
 
     @Test
     void shouldCreatePitchBendEvent() {
-        var event = MidiEvent.pitchBend(0, 8192);
+        MidiEvent event = MidiEvent.pitchBend(0, 8192);
         assertThat(event.type()).isEqualTo(MidiEvent.Type.PITCH_BEND);
         assertThat(event.channel()).isZero();
         assertThat(event.data1()).isEqualTo(8192);
@@ -156,15 +156,15 @@ class MidiEventTest {
 
     @Test
     void shouldSupportRecordEquality() {
-        var a = MidiEvent.noteOn(0, 60, 100);
-        var b = MidiEvent.noteOn(0, 60, 100);
+        MidiEvent a = MidiEvent.noteOn(0, 60, 100);
+        MidiEvent b = MidiEvent.noteOn(0, 60, 100);
         assertThat(a).isEqualTo(b);
         assertThat(a.hashCode()).isEqualTo(b.hashCode());
     }
 
     @Test
     void shouldSupportRecordToString() {
-        var event = MidiEvent.noteOn(0, 60, 100);
+        MidiEvent event = MidiEvent.noteOn(0, 60, 100);
         assertThat(event.toString()).contains("NOTE_ON");
     }
 }

@@ -14,7 +14,7 @@ class BedChannelTest {
 
     @Test
     void shouldCreateBedChannelWithUnityGain() {
-        var bed = new BedChannel("track-1", SpeakerLabel.L);
+        BedChannel bed = new BedChannel("track-1", SpeakerLabel.L);
         assertThat(bed.trackId()).isEqualTo("track-1");
         assertThat(bed.speakerLabel()).isEqualTo(SpeakerLabel.L);
         assertThat(bed.gain()).isEqualTo(1.0);
@@ -22,7 +22,7 @@ class BedChannelTest {
 
     @Test
     void shouldCreateBedChannelWithCustomGain() {
-        var bed = new BedChannel("track-1", SpeakerLabel.C, 0.5);
+        BedChannel bed = new BedChannel("track-1", SpeakerLabel.C, 0.5);
         assertThat(bed.gain()).isEqualTo(0.5);
     }
 
@@ -48,19 +48,19 @@ class BedChannelTest {
 
     @Test
     void shouldRouteBedChannelToCorrectSpeakerIndex() {
-        var layout = SpeakerLayout.LAYOUT_7_1_4;
-        var bed = new BedChannel("track-1", SpeakerLabel.C);
+        SpeakerLayout layout = SpeakerLayout.LAYOUT_7_1_4;
+        BedChannel bed = new BedChannel("track-1", SpeakerLabel.C);
         int idx = layout.indexOf(bed.speakerLabel());
         assertThat(idx).isEqualTo(2); // C is at index 2 in 7.1.4
     }
 
     @Test
     void shouldRouteBedChannelsToAll714Positions() {
-        var layout = SpeakerLayout.LAYOUT_7_1_4;
+        SpeakerLayout layout = SpeakerLayout.LAYOUT_7_1_4;
         SpeakerLabel[] labels = SpeakerLabel.values();
 
         for (int i = 0; i < labels.length; i++) {
-            var bed = new BedChannel("track-" + i, labels[i]);
+            BedChannel bed = new BedChannel("track-" + i, labels[i]);
             int idx = layout.indexOf(bed.speakerLabel());
             assertThat(idx)
                     .as("Speaker %s should be at index %d", labels[i], i)

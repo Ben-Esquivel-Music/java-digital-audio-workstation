@@ -9,7 +9,7 @@ class FluidSynthBindingsTest {
     @Test
     void shouldReportAvailabilityBasedOnNativeLibrary() {
         // FluidSynth is unlikely to be installed in the CI/test environment
-        var bindings = new FluidSynthBindings();
+        FluidSynthBindings bindings = new FluidSynthBindings();
         // We don't assert true/false — just that it doesn't crash
         assertThat(bindings.isAvailable()).isIn(true, false);
     }

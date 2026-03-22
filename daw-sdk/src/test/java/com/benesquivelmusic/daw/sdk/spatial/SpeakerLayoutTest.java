@@ -11,7 +11,7 @@ class SpeakerLayoutTest {
 
     @Test
     void shouldCreate714Layout() {
-        var layout = SpeakerLayout.LAYOUT_7_1_4;
+        SpeakerLayout layout = SpeakerLayout.LAYOUT_7_1_4;
         assertThat(layout.name()).isEqualTo("7.1.4");
         assertThat(layout.channelCount()).isEqualTo(12);
         assertThat(layout.speakers()).containsExactly(
@@ -22,7 +22,7 @@ class SpeakerLayoutTest {
 
     @Test
     void shouldCreate51Layout() {
-        var layout = SpeakerLayout.LAYOUT_5_1;
+        SpeakerLayout layout = SpeakerLayout.LAYOUT_5_1;
         assertThat(layout.channelCount()).isEqualTo(6);
         assertThat(layout.speakers()).containsExactly(
                 SpeakerLabel.L, SpeakerLabel.R, SpeakerLabel.C, SpeakerLabel.LFE,
@@ -31,14 +31,14 @@ class SpeakerLayoutTest {
 
     @Test
     void shouldCreateStereoLayout() {
-        var layout = SpeakerLayout.LAYOUT_STEREO;
+        SpeakerLayout layout = SpeakerLayout.LAYOUT_STEREO;
         assertThat(layout.channelCount()).isEqualTo(2);
         assertThat(layout.speakers()).containsExactly(SpeakerLabel.L, SpeakerLabel.R);
     }
 
     @Test
     void shouldFindSpeakerIndex() {
-        var layout = SpeakerLayout.LAYOUT_7_1_4;
+        SpeakerLayout layout = SpeakerLayout.LAYOUT_7_1_4;
         assertThat(layout.indexOf(SpeakerLabel.L)).isEqualTo(0);
         assertThat(layout.indexOf(SpeakerLabel.C)).isEqualTo(2);
         assertThat(layout.indexOf(SpeakerLabel.LTF)).isEqualTo(8);
@@ -47,14 +47,14 @@ class SpeakerLayoutTest {
 
     @Test
     void shouldReturnMinusOneForMissingSpeaker() {
-        var layout = SpeakerLayout.LAYOUT_STEREO;
+        SpeakerLayout layout = SpeakerLayout.LAYOUT_STEREO;
         assertThat(layout.indexOf(SpeakerLabel.C)).isEqualTo(-1);
         assertThat(layout.indexOf(SpeakerLabel.LFE)).isEqualTo(-1);
     }
 
     @Test
     void shouldCheckContains() {
-        var layout = SpeakerLayout.LAYOUT_5_1;
+        SpeakerLayout layout = SpeakerLayout.LAYOUT_5_1;
         assertThat(layout.contains(SpeakerLabel.L)).isTrue();
         assertThat(layout.contains(SpeakerLabel.LFE)).isTrue();
         assertThat(layout.contains(SpeakerLabel.LTF)).isFalse();
@@ -75,7 +75,7 @@ class SpeakerLayoutTest {
 
     @Test
     void shouldMakeDefensiveCopy() {
-        var layout = SpeakerLayout.LAYOUT_7_1_4;
+        SpeakerLayout layout = SpeakerLayout.LAYOUT_7_1_4;
         // speakers() returns an unmodifiable list
         assertThatThrownBy(() -> layout.speakers().add(SpeakerLabel.L))
                 .isInstanceOf(UnsupportedOperationException.class);

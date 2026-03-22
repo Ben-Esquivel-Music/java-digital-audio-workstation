@@ -23,8 +23,8 @@ class RoomSimulationConfigTest {
 
     @Test
     void shouldCreateWithValidParameters() {
-        var source = new SoundSource("Guitar", new Position3D(3, 2, 1), 85);
-        var config = new RoomSimulationConfig(
+        SoundSource source = new SoundSource("Guitar", new Position3D(3, 2, 1), 85);
+        RoomSimulationConfig config = new RoomSimulationConfig(
                 DIMS, Map.of("floor", WallMaterial.CARPET), WallMaterial.DRYWALL,
                 List.of(source), LISTENER, 48000);
 
@@ -37,7 +37,7 @@ class RoomSimulationConfigTest {
 
     @Test
     void shouldReturnMaterialForMappedSurface() {
-        var config = new RoomSimulationConfig(
+        RoomSimulationConfig config = new RoomSimulationConfig(
                 DIMS, Map.of("floor", WallMaterial.CARPET), WallMaterial.DRYWALL,
                 List.of(), LISTENER, 48000);
 
@@ -46,7 +46,7 @@ class RoomSimulationConfigTest {
 
     @Test
     void shouldFallBackToDefaultMaterialForUnmappedSurface() {
-        var config = new RoomSimulationConfig(
+        RoomSimulationConfig config = new RoomSimulationConfig(
                 DIMS, Map.of("floor", WallMaterial.CARPET), WallMaterial.DRYWALL,
                 List.of(), LISTENER, 48000);
 
@@ -56,7 +56,7 @@ class RoomSimulationConfigTest {
     @Test
     void shouldComputeAverageAbsorption() {
         // All surfaces use the same material
-        var config = new RoomSimulationConfig(
+        RoomSimulationConfig config = new RoomSimulationConfig(
                 DIMS, Map.of(), WallMaterial.ACOUSTIC_FOAM,
                 List.of(), LISTENER, 48000);
 
@@ -66,8 +66,8 @@ class RoomSimulationConfigTest {
 
     @Test
     void shouldMakeSourcesImmutable() {
-        var source = new SoundSource("Guitar", new Position3D(3, 2, 1), 85);
-        var config = new RoomSimulationConfig(
+        SoundSource source = new SoundSource("Guitar", new Position3D(3, 2, 1), 85);
+        RoomSimulationConfig config = new RoomSimulationConfig(
                 DIMS, Map.of(), WallMaterial.DRYWALL,
                 List.of(source), LISTENER, 48000);
 
@@ -78,7 +78,7 @@ class RoomSimulationConfigTest {
 
     @Test
     void shouldMakeSurfaceMaterialsImmutable() {
-        var config = new RoomSimulationConfig(
+        RoomSimulationConfig config = new RoomSimulationConfig(
                 DIMS, Map.of("floor", WallMaterial.CARPET), WallMaterial.DRYWALL,
                 List.of(), LISTENER, 48000);
 

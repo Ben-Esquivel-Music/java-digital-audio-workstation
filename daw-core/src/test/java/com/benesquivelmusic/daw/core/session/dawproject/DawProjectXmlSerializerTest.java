@@ -21,9 +21,9 @@ class DawProjectXmlSerializerTest {
 
     @Test
     void shouldSerializeMinimalSession() throws IOException {
-        var session = new SessionData("Empty Session", 120.0, 4, 4, 44100.0, List.of());
+        SessionData session = new SessionData("Empty Session", 120.0, 4, 4, 44100.0, List.of());
 
-        var xml = serializeToString(session);
+        String xml = serializeToString(session);
 
         assertThat(xml).contains("name=\"Empty Session\"");
         assertThat(xml).contains("sampleRate=\"44100.0\"");
@@ -37,11 +37,11 @@ class DawProjectXmlSerializerTest {
 
     @Test
     void shouldSerializeSessionWithTracks() throws IOException {
-        var clip = new SessionClip("Kick", 0.0, 4.0, 0.5, "audio/kick.wav", -3.0);
-        var track = new SessionTrack("Drums", "AUDIO", 0.8, -0.5, true, false, List.of(clip));
-        var session = new SessionData("Full Song", 140.0, 3, 4, 96000.0, List.of(track));
+        SessionClip clip = new SessionClip("Kick", 0.0, 4.0, 0.5, "audio/kick.wav", -3.0);
+        SessionTrack track = new SessionTrack("Drums", "AUDIO", 0.8, -0.5, true, false, List.of(clip));
+        SessionData session = new SessionData("Full Song", 140.0, 3, 4, 96000.0, List.of(track));
 
-        var xml = serializeToString(session);
+        String xml = serializeToString(session);
 
         assertThat(xml).contains("name=\"Full Song\"");
         assertThat(xml).contains("value=\"140.0\"");
@@ -60,15 +60,15 @@ class DawProjectXmlSerializerTest {
 
     @Test
     void shouldMapTrackTypesCorrectly() throws IOException {
-        var tracks = List.of(
+        List<SessionTrack> tracks = List.of(
                 new SessionTrack("T1", "AUDIO", 1.0, 0.0, false, false, List.of()),
                 new SessionTrack("T2", "MIDI", 1.0, 0.0, false, false, List.of()),
                 new SessionTrack("T3", "AUX", 1.0, 0.0, false, false, List.of()),
                 new SessionTrack("T4", "MASTER", 1.0, 0.0, false, false, List.of())
         );
-        var session = new SessionData("Types", 120.0, 4, 4, 44100.0, tracks);
+        SessionData session = new SessionData("Types", 120.0, 4, 4, 44100.0, tracks);
 
-        var xml = serializeToString(session);
+        String xml = serializeToString(session);
 
         assertThat(xml).contains("contentType=\"audio\"");
         assertThat(xml).contains("contentType=\"notes\"");
@@ -78,10 +78,10 @@ class DawProjectXmlSerializerTest {
 
     @Test
     void shouldNotWriteSoloAttributeWhenFalse() throws IOException {
-        var track = new SessionTrack("T", "AUDIO", 1.0, 0.0, false, false, List.of());
-        var session = new SessionData("Test", 120.0, 4, 4, 44100.0, List.of(track));
+        SessionTrack track = new SessionTrack("T", "AUDIO", 1.0, 0.0, false, false, List.of());
+        SessionData session = new SessionData("Test", 120.0, 4, 4, 44100.0, List.of(track));
 
-        var xml = serializeToString(session);
+        String xml = serializeToString(session);
 
         assertThat(xml).doesNotContain("solo=");
         assertThat(xml).doesNotContain("mute=");
@@ -89,11 +89,11 @@ class DawProjectXmlSerializerTest {
 
     @Test
     void shouldOmitAudioElementForClipWithNoSource() throws IOException {
-        var clip = new SessionClip("Empty Clip", 0.0, 2.0, 0.0, null, 0.0);
-        var track = new SessionTrack("T", "AUDIO", 1.0, 0.0, false, false, List.of(clip));
-        var session = new SessionData("Test", 120.0, 4, 4, 44100.0, List.of(track));
+        SessionClip clip = new SessionClip("Empty Clip", 0.0, 2.0, 0.0, null, 0.0);
+        SessionTrack track = new SessionTrack("T", "AUDIO", 1.0, 0.0, false, false, List.of(clip));
+        SessionData session = new SessionData("Test", 120.0, 4, 4, 44100.0, List.of(track));
 
-        var xml = serializeToString(session);
+        String xml = serializeToString(session);
 
         assertThat(xml).contains("name=\"Empty Clip\"");
         assertThat(xml).doesNotContain("<Audio");
@@ -101,14 +101,14 @@ class DawProjectXmlSerializerTest {
 
     @Test
     void shouldProduceParseableOutput() throws IOException {
-        var clip = new SessionClip("Clip1", 2.0, 8.0, 0.0, "audio/vocal.wav", 0.0);
-        var track = new SessionTrack("Vocals", "AUDIO", 0.9, 0.1, false, true, List.of(clip));
-        var session = new SessionData("Round Trip", 130.0, 6, 8, 48000.0, List.of(track));
+        SessionClip clip = new SessionClip("Clip1", 2.0, 8.0, 0.0, "audio/vocal.wav", 0.0);
+        SessionTrack track = new SessionTrack("Vocals", "AUDIO", 0.9, 0.1, false, true, List.of(clip));
+        SessionData session = new SessionData("Round Trip", 130.0, 6, 8, 48000.0, List.of(track));
 
-        var baos = new ByteArrayOutputStream();
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
         serializer.serialize(session, baos, new ArrayList<>());
 
-        var reparsed = parser.parse(new ByteArrayInputStream(baos.toByteArray()), new ArrayList<>());
+        SessionData reparsed = parser.parse(new ByteArrayInputStream(baos.toByteArray()), new ArrayList<>());
 
         assertThat(reparsed.projectName()).isEqualTo("Round Trip");
         assertThat(reparsed.tempo()).isEqualTo(130.0);
@@ -117,16 +117,16 @@ class DawProjectXmlSerializerTest {
     }
 
     private String serializeToString(SessionData session) throws IOException {
-        var baos = new ByteArrayOutputStream();
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
         serializer.serialize(session, baos, new ArrayList<>());
         return baos.toString(java.nio.charset.StandardCharsets.UTF_8);
     }
 
     @Test
     void shouldProduceXmlWithoutDoctype() throws IOException {
-        var session = new SessionData("Secure Session", 120.0, 4, 4, 44100.0, List.of());
+        SessionData session = new SessionData("Secure Session", 120.0, 4, 4, 44100.0, List.of());
 
-        var xml = serializeToString(session);
+        String xml = serializeToString(session);
 
         // The serialized output must not contain DOCTYPE declarations
         assertThat(xml.toUpperCase()).doesNotContain("<!DOCTYPE");

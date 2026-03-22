@@ -9,7 +9,7 @@ class TruePeakDetectorTest {
 
     @Test
     void shouldDetectSamplePeakForConstantSignal() {
-        var detector = new TruePeakDetector();
+        TruePeakDetector detector = new TruePeakDetector();
         for (int i = 0; i < 100; i++) {
             detector.processSample(0.5);
         }
@@ -21,7 +21,7 @@ class TruePeakDetectorTest {
     void shouldDetectIntersamplePeak() {
         // Two consecutive samples at +0.9 and -0.9 create an intersample peak
         // higher than 0.9 because the interpolated signal overshoots
-        var detector = new TruePeakDetector();
+        TruePeakDetector detector = new TruePeakDetector();
 
         // Feed alternating high-amplitude samples to create intersample peaks
         for (int i = 0; i < 100; i++) {
@@ -35,7 +35,7 @@ class TruePeakDetectorTest {
 
     @Test
     void shouldReturnZeroForSilence() {
-        var detector = new TruePeakDetector();
+        TruePeakDetector detector = new TruePeakDetector();
         for (int i = 0; i < 50; i++) {
             detector.processSample(0.0);
         }
@@ -45,7 +45,7 @@ class TruePeakDetectorTest {
 
     @Test
     void shouldComputeCorrectDbtpForFullScale() {
-        var detector = new TruePeakDetector();
+        TruePeakDetector detector = new TruePeakDetector();
         // Feed a signal that results in a peak of exactly 1.0
         detector.processSample(1.0);
         // The true peak should be at least 0 dBTP (or above due to overshoot)
@@ -54,7 +54,7 @@ class TruePeakDetectorTest {
 
     @Test
     void shouldResetState() {
-        var detector = new TruePeakDetector();
+        TruePeakDetector detector = new TruePeakDetector();
         for (int i = 0; i < 50; i++) {
             detector.processSample(0.8);
         }
@@ -67,7 +67,7 @@ class TruePeakDetectorTest {
 
     @Test
     void shouldAccumulateMaxTruePeak() {
-        var detector = new TruePeakDetector();
+        TruePeakDetector detector = new TruePeakDetector();
 
         // Process low-level signal
         for (int i = 0; i < 50; i++) {
@@ -86,7 +86,7 @@ class TruePeakDetectorTest {
 
     @Test
     void shouldHandleNegativeSamples() {
-        var detector = new TruePeakDetector();
+        TruePeakDetector detector = new TruePeakDetector();
         for (int i = 0; i < 50; i++) {
             detector.processSample(-0.7);
         }
@@ -95,7 +95,7 @@ class TruePeakDetectorTest {
 
     @Test
     void truePeakShouldBeAtLeastAsBigAsSamplePeak() {
-        var detector = new TruePeakDetector();
+        TruePeakDetector detector = new TruePeakDetector();
         double maxSample = 0.0;
         for (int i = 0; i < 200; i++) {
             double sample = Math.sin(2 * Math.PI * i / 10.0) * 0.8;

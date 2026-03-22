@@ -10,7 +10,7 @@ class RoomDimensionsTest {
 
     @Test
     void shouldCreateWithValidDimensions() {
-        var room = new RoomDimensions(10.0, 8.0, 3.0);
+        RoomDimensions room = new RoomDimensions(10.0, 8.0, 3.0);
 
         assertThat(room.width()).isEqualTo(10.0);
         assertThat(room.length()).isEqualTo(8.0);
@@ -19,14 +19,14 @@ class RoomDimensionsTest {
 
     @Test
     void shouldComputeVolume() {
-        var room = new RoomDimensions(10.0, 8.0, 3.0);
+        RoomDimensions room = new RoomDimensions(10.0, 8.0, 3.0);
 
         assertThat(room.volume()).isCloseTo(240.0, offset(0.001));
     }
 
     @Test
     void shouldComputeSurfaceArea() {
-        var room = new RoomDimensions(10.0, 8.0, 3.0);
+        RoomDimensions room = new RoomDimensions(10.0, 8.0, 3.0);
 
         // 2*(10*8 + 10*3 + 8*3) = 2*(80+30+24) = 268
         assertThat(room.surfaceArea()).isCloseTo(268.0, offset(0.001));

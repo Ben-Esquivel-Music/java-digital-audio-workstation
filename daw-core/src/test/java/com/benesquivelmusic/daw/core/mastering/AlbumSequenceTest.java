@@ -15,7 +15,7 @@ class AlbumSequenceTest {
 
     @Test
     void shouldCreateEmptySequence() {
-        var seq = new AlbumSequence("Test Album", "Test Artist");
+        AlbumSequence seq = new AlbumSequence("Test Album", "Test Artist");
 
         assertThat(seq.getAlbumTitle()).isEqualTo("Test Album");
         assertThat(seq.getArtist()).isEqualTo("Test Artist");
@@ -25,7 +25,7 @@ class AlbumSequenceTest {
 
     @Test
     void shouldAddTracks() {
-        var seq = new AlbumSequence("Album", "Artist");
+        AlbumSequence seq = new AlbumSequence("Album", "Artist");
         seq.addTrack(AlbumTrackEntry.of("Track 1", 180.0));
         seq.addTrack(AlbumTrackEntry.of("Track 2", 240.0));
 
@@ -36,7 +36,7 @@ class AlbumSequenceTest {
 
     @Test
     void shouldInsertTrackAtIndex() {
-        var seq = new AlbumSequence("Album", "Artist");
+        AlbumSequence seq = new AlbumSequence("Album", "Artist");
         seq.addTrack(AlbumTrackEntry.of("Track 1", 180.0));
         seq.addTrack(AlbumTrackEntry.of("Track 3", 200.0));
         seq.insertTrack(1, AlbumTrackEntry.of("Track 2", 240.0));
@@ -46,18 +46,18 @@ class AlbumSequenceTest {
 
     @Test
     void shouldRemoveTrack() {
-        var seq = new AlbumSequence("Album", "Artist");
+        AlbumSequence seq = new AlbumSequence("Album", "Artist");
         seq.addTrack(AlbumTrackEntry.of("Track 1", 180.0));
         seq.addTrack(AlbumTrackEntry.of("Track 2", 240.0));
 
-        var removed = seq.removeTrack(0);
+        AlbumTrackEntry removed = seq.removeTrack(0);
         assertThat(removed.title()).isEqualTo("Track 1");
         assertThat(seq.size()).isEqualTo(1);
     }
 
     @Test
     void shouldMoveTrack() {
-        var seq = new AlbumSequence("Album", "Artist");
+        AlbumSequence seq = new AlbumSequence("Album", "Artist");
         seq.addTrack(AlbumTrackEntry.of("A", 100.0));
         seq.addTrack(AlbumTrackEntry.of("B", 200.0));
         seq.addTrack(AlbumTrackEntry.of("C", 300.0));
@@ -70,7 +70,7 @@ class AlbumSequenceTest {
 
     @Test
     void shouldRejectInvalidMoveIndices() {
-        var seq = new AlbumSequence("Album", "Artist");
+        AlbumSequence seq = new AlbumSequence("Album", "Artist");
         seq.addTrack(AlbumTrackEntry.of("A", 100.0));
 
         assertThatThrownBy(() -> seq.moveTrack(-1, 0))
@@ -81,7 +81,7 @@ class AlbumSequenceTest {
 
     @Test
     void shouldComputeTotalDurationWithGaps() {
-        var seq = new AlbumSequence("Album", "Artist");
+        AlbumSequence seq = new AlbumSequence("Album", "Artist");
         // First track: 180s, default pre-gap (2s) — but first track's pre-gap is excluded
         seq.addTrack(AlbumTrackEntry.of("Track 1", 180.0));
         // Second track: 240s, default pre-gap (2s)
@@ -93,7 +93,7 @@ class AlbumSequenceTest {
 
     @Test
     void shouldComputeTotalDurationWithCrossfades() {
-        var seq = new AlbumSequence("Album", "Artist");
+        AlbumSequence seq = new AlbumSequence("Album", "Artist");
         seq.addTrack(AlbumTrackEntry.of("Track 1", 180.0));
         seq.addTrack(AlbumTrackEntry.of("Track 2", 240.0)
                 .withPreGapSeconds(0.0)
@@ -105,7 +105,7 @@ class AlbumSequenceTest {
 
     @Test
     void shouldComputeTrackStartTimes() {
-        var seq = new AlbumSequence("Album", "Artist");
+        AlbumSequence seq = new AlbumSequence("Album", "Artist");
         seq.addTrack(AlbumTrackEntry.of("Track 1", 180.0).withPreGapSeconds(0.0));
         seq.addTrack(AlbumTrackEntry.of("Track 2", 240.0).withPreGapSeconds(2.0));
         seq.addTrack(AlbumTrackEntry.of("Track 3", 200.0).withPreGapSeconds(3.0));
@@ -120,7 +120,7 @@ class AlbumSequenceTest {
 
     @Test
     void shouldComputeStartTimesWithCrossfades() {
-        var seq = new AlbumSequence("Album", "Artist");
+        AlbumSequence seq = new AlbumSequence("Album", "Artist");
         seq.addTrack(AlbumTrackEntry.of("Track 1", 180.0));
         seq.addTrack(new AlbumTrackEntry("Track 2", null, 240.0,
                 0.0, 5.0, CrossfadeCurve.S_CURVE));
@@ -134,7 +134,7 @@ class AlbumSequenceTest {
 
     @Test
     void shouldGeneratePqSheet() {
-        var seq = new AlbumSequence("Test Album", "Test Artist");
+        AlbumSequence seq = new AlbumSequence("Test Album", "Test Artist");
         seq.addTrack(new AlbumTrackEntry("Opening", "USRC11111111", 180.0,
                 0.0, 0.0, CrossfadeCurve.LINEAR));
         seq.addTrack(new AlbumTrackEntry("Main Theme", "USRC22222222", 240.0,
@@ -156,7 +156,7 @@ class AlbumSequenceTest {
 
     @Test
     void shouldHandleCustomGapTimings() {
-        var seq = new AlbumSequence("Album", "Artist");
+        AlbumSequence seq = new AlbumSequence("Album", "Artist");
         seq.addTrack(AlbumTrackEntry.of("T1", 100.0).withPreGapSeconds(0.0));
         seq.addTrack(AlbumTrackEntry.of("T2", 100.0).withPreGapSeconds(0.0));
         seq.addTrack(AlbumTrackEntry.of("T3", 100.0).withPreGapSeconds(5.0));
@@ -174,7 +174,7 @@ class AlbumSequenceTest {
 
     @Test
     void shouldUpdateAlbumMetadata() {
-        var seq = new AlbumSequence("Old Title", "Old Artist");
+        AlbumSequence seq = new AlbumSequence("Old Title", "Old Artist");
         seq.setAlbumTitle("New Title");
         seq.setArtist("New Artist");
 
@@ -196,14 +196,14 @@ class AlbumSequenceTest {
 
     @Test
     void shouldRejectNullTrackEntry() {
-        var seq = new AlbumSequence("Album", "Artist");
+        AlbumSequence seq = new AlbumSequence("Album", "Artist");
         assertThatThrownBy(() -> seq.addTrack(null))
                 .isInstanceOf(NullPointerException.class);
     }
 
     @Test
     void shouldReturnUnmodifiableTrackList() {
-        var seq = new AlbumSequence("Album", "Artist");
+        AlbumSequence seq = new AlbumSequence("Album", "Artist");
         seq.addTrack(AlbumTrackEntry.of("Track 1", 180.0));
 
         assertThatThrownBy(() -> seq.getTracks().clear())
@@ -212,7 +212,7 @@ class AlbumSequenceTest {
 
     @Test
     void shouldReplaceTrackAtIndex() {
-        var seq = new AlbumSequence("Album", "Artist");
+        AlbumSequence seq = new AlbumSequence("Album", "Artist");
         seq.addTrack(AlbumTrackEntry.of("Old", 180.0));
 
         seq.setTrack(0, AlbumTrackEntry.of("New", 200.0));
@@ -223,7 +223,7 @@ class AlbumSequenceTest {
 
     @Test
     void singleTrackAlbumShouldHaveOnlyTrackDuration() {
-        var seq = new AlbumSequence("Album", "Artist");
+        AlbumSequence seq = new AlbumSequence("Album", "Artist");
         seq.addTrack(AlbumTrackEntry.of("Solo Track", 300.0));
 
         // First track's pre-gap is excluded

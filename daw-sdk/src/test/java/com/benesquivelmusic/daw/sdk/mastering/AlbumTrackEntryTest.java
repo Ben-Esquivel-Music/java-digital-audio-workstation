@@ -9,7 +9,7 @@ class AlbumTrackEntryTest {
 
     @Test
     void shouldCreateWithDefaults() {
-        var entry = AlbumTrackEntry.of("Track 1", 180.0);
+        AlbumTrackEntry entry = AlbumTrackEntry.of("Track 1", 180.0);
 
         assertThat(entry.title()).isEqualTo("Track 1");
         assertThat(entry.durationSeconds()).isEqualTo(180.0);
@@ -21,7 +21,7 @@ class AlbumTrackEntryTest {
 
     @Test
     void shouldCreateWithAllFields() {
-        var entry = new AlbumTrackEntry("Track 2", "USRC12345678",
+        AlbumTrackEntry entry = new AlbumTrackEntry("Track 2", "USRC12345678",
                 240.0, 3.0, 2.0, CrossfadeCurve.EQUAL_POWER);
 
         assertThat(entry.title()).isEqualTo("Track 2");
@@ -34,8 +34,8 @@ class AlbumTrackEntryTest {
 
     @Test
     void shouldUpdatePreGap() {
-        var entry = AlbumTrackEntry.of("Track", 180.0);
-        var updated = entry.withPreGapSeconds(5.0);
+        AlbumTrackEntry entry = AlbumTrackEntry.of("Track", 180.0);
+        AlbumTrackEntry updated = entry.withPreGapSeconds(5.0);
 
         assertThat(updated.preGapSeconds()).isEqualTo(5.0);
         assertThat(updated.title()).isEqualTo("Track");
@@ -44,8 +44,8 @@ class AlbumTrackEntryTest {
 
     @Test
     void shouldUpdateCrossfade() {
-        var entry = AlbumTrackEntry.of("Track", 180.0);
-        var updated = entry.withCrossfade(3.0, CrossfadeCurve.S_CURVE);
+        AlbumTrackEntry entry = AlbumTrackEntry.of("Track", 180.0);
+        AlbumTrackEntry updated = entry.withCrossfade(3.0, CrossfadeCurve.S_CURVE);
 
         assertThat(updated.crossfadeDuration()).isEqualTo(3.0);
         assertThat(updated.crossfadeCurve()).isEqualTo(CrossfadeCurve.S_CURVE);

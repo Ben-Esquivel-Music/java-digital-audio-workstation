@@ -9,7 +9,7 @@ class AudioClipTest {
 
     @Test
     void shouldCreateClip() {
-        var clip = new AudioClip("Vocal Take 1", 0.0, 16.0, "/audio/take1.wav");
+        AudioClip clip = new AudioClip("Vocal Take 1", 0.0, 16.0, "/audio/take1.wav");
 
         assertThat(clip.getId()).isNotNull();
         assertThat(clip.getName()).isEqualTo("Vocal Take 1");
@@ -22,14 +22,14 @@ class AudioClipTest {
 
     @Test
     void shouldComputeEndBeat() {
-        var clip = new AudioClip("Test", 4.0, 8.0, null);
+        AudioClip clip = new AudioClip("Test", 4.0, 8.0, null);
 
         assertThat(clip.getEndBeat()).isEqualTo(12.0);
     }
 
     @Test
     void shouldUpdatePosition() {
-        var clip = new AudioClip("Test", 0.0, 4.0, null);
+        AudioClip clip = new AudioClip("Test", 0.0, 4.0, null);
 
         clip.setStartBeat(8.0);
         assertThat(clip.getStartBeat()).isEqualTo(8.0);
@@ -38,7 +38,7 @@ class AudioClipTest {
 
     @Test
     void shouldUpdateDuration() {
-        var clip = new AudioClip("Test", 0.0, 4.0, null);
+        AudioClip clip = new AudioClip("Test", 0.0, 4.0, null);
 
         clip.setDurationBeats(16.0);
         assertThat(clip.getDurationBeats()).isEqualTo(16.0);
@@ -46,7 +46,7 @@ class AudioClipTest {
 
     @Test
     void shouldUpdateName() {
-        var clip = new AudioClip("Original", 0.0, 4.0, null);
+        AudioClip clip = new AudioClip("Original", 0.0, 4.0, null);
 
         clip.setName("Renamed");
         assertThat(clip.getName()).isEqualTo("Renamed");
@@ -54,7 +54,7 @@ class AudioClipTest {
 
     @Test
     void shouldUpdateSourceOffset() {
-        var clip = new AudioClip("Test", 0.0, 4.0, null);
+        AudioClip clip = new AudioClip("Test", 0.0, 4.0, null);
 
         clip.setSourceOffsetBeats(2.0);
         assertThat(clip.getSourceOffsetBeats()).isEqualTo(2.0);
@@ -62,7 +62,7 @@ class AudioClipTest {
 
     @Test
     void shouldUpdateGain() {
-        var clip = new AudioClip("Test", 0.0, 4.0, null);
+        AudioClip clip = new AudioClip("Test", 0.0, 4.0, null);
 
         clip.setGainDb(-6.0);
         assertThat(clip.getGainDb()).isEqualTo(-6.0);
@@ -88,7 +88,7 @@ class AudioClipTest {
 
     @Test
     void shouldRejectSetNegativeStartBeat() {
-        var clip = new AudioClip("Test", 0.0, 4.0, null);
+        AudioClip clip = new AudioClip("Test", 0.0, 4.0, null);
 
         assertThatThrownBy(() -> clip.setStartBeat(-1.0))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -96,7 +96,7 @@ class AudioClipTest {
 
     @Test
     void shouldRejectSetNonPositiveDuration() {
-        var clip = new AudioClip("Test", 0.0, 4.0, null);
+        AudioClip clip = new AudioClip("Test", 0.0, 4.0, null);
 
         assertThatThrownBy(() -> clip.setDurationBeats(0.0))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -104,15 +104,15 @@ class AudioClipTest {
 
     @Test
     void shouldAllowNullSourceFilePath() {
-        var clip = new AudioClip("Test", 0.0, 4.0, null);
+        AudioClip clip = new AudioClip("Test", 0.0, 4.0, null);
 
         assertThat(clip.getSourceFilePath()).isNull();
     }
 
     @Test
     void shouldHaveUniqueIds() {
-        var clip1 = new AudioClip("A", 0.0, 1.0, null);
-        var clip2 = new AudioClip("B", 0.0, 1.0, null);
+        AudioClip clip1 = new AudioClip("A", 0.0, 1.0, null);
+        AudioClip clip2 = new AudioClip("B", 0.0, 1.0, null);
 
         assertThat(clip1.getId()).isNotEqualTo(clip2.getId());
     }

@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.audio.javasound;
 
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
+import java.util.List;
 import com.benesquivelmusic.daw.sdk.audio.BufferSize;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 
@@ -44,7 +45,7 @@ class JavaSoundBackendTest {
     @Test
     void shouldEnumerateDevicesAfterInitialization() {
         backend.initialize();
-        var devices = backend.getAvailableDevices();
+        List<AudioDeviceInfo> devices = backend.getAvailableDevices();
         assertThat(devices).isNotNull();
         // Devices may be empty in CI, but the list itself should be valid
     }
@@ -52,8 +53,8 @@ class JavaSoundBackendTest {
     @Test
     void shouldReturnSameDeviceListOnRepeatedCalls() {
         backend.initialize();
-        var first = backend.getAvailableDevices();
-        var second = backend.getAvailableDevices();
+        List<AudioDeviceInfo> first = backend.getAvailableDevices();
+        List<AudioDeviceInfo> second = backend.getAvailableDevices();
         assertThat(first).isSameAs(second);
     }
 
@@ -86,7 +87,7 @@ class JavaSoundBackendTest {
 
     @Test
     void shouldThrowWhenOpenStreamNotInitialized() {
-        var config = new com.benesquivelmusic.daw.sdk.audio.AudioStreamConfig(
+        com.benesquivelmusic.daw.sdk.audio.AudioStreamConfig config = new com.benesquivelmusic.daw.sdk.audio.AudioStreamConfig(
                 -1, 0, 0, 2, SampleRate.HZ_44100, BufferSize.SAMPLES_256);
         assertThatThrownBy(() -> backend.openStream(config, (in, out, n) -> {}))
                 .isInstanceOf(IllegalStateException.class);
@@ -111,7 +112,7 @@ class JavaSoundBackendTest {
     @Test
     void shouldReportDeviceHostApiAsJavaSound() {
         backend.initialize();
-        var devices = backend.getAvailableDevices();
+        List<AudioDeviceInfo> devices = backend.getAvailableDevices();
         for (AudioDeviceInfo device : devices) {
             assertThat(device.hostApi()).isEqualTo("Java Sound");
         }

@@ -9,7 +9,7 @@ class AudioStreamConfigTest {
 
     @Test
     void shouldCreateOutputOnlyConfig() {
-        var config = new AudioStreamConfig(-1, 0, 0, 2,
+        AudioStreamConfig config = new AudioStreamConfig(-1, 0, 0, 2,
                 SampleRate.HZ_44100, BufferSize.SAMPLES_256);
         assertThat(config.hasInput()).isFalse();
         assertThat(config.hasOutput()).isTrue();
@@ -17,7 +17,7 @@ class AudioStreamConfigTest {
 
     @Test
     void shouldCreateInputOnlyConfig() {
-        var config = new AudioStreamConfig(0, -1, 2, 0,
+        AudioStreamConfig config = new AudioStreamConfig(0, -1, 2, 0,
                 SampleRate.HZ_48000, BufferSize.SAMPLES_128);
         assertThat(config.hasInput()).isTrue();
         assertThat(config.hasOutput()).isFalse();
@@ -25,7 +25,7 @@ class AudioStreamConfigTest {
 
     @Test
     void shouldCreateFullDuplexConfig() {
-        var config = new AudioStreamConfig(0, 1, 2, 2,
+        AudioStreamConfig config = new AudioStreamConfig(0, 1, 2, 2,
                 SampleRate.HZ_96000, BufferSize.SAMPLES_64);
         assertThat(config.hasInput()).isTrue();
         assertThat(config.hasOutput()).isTrue();

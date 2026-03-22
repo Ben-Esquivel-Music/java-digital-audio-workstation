@@ -9,7 +9,7 @@ class PluginDescriptorTest {
 
     @Test
     void shouldCreateDescriptorWithValidArguments() {
-        var descriptor = new PluginDescriptor(
+        PluginDescriptor descriptor = new PluginDescriptor(
                 "com.example.reverb", "Reverb", "1.0.0", "Example Audio", PluginType.EFFECT);
 
         assertThat(descriptor.id()).isEqualTo("com.example.reverb");
@@ -71,22 +71,22 @@ class PluginDescriptorTest {
     @Test
     void shouldSupportAllPluginTypes() {
         for (PluginType type : PluginType.values()) {
-            var descriptor = new PluginDescriptor("id", "Test", "1.0", "Vendor", type);
+            PluginDescriptor descriptor = new PluginDescriptor("id", "Test", "1.0", "Vendor", type);
             assertThat(descriptor.type()).isEqualTo(type);
         }
     }
 
     @Test
     void shouldImplementEqualsAndHashCode() {
-        var a = new PluginDescriptor("id", "Name", "1.0", "Vendor", PluginType.EFFECT);
-        var b = new PluginDescriptor("id", "Name", "1.0", "Vendor", PluginType.EFFECT);
+        PluginDescriptor a = new PluginDescriptor("id", "Name", "1.0", "Vendor", PluginType.EFFECT);
+        PluginDescriptor b = new PluginDescriptor("id", "Name", "1.0", "Vendor", PluginType.EFFECT);
         assertThat(a).isEqualTo(b);
         assertThat(a.hashCode()).isEqualTo(b.hashCode());
     }
 
     @Test
     void shouldImplementToString() {
-        var descriptor = new PluginDescriptor("id", "Name", "1.0", "Vendor", PluginType.INSTRUMENT);
+        PluginDescriptor descriptor = new PluginDescriptor("id", "Name", "1.0", "Vendor", PluginType.INSTRUMENT);
         assertThat(descriptor.toString()).contains("id", "Name", "1.0", "Vendor", "INSTRUMENT");
     }
 }

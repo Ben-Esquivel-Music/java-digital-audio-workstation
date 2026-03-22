@@ -12,14 +12,14 @@ class CorrelationMeterTest {
 
     @Test
     void shouldInitializeToSilence() {
-        var meter = new CorrelationMeter();
+        CorrelationMeter meter = new CorrelationMeter();
         assertThat(meter.hasData()).isTrue();
         assertThat(meter.getLatestData()).isEqualTo(CorrelationData.SILENCE);
     }
 
     @Test
     void shouldDetectMonoSignalAsFullyCorrelated() {
-        var meter = new CorrelationMeter(0.0);
+        CorrelationMeter meter = new CorrelationMeter(0.0);
         float[] signal = generateSineWave(440.0, 44100.0, 1024);
         meter.process(signal, signal, 1024);
 
@@ -29,7 +29,7 @@ class CorrelationMeterTest {
 
     @Test
     void shouldDetectInvertedSignalAsAntiCorrelated() {
-        var meter = new CorrelationMeter(0.0);
+        CorrelationMeter meter = new CorrelationMeter(0.0);
         float[] left = generateSineWave(440.0, 44100.0, 1024);
         float[] right = new float[left.length];
         for (int i = 0; i < left.length; i++) {
@@ -43,7 +43,7 @@ class CorrelationMeterTest {
 
     @Test
     void shouldDetectCenteredBalance() {
-        var meter = new CorrelationMeter(0.0);
+        CorrelationMeter meter = new CorrelationMeter(0.0);
         float[] signal = generateSineWave(440.0, 44100.0, 1024);
         meter.process(signal, signal, 1024);
 
@@ -53,7 +53,7 @@ class CorrelationMeterTest {
 
     @Test
     void shouldDetectLeftBalance() {
-        var meter = new CorrelationMeter(0.0);
+        CorrelationMeter meter = new CorrelationMeter(0.0);
         float[] left = generateSineWave(440.0, 44100.0, 1024);
         float[] right = new float[1024]; // Silence on right
         meter.process(left, right, 1024);
@@ -63,7 +63,7 @@ class CorrelationMeterTest {
 
     @Test
     void shouldDetectRightBalance() {
-        var meter = new CorrelationMeter(0.0);
+        CorrelationMeter meter = new CorrelationMeter(0.0);
         float[] left = new float[1024]; // Silence on left
         float[] right = generateSineWave(440.0, 44100.0, 1024);
         meter.process(left, right, 1024);
@@ -73,7 +73,7 @@ class CorrelationMeterTest {
 
     @Test
     void shouldMeasureMidAndSideLevels() {
-        var meter = new CorrelationMeter(0.0);
+        CorrelationMeter meter = new CorrelationMeter(0.0);
         float[] signal = generateSineWave(440.0, 44100.0, 1024);
         meter.process(signal, signal, 1024);
 
@@ -84,7 +84,7 @@ class CorrelationMeterTest {
 
     @Test
     void shouldResetToSilence() {
-        var meter = new CorrelationMeter();
+        CorrelationMeter meter = new CorrelationMeter();
         meter.process(generateSineWave(440, 44100, 512),
                 generateSineWave(440, 44100, 512), 512);
         meter.reset();
@@ -164,7 +164,7 @@ class CorrelationMeterTest {
 
     @Test
     void shouldStoreGoniometerDataAfterProcessWithGoniometer() {
-        var meter = new CorrelationMeter(0.0);
+        CorrelationMeter meter = new CorrelationMeter(0.0);
         float[] left = generateSineWave(440.0, 44100.0, 512);
         float[] right = generateSineWave(880.0, 44100.0, 512);
 
@@ -176,7 +176,7 @@ class CorrelationMeterTest {
 
     @Test
     void shouldResetGoniometerData() {
-        var meter = new CorrelationMeter(0.0);
+        CorrelationMeter meter = new CorrelationMeter(0.0);
         float[] signal = generateSineWave(440.0, 44100.0, 256);
         meter.processWithGoniometer(signal, signal, 256);
         meter.reset();
@@ -188,7 +188,7 @@ class CorrelationMeterTest {
 
     @Test
     void shouldDetectPhaseInversion() {
-        var meter = new CorrelationMeter(0.0);
+        CorrelationMeter meter = new CorrelationMeter(0.0);
         float[] left = generateSineWave(440.0, 44100.0, 1024);
         float[] right = new float[1024];
         for (int i = 0; i < 1024; i++) right[i] = -left[i];
@@ -200,7 +200,7 @@ class CorrelationMeterTest {
 
     @Test
     void shouldNotDetectPhaseInversionForMonoSignal() {
-        var meter = new CorrelationMeter(0.0);
+        CorrelationMeter meter = new CorrelationMeter(0.0);
         float[] signal = generateSineWave(440.0, 44100.0, 1024);
         meter.process(signal, signal, 1024);
 
@@ -209,7 +209,7 @@ class CorrelationMeterTest {
 
     @Test
     void shouldNotDetectPhaseInversionForUncorrelatedSignal() {
-        var meter = new CorrelationMeter(0.0);
+        CorrelationMeter meter = new CorrelationMeter(0.0);
         float[] left = generateSineWave(440.0, 44100.0, 1024);
         float[] right = generateSineWave(880.0, 44100.0, 1024);
         meter.process(left, right, 1024);
@@ -222,7 +222,7 @@ class CorrelationMeterTest {
 
     @Test
     void shouldScoreMonoSignalAsFullyCompatible() {
-        var meter = new CorrelationMeter(0.0);
+        CorrelationMeter meter = new CorrelationMeter(0.0);
         float[] signal = generateSineWave(440.0, 44100.0, 1024);
         meter.process(signal, signal, 1024);
 
@@ -232,7 +232,7 @@ class CorrelationMeterTest {
 
     @Test
     void shouldScoreInvertedSignalAsIncompatible() {
-        var meter = new CorrelationMeter(0.0);
+        CorrelationMeter meter = new CorrelationMeter(0.0);
         float[] left = generateSineWave(440.0, 44100.0, 1024);
         float[] right = new float[1024];
         for (int i = 0; i < 1024; i++) right[i] = -left[i];
@@ -245,7 +245,7 @@ class CorrelationMeterTest {
 
     @Test
     void shouldScoreUncorrelatedSignalNearHalf() {
-        var meter = new CorrelationMeter(0.0);
+        CorrelationMeter meter = new CorrelationMeter(0.0);
         // Two different frequencies → roughly uncorrelated
         float[] left = generateSineWave(440.0, 44100.0, 4096);
         float[] right = generateSineWave(880.0, 44100.0, 4096);

@@ -99,7 +99,7 @@ final class WavExporter {
         int riffSize = 4 + 24 + 8 + dataSize + listInfoChunk.length;
 
         try (OutputStream out = Files.newOutputStream(outputPath)) {
-            var header = ByteBuffer.allocate(12 + 24 + 8).order(ByteOrder.LITTLE_ENDIAN);
+            ByteBuffer header = ByteBuffer.allocate(12 + 24 + 8).order(ByteOrder.LITTLE_ENDIAN);
 
             // RIFF header
             header.put("RIFF".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
@@ -161,7 +161,7 @@ final class WavExporter {
         int bytesPerSample = bitDepth / 8;
         int bytesPerFrame = channels * bytesPerSample;
 
-        try (var arena = Arena.ofConfined()) {
+        try (Arena arena = Arena.ofConfined()) {
             int chunkByteCount = CHUNK_FRAMES * bytesPerFrame;
             MemorySegment chunk = arena.allocate(chunkByteCount);
             byte[] ioBuffer = new byte[chunkByteCount];
@@ -243,7 +243,7 @@ final class WavExporter {
             return new byte[0];
         }
 
-        var entries = new java.util.ArrayList<byte[]>();
+        java.util.ArrayList<byte[]> entries = new java.util.ArrayList<byte[]>();
 
         addInfoEntry(entries, "INAM", metadata.title());
         addInfoEntry(entries, "IART", metadata.artist());
@@ -260,7 +260,7 @@ final class WavExporter {
 
         // LIST header: "LIST" + size(4) + "INFO" + entries
         int chunkSize = 4 + payloadSize; // "INFO" + entries
-        var buf = ByteBuffer.allocate(8 + chunkSize).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer buf = ByteBuffer.allocate(8 + chunkSize).order(ByteOrder.LITTLE_ENDIAN);
         buf.put("LIST".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
         buf.putInt(chunkSize);
         buf.put("INFO".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
@@ -277,7 +277,7 @@ final class WavExporter {
         byte[] valueBytes = (value + "\0").getBytes(java.nio.charset.StandardCharsets.US_ASCII);
         // Pad to even length per RIFF spec
         int paddedLength = valueBytes.length + (valueBytes.length % 2);
-        var buf = ByteBuffer.allocate(8 + paddedLength).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer buf = ByteBuffer.allocate(8 + paddedLength).order(ByteOrder.LITTLE_ENDIAN);
         buf.put(tag.getBytes(java.nio.charset.StandardCharsets.US_ASCII));
         buf.putInt(valueBytes.length);
         buf.put(valueBytes);

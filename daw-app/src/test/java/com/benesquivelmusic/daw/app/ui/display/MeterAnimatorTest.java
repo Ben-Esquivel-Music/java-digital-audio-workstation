@@ -11,14 +11,14 @@ class MeterAnimatorTest {
 
     @Test
     void shouldInitializeToZero() {
-        var animator = new MeterAnimator();
+        MeterAnimator animator = new MeterAnimator();
         assertThat(animator.getCurrentValue()).isEqualTo(0.0);
         assertThat(animator.getPeakValue()).isEqualTo(0.0);
     }
 
     @Test
     void shouldRiseTowardsTarget() {
-        var animator = new MeterAnimator();
+        MeterAnimator animator = new MeterAnimator();
         // Simulate multiple frames pushing towards 0.8
         for (int i = 0; i < 60; i++) {
             animator.update(0.8, FRAME_NANOS);
@@ -28,7 +28,7 @@ class MeterAnimatorTest {
 
     @Test
     void shouldDecayWhenTargetDrops() {
-        var animator = new MeterAnimator();
+        MeterAnimator animator = new MeterAnimator();
         // Rise
         for (int i = 0; i < 60; i++) {
             animator.update(0.8, FRAME_NANOS);
@@ -44,7 +44,7 @@ class MeterAnimatorTest {
 
     @Test
     void shouldHoldPeakValue() {
-        var animator = new MeterAnimator(0.005, 0.3, 1.5);
+        MeterAnimator animator = new MeterAnimator(0.005, 0.3, 1.5);
 
         // Push to a peak
         for (int i = 0; i < 10; i++) {
@@ -64,7 +64,7 @@ class MeterAnimatorTest {
 
     @Test
     void shouldResetToZero() {
-        var animator = new MeterAnimator();
+        MeterAnimator animator = new MeterAnimator();
         for (int i = 0; i < 30; i++) {
             animator.update(0.8, FRAME_NANOS);
         }
@@ -101,7 +101,7 @@ class MeterAnimatorTest {
 
     @Test
     void shouldAttackFasterThanRelease() {
-        var animator = new MeterAnimator();
+        MeterAnimator animator = new MeterAnimator();
 
         // Measure attack speed
         for (int i = 0; i < 5; i++) {

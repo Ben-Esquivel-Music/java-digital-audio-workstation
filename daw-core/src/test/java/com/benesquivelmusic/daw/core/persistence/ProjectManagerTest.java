@@ -17,16 +17,16 @@ class ProjectManagerTest {
     Path tempDir;
 
     private ProjectManager createProjectManager() {
-        var config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
-        var checkpointManager = new CheckpointManager(config);
+        AutoSaveConfig config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
+        CheckpointManager checkpointManager = new CheckpointManager(config);
         return new ProjectManager(checkpointManager);
     }
 
     @Test
     void shouldCreateProject() throws IOException {
-        var manager = createProjectManager();
+        ProjectManager manager = createProjectManager();
 
-        var metadata = manager.createProject("My Song", tempDir);
+        ProjectMetadata metadata = manager.createProject("My Song", tempDir);
 
         assertThat(metadata.name()).isEqualTo("My Song");
         assertThat(metadata.projectPath()).isNotNull();
@@ -37,7 +37,7 @@ class ProjectManagerTest {
 
     @Test
     void shouldHaveCurrentProjectAfterCreate() throws IOException {
-        var manager = createProjectManager();
+        ProjectManager manager = createProjectManager();
 
         manager.createProject("Test", tempDir);
 
@@ -47,7 +47,7 @@ class ProjectManagerTest {
 
     @Test
     void shouldTrackRecentProjects() throws IOException {
-        var manager = createProjectManager();
+        ProjectManager manager = createProjectManager();
 
         manager.createProject("Song A", tempDir);
         manager.closeProject();
@@ -57,7 +57,7 @@ class ProjectManagerTest {
 
     @Test
     void shouldSaveProject() throws IOException {
-        var manager = createProjectManager();
+        ProjectManager manager = createProjectManager();
         manager.createProject("Test", tempDir);
 
         manager.saveProject();
@@ -67,7 +67,7 @@ class ProjectManagerTest {
 
     @Test
     void shouldRejectSaveWithoutOpenProject() {
-        var manager = createProjectManager();
+        ProjectManager manager = createProjectManager();
 
         assertThatThrownBy(manager::saveProject)
                 .isInstanceOf(IllegalStateException.class)
@@ -76,7 +76,7 @@ class ProjectManagerTest {
 
     @Test
     void shouldCloseProject() throws IOException {
-        var manager = createProjectManager();
+        ProjectManager manager = createProjectManager();
         manager.createProject("Test", tempDir);
 
         manager.closeProject();
@@ -87,7 +87,7 @@ class ProjectManagerTest {
 
     @Test
     void shouldCloseProjectIdempotently() throws IOException {
-        var manager = createProjectManager();
+        ProjectManager manager = createProjectManager();
 
         manager.closeProject();
         assertThat(manager.getCurrentProject()).isNull();
@@ -95,12 +95,12 @@ class ProjectManagerTest {
 
     @Test
     void shouldOpenExistingProject() throws IOException {
-        var manager = createProjectManager();
-        var created = manager.createProject("Original", tempDir);
+        ProjectManager manager = createProjectManager();
+        ProjectMetadata created = manager.createProject("Original", tempDir);
         Path projectDir = created.projectPath();
         manager.closeProject();
 
-        var opened = manager.openProject(projectDir);
+        ProjectMetadata opened = manager.openProject(projectDir);
 
         assertThat(opened.name()).isEqualTo("Original");
         assertThat(manager.getCurrentProject()).isNotNull();
@@ -108,7 +108,7 @@ class ProjectManagerTest {
 
     @Test
     void shouldRejectOpeningNonexistentProject() {
-        var manager = createProjectManager();
+        ProjectManager manager = createProjectManager();
 
         assertThatThrownBy(() -> manager.openProject(tempDir.resolve("nonexistent")))
                 .isInstanceOf(IOException.class);
@@ -116,8 +116,8 @@ class ProjectManagerTest {
 
     @Test
     void shouldWriteProjectFile() throws IOException {
-        var manager = createProjectManager();
-        var metadata = manager.createProject("Written", tempDir);
+        ProjectManager manager = createProjectManager();
+        ProjectMetadata metadata = manager.createProject("Written", tempDir);
 
         String content = Files.readString(metadata.projectPath().resolve("project.daw"));
 
@@ -158,7 +158,7 @@ class ProjectManagerTest {
 
     @Test
     void shouldOpenProjectWithMalformedDates() throws IOException {
-        var manager = createProjectManager();
+        ProjectManager manager = createProjectManager();
         Path projectDir = tempDir.resolve("malformed");
         Files.createDirectories(projectDir);
 
@@ -172,7 +172,7 @@ class ProjectManagerTest {
         Files.writeString(projectDir.resolve("project.daw"), content);
 
         // Should not throw — falls back to defaults
-        var metadata = manager.openProject(projectDir);
+        ProjectMetadata metadata = manager.openProject(projectDir);
         assertThat(metadata.name()).isEqualTo("Corrupted");
         assertThat(metadata.createdAt()).isNotNull();
         assertThat(metadata.lastModified()).isNotNull();
@@ -181,7 +181,7 @@ class ProjectManagerTest {
 
     @Test
     void shouldStartCheckpointManagerOnCreate() throws IOException {
-        var manager = createProjectManager();
+        ProjectManager manager = createProjectManager();
 
         manager.createProject("Test", tempDir);
 

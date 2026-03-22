@@ -10,7 +10,7 @@ class SpectrumDataTest {
     @Test
     void shouldDefensivelyCopyMagnitudesArray() {
         float[] magnitudes = new float[]{-60f, -40f, -20f, 0f};
-        var data = new SpectrumData(magnitudes, 8, 44100.0);
+        SpectrumData data = new SpectrumData(magnitudes, 8, 44100.0);
 
         // Mutating the original array should not affect the record's internal state
         magnitudes[0] = 99f;
@@ -20,7 +20,7 @@ class SpectrumDataTest {
     @Test
     void shouldCreateWithValidParameters() {
         float[] magnitudes = new float[]{-60f, -40f, -20f, 0f};
-        var data = new SpectrumData(magnitudes, 8, 44100.0);
+        SpectrumData data = new SpectrumData(magnitudes, 8, 44100.0);
 
         assertThat(data.magnitudesDb()).isEqualTo(magnitudes);
         assertThat(data.fftSize()).isEqualTo(8);
@@ -30,7 +30,7 @@ class SpectrumDataTest {
 
     @Test
     void shouldCalculateFrequencyOfBin() {
-        var data = new SpectrumData(new float[512], 1024, 44100.0);
+        SpectrumData data = new SpectrumData(new float[512], 1024, 44100.0);
 
         assertThat(data.frequencyOfBin(0)).isEqualTo(0.0);
         assertThat(data.frequencyOfBin(1)).isCloseTo(43.066, org.assertj.core.data.Offset.offset(0.1));

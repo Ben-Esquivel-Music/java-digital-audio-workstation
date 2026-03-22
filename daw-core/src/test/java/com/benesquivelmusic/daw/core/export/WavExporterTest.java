@@ -34,7 +34,7 @@ class WavExporterTest {
         assertThat(outputPath).exists();
 
         byte[] data = Files.readAllBytes(outputPath);
-        var buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
 
         // RIFF header
         assertThat(new String(data, 0, 4)).isEqualTo("RIFF");
@@ -64,7 +64,7 @@ class WavExporterTest {
         assertThat(outputPath).exists();
 
         byte[] data = Files.readAllBytes(outputPath);
-        var buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
 
         buf.position(34);
         assertThat(buf.getShort()).isEqualTo((short) 24); // bits per sample
@@ -81,7 +81,7 @@ class WavExporterTest {
         assertThat(outputPath).exists();
 
         byte[] data = Files.readAllBytes(outputPath);
-        var buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
 
         buf.position(20);
         assertThat(buf.getShort()).isEqualTo((short) 3); // IEEE float format
@@ -103,7 +103,7 @@ class WavExporterTest {
 
         // Read back the samples from the WAV file
         byte[] fileData = Files.readAllBytes(outputPath);
-        var buf = ByteBuffer.wrap(fileData).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer buf = ByteBuffer.wrap(fileData).order(ByteOrder.LITTLE_ENDIAN);
 
         // Skip to data chunk (44 bytes for standard WAV header)
         buf.position(44);
@@ -118,7 +118,7 @@ class WavExporterTest {
     @Test
     void shouldEmbedMetadataInListInfoChunk() throws IOException {
         float[][] audio = new float[1][100];
-        var metadata = new AudioMetadata("Test Song", "Test Artist", "Test Album", null);
+        AudioMetadata metadata = new AudioMetadata("Test Song", "Test Artist", "Test Album", null);
         Path outputPath = tempDir.resolve("meta.wav");
 
         WavExporter.write(audio, 44100, 16, DitherType.NONE, metadata, outputPath);
@@ -149,7 +149,7 @@ class WavExporterTest {
         assertThat(outputPath).exists();
 
         byte[] data = Files.readAllBytes(outputPath);
-        var buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
 
         buf.position(34);
         assertThat(buf.getShort()).isEqualTo((short) 8);
@@ -175,7 +175,7 @@ class WavExporterTest {
         // Read back and verify L and R channels have the same quantization
         // characteristics (per-channel ditherers produce independent noise)
         byte[] data = Files.readAllBytes(outputPath);
-        var buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
         buf.position(44);
 
         int numSamples = audio[0].length;
@@ -212,7 +212,7 @@ class WavExporterTest {
                 AudioMetadata.EMPTY, outputPath);
 
         byte[] data = Files.readAllBytes(outputPath);
-        var buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
 
         // Verify header
         assertThat(new String(data, 0, 4)).isEqualTo("RIFF");
@@ -256,7 +256,7 @@ class WavExporterTest {
 
         byte[] data = Files.readAllBytes(outputPath);
         int expectedDataSize = numSamples * 1 * 2;
-        var buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
         buf.position(40);
         assertThat(buf.getInt()).isEqualTo(expectedDataSize);
         assertThat(data.length).isEqualTo(44 + expectedDataSize);
@@ -276,7 +276,7 @@ class WavExporterTest {
                 AudioMetadata.EMPTY, outputPath);
 
         byte[] data = Files.readAllBytes(outputPath);
-        var buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
 
         // Format should be PCM (not float) because dither is applied
         buf.position(20);

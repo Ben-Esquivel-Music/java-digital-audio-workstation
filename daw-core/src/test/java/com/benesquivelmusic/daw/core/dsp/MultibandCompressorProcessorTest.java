@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.visualization.MultibandCompressorData;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -14,7 +15,7 @@ class MultibandCompressorProcessorTest {
 
     @Test
     void shouldCreateTwoBandCompressor() {
-        var mbc = new MultibandCompressorProcessor(2, SAMPLE_RATE,
+        MultibandCompressorProcessor mbc = new MultibandCompressorProcessor(2, SAMPLE_RATE,
                 new double[]{1000.0});
         assertThat(mbc.getBandCount()).isEqualTo(2);
         assertThat(mbc.getInputChannelCount()).isEqualTo(2);
@@ -24,7 +25,7 @@ class MultibandCompressorProcessorTest {
 
     @Test
     void shouldCreateThreeBandCompressor() {
-        var mbc = new MultibandCompressorProcessor(2, SAMPLE_RATE,
+        MultibandCompressorProcessor mbc = new MultibandCompressorProcessor(2, SAMPLE_RATE,
                 new double[]{200.0, 5000.0});
         assertThat(mbc.getBandCount()).isEqualTo(3);
         assertThat(mbc.getCrossoverFrequencies()).containsExactly(200.0, 5000.0);
@@ -32,7 +33,7 @@ class MultibandCompressorProcessorTest {
 
     @Test
     void shouldCreateFourBandCompressor() {
-        var mbc = new MultibandCompressorProcessor(2, SAMPLE_RATE,
+        MultibandCompressorProcessor mbc = new MultibandCompressorProcessor(2, SAMPLE_RATE,
                 new double[]{200.0, 2000.0, 8000.0});
         assertThat(mbc.getBandCount()).isEqualTo(4);
         assertThat(mbc.getCrossoverFrequencies()).containsExactly(200.0, 2000.0, 8000.0);
@@ -43,7 +44,7 @@ class MultibandCompressorProcessorTest {
     @Test
     void shouldPassThroughWhenNoCompression() {
         // With threshold at 0 dB, no compression should be applied
-        var mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
+        MultibandCompressorProcessor mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
                 new double[]{1000.0});
         for (int band = 0; band < mbc.getBandCount(); band++) {
             mbc.getBandCompressor(band).setThresholdDb(0.0);
@@ -72,7 +73,7 @@ class MultibandCompressorProcessorTest {
     @Test
     void shouldCompressLowBandIndependently() {
         // 2-band with crossover at 4000 Hz
-        var mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
+        MultibandCompressorProcessor mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
                 new double[]{4000.0});
 
         // Aggressively compress only the low band
@@ -107,7 +108,7 @@ class MultibandCompressorProcessorTest {
     @Test
     void shouldCompressHighBandIndependently() {
         // 2-band with crossover at 1000 Hz
-        var mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
+        MultibandCompressorProcessor mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
                 new double[]{1000.0});
 
         // Leave low band uncompressed
@@ -143,7 +144,7 @@ class MultibandCompressorProcessorTest {
 
     @Test
     void shouldBypassBandCompression() {
-        var mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
+        MultibandCompressorProcessor mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
                 new double[]{1000.0});
 
         // Compress the low band aggressively
@@ -174,7 +175,7 @@ class MultibandCompressorProcessorTest {
 
     @Test
     void shouldSoloBand() {
-        var mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
+        MultibandCompressorProcessor mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
                 new double[]{4000.0});
         for (int band = 0; band < mbc.getBandCount(); band++) {
             mbc.getBandCompressor(band).setThresholdDb(0.0);
@@ -216,7 +217,7 @@ class MultibandCompressorProcessorTest {
 
     @Test
     void shouldApplyPerBandMakeupGain() {
-        var mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
+        MultibandCompressorProcessor mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
                 new double[]{1000.0});
         for (int band = 0; band < mbc.getBandCount(); band++) {
             mbc.getBandCompressor(band).setThresholdDb(0.0);
@@ -231,7 +232,7 @@ class MultibandCompressorProcessorTest {
 
     @Test
     void shouldProvideMeteringData() {
-        var mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
+        MultibandCompressorProcessor mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
                 new double[]{200.0, 5000.0});
 
         // Process some loud signal
@@ -243,7 +244,7 @@ class MultibandCompressorProcessorTest {
         }
         mbc.process(input, output, numFrames);
 
-        var data = mbc.getMeteringData();
+        MultibandCompressorData data = mbc.getMeteringData();
         assertThat(data.bandCount()).isEqualTo(3);
         assertThat(data.bandGainReductionDb()).hasSize(3);
         assertThat(data.crossoverFrequencies()).containsExactly(200.0, 5000.0);
@@ -251,7 +252,7 @@ class MultibandCompressorProcessorTest {
 
     @Test
     void shouldReportPerBandGainReduction() {
-        var mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
+        MultibandCompressorProcessor mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
                 new double[]{1000.0});
 
         // Compress both bands
@@ -279,7 +280,7 @@ class MultibandCompressorProcessorTest {
 
     @Test
     void shouldResetAllBands() {
-        var mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
+        MultibandCompressorProcessor mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
                 new double[]{1000.0});
 
         float[][] buf = new float[1][1024];
@@ -298,7 +299,7 @@ class MultibandCompressorProcessorTest {
 
     @Test
     void shouldProcessStereoSignal() {
-        var mbc = new MultibandCompressorProcessor(2, SAMPLE_RATE,
+        MultibandCompressorProcessor mbc = new MultibandCompressorProcessor(2, SAMPLE_RATE,
                 new double[]{1000.0});
 
         int numFrames = 4096;
@@ -321,7 +322,7 @@ class MultibandCompressorProcessorTest {
 
     @Test
     void shouldProcessThreeBands() {
-        var mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
+        MultibandCompressorProcessor mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
                 new double[]{300.0, 5000.0});
         for (int band = 0; band < 3; band++) {
             mbc.getBandCompressor(band).setThresholdDb(0.0);
@@ -349,7 +350,7 @@ class MultibandCompressorProcessorTest {
 
     @Test
     void shouldProcessFourBands() {
-        var mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
+        MultibandCompressorProcessor mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
                 new double[]{200.0, 2000.0, 8000.0});
         for (int band = 0; band < 4; band++) {
             mbc.getBandCompressor(band).setThresholdDb(0.0);
@@ -430,7 +431,7 @@ class MultibandCompressorProcessorTest {
 
     @Test
     void shouldRejectInvalidBandIndex() {
-        var mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
+        MultibandCompressorProcessor mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
                 new double[]{1000.0});
         assertThatThrownBy(() -> mbc.getBandCompressor(-1))
                 .isInstanceOf(IndexOutOfBoundsException.class);
@@ -442,7 +443,7 @@ class MultibandCompressorProcessorTest {
 
     @Test
     void shouldHandleVaryingBufferSizes() {
-        var mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
+        MultibandCompressorProcessor mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
                 new double[]{1000.0});
         for (int band = 0; band < 2; band++) {
             mbc.getBandCompressor(band).setThresholdDb(0.0);

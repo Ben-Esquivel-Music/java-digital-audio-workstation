@@ -11,9 +11,9 @@ class SessionDataTest {
 
     @Test
     void shouldCreateSessionData() {
-        var clip = new SessionData.SessionClip("Clip 1", 0.0, 4.0, 0.0, "audio/kick.wav", -3.0);
-        var track = new SessionData.SessionTrack("Drums", "AUDIO", 0.8, -0.5, false, true, List.of(clip));
-        var session = new SessionData("My Song", 128.0, 4, 4, 48000.0, List.of(track));
+        SessionData.SessionClip clip = new SessionData.SessionClip("Clip 1", 0.0, 4.0, 0.0, "audio/kick.wav", -3.0);
+        SessionData.SessionTrack track = new SessionData.SessionTrack("Drums", "AUDIO", 0.8, -0.5, false, true, List.of(clip));
+        SessionData session = new SessionData("My Song", 128.0, 4, 4, 48000.0, List.of(track));
 
         assertThat(session.projectName()).isEqualTo("My Song");
         assertThat(session.tempo()).isEqualTo(128.0);
@@ -25,7 +25,7 @@ class SessionDataTest {
 
     @Test
     void shouldReturnDefensiveCopyOfTracks() {
-        var session = new SessionData("Test", 120.0, 4, 4, 44100.0, List.of());
+        SessionData session = new SessionData("Test", 120.0, 4, 4, 44100.0, List.of());
 
         assertThatThrownBy(() -> session.tracks().add(
                 new SessionData.SessionTrack("X", "AUDIO", 1.0, 0.0, false, false, List.of())))
@@ -46,7 +46,7 @@ class SessionDataTest {
 
     @Test
     void shouldCreateSessionTrack() {
-        var track = new SessionData.SessionTrack("Bass", "AUDIO", 0.7, 0.3, true, false, List.of());
+        SessionData.SessionTrack track = new SessionData.SessionTrack("Bass", "AUDIO", 0.7, 0.3, true, false, List.of());
 
         assertThat(track.name()).isEqualTo("Bass");
         assertThat(track.type()).isEqualTo("AUDIO");
@@ -59,7 +59,7 @@ class SessionDataTest {
 
     @Test
     void shouldCreateSessionClip() {
-        var clip = new SessionData.SessionClip("Vocal Take", 4.0, 8.0, 1.0, "audio/vocal.wav", -6.0);
+        SessionData.SessionClip clip = new SessionData.SessionClip("Vocal Take", 4.0, 8.0, 1.0, "audio/vocal.wav", -6.0);
 
         assertThat(clip.name()).isEqualTo("Vocal Take");
         assertThat(clip.startBeat()).isEqualTo(4.0);
@@ -71,7 +71,7 @@ class SessionDataTest {
 
     @Test
     void shouldAllowNullSourceFilePath() {
-        var clip = new SessionData.SessionClip("Empty", 0.0, 1.0, 0.0, null, 0.0);
+        SessionData.SessionClip clip = new SessionData.SessionClip("Empty", 0.0, 1.0, 0.0, null, 0.0);
         assertThat(clip.sourceFilePath()).isNull();
     }
 

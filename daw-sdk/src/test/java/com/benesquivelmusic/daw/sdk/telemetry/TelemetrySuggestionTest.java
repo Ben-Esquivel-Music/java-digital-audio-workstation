@@ -9,7 +9,7 @@ class TelemetrySuggestionTest {
 
     @Test
     void adjustMicPositionShouldFormatDescription() {
-        var suggestion = new TelemetrySuggestion.AdjustMicPosition(
+        TelemetrySuggestion.AdjustMicPosition suggestion = new TelemetrySuggestion.AdjustMicPosition(
                 "OH-L", new Position3D(2.0, 3.0, 2.5), "too close to wall");
 
         assertThat(suggestion.description()).contains("OH-L");
@@ -18,7 +18,7 @@ class TelemetrySuggestionTest {
 
     @Test
     void adjustMicAngleShouldFormatDescription() {
-        var suggestion = new TelemetrySuggestion.AdjustMicAngle(
+        TelemetrySuggestion.AdjustMicAngle suggestion = new TelemetrySuggestion.AdjustMicAngle(
                 "SM57", 45.0, 10.0, "not aimed at source");
 
         assertThat(suggestion.description()).contains("SM57");
@@ -27,7 +27,7 @@ class TelemetrySuggestionTest {
 
     @Test
     void addDampeningShouldFormatDescription() {
-        var suggestion = new TelemetrySuggestion.AddDampening(
+        TelemetrySuggestion.AddDampening suggestion = new TelemetrySuggestion.AddDampening(
                 "back wall", "RT60 too high");
 
         assertThat(suggestion.description()).contains("back wall");
@@ -36,7 +36,7 @@ class TelemetrySuggestionTest {
 
     @Test
     void removeDampeningShouldFormatDescription() {
-        var suggestion = new TelemetrySuggestion.RemoveDampening(
+        TelemetrySuggestion.RemoveDampening suggestion = new TelemetrySuggestion.RemoveDampening(
                 "ceiling", "room is too dead");
 
         assertThat(suggestion.description()).contains("ceiling");

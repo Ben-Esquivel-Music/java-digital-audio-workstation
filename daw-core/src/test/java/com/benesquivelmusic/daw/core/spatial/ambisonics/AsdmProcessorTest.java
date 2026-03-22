@@ -18,7 +18,7 @@ class AsdmProcessorTest {
 
     @Test
     void shouldCreateWithDefaultSmoothing() {
-        var asdm = new AsdmProcessor();
+        AsdmProcessor asdm = new AsdmProcessor();
         assertThat(asdm.getSmoothingCoefficient()).isCloseTo(0.95, within(1e-10));
         assertThat(asdm.getInputChannelCount()).isEqualTo(4);
         assertThat(asdm.getOutputChannelCount()).isEqualTo(8);
@@ -26,7 +26,7 @@ class AsdmProcessorTest {
 
     @Test
     void shouldCreateWithCustomSmoothing() {
-        var asdm = new AsdmProcessor(0.5);
+        AsdmProcessor asdm = new AsdmProcessor(0.5);
         assertThat(asdm.getSmoothingCoefficient()).isCloseTo(0.5, within(1e-10));
     }
 
@@ -42,10 +42,10 @@ class AsdmProcessorTest {
 
     @Test
     void shouldSeparateDirectionalSignalAsSalient() {
-        var asdm = new AsdmProcessor(0.0); // no smoothing for deterministic test
+        AsdmProcessor asdm = new AsdmProcessor(0.0); // no smoothing for deterministic test
 
         // Create a highly directional FOA signal (source from front)
-        var encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
+        AmbisonicEncoder encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
         encoder.setDirection(0, 0); // front
 
         float[][] monoInput = {constantBuffer(0.5f, NUM_FRAMES)};
@@ -64,10 +64,10 @@ class AsdmProcessorTest {
 
     @Test
     void shouldSumToOriginalSignal() {
-        var asdm = new AsdmProcessor(0.0); // no smoothing
+        AsdmProcessor asdm = new AsdmProcessor(0.0); // no smoothing
 
         // Create test FOA signal
-        var encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
+        AmbisonicEncoder encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
         encoder.setDirection(Math.PI / 4.0, 0);
 
         float[][] monoInput = {constantBuffer(1.0f, NUM_FRAMES)};
@@ -89,7 +89,7 @@ class AsdmProcessorTest {
 
     @Test
     void shouldTreatSilenceAsDiffuse() {
-        var asdm = new AsdmProcessor(0.0);
+        AsdmProcessor asdm = new AsdmProcessor(0.0);
 
         float[][] input = new float[4][NUM_FRAMES]; // all zeros
         float[][] output = new float[8][NUM_FRAMES];
@@ -107,14 +107,14 @@ class AsdmProcessorTest {
 
     @Test
     void shouldUpdateSmoothingCoefficient() {
-        var asdm = new AsdmProcessor();
+        AsdmProcessor asdm = new AsdmProcessor();
         asdm.setSmoothingCoefficient(0.8);
         assertThat(asdm.getSmoothingCoefficient()).isCloseTo(0.8, within(1e-10));
     }
 
     @Test
     void shouldRejectInvalidSmoothingUpdate() {
-        var asdm = new AsdmProcessor();
+        AsdmProcessor asdm = new AsdmProcessor();
         assertThatThrownBy(() -> asdm.setSmoothingCoefficient(1.0))
                 .isInstanceOf(IllegalArgumentException.class);
     }
@@ -123,7 +123,7 @@ class AsdmProcessorTest {
 
     @Test
     void shouldResetState() {
-        var asdm = new AsdmProcessor();
+        AsdmProcessor asdm = new AsdmProcessor();
         // Process some data to change state
         float[][] input = new float[4][NUM_FRAMES];
         Arrays.fill(input[0], 1.0f);

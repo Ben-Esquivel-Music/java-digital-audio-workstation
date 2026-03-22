@@ -63,7 +63,7 @@ public final class ProjectManager {
         Files.createDirectories(projectDir);
         Files.createDirectories(projectDir.resolve(AUDIO_DIR_NAME));
 
-        var metadata = ProjectMetadata.createNew(name).withPath(projectDir);
+        ProjectMetadata metadata = ProjectMetadata.createNew(name).withPath(projectDir);
         writeProjectFile(metadata);
 
         currentProject = metadata;
@@ -88,7 +88,7 @@ public final class ProjectManager {
         }
 
         String content = Files.readString(projectFile);
-        var metadata = parseProjectFile(content, projectDirectory);
+        ProjectMetadata metadata = parseProjectFile(content, projectDirectory);
 
         currentProject = metadata;
         recentProjects.put(projectDirectory.toString(), metadata);

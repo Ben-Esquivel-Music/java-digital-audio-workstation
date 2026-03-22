@@ -22,7 +22,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldStartSession() {
-        var session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
 
         session.start();
 
@@ -35,7 +35,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldRejectDoubleStart() {
-        var session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
         session.start();
 
         assertThatThrownBy(session::start)
@@ -44,7 +44,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldPauseAndResumeSession() {
-        var session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
         session.start();
 
         session.pause();
@@ -57,7 +57,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldStopSession() {
-        var session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
         session.start();
 
         session.stop();
@@ -68,7 +68,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldNotRecordWhenInactive() {
-        var session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
 
         session.recordSamples(1000, 4000);
 
@@ -77,7 +77,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldNotRecordWhenPaused() {
-        var session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
         session.start();
         session.pause();
 
@@ -88,7 +88,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldRecordSamples() {
-        var session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
         session.start();
 
         session.recordSamples(44100, 176400);
@@ -98,7 +98,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldNotifyListenersOnStart() {
-        var session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
         List<String> events = new ArrayList<>();
 
         session.addListener(new TestRecordingListener(events));
@@ -109,7 +109,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldNotifyListenersOnPauseAndResume() {
-        var session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
         List<String> events = new ArrayList<>();
         session.addListener(new TestRecordingListener(events));
 
@@ -122,7 +122,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldNotifyListenersOnStop() {
-        var session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
         List<String> events = new ArrayList<>();
         session.addListener(new TestRecordingListener(events));
 
@@ -134,14 +134,14 @@ class RecordingSessionTest {
 
     @Test
     void shouldReturnFormat() {
-        var session = new RecordingSession(AudioFormat.STUDIO_QUALITY, tempDir);
+        RecordingSession session = new RecordingSession(AudioFormat.STUDIO_QUALITY, tempDir);
 
         assertThat(session.getFormat()).isEqualTo(AudioFormat.STUDIO_QUALITY);
     }
 
     @Test
     void shouldReturnDefaultSegmentLimits() {
-        var session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
 
         assertThat(session.getMaxSegmentDuration()).isEqualTo(Duration.ofMinutes(30));
         assertThat(session.getMaxSegmentBytes()).isEqualTo(500L * 1024 * 1024);
@@ -149,7 +149,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldReturnCustomSegmentLimits() {
-        var session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir,
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir,
                 Duration.ofMinutes(10), 100_000_000L);
 
         assertThat(session.getMaxSegmentDuration()).isEqualTo(Duration.ofMinutes(10));
@@ -181,7 +181,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldComputeTotalDuration() {
-        var session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
         session.start();
 
         session.recordSamples(44100, 176400);
@@ -191,9 +191,9 @@ class RecordingSessionTest {
 
     @Test
     void shouldRemoveListener() {
-        var session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
         List<String> events = new ArrayList<>();
-        var listener = new TestRecordingListener(events);
+        TestRecordingListener listener = new TestRecordingListener(events);
 
         session.addListener(listener);
         session.removeListener(listener);
@@ -205,7 +205,7 @@ class RecordingSessionTest {
     @Test
     void shouldRotateSegmentWhenByteLimitExceeded() {
         // Very small byte limit to trigger rotation
-        var session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir,
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir,
                 Duration.ofHours(1), 1000L);
         session.start();
         assertThat(session.getSegmentCount()).isEqualTo(1);
@@ -221,7 +221,7 @@ class RecordingSessionTest {
 
     @Test
     void shouldReturnUnmodifiableSegments() {
-        var session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
         session.start();
 
         assertThatThrownBy(() -> session.getSegments().clear())

@@ -9,7 +9,7 @@ class AudioBufferTest {
 
     @Test
     void shouldCreateSilentBuffer() {
-        var buffer = new AudioBuffer(2, 128);
+        AudioBuffer buffer = new AudioBuffer(2, 128);
 
         assertThat(buffer.getChannels()).isEqualTo(2);
         assertThat(buffer.getFrames()).isEqualTo(128);
@@ -19,7 +19,7 @@ class AudioBufferTest {
 
     @Test
     void shouldSetAndGetSamples() {
-        var buffer = new AudioBuffer(1, 4);
+        AudioBuffer buffer = new AudioBuffer(1, 4);
         buffer.setSample(0, 0, 0.5f);
         buffer.setSample(0, 1, -0.5f);
         buffer.setSample(0, 2, 1.0f);
@@ -33,7 +33,7 @@ class AudioBufferTest {
 
     @Test
     void shouldClearBuffer() {
-        var buffer = new AudioBuffer(2, 4);
+        AudioBuffer buffer = new AudioBuffer(2, 4);
         buffer.setSample(0, 0, 0.9f);
         buffer.setSample(1, 3, -0.9f);
 
@@ -45,7 +45,7 @@ class AudioBufferTest {
 
     @Test
     void shouldProvideChannelDataArray() {
-        var buffer = new AudioBuffer(2, 2);
+        AudioBuffer buffer = new AudioBuffer(2, 2);
         buffer.setSample(0, 0, 0.1f);
         buffer.setSample(0, 1, 0.2f);
 

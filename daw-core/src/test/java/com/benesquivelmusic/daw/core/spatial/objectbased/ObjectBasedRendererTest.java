@@ -18,12 +18,12 @@ class ObjectBasedRendererTest {
 
     @Test
     void shouldRouteBedChannelToCorrectSpeaker() {
-        var renderer = new ObjectBasedRenderer(SpeakerLayout.LAYOUT_7_1_4);
+        ObjectBasedRenderer renderer = new ObjectBasedRenderer(SpeakerLayout.LAYOUT_7_1_4);
 
-        var beds = List.of(new BedChannel("bed-C", SpeakerLabel.C));
+        List<BedChannel> beds = List.of(new BedChannel("bed-C", SpeakerLabel.C));
         float[] audio = new float[NUM_SAMPLES];
         Arrays.fill(audio, 0.8f);
-        var bedAudio = List.of(audio);
+        List<float[]> bedAudio = List.of(audio);
 
         float[][] output = renderer.render(beds, bedAudio,
                 List.of(), List.of(), NUM_SAMPLES);
@@ -39,9 +39,9 @@ class ObjectBasedRendererTest {
 
     @Test
     void shouldRouteBedChannelWithGainAttenuation() {
-        var renderer = new ObjectBasedRenderer(SpeakerLayout.LAYOUT_7_1_4);
+        ObjectBasedRenderer renderer = new ObjectBasedRenderer(SpeakerLayout.LAYOUT_7_1_4);
 
-        var beds = List.of(new BedChannel("bed-L", SpeakerLabel.L, 0.5));
+        List<BedChannel> beds = List.of(new BedChannel("bed-L", SpeakerLabel.L, 0.5));
         float[] audio = new float[NUM_SAMPLES];
         Arrays.fill(audio, 1.0f);
 
@@ -54,10 +54,10 @@ class ObjectBasedRendererTest {
 
     @Test
     void shouldRenderObjectToNearestSpeakers() {
-        var renderer = new ObjectBasedRenderer(SpeakerLayout.LAYOUT_7_1_4);
+        ObjectBasedRenderer renderer = new ObjectBasedRenderer(SpeakerLayout.LAYOUT_7_1_4);
 
         // Object at front-center (x=0, y=1, z=0) should mostly go to C speaker
-        var obj = new AudioObject("obj-1", new ObjectMetadata(0.0, 1.0, 0.0, 0.0, 1.0));
+        AudioObject obj = new AudioObject("obj-1", new ObjectMetadata(0.0, 1.0, 0.0, 0.0, 1.0));
         float[] audio = new float[NUM_SAMPLES];
         Arrays.fill(audio, 1.0f);
 
@@ -80,9 +80,9 @@ class ObjectBasedRendererTest {
 
     @Test
     void shouldApplyObjectGain() {
-        var renderer = new ObjectBasedRenderer(SpeakerLayout.LAYOUT_STEREO);
+        ObjectBasedRenderer renderer = new ObjectBasedRenderer(SpeakerLayout.LAYOUT_STEREO);
 
-        var obj = new AudioObject("obj-1", new ObjectMetadata(0.0, 1.0, 0.0, 0.0, 0.5));
+        AudioObject obj = new AudioObject("obj-1", new ObjectMetadata(0.0, 1.0, 0.0, 0.0, 0.5));
         float[] audio = new float[NUM_SAMPLES];
         Arrays.fill(audio, 1.0f);
 
@@ -99,15 +99,15 @@ class ObjectBasedRendererTest {
 
     @Test
     void shouldMixBedsAndObjectsTogether() {
-        var renderer = new ObjectBasedRenderer(SpeakerLayout.LAYOUT_STEREO);
+        ObjectBasedRenderer renderer = new ObjectBasedRenderer(SpeakerLayout.LAYOUT_STEREO);
 
         // Bed on L at 0.5
-        var beds = List.of(new BedChannel("bed-L", SpeakerLabel.L));
+        List<BedChannel> beds = List.of(new BedChannel("bed-L", SpeakerLabel.L));
         float[] bedAudio = new float[NUM_SAMPLES];
         Arrays.fill(bedAudio, 0.5f);
 
         // Object centered
-        var obj = new AudioObject("obj-1", new ObjectMetadata(0.0, 1.0, 0.0, 0.0, 1.0));
+        AudioObject obj = new AudioObject("obj-1", new ObjectMetadata(0.0, 1.0, 0.0, 0.0, 1.0));
         float[] objAudio = new float[NUM_SAMPLES];
         Arrays.fill(objAudio, 0.3f);
 
@@ -120,10 +120,10 @@ class ObjectBasedRendererTest {
 
     @Test
     void shouldSkipBedOnMissingSpeaker() {
-        var renderer = new ObjectBasedRenderer(SpeakerLayout.LAYOUT_STEREO);
+        ObjectBasedRenderer renderer = new ObjectBasedRenderer(SpeakerLayout.LAYOUT_STEREO);
 
         // Assign bed to Center, which is not in stereo layout
-        var beds = List.of(new BedChannel("bed-C", SpeakerLabel.C));
+        List<BedChannel> beds = List.of(new BedChannel("bed-C", SpeakerLabel.C));
         float[] audio = new float[NUM_SAMPLES];
         Arrays.fill(audio, 1.0f);
 

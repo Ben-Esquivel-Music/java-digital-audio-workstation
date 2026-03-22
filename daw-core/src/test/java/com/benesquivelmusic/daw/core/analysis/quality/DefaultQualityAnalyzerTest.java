@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.analysis.quality;
 
 import com.benesquivelmusic.daw.sdk.analysis.DynamicRangeMetrics;
+import com.benesquivelmusic.daw.sdk.analysis.QualityReport;
 import com.benesquivelmusic.daw.sdk.analysis.QualityThresholds;
 import com.benesquivelmusic.daw.sdk.analysis.SignalQualityMetrics;
 import com.benesquivelmusic.daw.sdk.analysis.SpectralQualityMetrics;
@@ -94,7 +95,7 @@ class DefaultQualityAnalyzerTest {
     void shouldMeasureHighSpectralFlatnessForNoise() {
         // White noise approximation
         float[] noise = new float[44100];
-        var rng = new java.util.Random(42);
+        java.util.Random rng = new java.util.Random(42);
         for (int i = 0; i < noise.length; i++) {
             noise[i] = (rng.nextFloat() * 2.0f - 1.0f) * 0.5f;
         }
@@ -137,7 +138,7 @@ class DefaultQualityAnalyzerTest {
     @Test
     void noiseShouldHaveHighBandwidthUtilization() {
         float[] noise = new float[44100];
-        var rng = new java.util.Random(42);
+        java.util.Random rng = new java.util.Random(42);
         for (int i = 0; i < noise.length; i++) {
             noise[i] = (rng.nextFloat() * 2.0f - 1.0f) * 0.5f;
         }
@@ -284,7 +285,7 @@ class DefaultQualityAnalyzerTest {
         float[] left = generateSineWave(440.0, 44100.0, 44100);
         float[] right = generateSineWave(440.0, 44100.0, 44100);
 
-        var report = analyzer.analyze(left, right, left.length, 44100.0);
+        QualityReport report = analyzer.analyze(left, right, left.length, 44100.0);
 
         assertThat(report.signalMetrics()).isNotNull();
         assertThat(report.spectralMetrics()).isNotNull();
@@ -297,10 +298,10 @@ class DefaultQualityAnalyzerTest {
     void shouldAcceptCustomThresholdsInFullAnalysis() {
         float[] left = generateSineWave(440.0, 44100.0, 44100);
         float[] right = generateSineWave(440.0, 44100.0, 44100);
-        var lenient = new QualityThresholds(
+        QualityThresholds lenient = new QualityThresholds(
                 0.0, 100.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0);
 
-        var report = analyzer.analyze(left, right, left.length, 44100.0, lenient);
+        QualityReport report = analyzer.analyze(left, right, left.length, 44100.0, lenient);
 
         assertThat(report.thresholds()).isEqualTo(lenient);
         assertThat(report.passed()).isTrue();
@@ -311,7 +312,7 @@ class DefaultQualityAnalyzerTest {
         float[] left = generateSineWave(440.0, 44100.0, 44100);
         float[] right = generateSineWave(440.0, 44100.0, 44100);
 
-        var report = analyzer.analyze(left, right, left.length, 44100.0);
+        QualityReport report = analyzer.analyze(left, right, left.length, 44100.0);
 
         assertThat(report.thresholds()).isEqualTo(QualityThresholds.DEFAULT);
     }

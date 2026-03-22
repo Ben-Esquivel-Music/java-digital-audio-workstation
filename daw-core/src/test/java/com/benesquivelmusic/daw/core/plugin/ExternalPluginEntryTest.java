@@ -11,7 +11,7 @@ class ExternalPluginEntryTest {
 
     @Test
     void shouldCreateEntryWithValidArguments() {
-        var entry = new ExternalPluginEntry(
+        ExternalPluginEntry entry = new ExternalPluginEntry(
                 Path.of("/plugins/my-reverb.jar"), "com.example.MyReverb");
 
         assertThat(entry.jarPath()).isEqualTo(Path.of("/plugins/my-reverb.jar"));
@@ -41,15 +41,15 @@ class ExternalPluginEntryTest {
 
     @Test
     void shouldImplementEqualsAndHashCode() {
-        var a = new ExternalPluginEntry(Path.of("/plugins/test.jar"), "com.example.Plugin");
-        var b = new ExternalPluginEntry(Path.of("/plugins/test.jar"), "com.example.Plugin");
+        ExternalPluginEntry a = new ExternalPluginEntry(Path.of("/plugins/test.jar"), "com.example.Plugin");
+        ExternalPluginEntry b = new ExternalPluginEntry(Path.of("/plugins/test.jar"), "com.example.Plugin");
         assertThat(a).isEqualTo(b);
         assertThat(a.hashCode()).isEqualTo(b.hashCode());
     }
 
     @Test
     void shouldImplementToString() {
-        var entry = new ExternalPluginEntry(
+        ExternalPluginEntry entry = new ExternalPluginEntry(
                 Path.of("/plugins/test.jar"), "com.example.Plugin");
         assertThat(entry.toString()).contains("/plugins/test.jar", "com.example.Plugin");
     }

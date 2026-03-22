@@ -9,8 +9,8 @@ class AudioExportConfigTest {
 
     @Test
     void shouldCreateWithAllParameters() {
-        var metadata = new AudioMetadata("Title", "Artist", "Album", "ISRC123");
-        var config = new AudioExportConfig(
+        AudioMetadata metadata = new AudioMetadata("Title", "Artist", "Album", "ISRC123");
+        AudioExportConfig config = new AudioExportConfig(
                 AudioExportFormat.WAV, 44100, 16, DitherType.TPDF, metadata, 0.9);
 
         assertThat(config.format()).isEqualTo(AudioExportFormat.WAV);
@@ -23,7 +23,7 @@ class AudioExportConfigTest {
 
     @Test
     void shouldCreateWithConvenienceConstructor() {
-        var config = new AudioExportConfig(AudioExportFormat.FLAC, 48000, 24, DitherType.NONE);
+        AudioExportConfig config = new AudioExportConfig(AudioExportFormat.FLAC, 48000, 24, DitherType.NONE);
 
         assertThat(config.format()).isEqualTo(AudioExportFormat.FLAC);
         assertThat(config.sampleRate()).isEqualTo(48000);

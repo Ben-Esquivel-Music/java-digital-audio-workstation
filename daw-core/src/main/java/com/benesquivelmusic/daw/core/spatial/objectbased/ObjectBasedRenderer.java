@@ -51,7 +51,7 @@ public final class ObjectBasedRenderer {
 
         // Route bed channels to their assigned speaker positions
         for (int b = 0; b < bedChannels.size(); b++) {
-            var bed = bedChannels.get(b);
+            BedChannel bed = bedChannels.get(b);
             int speakerIdx = layout.indexOf(bed.speakerLabel());
             if (speakerIdx < 0) {
                 continue; // speaker not in layout — skip
@@ -65,7 +65,7 @@ public final class ObjectBasedRenderer {
 
         // Render audio objects using nearest-speaker panning
         for (int o = 0; o < audioObjects.size(); o++) {
-            var obj = audioObjects.get(o);
+            AudioObject obj = audioObjects.get(o);
             float[] audio = objectAudio.get(o);
             double[] gains = computeObjectGains(obj.getMetadata());
             for (int ch = 0; ch < channels; ch++) {
@@ -99,7 +99,7 @@ public final class ObjectBasedRenderer {
 
         double totalWeight = 0.0;
         for (int i = 0; i < numSpeakers; i++) {
-            var speaker = speakers.get(i);
+            SpeakerLabel speaker = speakers.get(i);
             // Skip LFE for object panning
             if (speaker == SpeakerLabel.LFE) {
                 continue;

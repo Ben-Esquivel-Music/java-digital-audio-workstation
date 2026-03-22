@@ -18,7 +18,7 @@ class AmbisonicRotatorTest {
 
     @Test
     void shouldCreateWithNoRotation() {
-        var rotator = new AmbisonicRotator(AmbisonicOrder.FIRST);
+        AmbisonicRotator rotator = new AmbisonicRotator(AmbisonicOrder.FIRST);
         assertThat(rotator.getYawRadians()).isCloseTo(0.0, within(1e-15));
         assertThat(rotator.getPitchRadians()).isCloseTo(0.0, within(1e-15));
         assertThat(rotator.getRollRadians()).isCloseTo(0.0, within(1e-15));
@@ -36,9 +36,9 @@ class AmbisonicRotatorTest {
 
     @Test
     void identityRotationShouldPassThrough() {
-        var rotator = new AmbisonicRotator(AmbisonicOrder.FIRST);
+        AmbisonicRotator rotator = new AmbisonicRotator(AmbisonicOrder.FIRST);
 
-        var encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
+        AmbisonicEncoder encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
         encoder.setDirection(Math.PI / 4.0, Math.PI / 6.0);
 
         float[][] input = {constantBuffer(1.0f, NUM_FRAMES)};
@@ -61,7 +61,7 @@ class AmbisonicRotatorTest {
 
     @Test
     void wChannelShouldBeUnaffectedByRotation() {
-        var rotator = new AmbisonicRotator(AmbisonicOrder.FIRST);
+        AmbisonicRotator rotator = new AmbisonicRotator(AmbisonicOrder.FIRST);
         rotator.setRotation(Math.PI / 3.0, Math.PI / 4.0, Math.PI / 6.0);
 
         float[][] foaInput = new float[4][NUM_FRAMES];
@@ -81,7 +81,7 @@ class AmbisonicRotatorTest {
 
     @Test
     void yaw180ShouldNegateXChannel() {
-        var rotator = new AmbisonicRotator(AmbisonicOrder.FIRST);
+        AmbisonicRotator rotator = new AmbisonicRotator(AmbisonicOrder.FIRST);
         rotator.setRotation(Math.PI, 0, 0); // 180° yaw
 
         float[][] foaInput = new float[4][NUM_FRAMES];
@@ -105,7 +105,7 @@ class AmbisonicRotatorTest {
 
     @Test
     void yaw90ShouldRotateFrontToLeft() {
-        var rotator = new AmbisonicRotator(AmbisonicOrder.FIRST);
+        AmbisonicRotator rotator = new AmbisonicRotator(AmbisonicOrder.FIRST);
         rotator.setRotation(Math.PI / 2.0, 0, 0); // 90° yaw
 
         // Pure X (front) signal
@@ -128,10 +128,10 @@ class AmbisonicRotatorTest {
 
     @Test
     void rotationShouldPreserveDirectionalEnergy() {
-        var rotator = new AmbisonicRotator(AmbisonicOrder.FIRST);
+        AmbisonicRotator rotator = new AmbisonicRotator(AmbisonicOrder.FIRST);
         rotator.setRotation(0.7, 0.3, 0.1);
 
-        var encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
+        AmbisonicEncoder encoder = new AmbisonicEncoder(AmbisonicOrder.FIRST);
         encoder.setDirection(Math.PI / 3.0, Math.PI / 8.0);
 
         float[][] monoInput = {constantBuffer(1.0f, NUM_FRAMES)};
@@ -151,7 +151,7 @@ class AmbisonicRotatorTest {
 
     @Test
     void shouldResetWithoutError() {
-        var rotator = new AmbisonicRotator(AmbisonicOrder.FIRST);
+        AmbisonicRotator rotator = new AmbisonicRotator(AmbisonicOrder.FIRST);
         rotator.reset();
     }
 

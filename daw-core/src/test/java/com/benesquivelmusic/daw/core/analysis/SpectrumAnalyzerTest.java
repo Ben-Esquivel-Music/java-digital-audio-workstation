@@ -11,7 +11,7 @@ class SpectrumAnalyzerTest {
 
     @Test
     void shouldCreateWithValidParameters() {
-        var analyzer = new SpectrumAnalyzer(1024, 44100.0, 0.5);
+        SpectrumAnalyzer analyzer = new SpectrumAnalyzer(1024, 44100.0, 0.5);
 
         assertThat(analyzer.getFftSize()).isEqualTo(1024);
         assertThat(analyzer.getSampleRate()).isEqualTo(44100.0);
@@ -41,7 +41,7 @@ class SpectrumAnalyzerTest {
 
     @Test
     void shouldProduceSpectrumDataAfterProcessing() {
-        var analyzer = new SpectrumAnalyzer(256, 44100.0, 0.0);
+        SpectrumAnalyzer analyzer = new SpectrumAnalyzer(256, 44100.0, 0.0);
         float[] samples = generateSineWave(1000.0, 44100.0, 256);
         analyzer.process(samples);
 
@@ -57,7 +57,7 @@ class SpectrumAnalyzerTest {
         int fftSize = 1024;
         double sampleRate = 44100.0;
         double frequency = 1000.0;
-        var analyzer = new SpectrumAnalyzer(fftSize, sampleRate, 0.0);
+        SpectrumAnalyzer analyzer = new SpectrumAnalyzer(fftSize, sampleRate, 0.0);
 
         float[] samples = generateSineWave(frequency, sampleRate, fftSize);
         analyzer.process(samples);
@@ -82,7 +82,7 @@ class SpectrumAnalyzerTest {
 
     @Test
     void shouldProduceLowMagnitudesForSilence() {
-        var analyzer = new SpectrumAnalyzer(256, 44100.0, 0.0);
+        SpectrumAnalyzer analyzer = new SpectrumAnalyzer(256, 44100.0, 0.0);
         float[] silence = new float[256];
         analyzer.process(silence);
 
@@ -94,7 +94,7 @@ class SpectrumAnalyzerTest {
 
     @Test
     void shouldResetState() {
-        var analyzer = new SpectrumAnalyzer(256, 44100.0, 0.5);
+        SpectrumAnalyzer analyzer = new SpectrumAnalyzer(256, 44100.0, 0.5);
         analyzer.process(generateSineWave(1000, 44100, 256));
         assertThat(analyzer.hasData()).isTrue();
 
@@ -104,7 +104,7 @@ class SpectrumAnalyzerTest {
 
     @Test
     void shouldApplySmoothing() {
-        var analyzer = new SpectrumAnalyzer(256, 44100.0, 0.8);
+        SpectrumAnalyzer analyzer = new SpectrumAnalyzer(256, 44100.0, 0.8);
 
         // Process a loud signal
         analyzer.process(generateSineWave(1000, 44100, 256));

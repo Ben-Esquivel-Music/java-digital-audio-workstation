@@ -9,7 +9,7 @@ class TpdfDithererTest {
 
     @Test
     void shouldQuantizeToTargetBitDepthRange() {
-        var ditherer = new TpdfDitherer(42L);
+        TpdfDitherer ditherer = new TpdfDitherer(42L);
         double maxVal16 = (1L << 15) - 1; // 32767
 
         for (int i = 0; i < 1000; i++) {
@@ -21,7 +21,7 @@ class TpdfDithererTest {
 
     @Test
     void shouldPreserveSilenceApproximately() {
-        var ditherer = new TpdfDitherer(42L);
+        TpdfDitherer ditherer = new TpdfDitherer(42L);
         double sum = 0.0;
         int count = 100_000;
 
@@ -37,7 +37,7 @@ class TpdfDithererTest {
     @Test
     void shouldProduceNoiseFloorAtExpectedLevel() {
         // TPDF dithering on 16-bit should produce noise at roughly 1 LSB RMS
-        var ditherer = new TpdfDitherer(42L);
+        TpdfDitherer ditherer = new TpdfDitherer(42L);
         double sumSquared = 0.0;
         int count = 100_000;
 
@@ -53,7 +53,7 @@ class TpdfDithererTest {
 
     @Test
     void shouldWorkWith24BitTarget() {
-        var ditherer = new TpdfDitherer(42L);
+        TpdfDitherer ditherer = new TpdfDitherer(42L);
         double maxVal24 = (1L << 23) - 1;
 
         double quantized = ditherer.dither(0.5, 24);
@@ -65,7 +65,7 @@ class TpdfDithererTest {
 
     @Test
     void shouldClampExtremeValues() {
-        var ditherer = new TpdfDitherer(42L);
+        TpdfDitherer ditherer = new TpdfDitherer(42L);
         double maxVal16 = (1L << 15) - 1;
 
         double quantizedMax = ditherer.dither(1.0, 16);

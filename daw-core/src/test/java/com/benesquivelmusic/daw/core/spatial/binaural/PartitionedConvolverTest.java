@@ -15,7 +15,7 @@ class PartitionedConvolverTest {
         // Convolving with a delta function should produce the original signal (delayed by one block)
         float[] deltaIr = new float[BLOCK_SIZE];
         deltaIr[0] = 1.0f;
-        var convolver = new PartitionedConvolver(deltaIr, BLOCK_SIZE);
+        PartitionedConvolver convolver = new PartitionedConvolver(deltaIr, BLOCK_SIZE);
 
         float[] input = new float[BLOCK_SIZE];
         for (int i = 0; i < BLOCK_SIZE; i++) {
@@ -42,7 +42,7 @@ class PartitionedConvolverTest {
         // IR is a scaled delta: should scale the signal
         float[] scaledIr = new float[BLOCK_SIZE];
         scaledIr[0] = 0.5f;
-        var convolver = new PartitionedConvolver(scaledIr, BLOCK_SIZE);
+        PartitionedConvolver convolver = new PartitionedConvolver(scaledIr, BLOCK_SIZE);
 
         float[] input = new float[BLOCK_SIZE];
         for (int i = 0; i < BLOCK_SIZE; i++) {
@@ -67,7 +67,7 @@ class PartitionedConvolverTest {
         float[] longIr = new float[BLOCK_SIZE * 3];
         longIr[0] = 1.0f; // delta at start
 
-        var convolver = new PartitionedConvolver(longIr, BLOCK_SIZE);
+        PartitionedConvolver convolver = new PartitionedConvolver(longIr, BLOCK_SIZE);
 
         float[] input = new float[BLOCK_SIZE];
         input[0] = 1.0f;
@@ -91,7 +91,7 @@ class PartitionedConvolverTest {
     void shouldResetState() {
         float[] ir = new float[BLOCK_SIZE];
         ir[0] = 1.0f;
-        var convolver = new PartitionedConvolver(ir, BLOCK_SIZE);
+        PartitionedConvolver convolver = new PartitionedConvolver(ir, BLOCK_SIZE);
 
         float[] input = new float[BLOCK_SIZE];
         input[0] = 1.0f;
@@ -133,7 +133,7 @@ class PartitionedConvolverTest {
     @Test
     void shouldReturnCorrectBlockSize() {
         float[] ir = {1.0f};
-        var convolver = new PartitionedConvolver(ir, 256);
+        PartitionedConvolver convolver = new PartitionedConvolver(ir, 256);
         assertThat(convolver.getBlockSize()).isEqualTo(256);
     }
 

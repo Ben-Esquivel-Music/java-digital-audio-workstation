@@ -11,14 +11,14 @@ class LevelMeterTest {
 
     @Test
     void shouldInitializeToSilence() {
-        var meter = new LevelMeter();
+        LevelMeter meter = new LevelMeter();
         assertThat(meter.hasData()).isTrue();
         assertThat(meter.getLatestData()).isEqualTo(LevelData.SILENCE);
     }
 
     @Test
     void shouldMeasurePeakLevel() {
-        var meter = new LevelMeter(0.0);
+        LevelMeter meter = new LevelMeter(0.0);
         float[] samples = {0.0f, 0.5f, -0.8f, 0.3f};
         meter.process(samples);
 
@@ -28,7 +28,7 @@ class LevelMeterTest {
 
     @Test
     void shouldMeasureRmsLevel() {
-        var meter = new LevelMeter(0.0);
+        LevelMeter meter = new LevelMeter(0.0);
         // All samples at 0.5 → RMS = 0.5
         float[] samples = {0.5f, 0.5f, 0.5f, 0.5f};
         meter.process(samples);
@@ -39,7 +39,7 @@ class LevelMeterTest {
 
     @Test
     void shouldDetectClipping() {
-        var meter = new LevelMeter(0.0);
+        LevelMeter meter = new LevelMeter(0.0);
         float[] samples = {0.0f, 1.5f, 0.0f};
         meter.process(samples);
 
@@ -48,7 +48,7 @@ class LevelMeterTest {
 
     @Test
     void shouldNotClipNormalSignals() {
-        var meter = new LevelMeter(0.0);
+        LevelMeter meter = new LevelMeter(0.0);
         float[] samples = {0.0f, 0.9f, -0.5f};
         meter.process(samples);
 
@@ -67,7 +67,7 @@ class LevelMeterTest {
 
     @Test
     void shouldResetToSilence() {
-        var meter = new LevelMeter();
+        LevelMeter meter = new LevelMeter();
         meter.process(new float[]{0.9f, 0.8f});
         meter.reset();
 
@@ -76,7 +76,7 @@ class LevelMeterTest {
 
     @Test
     void shouldSupportOffsetProcessing() {
-        var meter = new LevelMeter(0.0);
+        LevelMeter meter = new LevelMeter(0.0);
         float[] samples = {0.1f, 0.9f, 0.2f, 0.1f};
         // Process only samples[1] and samples[2]
         meter.process(samples, 1, 2);
@@ -95,7 +95,7 @@ class LevelMeterTest {
 
     @Test
     void shouldProvideDbValues() {
-        var meter = new LevelMeter(0.0);
+        LevelMeter meter = new LevelMeter(0.0);
         float[] samples = {1.0f}; // Full scale
         meter.process(samples);
 
@@ -107,7 +107,7 @@ class LevelMeterTest {
 
     @Test
     void shouldReportTruePeakLinear() {
-        var meter = new LevelMeter(0.0);
+        LevelMeter meter = new LevelMeter(0.0);
         float[] samples = new float[256];
         for (int i = 0; i < samples.length; i++) {
             samples[i] = 0.8f;
@@ -120,7 +120,7 @@ class LevelMeterTest {
 
     @Test
     void shouldReportTruePeakDbtp() {
-        var meter = new LevelMeter(0.0);
+        LevelMeter meter = new LevelMeter(0.0);
         float[] samples = new float[256];
         for (int i = 0; i < samples.length; i++) {
             samples[i] = 0.8f;
@@ -134,7 +134,7 @@ class LevelMeterTest {
 
     @Test
     void truePeakShouldBeAtLeastAsBigAsSamplePeak() {
-        var meter = new LevelMeter(0.0);
+        LevelMeter meter = new LevelMeter(0.0);
         float[] samples = new float[512];
         for (int i = 0; i < samples.length; i++) {
             samples[i] = (float) (Math.sin(2 * Math.PI * i / 10.0) * 0.9);
@@ -147,7 +147,7 @@ class LevelMeterTest {
 
     @Test
     void shouldResetTruePeakOnReset() {
-        var meter = new LevelMeter(0.0);
+        LevelMeter meter = new LevelMeter(0.0);
         meter.process(new float[]{0.9f, 0.8f, 0.7f});
 
         LevelData dataBeforeReset = meter.getLatestData();
@@ -160,7 +160,7 @@ class LevelMeterTest {
 
     @Test
     void silenceShouldHaveZeroTruePeak() {
-        var meter = new LevelMeter(0.0);
+        LevelMeter meter = new LevelMeter(0.0);
         float[] samples = new float[64]; // All zeros
         meter.process(samples);
 

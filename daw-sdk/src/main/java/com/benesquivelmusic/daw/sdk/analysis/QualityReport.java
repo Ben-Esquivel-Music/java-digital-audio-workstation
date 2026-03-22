@@ -62,7 +62,7 @@ public record QualityReport(
             DynamicRangeMetrics dynamicRange,
             QualityThresholds thresholds) {
 
-        var failures = new ArrayList<String>();
+        ArrayList<String> failures = new ArrayList<String>();
 
         if (signal.snrDb() < thresholds.minSnrDb()) {
             failures.add(String.format("SNR %.1f dB below minimum %.1f dB",

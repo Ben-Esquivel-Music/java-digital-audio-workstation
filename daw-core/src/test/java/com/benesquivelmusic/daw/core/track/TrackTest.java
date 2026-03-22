@@ -9,7 +9,7 @@ class TrackTest {
 
     @Test
     void shouldCreateTrackWithDefaults() {
-        var track = new Track("Vocals", TrackType.AUDIO);
+        Track track = new Track("Vocals", TrackType.AUDIO);
 
         assertThat(track.getName()).isEqualTo("Vocals");
         assertThat(track.getType()).isEqualTo(TrackType.AUDIO);
@@ -23,14 +23,14 @@ class TrackTest {
 
     @Test
     void shouldSetVolume() {
-        var track = new Track("Track", TrackType.AUDIO);
+        Track track = new Track("Track", TrackType.AUDIO);
         track.setVolume(0.5);
         assertThat(track.getVolume()).isEqualTo(0.5);
     }
 
     @Test
     void shouldRejectInvalidVolume() {
-        var track = new Track("Track", TrackType.AUDIO);
+        Track track = new Track("Track", TrackType.AUDIO);
         assertThatThrownBy(() -> track.setVolume(-0.1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> track.setVolume(1.1))
@@ -39,7 +39,7 @@ class TrackTest {
 
     @Test
     void shouldSetPan() {
-        var track = new Track("Track", TrackType.AUDIO);
+        Track track = new Track("Track", TrackType.AUDIO);
         track.setPan(-1.0);
         assertThat(track.getPan()).isEqualTo(-1.0);
         track.setPan(1.0);
@@ -48,7 +48,7 @@ class TrackTest {
 
     @Test
     void shouldRejectInvalidPan() {
-        var track = new Track("Track", TrackType.AUDIO);
+        Track track = new Track("Track", TrackType.AUDIO);
         assertThatThrownBy(() -> track.setPan(-1.1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> track.setPan(1.1))
@@ -57,7 +57,7 @@ class TrackTest {
 
     @Test
     void shouldToggleMuteAndSolo() {
-        var track = new Track("Track", TrackType.MIDI);
+        Track track = new Track("Track", TrackType.MIDI);
         track.setMuted(true);
         assertThat(track.isMuted()).isTrue();
         track.setSolo(true);
@@ -66,7 +66,7 @@ class TrackTest {
 
     @Test
     void shouldToggleArmed() {
-        var track = new Track("Track", TrackType.AUDIO);
+        Track track = new Track("Track", TrackType.AUDIO);
         assertThat(track.isArmed()).isFalse();
         track.setArmed(true);
         assertThat(track.isArmed()).isTrue();
@@ -76,8 +76,8 @@ class TrackTest {
 
     @Test
     void shouldGenerateUniqueIds() {
-        var a = new Track("A", TrackType.AUDIO);
-        var b = new Track("B", TrackType.AUDIO);
+        Track a = new Track("A", TrackType.AUDIO);
+        Track b = new Track("B", TrackType.AUDIO);
         assertThat(a.getId()).isNotEqualTo(b.getId());
     }
 }

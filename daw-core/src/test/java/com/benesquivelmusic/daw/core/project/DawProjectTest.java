@@ -13,7 +13,7 @@ class DawProjectTest {
 
     @Test
     void shouldCreateProjectWithDefaults() {
-        var project = new DawProject("My Song", AudioFormat.STUDIO_QUALITY);
+        DawProject project = new DawProject("My Song", AudioFormat.STUDIO_QUALITY);
 
         assertThat(project.getName()).isEqualTo("My Song");
         assertThat(project.getFormat()).isEqualTo(AudioFormat.STUDIO_QUALITY);
@@ -24,8 +24,8 @@ class DawProjectTest {
 
     @Test
     void shouldAddAndRemoveTracks() {
-        var project = new DawProject("Test", AudioFormat.CD_QUALITY);
-        var track = new Track("Vocals", TrackType.AUDIO);
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = new Track("Vocals", TrackType.AUDIO);
 
         project.addTrack(track);
         assertThat(project.getTracks()).hasSize(1);
@@ -37,14 +37,14 @@ class DawProjectTest {
 
     @Test
     void shouldReturnUnmodifiableTrackList() {
-        var project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
         assertThatThrownBy(() -> project.getTracks().add(new Track("Illegal", TrackType.AUDIO)))
                 .isInstanceOf(UnsupportedOperationException.class);
     }
 
     @Test
     void shouldSetProjectName() {
-        var project = new DawProject("Original", AudioFormat.CD_QUALITY);
+        DawProject project = new DawProject("Original", AudioFormat.CD_QUALITY);
         project.setName("Renamed");
         assertThat(project.getName()).isEqualTo("Renamed");
     }
@@ -57,8 +57,8 @@ class DawProjectTest {
 
     @Test
     void shouldAddMixerChannelWhenTrackIsAdded() {
-        var project = new DawProject("Test", AudioFormat.CD_QUALITY);
-        var track = new Track("Bass", TrackType.AUDIO);
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = new Track("Bass", TrackType.AUDIO);
 
         project.addTrack(track);
 
@@ -68,8 +68,8 @@ class DawProjectTest {
 
     @Test
     void shouldRemoveMixerChannelWhenTrackIsRemoved() {
-        var project = new DawProject("Test", AudioFormat.CD_QUALITY);
-        var track = new Track("Drums", TrackType.AUDIO);
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = new Track("Drums", TrackType.AUDIO);
 
         project.addTrack(track);
         assertThat(project.getMixer().getChannelCount()).isEqualTo(1);
@@ -81,8 +81,8 @@ class DawProjectTest {
 
     @Test
     void shouldNotDuplicateMixerChannelOnUndoRedoCycle() {
-        var project = new DawProject("Test", AudioFormat.CD_QUALITY);
-        var track = new Track("Guitar", TrackType.AUDIO);
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = new Track("Guitar", TrackType.AUDIO);
 
         // Simulate add → undo (remove) → redo (add again)
         project.addTrack(track);
@@ -97,9 +97,9 @@ class DawProjectTest {
 
     @Test
     void shouldCreateAudioTrackWithMixerChannel() {
-        var project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
 
-        var track = project.createAudioTrack("Lead Synth");
+        Track track = project.createAudioTrack("Lead Synth");
 
         assertThat(project.getTracks()).hasSize(1);
         assertThat(project.getMixer().getChannelCount()).isEqualTo(1);

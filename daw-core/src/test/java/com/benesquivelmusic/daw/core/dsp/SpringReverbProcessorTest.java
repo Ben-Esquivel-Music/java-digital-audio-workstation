@@ -9,7 +9,7 @@ class SpringReverbProcessorTest {
 
     @Test
     void shouldCreateWithDefaults() {
-        var reverb = new SpringReverbProcessor(2, 44100.0);
+        SpringReverbProcessor reverb = new SpringReverbProcessor(2, 44100.0);
         assertThat(reverb.getInputChannelCount()).isEqualTo(2);
         assertThat(reverb.getOutputChannelCount()).isEqualTo(2);
         assertThat(reverb.getSpringTension()).isEqualTo(0.5);
@@ -22,7 +22,7 @@ class SpringReverbProcessorTest {
 
     @Test
     void shouldPassDrySignalWithZeroMix() {
-        var reverb = new SpringReverbProcessor(1, 44100.0);
+        SpringReverbProcessor reverb = new SpringReverbProcessor(1, 44100.0);
         reverb.setMix(0.0);
 
         float[][] input = new float[1][512];
@@ -40,7 +40,7 @@ class SpringReverbProcessorTest {
 
     @Test
     void shouldProduceReverbTailAfterImpulse() {
-        var reverb = new SpringReverbProcessor(1, 44100.0);
+        SpringReverbProcessor reverb = new SpringReverbProcessor(1, 44100.0);
         reverb.setMix(1.0);
         reverb.setDecayTime(0.8);
 
@@ -59,7 +59,7 @@ class SpringReverbProcessorTest {
     void shouldExhibitDispersion() {
         // Dispersion means higher frequencies arrive later than lower frequencies.
         // Feed a broadband impulse and check that output spreads over time.
-        var reverb = new SpringReverbProcessor(1, 44100.0);
+        SpringReverbProcessor reverb = new SpringReverbProcessor(1, 44100.0);
         reverb.setMix(1.0);
         reverb.setDecayTime(0.6);
         reverb.setHelixAngle(0.8);
@@ -79,7 +79,7 @@ class SpringReverbProcessorTest {
 
     @Test
     void shouldDecayOverTime() {
-        var reverb = new SpringReverbProcessor(1, 44100.0);
+        SpringReverbProcessor reverb = new SpringReverbProcessor(1, 44100.0);
         reverb.setMix(1.0);
         reverb.setDecayTime(0.3);
 
@@ -98,7 +98,7 @@ class SpringReverbProcessorTest {
 
     @Test
     void shouldModifySignalComparedToDry() {
-        var reverb = new SpringReverbProcessor(1, 44100.0);
+        SpringReverbProcessor reverb = new SpringReverbProcessor(1, 44100.0);
         reverb.setMix(0.5);
 
         float[][] input = new float[1][4096];
@@ -120,7 +120,7 @@ class SpringReverbProcessorTest {
 
     @Test
     void shouldResetState() {
-        var reverb = new SpringReverbProcessor(1, 44100.0);
+        SpringReverbProcessor reverb = new SpringReverbProcessor(1, 44100.0);
         reverb.setMix(1.0);
 
         float[][] input = new float[1][4096];
@@ -151,7 +151,7 @@ class SpringReverbProcessorTest {
 
     @Test
     void shouldRejectInvalidSpringTension() {
-        var reverb = new SpringReverbProcessor(1, 44100.0);
+        SpringReverbProcessor reverb = new SpringReverbProcessor(1, 44100.0);
         assertThatThrownBy(() -> reverb.setSpringTension(-0.1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> reverb.setSpringTension(1.1))
@@ -160,7 +160,7 @@ class SpringReverbProcessorTest {
 
     @Test
     void shouldRejectInvalidDecayTime() {
-        var reverb = new SpringReverbProcessor(1, 44100.0);
+        SpringReverbProcessor reverb = new SpringReverbProcessor(1, 44100.0);
         assertThatThrownBy(() -> reverb.setDecayTime(-0.1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> reverb.setDecayTime(1.1))
@@ -169,7 +169,7 @@ class SpringReverbProcessorTest {
 
     @Test
     void shouldRejectInvalidDamping() {
-        var reverb = new SpringReverbProcessor(1, 44100.0);
+        SpringReverbProcessor reverb = new SpringReverbProcessor(1, 44100.0);
         assertThatThrownBy(() -> reverb.setDamping(-0.1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> reverb.setDamping(1.1))
@@ -178,7 +178,7 @@ class SpringReverbProcessorTest {
 
     @Test
     void shouldRejectInvalidMix() {
-        var reverb = new SpringReverbProcessor(1, 44100.0);
+        SpringReverbProcessor reverb = new SpringReverbProcessor(1, 44100.0);
         assertThatThrownBy(() -> reverb.setMix(-0.1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> reverb.setMix(1.1))
@@ -187,7 +187,7 @@ class SpringReverbProcessorTest {
 
     @Test
     void shouldRejectInvalidPreDelay() {
-        var reverb = new SpringReverbProcessor(1, 44100.0);
+        SpringReverbProcessor reverb = new SpringReverbProcessor(1, 44100.0);
         assertThatThrownBy(() -> reverb.setPreDelayMs(-1.0))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> reverb.setPreDelayMs(201.0))
@@ -196,7 +196,7 @@ class SpringReverbProcessorTest {
 
     @Test
     void shouldRejectInvalidHelixAngle() {
-        var reverb = new SpringReverbProcessor(1, 44100.0);
+        SpringReverbProcessor reverb = new SpringReverbProcessor(1, 44100.0);
         assertThatThrownBy(() -> reverb.setHelixAngle(-0.1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> reverb.setHelixAngle(1.1))
@@ -205,7 +205,7 @@ class SpringReverbProcessorTest {
 
     @Test
     void shouldSupportParameterChanges() {
-        var reverb = new SpringReverbProcessor(1, 44100.0);
+        SpringReverbProcessor reverb = new SpringReverbProcessor(1, 44100.0);
         reverb.setSpringTension(0.8);
         reverb.setDecayTime(0.7);
         reverb.setDamping(0.3);
@@ -223,7 +223,7 @@ class SpringReverbProcessorTest {
 
     @Test
     void shouldProcessStereo() {
-        var reverb = new SpringReverbProcessor(2, 44100.0);
+        SpringReverbProcessor reverb = new SpringReverbProcessor(2, 44100.0);
         reverb.setMix(1.0);
 
         float[][] input = new float[2][4096];
@@ -240,12 +240,12 @@ class SpringReverbProcessorTest {
     @Test
     void shouldRespondToHelixAngleChange() {
         // Different helix angles should produce different impulse responses
-        var reverb1 = new SpringReverbProcessor(1, 44100.0);
+        SpringReverbProcessor reverb1 = new SpringReverbProcessor(1, 44100.0);
         reverb1.setMix(1.0);
         reverb1.setHelixAngle(0.1);
         reverb1.setDecayTime(0.6);
 
-        var reverb2 = new SpringReverbProcessor(1, 44100.0);
+        SpringReverbProcessor reverb2 = new SpringReverbProcessor(1, 44100.0);
         reverb2.setMix(1.0);
         reverb2.setHelixAngle(0.9);
         reverb2.setDecayTime(0.6);

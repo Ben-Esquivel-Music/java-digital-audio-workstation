@@ -9,7 +9,7 @@ class MixerTest {
 
     @Test
     void shouldStartWithEmptyChannelListAndMaster() {
-        var mixer = new Mixer();
+        Mixer mixer = new Mixer();
 
         assertThat(mixer.getChannelCount()).isZero();
         assertThat(mixer.getChannels()).isEmpty();
@@ -19,9 +19,9 @@ class MixerTest {
 
     @Test
     void shouldAddAndRemoveChannels() {
-        var mixer = new Mixer();
-        var ch1 = new MixerChannel("Channel 1");
-        var ch2 = new MixerChannel("Channel 2");
+        Mixer mixer = new Mixer();
+        MixerChannel ch1 = new MixerChannel("Channel 1");
+        MixerChannel ch2 = new MixerChannel("Channel 2");
 
         mixer.addChannel(ch1);
         mixer.addChannel(ch2);
@@ -36,7 +36,7 @@ class MixerTest {
 
     @Test
     void shouldReturnUnmodifiableChannelList() {
-        var mixer = new Mixer();
+        Mixer mixer = new Mixer();
         mixer.addChannel(new MixerChannel("Ch1"));
 
         assertThatThrownBy(() -> mixer.getChannels().add(new MixerChannel("Illegal")))
@@ -45,8 +45,8 @@ class MixerTest {
 
     @Test
     void shouldMixDownSingleChannel() {
-        var mixer = new Mixer();
-        var ch = new MixerChannel("Ch1");
+        Mixer mixer = new Mixer();
+        MixerChannel ch = new MixerChannel("Ch1");
         mixer.addChannel(ch);
 
         float[][][] channelBuffers = {{{1.0f, 0.5f, -0.5f}}};
@@ -59,7 +59,7 @@ class MixerTest {
 
     @Test
     void shouldMixDownMultipleChannels() {
-        var mixer = new Mixer();
+        Mixer mixer = new Mixer();
         mixer.addChannel(new MixerChannel("Ch1"));
         mixer.addChannel(new MixerChannel("Ch2"));
 
@@ -77,8 +77,8 @@ class MixerTest {
 
     @Test
     void shouldApplyChannelVolume() {
-        var mixer = new Mixer();
-        var ch = new MixerChannel("Ch1");
+        Mixer mixer = new Mixer();
+        MixerChannel ch = new MixerChannel("Ch1");
         ch.setVolume(0.5);
         mixer.addChannel(ch);
 
@@ -93,8 +93,8 @@ class MixerTest {
 
     @Test
     void shouldMuteChannel() {
-        var mixer = new Mixer();
-        var ch = new MixerChannel("Ch1");
+        Mixer mixer = new Mixer();
+        MixerChannel ch = new MixerChannel("Ch1");
         ch.setMuted(true);
         mixer.addChannel(ch);
 
@@ -108,9 +108,9 @@ class MixerTest {
 
     @Test
     void shouldSoloChannel() {
-        var mixer = new Mixer();
-        var ch1 = new MixerChannel("Ch1");
-        var ch2 = new MixerChannel("Ch2");
+        Mixer mixer = new Mixer();
+        MixerChannel ch1 = new MixerChannel("Ch1");
+        MixerChannel ch2 = new MixerChannel("Ch2");
         ch2.setSolo(true);
         mixer.addChannel(ch1);
         mixer.addChannel(ch2);
@@ -129,9 +129,9 @@ class MixerTest {
 
     @Test
     void shouldApplyMasterVolume() {
-        var mixer = new Mixer();
+        Mixer mixer = new Mixer();
         mixer.getMasterChannel().setVolume(0.5);
-        var ch = new MixerChannel("Ch1");
+        MixerChannel ch = new MixerChannel("Ch1");
         mixer.addChannel(ch);
 
         float[][][] channelBuffers = {{{1.0f}}};
@@ -144,9 +144,9 @@ class MixerTest {
 
     @Test
     void shouldSilenceOutputWhenMasterIsMuted() {
-        var mixer = new Mixer();
+        Mixer mixer = new Mixer();
         mixer.getMasterChannel().setMuted(true);
-        var ch = new MixerChannel("Ch1");
+        MixerChannel ch = new MixerChannel("Ch1");
         mixer.addChannel(ch);
 
         float[][][] channelBuffers = {{{1.0f, 0.5f}}};
@@ -159,7 +159,7 @@ class MixerTest {
 
     @Test
     void shouldHandleEmptyMixDown() {
-        var mixer = new Mixer();
+        Mixer mixer = new Mixer();
 
         float[][][] channelBuffers = {};
         float[][] output = {{0.5f, 0.5f}};
@@ -172,8 +172,8 @@ class MixerTest {
 
     @Test
     void shouldApplyPanFullLeft() {
-        var mixer = new Mixer();
-        var ch = new MixerChannel("Ch1");
+        Mixer mixer = new Mixer();
+        MixerChannel ch = new MixerChannel("Ch1");
         ch.setPan(-1.0); // full left
         mixer.addChannel(ch);
 
@@ -190,8 +190,8 @@ class MixerTest {
 
     @Test
     void shouldApplyPanFullRight() {
-        var mixer = new Mixer();
-        var ch = new MixerChannel("Ch1");
+        Mixer mixer = new Mixer();
+        MixerChannel ch = new MixerChannel("Ch1");
         ch.setPan(1.0); // full right
         mixer.addChannel(ch);
 
@@ -207,8 +207,8 @@ class MixerTest {
 
     @Test
     void shouldApplyPanCenter() {
-        var mixer = new Mixer();
-        var ch = new MixerChannel("Ch1");
+        Mixer mixer = new Mixer();
+        MixerChannel ch = new MixerChannel("Ch1");
         ch.setPan(0.0); // center
         mixer.addChannel(ch);
 

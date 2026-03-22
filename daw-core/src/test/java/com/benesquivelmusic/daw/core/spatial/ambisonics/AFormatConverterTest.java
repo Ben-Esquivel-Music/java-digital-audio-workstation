@@ -16,13 +16,13 @@ class AFormatConverterTest {
 
     @Test
     void shouldHaveFourInputChannels() {
-        var converter = new AFormatConverter();
+        AFormatConverter converter = new AFormatConverter();
         assertThat(converter.getInputChannelCount()).isEqualTo(4);
     }
 
     @Test
     void shouldHaveFourOutputChannels() {
-        var converter = new AFormatConverter();
+        AFormatConverter converter = new AFormatConverter();
         assertThat(converter.getOutputChannelCount()).isEqualTo(4);
     }
 
@@ -30,7 +30,7 @@ class AFormatConverterTest {
 
     @Test
     void shouldConvertUniformSignalToOmniOnly() {
-        var converter = new AFormatConverter();
+        AFormatConverter converter = new AFormatConverter();
 
         // All capsules receive identical signal → pure omnidirectional
         float[][] input = new float[4][NUM_FRAMES];
@@ -51,7 +51,7 @@ class AFormatConverterTest {
 
     @Test
     void shouldConvertFluOnlyToCorrectBFormat() {
-        var converter = new AFormatConverter();
+        AFormatConverter converter = new AFormatConverter();
 
         // Only FLU capsule has signal
         float[][] input = new float[4][NUM_FRAMES];
@@ -72,7 +72,7 @@ class AFormatConverterTest {
 
     @Test
     void shouldConvertOpposingCapsulesForXAxis() {
-        var converter = new AFormatConverter();
+        AFormatConverter converter = new AFormatConverter();
 
         // FLU and FRD are "front" capsules, BLD and BRU are "back"
         // Signal only in front capsules → dominant X component
@@ -91,7 +91,7 @@ class AFormatConverterTest {
 
     @Test
     void shouldProduceEnergyConservation() {
-        var converter = new AFormatConverter();
+        AFormatConverter converter = new AFormatConverter();
 
         // Random-ish A-format signal
         float[][] input = new float[4][NUM_FRAMES];
@@ -115,7 +115,7 @@ class AFormatConverterTest {
 
     @Test
     void shouldResetWithoutError() {
-        var converter = new AFormatConverter();
+        AFormatConverter converter = new AFormatConverter();
         converter.reset();
     }
 

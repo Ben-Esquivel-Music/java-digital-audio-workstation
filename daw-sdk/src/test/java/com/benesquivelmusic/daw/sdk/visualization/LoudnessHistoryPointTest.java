@@ -8,7 +8,7 @@ class LoudnessHistoryPointTest {
 
     @Test
     void shouldStoreTimestampAndLoudnessValues() {
-        var point = new LoudnessHistoryPoint(1.5, -14.0, -16.0, -15.0);
+        LoudnessHistoryPoint point = new LoudnessHistoryPoint(1.5, -14.0, -16.0, -15.0);
 
         assertThat(point.timestampSeconds()).isEqualTo(1.5);
         assertThat(point.momentaryLufs()).isEqualTo(-14.0);
@@ -18,8 +18,8 @@ class LoudnessHistoryPointTest {
 
     @Test
     void shouldImplementEqualityForRecords() {
-        var a = new LoudnessHistoryPoint(1.0, -14.0, -16.0, -15.0);
-        var b = new LoudnessHistoryPoint(1.0, -14.0, -16.0, -15.0);
+        LoudnessHistoryPoint a = new LoudnessHistoryPoint(1.0, -14.0, -16.0, -15.0);
+        LoudnessHistoryPoint b = new LoudnessHistoryPoint(1.0, -14.0, -16.0, -15.0);
 
         assertThat(a).isEqualTo(b);
         assertThat(a.hashCode()).isEqualTo(b.hashCode());
@@ -27,8 +27,8 @@ class LoudnessHistoryPointTest {
 
     @Test
     void shouldNotBeEqualWhenValuessDiffer() {
-        var a = new LoudnessHistoryPoint(1.0, -14.0, -16.0, -15.0);
-        var b = new LoudnessHistoryPoint(2.0, -14.0, -16.0, -15.0);
+        LoudnessHistoryPoint a = new LoudnessHistoryPoint(1.0, -14.0, -16.0, -15.0);
+        LoudnessHistoryPoint b = new LoudnessHistoryPoint(2.0, -14.0, -16.0, -15.0);
 
         assertThat(a).isNotEqualTo(b);
     }

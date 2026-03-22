@@ -11,7 +11,7 @@ class LimiterProcessorTest {
 
     @Test
     void shouldCreateWithDefaults() {
-        var limiter = new LimiterProcessor(2, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(2, 44100.0);
         assertThat(limiter.getInputChannelCount()).isEqualTo(2);
         assertThat(limiter.getOutputChannelCount()).isEqualTo(2);
         assertThat(limiter.getCeilingDb()).isEqualTo(-0.3);
@@ -19,7 +19,7 @@ class LimiterProcessorTest {
 
     @Test
     void shouldLimitPeaksAboveCeiling() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
         limiter.setCeilingDb(-6.0); // Ceiling at -6 dBFS (~0.5 linear)
 
         int blockSize = 4096;
@@ -39,7 +39,7 @@ class LimiterProcessorTest {
 
     @Test
     void shouldPassThroughBelowCeiling() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
         limiter.setCeilingDb(0.0);
 
         float[][] input = new float[1][256];
@@ -60,7 +60,7 @@ class LimiterProcessorTest {
 
     @Test
     void shouldReportGainReduction() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
         limiter.setCeilingDb(-6.0);
 
         float[][] input = new float[1][256];
@@ -75,7 +75,7 @@ class LimiterProcessorTest {
 
     @Test
     void shouldResetState() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
         float[][] buf = {{0.9f, 0.8f, 0.7f}};
         limiter.process(buf, new float[1][3], 3);
         limiter.reset();
@@ -85,7 +85,7 @@ class LimiterProcessorTest {
 
     @Test
     void shouldRejectPositiveCeiling() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
         assertThatThrownBy(() -> limiter.setCeilingDb(1.0))
                 .isInstanceOf(IllegalArgumentException.class);
     }
@@ -102,7 +102,7 @@ class LimiterProcessorTest {
 
     @Test
     void shouldReportTruePeakValues() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
         int blockSize = 512;
         float[][] input = new float[1][blockSize];
         float[][] output = new float[1][blockSize];
@@ -117,7 +117,7 @@ class LimiterProcessorTest {
 
     @Test
     void shouldResetTruePeakMetering() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
         float[][] input = new float[1][256];
         float[][] output = new float[1][256];
         for (int i = 0; i < 256; i++) {
@@ -133,7 +133,7 @@ class LimiterProcessorTest {
 
     @Test
     void truePeakShouldBeAtLeastAsBigAsSamplePeak() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
         int blockSize = 1024;
         float[][] input = new float[1][blockSize];
         float[][] output = new float[1][blockSize];
@@ -156,14 +156,14 @@ class LimiterProcessorTest {
 
     @Test
     void shouldReportLatencyInSamples() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
         assertThat(limiter.getLatencySamples()).isEqualTo(limiter.getLookAheadSamples());
         assertThat(limiter.getLatencySamples()).isGreaterThan(0);
     }
 
     @Test
     void shouldReportLatencyInSeconds() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
         double expectedSeconds = limiter.getLookAheadSamples() / 44100.0;
         assertThat(limiter.getLatencySeconds()).isCloseTo(expectedSeconds,
                 org.assertj.core.data.Offset.offset(0.0001));
@@ -171,7 +171,7 @@ class LimiterProcessorTest {
 
     @Test
     void shouldAllowConfigurableLookAheadMs() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
 
         limiter.setLookAheadMs(3.0);
         int expectedSamples = (int) (0.003 * 44100.0);
@@ -180,7 +180,7 @@ class LimiterProcessorTest {
 
     @Test
     void shouldClampLookAheadMsToRange() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
 
         // Below min (1ms) → should clamp to 1ms
         limiter.setLookAheadMs(0.1);
@@ -195,7 +195,7 @@ class LimiterProcessorTest {
 
     @Test
     void shouldHandleTransientWithLookAhead() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
         limiter.setCeilingDb(-6.0);
 
         int blockSize = 4096;
@@ -223,28 +223,28 @@ class LimiterProcessorTest {
 
     @Test
     void shouldAllowSettingAttackMs() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
         limiter.setAttackMs(0.5);
         assertThat(limiter.getAttackMs()).isEqualTo(0.5);
     }
 
     @Test
     void shouldRejectNegativeAttackMs() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
         assertThatThrownBy(() -> limiter.setAttackMs(-1.0))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void shouldAllowSettingReleaseMs() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
         limiter.setReleaseMs(100.0);
         assertThat(limiter.getReleaseMs()).isEqualTo(100.0);
     }
 
     @Test
     void shouldRejectNegativeReleaseMs() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
         assertThatThrownBy(() -> limiter.setReleaseMs(-1.0))
                 .isInstanceOf(IllegalArgumentException.class);
     }
@@ -253,7 +253,7 @@ class LimiterProcessorTest {
 
     @Test
     void shouldSupportAutoReleaseMode() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
         assertThat(limiter.isAutoRelease()).isFalse(); // Off by default
 
         limiter.setAutoRelease(true);
@@ -277,14 +277,14 @@ class LimiterProcessorTest {
 
     @Test
     void shouldApplySpotifyPreset() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
         limiter.setCeilingPreset(TruePeakCeilingPreset.SPOTIFY);
         assertThat(limiter.getCeilingDb()).isEqualTo(-1.0);
     }
 
     @Test
     void shouldApplyBroadcastPreset() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
         limiter.setCeilingPreset(TruePeakCeilingPreset.BROADCAST_STRICT);
         assertThat(limiter.getCeilingDb()).isEqualTo(-0.5);
     }
@@ -293,7 +293,7 @@ class LimiterProcessorTest {
 
     @Test
     void shouldNotDistortSignalBelowCeiling() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
         limiter.setCeilingDb(0.0);
 
         int blockSize = 1024;
@@ -316,7 +316,7 @@ class LimiterProcessorTest {
 
     @Test
     void shouldResetTruePeakOnFullReset() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
         float[][] input = {{0.9f, 0.8f, 0.7f}};
         limiter.process(input, new float[1][3], 3);
         assertThat(limiter.getTruePeakLinear()).isGreaterThan(0.0);
@@ -328,7 +328,7 @@ class LimiterProcessorTest {
 
     @Test
     void shouldHandleStereoInput() {
-        var limiter = new LimiterProcessor(2, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(2, 44100.0);
         int blockSize = 512;
         float[][] input = new float[2][blockSize];
         float[][] output = new float[2][blockSize];
@@ -345,7 +345,7 @@ class LimiterProcessorTest {
 
     @Test
     void shouldGetLookAheadMs() {
-        var limiter = new LimiterProcessor(1, 44100.0);
+        LimiterProcessor limiter = new LimiterProcessor(1, 44100.0);
         // Default is 5ms
         assertThat(limiter.getLookAheadMs()).isCloseTo(5.0,
                 org.assertj.core.data.Offset.offset(0.1));

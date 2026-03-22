@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.spatial.panner;
 
 import com.benesquivelmusic.daw.sdk.spatial.PanAutomationCurve;
+import com.benesquivelmusic.daw.sdk.spatial.SpatialPannerData;
 import com.benesquivelmusic.daw.sdk.spatial.PanAutomationPoint;
 import com.benesquivelmusic.daw.sdk.spatial.PositioningMode;
 import com.benesquivelmusic.daw.sdk.spatial.SpatialPosition;
@@ -41,7 +42,7 @@ class VbapPannerTest {
 
     @Test
     void shouldCreatePannerWithSpeakers() {
-        var panner = new VbapPanner(stereoSpeakers);
+        VbapPanner panner = new VbapPanner(stereoSpeakers);
         assertThat(panner.getSpeakerPositions()).hasSize(2);
         assertThat(panner.getOutputChannelCount()).isEqualTo(2);
         assertThat(panner.getInputChannelCount()).isEqualTo(1);
@@ -63,7 +64,7 @@ class VbapPannerTest {
 
     @Test
     void shouldPanToLeftSpeakerWhenSourceIsLeft() {
-        var panner = new VbapPanner(stereoSpeakers);
+        VbapPanner panner = new VbapPanner(stereoSpeakers);
         panner.setPosition(new SpatialPosition(30, 0, 1.0)); // exactly at left speaker
 
         double[] gains = panner.computeSpeakerGains();
@@ -73,7 +74,7 @@ class VbapPannerTest {
 
     @Test
     void shouldPanToRightSpeakerWhenSourceIsRight() {
-        var panner = new VbapPanner(stereoSpeakers);
+        VbapPanner panner = new VbapPanner(stereoSpeakers);
         panner.setPosition(new SpatialPosition(330, 0, 1.0)); // exactly at right speaker
 
         double[] gains = panner.computeSpeakerGains();
@@ -83,7 +84,7 @@ class VbapPannerTest {
 
     @Test
     void shouldPanCenterEquallyForStereo() {
-        var panner = new VbapPanner(stereoSpeakers);
+        VbapPanner panner = new VbapPanner(stereoSpeakers);
         panner.setPosition(new SpatialPosition(0, 0, 1.0)); // center (front)
 
         double[] gains = panner.computeSpeakerGains();
@@ -95,7 +96,7 @@ class VbapPannerTest {
 
     @Test
     void shouldPreserveEnergyForStereo() {
-        var panner = new VbapPanner(stereoSpeakers);
+        VbapPanner panner = new VbapPanner(stereoSpeakers);
         panner.setPosition(new SpatialPosition(15, 0, 1.0));
 
         double[] gains = panner.computeSpeakerGains();
@@ -108,7 +109,7 @@ class VbapPannerTest {
 
     @Test
     void shouldPreserveEnergyForQuad() {
-        var panner = new VbapPanner(quadSpeakers);
+        VbapPanner panner = new VbapPanner(quadSpeakers);
         panner.setPosition(new SpatialPosition(45, 0, 1.0));
 
         double[] gains = panner.computeSpeakerGains();
@@ -121,7 +122,7 @@ class VbapPannerTest {
 
     @Test
     void shouldPreserveEnergyWithSpread() {
-        var panner = new VbapPanner(quadSpeakers);
+        VbapPanner panner = new VbapPanner(quadSpeakers);
         panner.setPosition(new SpatialPosition(60, 0, 1.0));
         panner.setSpread(0.5);
 
@@ -137,7 +138,7 @@ class VbapPannerTest {
 
     @Test
     void shouldIncreaseSpreadUniformity() {
-        var panner = new VbapPanner(quadSpeakers);
+        VbapPanner panner = new VbapPanner(quadSpeakers);
         panner.setPosition(new SpatialPosition(30, 0, 1.0)); // at FL speaker
 
         double[] pointGains = panner.computeSpeakerGains();
@@ -152,7 +153,7 @@ class VbapPannerTest {
 
     @Test
     void shouldRejectSpreadOutOfRange() {
-        var panner = new VbapPanner(stereoSpeakers);
+        VbapPanner panner = new VbapPanner(stereoSpeakers);
         assertThatThrownBy(() -> panner.setSpread(-0.1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> panner.setSpread(1.1))
@@ -163,18 +164,18 @@ class VbapPannerTest {
 
     @Test
     void shouldDefaultToFreeFormMode() {
-        var panner = new VbapPanner(stereoSpeakers);
+        VbapPanner panner = new VbapPanner(stereoSpeakers);
         assertThat(panner.getPositioningMode()).isEqualTo(PositioningMode.FREE_FORM);
     }
 
     @Test
     void shouldSnapToNearestSpeaker() {
-        var panner = new VbapPanner(stereoSpeakers);
+        VbapPanner panner = new VbapPanner(stereoSpeakers);
         panner.setPositioningMode(PositioningMode.SNAP_TO_SPEAKER);
         panner.setPosition(new SpatialPosition(20, 0, 2.0));
 
         // Should snap to left speaker (30°) since it's closer than right (330°)
-        var pos = panner.getPosition();
+        SpatialPosition pos = panner.getPosition();
         assertThat(pos.azimuthDegrees()).isCloseTo(30.0, within(TOLERANCE));
         // Distance should be preserved
         assertThat(pos.distanceMeters()).isCloseTo(2.0, within(TOLERANCE));
@@ -182,14 +183,14 @@ class VbapPannerTest {
 
     @Test
     void shouldRejectNullPosition() {
-        var panner = new VbapPanner(stereoSpeakers);
+        VbapPanner panner = new VbapPanner(stereoSpeakers);
         assertThatThrownBy(() -> panner.setPosition(null))
                 .isInstanceOf(NullPointerException.class);
     }
 
     @Test
     void shouldRejectNullPositioningMode() {
-        var panner = new VbapPanner(stereoSpeakers);
+        VbapPanner panner = new VbapPanner(stereoSpeakers);
         assertThatThrownBy(() -> panner.setPositioningMode(null))
                 .isInstanceOf(NullPointerException.class);
     }
@@ -198,14 +199,14 @@ class VbapPannerTest {
 
     @Test
     void shouldDefaultToInverseSquareModel() {
-        var panner = new VbapPanner(stereoSpeakers);
+        VbapPanner panner = new VbapPanner(stereoSpeakers);
         assertThat(panner.getDistanceAttenuationModel())
                 .isInstanceOf(InverseSquareAttenuation.class);
     }
 
     @Test
     void shouldRejectNullAttenuationModel() {
-        var panner = new VbapPanner(stereoSpeakers);
+        VbapPanner panner = new VbapPanner(stereoSpeakers);
         assertThatThrownBy(() -> panner.setDistanceAttenuationModel(null))
                 .isInstanceOf(NullPointerException.class);
     }
@@ -214,8 +215,8 @@ class VbapPannerTest {
 
     @Test
     void shouldSetAndGetAutomationCurve() {
-        var panner = new VbapPanner(stereoSpeakers);
-        var curve = new PanAutomationCurve(List.of(
+        VbapPanner panner = new VbapPanner(stereoSpeakers);
+        PanAutomationCurve curve = new PanAutomationCurve(List.of(
                 new PanAutomationPoint(0, 0, 0, 1),
                 new PanAutomationPoint(4, 90, 0, 1)
         ));
@@ -225,7 +226,7 @@ class VbapPannerTest {
 
     @Test
     void shouldClearAutomationCurve() {
-        var panner = new VbapPanner(stereoSpeakers);
+        VbapPanner panner = new VbapPanner(stereoSpeakers);
         panner.setAutomationCurve(null);
         assertThat(panner.getAutomationCurve()).isNull();
     }
@@ -234,7 +235,7 @@ class VbapPannerTest {
 
     @Test
     void shouldProcessMonoInputToMultipleOutputs() {
-        var panner = new VbapPanner(stereoSpeakers);
+        VbapPanner panner = new VbapPanner(stereoSpeakers);
         panner.setPosition(new SpatialPosition(0, 0, 1.0));
 
         float[][] input = {new float[]{1.0f, 0.5f, -0.5f}};
@@ -254,7 +255,7 @@ class VbapPannerTest {
 
     @Test
     void shouldApplyDistanceAttenuation() {
-        var panner = new VbapPanner(stereoSpeakers);
+        VbapPanner panner = new VbapPanner(stereoSpeakers);
         panner.setDistanceAttenuationModel(new InverseSquareAttenuation(1.0, 100.0));
 
         // Process at reference distance
@@ -276,7 +277,7 @@ class VbapPannerTest {
 
     @Test
     void shouldResetWithoutError() {
-        var panner = new VbapPanner(stereoSpeakers);
+        VbapPanner panner = new VbapPanner(stereoSpeakers);
         panner.reset(); // no-op, should not throw
     }
 
@@ -284,11 +285,11 @@ class VbapPannerTest {
 
     @Test
     void shouldReturnPannerData() {
-        var panner = new VbapPanner(stereoSpeakers);
+        VbapPanner panner = new VbapPanner(stereoSpeakers);
         panner.setPosition(new SpatialPosition(45, 10, 2.0));
         panner.setSpread(0.3);
 
-        var data = panner.getPannerData();
+        SpatialPannerData data = panner.getPannerData();
         assertThat(data.sourcePosition().azimuthDegrees()).isCloseTo(45.0, within(TOLERANCE));
         assertThat(data.speakerPositions()).hasSize(2);
         assertThat(data.speakerGains()).hasSize(2);

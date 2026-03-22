@@ -41,7 +41,7 @@ public final class AudioBackendFactory {
      * @return a new audio backend instance (not yet initialized)
      */
     public static NativeAudioBackend createDefault() {
-        var portAudio = new PortAudioBackend();
+        PortAudioBackend portAudio = new PortAudioBackend();
         if (portAudio.isAvailable()) {
             return portAudio;
         }
@@ -55,7 +55,7 @@ public final class AudioBackendFactory {
      * @throws IllegalStateException if PortAudio is not available
      */
     public static NativeAudioBackend createPortAudio() {
-        var backend = new PortAudioBackend();
+        PortAudioBackend backend = new PortAudioBackend();
         if (!backend.isAvailable()) {
             throw new IllegalStateException(
                     "PortAudio native library is not available on this system");
@@ -78,7 +78,7 @@ public final class AudioBackendFactory {
      * @return the backend name ("PortAudio" or "Java Sound")
      */
     public static String detectBackendName() {
-        var portAudio = new PortAudioBackend();
+        PortAudioBackend portAudio = new PortAudioBackend();
         return portAudio.isAvailable() ? "PortAudio" : "Java Sound";
     }
 }

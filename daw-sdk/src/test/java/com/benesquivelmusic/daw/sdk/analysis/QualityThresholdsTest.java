@@ -8,7 +8,7 @@ class QualityThresholdsTest {
 
     @Test
     void defaultThresholdsShouldHaveReasonableValues() {
-        var t = QualityThresholds.DEFAULT;
+        QualityThresholds t = QualityThresholds.DEFAULT;
 
         assertThat(t.minSnrDb()).isGreaterThan(0.0);
         assertThat(t.maxThdPercent()).isGreaterThan(0.0);
@@ -23,7 +23,7 @@ class QualityThresholdsTest {
 
     @Test
     void shouldSupportCustomThresholds() {
-        var custom = new QualityThresholds(20.0, 5.0, 2.0, 0.1, 0.2,
+        QualityThresholds custom = new QualityThresholds(20.0, 5.0, 2.0, 0.1, 0.2,
                 -0.3, 0.4, 0.5, 2.0, 3.0);
 
         assertThat(custom.minSnrDb()).isEqualTo(20.0);

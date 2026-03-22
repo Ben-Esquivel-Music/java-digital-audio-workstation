@@ -9,7 +9,7 @@ class SoundFontPresetTest {
 
     @Test
     void shouldCreatePreset() {
-        var preset = new SoundFontPreset(0, 0, "Acoustic Grand Piano");
+        SoundFontPreset preset = new SoundFontPreset(0, 0, "Acoustic Grand Piano");
         assertThat(preset.bank()).isZero();
         assertThat(preset.program()).isZero();
         assertThat(preset.name()).isEqualTo("Acoustic Grand Piano");
@@ -77,8 +77,8 @@ class SoundFontPresetTest {
 
     @Test
     void shouldSupportRecordEquality() {
-        var a = new SoundFontPreset(0, 0, "Piano");
-        var b = new SoundFontPreset(0, 0, "Piano");
+        SoundFontPreset a = new SoundFontPreset(0, 0, "Piano");
+        SoundFontPreset b = new SoundFontPreset(0, 0, "Piano");
         assertThat(a).isEqualTo(b);
         assertThat(a.hashCode()).isEqualTo(b.hashCode());
     }

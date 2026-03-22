@@ -17,8 +17,8 @@ class RoomSimulationParameterMapperTest {
 
     @Test
     void shouldMapBasicConfiguration() {
-        var dims = new RoomDimensions(10, 8, 3);
-        var roomConfig = new RoomConfiguration(dims, WallMaterial.DRYWALL);
+        RoomDimensions dims = new RoomDimensions(10, 8, 3);
+        RoomConfiguration roomConfig = new RoomConfiguration(dims, WallMaterial.DRYWALL);
         roomConfig.addSoundSource(new SoundSource("Guitar", new Position3D(3, 2, 1), 85));
 
         RoomSimulationConfig simConfig = RoomSimulationParameterMapper.toSimulationConfig(roomConfig, 48000);
@@ -31,8 +31,8 @@ class RoomSimulationParameterMapperTest {
 
     @Test
     void shouldPlaceListenerAtRoomCenter() {
-        var dims = new RoomDimensions(10, 8, 3);
-        var roomConfig = new RoomConfiguration(dims, WallMaterial.DRYWALL);
+        RoomDimensions dims = new RoomDimensions(10, 8, 3);
+        RoomConfiguration roomConfig = new RoomConfiguration(dims, WallMaterial.DRYWALL);
 
         RoomSimulationConfig simConfig = RoomSimulationParameterMapper.toSimulationConfig(roomConfig);
 
@@ -43,7 +43,7 @@ class RoomSimulationParameterMapperTest {
 
     @Test
     void shouldUseDefaultSampleRate() {
-        var roomConfig = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        RoomConfiguration roomConfig = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
 
         RoomSimulationConfig simConfig = RoomSimulationParameterMapper.toSimulationConfig(roomConfig);
 
@@ -52,7 +52,7 @@ class RoomSimulationParameterMapperTest {
 
     @Test
     void shouldPreserveAllSoundSources() {
-        var roomConfig = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        RoomConfiguration roomConfig = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
         roomConfig.addSoundSource(new SoundSource("Guitar", new Position3D(3, 2, 1), 85));
         roomConfig.addSoundSource(new SoundSource("Drums", new Position3D(5, 3, 1), 90));
         roomConfig.addSoundSource(new SoundSource("Vocals", new Position3D(4, 4, 1.5), 75));
@@ -64,7 +64,7 @@ class RoomSimulationParameterMapperTest {
 
     @Test
     void shouldApplyDefaultMaterialToAllSurfaces() {
-        var roomConfig = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.ACOUSTIC_FOAM);
+        RoomConfiguration roomConfig = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.ACOUSTIC_FOAM);
 
         RoomSimulationConfig simConfig = RoomSimulationParameterMapper.toSimulationConfig(roomConfig);
 
@@ -75,8 +75,8 @@ class RoomSimulationParameterMapperTest {
 
     @Test
     void shouldAcceptCustomListenerOrientation() {
-        var roomConfig = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
-        var customListener = new ListenerOrientation(new Position3D(2, 2, 1.5), 90.0, 10.0);
+        RoomConfiguration roomConfig = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        ListenerOrientation customListener = new ListenerOrientation(new Position3D(2, 2, 1.5), 90.0, 10.0);
 
         RoomSimulationConfig simConfig = RoomSimulationParameterMapper.toSimulationConfig(
                 roomConfig, customListener, 44100);
@@ -93,7 +93,7 @@ class RoomSimulationParameterMapperTest {
 
     @Test
     void shouldRejectNonPositiveSampleRate() {
-        var roomConfig = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        RoomConfiguration roomConfig = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
 
         assertThatThrownBy(() -> RoomSimulationParameterMapper.toSimulationConfig(roomConfig, 0))
                 .isInstanceOf(IllegalArgumentException.class);

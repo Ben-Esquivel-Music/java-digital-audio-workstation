@@ -9,28 +9,28 @@ class AmbisonicFormatTest {
 
     @Test
     void shouldCreateFoaFormat() {
-        var format = AmbisonicFormat.FOA;
+        AmbisonicFormat format = AmbisonicFormat.FOA;
         assertThat(format.order()).isEqualTo(AmbisonicOrder.FIRST);
         assertThat(format.channelCount()).isEqualTo(4);
     }
 
     @Test
     void shouldCreateSecondOrderFormat() {
-        var format = AmbisonicFormat.SECOND_ORDER;
+        AmbisonicFormat format = AmbisonicFormat.SECOND_ORDER;
         assertThat(format.order()).isEqualTo(AmbisonicOrder.SECOND);
         assertThat(format.channelCount()).isEqualTo(9);
     }
 
     @Test
     void shouldCreateThirdOrderFormat() {
-        var format = AmbisonicFormat.THIRD_ORDER;
+        AmbisonicFormat format = AmbisonicFormat.THIRD_ORDER;
         assertThat(format.order()).isEqualTo(AmbisonicOrder.THIRD);
         assertThat(format.channelCount()).isEqualTo(16);
     }
 
     @Test
     void shouldCreateFromOrder() {
-        var format = new AmbisonicFormat(AmbisonicOrder.FIRST);
+        AmbisonicFormat format = new AmbisonicFormat(AmbisonicOrder.FIRST);
         assertThat(format.channelCount()).isEqualTo(4);
     }
 

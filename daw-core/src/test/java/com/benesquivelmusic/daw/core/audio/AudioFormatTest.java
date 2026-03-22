@@ -9,7 +9,7 @@ class AudioFormatTest {
 
     @Test
     void shouldCreateFormatWithValidParameters() {
-        var format = new AudioFormat(48000.0, 2, 24, 256);
+        AudioFormat format = new AudioFormat(48000.0, 2, 24, 256);
 
         assertThat(format.sampleRate()).isEqualTo(48000.0);
         assertThat(format.channels()).isEqualTo(2);
@@ -56,8 +56,8 @@ class AudioFormatTest {
 
     @Test
     void shouldImplementEqualsAndHashCode() {
-        var a = new AudioFormat(44100, 2, 16, 512);
-        var b = new AudioFormat(44100, 2, 16, 512);
+        AudioFormat a = new AudioFormat(44100, 2, 16, 512);
+        AudioFormat b = new AudioFormat(44100, 2, 16, 512);
         assertThat(a).isEqualTo(b);
         assertThat(a.hashCode()).isEqualTo(b.hashCode());
     }

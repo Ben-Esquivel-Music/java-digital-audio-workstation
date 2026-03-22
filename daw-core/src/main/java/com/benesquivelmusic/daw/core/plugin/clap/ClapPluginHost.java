@@ -15,6 +15,7 @@ import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -354,7 +355,7 @@ public final class ClapPluginHost implements ExternalPluginHost {
 
         try {
             int count = (int) paramsCount.invoke(pluginSegment);
-            var params = new ArrayList<PluginParameter>(count);
+            ArrayList<PluginParameter> params = new ArrayList<PluginParameter>(count);
 
             for (int i = 0; i < count; i++) {
                 MemorySegment infoSegment = arena.allocate(ClapBindings.CLAP_PARAM_INFO_LAYOUT);
@@ -407,8 +408,8 @@ public final class ClapPluginHost implements ExternalPluginHost {
     public void setParameterValue(int parameterId, double value) {
         // Parameter value changes in CLAP are typically done via events in the
         // process call. For now, validate the parameter exists.
-        var params = getParameters();
-        var param = params.stream()
+        List<PluginParameter> params = getParameters();
+        PluginParameter param = params.stream()
                 .filter(p -> p.id() == parameterId)
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException(
@@ -445,9 +446,9 @@ public final class ClapPluginHost implements ExternalPluginHost {
             return new byte[0];
         }
 
-        var output = new ByteArrayOutputStream();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
         CURRENT_WRITE_TARGET.set(output);
-        try (var callArena = Arena.ofConfined()) {
+        try (Arena callArena = Arena.ofConfined()) {
             MemorySegment ostream = callArena.allocate(ClapBindings.CLAP_OSTREAM_LAYOUT);
             ostream.set(ValueLayout.ADDRESS,
                     ClapBindings.CLAP_OSTREAM_LAYOUT.byteOffset(
@@ -481,7 +482,7 @@ public final class ClapPluginHost implements ExternalPluginHost {
 
         CURRENT_READ_SOURCE.set(state);
         CURRENT_READ_POSITION.set(new int[]{0});
-        try (var callArena = Arena.ofConfined()) {
+        try (Arena callArena = Arena.ofConfined()) {
             MemorySegment istream = callArena.allocate(ClapBindings.CLAP_ISTREAM_LAYOUT);
             istream.set(ValueLayout.ADDRESS,
                     ClapBindings.CLAP_ISTREAM_LAYOUT.byteOffset(
@@ -1037,7 +1038,7 @@ public final class ClapPluginHost implements ExternalPluginHost {
 
     static {
         try {
-            var lookup = java.lang.invoke.MethodHandles.lookup();
+            MethodHandles.Lookup lookup = java.lang.invoke.MethodHandles.lookup();
             NO_OP_HOST_CALLBACK = lookup.findStatic(ClapPluginHost.class, "noOpHostCallback",
                     java.lang.invoke.MethodType.methodType(void.class, MemorySegment.class));
             PENDING_EVENTS_SIZE = lookup.findStatic(ClapPluginHost.class, "pendingEventsSize",

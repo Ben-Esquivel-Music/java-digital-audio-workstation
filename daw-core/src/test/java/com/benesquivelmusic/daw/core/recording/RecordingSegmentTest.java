@@ -12,7 +12,7 @@ class RecordingSegmentTest {
 
     @Test
     void shouldCreateNewSegment() {
-        var segment = RecordingSegment.startNew(0, Path.of("/tmp/segment-000.wav"));
+        RecordingSegment segment = RecordingSegment.startNew(0, Path.of("/tmp/segment-000.wav"));
 
         assertThat(segment.index()).isZero();
         assertThat(segment.filePath()).isEqualTo(Path.of("/tmp/segment-000.wav"));
@@ -25,9 +25,9 @@ class RecordingSegmentTest {
 
     @Test
     void shouldCompleteSegment() {
-        var segment = RecordingSegment.startNew(1, Path.of("/tmp/segment-001.wav"));
+        RecordingSegment segment = RecordingSegment.startNew(1, Path.of("/tmp/segment-001.wav"));
 
-        var completed = segment.complete(44100 * 60, 5_292_000);
+        RecordingSegment completed = segment.complete(44100 * 60, 5_292_000);
 
         assertThat(completed.isInProgress()).isFalse();
         assertThat(completed.endTime()).isNotNull();

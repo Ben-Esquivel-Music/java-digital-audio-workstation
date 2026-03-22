@@ -19,6 +19,8 @@ import java.util.List;
 
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.transform.Transformer;
 
 /**
  * Serializes a {@link SessionData} instance into DAWproject XML ({@code project.xml}).
@@ -41,19 +43,19 @@ public final class DawProjectXmlSerializer {
     public void serialize(SessionData sessionData, OutputStream outputStream, List<String> warnings)
             throws IOException {
         try {
-            var factory = DocumentBuilderFactory.newInstance();
+            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
             factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-            var builder = factory.newDocumentBuilder();
-            var document = builder.newDocument();
+            DocumentBuilder builder = factory.newDocumentBuilder();
+            Document document = builder.newDocument();
 
             buildDocument(document, sessionData, warnings);
 
-            var transformerFactory = TransformerFactory.newInstance();
+            TransformerFactory transformerFactory = TransformerFactory.newInstance();
             transformerFactory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
             transformerFactory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
             transformerFactory.setAttribute(XMLConstants.ACCESS_EXTERNAL_STYLESHEET, "");
-            var transformer = transformerFactory.newTransformer();
+            Transformer transformer = transformerFactory.newTransformer();
             transformer.setOutputProperty(OutputKeys.INDENT, "yes");
             transformer.setOutputProperty(OutputKeys.ENCODING, "UTF-8");
             transformer.setOutputProperty("{http://xml.apache.org/xslt}indent-amount", "2");
@@ -65,7 +67,7 @@ public final class DawProjectXmlSerializer {
     }
 
     private void buildDocument(Document document, SessionData sessionData, List<String> warnings) {
-        var project = document.createElement("Project");
+        Element project = document.createElement("Project");
         project.setAttribute("version", "1.0");
         project.setAttribute("name", sessionData.projectName());
         if (sessionData.sampleRate() > 0) {
@@ -74,34 +76,34 @@ public final class DawProjectXmlSerializer {
         document.appendChild(project);
 
         // Transport
-        var transport = document.createElement("Transport");
+        Element transport = document.createElement("Transport");
         project.appendChild(transport);
 
-        var tempo = document.createElement("Tempo");
+        Element tempo = document.createElement("Tempo");
         tempo.setAttribute("value", String.valueOf(sessionData.tempo()));
         transport.appendChild(tempo);
 
-        var timeSignature = document.createElement("TimeSignature");
+        Element timeSignature = document.createElement("TimeSignature");
         timeSignature.setAttribute("numerator", String.valueOf(sessionData.timeSignatureNumerator()));
         timeSignature.setAttribute("denominator", String.valueOf(sessionData.timeSignatureDenominator()));
         transport.appendChild(timeSignature);
 
         // Structure (tracks)
-        var structure = document.createElement("Structure");
+        Element structure = document.createElement("Structure");
         project.appendChild(structure);
 
-        for (var track : sessionData.tracks()) {
+        for (SessionData.SessionTrack track : sessionData.tracks()) {
             structure.appendChild(buildTrackElement(document, track, warnings));
         }
     }
 
     private Element buildTrackElement(Document document, SessionTrack track, List<String> warnings) {
-        var trackElement = document.createElement("Track");
+        Element trackElement = document.createElement("Track");
         trackElement.setAttribute("name", track.name());
         trackElement.setAttribute("contentType", mapTrackType(track.type()));
 
         // Channel (mixer settings)
-        var channel = document.createElement("Channel");
+        Element channel = document.createElement("Channel");
         channel.setAttribute("volume", String.valueOf(track.volume()));
         channel.setAttribute("pan", String.valueOf(track.pan()));
         if (track.muted()) {
@@ -114,13 +116,13 @@ public final class DawProjectXmlSerializer {
 
         // Lanes with Clips
         if (!track.clips().isEmpty()) {
-            var lanes = document.createElement("Lanes");
+            Element lanes = document.createElement("Lanes");
             trackElement.appendChild(lanes);
 
-            var clips = document.createElement("Clips");
+            Element clips = document.createElement("Clips");
             lanes.appendChild(clips);
 
-            for (var clip : track.clips()) {
+            for (SessionData.SessionClip clip : track.clips()) {
                 clips.appendChild(buildClipElement(document, clip));
             }
         }
@@ -129,13 +131,13 @@ public final class DawProjectXmlSerializer {
     }
 
     private Element buildClipElement(Document document, SessionClip clip) {
-        var clipElement = document.createElement("Clip");
+        Element clipElement = document.createElement("Clip");
         clipElement.setAttribute("name", clip.name());
         clipElement.setAttribute("time", String.valueOf(clip.startBeat()));
         clipElement.setAttribute("duration", String.valueOf(clip.durationBeats()));
 
         if (clip.sourceFilePath() != null || clip.gainDb() != 0.0 || clip.sourceOffsetBeats() != 0.0) {
-            var audio = document.createElement("Audio");
+            Element audio = document.createElement("Audio");
             if (clip.gainDb() != 0.0) {
                 audio.setAttribute("gain", String.valueOf(clip.gainDb()));
             }
@@ -145,7 +147,7 @@ public final class DawProjectXmlSerializer {
             clipElement.appendChild(audio);
 
             if (clip.sourceFilePath() != null) {
-                var file = document.createElement("File");
+                Element file = document.createElement("File");
                 file.setAttribute("path", clip.sourceFilePath());
                 audio.appendChild(file);
             }

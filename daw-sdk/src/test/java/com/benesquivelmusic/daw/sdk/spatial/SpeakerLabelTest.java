@@ -32,7 +32,7 @@ class SpeakerLabelTest {
 
     @Test
     void shouldConvertToSpatialPosition() {
-        var pos = SpeakerLabel.L.toSpatialPosition();
+        SpatialPosition pos = SpeakerLabel.L.toSpatialPosition();
         assertThat(pos.azimuthDegrees()).isEqualTo(30.0);
         assertThat(pos.elevationDegrees()).isEqualTo(0.0);
         assertThat(pos.distanceMeters()).isEqualTo(1.0);
@@ -40,7 +40,7 @@ class SpeakerLabelTest {
 
     @Test
     void shouldConvertHeightSpeakerToSpatialPosition() {
-        var pos = SpeakerLabel.LTF.toSpatialPosition();
+        SpatialPosition pos = SpeakerLabel.LTF.toSpatialPosition();
         assertThat(pos.azimuthDegrees()).isEqualTo(45.0);
         assertThat(pos.elevationDegrees()).isEqualTo(45.0);
         assertThat(pos.distanceMeters()).isEqualTo(1.0);

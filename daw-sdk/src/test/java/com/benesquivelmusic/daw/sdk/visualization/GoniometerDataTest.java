@@ -14,7 +14,7 @@ class GoniometerDataTest {
         float[] mag = {0.41f, 0.54f, 0.67f};
         float[] ang = {0.24f, 0.38f, 0.46f};
 
-        var data = new GoniometerData(x, y, mag, ang, 3);
+        GoniometerData data = new GoniometerData(x, y, mag, ang, 3);
 
         assertThat(data.pointCount()).isEqualTo(3);
         assertThat(data.xPoints()).hasSize(3);
@@ -39,7 +39,7 @@ class GoniometerDataTest {
         float[] mag = {3.0f};
         float[] ang = {4.0f};
 
-        var data = new GoniometerData(x, y, mag, ang, 1);
+        GoniometerData data = new GoniometerData(x, y, mag, ang, 1);
 
         // Mutating the original arrays should not affect the record
         x[0] = 99.0f;
@@ -92,7 +92,7 @@ class GoniometerDataTest {
 
     @Test
     void shouldAllowArraysLongerThanPointCount() {
-        var data = new GoniometerData(
+        GoniometerData data = new GoniometerData(
                 new float[5], new float[5], new float[5], new float[5], 3);
         assertThat(data.pointCount()).isEqualTo(3);
     }

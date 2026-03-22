@@ -13,7 +13,7 @@ class LockFreeRingBufferTest {
 
     @Test
     void shouldStartEmpty() {
-        var buffer = new LockFreeRingBuffer<String>(4);
+        LockFreeRingBuffer<String> buffer = new LockFreeRingBuffer<String>(4);
 
         assertThat(buffer.isEmpty()).isTrue();
         assertThat(buffer.isFull()).isFalse();
@@ -33,7 +33,7 @@ class LockFreeRingBufferTest {
 
     @Test
     void shouldWriteAndRead() {
-        var buffer = new LockFreeRingBuffer<Integer>(4);
+        LockFreeRingBuffer<Integer> buffer = new LockFreeRingBuffer<Integer>(4);
 
         assertThat(buffer.write(1)).isTrue();
         assertThat(buffer.write(2)).isTrue();
@@ -48,13 +48,13 @@ class LockFreeRingBufferTest {
 
     @Test
     void shouldReturnNullWhenEmpty() {
-        var buffer = new LockFreeRingBuffer<String>(4);
+        LockFreeRingBuffer<String> buffer = new LockFreeRingBuffer<String>(4);
         assertThat(buffer.read()).isNull();
     }
 
     @Test
     void shouldReturnFalseWhenFull() {
-        var buffer = new LockFreeRingBuffer<Integer>(2);
+        LockFreeRingBuffer<Integer> buffer = new LockFreeRingBuffer<Integer>(2);
 
         assertThat(buffer.write(1)).isTrue();
         assertThat(buffer.write(2)).isTrue();
@@ -64,7 +64,7 @@ class LockFreeRingBufferTest {
 
     @Test
     void shouldWrapAroundCorrectly() {
-        var buffer = new LockFreeRingBuffer<Integer>(4);
+        LockFreeRingBuffer<Integer> buffer = new LockFreeRingBuffer<Integer>(4);
 
         // Fill and drain twice to exercise wrap-around
         for (int round = 0; round < 2; round++) {
@@ -88,13 +88,13 @@ class LockFreeRingBufferTest {
     @Test
     void shouldWorkConcurrentlyWithSingleProducerSingleConsumer() throws InterruptedException {
         int itemCount = 100_000;
-        var buffer = new LockFreeRingBuffer<Integer>(1024);
-        var producerDone = new AtomicBoolean(false);
-        var results = new ArrayList<Integer>(itemCount);
-        var latch = new CountDownLatch(2);
+        LockFreeRingBuffer<Integer> buffer = new LockFreeRingBuffer<Integer>(1024);
+        AtomicBoolean producerDone = new AtomicBoolean(false);
+        ArrayList<Integer> results = new ArrayList<Integer>(itemCount);
+        CountDownLatch latch = new CountDownLatch(2);
 
         // Producer thread
-        var producer = Thread.ofPlatform().start(() -> {
+        Thread producer = Thread.ofPlatform().start(() -> {
             for (int i = 0; i < itemCount; i++) {
                 while (!buffer.write(i)) {
                     Thread.onSpinWait();
@@ -105,7 +105,7 @@ class LockFreeRingBufferTest {
         });
 
         // Consumer thread
-        var consumer = Thread.ofPlatform().start(() -> {
+        Thread consumer = Thread.ofPlatform().start(() -> {
             while (results.size() < itemCount) {
                 Integer val = buffer.read();
                 if (val != null) {
@@ -129,7 +129,7 @@ class LockFreeRingBufferTest {
 
     @Test
     void shouldReportCorrectSizeAfterMixedOperations() {
-        var buffer = new LockFreeRingBuffer<String>(8);
+        LockFreeRingBuffer<String> buffer = new LockFreeRingBuffer<String>(8);
 
         buffer.write("a");
         buffer.write("b");

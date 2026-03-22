@@ -95,7 +95,7 @@ public final class DawProject {
      * @return the newly created track
      */
     public Track createAudioTrack(String name) {
-        var track = new Track(name, TrackType.AUDIO);
+        Track track = new Track(name, TrackType.AUDIO);
         addTrack(track);
         return track;
     }
@@ -107,7 +107,7 @@ public final class DawProject {
      * @return the newly created track
      */
     public Track createMidiTrack(String name) {
-        var track = new Track(name, TrackType.MIDI);
+        Track track = new Track(name, TrackType.MIDI);
         addTrack(track);
         return track;
     }
