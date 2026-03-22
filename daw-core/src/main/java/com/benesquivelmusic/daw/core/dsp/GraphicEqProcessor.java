@@ -19,7 +19,7 @@ import java.util.Objects;
  *   <li>{@link BandType#OCTAVE} — 10 bands at ISO octave center frequencies
  *       from 31.5&nbsp;Hz to 16&nbsp;kHz</li>
  *   <li>{@link BandType#THIRD_OCTAVE} — 31 bands at ISO 1/3-octave center
- *       frequencies from 25&nbsp;Hz to 20&nbsp;kHz</li>
+ *       frequencies from 20&nbsp;Hz to 20&nbsp;kHz</li>
  * </ul>
  *
  * <h2>Filter Modes</h2>
@@ -53,7 +53,7 @@ public final class GraphicEqProcessor implements AudioProcessor {
     public enum BandType {
         /** 10 bands at ISO octave center frequencies (31.5 Hz – 16 kHz). */
         OCTAVE,
-        /** 31 bands at ISO 1/3-octave center frequencies (25 Hz – 20 kHz). */
+        /** 31 bands at ISO 1/3-octave center frequencies (20 Hz – 20 kHz). */
         THIRD_OCTAVE
     }
 
@@ -70,9 +70,9 @@ public final class GraphicEqProcessor implements AudioProcessor {
             31.5, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0
     };
 
-    /** ISO 1/3-octave center frequencies in Hz (25 Hz – 20 kHz). */
+    /** ISO 1/3-octave center frequencies in Hz (20 Hz – 20 kHz, 31 bands). */
     static final double[] THIRD_OCTAVE_FREQUENCIES = {
-            25.0, 31.5, 40.0, 50.0, 63.0, 80.0, 100.0, 125.0, 160.0, 200.0,
+            20.0, 25.0, 31.5, 40.0, 50.0, 63.0, 80.0, 100.0, 125.0, 160.0, 200.0,
             250.0, 315.0, 400.0, 500.0, 630.0, 800.0, 1000.0, 1250.0, 1600.0, 2000.0,
             2500.0, 3150.0, 4000.0, 5000.0, 6300.0, 8000.0, 10000.0, 12500.0, 16000.0, 20000.0
     };

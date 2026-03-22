@@ -44,9 +44,8 @@ class GraphicEqProcessorTest {
     void shouldHaveThirdOctaveBands() {
         GraphicEqProcessor eq = new GraphicEqProcessor(2, 44100.0);
         eq.setBandType(GraphicEqProcessor.BandType.THIRD_OCTAVE);
-        assertThat(eq.getBandCount()).isEqualTo(30);
-        assertThat(eq.getBandFrequency(0)).isEqualTo(25.0);
-        // 20 kHz is below Nyquist of 22050 Hz but the 30th band is at 20000 Hz
+        assertThat(eq.getBandCount()).isEqualTo(31);
+        assertThat(eq.getBandFrequency(0)).isEqualTo(20.0);
         assertThat(eq.getBandFrequency(eq.getBandCount() - 1)).isEqualTo(20000.0);
     }
 
@@ -66,7 +65,7 @@ class GraphicEqProcessorTest {
         assertThat(eq.getBandType()).isEqualTo(GraphicEqProcessor.BandType.OCTAVE);
         eq.setBandType(GraphicEqProcessor.BandType.THIRD_OCTAVE);
         assertThat(eq.getBandType()).isEqualTo(GraphicEqProcessor.BandType.THIRD_OCTAVE);
-        assertThat(eq.getBandCount()).isEqualTo(30);
+        assertThat(eq.getBandCount()).isEqualTo(31);
     }
 
     @Test
@@ -357,8 +356,8 @@ class GraphicEqProcessorTest {
     void shouldProcessThirdOctaveBands() {
         GraphicEqProcessor eq = new GraphicEqProcessor(1, 44100.0);
         eq.setBandType(GraphicEqProcessor.BandType.THIRD_OCTAVE);
-        // Band index 16 is 1000 Hz for third-octave
-        eq.setBandGain(16, 12.0);
+        // Band index 17 is 1000 Hz for third-octave (31-band starting at 20 Hz)
+        eq.setBandGain(17, 12.0);
 
         int numFrames = 4096;
         float[][] input = new float[1][numFrames];
