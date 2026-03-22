@@ -4,6 +4,16 @@
 
 An open-source, state-of-the-art Digital Audio Workstation (DAW) built with **JavaFX** and **Java 25** for recording, mixing, and mastering audio.
 
+## Screenshots
+
+**Session View** — multi-track arrangement with waveform editing, visualization tiles (oscilloscope, spectrum, level meters, LUFS loudness, stereo correlation), and real-time transport controls:
+
+![DAW Main Session View](docs/screenshot-main.svg)
+
+**Mixer & Recording View** — full channel-strip mixer with per-channel faders, pan knobs, mute/solo/arm, live input monitoring, and master bus metering during an active recording session:
+
+![DAW Mixer and Recording View](docs/screenshot-mixer.svg)
+
 ## Project Structure
 
 | Module | Description |
