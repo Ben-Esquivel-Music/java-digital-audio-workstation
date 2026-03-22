@@ -1,7 +1,5 @@
 package com.benesquivelmusic.daw.core.export;
 
-import java.util.Random;
-
 /**
  * Noise-shaped dithering for bit-depth reduction with improved perceptual quality.
  *
@@ -22,14 +20,14 @@ final class NoiseShapedDitherer {
      */
     private static final double SHAPING_COEFFICIENT = 0.5;
 
-    private final Random random;
+    private final TpdfDitherer tpdfDitherer;
     private double previousError;
 
     /**
      * Creates a noise-shaped ditherer with a random seed.
      */
     NoiseShapedDitherer() {
-        this.random = new Random();
+        this.tpdfDitherer = new TpdfDitherer();
     }
 
     /**
@@ -38,7 +36,7 @@ final class NoiseShapedDitherer {
      * @param seed the random seed
      */
     NoiseShapedDitherer(long seed) {
-        this.random = new Random(seed);
+        this.tpdfDitherer = new TpdfDitherer(seed);
     }
 
     /**
@@ -50,13 +48,13 @@ final class NoiseShapedDitherer {
      * @return the dithered, quantized sample in the target integer range
      */
     double dither(double sample, int targetBitDepth) {
-        double maxVal = (1L << (targetBitDepth - 1)) - 1;
+        double maxVal = TpdfDitherer.maxValue(targetBitDepth);
 
         // Scale to target integer range
         double scaled = sample * maxVal;
 
         // Generate TPDF noise (same base as TpdfDitherer)
-        double noise = (random.nextDouble() - 0.5) + (random.nextDouble() - 0.5);
+        double noise = tpdfDitherer.generateTpdfNoise();
 
         // Apply error feedback (noise shaping)
         double shaped = scaled + noise - SHAPING_COEFFICIENT * previousError;

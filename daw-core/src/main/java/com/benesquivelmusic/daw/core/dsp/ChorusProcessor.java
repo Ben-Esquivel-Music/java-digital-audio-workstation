@@ -83,9 +83,6 @@ public final class ChorusProcessor implements AudioProcessor {
             // Clamp to valid range
             delaySamplesFloat = Math.max(0.0, Math.min(delaySamplesFloat, maxDelaySamples - 2));
 
-            int delaySamplesInt = (int) delaySamplesFloat;
-            double frac = delaySamplesFloat - delaySamplesInt;
-
             for (int ch = 0; ch < activeCh; ch++) {
                 float input = inputBuffer[ch][frame];
 
@@ -93,11 +90,8 @@ public final class ChorusProcessor implements AudioProcessor {
                 delayLines[ch][writePositions[ch]] = input;
 
                 // Read with linear interpolation for smooth modulation
-                int readPos0 = (writePositions[ch] - delaySamplesInt + maxDelaySamples)
-                        % maxDelaySamples;
-                int readPos1 = (readPos0 - 1 + maxDelaySamples) % maxDelaySamples;
-                float delayed = (float) (delayLines[ch][readPos0] * (1.0 - frac)
-                        + delayLines[ch][readPos1] * frac);
+                float delayed = DspUtils.readInterpolated(delayLines[ch],
+                        writePositions[ch], delaySamplesFloat, maxDelaySamples);
 
                 // Advance write position
                 writePositions[ch] = (writePositions[ch] + 1) % maxDelaySamples;
