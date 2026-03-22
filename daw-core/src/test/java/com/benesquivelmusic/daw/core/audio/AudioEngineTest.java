@@ -1,8 +1,11 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class AudioEngineTest {
 
@@ -29,5 +32,80 @@ class AudioEngineTest {
     void shouldReturnConfiguredFormat() {
         var engine = new AudioEngine(AudioFormat.STUDIO_QUALITY);
         assertThat(engine.getFormat()).isEqualTo(AudioFormat.STUDIO_QUALITY);
+    }
+
+    @Test
+    void shouldExposeMasterChain() {
+        var engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        assertThat(engine.getMasterChain()).isNotNull();
+        assertThat(engine.getMasterChain().isEmpty()).isTrue();
+    }
+
+    @Test
+    void shouldAllocateBufferPoolOnStart() {
+        var engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        assertThat(engine.getBufferPool()).isNull();
+
+        engine.start();
+        assertThat(engine.getBufferPool()).isNotNull();
+        assertThat(engine.getBufferPool().available()).isGreaterThan(0);
+    }
+
+    @Test
+    void shouldProcessBlockPassthroughWhenChainEmpty() {
+        var format = new AudioFormat(44_100.0, 1, 16, 4);
+        var engine = new AudioEngine(format);
+        engine.start();
+
+        float[][] input = {{0.5f, -0.3f, 0.8f, -1.0f}};
+        float[][] output = {{0.0f, 0.0f, 0.0f, 0.0f}};
+        engine.processBlock(input, output, 4);
+
+        assertThat(output[0]).containsExactly(0.5f, -0.3f, 0.8f, -1.0f);
+    }
+
+    @Test
+    void shouldProcessBlockThroughMasterChain() {
+        var format = new AudioFormat(44_100.0, 1, 16, 4);
+        var engine = new AudioEngine(format);
+        engine.getMasterChain().addProcessor(new HalfGainProcessor());
+        engine.start();
+
+        float[][] input = {{1.0f, -1.0f, 0.5f, -0.5f}};
+        float[][] output = {{0.0f, 0.0f, 0.0f, 0.0f}};
+        engine.processBlock(input, output, 4);
+
+        assertThat(output[0]).containsExactly(0.5f, -0.5f, 0.25f, -0.25f);
+    }
+
+    @Test
+    void shouldThrowWhenProcessingWhileNotRunning() {
+        var engine = new AudioEngine(AudioFormat.CD_QUALITY);
+
+        float[][] input = {{0.0f}};
+        float[][] output = {{0.0f}};
+
+        assertThatThrownBy(() -> engine.processBlock(input, output, 1))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    private static class HalfGainProcessor implements AudioProcessor {
+        @Override
+        public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
+            for (int ch = 0; ch < inputBuffer.length; ch++) {
+                for (int i = 0; i < numFrames; i++) {
+                    outputBuffer[ch][i] = inputBuffer[ch][i] * 0.5f;
+                }
+            }
+        }
+
+        @Override
+        public void reset() {}
+
+        @Override
+        public int getInputChannelCount() { return 1; }
+
+        @Override
+        public int getOutputChannelCount() { return 1; }
     }
 }
