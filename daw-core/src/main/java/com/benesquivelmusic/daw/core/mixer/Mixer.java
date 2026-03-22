@@ -113,9 +113,41 @@ public final class Mixer {
             float volume = (float) channel.getVolume();
             float[][] src = channelBuffers[i];
             int audioChannels = Math.min(src.length, outputBuffer.length);
-            for (int ch = 0; ch < audioChannels; ch++) {
+
+            // Apply constant-power pan law for stereo output
+            if (outputBuffer.length >= 2 && audioChannels >= 1) {
+                double pan = channel.getPan();
+                // pan: -1.0 = full left, 0.0 = center, 1.0 = full right
+                double angle = (pan + 1.0) * 0.25 * Math.PI; // [0, π/2]
+                float leftGain = (float) (Math.cos(angle) * volume);
+                float rightGain = (float) (Math.sin(angle) * volume);
+
+                // Mix mono source or first channel into stereo output
                 for (int f = 0; f < numFrames; f++) {
-                    outputBuffer[ch][f] += src[ch][f] * volume;
+                    outputBuffer[0][f] += src[0][f] * leftGain;
+                }
+                if (audioChannels >= 2) {
+                    for (int f = 0; f < numFrames; f++) {
+                        outputBuffer[1][f] += src[1][f] * rightGain;
+                    }
+                } else {
+                    // Mono source panned into stereo
+                    for (int f = 0; f < numFrames; f++) {
+                        outputBuffer[1][f] += src[0][f] * rightGain;
+                    }
+                }
+                // Copy remaining channels (surround) without pan
+                for (int ch = 2; ch < audioChannels; ch++) {
+                    for (int f = 0; f < numFrames; f++) {
+                        outputBuffer[ch][f] += src[ch][f] * volume;
+                    }
+                }
+            } else {
+                // Non-stereo output: apply volume only (no pan)
+                for (int ch = 0; ch < audioChannels; ch++) {
+                    for (int f = 0; f < numFrames; f++) {
+                        outputBuffer[ch][f] += src[ch][f] * volume;
+                    }
                 }
             }
         }

@@ -169,4 +169,57 @@ class MixerTest {
         // Should be silent after mixDown
         assertThat(output[0]).containsExactly(0.0f, 0.0f);
     }
+
+    @Test
+    void shouldApplyPanFullLeft() {
+        var mixer = new Mixer();
+        var ch = new MixerChannel("Ch1");
+        ch.setPan(-1.0); // full left
+        mixer.addChannel(ch);
+
+        // Mono source into stereo output
+        float[][][] channelBuffers = {{{1.0f}}};
+        float[][] output = {{0.0f}, {0.0f}};
+
+        mixer.mixDown(channelBuffers, output, 1);
+
+        // Full left: all signal in left channel, none in right
+        assertThat(output[0][0]).isEqualTo(1.0f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(output[1][0]).isCloseTo(0.0f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
+
+    @Test
+    void shouldApplyPanFullRight() {
+        var mixer = new Mixer();
+        var ch = new MixerChannel("Ch1");
+        ch.setPan(1.0); // full right
+        mixer.addChannel(ch);
+
+        float[][][] channelBuffers = {{{1.0f}}};
+        float[][] output = {{0.0f}, {0.0f}};
+
+        mixer.mixDown(channelBuffers, output, 1);
+
+        // Full right: no signal in left channel, all in right
+        assertThat(output[0][0]).isCloseTo(0.0f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(output[1][0]).isEqualTo(1.0f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
+
+    @Test
+    void shouldApplyPanCenter() {
+        var mixer = new Mixer();
+        var ch = new MixerChannel("Ch1");
+        ch.setPan(0.0); // center
+        mixer.addChannel(ch);
+
+        float[][][] channelBuffers = {{{1.0f}}};
+        float[][] output = {{0.0f}, {0.0f}};
+
+        mixer.mixDown(channelBuffers, output, 1);
+
+        // Center: equal power in both channels (cos(π/4) = sin(π/4) ≈ 0.707)
+        float expected = (float) Math.cos(Math.PI / 4.0);
+        assertThat(output[0][0]).isCloseTo(expected, org.assertj.core.data.Offset.offset(1e-5f));
+        assertThat(output[1][0]).isCloseTo(expected, org.assertj.core.data.Offset.offset(1e-5f));
+    }
 }
