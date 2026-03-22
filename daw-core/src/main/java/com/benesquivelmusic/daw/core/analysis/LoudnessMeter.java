@@ -48,10 +48,15 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
     private final int shortTermFrames;
 
     // K-weighting filter state (two cascaded biquad stages, per channel)
-    private double kw1L_x1, kw1L_x2, kw1L_y1, kw1L_y2;
-    private double kw2L_x1, kw2L_x2, kw2L_y1, kw2L_y2;
-    private double kw1R_x1, kw1R_x2, kw1R_y1, kw1R_y2;
-    private double kw2R_x1, kw2R_x2, kw2R_y1, kw2R_y2;
+    // Index 0 = left, 1 = right
+    private final double[] kw1_x1 = new double[2];
+    private final double[] kw1_x2 = new double[2];
+    private final double[] kw1_y1 = new double[2];
+    private final double[] kw1_y2 = new double[2];
+    private final double[] kw2_x1 = new double[2];
+    private final double[] kw2_x2 = new double[2];
+    private final double[] kw2_y1 = new double[2];
+    private final double[] kw2_y2 = new double[2];
     private final double[] kw1Coeffs;
     private final double[] kw2Coeffs;
 
@@ -134,8 +139,8 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
             }
 
             // Apply K-weighting to left and right channels independently
-            double weightedL = applyKWeightingLeft(sampleL);
-            double weightedR = applyKWeightingRight(sampleR);
+            double weightedL = applyKWeighting(sampleL, 0);
+            double weightedR = applyKWeighting(sampleR, 1);
 
             // Mean square (equal power for L/R)
             blockMeanSquare += (weightedL * weightedL + weightedR * weightedR) / 2.0;
@@ -199,10 +204,14 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
      * Resets all meter state.
      */
     public void reset() {
-        kw1L_x1 = kw1L_x2 = kw1L_y1 = kw1L_y2 = 0;
-        kw2L_x1 = kw2L_x2 = kw2L_y1 = kw2L_y2 = 0;
-        kw1R_x1 = kw1R_x2 = kw1R_y1 = kw1R_y2 = 0;
-        kw2R_x1 = kw2R_x2 = kw2R_y1 = kw2R_y2 = 0;
+        java.util.Arrays.fill(kw1_x1, 0);
+        java.util.Arrays.fill(kw1_x2, 0);
+        java.util.Arrays.fill(kw1_y1, 0);
+        java.util.Arrays.fill(kw1_y2, 0);
+        java.util.Arrays.fill(kw2_x1, 0);
+        java.util.Arrays.fill(kw2_x2, 0);
+        java.util.Arrays.fill(kw2_y1, 0);
+        java.util.Arrays.fill(kw2_y2, 0);
         momentaryIndex = shortTermIndex = 0;
         momentaryCount = shortTermCount = 0;
         integratedSum = 0;
@@ -287,42 +296,22 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
     // K-weighting filters (simplified biquad cascade)
     // ----------------------------------------------------------------
 
-    private double applyKWeightingLeft(double sample) {
+    private double applyKWeighting(double sample, int ch) {
         // Stage 1: High shelf (+4 dB above ~1500 Hz)
-        double y1 = kw1Coeffs[0] * sample + kw1Coeffs[1] * kw1L_x1 + kw1Coeffs[2] * kw1L_x2
-                - kw1Coeffs[3] * kw1L_y1 - kw1Coeffs[4] * kw1L_y2;
-        kw1L_x2 = kw1L_x1;
-        kw1L_x1 = sample;
-        kw1L_y2 = kw1L_y1;
-        kw1L_y1 = y1;
+        double y1 = kw1Coeffs[0] * sample + kw1Coeffs[1] * kw1_x1[ch] + kw1Coeffs[2] * kw1_x2[ch]
+                - kw1Coeffs[3] * kw1_y1[ch] - kw1Coeffs[4] * kw1_y2[ch];
+        kw1_x2[ch] = kw1_x1[ch];
+        kw1_x1[ch] = sample;
+        kw1_y2[ch] = kw1_y1[ch];
+        kw1_y1[ch] = y1;
 
         // Stage 2: High-pass (~60 Hz, 2nd order)
-        double y2 = kw2Coeffs[0] * y1 + kw2Coeffs[1] * kw2L_x1 + kw2Coeffs[2] * kw2L_x2
-                - kw2Coeffs[3] * kw2L_y1 - kw2Coeffs[4] * kw2L_y2;
-        kw2L_x2 = kw2L_x1;
-        kw2L_x1 = y1;
-        kw2L_y2 = kw2L_y1;
-        kw2L_y1 = y2;
-
-        return y2;
-    }
-
-    private double applyKWeightingRight(double sample) {
-        // Stage 1: High shelf (+4 dB above ~1500 Hz)
-        double y1 = kw1Coeffs[0] * sample + kw1Coeffs[1] * kw1R_x1 + kw1Coeffs[2] * kw1R_x2
-                - kw1Coeffs[3] * kw1R_y1 - kw1Coeffs[4] * kw1R_y2;
-        kw1R_x2 = kw1R_x1;
-        kw1R_x1 = sample;
-        kw1R_y2 = kw1R_y1;
-        kw1R_y1 = y1;
-
-        // Stage 2: High-pass (~60 Hz, 2nd order)
-        double y2 = kw2Coeffs[0] * y1 + kw2Coeffs[1] * kw2R_x1 + kw2Coeffs[2] * kw2R_x2
-                - kw2Coeffs[3] * kw2R_y1 - kw2Coeffs[4] * kw2R_y2;
-        kw2R_x2 = kw2R_x1;
-        kw2R_x1 = y1;
-        kw2R_y2 = kw2R_y1;
-        kw2R_y1 = y2;
+        double y2 = kw2Coeffs[0] * y1 + kw2Coeffs[1] * kw2_x1[ch] + kw2Coeffs[2] * kw2_x2[ch]
+                - kw2Coeffs[3] * kw2_y1[ch] - kw2Coeffs[4] * kw2_y2[ch];
+        kw2_x2[ch] = kw2_x1[ch];
+        kw2_x1[ch] = y1;
+        kw2_y2[ch] = kw2_y1[ch];
+        kw2_y1[ch] = y2;
 
         return y2;
     }

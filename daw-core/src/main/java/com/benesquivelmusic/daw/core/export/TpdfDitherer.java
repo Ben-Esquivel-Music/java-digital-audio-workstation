@@ -47,15 +47,34 @@ final class TpdfDitherer {
      * @return the dithered, quantized sample as a double in the target integer range
      */
     double dither(double sample, int targetBitDepth) {
-        double maxVal = (1L << (targetBitDepth - 1)) - 1;
+        double maxVal = maxValue(targetBitDepth);
 
         // Scale to target integer range
         double scaled = sample * maxVal;
 
-        // Generate TPDF noise: sum of two independent uniform random values in [-0.5, 0.5]
-        double noise = (random.nextDouble() - 0.5) + (random.nextDouble() - 0.5);
-
         // Add dither noise and round to nearest integer
-        return Math.max(-maxVal - 1, Math.min(maxVal, Math.round(scaled + noise)));
+        return Math.max(-maxVal - 1, Math.min(maxVal, Math.round(scaled + generateTpdfNoise())));
+    }
+
+    /**
+     * Generates a single TPDF noise sample.
+     *
+     * <p>The triangular distribution is produced by summing two independent
+     * uniform random values, each in the range [−0.5, +0.5].</p>
+     *
+     * @return a noise value in the range (−1.0, +1.0) with a triangular distribution
+     */
+    double generateTpdfNoise() {
+        return (random.nextDouble() - 0.5) + (random.nextDouble() - 0.5);
+    }
+
+    /**
+     * Returns the maximum integer value for the given bit depth.
+     *
+     * @param targetBitDepth the target bit depth (e.g., 16 or 24)
+     * @return the maximum value, i.e. {@code (1L << (targetBitDepth - 1)) - 1}
+     */
+    static double maxValue(int targetBitDepth) {
+        return (1L << (targetBitDepth - 1)) - 1;
     }
 }

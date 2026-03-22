@@ -162,14 +162,14 @@ public final class LeslieProcessor implements AudioProcessor {
 
                 // --- Horn path (high frequencies): Doppler + AM ---
                 hornDelayLines[ch][hornWritePos[ch]] = highBand;
-                float hornWet = readInterpolated(hornDelayLines[ch],
+                float hornWet = DspUtils.readInterpolated(hornDelayLines[ch],
                         hornWritePos[ch], hornDelaySamples, maxDopplerSamples);
                 hornWritePos[ch] = (hornWritePos[ch] + 1) % maxDopplerSamples;
                 hornWet *= (float) hornAm;
 
                 // --- Drum path (low frequencies): Doppler + AM ---
                 drumDelayLines[ch][drumWritePos[ch]] = lowBand;
-                float drumWet = readInterpolated(drumDelayLines[ch],
+                float drumWet = DspUtils.readInterpolated(drumDelayLines[ch],
                         drumWritePos[ch], drumDelaySamples, maxDopplerSamples);
                 drumWritePos[ch] = (drumWritePos[ch] + 1) % maxDopplerSamples;
                 drumWet *= (float) drumAm;
@@ -254,18 +254,4 @@ public final class LeslieProcessor implements AudioProcessor {
 
     @Override
     public int getOutputChannelCount() { return channels; }
-
-    /**
-     * Reads from a circular delay line with linear interpolation.
-     */
-    private static float readInterpolated(float[] buffer, int writePos,
-                                          double delaySamples, int bufferLength) {
-        int delayInt = (int) delaySamples;
-        double frac = delaySamples - delayInt;
-
-        int readPos0 = (writePos - delayInt + bufferLength) % bufferLength;
-        int readPos1 = (readPos0 - 1 + bufferLength) % bufferLength;
-
-        return (float) (buffer[readPos0] * (1.0 - frac) + buffer[readPos1] * frac);
-    }
 }
