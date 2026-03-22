@@ -175,11 +175,7 @@ public final class CompressorProcessor implements AudioProcessor {
     public int getOutputChannelCount() { return channels; }
 
     private void recalculateCoefficients() {
-        attackCoeff = (attackMs > 0)
-                ? Math.exp(-1.0 / (attackMs * 0.001 * sampleRate))
-                : 0.0;
-        releaseCoeff = (releaseMs > 0)
-                ? Math.exp(-1.0 / (releaseMs * 0.001 * sampleRate))
-                : 0.0;
+        attackCoeff = DspUtils.envelopeCoefficient(attackMs, sampleRate);
+        releaseCoeff = DspUtils.envelopeCoefficient(releaseMs, sampleRate);
     }
 }
