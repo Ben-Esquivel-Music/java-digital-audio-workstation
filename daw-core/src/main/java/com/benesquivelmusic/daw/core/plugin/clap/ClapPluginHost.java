@@ -91,6 +91,13 @@ public final class ClapPluginHost implements ExternalPluginHost {
     private MemorySegment inputEventsStruct;
     private MemorySegment outputEventsStruct;
 
+    // Pre-allocated channel data buffers (reused per process call)
+    private MemorySegment inputChannelPtrs;
+    private MemorySegment[] inputChannelData;
+    private MemorySegment outputChannelPtrs;
+    private MemorySegment[] outputChannelData;
+    private int allocatedFrames;
+
     /**
      * Creates a CLAP plugin host for the plugin at the given index within
      * the specified {@code .clap} library.
@@ -675,6 +682,24 @@ public final class ClapPluginHost implements ExternalPluginHost {
         outputAudioBuffer = arena.allocate(ClapBindings.CLAP_AUDIO_BUFFER_LAYOUT);
         ClapBindings.AUDIO_BUFFER_CHANNEL_COUNT.set(outputAudioBuffer, 0L, outputChannels);
 
+        // Pre-allocate channel data buffers for the configured buffer size
+        allocatedFrames = bufferSize;
+        inputChannelPtrs = arena.allocate(ValueLayout.ADDRESS, inputChannels);
+        inputChannelData = new MemorySegment[inputChannels];
+        for (int ch = 0; ch < inputChannels; ch++) {
+            inputChannelData[ch] = arena.allocate(ValueLayout.JAVA_FLOAT, allocatedFrames);
+            inputChannelPtrs.setAtIndex(ValueLayout.ADDRESS, ch, inputChannelData[ch]);
+        }
+        ClapBindings.AUDIO_BUFFER_DATA32.set(inputAudioBuffer, 0L, inputChannelPtrs);
+
+        outputChannelPtrs = arena.allocate(ValueLayout.ADDRESS, outputChannels);
+        outputChannelData = new MemorySegment[outputChannels];
+        for (int ch = 0; ch < outputChannels; ch++) {
+            outputChannelData[ch] = arena.allocate(ValueLayout.JAVA_FLOAT, allocatedFrames);
+            outputChannelPtrs.setAtIndex(ValueLayout.ADDRESS, ch, outputChannelData[ch]);
+        }
+        ClapBindings.AUDIO_BUFFER_DATA32.set(outputAudioBuffer, 0L, outputChannelPtrs);
+
         // Allocate empty input events (no events)
         inputEventsStruct = arena.allocate(ClapBindings.CLAP_INPUT_EVENTS_LAYOUT);
         MemorySegment sizeStub = ClapBindings.linker().upcallStub(
@@ -699,18 +724,11 @@ public final class ClapPluginHost implements ExternalPluginHost {
 
     private void writeInputToNative(float[][] inputBuffer, int numFrames) {
         int channels = Math.min(inputBuffer.length, inputChannels);
-
-        // Allocate array of channel pointers
-        MemorySegment channelPtrs = arena.allocate(ValueLayout.ADDRESS, channels);
         for (int ch = 0; ch < channels; ch++) {
             int framesToCopy = Math.min(inputBuffer[ch].length, numFrames);
-            MemorySegment channelData = arena.allocate(ValueLayout.JAVA_FLOAT, numFrames);
-            MemorySegment.copy(inputBuffer[ch], 0, channelData,
+            MemorySegment.copy(inputBuffer[ch], 0, inputChannelData[ch],
                     ValueLayout.JAVA_FLOAT, 0, framesToCopy);
-            channelPtrs.setAtIndex(ValueLayout.ADDRESS, ch, channelData);
         }
-
-        ClapBindings.AUDIO_BUFFER_DATA32.set(inputAudioBuffer, 0L, channelPtrs);
     }
 
     private void setupProcessStruct(int numFrames) {
@@ -728,15 +746,6 @@ public final class ClapPluginHost implements ExternalPluginHost {
 
         long outputsOffset = ClapBindings.CLAP_PROCESS_LAYOUT
                 .byteOffset(MemoryLayout.PathElement.groupElement("audio_outputs"));
-        // Allocate fresh output channel pointers
-        int channels = outputChannels;
-        MemorySegment outChannelPtrs = arena.allocate(ValueLayout.ADDRESS, channels);
-        MemorySegment[] outChannelData = new MemorySegment[channels];
-        for (int ch = 0; ch < channels; ch++) {
-            outChannelData[ch] = arena.allocate(ValueLayout.JAVA_FLOAT, numFrames);
-            outChannelPtrs.setAtIndex(ValueLayout.ADDRESS, ch, outChannelData[ch]);
-        }
-        ClapBindings.AUDIO_BUFFER_DATA32.set(outputAudioBuffer, 0L, outChannelPtrs);
         processStruct.set(ValueLayout.ADDRESS, outputsOffset, outputAudioBuffer);
 
         long inputsCountOffset = ClapBindings.CLAP_PROCESS_LAYOUT
@@ -835,12 +844,5 @@ public final class ClapPluginHost implements ExternalPluginHost {
         } catch (ReflectiveOperationException e) {
             throw new ExceptionInInitializerError(e);
         }
-    }
-
-    // Read the number of frames from setupProcessStruct
-    private int readNumFrames() {
-        long framesOffset = ClapBindings.CLAP_PROCESS_LAYOUT
-                .byteOffset(MemoryLayout.PathElement.groupElement("frames_count"));
-        return processStruct.get(ValueLayout.JAVA_INT, framesOffset);
     }
 }
