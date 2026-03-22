@@ -129,6 +129,30 @@ public final class BiquadFilter {
     }
 
     /**
+     * Evaluates the magnitude of the frequency response at the given
+     * normalized angular frequency ω (where ω = 2π·f/fs).
+     *
+     * @param omega normalized angular frequency in radians
+     * @return the magnitude response |H(e^{jω})|
+     */
+    double evaluateMagnitudeAt(double omega) {
+        double cosW = Math.cos(omega);
+        double sinW = Math.sin(omega);
+        double cos2W = Math.cos(2.0 * omega);
+        double sin2W = Math.sin(2.0 * omega);
+
+        double numReal = b0 + b1 * cosW + b2 * cos2W;
+        double numImag = -(b1 * sinW + b2 * sin2W);
+        double denReal = 1.0 + a1 * cosW + a2 * cos2W;
+        double denImag = -(a1 * sinW + a2 * sin2W);
+
+        double numMagSq = numReal * numReal + numImag * numImag;
+        double denMagSq = denReal * denReal + denImag * denImag;
+
+        return Math.sqrt(numMagSq / denMagSq);
+    }
+
+    /**
      * Recalculates the filter coefficients.
      *
      * @param type       the filter type
