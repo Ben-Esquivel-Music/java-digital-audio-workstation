@@ -19,6 +19,7 @@ import javafx.scene.text.FontWeight;
 import javafx.scene.text.Text;
 import javafx.scene.text.TextAlignment;
 
+import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
 
@@ -323,7 +324,7 @@ public final class IconNode {
 
     private static double[] parsePoints(String points) {
         String[] tokens = points.trim().split("[,\\s]+");
-        double result = new double[tokens.length];
+        double[] result = new double[tokens.length];
         for (int i = 0; i < tokens.length; i++) {
             result[i] = Double.parseDouble(tokens[i]);
         }
