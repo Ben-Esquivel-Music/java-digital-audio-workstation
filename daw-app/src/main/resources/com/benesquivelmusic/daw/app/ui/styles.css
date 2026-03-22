@@ -1,25 +1,67 @@
 /*
- * Digital Audio Workstation — Main Stylesheet
+ * Digital Audio Workstation — Main Stylesheet (Tiled Theme)
  * Color palette: Black, White, Green, Red, Purple, Orange
+ *
+ * Professional tiled/card layout with solid black background
+ * and creative neon-accent styling.
  */
 
 /* ── Color Variables (applied via literal values) ──
- *  Black:   #0d0d0d, #1a1a1a, #242424, #2e2e2e
+ *  Black:   #000000, #0d0d0d, #1a1a1a, #242424, #2e2e2e
  *  White:   #ffffff, #e0e0e0, #b0b0b0, #808080
  *  Green:   #00e676, #00c853, #1b5e20
  *  Red:     #ff1744, #d50000, #b71c1c
  *  Purple:  #e040fb, #aa00ff, #7c4dff, #4a148c
  *  Orange:  #ff9100, #ff6d00, #e65100
+ *  Cyan:    #00e5ff
  */
 
 .root-pane {
-    -fx-background-color: #0d0d0d;
+    -fx-background-color: #000000;
+}
+
+/* ── Tile / Card ── */
+.tile {
+    -fx-background-color: #111111;
+    -fx-background-radius: 10;
+    -fx-border-color: #2a2a2a;
+    -fx-border-width: 1;
+    -fx-border-radius: 10;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.5), 8, 0, 0, 2);
+}
+
+.tile-header {
+    -fx-text-fill: #e0e0e0;
+    -fx-font-size: 11px;
+    -fx-font-weight: bold;
+    -fx-text-transform: uppercase;
+    -fx-padding: 0 0 4 0;
+}
+
+.tile-header-accent-purple {
+    -fx-text-fill: #e040fb;
+}
+
+.tile-header-accent-cyan {
+    -fx-text-fill: #00e5ff;
+}
+
+.tile-header-accent-green {
+    -fx-text-fill: #00e676;
+}
+
+.tile-header-accent-orange {
+    -fx-text-fill: #ff9100;
+}
+
+.tile-header-accent-red {
+    -fx-text-fill: #ff1744;
 }
 
 /* ── Transport Bar ── */
 .transport-bar {
-    -fx-background-color: linear-gradient(to bottom, #242424, #1a1a1a);
-    -fx-border-color: transparent transparent #2e2e2e transparent;
+    -fx-background-color: linear-gradient(to bottom, #181818, #101010);
+    -fx-border-color: transparent transparent #2a2a2a transparent;
     -fx-border-width: 0 0 1 0;
 }
 
@@ -142,9 +184,11 @@
 
 /* ── Track List Panel ── */
 .track-list-panel {
-    -fx-background-color: #1a1a1a;
-    -fx-border-color: transparent #2e2e2e transparent transparent;
-    -fx-border-width: 0 1 0 0;
+    -fx-background-color: #111111;
+    -fx-background-radius: 10;
+    -fx-border-color: #2a2a2a;
+    -fx-border-width: 1;
+    -fx-border-radius: 10;
 }
 
 .panel-header {
@@ -155,14 +199,16 @@
 }
 
 .track-item {
-    -fx-background-color: #242424;
-    -fx-border-color: #2e2e2e;
+    -fx-background-color: #1a1a1a;
+    -fx-border-color: #2a2a2a;
     -fx-border-width: 0 0 1 0;
     -fx-padding: 8;
+    -fx-background-radius: 6;
 }
 
 .track-item:hover {
-    -fx-background-color: #2e2e2e;
+    -fx-background-color: #222222;
+    -fx-border-color: #7c4dff;
 }
 
 .track-name {
@@ -224,7 +270,11 @@
 
 /* ── Arrangement Panel ── */
 .arrangement-panel {
-    -fx-background-color: #0d0d0d;
+    -fx-background-color: #111111;
+    -fx-background-radius: 10;
+    -fx-border-color: #2a2a2a;
+    -fx-border-width: 1;
+    -fx-border-radius: 10;
 }
 
 .placeholder-label {
@@ -235,10 +285,11 @@
 
 /* ── Timeline Header ── */
 .timeline-header {
-    -fx-background-color: #1a1a1a;
-    -fx-border-color: transparent transparent #2e2e2e transparent;
+    -fx-background-color: #161616;
+    -fx-border-color: transparent transparent #2a2a2a transparent;
     -fx-border-width: 0 0 1 0;
     -fx-padding: 4 8;
+    -fx-background-radius: 10 10 0 0;
 }
 
 .timeline-label {
@@ -249,18 +300,20 @@
 
 /* ── Mixer Panel ── */
 .mixer-panel {
-    -fx-background-color: #1a1a1a;
-    -fx-border-color: #2e2e2e transparent transparent transparent;
-    -fx-border-width: 1 0 0 0;
+    -fx-background-color: #111111;
+    -fx-background-radius: 10;
+    -fx-border-color: #2a2a2a;
+    -fx-border-width: 1;
+    -fx-border-radius: 10;
     -fx-padding: 8;
 }
 
 .mixer-channel {
-    -fx-background-color: #242424;
-    -fx-border-color: #2e2e2e;
+    -fx-background-color: #1a1a1a;
+    -fx-border-color: #2a2a2a;
     -fx-border-width: 1;
-    -fx-border-radius: 4;
-    -fx-background-radius: 4;
+    -fx-border-radius: 6;
+    -fx-background-radius: 6;
     -fx-padding: 6;
     -fx-min-width: 70;
 }
@@ -285,14 +338,14 @@
 
 /* ── Main Split Pane ── */
 .main-split > .split-pane-divider {
-    -fx-background-color: #2e2e2e;
-    -fx-padding: 0 1 0 1;
+    -fx-background-color: transparent;
+    -fx-padding: 0 3 0 3;
 }
 
 /* ── Status Bar ── */
 .status-bar {
-    -fx-background-color: #1a1a1a;
-    -fx-border-color: #2e2e2e transparent transparent transparent;
+    -fx-background-color: #0a0a0a;
+    -fx-border-color: #2a2a2a transparent transparent transparent;
     -fx-border-width: 1 0 0 0;
 }
 
@@ -314,13 +367,13 @@
 
 /* ── Separator ── */
 .separator > .line {
-    -fx-border-color: #2e2e2e;
+    -fx-border-color: #2a2a2a;
     -fx-border-width: 1 0 0 0;
 }
 
 /* ── Scroll Bars ── */
 .scroll-bar {
-    -fx-background-color: #1a1a1a;
+    -fx-background-color: #0a0a0a;
 }
 
 .scroll-bar .thumb {
@@ -355,8 +408,8 @@
 
 /* ── Level Meters ── */
 .level-meter {
-    -fx-background-color: #1a1a1a;
-    -fx-border-color: #2e2e2e;
+    -fx-background-color: #111111;
+    -fx-border-color: #2a2a2a;
     -fx-border-width: 1;
     -fx-border-radius: 2;
 }
@@ -371,4 +424,38 @@
 
 .level-meter-fill-red {
     -fx-background-color: linear-gradient(to top, #b71c1c, #ff1744);
+}
+
+/* ── Visualization Tiles Row ── */
+.viz-tile-row {
+    -fx-background-color: #000000;
+    -fx-padding: 6 6 0 6;
+    -fx-spacing: 6;
+}
+
+.viz-tile {
+    -fx-background-color: #111111;
+    -fx-background-radius: 10;
+    -fx-border-color: #2a2a2a;
+    -fx-border-width: 1;
+    -fx-border-radius: 10;
+    -fx-padding: 8;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.5), 8, 0, 0, 2);
+}
+
+.viz-tile-label {
+    -fx-text-fill: #808080;
+    -fx-font-size: 10px;
+    -fx-font-weight: bold;
+}
+
+/* ── Main Content Area ── */
+.content-area {
+    -fx-background-color: #000000;
+    -fx-padding: 6;
+}
+
+/* ── Split Pane Background ── */
+.main-split {
+    -fx-background-color: #000000;
 }

@@ -19,6 +19,8 @@ import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 
 import java.io.IOException;
@@ -66,6 +68,7 @@ public final class MainController {
     @FXML private Label arrangementPlaceholder;
     @FXML private Label tracksPanelHeader;
     @FXML private VBox trackListPanel;
+    @FXML private HBox vizTileRow;
 
     private DawProject project;
     private PluginRegistry pluginRegistry;
@@ -85,6 +88,7 @@ public final class MainController {
         midiTrackCounter = 0;
 
         applyIcons();
+        buildVisualizationTiles();
         updateStatus();
         updateTempoDisplay();
         updateProjectInfo();
@@ -122,6 +126,45 @@ public final class MainController {
         checkpointLabel.setGraphic(IconNode.of(DawIcon.SYNC, 12));
 
         LOG.fine("Applied SVG icons from DAW icon pack");
+    }
+
+    /**
+     * Builds the visualization tile row at the bottom of the main content area.
+     * Each tile is a styled card containing a labeled display placeholder.
+     */
+    private void buildVisualizationTiles() {
+        vizTileRow.setPrefHeight(120);
+        vizTileRow.setMinHeight(100);
+
+        vizTileRow.getChildren().addAll(
+                createVizTile("WAVEFORM", DawIcon.WAVEFORM, "tile-header-accent-cyan"),
+                createVizTile("SPECTRUM", DawIcon.SPECTRUM, "tile-header-accent-green"),
+                createVizTile("LEVELS", DawIcon.VU_METER, "tile-header-accent-orange"),
+                createVizTile("LOUDNESS", DawIcon.LOUDNESS_METER, "tile-header-accent-purple"),
+                createVizTile("CORRELATION", DawIcon.CORRELATION, "tile-header-accent-red")
+        );
+
+        LOG.fine("Built visualization tile row with 5 display tiles");
+    }
+
+    /**
+     * Creates a single visualization tile with a header label and display area.
+     */
+    private VBox createVizTile(String title, DawIcon icon, String accentClass) {
+        var header = new Label(title);
+        header.getStyleClass().addAll("viz-tile-label", accentClass);
+        header.setGraphic(IconNode.of(icon, 12));
+
+        var displayArea = new StackPane();
+        displayArea.setStyle("-fx-background-color: #0a0a0a; -fx-background-radius: 6;");
+        VBox.setVgrow(displayArea, Priority.ALWAYS);
+
+        var tile = new VBox(4, header, displayArea);
+        tile.getStyleClass().add("viz-tile");
+        tile.setPadding(new Insets(8));
+        HBox.setHgrow(tile, Priority.ALWAYS);
+
+        return tile;
     }
 
     @FXML

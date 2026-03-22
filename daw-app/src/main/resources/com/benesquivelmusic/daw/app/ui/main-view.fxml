@@ -68,36 +68,44 @@
         </VBox>
     </top>
 
-    <!-- Center: Track Area / Arrangement View -->
+    <!-- Center: Tiled Content Area -->
     <center>
-        <SplitPane dividerPositions="0.22" styleClass="main-split">
-            <!-- Left: Track List -->
-            <VBox fx:id="trackListPanel" styleClass="track-list-panel">
-                <padding>
-                    <Insets top="8" right="8" bottom="8" left="8"/>
-                </padding>
-                <Label fx:id="tracksPanelHeader" text="TRACKS" styleClass="panel-header"/>
-            </VBox>
+        <VBox styleClass="content-area" spacing="6">
+            <!-- Upper row: Track List + Arrangement tiles -->
+            <SplitPane dividerPositions="0.22" styleClass="main-split" VBox.vgrow="ALWAYS">
+                <!-- Left: Track List Tile -->
+                <VBox fx:id="trackListPanel" styleClass="track-list-panel">
+                    <padding>
+                        <Insets top="8" right="8" bottom="8" left="8"/>
+                    </padding>
+                    <Label fx:id="tracksPanelHeader" text="TRACKS" styleClass="panel-header"/>
+                </VBox>
 
-            <!-- Right: Arrangement Timeline -->
-            <VBox styleClass="arrangement-panel">
-                <HBox styleClass="timeline-header" alignment="CENTER_LEFT" spacing="20">
-                    <Label text="1" styleClass="timeline-label"/>
-                    <Label text="2" styleClass="timeline-label"/>
-                    <Label text="3" styleClass="timeline-label"/>
-                    <Label text="4" styleClass="timeline-label"/>
-                    <Label text="5" styleClass="timeline-label"/>
-                    <Label text="6" styleClass="timeline-label"/>
-                    <Label text="7" styleClass="timeline-label"/>
-                    <Label text="8" styleClass="timeline-label"/>
-                </HBox>
-                <StackPane VBox.vgrow="ALWAYS">
-                    <Label fx:id="arrangementPlaceholder"
-                           text="Add tracks to begin your session"
-                           styleClass="placeholder-label"/>
-                </StackPane>
-            </VBox>
-        </SplitPane>
+                <!-- Right: Arrangement Timeline Tile -->
+                <VBox styleClass="arrangement-panel">
+                    <HBox styleClass="timeline-header" alignment="CENTER_LEFT" spacing="20">
+                        <Label text="1" styleClass="timeline-label"/>
+                        <Label text="2" styleClass="timeline-label"/>
+                        <Label text="3" styleClass="timeline-label"/>
+                        <Label text="4" styleClass="timeline-label"/>
+                        <Label text="5" styleClass="timeline-label"/>
+                        <Label text="6" styleClass="timeline-label"/>
+                        <Label text="7" styleClass="timeline-label"/>
+                        <Label text="8" styleClass="timeline-label"/>
+                    </HBox>
+                    <StackPane VBox.vgrow="ALWAYS">
+                        <Label fx:id="arrangementPlaceholder"
+                               text="Add tracks to begin your session"
+                               styleClass="placeholder-label"/>
+                    </StackPane>
+                </VBox>
+            </SplitPane>
+
+            <!-- Lower row: Visualization Display Tiles -->
+            <HBox fx:id="vizTileRow" styleClass="viz-tile-row" spacing="6">
+                <!-- Tiles added programmatically by MainController -->
+            </HBox>
+        </VBox>
     </center>
 
     <!-- Bottom: Status Bar -->
