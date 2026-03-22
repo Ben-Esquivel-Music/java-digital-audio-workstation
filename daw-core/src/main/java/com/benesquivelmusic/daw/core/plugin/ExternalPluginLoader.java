@@ -122,7 +122,7 @@ public final class ExternalPluginLoader {
         }
     }
 
-    private static void closeQuietly(URLClassLoader classLoader) {
+    static void closeQuietly(URLClassLoader classLoader) {
         if (classLoader != null) {
             try {
                 classLoader.close();

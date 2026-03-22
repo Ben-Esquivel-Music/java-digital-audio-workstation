@@ -35,7 +35,7 @@ import java.util.logging.Logger;
  * during long-running recording sessions. Uses the {@link DawIcon}
  * icon pack throughout the UI via {@link IconNode}.</p>
  */
-public class MainController {
+public final class MainController {
 
     private static final Logger LOG = Logger.getLogger(MainController.class.getName());
 

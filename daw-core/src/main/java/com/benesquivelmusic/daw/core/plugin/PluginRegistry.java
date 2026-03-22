@@ -2,7 +2,6 @@ package com.benesquivelmusic.daw.core.plugin;
 
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 
-import java.io.IOException;
 import java.net.URLClassLoader;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -58,7 +57,7 @@ public final class PluginRegistry {
         if (plugin != null) {
             plugin.dispose();
         }
-        closeClassLoader(classLoaders.remove(entry));
+        ExternalPluginLoader.closeQuietly(classLoaders.remove(entry));
         return true;
     }
 
@@ -98,20 +97,11 @@ public final class PluginRegistry {
             plugin.dispose();
         }
         for (URLClassLoader cl : classLoaders.values()) {
-            closeClassLoader(cl);
+            ExternalPluginLoader.closeQuietly(cl);
         }
         classLoaders.clear();
         loadedPlugins.clear();
         entries.clear();
     }
 
-    private static void closeClassLoader(URLClassLoader classLoader) {
-        if (classLoader != null) {
-            try {
-                classLoader.close();
-            } catch (IOException ignored) {
-                // best-effort cleanup
-            }
-        }
-    }
 }

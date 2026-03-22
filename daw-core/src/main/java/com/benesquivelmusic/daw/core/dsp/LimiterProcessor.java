@@ -155,8 +155,6 @@ public final class LimiterProcessor implements AudioProcessor {
     }
 
     private void recalculateCoefficients() {
-        releaseCoeff = (releaseMs > 0)
-                ? Math.exp(-1.0 / (releaseMs * 0.001 * sampleRate))
-                : 0.0;
+        releaseCoeff = DspUtils.envelopeCoefficient(releaseMs, sampleRate);
     }
 }

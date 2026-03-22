@@ -50,72 +50,49 @@ public final class BiquadFilter {
         double alpha = sinW0 / (2.0 * q);
         double A = Math.pow(10.0, gainDb / 40.0);
 
-        double b0, b1, b2, a0, a1, a2;
+        record RawCoeffs(double b0, double b1, double b2, double a0, double a1, double a2) {}
 
-        switch (type) {
-            case LOW_PASS -> {
-                b0 = (1.0 - cosW0) / 2.0;
-                b1 = 1.0 - cosW0;
-                b2 = (1.0 - cosW0) / 2.0;
-                a0 = 1.0 + alpha;
-                a1 = -2.0 * cosW0;
-                a2 = 1.0 - alpha;
-            }
-            case HIGH_PASS -> {
-                b0 = (1.0 + cosW0) / 2.0;
-                b1 = -(1.0 + cosW0);
-                b2 = (1.0 + cosW0) / 2.0;
-                a0 = 1.0 + alpha;
-                a1 = -2.0 * cosW0;
-                a2 = 1.0 - alpha;
-            }
-            case BAND_PASS -> {
-                b0 = alpha;
-                b1 = 0.0;
-                b2 = -alpha;
-                a0 = 1.0 + alpha;
-                a1 = -2.0 * cosW0;
-                a2 = 1.0 - alpha;
-            }
-            case PEAK_EQ -> {
-                b0 = 1.0 + alpha * A;
-                b1 = -2.0 * cosW0;
-                b2 = 1.0 - alpha * A;
-                a0 = 1.0 + alpha / A;
-                a1 = -2.0 * cosW0;
-                a2 = 1.0 - alpha / A;
-            }
+        var raw = switch (type) {
+            case LOW_PASS -> new RawCoeffs(
+                    (1.0 - cosW0) / 2.0, 1.0 - cosW0, (1.0 - cosW0) / 2.0,
+                    1.0 + alpha, -2.0 * cosW0, 1.0 - alpha);
+            case HIGH_PASS -> new RawCoeffs(
+                    (1.0 + cosW0) / 2.0, -(1.0 + cosW0), (1.0 + cosW0) / 2.0,
+                    1.0 + alpha, -2.0 * cosW0, 1.0 - alpha);
+            case BAND_PASS -> new RawCoeffs(
+                    alpha, 0.0, -alpha,
+                    1.0 + alpha, -2.0 * cosW0, 1.0 - alpha);
+            case PEAK_EQ -> new RawCoeffs(
+                    1.0 + alpha * A, -2.0 * cosW0, 1.0 - alpha * A,
+                    1.0 + alpha / A, -2.0 * cosW0, 1.0 - alpha / A);
             case LOW_SHELF -> {
                 double sqrtA2alpha = 2.0 * Math.sqrt(A) * alpha;
-                b0 = A * ((A + 1) - (A - 1) * cosW0 + sqrtA2alpha);
-                b1 = 2.0 * A * ((A - 1) - (A + 1) * cosW0);
-                b2 = A * ((A + 1) - (A - 1) * cosW0 - sqrtA2alpha);
-                a0 = (A + 1) + (A - 1) * cosW0 + sqrtA2alpha;
-                a1 = -2.0 * ((A - 1) + (A + 1) * cosW0);
-                a2 = (A + 1) + (A - 1) * cosW0 - sqrtA2alpha;
+                yield new RawCoeffs(
+                        A * ((A + 1) - (A - 1) * cosW0 + sqrtA2alpha),
+                        2.0 * A * ((A - 1) - (A + 1) * cosW0),
+                        A * ((A + 1) - (A - 1) * cosW0 - sqrtA2alpha),
+                        (A + 1) + (A - 1) * cosW0 + sqrtA2alpha,
+                        -2.0 * ((A - 1) + (A + 1) * cosW0),
+                        (A + 1) + (A - 1) * cosW0 - sqrtA2alpha);
             }
             case HIGH_SHELF -> {
                 double sqrtA2alpha = 2.0 * Math.sqrt(A) * alpha;
-                b0 = A * ((A + 1) + (A - 1) * cosW0 + sqrtA2alpha);
-                b1 = -2.0 * A * ((A - 1) + (A + 1) * cosW0);
-                b2 = A * ((A + 1) + (A - 1) * cosW0 - sqrtA2alpha);
-                a0 = (A + 1) - (A - 1) * cosW0 + sqrtA2alpha;
-                a1 = 2.0 * ((A - 1) - (A + 1) * cosW0);
-                a2 = (A + 1) - (A - 1) * cosW0 - sqrtA2alpha;
+                yield new RawCoeffs(
+                        A * ((A + 1) + (A - 1) * cosW0 + sqrtA2alpha),
+                        -2.0 * A * ((A - 1) + (A + 1) * cosW0),
+                        A * ((A + 1) + (A - 1) * cosW0 - sqrtA2alpha),
+                        (A + 1) - (A - 1) * cosW0 + sqrtA2alpha,
+                        2.0 * ((A - 1) - (A + 1) * cosW0),
+                        (A + 1) - (A - 1) * cosW0 - sqrtA2alpha);
             }
-            case NOTCH -> {
-                b0 = 1.0;
-                b1 = -2.0 * cosW0;
-                b2 = 1.0;
-                a0 = 1.0 + alpha;
-                a1 = -2.0 * cosW0;
-                a2 = 1.0 - alpha;
-            }
-            default -> throw new IllegalArgumentException("Unknown filter type: " + type);
-        }
+            case NOTCH -> new RawCoeffs(
+                    1.0, -2.0 * cosW0, 1.0,
+                    1.0 + alpha, -2.0 * cosW0, 1.0 - alpha);
+        };
 
-        // Normalize by a0
-        return new BiquadFilter(b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0);
+        return new BiquadFilter(
+                raw.b0 / raw.a0, raw.b1 / raw.a0, raw.b2 / raw.a0,
+                raw.a1 / raw.a0, raw.a2 / raw.a0);
     }
 
     /**
