@@ -88,6 +88,10 @@ public final class ExternalPluginLoader {
         Objects.requireNonNull(jarPath, "jarPath must not be null");
         Objects.requireNonNull(className, "className must not be null");
 
+        if (className.isBlank()) {
+            throw new PluginLoadException("className must not be blank");
+        }
+
         if (!Files.exists(jarPath)) {
             throw new PluginLoadException("JAR file does not exist: " + jarPath);
         }

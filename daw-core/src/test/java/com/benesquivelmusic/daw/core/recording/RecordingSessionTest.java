@@ -11,6 +11,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
+import static com.benesquivelmusic.daw.core.recording.RecordingSession.DEFAULT_MAX_SEGMENT_BYTES;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -160,6 +161,22 @@ class RecordingSessionTest {
         assertThatThrownBy(() -> new RecordingSession(AudioFormat.CD_QUALITY, tempDir,
                 Duration.ofMinutes(10), 0))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void shouldRejectZeroMaxSegmentDuration() {
+        assertThatThrownBy(() -> new RecordingSession(AudioFormat.CD_QUALITY, tempDir,
+                Duration.ZERO, DEFAULT_MAX_SEGMENT_BYTES))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxSegmentDuration");
+    }
+
+    @Test
+    void shouldRejectNegativeMaxSegmentDuration() {
+        assertThatThrownBy(() -> new RecordingSession(AudioFormat.CD_QUALITY, tempDir,
+                Duration.ofMinutes(-1), DEFAULT_MAX_SEGMENT_BYTES))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxSegmentDuration");
     }
 
     @Test

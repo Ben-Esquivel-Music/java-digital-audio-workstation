@@ -64,6 +64,9 @@ public final class RecordingSession {
         this.outputDirectory = Objects.requireNonNull(outputDirectory, "outputDirectory must not be null");
         this.maxSegmentDuration = Objects.requireNonNull(maxSegmentDuration,
                 "maxSegmentDuration must not be null");
+        if (maxSegmentDuration.isZero() || maxSegmentDuration.isNegative()) {
+            throw new IllegalArgumentException("maxSegmentDuration must be positive: " + maxSegmentDuration);
+        }
         if (maxSegmentBytes <= 0) {
             throw new IllegalArgumentException("maxSegmentBytes must be positive: " + maxSegmentBytes);
         }

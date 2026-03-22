@@ -42,6 +42,9 @@ public final class DefaultAudioExporter implements AudioExporter {
         if (audioData.length == 0) {
             throw new IllegalArgumentException("audioData must have at least one channel");
         }
+        if (baseName.isEmpty()) {
+            throw new IllegalArgumentException("baseName must not be empty");
+        }
 
         long startTime = System.currentTimeMillis();
 
@@ -54,6 +57,11 @@ public final class DefaultAudioExporter implements AudioExporter {
 
             // Step 2: Format-specific export (dithering is applied inside the exporter)
             Path outputPath = outputDir.resolve(baseName + "." + config.format().fileExtension());
+            // Prevent path traversal: ensure the resolved path stays within outputDir
+            if (!outputPath.normalize().startsWith(outputDir.toAbsolutePath().normalize())) {
+                throw new IllegalArgumentException(
+                        "baseName must not escape the output directory: " + baseName);
+            }
 
             switch (config.format()) {
                 case WAV -> WavExporter.write(converted, config.sampleRate(),

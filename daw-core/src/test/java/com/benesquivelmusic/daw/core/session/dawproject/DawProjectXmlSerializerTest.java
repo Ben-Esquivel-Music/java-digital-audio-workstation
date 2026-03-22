@@ -121,4 +121,15 @@ class DawProjectXmlSerializerTest {
         serializer.serialize(session, baos, new ArrayList<>());
         return baos.toString(java.nio.charset.StandardCharsets.UTF_8);
     }
+
+    @Test
+    void shouldProduceXmlWithoutDoctype() throws IOException {
+        var session = new SessionData("Secure Session", 120.0, 4, 4, 44100.0, List.of());
+
+        var xml = serializeToString(session);
+
+        // The serialized output must not contain DOCTYPE declarations
+        assertThat(xml.toUpperCase()).doesNotContain("<!DOCTYPE");
+        assertThat(xml.toUpperCase()).doesNotContain("ENTITY");
+    }
 }

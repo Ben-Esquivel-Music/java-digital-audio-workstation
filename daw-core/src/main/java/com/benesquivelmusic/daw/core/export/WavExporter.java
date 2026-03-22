@@ -12,6 +12,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Objects;
 
 /**
  * Exports audio data to the WAV (RIFF WAVE) file format.
@@ -70,6 +71,19 @@ final class WavExporter {
     static void write(float[][] audioData, int sampleRate, int bitDepth,
                       DitherType ditherType, AudioMetadata metadata,
                       Path outputPath) throws IOException {
+
+        Objects.requireNonNull(audioData, "audioData must not be null");
+        Objects.requireNonNull(ditherType, "ditherType must not be null");
+        Objects.requireNonNull(outputPath, "outputPath must not be null");
+        if (audioData.length == 0) {
+            throw new IllegalArgumentException("audioData must have at least one channel");
+        }
+        if (sampleRate <= 0) {
+            throw new IllegalArgumentException("sampleRate must be positive: " + sampleRate);
+        }
+        if (bitDepth != 8 && bitDepth != 16 && bitDepth != 24 && bitDepth != 32) {
+            throw new IllegalArgumentException("bitDepth must be 8, 16, 24, or 32: " + bitDepth);
+        }
 
         int channels = audioData.length;
         int numSamples = (channels > 0) ? audioData[0].length : 0;

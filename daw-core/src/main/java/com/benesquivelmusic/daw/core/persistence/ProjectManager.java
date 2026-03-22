@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -177,15 +178,27 @@ public final class ProjectManager {
             if (line.startsWith("name=")) {
                 name = line.substring("name=".length()).strip();
             } else if (line.startsWith("created_at=")) {
-                createdAt = Instant.parse(line.substring("created_at=".length()).strip());
+                try {
+                    createdAt = Instant.parse(line.substring("created_at=".length()).strip());
+                } catch (DateTimeParseException ignored) {
+                    // keep default
+                }
             } else if (line.startsWith("last_modified=")) {
-                lastModified = Instant.parse(line.substring("last_modified=".length()).strip());
+                try {
+                    lastModified = Instant.parse(line.substring("last_modified=".length()).strip());
+                } catch (DateTimeParseException ignored) {
+                    // keep default
+                }
             }
         }
         return new ProjectMetadata(name, createdAt, lastModified, projectDir);
     }
 
     static String sanitizeDirectoryName(String name) {
-        return name.replaceAll("[^a-zA-Z0-9._\\- ]", "_").strip();
+        String sanitized = name.replaceAll("[^a-zA-Z0-9._\\- ]", "_").strip();
+        if (sanitized.isEmpty() || sanitized.equals(".") || sanitized.equals("..")) {
+            throw new IllegalArgumentException("Project name results in an invalid directory name: " + name);
+        }
+        return sanitized;
     }
 }

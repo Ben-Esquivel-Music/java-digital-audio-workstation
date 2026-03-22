@@ -142,6 +142,28 @@ class DefaultAudioExporterTest {
         assertThat(result.outputPath()).exists();
     }
 
+    @Test
+    void shouldRejectEmptyBaseName() {
+        var exporter = new DefaultAudioExporter();
+        float[][] audio = generateStereoSine(44100, 0.1, 440.0);
+        var config = new AudioExportConfig(AudioExportFormat.WAV, 44100, 16, DitherType.NONE);
+
+        assertThatThrownBy(() -> exporter.export(audio, 44100, tempDir, "", config))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("baseName");
+    }
+
+    @Test
+    void shouldRejectPathTraversalInBaseName() {
+        var exporter = new DefaultAudioExporter();
+        float[][] audio = generateStereoSine(44100, 0.1, 440.0);
+        var config = new AudioExportConfig(AudioExportFormat.WAV, 44100, 16, DitherType.NONE);
+
+        assertThatThrownBy(() -> exporter.export(audio, 44100, tempDir, "../escape", config))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("baseName");
+    }
+
     private static float[][] generateStereoSine(int sampleRate, double duration, double freq) {
         int numSamples = (int) (sampleRate * duration);
         float[][] audio = new float[2][numSamples];

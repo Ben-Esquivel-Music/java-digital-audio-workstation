@@ -36,6 +36,20 @@ class ExternalPluginLoaderTest {
     }
 
     @Test
+    void shouldRejectBlankClassName() {
+        assertThatThrownBy(() -> ExternalPluginLoader.load(Path.of("/test.jar"), "  "))
+                .isInstanceOf(PluginLoadException.class)
+                .hasMessageContaining("className");
+    }
+
+    @Test
+    void shouldRejectEmptyClassName() {
+        assertThatThrownBy(() -> ExternalPluginLoader.load(Path.of("/test.jar"), ""))
+                .isInstanceOf(PluginLoadException.class)
+                .hasMessageContaining("className");
+    }
+
+    @Test
     void shouldThrowWhenJarDoesNotExist() {
         Path nonExistent = tempDir.resolve("missing.jar");
 

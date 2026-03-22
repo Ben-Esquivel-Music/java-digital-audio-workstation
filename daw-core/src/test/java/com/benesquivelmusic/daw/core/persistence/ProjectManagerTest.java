@@ -135,6 +135,51 @@ class ProjectManagerTest {
     }
 
     @Test
+    void shouldRejectBlankSanitizedDirectoryName() {
+        // All spaces strip to blank after sanitization
+        assertThatThrownBy(() -> ProjectManager.sanitizeDirectoryName("   "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("invalid directory name");
+    }
+
+    @Test
+    void shouldRejectDotSanitizedDirectoryName() {
+        assertThatThrownBy(() -> ProjectManager.sanitizeDirectoryName("."))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("invalid directory name");
+    }
+
+    @Test
+    void shouldRejectDotDotSanitizedDirectoryName() {
+        assertThatThrownBy(() -> ProjectManager.sanitizeDirectoryName(".."))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("invalid directory name");
+    }
+
+    @Test
+    void shouldOpenProjectWithMalformedDates() throws IOException {
+        var manager = createProjectManager();
+        Path projectDir = tempDir.resolve("malformed");
+        Files.createDirectories(projectDir);
+
+        // Write a project file with corrupted timestamp values
+        String content = """
+                # DAW Project File
+                name=Corrupted
+                created_at=not-a-date
+                last_modified=also-not-a-date
+                """;
+        Files.writeString(projectDir.resolve("project.daw"), content);
+
+        // Should not throw — falls back to defaults
+        var metadata = manager.openProject(projectDir);
+        assertThat(metadata.name()).isEqualTo("Corrupted");
+        assertThat(metadata.createdAt()).isNotNull();
+        assertThat(metadata.lastModified()).isNotNull();
+        manager.closeProject();
+    }
+
+    @Test
     void shouldStartCheckpointManagerOnCreate() throws IOException {
         var manager = createProjectManager();
 
