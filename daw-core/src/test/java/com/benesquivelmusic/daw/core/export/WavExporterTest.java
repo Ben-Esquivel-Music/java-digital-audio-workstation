@@ -195,6 +195,96 @@ class WavExporterTest {
         assertThat(avgErrorR).isLessThan(0.001);
     }
 
+    @Test
+    void shouldHandleMultipleChunks16Bit() throws IOException {
+        // 10000 frames > CHUNK_FRAMES (8192) — verifies chunked MemorySegment writing
+        int numSamples = 10000;
+        int sampleRate = 44100;
+        float[][] audio = new float[2][numSamples];
+        for (int i = 0; i < numSamples; i++) {
+            audio[0][i] = (float) (0.7 * Math.sin(2.0 * Math.PI * 440.0 * i / sampleRate));
+            audio[1][i] = (float) (0.7 * Math.cos(2.0 * Math.PI * 440.0 * i / sampleRate));
+        }
+        Path outputPath = tempDir.resolve("multi_chunk.wav");
+
+        WavExporter.write(audio, sampleRate, 16, DitherType.NONE,
+                AudioMetadata.EMPTY, outputPath);
+
+        byte[] data = Files.readAllBytes(outputPath);
+        var buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+
+        // Verify header
+        assertThat(new String(data, 0, 4)).isEqualTo("RIFF");
+        buf.position(22);
+        assertThat(buf.getShort()).isEqualTo((short) 2); // stereo
+        buf.position(34);
+        assertThat(buf.getShort()).isEqualTo((short) 16);
+
+        // Expected data size: 10000 samples * 2 channels * 2 bytes
+        int expectedDataSize = numSamples * 2 * 2;
+        buf.position(40);
+        assertThat(buf.getInt()).isEqualTo(expectedDataSize);
+
+        // Verify total file size
+        assertThat(data.length).isEqualTo(44 + expectedDataSize);
+
+        // Spot-check samples across chunk boundary (frame 8191 and 8192)
+        buf.position(44 + 8191 * 2 * 2); // frame 8191, channel 0
+        short sampleAtBoundary = buf.getShort();
+        double expected = 0.7 * Math.sin(2.0 * Math.PI * 440.0 * 8191 / sampleRate);
+        assertThat(sampleAtBoundary / 32767.0).isCloseTo(expected, offset(0.001));
+
+        buf.position(44 + 8192 * 2 * 2); // frame 8192 (first frame of second chunk), channel 0
+        short sampleAfterBoundary = buf.getShort();
+        expected = 0.7 * Math.sin(2.0 * Math.PI * 440.0 * 8192 / sampleRate);
+        assertThat(sampleAfterBoundary / 32767.0).isCloseTo(expected, offset(0.001));
+    }
+
+    @Test
+    void shouldHandleExactChunkBoundary() throws IOException {
+        // Exactly 8192 frames = one full chunk with no partial chunk
+        int numSamples = 8192;
+        float[][] audio = new float[1][numSamples];
+        for (int i = 0; i < numSamples; i++) {
+            audio[0][i] = (float) i / numSamples;
+        }
+        Path outputPath = tempDir.resolve("exact_chunk.wav");
+
+        WavExporter.write(audio, 44100, 16, DitherType.NONE,
+                AudioMetadata.EMPTY, outputPath);
+
+        byte[] data = Files.readAllBytes(outputPath);
+        int expectedDataSize = numSamples * 1 * 2;
+        var buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+        buf.position(40);
+        assertThat(buf.getInt()).isEqualTo(expectedDataSize);
+        assertThat(data.length).isEqualTo(44 + expectedDataSize);
+    }
+
+    @Test
+    void shouldRoundTrip32BitIntAccurately() throws IOException {
+        // 32-bit integer PCM (triggered by using DitherType.TPDF with 32-bit)
+        int numSamples = 100;
+        float[][] audio = new float[1][numSamples];
+        for (int i = 0; i < numSamples; i++) {
+            audio[0][i] = (float) (0.5 * Math.sin(2.0 * Math.PI * 1000.0 * i / 48000));
+        }
+        Path outputPath = tempDir.resolve("int32.wav");
+
+        WavExporter.write(audio, 48000, 32, DitherType.TPDF,
+                AudioMetadata.EMPTY, outputPath);
+
+        byte[] data = Files.readAllBytes(outputPath);
+        var buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+
+        // Format should be PCM (not float) because dither is applied
+        buf.position(20);
+        assertThat(buf.getShort()).isEqualTo((short) 1); // PCM
+
+        buf.position(34);
+        assertThat(buf.getShort()).isEqualTo((short) 32);
+    }
+
     private static float[][] generateStereoSine(int sampleRate, double duration, double freq) {
         int numSamples = (int) (sampleRate * duration);
         float[][] audio = new float[2][numSamples];

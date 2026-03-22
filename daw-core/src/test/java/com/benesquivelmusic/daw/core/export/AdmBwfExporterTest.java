@@ -150,6 +150,62 @@ class AdmBwfExporterTest {
         assertThat(content).contains("0.1000"); // z position
     }
 
+    @Test
+    void shouldHandleMultipleChunks() throws IOException {
+        // 10000 frames > CHUNK_FRAMES (8192) — verifies chunked MemorySegment writing
+        Path output = tempDir.resolve("multi_chunk.wav");
+        int numSamples = 10000;
+        var beds = List.of(
+                new BedChannel("bed-L", SpeakerLabel.L),
+                new BedChannel("bed-R", SpeakerLabel.R));
+        float[] bedL = new float[numSamples];
+        float[] bedR = new float[numSamples];
+        for (int i = 0; i < numSamples; i++) {
+            bedL[i] = (float) (0.5 * Math.sin(2.0 * Math.PI * 440.0 * i / 48000));
+            bedR[i] = (float) (0.3 * Math.cos(2.0 * Math.PI * 440.0 * i / 48000));
+        }
+
+        var obj = new AudioObject("obj-1", new ObjectMetadata(0.5, 0.0, 0.2, 0.1, 0.9));
+        float[] objAudio = new float[numSamples];
+        Arrays.fill(objAudio, 0.1f);
+
+        AdmBwfExporter.export(beds, List.of(bedL, bedR),
+                List.of(obj), List.of(objAudio),
+                SpeakerLayout.LAYOUT_7_1_4, 48000, 24,
+                AudioMetadata.EMPTY, output);
+
+        assertThat(output).exists();
+        byte[] data = Files.readAllBytes(output);
+        assertThat(new String(data, 0, 4, StandardCharsets.US_ASCII)).isEqualTo("RIFF");
+
+        var buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+        // Verify data chunk size: 10000 samples * 3 channels * 3 bytes
+        int expectedDataSize = numSamples * 3 * 3;
+        buf.position(40);
+        assertThat(buf.getInt()).isEqualTo(expectedDataSize);
+    }
+
+    @Test
+    void shouldHandleExactChunkBoundary() throws IOException {
+        // Exactly 8192 frames = one full chunk
+        Path output = tempDir.resolve("exact_chunk.wav");
+        int numSamples = 8192;
+        var beds = List.of(new BedChannel("bed-L", SpeakerLabel.L));
+        float[] bedL = new float[numSamples];
+        Arrays.fill(bedL, 0.4f);
+
+        AdmBwfExporter.export(beds, List.of(bedL),
+                List.of(), List.of(),
+                SpeakerLayout.LAYOUT_7_1_4, 48000, 16,
+                AudioMetadata.EMPTY, output);
+
+        byte[] data = Files.readAllBytes(output);
+        var buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+        int expectedDataSize = numSamples * 1 * 2;
+        buf.position(40);
+        assertThat(buf.getInt()).isEqualTo(expectedDataSize);
+    }
+
     private void exportSimpleSession(Path output, int bitDepth) throws IOException {
         var beds = List.of(
                 new BedChannel("bed-L", SpeakerLabel.L),

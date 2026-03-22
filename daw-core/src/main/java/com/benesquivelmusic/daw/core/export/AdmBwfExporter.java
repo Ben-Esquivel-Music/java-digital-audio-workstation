@@ -8,6 +8,9 @@ import com.benesquivelmusic.daw.sdk.spatial.SpeakerLayout;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -32,6 +35,18 @@ public final class AdmBwfExporter {
     private AdmBwfExporter() {
         // utility class
     }
+
+    /**
+     * Number of sample frames to batch into a single off-heap
+     * {@link MemorySegment} before flushing to the output stream.
+     */
+    private static final int CHUNK_FRAMES = 8192;
+
+    // Little-endian value layouts for WAV sample encoding (JEP 454)
+    private static final ValueLayout.OfFloat FLOAT_LE =
+            ValueLayout.JAVA_FLOAT.withOrder(ByteOrder.LITTLE_ENDIAN);
+    private static final ValueLayout.OfShort SHORT_LE =
+            ValueLayout.JAVA_SHORT.withOrder(ByteOrder.LITTLE_ENDIAN);
 
     /**
      * Exports an ADM BWF file containing bed channels and audio objects.
@@ -207,48 +222,77 @@ public final class AdmBwfExporter {
         };
     }
 
+    /**
+     * Writes interleaved audio samples (beds then objects) using an
+     * off-heap {@link MemorySegment} chunk buffer (FFM API — JEP 454).
+     *
+     * <p>Batches frames into a reusable off-heap buffer and writes each
+     * chunk in a single I/O call, reducing the number of
+     * {@code OutputStream.write()} calls from {@code numSamples × totalChannels}
+     * to {@code ceil(numSamples / CHUNK_FRAMES)}.</p>
+     */
     private static void writeSamples(OutputStream out, List<float[]> bedAudio,
                                      List<float[]> objectAudio, int numSamples,
                                      int totalChannels, int bitDepth,
                                      boolean isFloat) throws IOException {
         int bytesPerSample = bitDepth / 8;
-        var buf = ByteBuffer.allocate(bytesPerSample).order(ByteOrder.LITTLE_ENDIAN);
+        int bytesPerFrame = totalChannels * bytesPerSample;
 
-        for (int i = 0; i < numSamples; i++) {
-            // Bed channels first
-            for (float[] channel : bedAudio) {
-                writeSample(out, buf, channel[i], bitDepth, isFloat, bytesPerSample);
-            }
-            // Then object channels
-            for (float[] channel : objectAudio) {
-                writeSample(out, buf, channel[i], bitDepth, isFloat, bytesPerSample);
+        try (var arena = Arena.ofConfined()) {
+            int chunkByteCount = CHUNK_FRAMES * bytesPerFrame;
+            MemorySegment chunk = arena.allocate(chunkByteCount);
+            byte[] ioBuffer = new byte[chunkByteCount];
+            MemorySegment ioSegment = MemorySegment.ofArray(ioBuffer);
+
+            int framesWritten = 0;
+            while (framesWritten < numSamples) {
+                int framesToWrite = Math.min(CHUNK_FRAMES, numSamples - framesWritten);
+                int writeByteCount = framesToWrite * bytesPerFrame;
+
+                for (int i = 0; i < framesToWrite; i++) {
+                    int sampleIndex = framesWritten + i;
+                    int channelIndex = 0;
+
+                    // Bed channels first
+                    for (float[] channel : bedAudio) {
+                        long offset = (long) (i * totalChannels + channelIndex) * bytesPerSample;
+                        writeSampleToSegment(chunk, offset, channel[sampleIndex], bitDepth, isFloat);
+                        channelIndex++;
+                    }
+                    // Then object channels
+                    for (float[] channel : objectAudio) {
+                        long offset = (long) (i * totalChannels + channelIndex) * bytesPerSample;
+                        writeSampleToSegment(chunk, offset, channel[sampleIndex], bitDepth, isFloat);
+                        channelIndex++;
+                    }
+                }
+
+                MemorySegment.copy(chunk, 0, ioSegment, 0, writeByteCount);
+                out.write(ioBuffer, 0, writeByteCount);
+                framesWritten += framesToWrite;
             }
         }
     }
 
-    private static void writeSample(OutputStream out, ByteBuffer buf,
-                                    float sample, int bitDepth, boolean isFloat,
-                                    int bytesPerSample) throws IOException {
+    private static void writeSampleToSegment(MemorySegment segment, long offset,
+                                              float sample, int bitDepth, boolean isFloat) {
         double clamped = Math.max(-1.0, Math.min(1.0, sample));
-        buf.clear();
 
         if (isFloat) {
-            buf.putFloat((float) clamped);
+            segment.set(FLOAT_LE, offset, (float) clamped);
         } else {
             double maxVal = (1L << (bitDepth - 1)) - 1;
             long value = Math.round(clamped * maxVal);
             switch (bitDepth) {
-                case 16 -> buf.putShort((short) value);
+                case 16 -> segment.set(SHORT_LE, offset, (short) value);
                 case 24 -> {
-                    buf.put((byte) (value & 0xFF));
-                    buf.put((byte) ((value >> 8) & 0xFF));
-                    buf.put((byte) ((value >> 16) & 0xFF));
+                    segment.set(ValueLayout.JAVA_BYTE, offset, (byte) (value & 0xFF));
+                    segment.set(ValueLayout.JAVA_BYTE, offset + 1, (byte) ((value >> 8) & 0xFF));
+                    segment.set(ValueLayout.JAVA_BYTE, offset + 2, (byte) ((value >> 16) & 0xFF));
                 }
                 default -> throw new IllegalArgumentException("Unsupported bit depth: " + bitDepth);
             }
         }
-
-        out.write(buf.array(), 0, bytesPerSample);
     }
 
     private static int determineSampleCount(List<float[]> bedAudio, List<float[]> objectAudio) {

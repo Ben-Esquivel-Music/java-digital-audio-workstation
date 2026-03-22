@@ -5,6 +5,9 @@ import com.benesquivelmusic.daw.sdk.export.DitherType;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
@@ -32,6 +35,22 @@ final class WavExporter {
 
     /** WAV format code for IEEE floating-point data. */
     private static final short FORMAT_IEEE_FLOAT = 3;
+
+    /**
+     * Number of sample frames to batch into a single off-heap
+     * {@link MemorySegment} before flushing to the output stream.
+     * Using FFM bulk writes instead of per-sample I/O dramatically
+     * reduces the number of {@code OutputStream.write()} calls.
+     */
+    private static final int CHUNK_FRAMES = 8192;
+
+    // Little-endian value layouts for WAV sample encoding (JEP 454)
+    private static final ValueLayout.OfFloat FLOAT_LE =
+            ValueLayout.JAVA_FLOAT.withOrder(ByteOrder.LITTLE_ENDIAN);
+    private static final ValueLayout.OfShort SHORT_LE =
+            ValueLayout.JAVA_SHORT.withOrder(ByteOrder.LITTLE_ENDIAN);
+    private static final ValueLayout.OfInt INT_LE =
+            ValueLayout.JAVA_INT.withOrder(ByteOrder.LITTLE_ENDIAN);
 
     private WavExporter() {
         // utility class
@@ -99,6 +118,19 @@ final class WavExporter {
         }
     }
 
+    /**
+     * Writes interleaved audio samples to the output stream using an
+     * off-heap {@link MemorySegment} chunk buffer (FFM API — JEP 454).
+     *
+     * <p>Instead of writing one sample at a time through a tiny
+     * {@link ByteBuffer}, this method allocates a reusable off-heap buffer
+     * via {@link Arena}, fills it with a chunk of interleaved samples using
+     * structured {@link ValueLayout} operations, then flushes the entire
+     * chunk in a single I/O call. This reduces the number of
+     * {@code OutputStream.write()} calls from {@code numSamples × channels}
+     * to {@code ceil(numSamples / CHUNK_FRAMES)} — a massive reduction for
+     * large audio files.</p>
+     */
     private static void writeSamples(OutputStream out, float[][] audioData,
                                      int numSamples, int channels, int bitDepth,
                                      boolean isFloat, DitherType ditherType) throws IOException {
@@ -113,26 +145,39 @@ final class WavExporter {
         }
 
         int bytesPerSample = bitDepth / 8;
-        var buf = ByteBuffer.allocate(bytesPerSample).order(ByteOrder.LITTLE_ENDIAN);
+        int bytesPerFrame = channels * bytesPerSample;
 
-        for (int i = 0; i < numSamples; i++) {
-            for (int ch = 0; ch < channels; ch++) {
-                double sample = audioData[ch][i];
+        try (var arena = Arena.ofConfined()) {
+            int chunkByteCount = CHUNK_FRAMES * bytesPerFrame;
+            MemorySegment chunk = arena.allocate(chunkByteCount);
+            byte[] ioBuffer = new byte[chunkByteCount];
+            MemorySegment ioSegment = MemorySegment.ofArray(ioBuffer);
 
-                // Clamp to [-1.0, 1.0]
-                sample = Math.max(-1.0, Math.min(1.0, sample));
+            int framesWritten = 0;
+            while (framesWritten < numSamples) {
+                int framesToWrite = Math.min(CHUNK_FRAMES, numSamples - framesWritten);
+                int writeByteCount = framesToWrite * bytesPerFrame;
 
-                buf.clear();
+                for (int i = 0; i < framesToWrite; i++) {
+                    for (int ch = 0; ch < channels; ch++) {
+                        double sample = audioData[ch][framesWritten + i];
+                        sample = Math.max(-1.0, Math.min(1.0, sample));
 
-                if (isFloat) {
-                    buf.putFloat((float) sample);
-                } else {
-                    long quantized = quantize(sample, bitDepth, tpdf,
-                            noiseShaped != null ? noiseShaped[ch] : null);
-                    writeIntSample(buf, quantized, bitDepth);
+                        long offset = (long) (i * channels + ch) * bytesPerSample;
+
+                        if (isFloat) {
+                            chunk.set(FLOAT_LE, offset, (float) sample);
+                        } else {
+                            long quantized = quantize(sample, bitDepth, tpdf,
+                                    noiseShaped != null ? noiseShaped[ch] : null);
+                            writeIntSample(chunk, offset, quantized, bitDepth);
+                        }
+                    }
                 }
 
-                out.write(buf.array(), 0, bytesPerSample);
+                MemorySegment.copy(chunk, 0, ioSegment, 0, writeByteCount);
+                out.write(ioBuffer, 0, writeByteCount);
+                framesWritten += framesToWrite;
             }
         }
     }
@@ -161,16 +206,16 @@ final class WavExporter {
         return value;
     }
 
-    private static void writeIntSample(ByteBuffer buf, long value, int bitDepth) {
+    private static void writeIntSample(MemorySegment segment, long offset, long value, int bitDepth) {
         switch (bitDepth) {
-            case 8 -> buf.put((byte) (value & 0xFF));
-            case 16 -> buf.putShort((short) value);
+            case 8 -> segment.set(ValueLayout.JAVA_BYTE, offset, (byte) (value & 0xFF));
+            case 16 -> segment.set(SHORT_LE, offset, (short) value);
             case 24 -> {
-                buf.put((byte) (value & 0xFF));
-                buf.put((byte) ((value >> 8) & 0xFF));
-                buf.put((byte) ((value >> 16) & 0xFF));
+                segment.set(ValueLayout.JAVA_BYTE, offset, (byte) (value & 0xFF));
+                segment.set(ValueLayout.JAVA_BYTE, offset + 1, (byte) ((value >> 8) & 0xFF));
+                segment.set(ValueLayout.JAVA_BYTE, offset + 2, (byte) ((value >> 16) & 0xFF));
             }
-            case 32 -> buf.putInt((int) value);
+            case 32 -> segment.set(INT_LE, offset, (int) value);
             default -> throw new IllegalArgumentException("Unsupported bit depth: " + bitDepth);
         }
     }
