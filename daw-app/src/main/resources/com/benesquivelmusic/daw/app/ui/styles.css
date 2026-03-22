@@ -125,6 +125,17 @@
     -fx-background-color: #3a2a1a;
 }
 
+/* Pause button — cyan accent */
+.pause-button {
+    -fx-text-fill: #00e5ff;
+    -fx-border-color: #006064;
+}
+
+.pause-button:hover {
+    -fx-border-color: #00e5ff;
+    -fx-background-color: #1a2a3a;
+}
+
 /* Plugin button — purple accent */
 .plugin-button {
     -fx-text-fill: #e040fb;
@@ -172,6 +183,11 @@
 
 .status-stopped {
     -fx-text-fill: #808080;
+}
+
+.status-paused {
+    -fx-text-fill: #00e5ff;
+    -fx-font-weight: bold;
 }
 
 /* ── Time Display ── */
@@ -266,6 +282,55 @@
 .track-arm-button:hover {
     -fx-background-color: #ff1744;
     -fx-text-fill: #ffffff;
+}
+
+/* Track remove button */
+.track-remove-button {
+    -fx-background-color: #2e2e2e;
+    -fx-text-fill: #808080;
+    -fx-font-size: 10px;
+    -fx-font-weight: bold;
+    -fx-padding: 2 6;
+    -fx-background-radius: 3;
+    -fx-cursor: hand;
+}
+
+.track-remove-button:hover {
+    -fx-background-color: #ff1744;
+    -fx-text-fill: #ffffff;
+}
+
+/* Track volume slider */
+.track-volume-slider .track {
+    -fx-background-color: #2e2e2e;
+    -fx-pref-height: 4;
+    -fx-background-radius: 2;
+}
+
+.track-volume-slider .thumb {
+    -fx-background-color: #7c4dff;
+    -fx-background-radius: 6;
+    -fx-pref-width: 12;
+    -fx-pref-height: 12;
+}
+
+.track-volume-slider .thumb:hover {
+    -fx-background-color: #e040fb;
+}
+
+/* Tempo editor field */
+.tempo-editor {
+    -fx-background-color: #1a1a1a;
+    -fx-text-fill: #ff9100;
+    -fx-font-size: 15px;
+    -fx-font-weight: bold;
+    -fx-font-family: "Monospaced";
+    -fx-border-color: #7c4dff;
+    -fx-border-width: 1;
+    -fx-border-radius: 3;
+    -fx-background-radius: 3;
+    -fx-padding: 2 4;
+    -fx-pref-width: 80;
 }
 
 /* ── Arrangement Panel ── */

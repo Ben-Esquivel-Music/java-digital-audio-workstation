@@ -7,7 +7,7 @@ import java.util.UUID;
  * Represents a single track in the DAW project.
  *
  * <p>A track holds audio or MIDI data and has properties such as volume,
- * pan, mute, and solo.</p>
+ * pan, mute, solo, and armed (record-ready) state.</p>
  */
 public final class Track {
 
@@ -18,6 +18,7 @@ public final class Track {
     private double pan;
     private boolean muted;
     private boolean solo;
+    private boolean armed;
 
     /**
      * Creates a new track with the given name and type.
@@ -33,6 +34,7 @@ public final class Track {
         this.pan = 0.0;
         this.muted = false;
         this.solo = false;
+        this.armed = false;
     }
 
     /** Returns the unique identifier for this track. */
@@ -109,5 +111,15 @@ public final class Track {
     /** Sets the solo state. */
     public void setSolo(boolean solo) {
         this.solo = solo;
+    }
+
+    /** Returns whether this track is armed for recording. */
+    public boolean isArmed() {
+        return armed;
+    }
+
+    /** Sets the armed (record-ready) state. */
+    public void setArmed(boolean armed) {
+        this.armed = armed;
     }
 }
