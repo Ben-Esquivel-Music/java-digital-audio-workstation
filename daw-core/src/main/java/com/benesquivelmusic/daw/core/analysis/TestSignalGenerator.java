@@ -131,7 +131,6 @@ public final class TestSignalGenerator {
 
         for (int i = 0; i < totalSamples; i++) {
             double t = i / sampleRate;
-            double instantFreq = startFrequency + freqSlope * t;
             double phase = 2.0 * Math.PI * (startFrequency * t + 0.5 * freqSlope * t * t);
             output[i] = (float) Math.sin(phase);
         }
