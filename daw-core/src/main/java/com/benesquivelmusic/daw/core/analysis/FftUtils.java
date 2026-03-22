@@ -60,6 +60,29 @@ public final class FftUtils {
     }
 
     /**
+     * In-place inverse FFT (conjugate method).
+     *
+     * <p>Conjugates the input, runs the forward FFT, conjugates the result
+     * and divides by N.</p>
+     *
+     * @param real the real part of the frequency-domain input; overwritten with time-domain output
+     * @param imag the imaginary part; overwritten with time-domain output
+     */
+    public static void ifft(double[] real, double[] imag) {
+        int n = real.length;
+        // Conjugate
+        for (int i = 0; i < n; i++) {
+            imag[i] = -imag[i];
+        }
+        fft(real, imag);
+        // Conjugate and scale
+        for (int i = 0; i < n; i++) {
+            real[i] /= n;
+            imag[i] = -imag[i] / n;
+        }
+    }
+
+    /**
      * Creates a Hann window of the given size.
      *
      * @param size the window size
