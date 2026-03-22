@@ -136,7 +136,7 @@ public final class MainController {
         addMidiTrackButton.setGraphic(IconNode.of(DawIcon.MIDI, TOOLBAR_ICON_SIZE));
         undoButton.setGraphic(IconNode.of(DawIcon.UNDO, TOOLBAR_ICON_SIZE));
         redoButton.setGraphic(IconNode.of(DawIcon.REDO, TOOLBAR_ICON_SIZE));
-        saveButton.setGraphic(IconNode.of(DawIcon.DOWNLOAD, TOOLBAR_ICON_SIZE));
+        saveButton.setGraphic(IconNode.of(DawIcon.UPLOAD, TOOLBAR_ICON_SIZE));
         pluginsButton.setGraphic(IconNode.of(DawIcon.SETTINGS, TOOLBAR_ICON_SIZE));
 
         // Time display — clock icon prefix
@@ -439,7 +439,7 @@ public final class MainController {
             checkpointLabel.setText("Saved (checkpoint #" + count + ")");
             checkpointLabel.setGraphic(IconNode.of(DawIcon.SUCCESS, 12));
             statusBarLabel.setText("Project saved");
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.DOWNLOAD, 12));
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.UPLOAD, 12));
             LOG.info("Project saved successfully");
         } catch (IOException e) {
             statusBarLabel.setText("Save failed: " + e.getMessage());
@@ -622,7 +622,7 @@ public final class MainController {
                 });
                 updateUndoRedoState();
                 statusBarLabel.setText("Renamed track: " + oldName + " → " + newName);
-                statusBarLabel.setGraphic(IconNode.of(DawIcon.CUT, 12));
+                statusBarLabel.setGraphic(IconNode.of(DawIcon.TAG, 12));
             }
             trackItem.getChildren().set(labelIndex, nameLabel);
         };
