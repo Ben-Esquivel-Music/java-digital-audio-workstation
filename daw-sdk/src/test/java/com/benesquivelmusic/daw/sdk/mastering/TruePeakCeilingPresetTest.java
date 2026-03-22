@@ -1,4 +1,4 @@
-package com.benesquivelmusic.daw.core.dsp;
+package com.benesquivelmusic.daw.sdk.mastering;
 
 import org.junit.jupiter.api.Test;
 

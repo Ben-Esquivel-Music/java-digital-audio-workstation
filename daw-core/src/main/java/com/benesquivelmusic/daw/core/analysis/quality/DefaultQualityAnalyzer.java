@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.analysis.quality;
 
+import com.benesquivelmusic.daw.core.analysis.FftUtils;
 import com.benesquivelmusic.daw.sdk.analysis.DynamicRangeMetrics;
 import com.benesquivelmusic.daw.sdk.analysis.QualityAnalyzer;
 import com.benesquivelmusic.daw.sdk.analysis.QualityReport;
@@ -104,7 +105,7 @@ public final class DefaultQualityAnalyzer implements QualityAnalyzer {
 
         double[] real = new double[fftSize];
         double[] imag = new double[fftSize];
-        double[] window = createHannWindow(fftSize);
+        double[] window = FftUtils.createHannWindow(fftSize);
 
         // Apply window and copy to FFT buffer
         int length = Math.min(numFrames, fftSize);
@@ -112,7 +113,7 @@ public final class DefaultQualityAnalyzer implements QualityAnalyzer {
             real[i] = samples[i] * window[i];
         }
 
-        fft(real, imag);
+        FftUtils.fft(real, imag);
 
         int binCount = fftSize / 2;
         double[] magnitudes = new double[binCount];
@@ -288,14 +289,14 @@ public final class DefaultQualityAnalyzer implements QualityAnalyzer {
 
         double[] real = new double[fftSize];
         double[] imag = new double[fftSize];
-        double[] window = createHannWindow(fftSize);
+        double[] window = FftUtils.createHannWindow(fftSize);
 
         int length = Math.min(numFrames, fftSize);
         for (int i = 0; i < length; i++) {
             real[i] = samples[i] * window[i];
         }
 
-        fft(real, imag);
+        FftUtils.fft(real, imag);
 
         // Find fundamental (highest magnitude bin, excluding DC)
         int binCount = fftSize / 2;
@@ -435,55 +436,4 @@ public final class DefaultQualityAnalyzer implements QualityAnalyzer {
         return Math.max(0.0, maxRmsDb - lowRmsDb);
     }
 
-    // ----------------------------------------------------------------
-    // FFT implementation (Cooley–Tukey radix-2, in-place)
-    // ----------------------------------------------------------------
-
-    static void fft(double[] real, double[] imag) {
-        int n = real.length;
-        if (n <= 1) return;
-
-        // Bit-reversal permutation
-        for (int i = 1, j = 0; i < n; i++) {
-            int bit = n >> 1;
-            while ((j & bit) != 0) {
-                j ^= bit;
-                bit >>= 1;
-            }
-            j ^= bit;
-            if (i < j) {
-                double tempR = real[i]; real[i] = real[j]; real[j] = tempR;
-                double tempI = imag[i]; imag[i] = imag[j]; imag[j] = tempI;
-            }
-        }
-
-        // Butterfly
-        for (int len = 2; len <= n; len <<= 1) {
-            double angle = -2.0 * Math.PI / len;
-            double wR = Math.cos(angle);
-            double wI = Math.sin(angle);
-            for (int i = 0; i < n; i += len) {
-                double curR = 1.0, curI = 0.0;
-                for (int j = 0; j < len / 2; j++) {
-                    double tR = curR * real[i + j + len / 2] - curI * imag[i + j + len / 2];
-                    double tI = curR * imag[i + j + len / 2] + curI * real[i + j + len / 2];
-                    real[i + j + len / 2] = real[i + j] - tR;
-                    imag[i + j + len / 2] = imag[i + j] - tI;
-                    real[i + j] += tR;
-                    imag[i + j] += tI;
-                    double newCurR = curR * wR - curI * wI;
-                    curI = curR * wI + curI * wR;
-                    curR = newCurR;
-                }
-            }
-        }
-    }
-
-    private static double[] createHannWindow(int size) {
-        double[] window = new double[size];
-        for (int i = 0; i < size; i++) {
-            window[i] = 0.5 * (1.0 - Math.cos(2.0 * Math.PI * i / (size - 1)));
-        }
-        return window;
-    }
 }
