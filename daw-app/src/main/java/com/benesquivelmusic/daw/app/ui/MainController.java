@@ -1034,9 +1034,6 @@ public final class MainController {
 
     /**
      * Builds and wires the browser/library side panel and its toolbar controller.
-     */
-    /**
-     * Builds and wires the browser/library side panel and its toolbar controller.
      *
      * @param initiallyVisible whether to show the browser panel on startup
      */
