@@ -81,6 +81,8 @@ public final class MainController {
     private static final double TRACK_TYPE_ICON_SIZE = 18;
     /** Icon size for panel-header labels. */
     private static final double PANEL_ICON_SIZE = 16;
+    /** Icon size for sidebar toolbar buttons. */
+    private static final double SIDEBAR_ICON_SIZE = 20;
 
     @FXML private Button skipBackButton;
     @FXML private Button skipForwardButton;
@@ -108,6 +110,13 @@ public final class MainController {
     @FXML private Label ioRoutingLabel;
     @FXML private VBox trackListPanel;
     @FXML private HBox vizTileRow;
+    @FXML private VBox sidebarToolbar;
+    @FXML private Button arrangementViewButton;
+    @FXML private Button mixerViewButton;
+    @FXML private Button editorViewButton;
+    @FXML private Button projectFolderButton;
+    @FXML private Button browserButton;
+    @FXML private Button settingsButton;
 
     private DawProject project;
     private PluginRegistry pluginRegistry;
@@ -218,6 +227,14 @@ public final class MainController {
         statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
         ioRoutingLabel.setGraphic(IconNode.of(DawIcon.USB, 12));
 
+        // ── Sidebar toolbar buttons ─────────────────────────────────────────
+        arrangementViewButton.setGraphic(IconNode.of(DawIcon.TIMELINE, SIDEBAR_ICON_SIZE));
+        mixerViewButton.setGraphic(IconNode.of(DawIcon.MIXER, SIDEBAR_ICON_SIZE));
+        editorViewButton.setGraphic(IconNode.of(DawIcon.WAVEFORM, SIDEBAR_ICON_SIZE));
+        projectFolderButton.setGraphic(IconNode.of(DawIcon.FOLDER, SIDEBAR_ICON_SIZE));
+        browserButton.setGraphic(IconNode.of(DawIcon.SEARCH, SIDEBAR_ICON_SIZE));
+        settingsButton.setGraphic(IconNode.of(DawIcon.SETTINGS, SIDEBAR_ICON_SIZE));
+
         LOG.fine("Applied SVG icons from DAW icon pack");
     }
 
@@ -238,6 +255,12 @@ public final class MainController {
         redoButton.setTooltip(new Tooltip("Redo (Ctrl+Shift+Z)"));
         saveButton.setTooltip(new Tooltip("Save Project (Ctrl+S)"));
         pluginsButton.setTooltip(new Tooltip("Manage Plugins"));
+        arrangementViewButton.setTooltip(new Tooltip("Arrangement View"));
+        mixerViewButton.setTooltip(new Tooltip("Mixer View"));
+        editorViewButton.setTooltip(new Tooltip("Editor View"));
+        projectFolderButton.setTooltip(new Tooltip("Project"));
+        browserButton.setTooltip(new Tooltip("Browser"));
+        settingsButton.setTooltip(new Tooltip("Settings"));
     }
 
     /**
