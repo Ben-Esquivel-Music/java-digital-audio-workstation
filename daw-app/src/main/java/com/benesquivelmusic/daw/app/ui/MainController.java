@@ -157,6 +157,7 @@ public final class MainController {
     private boolean snapEnabled = true;
     private GridResolution gridResolution = GridResolution.QUARTER;
     private boolean projectDirty;
+    private boolean toolbarExpanded = true;
 
     // ── View navigation state ────────────────────────────────────────────────
     /** Caches each view's content node so switching back preserves state. */
@@ -401,6 +402,20 @@ public final class MainController {
     }
 
     /**
+     * Toggles the sidebar toolbar between expanded and collapsed states.
+     */
+    private void onToggleToolbar() {
+        toolbarExpanded = !toolbarExpanded;
+        sidebarToolbar.setVisible(toolbarExpanded);
+        sidebarToolbar.setManaged(toolbarExpanded);
+        String state = toolbarExpanded ? "Toolbar expanded" : "Toolbar collapsed";
+        statusBarLabel.setText(state);
+        statusBarLabel.setGraphic(IconNode.of(
+                toolbarExpanded ? DawIcon.EXPAND : DawIcon.COLLAPSE, 12));
+        LOG.fine(state);
+    }
+
+    /**
      * Applies a highlight style to the snap button when snap is enabled.
      */
     private void updateSnapButtonStyle() {
@@ -628,7 +643,7 @@ public final class MainController {
     private void applyTooltips() {
         skipBackButton.setTooltip(new Tooltip("Skip to Beginning (Home)"));
         playButton.setTooltip(new Tooltip("Play (Space)"));
-        pauseButton.setTooltip(new Tooltip("Pause (P)"));
+        pauseButton.setTooltip(new Tooltip("Pause"));
         stopButton.setTooltip(new Tooltip("Stop (Escape)"));
         recordButton.setTooltip(new Tooltip("Record (R)"));
         skipForwardButton.setTooltip(new Tooltip("Skip Forward (End)"));
@@ -637,29 +652,29 @@ public final class MainController {
         addMidiTrackButton.setTooltip(new Tooltip("Add MIDI Track (Ctrl+Shift+M)"));
         undoButton.setTooltip(new Tooltip("Undo (Ctrl+Z)"));
         redoButton.setTooltip(new Tooltip("Redo (Ctrl+Shift+Z)"));
-        snapButton.setTooltip(new Tooltip("Toggle Snap · Right-click for grid resolution"));
+        snapButton.setTooltip(new Tooltip("Toggle Snap (Ctrl+Shift+S) · Right-click for grid resolution"));
         saveButton.setTooltip(new Tooltip("Save Project (Ctrl+S)"));
         pluginsButton.setTooltip(new Tooltip("Manage Plugins"));
-        arrangementViewButton.setTooltip(new Tooltip("Arrangement View"));
-        mixerViewButton.setTooltip(new Tooltip("Mixer View"));
-        editorViewButton.setTooltip(new Tooltip("Editor View"));
-        newProjectButton.setTooltip(new Tooltip("New Project"));
-        openProjectButton.setTooltip(new Tooltip("Open Project"));
-        saveProjectButton.setTooltip(new Tooltip("Save Project"));
+        arrangementViewButton.setTooltip(new Tooltip("Arrangement View (Ctrl+1)"));
+        mixerViewButton.setTooltip(new Tooltip("Mixer View (Ctrl+2)"));
+        editorViewButton.setTooltip(new Tooltip("Editor View (Ctrl+3)"));
+        newProjectButton.setTooltip(new Tooltip("New Project (Ctrl+N)"));
+        openProjectButton.setTooltip(new Tooltip("Open Project (Ctrl+O)"));
+        saveProjectButton.setTooltip(new Tooltip("Save Project (Ctrl+S)"));
         recentProjectsButton.setTooltip(new Tooltip("Recent Projects"));
-        browserButton.setTooltip(new Tooltip("Library"));
+        browserButton.setTooltip(new Tooltip("Toggle Browser (Ctrl+B)"));
         searchButton.setTooltip(new Tooltip("Search"));
         pluginsSidebarButton.setTooltip(new Tooltip("Plugins"));
-        visualizationsButton.setTooltip(new Tooltip("Visualizations"));
-        settingsButton.setTooltip(new Tooltip("Settings"));
+        visualizationsButton.setTooltip(new Tooltip("Toggle Visualizations (Ctrl+Shift+V)"));
+        settingsButton.setTooltip(new Tooltip("Settings (Ctrl+,)"));
         homeButton.setTooltip(new Tooltip("Home"));
-        expandCollapseButton.setTooltip(new Tooltip("Expand/Collapse"));
+        expandCollapseButton.setTooltip(new Tooltip("Collapse/Expand Toolbar (Ctrl+T)"));
         helpButton.setTooltip(new Tooltip("Help"));
-        pointerToolButton.setTooltip(new Tooltip("Pointer Tool (1)"));
-        pencilToolButton.setTooltip(new Tooltip("Pencil Tool (2)"));
-        eraserToolButton.setTooltip(new Tooltip("Eraser Tool (3)"));
-        scissorsToolButton.setTooltip(new Tooltip("Scissors Tool (4)"));
-        glueToolButton.setTooltip(new Tooltip("Glue Tool (5)"));
+        pointerToolButton.setTooltip(new Tooltip("Pointer Tool (V)"));
+        pencilToolButton.setTooltip(new Tooltip("Pencil Tool (P)"));
+        eraserToolButton.setTooltip(new Tooltip("Eraser Tool (E)"));
+        scissorsToolButton.setTooltip(new Tooltip("Scissors Tool (C)"));
+        glueToolButton.setTooltip(new Tooltip("Glue Tool (G)"));
         zoomInButton.setTooltip(new Tooltip("Zoom In (Ctrl+=)"));
         zoomOutButton.setTooltip(new Tooltip("Zoom Out (Ctrl+-)"));
         zoomToFitButton.setTooltip(new Tooltip("Zoom to Fit (Ctrl+0)"));
@@ -706,11 +721,6 @@ public final class MainController {
                 new KeyCodeCombination(KeyCode.ESCAPE),
                 this::onStop);
 
-        // P — pause
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.P),
-                this::onPause);
-
         // R — record
         accelerators.put(
                 new KeyCodeCombination(KeyCode.R),
@@ -741,29 +751,29 @@ public final class MainController {
                 new KeyCodeCombination(KeyCode.Z, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN),
                 this::onRedo);
 
-        // 1 — Pointer tool
+        // V — Pointer tool
         accelerators.put(
-                new KeyCodeCombination(KeyCode.DIGIT1),
+                new KeyCodeCombination(KeyCode.V),
                 () -> selectEditTool(EditTool.POINTER));
 
-        // 2 — Pencil tool
+        // P — Pencil tool
         accelerators.put(
-                new KeyCodeCombination(KeyCode.DIGIT2),
+                new KeyCodeCombination(KeyCode.P),
                 () -> selectEditTool(EditTool.PENCIL));
 
-        // 3 — Eraser tool
+        // E — Eraser tool
         accelerators.put(
-                new KeyCodeCombination(KeyCode.DIGIT3),
+                new KeyCodeCombination(KeyCode.E),
                 () -> selectEditTool(EditTool.ERASER));
 
-        // 4 — Scissors tool
+        // C — Scissors tool
         accelerators.put(
-                new KeyCodeCombination(KeyCode.DIGIT4),
+                new KeyCodeCombination(KeyCode.C),
                 () -> selectEditTool(EditTool.SCISSORS));
 
-        // 5 — Glue tool
+        // G — Glue tool
         accelerators.put(
-                new KeyCodeCombination(KeyCode.DIGIT5),
+                new KeyCodeCombination(KeyCode.G),
                 () -> selectEditTool(EditTool.GLUE));
 
         // Ctrl+= — Zoom in
@@ -780,6 +790,56 @@ public final class MainController {
         accelerators.put(
                 new KeyCodeCombination(KeyCode.DIGIT0, KeyCombination.SHORTCUT_DOWN),
                 this::onZoomToFit);
+
+        // Ctrl+1 — Arrangement View
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.DIGIT1, KeyCombination.SHORTCUT_DOWN),
+                () -> switchView(DawView.ARRANGEMENT));
+
+        // Ctrl+2 — Mixer View
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.DIGIT2, KeyCombination.SHORTCUT_DOWN),
+                () -> switchView(DawView.MIXER));
+
+        // Ctrl+3 — Editor View
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.DIGIT3, KeyCombination.SHORTCUT_DOWN),
+                () -> switchView(DawView.EDITOR));
+
+        // Ctrl+B — Toggle Browser
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.B, KeyCombination.SHORTCUT_DOWN),
+                () -> browserPanelController.toggleBrowserPanel());
+
+        // Ctrl+Shift+V — Toggle Visualizations
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.V, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN),
+                () -> vizPanelController.toggleRowVisibility());
+
+        // Ctrl+N — New Project
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.N, KeyCombination.SHORTCUT_DOWN),
+                this::onNewProject);
+
+        // Ctrl+O — Open Project
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.O, KeyCombination.SHORTCUT_DOWN),
+                this::onOpenProject);
+
+        // Ctrl+, — Settings
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.COMMA, KeyCombination.SHORTCUT_DOWN),
+                this::onOpenSettings);
+
+        // Ctrl+Shift+S — Toggle Snap
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.S, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN),
+                this::onToggleSnap);
+
+        // Ctrl+T — Collapse/Expand Toolbar
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.T, KeyCombination.SHORTCUT_DOWN),
+                this::onToggleToolbar);
 
         LOG.fine("Registered keyboard shortcuts");
     }
