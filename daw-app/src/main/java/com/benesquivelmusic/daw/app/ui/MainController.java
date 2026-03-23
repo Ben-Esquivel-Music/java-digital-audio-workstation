@@ -190,6 +190,10 @@ public final class MainController {
     /** Controls the sidebar toolbar collapse/expand toggle and persistence. */
     private ToolbarCollapseController toolbarCollapseController;
 
+    // ── Responsive toolbar controller ────────────────────────────────────────
+    /** Auto-collapses/expands the sidebar based on window width. */
+    private ResponsiveToolbarController responsiveToolbarController;
+
     // ── Toolbar state persistence ────────────────────────────────────────────
     /** Persists toolbar state (view, tool, snap, grid, browser) across sessions. */
     private ToolbarStateStore toolbarStateStore;
@@ -443,6 +447,8 @@ public final class MainController {
     /**
      * Initializes the toolbar collapse controller, wiring it to the sidebar
      * and the expand/collapse button, and restoring persisted state.
+     * Also sets up the responsive toolbar controller that auto-collapses
+     * the sidebar at narrow window widths and expands it at wider sizes.
      *
      * @param prefs the preferences node used for state persistence
      */
@@ -450,6 +456,15 @@ public final class MainController {
         toolbarCollapseController = new ToolbarCollapseController(
                 sidebarToolbar, expandCollapseButton, prefs);
         toolbarCollapseController.initialize();
+
+        responsiveToolbarController =
+                new ResponsiveToolbarController(toolbarCollapseController);
+        sidebarToolbar.sceneProperty().addListener((_, _, scene) -> {
+            if (scene != null) {
+                responsiveToolbarController.attach(scene);
+            }
+        });
+
         LOG.fine("Toolbar collapse controller initialized");
     }
 

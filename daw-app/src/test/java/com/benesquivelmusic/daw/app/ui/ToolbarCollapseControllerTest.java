@@ -417,4 +417,63 @@ class ToolbarCollapseControllerTest {
                     .isEqualTo(ToolbarCollapseController.COLLAPSED_WIDTH);
         });
     }
+
+    // ── setCollapsed ─────────────────────────────────────────────────────────
+
+    @Test
+    void setCollapsedTrueShouldCollapseWhenExpanded() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        runOnFxThread(() -> {
+            VBox sidebar = new VBox();
+            Button toggleButton = new Button("Expand");
+            ToolbarCollapseController controller =
+                    new ToolbarCollapseController(sidebar, toggleButton, freshPrefs());
+            controller.initialize();
+
+            assertThat(controller.isCollapsed()).isFalse();
+            controller.setCollapsed(true);
+            assertThat(controller.isCollapsed()).isTrue();
+        });
+    }
+
+    @Test
+    void setCollapsedFalseShouldExpandWhenCollapsed() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        runOnFxThread(() -> {
+            VBox sidebar = new VBox();
+            Button toggleButton = new Button("Expand");
+            ToolbarCollapseController controller =
+                    new ToolbarCollapseController(sidebar, toggleButton, freshPrefs());
+            controller.initialize();
+
+            controller.toggle(); // collapse
+            assertThat(controller.isCollapsed()).isTrue();
+
+            controller.setCollapsed(false);
+            assertThat(controller.isCollapsed()).isFalse();
+        });
+    }
+
+    @Test
+    void setCollapsedShouldNoOpWhenAlreadyInRequestedState() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        runOnFxThread(() -> {
+            VBox sidebar = new VBox();
+            Button toggleButton = new Button("Expand");
+            ToolbarCollapseController controller =
+                    new ToolbarCollapseController(sidebar, toggleButton, freshPrefs());
+            controller.initialize();
+
+            // Already expanded — setCollapsed(false) should be a no-op
+            assertThat(controller.isCollapsed()).isFalse();
+            controller.setCollapsed(false);
+            assertThat(controller.isCollapsed()).isFalse();
+
+            // Collapse, then setCollapsed(true) should be a no-op
+            controller.setCollapsed(true);
+            assertThat(controller.isCollapsed()).isTrue();
+            controller.setCollapsed(true);
+            assertThat(controller.isCollapsed()).isTrue();
+        });
+    }
 }

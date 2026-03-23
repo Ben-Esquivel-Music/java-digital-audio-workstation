@@ -106,6 +106,22 @@ public final class ToolbarCollapseController {
     }
 
     /**
+     * Sets the collapsed state to the given value with animation.
+     *
+     * <p>If the requested state matches the current state, this method
+     * does nothing. Otherwise it behaves like {@link #toggle()}: persists
+     * the new state and applies the width transition.</p>
+     *
+     * @param shouldCollapse {@code true} to collapse, {@code false} to expand
+     */
+    public void setCollapsed(boolean shouldCollapse) {
+        if (collapsed == shouldCollapse) {
+            return;
+        }
+        toggle();
+    }
+
+    /**
      * Applies the current collapsed/expanded state to the sidebar.
      *
      * @param animate {@code true} to animate the width transition
