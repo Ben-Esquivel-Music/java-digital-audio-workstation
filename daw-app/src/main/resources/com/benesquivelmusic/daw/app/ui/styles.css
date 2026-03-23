@@ -560,7 +560,15 @@
     -fx-text-fill: #808080;
     -fx-font-size: 10px;
     -fx-font-weight: bold;
+    -fx-graphic-text-gap: 6;
 }
+
+/* Accent color overrides for viz tile labels — higher specificity wins over .viz-tile-label */
+.viz-tile-label.tile-header-accent-cyan   { -fx-text-fill: #00e5ff; }
+.viz-tile-label.tile-header-accent-green  { -fx-text-fill: #00e676; }
+.viz-tile-label.tile-header-accent-orange { -fx-text-fill: #ff9100; }
+.viz-tile-label.tile-header-accent-purple { -fx-text-fill: #e040fb; }
+.viz-tile-label.tile-header-accent-red    { -fx-text-fill: #ff1744; }
 
 /* ── Main Content Area ── */
 .content-area {
