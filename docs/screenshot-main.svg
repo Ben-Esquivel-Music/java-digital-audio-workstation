@@ -525,8 +525,8 @@
            C268,746 272,778 278,764 L278,833 L14,833 Z"
         fill="#00e5ff" opacity="0.04"/>
 
-  <!-- ── Tile 2: Spectrum Analyzer (purple header) ── -->
-  <text x="300" y="686" fill="#e040fb" font-size="11" font-weight="bold"
+  <!-- ── Tile 2: Spectrum Analyzer (green header) ── -->
+  <text x="300" y="686" fill="#00e676" font-size="11" font-weight="bold"
         font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">SPECTRUM</text>
   <rect x="296"  y="691" width="264" height="142" rx="4" fill="#0a0a0a"/>
   <!-- Frequency axis labels -->
@@ -581,9 +581,9 @@
   <rect x="366" y="695" width="5" height="2" fill="#00e5ff" opacity="0.9"/>
   <rect x="372" y="700" width="5" height="2" fill="#00e5ff" opacity="0.9"/>
 
-  <!-- ── Tile 3: Level Meters L/R (green header) ── -->
-  <text x="582" y="686" fill="#00e676" font-size="11" font-weight="bold"
-        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">LEVEL  L / R</text>
+  <!-- ── Tile 3: Level Meters L/R (orange header) ── -->
+  <text x="582" y="686" fill="#ff9100" font-size="11" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">LEVELS</text>
   <rect x="578"  y="691" width="264" height="142" rx="4" fill="#0a0a0a"/>
   <!-- dB scale labels -->
   <text x="582" y="704"  fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">0</text>
@@ -614,8 +614,8 @@
   <text x="718" y="754" fill="#00e676" font-size="10"
         font-family="'Courier New',monospace">RMS: -14.2</text>
 
-  <!-- ── Tile 4: Loudness (orange header) ── -->
-  <text x="864" y="686" fill="#ff9100" font-size="11" font-weight="bold"
+  <!-- ── Tile 4: Loudness (purple header) ── -->
+  <text x="864" y="686" fill="#e040fb" font-size="11" font-weight="bold"
         font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">LOUDNESS</text>
   <rect x="860"  y="691" width="264" height="142" rx="4" fill="#0a0a0a"/>
   <!-- LUFS arc gauge -->
@@ -638,8 +638,8 @@
   <text x="998" y="822" fill="#ff1744" font-size="10" font-family="'Courier New',monospace">TP: -0.8</text>
   <text x="1068" y="822" fill="#b0b0b0" font-size="10" font-family="'Courier New',monospace">LRA: 9.2</text>
 
-  <!-- ── Tile 5: Stereo Correlation (cyan header) ── -->
-  <text x="1146" y="686" fill="#00e5ff" font-size="11" font-weight="bold"
+  <!-- ── Tile 5: Stereo Correlation (red header) ── -->
+  <text x="1146" y="686" fill="#ff1744" font-size="11" font-weight="bold"
         font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">CORRELATION</text>
   <rect x="1142" y="691" width="284" height="142" rx="4" fill="#0a0a0a"/>
   <!-- Correlation meter bar (horizontal) -->
@@ -673,7 +673,7 @@
   <rect x="0" y="852" width="1440" height="48" fill="#0a0a0a"/>
   <!-- Project info -->
   <text x="16" y="880" fill="#7c4dff" font-size="11"
-        font-family="'Segoe UI',Arial,sans-serif">Production Session  ·  96 kHz / 24-bit  ·  5 tracks  ·  128.0 BPM</text>
+        font-family="'Segoe UI',Arial,sans-serif">Production Session  ·  96 kHz / 24-bit / 2ch</text>
   <!-- Auto-save indicator -->
   <text x="900" y="880" fill="#00c853" font-size="11" font-weight="bold"
         font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">Auto-save: ON</text>

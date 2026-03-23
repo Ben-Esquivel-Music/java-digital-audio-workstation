@@ -487,10 +487,10 @@
        BOTTOM VISUALIZATION TILES (y=468, h=175)
        ═══════════════════════════════════════════════════════ -->
 
-  <!-- Tile 1: Live Recording Waveform (incoming signal) -->
+  <!-- Tile 1: Waveform display (recording state) -->
   <rect x="6"   y="468" width="276" height="175" rx="10" fill="#111111" stroke="#2a2a2a" stroke-width="1" filter="url(#tileShadow2)"/>
-  <text x="18"  y="486" fill="#ff1744" font-size="11" font-weight="bold"
-        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">INPUT MONITOR</text>
+  <text x="18"  y="486" fill="#00e5ff" font-size="11" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">WAVEFORM</text>
   <rect x="14"   y="491" width="264" height="142" rx="4" fill="#0a0a0a"/>
   <!-- Input signal (new incoming recording) -->
   <path d="M14,562 C20,545 24,580 30,562 C34,540 38,584 44,562
@@ -524,9 +524,9 @@
   <text x="130" y="625" fill="#808080" font-size="10"
         font-family="'Courier New',monospace">44.1kHz / 24-bit</text>
 
-  <!-- Tile 2: Spectrum (red→orange for recording) -->
+  <!-- Tile 2: Spectrum (green header) -->
   <rect x="288"  y="468" width="276" height="175" rx="10" fill="#111111" stroke="#2a2a2a" stroke-width="1" filter="url(#tileShadow2)"/>
-  <text x="300" y="486" fill="#e040fb" font-size="11" font-weight="bold"
+  <text x="300" y="486" fill="#00e676" font-size="11" font-weight="bold"
         font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">SPECTRUM</text>
   <rect x="296"  y="491" width="264" height="142" rx="4" fill="#0a0a0a"/>
   <!-- Spectrum bars -->
@@ -561,8 +561,8 @@
 
   <!-- Tile 3: Level Meters -->
   <rect x="570"  y="468" width="276" height="175" rx="10" fill="#111111" stroke="#2a2a2a" stroke-width="1" filter="url(#tileShadow2)"/>
-  <text x="582" y="486" fill="#00e676" font-size="11" font-weight="bold"
-        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">LEVEL  L / R</text>
+  <text x="582" y="486" fill="#ff9100" font-size="11" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">LEVELS</text>
   <rect x="578"  y="491" width="264" height="142" rx="4" fill="#0a0a0a"/>
   <text x="582" y="504"  fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">0</text>
   <text x="582" y="527"  fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">-6</text>
@@ -585,9 +585,9 @@
   <text x="718" y="554" fill="#00e676" font-size="10"
         font-family="'Courier New',monospace">RMS: -12.8</text>
 
-  <!-- Tile 4: Loudness -->
+  <!-- Tile 4: Loudness (purple header) -->
   <rect x="852"  y="468" width="276" height="175" rx="10" fill="#111111" stroke="#2a2a2a" stroke-width="1" filter="url(#tileShadow2)"/>
-  <text x="864" y="486" fill="#ff9100" font-size="11" font-weight="bold"
+  <text x="864" y="486" fill="#e040fb" font-size="11" font-weight="bold"
         font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">LOUDNESS</text>
   <rect x="860"  y="491" width="264" height="142" rx="4" fill="#0a0a0a"/>
   <path d="M994,590 m-80,0 a80,80 0 0 1 160,0" fill="none" stroke="#1e1e1e" stroke-width="16"/>
@@ -604,9 +604,9 @@
   <text x="998" y="622" fill="#ff1744" font-size="10" font-family="'Courier New',monospace">TP: -0.3</text>
   <text x="1068" y="622" fill="#b0b0b0" font-size="10" font-family="'Courier New',monospace">LRA: 7.1</text>
 
-  <!-- Tile 5: Correlation -->
+  <!-- Tile 5: Correlation (red header) -->
   <rect x="1134" y="468" width="300" height="175" rx="10" fill="#111111" stroke="#2a2a2a" stroke-width="1" filter="url(#tileShadow2)"/>
-  <text x="1146" y="486" fill="#00e5ff" font-size="11" font-weight="bold"
+  <text x="1146" y="486" fill="#ff1744" font-size="11" font-weight="bold"
         font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">CORRELATION</text>
   <rect x="1142" y="491" width="284" height="142" rx="4" fill="#0a0a0a"/>
   <line x1="1150" y1="530" x2="1418" y2="530" stroke="#1e1e1e" stroke-width="1"/>
@@ -632,7 +632,7 @@
   <line x1="0" y1="851" x2="1440" y2="851" stroke="#ff1744" stroke-width="1" opacity="0.3"/>
   <rect x="0" y="852" width="1440" height="48" fill="#0a0a0a"/>
   <text x="16" y="880" fill="#7c4dff" font-size="11"
-        font-family="'Segoe UI',Arial,sans-serif">Session: Untitled  ·  44.1 kHz / 24-bit  ·  4 tracks  ·  120.0 BPM</text>
+        font-family="'Segoe UI',Arial,sans-serif">Untitled Project  ·  44.1 kHz / 24-bit / 2ch</text>
   <text x="860" y="880" fill="#ff9100" font-size="11" font-weight="bold"
         font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">Auto-save: ON</text>
   <line x1="1060" y1="856" x2="1060" y2="895" stroke="#2a2a2a" stroke-width="1"/>
