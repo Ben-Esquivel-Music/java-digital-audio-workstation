@@ -1,10 +1,13 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
+import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
+import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.sdk.visualization.CorrelationData;
 import com.benesquivelmusic.daw.sdk.visualization.GoniometerData;
 
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.control.Label;
 import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
@@ -40,10 +43,23 @@ public final class CorrelationDisplay extends Region {
 
     private static final int HISTORY_SIZE = 120;
 
+    private static final double OVERLAY_ICON_SIZE = 9;
+
     private final Canvas canvas;
     private final double[] correlationHistory;
     private int historyIndex;
     private int historyCount;
+
+    /** Icon overlay label for the left channel end of the stereo balance bar. */
+    private final Label leftLabel;
+    /** Icon overlay label for the right channel end of the stereo balance bar. */
+    private final Label rightLabel;
+    /** Icon overlay label for the center position of the stereo balance bar. */
+    private final Label centerLabel;
+    /** Icon overlay label for the Mid axis of the goniometer (only visible in goniometer mode). */
+    private final Label midLabel;
+    /** Icon overlay label for the Side axis of the goniometer (only visible in goniometer mode). */
+    private final Label sideLabel;
 
     private double correlation = 1.0;
     private double midLevel = -120.0;
@@ -66,6 +82,29 @@ public final class CorrelationDisplay extends Region {
 
         correlationHistory = new double[HISTORY_SIZE];
         java.util.Arrays.fill(correlationHistory, 1.0);
+
+        // Icon overlay labels — replace the single-letter "L", "R", "C", "M", "S" canvas text.
+        // BACK (◄) = left channel, FORWARD (►) = right channel, PAN = centre position.
+        leftLabel   = makeIconLabel(DawIcon.BACK,    OVERLAY_ICON_SIZE);
+        rightLabel  = makeIconLabel(DawIcon.FORWARD, OVERLAY_ICON_SIZE);
+        centerLabel = makeIconLabel(DawIcon.PAN,     OVERLAY_ICON_SIZE);
+        // MONO = Mid (mono sum), STEREO = Side (stereo difference).
+        midLabel    = makeIconLabel(DawIcon.MONO,    OVERLAY_ICON_SIZE);
+        sideLabel   = makeIconLabel(DawIcon.STEREO,  OVERLAY_ICON_SIZE);
+
+        // Mid/side labels are only relevant in goniometer mode; hide until enabled.
+        midLabel.setVisible(false);
+        sideLabel.setVisible(false);
+
+        getChildren().addAll(leftLabel, rightLabel, centerLabel, midLabel, sideLabel);
+    }
+
+    private static Label makeIconLabel(DawIcon icon, double size) {
+        Label label = new Label();
+        label.setGraphic(IconNode.of(icon, size));
+        label.setMouseTransparent(true);
+        label.setManaged(false);
+        return label;
     }
 
     /**
@@ -104,6 +143,8 @@ public final class CorrelationDisplay extends Region {
      */
     public void setGoniometerMode(boolean enabled) {
         this.goniometerMode = enabled;
+        midLabel.setVisible(enabled);
+        sideLabel.setVisible(enabled);
         render();
     }
 
@@ -186,15 +227,8 @@ public final class CorrelationDisplay extends Region {
         gc.setFill(BALANCE_COLOR);
         gc.fillRect(balanceX - 3, meterY - 2, 6, barHeight + 4);
 
-        // Balance labels
-        gc.setFill(TEXT_COLOR);
-        gc.setFont(Font.font(9));
-        gc.setTextAlign(TextAlignment.LEFT);
-        gc.fillText("L", barX, meterY - 4);
-        gc.setTextAlign(TextAlignment.RIGHT);
-        gc.fillText("R", barX + barWidth, meterY - 4);
-        gc.setTextAlign(TextAlignment.CENTER);
-        gc.fillText("C", barX + barWidth / 2, meterY - 4);
+        // Balance labels — replaced by icon overlay labels (leftLabel, centerLabel, rightLabel)
+        // positioned in layoutChildren().
 
         // --- Correlation history ---
         if (historyCount > 1 && h > historyY + 20) {
@@ -236,12 +270,7 @@ public final class CorrelationDisplay extends Region {
             gc.fillOval(px - 1, py - 1, 2, 2);
         }
 
-        // Labels
-        gc.setFill(TEXT_COLOR);
-        gc.setFont(Font.font(9));
-        gc.setTextAlign(TextAlignment.CENTER);
-        gc.fillText("M", centerX, centerY - radius - 4);
-        gc.fillText("S", centerX + radius + 8, centerY + 3);
+        // Labels — replaced by icon overlay labels (midLabel, sideLabel) positioned in layoutChildren().
     }
 
     private Color getCorrelationColor(double c) {
@@ -252,7 +281,43 @@ public final class CorrelationDisplay extends Region {
 
     @Override
     protected void layoutChildren() {
-        super.layoutChildren();
+        double w = getWidth();
+        double h = getHeight();
+
+        // The canvas width/height are already bound to the region dimensions; no explicit resize needed.
+        // Position icon overlay labels at the same coordinates used by the old fillText() calls.
+        double topSection = h * 0.6;
+        double meterY     = topSection + 10;
+
+        double barWidth  = w - 40;
+        double barX      = 20;
+        double iconHalf  = OVERLAY_ICON_SIZE / 2;
+
+        // Left-channel icon: left-aligned at the start of the balance bar.
+        placeLabel(leftLabel,   barX - iconHalf,              meterY - OVERLAY_ICON_SIZE - 2);
+        // Right-channel icon: right-aligned at the end of the balance bar.
+        placeLabel(rightLabel,  barX + barWidth - iconHalf,   meterY - OVERLAY_ICON_SIZE - 2);
+        // Centre-pan icon: centred on the midpoint of the balance bar.
+        placeLabel(centerLabel, barX + barWidth / 2 - iconHalf, meterY - OVERLAY_ICON_SIZE - 2);
+
+        if (goniometerMode) {
+            double centerX = w / 2;
+            double centerY = h * 0.3;
+            double radius  = Math.min(centerX - 10, h * 0.25);
+
+            // Mid icon above the top of the goniometer circle.
+            placeLabel(midLabel,  centerX - iconHalf,           centerY - radius - OVERLAY_ICON_SIZE - 2);
+            // Side icon to the right of the goniometer circle.
+            placeLabel(sideLabel, centerX + radius + 2,         centerY - iconHalf);
+        }
+
         render();
+    }
+
+    /** Moves a non-managed label to the given (x, y) top-left position. */
+    private static void placeLabel(Label label, double x, double y) {
+        double pw = label.prefWidth(-1);
+        double ph = label.prefHeight(-1);
+        label.resizeRelocate(x, y, pw, ph);
     }
 }
