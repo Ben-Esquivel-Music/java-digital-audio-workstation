@@ -49,8 +49,8 @@ class ExternalPluginEntryTest {
 
     @Test
     void shouldImplementToString() {
-        ExternalPluginEntry entry = new ExternalPluginEntry(
-                Path.of("/plugins/test.jar"), "com.example.Plugin");
-        assertThat(entry.toString()).contains("/plugins/test.jar", "com.example.Plugin");
+        Path jarPath = Path.of("/plugins/test.jar");
+        ExternalPluginEntry entry = new ExternalPluginEntry(jarPath, "com.example.Plugin");
+        assertThat(entry.toString()).contains(jarPath.toString(), "com.example.Plugin");
     }
 }

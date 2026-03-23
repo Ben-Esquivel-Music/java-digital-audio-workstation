@@ -57,7 +57,11 @@ public final class SofaFileParser {
             if (fileSize < HDF5_SIGNATURE.length) {
                 throw new IOException("File too small to be a valid SOFA/HDF5 file");
             }
-            ByteBuffer buffer = channel.map(FileChannel.MapMode.READ_ONLY, 0, fileSize);
+            ByteBuffer buffer = ByteBuffer.allocate((int) fileSize);
+            while (buffer.hasRemaining()) {
+                channel.read(buffer);
+            }
+            buffer.flip();
             buffer.order(ByteOrder.LITTLE_ENDIAN);
             return parseHdf5(buffer, sofaFile.getFileName().toString());
         }
