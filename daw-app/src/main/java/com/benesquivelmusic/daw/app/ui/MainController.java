@@ -155,6 +155,7 @@ public final class MainController {
         applyIcons();
         applyTooltips();
         applyButtonPressAnimations();
+        preventButtonTruncation();
         buildVisualizationTiles();
         setupTempoEditor();
         updateStatus();
@@ -1345,6 +1346,21 @@ public final class MainController {
             pressDown.stop();
             springBack.playFromStart();
         });
+    }
+
+    /**
+     * Prevents transport-bar buttons and the status label from truncating their
+     * text by setting each control's minimum width to its preferred width.
+     */
+    private void preventButtonTruncation() {
+        for (Button btn : new Button[]{
+                skipBackButton, playButton, pauseButton, stopButton, recordButton,
+                skipForwardButton, loopButton,
+                addAudioTrackButton, addMidiTrackButton,
+                undoButton, redoButton, saveButton, pluginsButton}) {
+            btn.setMinWidth(Region.USE_PREF_SIZE);
+        }
+        statusLabel.setMinWidth(Region.USE_PREF_SIZE);
     }
 
     // ── Status update ────────────────────────────────────────────────────────
