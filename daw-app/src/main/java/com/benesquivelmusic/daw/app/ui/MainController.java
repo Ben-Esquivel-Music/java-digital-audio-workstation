@@ -106,6 +106,7 @@ public final class MainController {
     @FXML private Button addMidiTrackButton;
     @FXML private Button undoButton;
     @FXML private Button redoButton;
+    @FXML private Button snapButton;
     @FXML private Button saveButton;
     @FXML private Button pluginsButton;
     @FXML private Label statusLabel;
@@ -151,6 +152,7 @@ public final class MainController {
     private int midiTrackCounter;
     private boolean loopEnabled;
     private boolean snapEnabled = true;
+    private GridResolution gridResolution = GridResolution.QUARTER;
     private boolean projectDirty;
 
     // ── View navigation state ────────────────────────────────────────────────
@@ -226,6 +228,7 @@ public final class MainController {
         startMainAnimTimer();
         initializeViewNavigation();
         initializeEditTools();
+        initializeSnapControls();
 
         // Register keyboard shortcuts after the scene is available
         playButton.sceneProperty().addListener((_, _, scene) -> {
@@ -365,6 +368,82 @@ public final class MainController {
         }
     }
 
+    // ── Snap / grid controls ─────────────────────────────────────────────────
+
+    /**
+     * Wires the snap toggle button and builds the grid-resolution context menu
+     * shown on right-click.
+     */
+    private void initializeSnapControls() {
+        snapButton.setOnAction(event -> onToggleSnap());
+        updateSnapButtonStyle();
+        buildGridResolutionContextMenu();
+    }
+
+    /**
+     * Toggles snap-to-grid on or off and updates the visual state.
+     */
+    private void onToggleSnap() {
+        snapEnabled = !snapEnabled;
+        updateSnapButtonStyle();
+        String snapState = snapEnabled ? "Snap to grid enabled" : "Snap to grid disabled";
+        statusBarLabel.setText(snapState);
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.SNAP, 12));
+        LOG.fine(snapState);
+    }
+
+    /**
+     * Applies a highlight style to the snap button when snap is enabled.
+     */
+    private void updateSnapButtonStyle() {
+        snapButton.setStyle(snapEnabled
+                ? "-fx-background-color: #b388ff; -fx-text-fill: #0d0d0d;" : "");
+    }
+
+    /**
+     * Builds a right-click context menu on the snap button that allows the user
+     * to select a grid resolution.
+     */
+    private void buildGridResolutionContextMenu() {
+        ContextMenu gridMenu = new ContextMenu();
+        for (GridResolution resolution : GridResolution.values()) {
+            MenuItem item = new MenuItem(resolution.displayName());
+            item.setOnAction(event -> selectGridResolution(resolution));
+            gridMenu.getItems().add(item);
+        }
+        snapButton.setContextMenu(gridMenu);
+    }
+
+    /**
+     * Selects the given grid resolution and updates the status bar.
+     *
+     * @param resolution the grid resolution to activate
+     */
+    private void selectGridResolution(GridResolution resolution) {
+        gridResolution = resolution;
+        statusBarLabel.setText("Grid: " + resolution.displayName());
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.SNAP, 12));
+        LOG.fine(() -> "Grid resolution changed to: " + resolution.displayName());
+    }
+
+    /**
+     * Returns whether snap-to-grid is currently enabled.
+     *
+     * @return {@code true} if snap is enabled
+     */
+    public boolean isSnapEnabled() {
+        return snapEnabled;
+    }
+
+    /**
+     * Returns the currently active grid resolution.
+     *
+     * @return the active {@link GridResolution}
+     */
+    public GridResolution getGridResolution() {
+        return gridResolution;
+    }
+
     /**
      * Applies SVG icons from the DAW icon pack to all UI controls.
      *
@@ -389,6 +468,7 @@ public final class MainController {
         addMidiTrackButton.setGraphic(IconNode.of(DawIcon.KEYBOARD, TOOLBAR_ICON_SIZE));
         undoButton.setGraphic(IconNode.of(DawIcon.UNDO, TOOLBAR_ICON_SIZE));
         redoButton.setGraphic(IconNode.of(DawIcon.REDO, TOOLBAR_ICON_SIZE));
+        snapButton.setGraphic(IconNode.of(DawIcon.SNAP, TOOLBAR_ICON_SIZE));
         saveButton.setGraphic(IconNode.of(DawIcon.DOWNLOAD, TOOLBAR_ICON_SIZE));
         pluginsButton.setGraphic(IconNode.of(DawIcon.EQ, TOOLBAR_ICON_SIZE));
 
@@ -450,6 +530,7 @@ public final class MainController {
         addMidiTrackButton.setTooltip(new Tooltip("Add MIDI Track (Ctrl+Shift+M)"));
         undoButton.setTooltip(new Tooltip("Undo (Ctrl+Z)"));
         redoButton.setTooltip(new Tooltip("Redo (Ctrl+Shift+Z)"));
+        snapButton.setTooltip(new Tooltip("Toggle Snap · Right-click for grid resolution"));
         saveButton.setTooltip(new Tooltip("Save Project (Ctrl+S)"));
         pluginsButton.setTooltip(new Tooltip("Manage Plugins"));
         arrangementViewButton.setTooltip(new Tooltip("Arrangement View"));
@@ -1417,6 +1498,7 @@ public final class MainController {
         snapItem.setGraphic(IconNode.of(DawIcon.SNAP, 14));
         snapItem.setOnAction(_ -> {
             snapEnabled = !snapEnabled;
+            updateSnapButtonStyle();
             snapItem.setText(snapEnabled ? "Snap: ON" : "Snap: OFF");
             statusBarLabel.setText(snapEnabled ? "Snap to grid enabled" : "Snap to grid disabled");
             statusBarLabel.setGraphic(IconNode.of(DawIcon.SNAP, 12));
@@ -1775,7 +1857,7 @@ public final class MainController {
                 skipBackButton, playButton, pauseButton, stopButton, recordButton,
                 skipForwardButton, loopButton,
                 addAudioTrackButton, addMidiTrackButton,
-                undoButton, redoButton, saveButton, pluginsButton}) {
+                undoButton, redoButton, snapButton, saveButton, pluginsButton}) {
             applyPressAnimation(btn);
         }
     }
@@ -1813,7 +1895,7 @@ public final class MainController {
                 skipBackButton, playButton, pauseButton, stopButton, recordButton,
                 skipForwardButton, loopButton,
                 addAudioTrackButton, addMidiTrackButton,
-                undoButton, redoButton, saveButton, pluginsButton}) {
+                undoButton, redoButton, snapButton, saveButton, pluginsButton}) {
             btn.setMinWidth(Region.USE_PREF_SIZE);
         }
         statusLabel.setMinWidth(Region.USE_PREF_SIZE);
