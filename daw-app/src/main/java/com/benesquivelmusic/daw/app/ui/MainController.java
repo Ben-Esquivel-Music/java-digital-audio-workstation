@@ -917,6 +917,18 @@ public final class MainController {
     }
 
     @FXML
+    private void onOpenSettings() {
+        statusBarLabel.setText("Opening settings...");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.SETTINGS, 12));
+        Preferences settingsPrefs = Preferences.userNodeForPackage(SettingsModel.class);
+        SettingsModel settingsModel = new SettingsModel(settingsPrefs);
+        SettingsDialog dialog = new SettingsDialog(settingsModel);
+        dialog.showAndWait();
+        statusBarLabel.setText("Settings closed");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
+    }
+
+    @FXML
     private void onUndo() {
         if (undoManager.undo()) {
             statusBarLabel.setText("Undo: " + undoManager.redoDescription());

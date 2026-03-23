@@ -135,7 +135,7 @@
             <Button fx:id="visualizationsButton" text="Visualizations"
                     styleClass="sidebar-button"/>
             <Button fx:id="settingsButton" text="Settings"
-                    styleClass="sidebar-button"/>
+                    styleClass="sidebar-button" onAction="#onOpenSettings"/>
 
             <Separator styleClass="sidebar-separator"/>
 
