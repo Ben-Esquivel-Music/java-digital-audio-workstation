@@ -34,6 +34,7 @@ public final class ProjectManager {
 
     private final Map<String, ProjectMetadata> recentProjects = new LinkedHashMap<>();
     private final CheckpointManager checkpointManager;
+    private final RecentProjectsStore recentProjectsStore;
 
     private ProjectMetadata currentProject;
 
@@ -43,8 +44,20 @@ public final class ProjectManager {
      * @param checkpointManager the checkpoint manager to use for auto-saves
      */
     public ProjectManager(CheckpointManager checkpointManager) {
+        this(checkpointManager, null);
+    }
+
+    /**
+     * Creates a project manager with the given checkpoint manager and
+     * recent-projects store for cross-session persistence.
+     *
+     * @param checkpointManager   the checkpoint manager to use for auto-saves
+     * @param recentProjectsStore the store for persisting recent project paths (may be {@code null})
+     */
+    public ProjectManager(CheckpointManager checkpointManager, RecentProjectsStore recentProjectsStore) {
         this.checkpointManager = Objects.requireNonNull(checkpointManager,
                 "checkpointManager must not be null");
+        this.recentProjectsStore = recentProjectsStore;
     }
 
     /**
@@ -68,6 +81,7 @@ public final class ProjectManager {
 
         currentProject = metadata;
         recentProjects.put(projectDir.toString(), metadata);
+        recordRecentProject(projectDir);
         checkpointManager.start(projectDir);
         return metadata;
     }
@@ -92,6 +106,7 @@ public final class ProjectManager {
 
         currentProject = metadata;
         recentProjects.put(projectDirectory.toString(), metadata);
+        recordRecentProject(projectDirectory);
         checkpointManager.start(projectDirectory);
         return metadata;
     }
@@ -150,6 +165,34 @@ public final class ProjectManager {
      */
     public CheckpointManager getCheckpointManager() {
         return checkpointManager;
+    }
+
+    /**
+     * Returns the recent-projects store, or {@code null} if none was configured.
+     *
+     * @return the recent-projects store
+     */
+    public RecentProjectsStore getRecentProjectsStore() {
+        return recentProjectsStore;
+    }
+
+    /**
+     * Returns the list of recently opened project paths (most recent first),
+     * or an empty list if no {@link RecentProjectsStore} was configured.
+     *
+     * @return list of recent project paths
+     */
+    public List<Path> getRecentProjectPaths() {
+        if (recentProjectsStore == null) {
+            return List.of();
+        }
+        return recentProjectsStore.getRecentProjectPaths();
+    }
+
+    private void recordRecentProject(Path projectDir) {
+        if (recentProjectsStore != null) {
+            recentProjectsStore.addRecentProject(projectDir);
+        }
     }
 
     private void writeProjectFile(ProjectMetadata metadata) throws IOException {

@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.prefs.Preferences;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -20,6 +21,15 @@ class ProjectManagerTest {
         AutoSaveConfig config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
         CheckpointManager checkpointManager = new CheckpointManager(config);
         return new ProjectManager(checkpointManager);
+    }
+
+    private ProjectManager createProjectManagerWithRecentStore() throws Exception {
+        AutoSaveConfig config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
+        CheckpointManager checkpointManager = new CheckpointManager(config);
+        Preferences prefs = Preferences.userRoot().node("/com/benesquivelmusic/daw/test/pm-recent");
+        prefs.clear();
+        RecentProjectsStore store = new RecentProjectsStore(prefs, 5);
+        return new ProjectManager(checkpointManager, store);
     }
 
     @Test
@@ -187,5 +197,47 @@ class ProjectManagerTest {
 
         assertThat(manager.getCheckpointManager().isRunning()).isTrue();
         manager.closeProject();
+    }
+
+    @Test
+    void shouldPersistRecentProjectOnCreate() throws Exception {
+        ProjectManager manager = createProjectManagerWithRecentStore();
+
+        manager.createProject("Song A", tempDir);
+
+        assertThat(manager.getRecentProjectPaths()).hasSize(1);
+        manager.closeProject();
+    }
+
+    @Test
+    void shouldPersistRecentProjectOnOpen() throws Exception {
+        ProjectManager manager = createProjectManagerWithRecentStore();
+        ProjectMetadata created = manager.createProject("Song B", tempDir);
+        Path projectDir = created.projectPath();
+        manager.closeProject();
+
+        manager.openProject(projectDir);
+
+        // Created + opened = same project, so still 1 entry
+        assertThat(manager.getRecentProjectPaths()).hasSize(1);
+        manager.closeProject();
+    }
+
+    @Test
+    void shouldReturnEmptyRecentPathsWithoutStore() {
+        ProjectManager manager = createProjectManager();
+        assertThat(manager.getRecentProjectPaths()).isEmpty();
+    }
+
+    @Test
+    void shouldReturnRecentProjectsStore() throws Exception {
+        ProjectManager manager = createProjectManagerWithRecentStore();
+        assertThat(manager.getRecentProjectsStore()).isNotNull();
+    }
+
+    @Test
+    void shouldReturnNullStoreWhenNotConfigured() {
+        ProjectManager manager = createProjectManager();
+        assertThat(manager.getRecentProjectsStore()).isNull();
     }
 }
