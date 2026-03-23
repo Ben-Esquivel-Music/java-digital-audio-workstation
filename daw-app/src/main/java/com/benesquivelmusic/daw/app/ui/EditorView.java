@@ -70,10 +70,6 @@ public final class EditorView extends VBox {
     private static final Color VELOCITY_BG = Color.web("#0d0d1a");
     private static final Color VELOCITY_BAR_COLOR = Color.web("#00e5ff", 0.5);
 
-    private static final String[] NOTE_NAMES = {
-        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
-    };
-
     private final Label header;
     private final StackPane contentArea;
     private final Label placeholderLabel;
