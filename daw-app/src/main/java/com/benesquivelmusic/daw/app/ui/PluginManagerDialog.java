@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.plugin.PluginLoadException;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
+import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
@@ -58,6 +59,7 @@ public final class PluginManagerDialog extends Dialog<Void> {
 
         setTitle("Manage Plugins");
         setHeaderText("Add or remove external plugins");
+        setGraphic(IconNode.of(DawIcon.SETTINGS, 24));
 
         // --- Plugin list ---
         listView = new ListView<>(entryList);
@@ -74,10 +76,12 @@ public final class PluginManagerDialog extends Dialog<Void> {
                     if (plugin != null) {
                         PluginDescriptor desc = plugin.getDescriptor();
                         setText(desc.name() + " (" + desc.id() + ") — " + entry.jarPath().getFileName());
+                        // Use detail icon for known plugin types, falls back to type icon
+                        setGraphic(IconNode.of(pluginDetailIcon(desc), 14));
                     } else {
                         setText(entry.className() + " — " + entry.jarPath().getFileName());
+                        setGraphic(IconNode.of(DawIcon.KNOB, 14));
                     }
-                    setGraphic(IconNode.of(DawIcon.SETTINGS, 14));
                 }
             }
         });
@@ -88,11 +92,11 @@ public final class PluginManagerDialog extends Dialog<Void> {
         HBox.setHgrow(jarPathField, Priority.ALWAYS);
 
         Button browseButton = new Button("Browse…");
-        browseButton.setGraphic(IconNode.of(DawIcon.FOLDER, BUTTON_ICON_SIZE));
+        browseButton.setGraphic(IconNode.of(DawIcon.SEARCH, BUTTON_ICON_SIZE));
         browseButton.setOnAction(_ -> browseForJar());
 
         Label jarLabel = new Label("JAR Path:");
-        jarLabel.setGraphic(IconNode.of(DawIcon.LINK, 14));
+        jarLabel.setGraphic(IconNode.of(DawIcon.FOLDER, 14));
 
         HBox jarPathRow = new HBox(8, jarLabel, jarPathField, browseButton);
         jarPathRow.setPadding(new Insets(4, 0, 4, 0));
@@ -103,18 +107,18 @@ public final class PluginManagerDialog extends Dialog<Void> {
         HBox.setHgrow(classNameField, Priority.ALWAYS);
 
         Label classLabel = new Label("Plugin Class:");
-        classLabel.setGraphic(IconNode.of(DawIcon.INFO, 14));
+        classLabel.setGraphic(IconNode.of(DawIcon.TAG, 14));
 
         HBox classNameRow = new HBox(8, classLabel, classNameField);
         classNameRow.setPadding(new Insets(4, 0, 4, 0));
 
         // --- Action buttons ---
         Button addButton = new Button("Add Plugin");
-        addButton.setGraphic(IconNode.of(DawIcon.UPLOAD, BUTTON_ICON_SIZE));
+        addButton.setGraphic(IconNode.of(DawIcon.DOWNLOAD, BUTTON_ICON_SIZE));
         addButton.setOnAction(_ -> addPlugin());
 
         Button removeButton = new Button("Remove Selected");
-        removeButton.setGraphic(IconNode.of(DawIcon.DELETE, BUTTON_ICON_SIZE));
+        removeButton.setGraphic(IconNode.of(DawIcon.CLOSE, BUTTON_ICON_SIZE));
         removeButton.setOnAction(_ -> removeSelectedPlugin());
 
         HBox buttonRow = new HBox(8, addButton, removeButton);
@@ -124,12 +128,22 @@ public final class PluginManagerDialog extends Dialog<Void> {
         Label headerLabel = new Label("Loaded Plugins:");
         headerLabel.setGraphic(IconNode.of(DawIcon.LIBRARY, HEADER_ICON_SIZE));
 
+        Label infoLabel = new Label("Drop a JAR or browse to add a plugin");
+        infoLabel.setGraphic(IconNode.of(DawIcon.INFO, 14));
+        infoLabel.setStyle("-fx-text-fill: #808080; -fx-font-size: 11px;");
+
+        Label notificationLabel = new Label("Plugin changes apply after restart");
+        notificationLabel.setGraphic(IconNode.of(DawIcon.NOTIFICATION, 14));
+        notificationLabel.setStyle("-fx-text-fill: #ff9100; -fx-font-size: 10px;");
+
         VBox content = new VBox(8,
                 headerLabel,
                 listView,
+                infoLabel,
                 jarPathRow,
                 classNameRow,
-                buttonRow
+                buttonRow,
+                notificationLabel
         );
         content.setPadding(new Insets(16));
         content.setPrefWidth(600);
@@ -190,6 +204,98 @@ public final class PluginManagerDialog extends Dialog<Void> {
         alert.setTitle("Plugin Error");
         alert.setHeaderText(null);
         alert.setContentText(message);
+        alert.setGraphic(IconNode.of(DawIcon.ERROR, 32));
         alert.showAndWait();
+    }
+
+    /**
+     * Returns the appropriate icon for a given plugin type.
+     *
+     * <p>Maps plugin types to icons from the <em>DAW</em>, <em>Instruments</em>,
+     * <em>Metering</em>, and <em>Media</em> categories.</p>
+     */
+    private static DawIcon pluginTypeIcon(PluginType type) {
+        return switch (type) {
+            case EFFECT      -> DawIcon.REVERB;
+            case INSTRUMENT  -> DawIcon.KEYBOARD;
+            case ANALYZER    -> DawIcon.OSCILLOSCOPE;
+            case MIDI_EFFECT -> DawIcon.MIDI;
+        };
+    }
+
+    /**
+     * Returns a secondary detail icon for a plugin based on its descriptor.
+     *
+     * <p>Uses keywords in the plugin name to pick a category-specific icon
+     * from the <em>DAW</em>, <em>Media</em>, <em>General</em>, <em>Connectivity</em>,
+     * and other categories for the richest possible visual mapping.</p>
+     */
+    private static DawIcon pluginDetailIcon(PluginDescriptor desc) {
+        String lower = desc.name().toLowerCase();
+        // DAW category
+        if (lower.contains("compressor") || lower.contains("comp"))   return DawIcon.COMPRESSOR;
+        if (lower.contains("delay") || lower.contains("echo"))       return DawIcon.DELAY;
+        if (lower.contains("distort"))                                return DawIcon.DISTORTION;
+        if (lower.contains("flang"))                                  return DawIcon.FLANGER;
+        if (lower.contains("chorus"))                                 return DawIcon.CHORUS;
+        if (lower.contains("phas"))                                   return DawIcon.PHASER;
+        if (lower.contains("pitch"))                                  return DawIcon.PITCH_SHIFT;
+        if (lower.contains("gate") || lower.contains("noise"))       return DawIcon.NOISE_GATE;
+        if (lower.contains("limit"))                                  return DawIcon.LIMITER;
+        if (lower.contains("eq") || lower.contains("equaliz"))       return DawIcon.EQ;
+        if (lower.contains("filter") || lower.contains("low pass"))  return DawIcon.LOW_PASS;
+        if (lower.contains("high pass"))                              return DawIcon.HIGH_PASS;
+        if (lower.contains("gain"))                                   return DawIcon.GAIN;
+        if (lower.contains("automat"))                                return DawIcon.AUTOMATION;
+        if (lower.contains("marker"))                                 return DawIcon.MARKER;
+        if (lower.contains("waveform"))                               return DawIcon.WAVEFORM;
+        if (lower.contains("shuffle"))                                return DawIcon.SHUFFLE;
+        // Media category
+        if (lower.contains("amp"))                                    return DawIcon.AMPLIFIER;
+        if (lower.contains("meter") || lower.contains("analyz"))     return DawIcon.VU_METER;
+        if (lower.contains("rms"))                                    return DawIcon.RMS;
+        if (lower.contains("correlat"))                               return DawIcon.CORRELATION;
+        if (lower.contains("turntable") || lower.contains("vinyl"))  return DawIcon.TURNTABLE;
+        if (lower.contains("radio"))                                  return DawIcon.RADIO;
+        if (lower.contains("record"))                                 return DawIcon.RECORD_PLAYER;
+        if (lower.contains("cd") || lower.contains("disc"))          return DawIcon.CD;
+        if (lower.contains("boombox"))                                return DawIcon.BOOMBOX;
+        if (lower.contains("monitor") || lower.contains("screen"))   return DawIcon.MONITOR;
+        if (lower.contains("camera") || lower.contains("video"))     return DawIcon.CAMERA;
+        if (lower.contains("film"))                                   return DawIcon.FILM_STRIP;
+        if (lower.contains("mp3"))                                    return DawIcon.MP3_PLAYER;
+        if (lower.contains("wireless") || lower.contains("bluetooth")) return DawIcon.SPEAKER_WIRELESS;
+        if (lower.contains("drum machine"))                           return DawIcon.DRUM;
+        // Connectivity category
+        if (lower.contains("bluetooth"))                              return DawIcon.BLUETOOTH;
+        if (lower.contains("wifi") || lower.contains("wireless"))    return DawIcon.WIFI;
+        if (lower.contains("cloud"))                                  return DawIcon.CLOUD;
+        if (lower.contains("airplay"))                                return DawIcon.AIRPLAY;
+        if (lower.contains("ethernet"))                               return DawIcon.ETHERNET;
+        if (lower.contains("nfc"))                                    return DawIcon.NFC;
+        if (lower.contains("optical"))                                return DawIcon.OPTICAL;
+        if (lower.contains("antenna"))                                return DawIcon.ANTENNA;
+        if (lower.contains("aux"))                                    return DawIcon.AUX_CABLE;
+        if (lower.contains("cast"))                                   return DawIcon.CAST;
+        // General category
+        if (lower.contains("album"))                                  return DawIcon.ALBUM;
+        if (lower.contains("cassette") || lower.contains("tape"))    return DawIcon.CASSETTE;
+        if (lower.contains("vinyl"))                                  return DawIcon.VINYL;
+        if (lower.contains("podcast"))                                return DawIcon.PODCAST;
+        if (lower.contains("queue"))                                  return DawIcon.QUEUE_MUSIC;
+        // Playback category
+        if (lower.contains("repeat"))                                 return DawIcon.REPEAT;
+        if (lower.contains("fast forward") || lower.contains("ff"))  return DawIcon.FAST_FORWARD;
+        if (lower.contains("rewind"))                                 return DawIcon.REWIND;
+        if (lower.contains("slow"))                                   return DawIcon.SLOW_MOTION;
+        if (lower.contains("speed"))                                  return DawIcon.SPEED_UP;
+        if (lower.contains("eject"))                                  return DawIcon.EJECT;
+        if (lower.contains("next") || lower.contains("queue"))       return DawIcon.QUEUE_NEXT;
+        // Volume category
+        if (lower.contains("bass boost"))                             return DawIcon.BASS_BOOST;
+        if (lower.contains("treble"))                                 return DawIcon.TREBLE_BOOST;
+        if (lower.contains("loudness"))                               return DawIcon.LOUDNESS;
+        if (lower.contains("volume off") || lower.contains("silent")) return DawIcon.VOLUME_OFF;
+        return pluginTypeIcon(desc.type());
     }
 }

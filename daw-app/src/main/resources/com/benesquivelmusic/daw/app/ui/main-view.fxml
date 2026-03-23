@@ -25,6 +25,8 @@
                 </padding>
 
                 <!-- Transport (icons applied programmatically via IconNode) -->
+                <Button fx:id="skipBackButton" text="Skip Back" onAction="#onSkipBack"
+                        styleClass="transport-button"/>
                 <Button fx:id="playButton" text="Play" onAction="#onPlay"
                         styleClass="transport-button, play-button"/>
                 <Button fx:id="pauseButton" text="Pause" onAction="#onPause"
@@ -33,6 +35,10 @@
                         styleClass="transport-button, stop-button"/>
                 <Button fx:id="recordButton" text="Record" onAction="#onRecord"
                         styleClass="transport-button, record-button"/>
+                <Button fx:id="skipForwardButton" text="Skip Forward" onAction="#onSkipForward"
+                        styleClass="transport-button"/>
+                <Button fx:id="loopButton" text="Loop" onAction="#onToggleLoop"
+                        styleClass="transport-button, loop-button"/>
 
                 <Separator orientation="VERTICAL"/>
 
@@ -94,6 +100,8 @@
                 <!-- Right: Arrangement Timeline Tile -->
                 <VBox styleClass="arrangement-panel">
                     <HBox styleClass="timeline-header" alignment="CENTER_LEFT" spacing="20">
+                        <Label fx:id="arrangementPanelHeader" text="ARRANGEMENT"
+                               styleClass="panel-header"/>
                         <Label text="1" styleClass="timeline-label"/>
                         <Label text="2" styleClass="timeline-label"/>
                         <Label text="3" styleClass="timeline-label"/>
@@ -128,6 +136,12 @@
                 </padding>
                 <Label fx:id="projectInfoLabel" text="Untitled Project  ·  96 kHz / 24-bit"
                        styleClass="project-info-label"/>
+                <Separator orientation="VERTICAL"/>
+                <Label fx:id="monitoringLabel" text="Monitoring"
+                       styleClass="status-bar-label"/>
+                <Separator orientation="VERTICAL"/>
+                <Label fx:id="ioRoutingLabel" text="I/O"
+                       styleClass="status-bar-label"/>
                 <Region HBox.hgrow="ALWAYS"/>
                 <Label fx:id="checkpointLabel" text="Auto-save: ON"
                        styleClass="checkpoint-label"/>

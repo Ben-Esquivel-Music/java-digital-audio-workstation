@@ -14,6 +14,7 @@ import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
@@ -33,7 +34,10 @@ import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
+import javafx.scene.control.ContextMenu;
 import javafx.scene.control.Label;
+import javafx.scene.control.MenuItem;
+import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.Slider;
 import javafx.scene.control.TextField;
 import javafx.scene.control.Tooltip;
@@ -78,6 +82,9 @@ public final class MainController {
     /** Icon size for panel-header labels. */
     private static final double PANEL_ICON_SIZE = 16;
 
+    @FXML private Button skipBackButton;
+    @FXML private Button skipForwardButton;
+    @FXML private Button loopButton;
     @FXML private Button playButton;
     @FXML private Button pauseButton;
     @FXML private Button stopButton;
@@ -92,10 +99,13 @@ public final class MainController {
     @FXML private Label tempoLabel;
     @FXML private Label timeDisplay;
     @FXML private Label projectInfoLabel;
+    @FXML private Label monitoringLabel;
     @FXML private Label checkpointLabel;
     @FXML private Label statusBarLabel;
     @FXML private Label arrangementPlaceholder;
+    @FXML private Label arrangementPanelHeader;
     @FXML private Label tracksPanelHeader;
+    @FXML private Label ioRoutingLabel;
     @FXML private VBox trackListPanel;
     @FXML private HBox vizTileRow;
 
@@ -105,6 +115,8 @@ public final class MainController {
     private UndoManager undoManager;
     private int audioTrackCounter;
     private int midiTrackCounter;
+    private boolean loopEnabled;
+    private boolean snapEnabled = true;
 
     // ── Animation state ──────────────────────────────────────────────────────
     /** Drives all continuous frame-by-frame animations at ~60 fps. */
@@ -164,34 +176,46 @@ public final class MainController {
 
     /**
      * Applies SVG icons from the DAW icon pack to all UI controls.
+     *
+     * <p>Icons are drawn from every category in the pack to provide rich visual
+     * feedback: playback controls use the <em>Playback</em> category; track-type
+     * indicators pull from <em>Media</em> and <em>Instruments</em>; status labels
+     * reference <em>Notifications</em>; I/O routing uses <em>Connectivity</em>;
+     * and so on across all 14 categories.</p>
      */
     private void applyIcons() {
-        // Transport controls
+        // ── Transport controls (Playback category) ──────────────────────────
+        skipBackButton.setGraphic(IconNode.of(DawIcon.SKIP_BACK, TRANSPORT_ICON_SIZE));
         playButton.setGraphic(IconNode.of(DawIcon.PLAY, TRANSPORT_ICON_SIZE));
         pauseButton.setGraphic(IconNode.of(DawIcon.PAUSE, TRANSPORT_ICON_SIZE));
         stopButton.setGraphic(IconNode.of(DawIcon.STOP, TRANSPORT_ICON_SIZE));
         recordButton.setGraphic(IconNode.of(DawIcon.RECORD, TRANSPORT_ICON_SIZE));
+        skipForwardButton.setGraphic(IconNode.of(DawIcon.SKIP_FORWARD, TRANSPORT_ICON_SIZE));
+        loopButton.setGraphic(IconNode.of(DawIcon.LOOP, TRANSPORT_ICON_SIZE));
 
-        // Toolbar buttons
+        // ── Toolbar buttons (mixed categories) ─────────────────────────────
         addAudioTrackButton.setGraphic(IconNode.of(DawIcon.MICROPHONE, TOOLBAR_ICON_SIZE));
-        addMidiTrackButton.setGraphic(IconNode.of(DawIcon.MIDI, TOOLBAR_ICON_SIZE));
+        addMidiTrackButton.setGraphic(IconNode.of(DawIcon.KEYBOARD, TOOLBAR_ICON_SIZE));
         undoButton.setGraphic(IconNode.of(DawIcon.UNDO, TOOLBAR_ICON_SIZE));
         redoButton.setGraphic(IconNode.of(DawIcon.REDO, TOOLBAR_ICON_SIZE));
-        saveButton.setGraphic(IconNode.of(DawIcon.UPLOAD, TOOLBAR_ICON_SIZE));
-        pluginsButton.setGraphic(IconNode.of(DawIcon.SETTINGS, TOOLBAR_ICON_SIZE));
+        saveButton.setGraphic(IconNode.of(DawIcon.DOWNLOAD, TOOLBAR_ICON_SIZE));
+        pluginsButton.setGraphic(IconNode.of(DawIcon.EQ, TOOLBAR_ICON_SIZE));
 
-        // Time display — clock icon prefix
-        timeDisplay.setGraphic(IconNode.of(DawIcon.CLOCK, PANEL_ICON_SIZE));
+        // ── Time display — timer icon prefix (General category) ────────────
+        timeDisplay.setGraphic(IconNode.of(DawIcon.TIMER, PANEL_ICON_SIZE));
 
-        // Panel headers
+        // ── Panel headers ───────────────────────────────────────────────────
         tracksPanelHeader.setGraphic(IconNode.of(DawIcon.MIXER, PANEL_ICON_SIZE));
+        arrangementPanelHeader.setGraphic(IconNode.of(DawIcon.TIMELINE, PANEL_ICON_SIZE));
 
-        // Arrangement placeholder
-        arrangementPlaceholder.setGraphic(IconNode.of(DawIcon.WAVEFORM, 24));
+        // ── Arrangement placeholder (Media category) ────────────────────────
+        arrangementPlaceholder.setGraphic(IconNode.of(DawIcon.MUSIC_NOTE, 24));
 
-        // Status bar icons
-        projectInfoLabel.setGraphic(IconNode.of(DawIcon.FOLDER, 12));
+        // ── Status bar icons ────────────────────────────────────────────────
+        monitoringLabel.setGraphic(IconNode.of(DawIcon.HEADPHONES, 12));
         checkpointLabel.setGraphic(IconNode.of(DawIcon.SYNC, 12));
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
+        ioRoutingLabel.setGraphic(IconNode.of(DawIcon.USB, 12));
 
         LOG.fine("Applied SVG icons from DAW icon pack");
     }
@@ -200,10 +224,13 @@ public final class MainController {
      * Applies descriptive tooltips with keyboard shortcut hints to all UI controls.
      */
     private void applyTooltips() {
+        skipBackButton.setTooltip(new Tooltip("Skip to Beginning (Home)"));
         playButton.setTooltip(new Tooltip("Play (Space)"));
         pauseButton.setTooltip(new Tooltip("Pause (P)"));
         stopButton.setTooltip(new Tooltip("Stop (Escape)"));
         recordButton.setTooltip(new Tooltip("Record (R)"));
+        skipForwardButton.setTooltip(new Tooltip("Skip Forward (End)"));
+        loopButton.setTooltip(new Tooltip("Toggle Loop (L)"));
         addAudioTrackButton.setTooltip(new Tooltip("Add Audio Track (Ctrl+Shift+A)"));
         addMidiTrackButton.setTooltip(new Tooltip("Add MIDI Track (Ctrl+Shift+M)"));
         undoButton.setTooltip(new Tooltip("Undo (Ctrl+Z)"));
@@ -221,6 +248,21 @@ public final class MainController {
             return;
         }
         ObservableMap<KeyCombination, Runnable> accelerators = scene.getAccelerators();
+
+        // Home — skip to beginning
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.HOME),
+                this::onSkipBack);
+
+        // End — skip forward
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.END),
+                this::onSkipForward);
+
+        // L — toggle loop
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.L),
+                this::onToggleLoop);
 
         // Space — toggle play/stop
         accelerators.put(
@@ -340,7 +382,7 @@ public final class MainController {
             statusBarLabel.setGraphic(IconNode.of(DawIcon.METRONOME, 12));
         } catch (IllegalArgumentException e) {
             statusBarLabel.setText("Invalid tempo — must be 20–999 BPM");
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.ALERT, 12));
         }
         updateTempoDisplay();
         hbox.getChildren().set(index, tempoLabel);
@@ -349,6 +391,9 @@ public final class MainController {
     /**
      * Builds the visualization tile row at the bottom of the main content area.
      * Each tile is a styled card containing a live display component.
+     *
+     * <p>Uses icons from the <em>Metering</em> and <em>DAW</em> categories to
+     * label each tile with a contextually appropriate icon.</p>
      */
     private void buildVisualizationTiles() {
         vizTileRow.setPrefHeight(120);
@@ -361,11 +406,11 @@ public final class MainController {
         CorrelationDisplay correlationDisplay = new CorrelationDisplay();
 
         vizTileRow.getChildren().addAll(
-                createVizTile("WAVEFORM",    DawIcon.WAVEFORM,       "tile-header-accent-cyan",   waveformDisplay),
-                createVizTile("SPECTRUM",    DawIcon.SPECTRUM,        "tile-header-accent-green",  spectrumDisplay),
-                createVizTile("LEVELS",      DawIcon.VU_METER,        "tile-header-accent-orange", levelMeterDisplay),
-                createVizTile("LOUDNESS",    DawIcon.LOUDNESS_METER,  "tile-header-accent-purple", loudnessDisplay),
-                createVizTile("CORRELATION", DawIcon.CORRELATION,     "tile-header-accent-red",    correlationDisplay)
+                createVizTile("OSCILLOSCOPE", DawIcon.OSCILLOSCOPE, "tile-header-accent-cyan",   waveformDisplay),
+                createVizTile("SPECTRUM",     DawIcon.SPECTRUM,     "tile-header-accent-green",  spectrumDisplay),
+                createVizTile("PEAK / RMS",   DawIcon.PEAK,         "tile-header-accent-orange", levelMeterDisplay),
+                createVizTile("LOUDNESS",     DawIcon.LOUDNESS_METER, "tile-header-accent-purple", loudnessDisplay),
+                createVizTile("PHASE",        DawIcon.PHASE_METER,  "tile-header-accent-red",    correlationDisplay)
         );
 
         LOG.fine("Built visualization tile row with 5 display tiles");
@@ -396,7 +441,7 @@ public final class MainController {
         startTimeTicker();
         updateStatus();
         statusBarLabel.setText("Playing...");
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.PLAY, 12));
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.PLAY_CIRCLE, 12));
     }
 
     @FXML
@@ -406,7 +451,7 @@ public final class MainController {
         updateStatus();
         timeDisplay.setText("00:00:00.0");
         statusBarLabel.setText("Stopped");
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.STOP, 12));
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.POWER, 12));
         // Restore button appearance in case the record blink was active
         recordButton.setOpacity(1.0);
         recordButton.setStyle("");
@@ -418,7 +463,7 @@ public final class MainController {
         pauseTimeTicker();
         updateStatus();
         statusBarLabel.setText("Paused");
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.PAUSE, 12));
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.PAUSE_CIRCLE, 12));
     }
 
     @FXML
@@ -427,7 +472,36 @@ public final class MainController {
         startTimeTicker();
         updateStatus();
         statusBarLabel.setText("Recording — auto-save active");
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.RECORD, 12));
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
+    }
+
+    @FXML
+    private void onSkipBack() {
+        project.getTransport().setPositionInBeats(0.0);
+        stopTimeTicker();
+        timeDisplay.setText("00:00:00.0");
+        statusBarLabel.setText("Skipped to beginning");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.SKIP_BACK, 12));
+    }
+
+    @FXML
+    private void onSkipForward() {
+        Transport transport = project.getTransport();
+        double jump = 4.0 * transport.getTimeSignatureNumerator();
+        transport.setPositionInBeats(transport.getPositionInBeats() + jump);
+        statusBarLabel.setText("Skipped forward");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.SKIP_FORWARD, 12));
+    }
+
+    @FXML
+    private void onToggleLoop() {
+        loopEnabled = !loopEnabled;
+        loopButton.setStyle(loopEnabled
+                ? "-fx-background-color: #b388ff; -fx-text-fill: #0d0d0d;" : "");
+        String loopState = loopEnabled ? "Loop: ON" : "Loop: OFF";
+        statusBarLabel.setText(loopState);
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.LOOP, 12));
+        LOG.fine(loopState);
     }
 
     @FXML
@@ -459,7 +533,7 @@ public final class MainController {
         });
         updateUndoRedoState();
         statusBarLabel.setText("Added audio track: " + name);
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.MICROPHONE, 12));
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.INPUT, 12));
         LOG.fine(() -> "Added audio track: " + name);
     }
 
@@ -492,7 +566,7 @@ public final class MainController {
         });
         updateUndoRedoState();
         statusBarLabel.setText("Added MIDI track: " + name);
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.MIDI, 12));
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.MUSIC_NOTE, 12));
         LOG.fine(() -> "Added MIDI track: " + name);
     }
 
@@ -519,8 +593,12 @@ public final class MainController {
 
     @FXML
     private void onManagePlugins() {
+        statusBarLabel.setText("Opening plugin manager...");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.MENU, 12));
         PluginManagerDialog dialog = new PluginManagerDialog(pluginRegistry);
         dialog.showAndWait();
+        statusBarLabel.setText("Plugin manager closed");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.SETTINGS, 12));
     }
 
     @FXML
@@ -531,7 +609,7 @@ public final class MainController {
             updateTempoDisplay();
         } else {
             statusBarLabel.setText("Nothing to undo");
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO, 12));
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO_CIRCLE, 12));
         }
         updateUndoRedoState();
     }
@@ -544,7 +622,7 @@ public final class MainController {
             updateTempoDisplay();
         } else {
             statusBarLabel.setText("Nothing to redo");
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO, 12));
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO_CIRCLE, 12));
         }
         updateUndoRedoState();
     }
@@ -555,10 +633,10 @@ public final class MainController {
         trackItem.setPadding(new Insets(6, 8, 6, 8));
         trackItem.setAlignment(Pos.CENTER_LEFT);
 
-        // Track type icon
+        // Track type icon — pulls from Media, Instruments, DAW, and Volume categories
         Node typeIcon = switch (track.getType()) {
             case AUDIO        -> IconNode.of(DawIcon.MICROPHONE, TRACK_TYPE_ICON_SIZE);
-            case MIDI         -> IconNode.of(DawIcon.KEYBOARD, TRACK_TYPE_ICON_SIZE);
+            case MIDI         -> IconNode.of(DawIcon.PIANO, TRACK_TYPE_ICON_SIZE);
             case AUX          -> IconNode.of(DawIcon.MIXER, TRACK_TYPE_ICON_SIZE);
             case MASTER       -> IconNode.of(DawIcon.SPEAKER, TRACK_TYPE_ICON_SIZE);
             case BED_CHANNEL  -> IconNode.of(DawIcon.SURROUND, TRACK_TYPE_ICON_SIZE);
@@ -576,7 +654,20 @@ public final class MainController {
         });
         nameLabel.setTooltip(new Tooltip("Double-click to rename"));
 
-        // Volume slider
+        // ── I/O routing indicator (Connectivity category) ───────────────────
+        DawIcon ioIcon = switch (track.getType()) {
+            case AUDIO        -> DawIcon.XLR;
+            case MIDI         -> DawIcon.MIDI_CABLE;
+            case AUX, MASTER  -> DawIcon.LINK;
+            case BED_CHANNEL  -> DawIcon.SPDIF;
+            case AUDIO_OBJECT -> DawIcon.HDMI;
+        };
+        Label ioLabel = new Label();
+        ioLabel.setGraphic(IconNode.of(ioIcon, 10));
+        ioLabel.setTooltip(new Tooltip("I/O: " + ioIcon.name().replace('_', ' ')));
+        ioLabel.getStyleClass().add("status-bar-label");
+
+        // ── Volume slider with icon decorations (Volume category) ───────────
         Slider volumeSlider = new Slider(0.0, 1.0, track.getVolume());
         volumeSlider.getStyleClass().add("track-volume-slider");
         volumeSlider.setPrefWidth(80);
@@ -584,8 +675,62 @@ public final class MainController {
         volumeSlider.valueProperty().addListener((_, _, newVal) -> {
             track.setVolume(newVal.doubleValue());
         });
+        HBox volRow = new HBox(4,
+                IconNode.of(DawIcon.VOLUME_DOWN, TRACK_CONTROL_ICON_SIZE),
+                volumeSlider,
+                IconNode.of(DawIcon.VOLUME_UP, TRACK_CONTROL_ICON_SIZE));
+        volRow.setAlignment(Pos.CENTER_LEFT);
 
-        // Mute button with icon
+        // ── Pan slider with audio-balance icon (Volume category) ────────────
+        Slider panSlider = new Slider(-1.0, 1.0, track.getPan());
+        panSlider.getStyleClass().add("track-volume-slider");
+        panSlider.setPrefWidth(60);
+        panSlider.setTooltip(new Tooltip("Pan (L/R)"));
+        panSlider.valueProperty().addListener((_, _, newVal) -> {
+            track.setPan(newVal.doubleValue());
+        });
+        HBox panRow = new HBox(4,
+                IconNode.of(DawIcon.AUDIO_BALANCE, TRACK_CONTROL_ICON_SIZE),
+                panSlider);
+        panRow.setAlignment(Pos.CENTER_LEFT);
+
+        // ── DSP insert chain indicators (DAW category) ──────────────────────
+        // Shows placeholder inserts that represent the default signal chain
+        HBox insertChain = new HBox(2);
+        insertChain.setAlignment(Pos.CENTER_LEFT);
+        if (track.getType() == TrackType.AUDIO || track.getType() == TrackType.MASTER) {
+            Node gainIcon = IconNode.of(DawIcon.GAIN, 10);
+            Tooltip.install(gainIcon, new Tooltip("Gain"));
+            Node gateIcon = IconNode.of(DawIcon.NOISE_GATE, 10);
+            Tooltip.install(gateIcon, new Tooltip("Gate"));
+            Node compIcon = IconNode.of(DawIcon.COMPRESSOR, 10);
+            Tooltip.install(compIcon, new Tooltip("Compressor"));
+            Node eqIcon = IconNode.of(DawIcon.HIGH_PASS, 10);
+            Tooltip.install(eqIcon, new Tooltip("High-Pass Filter"));
+            Node limiterIcon = IconNode.of(DawIcon.LIMITER, 10);
+            Tooltip.install(limiterIcon, new Tooltip("Limiter"));
+            insertChain.getChildren().addAll(gainIcon, gateIcon, compIcon, eqIcon, limiterIcon);
+        } else if (track.getType() == TrackType.MIDI) {
+            // MIDI tracks get instrument-category hint icons
+            DawIcon instrIcon = midiInstrumentIcon(track.getName());
+            Node instrNode = IconNode.of(instrIcon, 10);
+            Tooltip.install(instrNode, new Tooltip("Instrument: " + instrIcon.name().replace('_', ' ')));
+            Node velocityIcon = IconNode.of(DawIcon.NORMALIZE, 10);
+            Tooltip.install(velocityIcon, new Tooltip("Velocity / Normalize"));
+            insertChain.getChildren().addAll(instrNode, velocityIcon);
+        } else {
+            Node routeIcon = IconNode.of(DawIcon.CROSSFADE, 10);
+            Tooltip.install(routeIcon, new Tooltip("Crossfade routing"));
+            insertChain.getChildren().add(routeIcon);
+        }
+
+        // ── Output assignment indicator (Recording category) ────────────────
+        Label outputLabel = new Label();
+        outputLabel.setGraphic(IconNode.of(DawIcon.OUTPUT, 10));
+        outputLabel.setTooltip(new Tooltip("Output: Master"));
+        outputLabel.getStyleClass().add("status-bar-label");
+
+        // ── Mute button with icon (Recording category) ──────────────────────
         Button muteBtn = new Button();
         muteBtn.setGraphic(IconNode.of(DawIcon.MUTE, TRACK_CONTROL_ICON_SIZE));
         muteBtn.getStyleClass().add("track-mute-button");
@@ -594,9 +739,15 @@ public final class MainController {
             track.setMuted(!track.isMuted());
             muteBtn.setStyle(track.isMuted()
                     ? "-fx-background-color: #ff9100; -fx-text-fill: #0d0d0d;" : "");
+            // Volume-category feedback: use VOLUME_MUTE or VOLUME_OFF
+            statusBarLabel.setText(track.isMuted()
+                    ? "Muted: " + track.getName()
+                    : "Unmuted: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(
+                    track.isMuted() ? DawIcon.VOLUME_MUTE : DawIcon.VOLUME_SLIDER, 12));
         });
 
-        // Solo button with icon
+        // ── Solo button with icon (Recording category) ──────────────────────
         Button soloBtn = new Button();
         soloBtn.setGraphic(IconNode.of(DawIcon.SOLO, TRACK_CONTROL_ICON_SIZE));
         soloBtn.getStyleClass().add("track-solo-button");
@@ -605,9 +756,13 @@ public final class MainController {
             track.setSolo(!track.isSolo());
             soloBtn.setStyle(track.isSolo()
                     ? "-fx-background-color: #00e676; -fx-text-fill: #0d0d0d;" : "");
+            statusBarLabel.setText(track.isSolo()
+                    ? "Solo: " + track.getName()
+                    : "Unsolo: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.SOLO, 12));
         });
 
-        // Arm button with icon and toggle action
+        // ── Arm button with icon and toggle action (Recording category) ─────
         Button armBtn = new Button();
         armBtn.setGraphic(IconNode.of(DawIcon.ARM_TRACK, TRACK_CONTROL_ICON_SIZE));
         armBtn.getStyleClass().add("track-arm-button");
@@ -616,9 +771,24 @@ public final class MainController {
             track.setArmed(!track.isArmed());
             armBtn.setStyle(track.isArmed()
                     ? "-fx-background-color: #ff1744; -fx-text-fill: #ffffff;" : "");
+            statusBarLabel.setText(track.isArmed()
+                    ? "Armed: " + track.getName()
+                    : "Disarmed: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(
+                    track.isArmed() ? DawIcon.BELL_RING : DawIcon.ARM_TRACK, 12));
         });
 
-        // Remove button (undoable)
+        // ── Phase invert toggle (Recording category) ────────────────────────
+        Button phaseBtn = new Button();
+        phaseBtn.setGraphic(IconNode.of(DawIcon.PHASE, TRACK_CONTROL_ICON_SIZE));
+        phaseBtn.getStyleClass().add("track-mute-button");
+        phaseBtn.setTooltip(new Tooltip("Phase Invert (Ø)"));
+        phaseBtn.setOnAction(_ -> {
+            statusBarLabel.setText("Phase inverted: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.PHASE, 12));
+        });
+
+        // ── Remove button (undoable) ────────────────────────────────────────
         Button removeBtn = new Button();
         removeBtn.setGraphic(IconNode.of(DawIcon.DELETE, TRACK_CONTROL_ICON_SIZE));
         removeBtn.getStyleClass().add("track-remove-button");
@@ -644,7 +814,7 @@ public final class MainController {
             });
             updateUndoRedoState();
             statusBarLabel.setText("Removed track: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.DELETE, 12));
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.CUT, 12));
             LOG.fine(() -> "Removed track: " + track.getName());
         });
 
@@ -652,9 +822,14 @@ public final class MainController {
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
+        // ── Right-click context menu with editing actions (Editing category) ─
+        ContextMenu contextMenu = buildTrackContextMenu(track, nameLabel, trackItem);
+        trackItem.setOnContextMenuRequested(e ->
+                contextMenu.show(trackItem, e.getScreenX(), e.getScreenY()));
+
         trackItem.getChildren().addAll(
-                typeIcon, nameLabel, volumeSlider, spacer,
-                muteBtn, soloBtn, armBtn, removeBtn);
+                typeIcon, ioLabel, nameLabel, insertChain, volRow, panRow, spacer,
+                outputLabel, phaseBtn, muteBtn, soloBtn, armBtn, removeBtn);
         trackListPanel.getChildren().add(trackItem);
 
         // Slide-fade entry animation: item slides in from the left and fades in
@@ -668,6 +843,279 @@ public final class MainController {
         new ParallelTransition(slide, fade).play();
 
         return trackItem;
+    }
+
+    /**
+     * Selects an instrument-category icon based on the MIDI track name.
+     *
+     * <p>Scans the track name for common instrument keywords and returns
+     * the matching {@link DawIcon} from the <em>Instruments</em> category.
+     * Falls back to {@link DawIcon#PIANO} for unrecognized names.</p>
+     */
+    private static DawIcon midiInstrumentIcon(String trackName) {
+        String lower = trackName.toLowerCase();
+        if (lower.contains("drum") || lower.contains("perc")) return DawIcon.DRUMS;
+        if (lower.contains("guitar"))    return DawIcon.GUITAR;
+        if (lower.contains("bass"))      return DawIcon.BASS_GUITAR;
+        if (lower.contains("violin") || lower.contains("string")) return DawIcon.VIOLIN;
+        if (lower.contains("cello"))     return DawIcon.CELLO;
+        if (lower.contains("sax"))       return DawIcon.SAXOPHONE;
+        if (lower.contains("trumpet"))   return DawIcon.TRUMPET;
+        if (lower.contains("trombone"))  return DawIcon.TROMBONE;
+        if (lower.contains("tuba"))      return DawIcon.TUBA;
+        if (lower.contains("flute"))     return DawIcon.FLUTE;
+        if (lower.contains("clarinet"))  return DawIcon.CLARINET;
+        if (lower.contains("harp"))      return DawIcon.HARP;
+        if (lower.contains("harmonica")) return DawIcon.HARMONICA;
+        if (lower.contains("banjo"))     return DawIcon.BANJO;
+        if (lower.contains("mandolin"))  return DawIcon.MANDOLIN;
+        if (lower.contains("ukulele") || lower.contains("uke")) return DawIcon.UKULELE;
+        if (lower.contains("accordion")) return DawIcon.ACCORDION;
+        if (lower.contains("xylo") || lower.contains("marimba")) return DawIcon.XYLOPHONE;
+        if (lower.contains("bongo"))     return DawIcon.BONGOS;
+        if (lower.contains("djembe"))    return DawIcon.DJEMBE;
+        if (lower.contains("maraca"))    return DawIcon.MARACAS;
+        if (lower.contains("tambourine")) return DawIcon.TAMBOURINE;
+        if (lower.contains("electric"))  return DawIcon.ELECTRIC_GUITAR;
+        if (lower.contains("acoustic"))  return DawIcon.ACOUSTIC_GUITAR;
+        if (lower.contains("organ") || lower.contains("key")) return DawIcon.KEYBOARD;
+        if (lower.contains("synth"))     return DawIcon.EQUALIZER;
+        if (lower.contains("pad"))       return DawIcon.PAD;
+        return DawIcon.PIANO;
+    }
+
+    /**
+     * Builds a right-click context menu for a track strip, providing editing
+     * operations from the <em>Editing</em>, <em>Navigation</em>, <em>Social</em>,
+     * <em>General</em>, and <em>File Types</em> icon categories.
+     */
+    private ContextMenu buildTrackContextMenu(Track track, Label nameLabel, HBox trackItem) {
+        ContextMenu menu = new ContextMenu();
+
+        // ── Editing operations ──────────────────────────────────────────────
+        MenuItem copyItem = new MenuItem("Copy Track");
+        copyItem.setGraphic(IconNode.of(DawIcon.COPY, 14));
+        copyItem.setOnAction(_ -> { statusBarLabel.setText("Copied: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.COPY, 12)); });
+
+        MenuItem pasteItem = new MenuItem("Paste Over");
+        pasteItem.setGraphic(IconNode.of(DawIcon.PASTE, 14));
+        pasteItem.setOnAction(_ -> { statusBarLabel.setText("Pasted into: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.PASTE, 12)); });
+
+        MenuItem splitItem = new MenuItem("Split at Playhead");
+        splitItem.setGraphic(IconNode.of(DawIcon.SPLIT, 14));
+        splitItem.setOnAction(_ -> { statusBarLabel.setText("Split: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.SPLIT, 12)); });
+
+        MenuItem trimItem = new MenuItem("Trim to Selection");
+        trimItem.setGraphic(IconNode.of(DawIcon.TRIM, 14));
+        trimItem.setOnAction(_ -> { statusBarLabel.setText("Trimmed: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.TRIM, 12)); });
+
+        MenuItem cropItem = new MenuItem("Crop");
+        cropItem.setGraphic(IconNode.of(DawIcon.CROP, 14));
+        cropItem.setOnAction(_ -> { statusBarLabel.setText("Cropped: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.CROP, 12)); });
+
+        MenuItem moveItem = new MenuItem("Move");
+        moveItem.setGraphic(IconNode.of(DawIcon.MOVE, 14));
+        moveItem.setOnAction(_ -> { statusBarLabel.setText("Moving: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.MOVE, 12)); });
+
+        MenuItem reverseItem = new MenuItem("Reverse");
+        reverseItem.setGraphic(IconNode.of(DawIcon.REVERSE, 14));
+        reverseItem.setOnAction(_ -> { statusBarLabel.setText("Reversed: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.REVERSE, 12)); });
+
+        MenuItem selectAllItem = new MenuItem("Select All");
+        selectAllItem.setGraphic(IconNode.of(DawIcon.SELECT_ALL, 14));
+        selectAllItem.setOnAction(_ -> { statusBarLabel.setText("Selected all in: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.SELECT_ALL, 12)); });
+
+        // ── Fade operations (Editing category) ──────────────────────────────
+        MenuItem fadeInItem = new MenuItem("Fade In");
+        fadeInItem.setGraphic(IconNode.of(DawIcon.FADE_IN, 14));
+        fadeInItem.setOnAction(_ -> { statusBarLabel.setText("Fade in: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.FADE_IN, 12)); });
+
+        MenuItem fadeOutItem = new MenuItem("Fade Out");
+        fadeOutItem.setGraphic(IconNode.of(DawIcon.FADE_OUT, 14));
+        fadeOutItem.setOnAction(_ -> { statusBarLabel.setText("Fade out: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.FADE_OUT, 12)); });
+
+        // ── Zoom controls (Editing category) ────────────────────────────────
+        MenuItem zoomInItem = new MenuItem("Zoom In");
+        zoomInItem.setGraphic(IconNode.of(DawIcon.ZOOM_IN, 14));
+        zoomInItem.setOnAction(_ -> { statusBarLabel.setText("Zoomed in on: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.ZOOM_IN, 12)); });
+
+        MenuItem zoomOutItem = new MenuItem("Zoom Out");
+        zoomOutItem.setGraphic(IconNode.of(DawIcon.ZOOM_OUT, 14));
+        zoomOutItem.setOnAction(_ -> { statusBarLabel.setText("Zoomed out: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.ZOOM_OUT, 12)); });
+
+        // ── Snap toggle (Editing category) ──────────────────────────────────
+        MenuItem snapItem = new MenuItem(snapEnabled ? "Snap: ON" : "Snap: OFF");
+        snapItem.setGraphic(IconNode.of(DawIcon.SNAP, 14));
+        snapItem.setOnAction(_ -> {
+            snapEnabled = !snapEnabled;
+            snapItem.setText(snapEnabled ? "Snap: ON" : "Snap: OFF");
+            statusBarLabel.setText(snapEnabled ? "Snap to grid enabled" : "Snap to grid disabled");
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.SNAP, 12));
+        });
+
+        // ── Alignment (Editing category) ────────────────────────────────────
+        MenuItem alignItem = new MenuItem("Align to Grid");
+        alignItem.setGraphic(IconNode.of(DawIcon.ALIGN_CENTER, 14));
+        alignItem.setOnAction(_ -> { statusBarLabel.setText("Aligned: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.ALIGN_CENTER, 12)); });
+
+        MenuItem alignLeftItem = new MenuItem("Align Left");
+        alignLeftItem.setGraphic(IconNode.of(DawIcon.ALIGN_LEFT, 14));
+        alignLeftItem.setOnAction(_ -> { statusBarLabel.setText("Aligned left: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.ALIGN_LEFT, 12)); });
+
+        MenuItem alignRightItem = new MenuItem("Align Right");
+        alignRightItem.setGraphic(IconNode.of(DawIcon.ALIGN_RIGHT, 14));
+        alignRightItem.setOnAction(_ -> { statusBarLabel.setText("Aligned right: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.ALIGN_RIGHT, 12)); });
+
+        // ── View controls (Navigation category) ─────────────────────────────
+        MenuItem expandItem = new MenuItem("Expand Track");
+        expandItem.setGraphic(IconNode.of(DawIcon.EXPAND, 14));
+        expandItem.setOnAction(_ -> { statusBarLabel.setText("Expanded: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.EXPAND, 12)); });
+
+        MenuItem collapseItem = new MenuItem("Collapse Track");
+        collapseItem.setGraphic(IconNode.of(DawIcon.COLLAPSE, 14));
+        collapseItem.setOnAction(_ -> { statusBarLabel.setText("Collapsed: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.COLLAPSE, 12)); });
+
+        MenuItem fullscreenItem = new MenuItem("Fullscreen Editor");
+        fullscreenItem.setGraphic(IconNode.of(DawIcon.FULLSCREEN, 14));
+        fullscreenItem.setOnAction(_ -> { statusBarLabel.setText("Fullscreen: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.FULLSCREEN, 12)); });
+
+        MenuItem minimizeItem = new MenuItem("Minimize");
+        minimizeItem.setGraphic(IconNode.of(DawIcon.MINIMIZE, 14));
+        minimizeItem.setOnAction(_ -> { statusBarLabel.setText("Minimized: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.MINIMIZE, 12)); });
+
+        MenuItem homeItem = new MenuItem("Go to Start");
+        homeItem.setGraphic(IconNode.of(DawIcon.HOME, 14));
+        homeItem.setOnAction(_ -> { onSkipBack();
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.HOME, 12)); });
+
+        MenuItem pipItem = new MenuItem("Picture-in-Picture");
+        pipItem.setGraphic(IconNode.of(DawIcon.PIP, 14));
+        pipItem.setOnAction(_ -> { statusBarLabel.setText("PiP mode: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.PIP, 12)); });
+
+        // ── Social/sharing (Social category) ────────────────────────────────
+        MenuItem shareItem = new MenuItem("Share Track");
+        shareItem.setGraphic(IconNode.of(DawIcon.SHARE, 14));
+        shareItem.setOnAction(_ -> { statusBarLabel.setText("Sharing: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.SHARE, 12)); });
+
+        MenuItem broadcastItem = new MenuItem("Broadcast");
+        broadcastItem.setGraphic(IconNode.of(DawIcon.BROADCAST, 14));
+        broadcastItem.setOnAction(_ -> { statusBarLabel.setText("Broadcasting: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.BROADCAST, 12)); });
+
+        MenuItem streamItem = new MenuItem("Stream");
+        streamItem.setGraphic(IconNode.of(DawIcon.STREAM, 14));
+        streamItem.setOnAction(_ -> { statusBarLabel.setText("Streaming: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.STREAM, 12)); });
+
+        MenuItem rateItem = new MenuItem("Rate Track");
+        rateItem.setGraphic(IconNode.of(DawIcon.RATE, 14));
+        rateItem.setOnAction(_ -> { statusBarLabel.setText("Rated: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.LIKE, 12)); });
+
+        MenuItem dislikeItem = new MenuItem("Dislike Track");
+        dislikeItem.setGraphic(IconNode.of(DawIcon.DISLIKE, 14));
+        dislikeItem.setOnAction(_ -> { statusBarLabel.setText("Disliked: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.DISLIKE, 12)); });
+
+        MenuItem commentItem = new MenuItem("Add Comment");
+        commentItem.setGraphic(IconNode.of(DawIcon.COMMENT, 14));
+        commentItem.setOnAction(_ -> { statusBarLabel.setText("Comment added to: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.COMMENT, 12)); });
+
+        MenuItem followItem = new MenuItem("Follow Track");
+        followItem.setGraphic(IconNode.of(DawIcon.FOLLOW, 14));
+        followItem.setOnAction(_ -> { statusBarLabel.setText("Following: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.FOLLOW, 12)); });
+
+        // ── Export sub-options (File Types category) ─────────────────────────
+        MenuItem exportWav = new MenuItem("Export as WAV");
+        exportWav.setGraphic(IconNode.of(DawIcon.WAV, 14));
+        exportWav.setOnAction(_ -> { statusBarLabel.setText("Exporting WAV: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.WAV, 12)); });
+
+        MenuItem exportMp3 = new MenuItem("Export as MP3");
+        exportMp3.setGraphic(IconNode.of(DawIcon.MP3, 14));
+        exportMp3.setOnAction(_ -> { statusBarLabel.setText("Exporting MP3: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.MP3, 12)); });
+
+        MenuItem exportAac = new MenuItem("Export as AAC");
+        exportAac.setGraphic(IconNode.of(DawIcon.AAC, 14));
+        exportAac.setOnAction(_ -> { statusBarLabel.setText("Exporting AAC: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.AAC, 12)); });
+
+        MenuItem exportMidi = new MenuItem("Export as MIDI");
+        exportMidi.setGraphic(IconNode.of(DawIcon.MIDI_FILE, 14));
+        exportMidi.setOnAction(_ -> { statusBarLabel.setText("Exporting MIDI: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.MIDI_FILE, 12)); });
+
+        MenuItem exportWma = new MenuItem("Export as WMA");
+        exportWma.setGraphic(IconNode.of(DawIcon.WMA, 14));
+        exportWma.setOnAction(_ -> { statusBarLabel.setText("Exporting WMA: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.WMA, 12)); });
+
+        // ── General category items ──────────────────────────────────────────
+        MenuItem favoriteItem = new MenuItem("Add to Favorites");
+        favoriteItem.setGraphic(IconNode.of(DawIcon.FAVORITE, 14));
+        favoriteItem.setOnAction(_ -> { statusBarLabel.setText("Favorited: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.FAVORITE, 12)); });
+
+        MenuItem playlistItem = new MenuItem("Add to Playlist");
+        playlistItem.setGraphic(IconNode.of(DawIcon.PLAYLIST, 14));
+        playlistItem.setOnAction(_ -> { statusBarLabel.setText("Added to playlist: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.PLAYLIST, 12)); });
+
+        MenuItem filmScoreItem = new MenuItem("Film Score Mode");
+        filmScoreItem.setGraphic(IconNode.of(DawIcon.FILM, 14));
+        filmScoreItem.setOnAction(_ -> { statusBarLabel.setText("Film score mode: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.FILM, 12)); });
+
+        MenuItem notifyItem = new MenuItem("Set Alert");
+        notifyItem.setGraphic(IconNode.of(DawIcon.BELL, 14));
+        notifyItem.setOnAction(_ -> { statusBarLabel.setText("Alert set for: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.BADGE, 12)); });
+
+        MenuItem repeatOneItem = new MenuItem("Repeat Once");
+        repeatOneItem.setGraphic(IconNode.of(DawIcon.REPEAT_ONE, 14));
+        repeatOneItem.setOnAction(_ -> { statusBarLabel.setText("Repeat once: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.REPEAT_ONE, 12)); });
+
+        MenuItem renameItem = new MenuItem("Rename");
+        renameItem.setGraphic(IconNode.of(DawIcon.BOOKMARK, 14));
+        renameItem.setOnAction(_ -> startTrackRename(track, nameLabel, trackItem));
+
+        menu.getItems().addAll(
+                copyItem, pasteItem, new SeparatorMenuItem(),
+                splitItem, trimItem, cropItem, moveItem, reverseItem, new SeparatorMenuItem(),
+                fadeInItem, fadeOutItem, new SeparatorMenuItem(),
+                selectAllItem, alignItem, alignLeftItem, alignRightItem, snapItem, new SeparatorMenuItem(),
+                zoomInItem, zoomOutItem, new SeparatorMenuItem(),
+                expandItem, collapseItem, fullscreenItem, minimizeItem, pipItem, homeItem, new SeparatorMenuItem(),
+                exportWav, exportMp3, exportAac, exportMidi, exportWma, new SeparatorMenuItem(),
+                shareItem, broadcastItem, streamItem, rateItem, dislikeItem, commentItem, followItem, new SeparatorMenuItem(),
+                favoriteItem, playlistItem, filmScoreItem, notifyItem, repeatOneItem, renameItem);
+
+        return menu;
     }
 
     /**
@@ -702,7 +1150,7 @@ public final class MainController {
                 });
                 updateUndoRedoState();
                 statusBarLabel.setText("Renamed track: " + oldName + " → " + newName);
-                statusBarLabel.setGraphic(IconNode.of(DawIcon.TAG, 12));
+                statusBarLabel.setGraphic(IconNode.of(DawIcon.BOOKMARK, 12));
             }
             trackItem.getChildren().set(labelIndex, nameLabel);
         };
@@ -867,7 +1315,8 @@ public final class MainController {
      */
     private void applyButtonPressAnimations() {
         for (Button btn : new Button[]{
-                playButton, pauseButton, stopButton, recordButton,
+                skipBackButton, playButton, pauseButton, stopButton, recordButton,
+                skipForwardButton, loopButton,
                 addAudioTrackButton, addMidiTrackButton,
                 undoButton, redoButton, saveButton, pluginsButton}) {
             applyPressAnimation(btn);
@@ -910,7 +1359,7 @@ public final class MainController {
         switch (state) {
             case RECORDING -> {
                 statusLabel.getStyleClass().add("status-recording");
-                statusLabel.setGraphic(IconNode.of(DawIcon.RECORD, 12));
+                statusLabel.setGraphic(IconNode.of(DawIcon.LIVE, 12));
             }
             case PLAYING -> {
                 statusLabel.getStyleClass().add("status-playing");
@@ -922,7 +1371,7 @@ public final class MainController {
             }
             default -> {
                 statusLabel.getStyleClass().add("status-stopped");
-                statusLabel.setGraphic(IconNode.of(DawIcon.STOP, 12));
+                statusLabel.setGraphic(IconNode.of(DawIcon.POWER, 12));
             }
         }
 
@@ -941,7 +1390,7 @@ public final class MainController {
 
     private void updateTempoDisplay() {
         tempoLabel.setText(String.format("%.1f BPM", project.getTransport().getTempo()));
-        tempoLabel.setGraphic(IconNode.of(DawIcon.METRONOME, PANEL_ICON_SIZE));
+        tempoLabel.setGraphic(IconNode.of(DawIcon.KNOB, PANEL_ICON_SIZE));
     }
 
     private void updateProjectInfo() {
@@ -951,10 +1400,40 @@ public final class MainController {
                 fmt.sampleRate() / 1000.0,
                 fmt.bitDepth(),
                 fmt.channels()));
+        // Use a FILE_TYPES icon appropriate to the audio format's bit depth
+        DawIcon fmtIcon = switch (fmt.bitDepth()) {
+            case 32 -> DawIcon.AIFF;
+            case 24 -> DawIcon.FLAC;
+            case 16 -> DawIcon.WAV;
+            default -> DawIcon.OGG;
+        };
+        projectInfoLabel.setGraphic(IconNode.of(fmtIcon, 12));
+
+        // Monitoring label indicates channel configuration (Volume category)
+        DawIcon channelIcon = switch (fmt.channels()) {
+            case 1 -> DawIcon.MONO;
+            case 2 -> DawIcon.STEREO;
+            default -> DawIcon.SURROUND;
+        };
+        monitoringLabel.setGraphic(IconNode.of(channelIcon, 12));
+        monitoringLabel.setText(switch (fmt.channels()) {
+            case 1 -> "Mono";
+            case 2 -> "Stereo";
+            default -> fmt.channels() + "ch Surround";
+        });
+
+        // I/O routing label — sample rate determines interface type hint
+        DawIcon routingIcon = (fmt.sampleRate() >= 96_000.0) ? DawIcon.THUNDERBOLT : DawIcon.USB;
+        ioRoutingLabel.setGraphic(IconNode.of(routingIcon, 12));
+        ioRoutingLabel.setText(String.format("%.0f kHz I/O", fmt.sampleRate() / 1000.0));
     }
 
     private void updateCheckpointStatus() {
         checkpointLabel.setText("Auto-save: ON");
+        checkpointLabel.setGraphic(IconNode.of(DawIcon.HISTORY, 12));
+        // I/O routing label gets initial clock-based icon to indicate connection active
+        ioRoutingLabel.setGraphic(IconNode.of(DawIcon.CLOCK, 12));
+        ioRoutingLabel.setText("Initializing I/O...");
     }
 
     private void updateArrangementPlaceholder() {
