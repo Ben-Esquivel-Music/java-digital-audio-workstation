@@ -69,6 +69,12 @@
 
                 <Separator orientation="VERTICAL"/>
 
+                <!-- Snap toggle (icon + context menu applied programmatically) -->
+                <Button fx:id="snapButton" text="Snap"
+                        styleClass="transport-button"/>
+
+                <Separator orientation="VERTICAL"/>
+
                 <!-- Project / Plugins (icons applied programmatically) -->
                 <Button fx:id="saveButton" text="Save" onAction="#onSaveProject"
                         styleClass="transport-button, project-button"/>
