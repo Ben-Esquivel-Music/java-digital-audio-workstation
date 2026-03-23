@@ -65,6 +65,43 @@
     -fx-border-width: 0 0 1 0;
 }
 
+/* ── Sidebar Toolbar ── */
+.sidebar-toolbar {
+    -fx-background-color: #0d0d0d;
+    -fx-border-color: transparent #2a2a2a transparent transparent;
+    -fx-border-width: 0 1 0 0;
+    -fx-pref-width: 56;
+    -fx-spacing: 4;
+}
+
+.sidebar-button {
+    -fx-background-color: transparent;
+    -fx-text-fill: #808080;
+    -fx-font-size: 10px;
+    -fx-padding: 6 4;
+    -fx-background-radius: 6;
+    -fx-cursor: hand;
+    -fx-content-display: top;
+    -fx-alignment: center;
+    -fx-max-width: 48;
+    -fx-min-width: 48;
+    -fx-pref-width: 48;
+}
+
+.sidebar-button:hover {
+    -fx-background-color: #2e2e2e;
+    -fx-text-fill: #e0e0e0;
+}
+
+.sidebar-button:pressed {
+    -fx-background-color: #4a148c;
+    -fx-text-fill: #e040fb;
+}
+
+.sidebar-separator {
+    -fx-padding: 4 0 4 0;
+}
+
 .transport-button {
     -fx-background-color: #2e2e2e;
     -fx-text-fill: #e0e0e0;

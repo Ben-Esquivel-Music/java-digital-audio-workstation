@@ -84,6 +84,37 @@
         </VBox>
     </top>
 
+    <!-- Left: Sidebar Toolbar -->
+    <left>
+        <VBox fx:id="sidebarToolbar" styleClass="sidebar-toolbar" alignment="TOP_CENTER">
+            <padding>
+                <Insets top="8" right="4" bottom="8" left="4"/>
+            </padding>
+
+            <!-- View Navigation -->
+            <Button fx:id="arrangementViewButton" text="Arrangement"
+                    styleClass="sidebar-button"/>
+            <Button fx:id="mixerViewButton" text="Mixer"
+                    styleClass="sidebar-button"/>
+            <Button fx:id="editorViewButton" text="Editor"
+                    styleClass="sidebar-button"/>
+
+            <Separator styleClass="sidebar-separator"/>
+
+            <!-- Project Management -->
+            <Button fx:id="projectFolderButton" text="Project"
+                    styleClass="sidebar-button"/>
+            <Button fx:id="browserButton" text="Browser"
+                    styleClass="sidebar-button"/>
+
+            <Separator styleClass="sidebar-separator"/>
+
+            <!-- Settings -->
+            <Button fx:id="settingsButton" text="Settings"
+                    styleClass="sidebar-button"/>
+        </VBox>
+    </left>
+
     <!-- Center: Tiled Content Area -->
     <center>
         <VBox styleClass="content-area" spacing="6">
