@@ -129,6 +129,17 @@
 
             <Separator styleClass="sidebar-separator"/>
 
+            <!-- Zoom Controls -->
+            <Label text="ZOOM" styleClass="toolbar-section-label"/>
+            <Button fx:id="zoomInButton" text="Zoom In"
+                    styleClass="sidebar-button"/>
+            <Button fx:id="zoomOutButton" text="Zoom Out"
+                    styleClass="sidebar-button"/>
+            <Button fx:id="zoomToFitButton" text="Zoom to Fit"
+                    styleClass="sidebar-button"/>
+
+            <Separator styleClass="sidebar-separator"/>
+
             <!-- Project Management -->
             <Label text="PROJECT" styleClass="toolbar-section-label"/>
             <Button fx:id="newProjectButton" text="New"

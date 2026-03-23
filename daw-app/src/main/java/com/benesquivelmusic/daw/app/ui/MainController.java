@@ -143,6 +143,9 @@ public final class MainController {
     @FXML private Button eraserToolButton;
     @FXML private Button scissorsToolButton;
     @FXML private Button glueToolButton;
+    @FXML private Button zoomInButton;
+    @FXML private Button zoomOutButton;
+    @FXML private Button zoomToFitButton;
 
     private DawProject project;
     private PluginRegistry pluginRegistry;
@@ -168,6 +171,10 @@ public final class MainController {
     // ── Edit tool state ──────────────────────────────────────────────────────
     /** The currently active edit tool. Defaults to {@link EditTool#POINTER}. */
     private EditTool activeEditTool = EditTool.POINTER;
+
+    // ── Zoom state ───────────────────────────────────────────────────────────
+    /** Per-view zoom levels — preserved when switching between views. */
+    private final Map<DawView, ZoomLevel> viewZoomLevels = new EnumMap<>(DawView.class);
 
     // ── Visualization panel controller ───────────────────────────────────────
     /** Controls the visualization row toggle, context menu, and persistence. */
@@ -229,6 +236,7 @@ public final class MainController {
         initializeViewNavigation();
         initializeEditTools();
         initializeSnapControls();
+        initializeZoomControls();
 
         // Register keyboard shortcuts after the scene is available
         playButton.sceneProperty().addListener((_, _, scene) -> {
@@ -444,6 +452,100 @@ public final class MainController {
         return gridResolution;
     }
 
+    // ── Zoom controls ────────────────────────────────────────────────────────
+
+    /**
+     * Initializes zoom state for all views and wires the sidebar zoom buttons.
+     * Each view maintains its own independent zoom level.
+     */
+    private void initializeZoomControls() {
+        for (DawView view : DawView.values()) {
+            viewZoomLevels.put(view, new ZoomLevel());
+        }
+
+        zoomInButton.setOnAction(event -> onZoomIn());
+        zoomOutButton.setOnAction(event -> onZoomOut());
+        zoomToFitButton.setOnAction(event -> onZoomToFit());
+
+        // Wire Ctrl+Scroll zoom on the center content area
+        rootPane.centerProperty().addListener((_, _, newCenter) -> {
+            if (newCenter != null) {
+                wireScrollZoom(newCenter);
+            }
+        });
+        // Wire initial center content
+        if (rootPane.getCenter() != null) {
+            wireScrollZoom(rootPane.getCenter());
+        }
+    }
+
+    /**
+     * Attaches a Ctrl+Scroll wheel handler to the given node for zooming.
+     *
+     * @param node the content node to attach scroll-zoom to
+     */
+    private void wireScrollZoom(Node node) {
+        node.setOnScroll(event -> {
+            if (event.isControlDown()) {
+                if (event.getDeltaY() > 0) {
+                    onZoomIn();
+                } else if (event.getDeltaY() < 0) {
+                    onZoomOut();
+                }
+                event.consume();
+            }
+        });
+    }
+
+    /**
+     * Zooms in on the active view.
+     */
+    private void onZoomIn() {
+        ZoomLevel zoom = viewZoomLevels.get(activeView);
+        zoom.zoomIn();
+        updateZoomStatus("Zoom in: " + zoom.toPercentageString(), DawIcon.ZOOM_IN);
+    }
+
+    /**
+     * Zooms out on the active view.
+     */
+    private void onZoomOut() {
+        ZoomLevel zoom = viewZoomLevels.get(activeView);
+        zoom.zoomOut();
+        updateZoomStatus("Zoom out: " + zoom.toPercentageString(), DawIcon.ZOOM_OUT);
+    }
+
+    /**
+     * Resets the active view's zoom to fit all content.
+     */
+    private void onZoomToFit() {
+        ZoomLevel zoom = viewZoomLevels.get(activeView);
+        zoom.zoomToFit();
+        updateZoomStatus("Zoom to fit: " + zoom.toPercentageString(), DawIcon.FULLSCREEN);
+    }
+
+    /**
+     * Updates the status bar with the given zoom message and icon.
+     *
+     * @param message the message to display
+     * @param icon    the icon to display
+     */
+    private void updateZoomStatus(String message, DawIcon icon) {
+        statusBarLabel.setText(message);
+        statusBarLabel.setGraphic(IconNode.of(icon, 12));
+        LOG.fine(() -> message + " (" + activeView + ")");
+    }
+
+    /**
+     * Returns the zoom level for the given view.
+     *
+     * @param view the view to query
+     * @return the zoom level for the view
+     */
+    public ZoomLevel getZoomLevel(DawView view) {
+        return viewZoomLevels.get(view);
+    }
+
     /**
      * Applies SVG icons from the DAW icon pack to all UI controls.
      *
@@ -512,6 +614,11 @@ public final class MainController {
         scissorsToolButton.setGraphic(IconNode.of(DawIcon.SPLIT, TOOLBAR_ICON_SIZE));
         glueToolButton.setGraphic(IconNode.of(DawIcon.CROSSFADE, TOOLBAR_ICON_SIZE));
 
+        // ── Zoom buttons (Editing + Navigation categories) ─────────────────
+        zoomInButton.setGraphic(IconNode.of(DawIcon.ZOOM_IN, TOOLBAR_ICON_SIZE));
+        zoomOutButton.setGraphic(IconNode.of(DawIcon.ZOOM_OUT, TOOLBAR_ICON_SIZE));
+        zoomToFitButton.setGraphic(IconNode.of(DawIcon.FULLSCREEN, TOOLBAR_ICON_SIZE));
+
         LOG.fine("Applied SVG icons from DAW icon pack");
     }
 
@@ -553,6 +660,9 @@ public final class MainController {
         eraserToolButton.setTooltip(new Tooltip("Eraser Tool (3)"));
         scissorsToolButton.setTooltip(new Tooltip("Scissors Tool (4)"));
         glueToolButton.setTooltip(new Tooltip("Glue Tool (5)"));
+        zoomInButton.setTooltip(new Tooltip("Zoom In (Ctrl+=)"));
+        zoomOutButton.setTooltip(new Tooltip("Zoom Out (Ctrl+-)"));
+        zoomToFitButton.setTooltip(new Tooltip("Zoom to Fit (Ctrl+0)"));
     }
 
     /**
@@ -655,6 +765,21 @@ public final class MainController {
         accelerators.put(
                 new KeyCodeCombination(KeyCode.DIGIT5),
                 () -> selectEditTool(EditTool.GLUE));
+
+        // Ctrl+= — Zoom in
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.EQUALS, KeyCombination.SHORTCUT_DOWN),
+                this::onZoomIn);
+
+        // Ctrl+- — Zoom out
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.MINUS, KeyCombination.SHORTCUT_DOWN),
+                this::onZoomOut);
+
+        // Ctrl+0 — Zoom to fit
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.DIGIT0, KeyCombination.SHORTCUT_DOWN),
+                this::onZoomToFit);
 
         LOG.fine("Registered keyboard shortcuts");
     }
