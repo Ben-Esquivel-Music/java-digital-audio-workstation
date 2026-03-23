@@ -91,6 +91,12 @@
                 <Insets top="8" right="4" bottom="8" left="4"/>
             </padding>
 
+            <!-- Navigation -->
+            <Button fx:id="homeButton" text="Home"
+                    styleClass="sidebar-button"/>
+
+            <Separator styleClass="sidebar-separator"/>
+
             <!-- View Navigation -->
             <Button fx:id="arrangementViewButton" text="Arrangement"
                     styleClass="sidebar-button"/>
@@ -102,15 +108,39 @@
             <Separator styleClass="sidebar-separator"/>
 
             <!-- Project Management -->
-            <Button fx:id="projectFolderButton" text="Project"
+            <Button fx:id="newProjectButton" text="New"
                     styleClass="sidebar-button"/>
-            <Button fx:id="browserButton" text="Browser"
+            <Button fx:id="openProjectButton" text="Open"
+                    styleClass="sidebar-button"/>
+            <Button fx:id="saveProjectButton" text="Save"
+                    styleClass="sidebar-button"/>
+            <Button fx:id="projectFolderButton" text="Project"
                     styleClass="sidebar-button"/>
 
             <Separator styleClass="sidebar-separator"/>
 
-            <!-- Settings -->
+            <!-- Browse &amp; Search -->
+            <Button fx:id="browserButton" text="Library"
+                    styleClass="sidebar-button"/>
+            <Button fx:id="searchButton" text="Search"
+                    styleClass="sidebar-button"/>
+
+            <Separator styleClass="sidebar-separator"/>
+
+            <!-- Tools -->
+            <Button fx:id="pluginsSidebarButton" text="Plugins"
+                    styleClass="sidebar-button"/>
+            <Button fx:id="visualizationsButton" text="Visualizations"
+                    styleClass="sidebar-button"/>
             <Button fx:id="settingsButton" text="Settings"
+                    styleClass="sidebar-button"/>
+
+            <Separator styleClass="sidebar-separator"/>
+
+            <!-- Expand/Collapse &amp; Help -->
+            <Button fx:id="expandCollapseButton" text="Expand"
+                    styleClass="sidebar-button"/>
+            <Button fx:id="helpButton" text="Help"
                     styleClass="sidebar-button"/>
         </VBox>
     </left>

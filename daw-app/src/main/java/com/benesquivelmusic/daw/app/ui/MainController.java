@@ -81,8 +81,6 @@ public final class MainController {
     private static final double TRACK_TYPE_ICON_SIZE = 18;
     /** Icon size for panel-header labels. */
     private static final double PANEL_ICON_SIZE = 16;
-    /** Icon size for sidebar toolbar buttons. */
-    private static final double SIDEBAR_ICON_SIZE = 20;
 
     @FXML private Button skipBackButton;
     @FXML private Button skipForwardButton;
@@ -111,12 +109,21 @@ public final class MainController {
     @FXML private VBox trackListPanel;
     @FXML private HBox vizTileRow;
     @FXML private VBox sidebarToolbar;
+    @FXML private Button homeButton;
     @FXML private Button arrangementViewButton;
     @FXML private Button mixerViewButton;
     @FXML private Button editorViewButton;
+    @FXML private Button newProjectButton;
+    @FXML private Button openProjectButton;
+    @FXML private Button saveProjectButton;
     @FXML private Button projectFolderButton;
     @FXML private Button browserButton;
+    @FXML private Button searchButton;
+    @FXML private Button pluginsSidebarButton;
+    @FXML private Button visualizationsButton;
     @FXML private Button settingsButton;
+    @FXML private Button expandCollapseButton;
+    @FXML private Button helpButton;
 
     private DawProject project;
     private PluginRegistry pluginRegistry;
@@ -228,12 +235,21 @@ public final class MainController {
         ioRoutingLabel.setGraphic(IconNode.of(DawIcon.USB, 12));
 
         // ── Sidebar toolbar buttons ─────────────────────────────────────────
-        arrangementViewButton.setGraphic(IconNode.of(DawIcon.TIMELINE, SIDEBAR_ICON_SIZE));
-        mixerViewButton.setGraphic(IconNode.of(DawIcon.MIXER, SIDEBAR_ICON_SIZE));
-        editorViewButton.setGraphic(IconNode.of(DawIcon.WAVEFORM, SIDEBAR_ICON_SIZE));
-        projectFolderButton.setGraphic(IconNode.of(DawIcon.FOLDER, SIDEBAR_ICON_SIZE));
-        browserButton.setGraphic(IconNode.of(DawIcon.SEARCH, SIDEBAR_ICON_SIZE));
-        settingsButton.setGraphic(IconNode.of(DawIcon.SETTINGS, SIDEBAR_ICON_SIZE));
+        homeButton.setGraphic(IconNode.of(DawIcon.HOME, TOOLBAR_ICON_SIZE));
+        arrangementViewButton.setGraphic(IconNode.of(DawIcon.TIMELINE, TOOLBAR_ICON_SIZE));
+        mixerViewButton.setGraphic(IconNode.of(DawIcon.MIXER, TOOLBAR_ICON_SIZE));
+        editorViewButton.setGraphic(IconNode.of(DawIcon.WAVEFORM, TOOLBAR_ICON_SIZE));
+        newProjectButton.setGraphic(IconNode.of(DawIcon.FOLDER, TOOLBAR_ICON_SIZE));
+        openProjectButton.setGraphic(IconNode.of(DawIcon.FOLDER, TOOLBAR_ICON_SIZE));
+        saveProjectButton.setGraphic(IconNode.of(DawIcon.DOWNLOAD, TOOLBAR_ICON_SIZE));
+        projectFolderButton.setGraphic(IconNode.of(DawIcon.FOLDER, TOOLBAR_ICON_SIZE));
+        browserButton.setGraphic(IconNode.of(DawIcon.LIBRARY, TOOLBAR_ICON_SIZE));
+        searchButton.setGraphic(IconNode.of(DawIcon.SEARCH, TOOLBAR_ICON_SIZE));
+        pluginsSidebarButton.setGraphic(IconNode.of(DawIcon.EQUALIZER, TOOLBAR_ICON_SIZE));
+        visualizationsButton.setGraphic(IconNode.of(DawIcon.SPECTRUM, TOOLBAR_ICON_SIZE));
+        settingsButton.setGraphic(IconNode.of(DawIcon.SETTINGS, TOOLBAR_ICON_SIZE));
+        expandCollapseButton.setGraphic(IconNode.of(DawIcon.EXPAND, TOOLBAR_ICON_SIZE));
+        helpButton.setGraphic(IconNode.of(DawIcon.INFO, TOOLBAR_ICON_SIZE));
 
         LOG.fine("Applied SVG icons from DAW icon pack");
     }
@@ -258,9 +274,18 @@ public final class MainController {
         arrangementViewButton.setTooltip(new Tooltip("Arrangement View"));
         mixerViewButton.setTooltip(new Tooltip("Mixer View"));
         editorViewButton.setTooltip(new Tooltip("Editor View"));
-        projectFolderButton.setTooltip(new Tooltip("Project"));
-        browserButton.setTooltip(new Tooltip("Browser"));
+        newProjectButton.setTooltip(new Tooltip("New Project"));
+        openProjectButton.setTooltip(new Tooltip("Open Project"));
+        saveProjectButton.setTooltip(new Tooltip("Save Project"));
+        projectFolderButton.setTooltip(new Tooltip("Project Folder"));
+        browserButton.setTooltip(new Tooltip("Library"));
+        searchButton.setTooltip(new Tooltip("Search"));
+        pluginsSidebarButton.setTooltip(new Tooltip("Plugins"));
+        visualizationsButton.setTooltip(new Tooltip("Visualizations"));
         settingsButton.setTooltip(new Tooltip("Settings"));
+        homeButton.setTooltip(new Tooltip("Home"));
+        expandCollapseButton.setTooltip(new Tooltip("Expand/Collapse"));
+        helpButton.setTooltip(new Tooltip("Help"));
     }
 
     /**
