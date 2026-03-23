@@ -53,10 +53,14 @@ import javafx.util.Duration;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.EnumMap;
+import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import javafx.scene.Scene;
 import javafx.scene.Parent;
+import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.StackPane;
 import javafx.collections.ObservableMap;
 
 /**
@@ -82,6 +86,7 @@ public final class MainController {
     /** Icon size for panel-header labels. */
     private static final double PANEL_ICON_SIZE = 16;
 
+    @FXML private BorderPane rootPane;
     @FXML private Button skipBackButton;
     @FXML private Button skipForwardButton;
     @FXML private Button loopButton;
@@ -134,6 +139,12 @@ public final class MainController {
     private boolean loopEnabled;
     private boolean snapEnabled = true;
 
+    // ── View navigation state ────────────────────────────────────────────────
+    /** Caches each view's content node so switching back preserves state. */
+    private final Map<DawView, Node> viewCache = new EnumMap<>(DawView.class);
+    /** The currently active view. */
+    private DawView activeView = DawView.ARRANGEMENT;
+
     // ── Animation state ──────────────────────────────────────────────────────
     /** Drives all continuous frame-by-frame animations at ~60 fps. */
     private AnimationTimer mainAnimTimer;
@@ -180,6 +191,7 @@ public final class MainController {
         updateCheckpointStatus();
         updateUndoRedoState();
         startMainAnimTimer();
+        initializeViewNavigation();
 
         // Register keyboard shortcuts after the scene is available
         playButton.sceneProperty().addListener((_, _, scene) -> {
@@ -189,6 +201,80 @@ public final class MainController {
         });
 
         LOG.info("DAW initialized with studio quality format");
+    }
+
+    // ── View navigation ──────────────────────────────────────────────────────
+
+    /**
+     * Sets up the view cache with the initial arrangement content and placeholder
+     * nodes for the mixer and editor views, then wires the sidebar view buttons.
+     */
+    private void initializeViewNavigation() {
+        // Cache the current center content as the arrangement view
+        viewCache.put(DawView.ARRANGEMENT, rootPane.getCenter());
+
+        // Mixer placeholder
+        Label mixerPlaceholder = new Label("Mixer View");
+        mixerPlaceholder.getStyleClass().add("placeholder-label");
+        mixerPlaceholder.setGraphic(IconNode.of(DawIcon.MIXER, 24));
+        StackPane mixerContent = new StackPane(mixerPlaceholder);
+        mixerContent.getStyleClass().add("content-area");
+        viewCache.put(DawView.MIXER, mixerContent);
+
+        // Editor placeholder
+        Label editorPlaceholder = new Label("Editor View");
+        editorPlaceholder.getStyleClass().add("placeholder-label");
+        editorPlaceholder.setGraphic(IconNode.of(DawIcon.WAVEFORM, 24));
+        StackPane editorContent = new StackPane(editorPlaceholder);
+        editorContent.getStyleClass().add("content-area");
+        viewCache.put(DawView.EDITOR, editorContent);
+
+        // Wire sidebar view buttons
+        arrangementViewButton.setOnAction(event -> switchView(DawView.ARRANGEMENT));
+        mixerViewButton.setOnAction(event -> switchView(DawView.MIXER));
+        editorViewButton.setOnAction(event -> switchView(DawView.EDITOR));
+
+        // Set the default active view styling
+        updateToolbarActiveState();
+    }
+
+    /**
+     * Switches the center content of the main {@link BorderPane} to the given view.
+     *
+     * <p>Each view's content node is created once and cached so switching back
+     * preserves state (scroll position, selection, etc.).</p>
+     *
+     * @param view the view to activate
+     */
+    private void switchView(DawView view) {
+        if (view == activeView) {
+            return;
+        }
+        activeView = view;
+        rootPane.setCenter(viewCache.get(view));
+        updateToolbarActiveState();
+        statusBarLabel.setText("Switched to " + view.name().charAt(0)
+                + view.name().substring(1).toLowerCase() + " view");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
+        LOG.fine(() -> "Switched to view: " + view);
+    }
+
+    /**
+     * Applies the {@code .toolbar-button-active} CSS class to the sidebar button
+     * corresponding to the active view and removes it from all others.
+     */
+    private void updateToolbarActiveState() {
+        Button[] viewButtons = { arrangementViewButton, mixerViewButton, editorViewButton };
+        DawView[] views = DawView.values();
+        for (int i = 0; i < viewButtons.length; i++) {
+            if (views[i] == activeView) {
+                if (!viewButtons[i].getStyleClass().contains("toolbar-button-active")) {
+                    viewButtons[i].getStyleClass().add("toolbar-button-active");
+                }
+            } else {
+                viewButtons[i].getStyleClass().remove("toolbar-button-active");
+            }
+        }
     }
 
     /**
