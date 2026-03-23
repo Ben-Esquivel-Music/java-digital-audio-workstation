@@ -194,6 +194,10 @@ public final class MainController {
     /** Auto-collapses/expands the sidebar based on window width. */
     private ResponsiveToolbarController responsiveToolbarController;
 
+    // ── Toolbar context menu controller ──────────────────────────────────────
+    /** Attaches right-click context menus to toolbar sections. */
+    private ToolbarContextMenuController toolbarContextMenuController;
+
     // ── Toolbar state persistence ────────────────────────────────────────────
     /** Persists toolbar state (view, tool, snap, grid, browser) across sessions. */
     private ToolbarStateStore toolbarStateStore;
@@ -259,6 +263,7 @@ public final class MainController {
         initializeSnapControls();
         initializeZoomControls();
         initializeToolbarCollapse(prefs);
+        initializeToolbarContextMenus();
 
         // Register keyboard shortcuts after the scene is available
         playButton.sceneProperty().addListener((_, _, scene) -> {
@@ -466,6 +471,47 @@ public final class MainController {
         });
 
         LOG.fine("Toolbar collapse controller initialized");
+    }
+
+    /**
+     * Creates and wires the toolbar context menu controller, attaching
+     * right-click context menus to the Views, Project, and Tools sidebar
+     * sections.
+     */
+    private void initializeToolbarContextMenus() {
+        Button[] viewBtns = { arrangementViewButton, mixerViewButton, editorViewButton };
+        Button[] projectBtns = { newProjectButton, openProjectButton, saveProjectButton, recentProjectsButton };
+        Button[] toolBtns = { pluginsSidebarButton, settingsButton };
+
+        toolbarContextMenuController = new ToolbarContextMenuController(
+                viewBtns,
+                projectBtns,
+                toolBtns,
+                projectManager,
+                text -> {
+                    statusBarLabel.setText(text);
+                    statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
+                },
+                this::resetViewLayout,
+                this::loadProjectFromPath
+        );
+        toolbarContextMenuController.initialize();
+        LOG.fine("Toolbar context menus initialized");
+    }
+
+    /**
+     * Resets the split pane divider positions to their default values.
+     */
+    private void resetViewLayout() {
+        Node center = rootPane.getCenter();
+        if (center instanceof VBox vbox) {
+            for (Node child : vbox.getChildren()) {
+                if (child instanceof javafx.scene.control.SplitPane splitPane) {
+                    splitPane.setDividerPositions(0.22);
+                }
+            }
+        }
+        LOG.fine("View layout reset to defaults");
     }
 
     /**
