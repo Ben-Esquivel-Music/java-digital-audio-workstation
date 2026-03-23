@@ -22,26 +22,45 @@ class EditorViewTest {
 
     @BeforeAll
     static void initToolkit() throws Exception {
-        CountDownLatch latch = new CountDownLatch(1);
+        toolkitAvailable = false;
+        CountDownLatch startupLatch = new CountDownLatch(1);
         try {
-            Platform.startup(latch::countDown);
-            latch.await(5, TimeUnit.SECONDS);
-            toolkitAvailable = true;
+            Platform.startup(startupLatch::countDown);
+            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
+                return;
+            }
         } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-            toolkitAvailable = true;
+            // Toolkit already initialized — will verify below
         } catch (UnsupportedOperationException ignored) {
             // No display available (headless CI environment)
-            toolkitAvailable = false;
+            return;
         }
+        // Verify the FX Application Thread is actually processing events.
+        // Platform.runLater() itself can block if the toolkit is wedged,
+        // so we call it from a daemon thread with a timeout.
+        CountDownLatch verifyLatch = new CountDownLatch(1);
+        Thread verifier = new Thread(() -> {
+            try {
+                Platform.runLater(verifyLatch::countDown);
+            } catch (Exception ignored) {
+                // Platform.runLater failed — toolkit is not functional
+            }
+        });
+        verifier.setDaemon(true);
+        verifier.start();
+        verifier.join(3000);
+        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
     }
 
     private EditorView createOnFxThread() throws Exception {
         AtomicReference<EditorView> ref = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
-            ref.set(new EditorView());
-            latch.countDown();
+            try {
+                ref.set(new EditorView());
+            } finally {
+                latch.countDown();
+            }
         });
         latch.await(5, TimeUnit.SECONDS);
         return ref.get();
@@ -50,8 +69,11 @@ class EditorViewTest {
     private void runOnFxThread(Runnable action) throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
-            action.run();
-            latch.countDown();
+            try {
+                action.run();
+            } finally {
+                latch.countDown();
+            }
         });
         latch.await(5, TimeUnit.SECONDS);
     }
