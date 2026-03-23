@@ -144,6 +144,8 @@ public final class MainController {
     private final Map<DawView, Node> viewCache = new EnumMap<>(DawView.class);
     /** The currently active view. */
     private DawView activeView = DawView.ARRANGEMENT;
+    /** The mixer view panel — refreshed when tracks are added or removed. */
+    private MixerView mixerView;
 
     // ── Animation state ──────────────────────────────────────────────────────
     /** Drives all continuous frame-by-frame animations at ~60 fps. */
@@ -213,13 +215,9 @@ public final class MainController {
         // Cache the current center content as the arrangement view
         viewCache.put(DawView.ARRANGEMENT, rootPane.getCenter());
 
-        // Mixer placeholder
-        Label mixerPlaceholder = new Label("Mixer View");
-        mixerPlaceholder.getStyleClass().add("placeholder-label");
-        mixerPlaceholder.setGraphic(IconNode.of(DawIcon.MIXER, 24));
-        StackPane mixerContent = new StackPane(mixerPlaceholder);
-        mixerContent.getStyleClass().add("content-area");
-        viewCache.put(DawView.MIXER, mixerContent);
+        // Mixer view — real channel-strip mixer panel
+        mixerView = new MixerView(project);
+        viewCache.put(DawView.MIXER, mixerView);
 
         // Editor placeholder
         Label editorPlaceholder = new Label("Editor View");
@@ -658,12 +656,14 @@ public final class MainController {
                     trackListPanel.getChildren().add(trackItem);
                 }
                 updateArrangementPlaceholder();
+                mixerView.refresh();
             }
             @Override public void undo() {
                 project.removeTrack(track);
                 trackListPanel.getChildren().remove(trackItem);
                 audioTrackCounter--;
                 updateArrangementPlaceholder();
+                mixerView.refresh();
             }
         });
         updateUndoRedoState();
@@ -691,12 +691,14 @@ public final class MainController {
                     trackListPanel.getChildren().add(trackItem);
                 }
                 updateArrangementPlaceholder();
+                mixerView.refresh();
             }
             @Override public void undo() {
                 project.removeTrack(track);
                 trackListPanel.getChildren().remove(trackItem);
                 midiTrackCounter--;
                 updateArrangementPlaceholder();
+                mixerView.refresh();
             }
         });
         updateUndoRedoState();
@@ -936,6 +938,7 @@ public final class MainController {
                     project.removeTrack(track);
                     trackListPanel.getChildren().remove(trackItem);
                     updateArrangementPlaceholder();
+                    mixerView.refresh();
                 }
                 @Override public void undo() {
                     project.addTrack(track);
@@ -945,6 +948,7 @@ public final class MainController {
                         trackListPanel.getChildren().add(trackItem);
                     }
                     updateArrangementPlaceholder();
+                    mixerView.refresh();
                 }
             });
             updateUndoRedoState();
