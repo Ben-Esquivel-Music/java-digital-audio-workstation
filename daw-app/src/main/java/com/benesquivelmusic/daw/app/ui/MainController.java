@@ -1498,6 +1498,7 @@ public final class MainController {
         snapItem.setGraphic(IconNode.of(DawIcon.SNAP, 14));
         snapItem.setOnAction(_ -> {
             snapEnabled = !snapEnabled;
+            updateSnapButtonStyle();
             snapItem.setText(snapEnabled ? "Snap: ON" : "Snap: OFF");
             statusBarLabel.setText(snapEnabled ? "Snap to grid enabled" : "Snap to grid disabled");
             statusBarLabel.setGraphic(IconNode.of(DawIcon.SNAP, 12));
