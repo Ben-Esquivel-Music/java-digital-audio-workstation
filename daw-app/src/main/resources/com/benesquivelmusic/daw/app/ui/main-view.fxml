@@ -108,6 +108,21 @@
 
             <Separator styleClass="sidebar-separator"/>
 
+            <!-- Edit Tools -->
+            <Label text="TOOLS" styleClass="toolbar-section-label"/>
+            <Button fx:id="pointerToolButton" text="Pointer"
+                    styleClass="sidebar-button"/>
+            <Button fx:id="pencilToolButton" text="Pencil"
+                    styleClass="sidebar-button"/>
+            <Button fx:id="eraserToolButton" text="Eraser"
+                    styleClass="sidebar-button"/>
+            <Button fx:id="scissorsToolButton" text="Scissors"
+                    styleClass="sidebar-button"/>
+            <Button fx:id="glueToolButton" text="Glue"
+                    styleClass="sidebar-button"/>
+
+            <Separator styleClass="sidebar-separator"/>
+
             <!-- Project Management -->
             <Label text="PROJECT" styleClass="toolbar-section-label"/>
             <Button fx:id="newProjectButton" text="New"

@@ -137,6 +137,11 @@ public final class MainController {
     @FXML private Button settingsButton;
     @FXML private Button expandCollapseButton;
     @FXML private Button helpButton;
+    @FXML private Button pointerToolButton;
+    @FXML private Button pencilToolButton;
+    @FXML private Button eraserToolButton;
+    @FXML private Button scissorsToolButton;
+    @FXML private Button glueToolButton;
 
     private DawProject project;
     private PluginRegistry pluginRegistry;
@@ -157,6 +162,10 @@ public final class MainController {
     private MixerView mixerView;
     /** The editor view panel — shows MIDI piano roll or audio waveform. */
     private EditorView editorView;
+
+    // ── Edit tool state ──────────────────────────────────────────────────────
+    /** The currently active edit tool. Defaults to {@link EditTool#POINTER}. */
+    private EditTool activeEditTool = EditTool.POINTER;
 
     // ── Visualization panel controller ───────────────────────────────────────
     /** Controls the visualization row toggle, context menu, and persistence. */
@@ -216,6 +225,7 @@ public final class MainController {
         updateUndoRedoState();
         startMainAnimTimer();
         initializeViewNavigation();
+        initializeEditTools();
 
         // Register keyboard shortcuts after the scene is available
         playButton.sceneProperty().addListener((_, _, scene) -> {
@@ -293,6 +303,68 @@ public final class MainController {
         }
     }
 
+    // ── Edit tool selection ──────────────────────────────────────────────────
+
+    /**
+     * Wires the edit tool buttons and sets the default active tool styling.
+     */
+    private void initializeEditTools() {
+        pointerToolButton.setOnAction(event -> selectEditTool(EditTool.POINTER));
+        pencilToolButton.setOnAction(event -> selectEditTool(EditTool.PENCIL));
+        eraserToolButton.setOnAction(event -> selectEditTool(EditTool.ERASER));
+        scissorsToolButton.setOnAction(event -> selectEditTool(EditTool.SCISSORS));
+        glueToolButton.setOnAction(event -> selectEditTool(EditTool.GLUE));
+
+        updateEditToolActiveState();
+    }
+
+    /**
+     * Selects the given edit tool and updates the toolbar styling.
+     *
+     * @param tool the tool to activate
+     */
+    private void selectEditTool(EditTool tool) {
+        if (tool == activeEditTool) {
+            return;
+        }
+        activeEditTool = tool;
+        updateEditToolActiveState();
+        statusBarLabel.setText("Selected " + tool.name().charAt(0)
+                + tool.name().substring(1).toLowerCase() + " tool");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
+        LOG.fine(() -> "Selected edit tool: " + tool);
+    }
+
+    /**
+     * Returns the currently active edit tool.
+     *
+     * @return the active {@link EditTool}
+     */
+    public EditTool getActiveEditTool() {
+        return activeEditTool;
+    }
+
+    /**
+     * Applies the {@code .toolbar-button-active} CSS class to the edit tool button
+     * corresponding to the active tool and removes it from all others.
+     */
+    private void updateEditToolActiveState() {
+        Button[] toolButtons = {
+                pointerToolButton, pencilToolButton, eraserToolButton,
+                scissorsToolButton, glueToolButton
+        };
+        EditTool[] tools = EditTool.values();
+        for (int i = 0; i < toolButtons.length; i++) {
+            if (tools[i] == activeEditTool) {
+                if (!toolButtons[i].getStyleClass().contains("toolbar-button-active")) {
+                    toolButtons[i].getStyleClass().add("toolbar-button-active");
+                }
+            } else {
+                toolButtons[i].getStyleClass().remove("toolbar-button-active");
+            }
+        }
+    }
+
     /**
      * Applies SVG icons from the DAW icon pack to all UI controls.
      *
@@ -353,6 +425,13 @@ public final class MainController {
         expandCollapseButton.setGraphic(IconNode.of(DawIcon.EXPAND, TOOLBAR_ICON_SIZE));
         helpButton.setGraphic(IconNode.of(DawIcon.INFO, TOOLBAR_ICON_SIZE));
 
+        // ── Edit tool buttons (Editing category) ───────────────────────────
+        pointerToolButton.setGraphic(IconNode.of(DawIcon.MOVE, TOOLBAR_ICON_SIZE));
+        pencilToolButton.setGraphic(IconNode.of(DawIcon.MARKER, TOOLBAR_ICON_SIZE));
+        eraserToolButton.setGraphic(IconNode.of(DawIcon.DELETE, TOOLBAR_ICON_SIZE));
+        scissorsToolButton.setGraphic(IconNode.of(DawIcon.SPLIT, TOOLBAR_ICON_SIZE));
+        glueToolButton.setGraphic(IconNode.of(DawIcon.CROSSFADE, TOOLBAR_ICON_SIZE));
+
         LOG.fine("Applied SVG icons from DAW icon pack");
     }
 
@@ -388,6 +467,11 @@ public final class MainController {
         homeButton.setTooltip(new Tooltip("Home"));
         expandCollapseButton.setTooltip(new Tooltip("Expand/Collapse"));
         helpButton.setTooltip(new Tooltip("Help"));
+        pointerToolButton.setTooltip(new Tooltip("Pointer Tool (1)"));
+        pencilToolButton.setTooltip(new Tooltip("Pencil Tool (2)"));
+        eraserToolButton.setTooltip(new Tooltip("Eraser Tool (3)"));
+        scissorsToolButton.setTooltip(new Tooltip("Scissors Tool (4)"));
+        glueToolButton.setTooltip(new Tooltip("Glue Tool (5)"));
     }
 
     /**
@@ -465,6 +549,31 @@ public final class MainController {
         accelerators.put(
                 new KeyCodeCombination(KeyCode.Z, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN),
                 this::onRedo);
+
+        // 1 — Pointer tool
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.DIGIT1),
+                () -> selectEditTool(EditTool.POINTER));
+
+        // 2 — Pencil tool
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.DIGIT2),
+                () -> selectEditTool(EditTool.PENCIL));
+
+        // 3 — Eraser tool
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.DIGIT3),
+                () -> selectEditTool(EditTool.ERASER));
+
+        // 4 — Scissors tool
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.DIGIT4),
+                () -> selectEditTool(EditTool.SCISSORS));
+
+        // 5 — Glue tool
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.DIGIT5),
+                () -> selectEditTool(EditTool.GLUE));
 
         LOG.fine("Registered keyboard shortcuts");
     }
