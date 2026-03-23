@@ -30,6 +30,7 @@ public final class BrowserPanelController {
     private final Button browserButton;
     private final BorderPane rootPane;
     private boolean panelVisible;
+    private Runnable onVisibilityChanged;
 
     /**
      * Creates a new controller wiring the browser panel to the toolbar button.
@@ -76,6 +77,9 @@ public final class BrowserPanelController {
             hidePanel();
         }
         updateButtonActiveState();
+        if (onVisibilityChanged != null) {
+            onVisibilityChanged.run();
+        }
         LOG.fine(() -> "Browser panel toggled: " + (panelVisible ? "visible" : "hidden"));
     }
 
@@ -86,6 +90,15 @@ public final class BrowserPanelController {
      */
     public boolean isPanelVisible() {
         return panelVisible;
+    }
+
+    /**
+     * Sets a callback that is invoked after the panel visibility changes.
+     *
+     * @param callback the callback to invoke, or {@code null} to remove
+     */
+    public void setOnVisibilityChanged(Runnable callback) {
+        this.onVisibilityChanged = callback;
     }
 
     /**
