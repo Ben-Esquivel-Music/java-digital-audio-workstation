@@ -884,7 +884,6 @@ public final class MainController {
         }
     }
 
-
     @FXML
     private void onManagePlugins() {
         statusBarLabel.setText("Opening plugin manager...");
