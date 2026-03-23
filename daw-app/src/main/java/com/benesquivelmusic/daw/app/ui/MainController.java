@@ -146,6 +146,8 @@ public final class MainController {
     private DawView activeView = DawView.ARRANGEMENT;
     /** The mixer view panel — refreshed when tracks are added or removed. */
     private MixerView mixerView;
+    /** The editor view panel — shows MIDI piano roll or audio waveform. */
+    private EditorView editorView;
 
     // ── Animation state ──────────────────────────────────────────────────────
     /** Drives all continuous frame-by-frame animations at ~60 fps. */
@@ -219,13 +221,9 @@ public final class MainController {
         mixerView = new MixerView(project);
         viewCache.put(DawView.MIXER, mixerView);
 
-        // Editor placeholder
-        Label editorPlaceholder = new Label("Editor View");
-        editorPlaceholder.getStyleClass().add("placeholder-label");
-        editorPlaceholder.setGraphic(IconNode.of(DawIcon.WAVEFORM, 24));
-        StackPane editorContent = new StackPane(editorPlaceholder);
-        editorContent.getStyleClass().add("content-area");
-        viewCache.put(DawView.EDITOR, editorContent);
+        // Editor view — MIDI piano-roll / audio waveform editor panel
+        editorView = new EditorView();
+        viewCache.put(DawView.EDITOR, editorView);
 
         // Wire sidebar view buttons
         arrangementViewButton.setOnAction(event -> switchView(DawView.ARRANGEMENT));
