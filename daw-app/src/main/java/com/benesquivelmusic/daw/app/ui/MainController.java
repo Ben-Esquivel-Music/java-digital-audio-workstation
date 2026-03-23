@@ -159,7 +159,6 @@ public final class MainController {
     private boolean snapEnabled = true;
     private GridResolution gridResolution = GridResolution.QUARTER;
     private boolean projectDirty;
-    private boolean toolbarExpanded = true;
 
     // ── View navigation state ────────────────────────────────────────────────
     /** Caches each view's content node so switching back preserves state. */
@@ -186,6 +185,10 @@ public final class MainController {
     // ── Browser panel controller ─────────────────────────────────────────────
     /** Controls the browser/library side panel toggle. */
     private BrowserPanelController browserPanelController;
+
+    // ── Toolbar collapse controller ──────────────────────────────────────────
+    /** Controls the sidebar toolbar collapse/expand toggle and persistence. */
+    private ToolbarCollapseController toolbarCollapseController;
 
     // ── Animation state ──────────────────────────────────────────────────────
     /** Drives all continuous frame-by-frame animations at ~60 fps. */
@@ -240,6 +243,7 @@ public final class MainController {
         initializeEditTools();
         initializeSnapControls();
         initializeZoomControls();
+        initializeToolbarCollapse(prefs);
 
         // Register keyboard shortcuts after the scene is available
         playButton.sceneProperty().addListener((_, _, scene) -> {
@@ -405,16 +409,29 @@ public final class MainController {
 
     /**
      * Toggles the sidebar toolbar between expanded and collapsed states.
+     * Delegates to {@link ToolbarCollapseController} for animation and persistence.
      */
     private void onToggleToolbar() {
-        toolbarExpanded = !toolbarExpanded;
-        sidebarToolbar.setVisible(toolbarExpanded);
-        sidebarToolbar.setManaged(toolbarExpanded);
-        String state = toolbarExpanded ? "Toolbar expanded" : "Toolbar collapsed";
+        toolbarCollapseController.toggle();
+        boolean collapsed = toolbarCollapseController.isCollapsed();
+        String state = collapsed ? "Toolbar collapsed" : "Toolbar expanded";
         statusBarLabel.setText(state);
         statusBarLabel.setGraphic(IconNode.of(
-                toolbarExpanded ? DawIcon.EXPAND : DawIcon.COLLAPSE, 12));
+                collapsed ? DawIcon.COLLAPSE : DawIcon.EXPAND, 12));
         LOG.fine(state);
+    }
+
+    /**
+     * Initializes the toolbar collapse controller, wiring it to the sidebar
+     * and the expand/collapse button, and restoring persisted state.
+     *
+     * @param prefs the preferences node used for state persistence
+     */
+    private void initializeToolbarCollapse(Preferences prefs) {
+        toolbarCollapseController = new ToolbarCollapseController(
+                sidebarToolbar, expandCollapseButton, prefs);
+        toolbarCollapseController.initialize();
+        LOG.fine("Toolbar collapse controller initialized");
     }
 
     /**
