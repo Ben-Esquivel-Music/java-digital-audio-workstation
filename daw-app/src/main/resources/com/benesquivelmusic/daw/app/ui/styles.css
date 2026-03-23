@@ -788,3 +788,15 @@
     -fx-background-color: #242424;
     -fx-text-fill: #e040fb;
 }
+
+/* ── Tooltips (dark theme) ── */
+.tooltip {
+    -fx-background-color: #1a1a1a;
+    -fx-text-fill: #e0e0e0;
+    -fx-border-color: #2e2e2e;
+    -fx-border-width: 1;
+    -fx-border-radius: 4;
+    -fx-background-radius: 4;
+    -fx-font-size: 12px;
+    -fx-padding: 6 10 6 10;
+}

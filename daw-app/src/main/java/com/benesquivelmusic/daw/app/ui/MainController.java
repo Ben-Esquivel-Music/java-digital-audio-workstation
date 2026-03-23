@@ -93,6 +93,8 @@ public final class MainController {
     private static final double TRACK_TYPE_ICON_SIZE = 18;
     /** Icon size for panel-header labels. */
     private static final double PANEL_ICON_SIZE = 16;
+    /** Show delay for all tooltips (300ms for quick discoverability). */
+    private static final Duration TOOLTIP_SHOW_DELAY = Duration.millis(300);
 
     @FXML private BorderPane rootPane;
     @FXML private Button skipBackButton;
@@ -639,45 +641,78 @@ public final class MainController {
 
     /**
      * Applies descriptive tooltips with keyboard shortcut hints to all UI controls.
+     *
+     * <p>Tooltips follow the format {@code "Action Name (Shortcut)"} and use a
+     * 300&nbsp;ms show delay for quick discoverability. Ambiguous buttons include
+     * a brief description separated by an em-dash.</p>
      */
     private void applyTooltips() {
-        skipBackButton.setTooltip(new Tooltip("Skip to Beginning (Home)"));
-        playButton.setTooltip(new Tooltip("Play (Space)"));
-        pauseButton.setTooltip(new Tooltip("Pause"));
-        stopButton.setTooltip(new Tooltip("Stop (Escape)"));
-        recordButton.setTooltip(new Tooltip("Record (R)"));
-        skipForwardButton.setTooltip(new Tooltip("Skip Forward (End)"));
-        loopButton.setTooltip(new Tooltip("Toggle Loop (L)"));
-        addAudioTrackButton.setTooltip(new Tooltip("Add Audio Track (Ctrl+Shift+A)"));
-        addMidiTrackButton.setTooltip(new Tooltip("Add MIDI Track (Ctrl+Shift+M)"));
-        undoButton.setTooltip(new Tooltip("Undo (Ctrl+Z)"));
-        redoButton.setTooltip(new Tooltip("Redo (Ctrl+Shift+Z)"));
-        snapButton.setTooltip(new Tooltip("Toggle Snap (Ctrl+Shift+S) · Right-click for grid resolution"));
-        saveButton.setTooltip(new Tooltip("Save Project (Ctrl+S)"));
-        pluginsButton.setTooltip(new Tooltip("Manage Plugins"));
-        arrangementViewButton.setTooltip(new Tooltip("Arrangement View (Ctrl+1)"));
-        mixerViewButton.setTooltip(new Tooltip("Mixer View (Ctrl+2)"));
-        editorViewButton.setTooltip(new Tooltip("Editor View (Ctrl+3)"));
-        newProjectButton.setTooltip(new Tooltip("New Project (Ctrl+N)"));
-        openProjectButton.setTooltip(new Tooltip("Open Project (Ctrl+O)"));
-        saveProjectButton.setTooltip(new Tooltip("Save Project (Ctrl+S)"));
-        recentProjectsButton.setTooltip(new Tooltip("Recent Projects"));
-        browserButton.setTooltip(new Tooltip("Toggle Browser (Ctrl+B)"));
-        searchButton.setTooltip(new Tooltip("Search"));
-        pluginsSidebarButton.setTooltip(new Tooltip("Plugins"));
-        visualizationsButton.setTooltip(new Tooltip("Toggle Visualizations (Ctrl+Shift+V)"));
-        settingsButton.setTooltip(new Tooltip("Settings (Ctrl+,)"));
-        homeButton.setTooltip(new Tooltip("Home"));
-        expandCollapseButton.setTooltip(new Tooltip("Collapse/Expand Toolbar (Ctrl+T)"));
-        helpButton.setTooltip(new Tooltip("Help"));
-        pointerToolButton.setTooltip(new Tooltip("Pointer Tool (V)"));
-        pencilToolButton.setTooltip(new Tooltip("Pencil Tool (P)"));
-        eraserToolButton.setTooltip(new Tooltip("Eraser Tool (E)"));
-        scissorsToolButton.setTooltip(new Tooltip("Scissors Tool (C)"));
-        glueToolButton.setTooltip(new Tooltip("Glue Tool (G)"));
-        zoomInButton.setTooltip(new Tooltip("Zoom In (Ctrl+=)"));
-        zoomOutButton.setTooltip(new Tooltip("Zoom Out (Ctrl+-)"));
-        zoomToFitButton.setTooltip(new Tooltip("Zoom to Fit (Ctrl+0)"));
+        // ── Transport controls ──────────────────────────────────────────────
+        skipBackButton.setTooltip(styledTooltip("Skip to Beginning (Home)"));
+        playButton.setTooltip(styledTooltip("Play (Space)"));
+        pauseButton.setTooltip(styledTooltip("Pause"));
+        stopButton.setTooltip(styledTooltip("Stop (Escape)"));
+        recordButton.setTooltip(styledTooltip("Record (R)"));
+        skipForwardButton.setTooltip(styledTooltip("Skip Forward (End)"));
+        loopButton.setTooltip(styledTooltip("Toggle Loop (L)"));
+
+        // ── Toolbar buttons ─────────────────────────────────────────────────
+        addAudioTrackButton.setTooltip(styledTooltip("Add Audio Track (Ctrl+Shift+A)"));
+        addMidiTrackButton.setTooltip(styledTooltip("Add MIDI Track (Ctrl+Shift+M)"));
+        undoButton.setTooltip(styledTooltip("Undo (Ctrl+Z)"));
+        redoButton.setTooltip(styledTooltip("Redo (Ctrl+Shift+Z)"));
+        snapButton.setTooltip(styledTooltip(
+                "Toggle Snap (Ctrl+Shift+S) \u00b7 Right-click for grid resolution"));
+        saveButton.setTooltip(styledTooltip("Save Project (Ctrl+S)"));
+        pluginsButton.setTooltip(styledTooltip(
+                "Manage Plugins \u2014 Add, remove, and configure audio plugins"));
+
+        // ── Sidebar view buttons ────────────────────────────────────────────
+        homeButton.setTooltip(styledTooltip(
+                "Home \u2014 Return to the default view"));
+        arrangementViewButton.setTooltip(styledTooltip("Arrangement View (Ctrl+1)"));
+        mixerViewButton.setTooltip(styledTooltip("Mixer View (Ctrl+2)"));
+        editorViewButton.setTooltip(styledTooltip("Editor View (Ctrl+3)"));
+        newProjectButton.setTooltip(styledTooltip("New Project (Ctrl+N)"));
+        openProjectButton.setTooltip(styledTooltip("Open Project (Ctrl+O)"));
+        saveProjectButton.setTooltip(styledTooltip("Save Project (Ctrl+S)"));
+        recentProjectsButton.setTooltip(styledTooltip(
+                "Recent Projects \u2014 Open a recently saved project"));
+        browserButton.setTooltip(styledTooltip(
+                "Browser \u2014 Browse samples, presets, and project files (Ctrl+B)"));
+        searchButton.setTooltip(styledTooltip(
+                "Search \u2014 Find tracks, clips, and project items"));
+        pluginsSidebarButton.setTooltip(styledTooltip(
+                "Plugins \u2014 Browse and manage audio plugins"));
+        visualizationsButton.setTooltip(styledTooltip(
+                "Visualizations \u2014 Toggle audio visualization panels (Ctrl+Shift+V)"));
+        settingsButton.setTooltip(styledTooltip("Settings (Ctrl+,)"));
+        expandCollapseButton.setTooltip(styledTooltip(
+                "Collapse/Expand Toolbar (Ctrl+T)"));
+        helpButton.setTooltip(styledTooltip(
+                "Help \u2014 View documentation and keyboard shortcuts"));
+
+        // ── Edit tool buttons ───────────────────────────────────────────────
+        pointerToolButton.setTooltip(styledTooltip("Pointer Tool (V)"));
+        pencilToolButton.setTooltip(styledTooltip("Pencil Tool (P)"));
+        eraserToolButton.setTooltip(styledTooltip("Eraser Tool (E)"));
+        scissorsToolButton.setTooltip(styledTooltip("Scissors Tool (C)"));
+        glueToolButton.setTooltip(styledTooltip("Glue Tool (G)"));
+
+        // ── Zoom buttons ────────────────────────────────────────────────────
+        zoomInButton.setTooltip(styledTooltip("Zoom In (Ctrl+=)"));
+        zoomOutButton.setTooltip(styledTooltip("Zoom Out (Ctrl+-)"));
+        zoomToFitButton.setTooltip(styledTooltip("Zoom to Fit (Ctrl+0)"));
+    }
+
+    /**
+     * Creates a {@link Tooltip} with the given text and a fast show delay
+     * matching the application's dark theme.
+     */
+    private static Tooltip styledTooltip(String text) {
+        Tooltip tooltip = new Tooltip(text);
+        tooltip.setShowDelay(TOOLTIP_SHOW_DELAY);
+        return tooltip;
     }
 
     /**
