@@ -163,25 +163,27 @@ public final class LoudnessDisplay extends Region {
         }
         gc.stroke();
 
-        // Integrated loudness text
+        // Integrated loudness text (row 1 left)
         gc.setTextAlign(TextAlignment.LEFT);
         gc.setFont(Font.font(11));
         gc.setFill(INTEGRATED_COLOR);
         String intText = (integratedLufs > MIN_LUFS)
                 ? String.format("INT: %.1f LUFS", integratedLufs)
                 : "INT: ---";
-        gc.fillText(intText, 35, h - 5);
+        gc.fillText(intText, 35, h - 16);
 
-        // True peak
+        // True peak (row 1 right)
+        gc.setTextAlign(TextAlignment.RIGHT);
         gc.setFill(TEXT_COLOR);
         String tpText = (truePeakDbfs > -100)
                 ? String.format("TP: %.1f dBFS", truePeakDbfs)
                 : "TP: ---";
-        gc.fillText(tpText, 170, h - 5);
+        gc.fillText(tpText, w - 5, h - 16);
 
-        // Target label
+        // Target label (row 2 left)
+        gc.setTextAlign(TextAlignment.LEFT);
         gc.setFill(TARGET_COLOR);
-        gc.fillText(String.format("Target: %.0f LUFS", targetLufs), w - 120, h - 5);
+        gc.fillText(String.format("Target: %.0f LUFS", targetLufs), 35, h - 4);
     }
 
     @Override
