@@ -14,8 +14,8 @@ import java.io.IOException;
 public final class DawApplication extends Application {
 
     private static final String APP_TITLE = "Digital Audio Workstation";
-    private static final double DEFAULT_WIDTH = 1280;
-    private static final double DEFAULT_HEIGHT = 800;
+    private static final double DEFAULT_WIDTH = 1600;
+    private static final double DEFAULT_HEIGHT = 900;
 
     @Override
     public void start(Stage primaryStage) throws IOException {
@@ -29,8 +29,9 @@ public final class DawApplication extends Application {
 
         primaryStage.setTitle(APP_TITLE);
         primaryStage.setScene(scene);
-        primaryStage.setMinWidth(800);
-        primaryStage.setMinHeight(600);
+        primaryStage.setMinWidth(1280);
+        primaryStage.setMinHeight(720);
+        primaryStage.setMaximized(true);
         primaryStage.show();
     }
 }
