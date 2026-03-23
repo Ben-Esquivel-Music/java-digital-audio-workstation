@@ -183,7 +183,7 @@ public final class MainController {
 
         // Toolbar buttons
         addAudioTrackButton.setGraphic(IconNode.of(DawIcon.MICROPHONE, TOOLBAR_ICON_SIZE));
-        addMidiTrackButton.setGraphic(IconNode.of(DawIcon.MIDI, TOOLBAR_ICON_SIZE));
+        addMidiTrackButton.setGraphic(IconNode.of(DawIcon.KEYBOARD, TOOLBAR_ICON_SIZE));
         undoButton.setGraphic(IconNode.of(DawIcon.UNDO, TOOLBAR_ICON_SIZE));
         redoButton.setGraphic(IconNode.of(DawIcon.REDO, TOOLBAR_ICON_SIZE));
         saveButton.setGraphic(IconNode.of(DawIcon.DOWNLOAD, TOOLBAR_ICON_SIZE));
@@ -390,11 +390,11 @@ public final class MainController {
         CorrelationDisplay correlationDisplay = new CorrelationDisplay();
 
         vizTileRow.getChildren().addAll(
-                createVizTile("WAVEFORM",    DawIcon.WAVEFORM,       "tile-header-accent-cyan",   waveformDisplay),
-                createVizTile("SPECTRUM",    DawIcon.SPECTRUM,        "tile-header-accent-green",  spectrumDisplay),
-                createVizTile("LEVELS",      DawIcon.VU_METER,        "tile-header-accent-orange", levelMeterDisplay),
-                createVizTile("LOUDNESS",    DawIcon.LOUDNESS_METER,  "tile-header-accent-purple", loudnessDisplay),
-                createVizTile("CORRELATION", DawIcon.CORRELATION,     "tile-header-accent-red",    correlationDisplay)
+                createVizTile("OSCILLOSCOPE", DawIcon.OSCILLOSCOPE, "tile-header-accent-cyan",   waveformDisplay),
+                createVizTile("SPECTRUM",     DawIcon.SPECTRUM,     "tile-header-accent-green",  spectrumDisplay),
+                createVizTile("PEAK / RMS",   DawIcon.PEAK,         "tile-header-accent-orange", levelMeterDisplay),
+                createVizTile("LOUDNESS",     DawIcon.LOUDNESS_METER, "tile-header-accent-purple", loudnessDisplay),
+                createVizTile("PHASE",        DawIcon.PHASE_METER,  "tile-header-accent-red",    correlationDisplay)
         );
 
         LOG.fine("Built visualization tile row with 5 display tiles");
@@ -425,7 +425,7 @@ public final class MainController {
         startTimeTicker();
         updateStatus();
         statusBarLabel.setText("Playing...");
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.PLAY, 12));
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.PLAY_CIRCLE, 12));
     }
 
     @FXML
@@ -435,7 +435,7 @@ public final class MainController {
         updateStatus();
         timeDisplay.setText("00:00:00.0");
         statusBarLabel.setText("Stopped");
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.STOP, 12));
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.POWER, 12));
         // Restore button appearance in case the record blink was active
         recordButton.setOpacity(1.0);
         recordButton.setStyle("");
@@ -447,7 +447,7 @@ public final class MainController {
         pauseTimeTicker();
         updateStatus();
         statusBarLabel.setText("Paused");
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.PAUSE, 12));
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.PAUSE_CIRCLE, 12));
     }
 
     @FXML
@@ -456,7 +456,7 @@ public final class MainController {
         startTimeTicker();
         updateStatus();
         statusBarLabel.setText("Recording — auto-save active");
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.RECORD, 12));
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
     }
 
     @FXML
@@ -517,7 +517,7 @@ public final class MainController {
         });
         updateUndoRedoState();
         statusBarLabel.setText("Added audio track: " + name);
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.MICROPHONE, 12));
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.INPUT, 12));
         LOG.fine(() -> "Added audio track: " + name);
     }
 
@@ -720,7 +720,7 @@ public final class MainController {
             });
             updateUndoRedoState();
             statusBarLabel.setText("Removed track: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.DELETE, 12));
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.CUT, 12));
             LOG.fine(() -> "Removed track: " + track.getName());
         });
 
@@ -987,7 +987,7 @@ public final class MainController {
         switch (state) {
             case RECORDING -> {
                 statusLabel.getStyleClass().add("status-recording");
-                statusLabel.setGraphic(IconNode.of(DawIcon.RECORD, 12));
+                statusLabel.setGraphic(IconNode.of(DawIcon.LIVE, 12));
             }
             case PLAYING -> {
                 statusLabel.getStyleClass().add("status-playing");
@@ -999,7 +999,7 @@ public final class MainController {
             }
             default -> {
                 statusLabel.getStyleClass().add("status-stopped");
-                statusLabel.setGraphic(IconNode.of(DawIcon.STOP, 12));
+                statusLabel.setGraphic(IconNode.of(DawIcon.POWER, 12));
             }
         }
 
