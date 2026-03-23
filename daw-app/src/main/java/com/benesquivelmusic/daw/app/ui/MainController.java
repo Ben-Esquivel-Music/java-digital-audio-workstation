@@ -158,6 +158,10 @@ public final class MainController {
     /** The editor view panel — shows MIDI piano roll or audio waveform. */
     private EditorView editorView;
 
+    // ── Visualization panel controller ───────────────────────────────────────
+    /** Controls the visualization row toggle, context menu, and persistence. */
+    private VisualizationPanelController vizPanelController;
+
     // ── Animation state ──────────────────────────────────────────────────────
     /** Drives all continuous frame-by-frame animations at ~60 fps. */
     private AnimationTimer mainAnimTimer;
@@ -535,7 +539,9 @@ public final class MainController {
      * Each tile is a styled card containing a live display component.
      *
      * <p>Uses icons from the <em>Metering</em> and <em>DAW</em> categories to
-     * label each tile with a contextually appropriate icon.</p>
+     * label each tile with a contextually appropriate icon. After building
+     * the tiles, wires a {@link VisualizationPanelController} to the toolbar
+     * button for toggle/context-menu control and preference persistence.</p>
      */
     private void buildVisualizationTiles() {
         vizTileRow.setPrefHeight(120);
@@ -547,13 +553,29 @@ public final class MainController {
         LoudnessDisplay loudnessDisplay   = new LoudnessDisplay();
         CorrelationDisplay correlationDisplay = new CorrelationDisplay();
 
+        VBox spectrumTile     = createVizTile("SPECTRUM",     DawIcon.SPECTRUM,       "tile-header-accent-green",  spectrumDisplay);
+        VBox levelsTile       = createVizTile("PEAK / RMS",   DawIcon.PEAK,           "tile-header-accent-orange", levelMeterDisplay);
+        VBox waveformTile     = createVizTile("OSCILLOSCOPE", DawIcon.OSCILLOSCOPE,   "tile-header-accent-cyan",   waveformDisplay);
+        VBox loudnessTile     = createVizTile("LOUDNESS",     DawIcon.LOUDNESS_METER, "tile-header-accent-purple", loudnessDisplay);
+        VBox correlationTile  = createVizTile("PHASE",        DawIcon.PHASE_METER,    "tile-header-accent-red",    correlationDisplay);
+
         vizTileRow.getChildren().addAll(
-                createVizTile("OSCILLOSCOPE", DawIcon.OSCILLOSCOPE, "tile-header-accent-cyan",   waveformDisplay),
-                createVizTile("SPECTRUM",     DawIcon.SPECTRUM,     "tile-header-accent-green",  spectrumDisplay),
-                createVizTile("PEAK / RMS",   DawIcon.PEAK,         "tile-header-accent-orange", levelMeterDisplay),
-                createVizTile("LOUDNESS",     DawIcon.LOUDNESS_METER, "tile-header-accent-purple", loudnessDisplay),
-                createVizTile("PHASE",        DawIcon.PHASE_METER,  "tile-header-accent-red",    correlationDisplay)
+                waveformTile, spectrumTile, levelsTile, loudnessTile, correlationTile
         );
+
+        // Wire up the visualization panel controller for toggle and context menu
+        Map<VisualizationPreferences.DisplayTile, Node> tileLookup = new EnumMap<>(VisualizationPreferences.DisplayTile.class);
+        tileLookup.put(VisualizationPreferences.DisplayTile.SPECTRUM,    spectrumTile);
+        tileLookup.put(VisualizationPreferences.DisplayTile.LEVELS,      levelsTile);
+        tileLookup.put(VisualizationPreferences.DisplayTile.WAVEFORM,    waveformTile);
+        tileLookup.put(VisualizationPreferences.DisplayTile.LOUDNESS,    loudnessTile);
+        tileLookup.put(VisualizationPreferences.DisplayTile.CORRELATION, correlationTile);
+
+        Preferences vizPrefs = Preferences.userNodeForPackage(VisualizationPreferences.class);
+        VisualizationPreferences vizPreferences = new VisualizationPreferences(vizPrefs);
+        vizPanelController = new VisualizationPanelController(
+                vizTileRow, visualizationsButton, vizPreferences, tileLookup);
+        vizPanelController.initialize();
 
         LOG.fine("Built visualization tile row with 5 display tiles");
     }
