@@ -106,4 +106,40 @@ class DawProjectTest {
         assertThat(project.getMixer().getChannels().get(0).getName()).isEqualTo("Lead Synth");
         assertThat(track.getName()).isEqualTo("Lead Synth");
     }
+
+    @Test
+    void shouldReturnMixerChannelForTrack() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = project.createAudioTrack("Vocals");
+
+        assertThat(project.getMixerChannelForTrack(track)).isNotNull();
+        assertThat(project.getMixerChannelForTrack(track).getName()).isEqualTo("Vocals");
+    }
+
+    @Test
+    void shouldReturnNullForUnknownTrack() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track unknownTrack = new Track("Unknown", TrackType.AUDIO);
+
+        assertThat(project.getMixerChannelForTrack(unknownTrack)).isNull();
+    }
+
+    @Test
+    void shouldRetainMixerChannelMappingAfterRemoval() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = project.createAudioTrack("Bass");
+
+        project.removeTrack(track);
+
+        // Channel mapping retained for undo/redo reuse
+        assertThat(project.getMixerChannelForTrack(track)).isNotNull();
+        assertThat(project.getMixerChannelForTrack(track).getName()).isEqualTo("Bass");
+    }
+
+    @Test
+    void shouldRejectNullTrackInGetMixerChannelForTrack() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        assertThatThrownBy(() -> project.getMixerChannelForTrack(null))
+                .isInstanceOf(NullPointerException.class);
+    }
 }

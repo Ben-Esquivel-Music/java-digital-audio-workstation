@@ -141,6 +141,18 @@ public final class DawProject {
         return Collections.unmodifiableList(tracks);
     }
 
+    /**
+     * Returns the {@link MixerChannel} associated with the given track, or
+     * {@code null} if no channel has been created for it yet.
+     *
+     * @param track the track whose mixer channel is requested
+     * @return the associated mixer channel, or {@code null}
+     */
+    public MixerChannel getMixerChannelForTrack(Track track) {
+        Objects.requireNonNull(track, "track must not be null");
+        return trackChannelMap.get(track.getId());
+    }
+
     /** Returns the mixer. */
     public Mixer getMixer() {
         return mixer;
