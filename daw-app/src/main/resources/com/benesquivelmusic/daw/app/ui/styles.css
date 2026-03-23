@@ -690,8 +690,17 @@
 }
 
 .toolbar-expanded {
-    -fx-pref-width: 180;
-    -fx-min-width: 180;
+    -fx-pref-width: 200;
+    -fx-min-width: 200;
+}
+
+.sidebar-button-expanded {
+    -fx-max-width: 190;
+    -fx-min-width: 190;
+    -fx-pref-width: 190;
+    -fx-content-display: left;
+    -fx-alignment: center-left;
+    -fx-padding: 6 8;
 }
 
 /* ── Main Content Area ── */
