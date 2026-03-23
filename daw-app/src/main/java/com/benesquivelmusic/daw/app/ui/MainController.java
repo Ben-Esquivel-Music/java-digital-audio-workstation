@@ -95,9 +95,11 @@ public final class MainController {
     @FXML private Label tempoLabel;
     @FXML private Label timeDisplay;
     @FXML private Label projectInfoLabel;
+    @FXML private Label monitoringLabel;
     @FXML private Label checkpointLabel;
     @FXML private Label statusBarLabel;
     @FXML private Label arrangementPlaceholder;
+    @FXML private Label arrangementPanelHeader;
     @FXML private Label tracksPanelHeader;
     @FXML private VBox trackListPanel;
     @FXML private HBox vizTileRow;
@@ -184,20 +186,23 @@ public final class MainController {
         addMidiTrackButton.setGraphic(IconNode.of(DawIcon.MIDI, TOOLBAR_ICON_SIZE));
         undoButton.setGraphic(IconNode.of(DawIcon.UNDO, TOOLBAR_ICON_SIZE));
         redoButton.setGraphic(IconNode.of(DawIcon.REDO, TOOLBAR_ICON_SIZE));
-        saveButton.setGraphic(IconNode.of(DawIcon.UPLOAD, TOOLBAR_ICON_SIZE));
-        pluginsButton.setGraphic(IconNode.of(DawIcon.SETTINGS, TOOLBAR_ICON_SIZE));
+        saveButton.setGraphic(IconNode.of(DawIcon.DOWNLOAD, TOOLBAR_ICON_SIZE));
+        pluginsButton.setGraphic(IconNode.of(DawIcon.EQ, TOOLBAR_ICON_SIZE));
 
-        // Time display — clock icon prefix
-        timeDisplay.setGraphic(IconNode.of(DawIcon.CLOCK, PANEL_ICON_SIZE));
+        // Time display — timer icon prefix
+        timeDisplay.setGraphic(IconNode.of(DawIcon.TIMER, PANEL_ICON_SIZE));
 
         // Panel headers
         tracksPanelHeader.setGraphic(IconNode.of(DawIcon.MIXER, PANEL_ICON_SIZE));
+        arrangementPanelHeader.setGraphic(IconNode.of(DawIcon.TIMELINE, PANEL_ICON_SIZE));
 
         // Arrangement placeholder
-        arrangementPlaceholder.setGraphic(IconNode.of(DawIcon.WAVEFORM, 24));
+        arrangementPlaceholder.setGraphic(IconNode.of(DawIcon.MUSIC_NOTE, 24));
 
         // Status bar icons
+        monitoringLabel.setGraphic(IconNode.of(DawIcon.HEADPHONES, 12));
         checkpointLabel.setGraphic(IconNode.of(DawIcon.SYNC, 12));
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
 
         LOG.fine("Applied SVG icons from DAW icon pack");
     }
@@ -364,7 +369,7 @@ public final class MainController {
             statusBarLabel.setGraphic(IconNode.of(DawIcon.METRONOME, 12));
         } catch (IllegalArgumentException e) {
             statusBarLabel.setText("Invalid tempo — must be 20–999 BPM");
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.ALERT, 12));
         }
         updateTempoDisplay();
         hbox.getChildren().set(index, tempoLabel);
@@ -545,7 +550,7 @@ public final class MainController {
         });
         updateUndoRedoState();
         statusBarLabel.setText("Added MIDI track: " + name);
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.MIDI, 12));
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.MUSIC_NOTE, 12));
         LOG.fine(() -> "Added MIDI track: " + name);
     }
 
@@ -561,11 +566,11 @@ public final class MainController {
             checkpointLabel.setText("Saved (checkpoint #" + count + ")");
             checkpointLabel.setGraphic(IconNode.of(DawIcon.SUCCESS, 12));
             statusBarLabel.setText("Project saved");
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.UPLOAD, 12));
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.DOWNLOAD, 12));
             LOG.info("Project saved successfully");
         } catch (IOException e) {
             statusBarLabel.setText("Save failed: " + e.getMessage());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.ERROR, 12));
             LOG.log(Level.WARNING, "Failed to save project", e);
         }
     }
@@ -584,7 +589,7 @@ public final class MainController {
             updateTempoDisplay();
         } else {
             statusBarLabel.setText("Nothing to undo");
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO, 12));
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO_CIRCLE, 12));
         }
         updateUndoRedoState();
     }
@@ -597,7 +602,7 @@ public final class MainController {
             updateTempoDisplay();
         } else {
             statusBarLabel.setText("Nothing to redo");
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO, 12));
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO_CIRCLE, 12));
         }
         updateUndoRedoState();
     }
@@ -611,7 +616,7 @@ public final class MainController {
         // Track type icon
         Node typeIcon = switch (track.getType()) {
             case AUDIO        -> IconNode.of(DawIcon.MICROPHONE, TRACK_TYPE_ICON_SIZE);
-            case MIDI         -> IconNode.of(DawIcon.KEYBOARD, TRACK_TYPE_ICON_SIZE);
+            case MIDI         -> IconNode.of(DawIcon.PIANO, TRACK_TYPE_ICON_SIZE);
             case AUX          -> IconNode.of(DawIcon.MIXER, TRACK_TYPE_ICON_SIZE);
             case MASTER       -> IconNode.of(DawIcon.SPEAKER, TRACK_TYPE_ICON_SIZE);
             case BED_CHANNEL  -> IconNode.of(DawIcon.SURROUND, TRACK_TYPE_ICON_SIZE);
@@ -642,6 +647,19 @@ public final class MainController {
                 volumeSlider,
                 IconNode.of(DawIcon.VOLUME_UP, TRACK_CONTROL_ICON_SIZE));
         volRow.setAlignment(Pos.CENTER_LEFT);
+
+        // Pan slider with audio-balance icon
+        Slider panSlider = new Slider(-1.0, 1.0, track.getPan());
+        panSlider.getStyleClass().add("track-volume-slider");
+        panSlider.setPrefWidth(60);
+        panSlider.setTooltip(new Tooltip("Pan (L/R)"));
+        panSlider.valueProperty().addListener((_, _, newVal) -> {
+            track.setPan(newVal.doubleValue());
+        });
+        HBox panRow = new HBox(4,
+                IconNode.of(DawIcon.AUDIO_BALANCE, TRACK_CONTROL_ICON_SIZE),
+                panSlider);
+        panRow.setAlignment(Pos.CENTER_LEFT);
 
         // Mute button with icon
         Button muteBtn = new Button();
@@ -711,7 +729,7 @@ public final class MainController {
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
         trackItem.getChildren().addAll(
-                typeIcon, nameLabel, volRow, spacer,
+                typeIcon, nameLabel, volRow, panRow, spacer,
                 muteBtn, soloBtn, armBtn, removeBtn);
         trackListPanel.getChildren().add(trackItem);
 
@@ -760,7 +778,7 @@ public final class MainController {
                 });
                 updateUndoRedoState();
                 statusBarLabel.setText("Renamed track: " + oldName + " → " + newName);
-                statusBarLabel.setGraphic(IconNode.of(DawIcon.TAG, 12));
+                statusBarLabel.setGraphic(IconNode.of(DawIcon.BOOKMARK, 12));
             }
             trackItem.getChildren().set(labelIndex, nameLabel);
         };
@@ -1000,7 +1018,7 @@ public final class MainController {
 
     private void updateTempoDisplay() {
         tempoLabel.setText(String.format("%.1f BPM", project.getTransport().getTempo()));
-        tempoLabel.setGraphic(IconNode.of(DawIcon.METRONOME, PANEL_ICON_SIZE));
+        tempoLabel.setGraphic(IconNode.of(DawIcon.KNOB, PANEL_ICON_SIZE));
     }
 
     private void updateProjectInfo() {
@@ -1017,10 +1035,24 @@ public final class MainController {
             default -> DawIcon.WAV;
         };
         projectInfoLabel.setGraphic(IconNode.of(fmtIcon, 12));
+
+        // Monitoring label indicates channel configuration
+        DawIcon channelIcon = switch (fmt.channels()) {
+            case 1 -> DawIcon.MONO;
+            case 2 -> DawIcon.STEREO;
+            default -> DawIcon.SURROUND;
+        };
+        monitoringLabel.setGraphic(IconNode.of(channelIcon, 12));
+        monitoringLabel.setText(switch (fmt.channels()) {
+            case 1 -> "Mono";
+            case 2 -> "Stereo";
+            default -> fmt.channels() + "ch Surround";
+        });
     }
 
     private void updateCheckpointStatus() {
         checkpointLabel.setText("Auto-save: ON");
+        checkpointLabel.setGraphic(IconNode.of(DawIcon.HISTORY, 12));
     }
 
     private void updateArrangementPlaceholder() {

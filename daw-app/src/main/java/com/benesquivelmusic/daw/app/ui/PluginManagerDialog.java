@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.plugin.PluginLoadException;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
+import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
@@ -74,10 +75,11 @@ public final class PluginManagerDialog extends Dialog<Void> {
                     if (plugin != null) {
                         PluginDescriptor desc = plugin.getDescriptor();
                         setText(desc.name() + " (" + desc.id() + ") — " + entry.jarPath().getFileName());
+                        setGraphic(IconNode.of(pluginTypeIcon(desc.type()), 14));
                     } else {
                         setText(entry.className() + " — " + entry.jarPath().getFileName());
+                        setGraphic(IconNode.of(DawIcon.KNOB, 14));
                     }
-                    setGraphic(IconNode.of(DawIcon.SETTINGS, 14));
                 }
             }
         });
@@ -88,11 +90,11 @@ public final class PluginManagerDialog extends Dialog<Void> {
         HBox.setHgrow(jarPathField, Priority.ALWAYS);
 
         Button browseButton = new Button("Browse…");
-        browseButton.setGraphic(IconNode.of(DawIcon.FOLDER, BUTTON_ICON_SIZE));
+        browseButton.setGraphic(IconNode.of(DawIcon.SEARCH, BUTTON_ICON_SIZE));
         browseButton.setOnAction(_ -> browseForJar());
 
         Label jarLabel = new Label("JAR Path:");
-        jarLabel.setGraphic(IconNode.of(DawIcon.LINK, 14));
+        jarLabel.setGraphic(IconNode.of(DawIcon.FOLDER, 14));
 
         HBox jarPathRow = new HBox(8, jarLabel, jarPathField, browseButton);
         jarPathRow.setPadding(new Insets(4, 0, 4, 0));
@@ -103,18 +105,18 @@ public final class PluginManagerDialog extends Dialog<Void> {
         HBox.setHgrow(classNameField, Priority.ALWAYS);
 
         Label classLabel = new Label("Plugin Class:");
-        classLabel.setGraphic(IconNode.of(DawIcon.INFO, 14));
+        classLabel.setGraphic(IconNode.of(DawIcon.TAG, 14));
 
         HBox classNameRow = new HBox(8, classLabel, classNameField);
         classNameRow.setPadding(new Insets(4, 0, 4, 0));
 
         // --- Action buttons ---
         Button addButton = new Button("Add Plugin");
-        addButton.setGraphic(IconNode.of(DawIcon.UPLOAD, BUTTON_ICON_SIZE));
+        addButton.setGraphic(IconNode.of(DawIcon.DOWNLOAD, BUTTON_ICON_SIZE));
         addButton.setOnAction(_ -> addPlugin());
 
         Button removeButton = new Button("Remove Selected");
-        removeButton.setGraphic(IconNode.of(DawIcon.DELETE, BUTTON_ICON_SIZE));
+        removeButton.setGraphic(IconNode.of(DawIcon.CLOSE, BUTTON_ICON_SIZE));
         removeButton.setOnAction(_ -> removeSelectedPlugin());
 
         HBox buttonRow = new HBox(8, addButton, removeButton);
@@ -190,6 +192,19 @@ public final class PluginManagerDialog extends Dialog<Void> {
         alert.setTitle("Plugin Error");
         alert.setHeaderText(null);
         alert.setContentText(message);
+        alert.setGraphic(IconNode.of(DawIcon.ERROR, 32));
         alert.showAndWait();
+    }
+
+    /**
+     * Returns the appropriate icon for a given plugin type.
+     */
+    private static DawIcon pluginTypeIcon(PluginType type) {
+        return switch (type) {
+            case EFFECT      -> DawIcon.REVERB;
+            case INSTRUMENT  -> DawIcon.KEYBOARD;
+            case ANALYZER    -> DawIcon.OSCILLOSCOPE;
+            case MIDI_EFFECT -> DawIcon.MIDI;
+        };
     }
 }
