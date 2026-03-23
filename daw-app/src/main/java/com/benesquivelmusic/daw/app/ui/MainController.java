@@ -190,6 +190,10 @@ public final class MainController {
     /** Controls the sidebar toolbar collapse/expand toggle and persistence. */
     private ToolbarCollapseController toolbarCollapseController;
 
+    // ── Toolbar state persistence ────────────────────────────────────────────
+    /** Persists toolbar state (view, tool, snap, grid, browser) across sessions. */
+    private ToolbarStateStore toolbarStateStore;
+
     // ── Animation state ──────────────────────────────────────────────────────
     /** Drives all continuous frame-by-frame animations at ~60 fps. */
     private AnimationTimer mainAnimTimer;
@@ -222,6 +226,13 @@ public final class MainController {
         Preferences prefs = Preferences.userNodeForPackage(MainController.class);
         RecentProjectsStore recentProjectsStore = new RecentProjectsStore(prefs);
         projectManager = new ProjectManager(checkpointManager, recentProjectsStore);
+        toolbarStateStore = new ToolbarStateStore(prefs);
+
+        // Restore persisted toolbar state before UI initialization
+        activeView = toolbarStateStore.loadActiveView();
+        activeEditTool = toolbarStateStore.loadEditTool();
+        snapEnabled = toolbarStateStore.loadSnapEnabled();
+        gridResolution = toolbarStateStore.loadGridResolution();
 
         audioTrackCounter = 0;
         midiTrackCounter = 0;
@@ -231,7 +242,7 @@ public final class MainController {
         applyButtonPressAnimations();
         preventButtonTruncation();
         buildVisualizationTiles();
-        buildBrowserPanel();
+        buildBrowserPanel(toolbarStateStore.loadBrowserVisible());
         setupTempoEditor();
         updateStatus();
         updateTempoDisplay();
@@ -278,7 +289,12 @@ public final class MainController {
         mixerViewButton.setOnAction(event -> switchView(DawView.MIXER));
         editorViewButton.setOnAction(event -> switchView(DawView.EDITOR));
 
-        // Set the default active view styling
+        // Restore persisted active view (activeView was loaded in initialize())
+        if (activeView != DawView.ARRANGEMENT) {
+            rootPane.setCenter(viewCache.get(activeView));
+        }
+
+        // Set the active view styling
         updateToolbarActiveState();
     }
 
@@ -295,6 +311,7 @@ public final class MainController {
             return;
         }
         activeView = view;
+        toolbarStateStore.saveActiveView(view);
         rootPane.setCenter(viewCache.get(view));
         updateToolbarActiveState();
         statusBarLabel.setText("Switched to " + view.name().charAt(0)
@@ -346,6 +363,7 @@ public final class MainController {
             return;
         }
         activeEditTool = tool;
+        toolbarStateStore.saveEditTool(tool);
         updateEditToolActiveState();
         statusBarLabel.setText("Selected " + tool.name().charAt(0)
                 + tool.name().substring(1).toLowerCase() + " tool");
@@ -400,6 +418,7 @@ public final class MainController {
      */
     private void onToggleSnap() {
         snapEnabled = !snapEnabled;
+        toolbarStateStore.saveSnapEnabled(snapEnabled);
         updateSnapButtonStyle();
         String snapState = snapEnabled ? "Snap to grid enabled" : "Snap to grid disabled";
         statusBarLabel.setText(snapState);
@@ -463,6 +482,7 @@ public final class MainController {
      */
     private void selectGridResolution(GridResolution resolution) {
         gridResolution = resolution;
+        toolbarStateStore.saveGridResolution(resolution);
         statusBarLabel.setText("Grid: " + resolution.displayName());
         statusBarLabel.setGraphic(IconNode.of(DawIcon.SNAP, 12));
         LOG.fine(() -> "Grid resolution changed to: " + resolution.displayName());
@@ -1014,12 +1034,20 @@ public final class MainController {
 
     /**
      * Builds and wires the browser/library side panel and its toolbar controller.
+     *
+     * @param initiallyVisible whether to show the browser panel on startup
      */
-    private void buildBrowserPanel() {
+    private void buildBrowserPanel(boolean initiallyVisible) {
         BrowserPanel browserPanel = new BrowserPanel();
         browserPanelController = new BrowserPanelController(
                 browserPanel, browserButton, rootPane);
+        browserPanelController.setOnVisibilityChanged(
+                () -> toolbarStateStore.saveBrowserVisible(browserPanelController.isPanelVisible()));
         browserPanelController.initialize();
+
+        if (initiallyVisible) {
+            browserPanelController.toggleBrowserPanel();
+        }
 
         LOG.fine("Built browser panel with toolbar toggle");
     }

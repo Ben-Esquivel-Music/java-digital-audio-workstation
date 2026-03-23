@@ -194,4 +194,38 @@ class BrowserPanelControllerTest {
             assertThat(controller.getBrowserPanel()).isSameAs(panel);
         });
     }
+
+    @Test
+    void shouldInvokeVisibilityChangedCallbackOnToggle() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        runOnFxThread(() -> {
+            BrowserPanel panel = new BrowserPanel();
+            Button button = new Button("Library");
+            BorderPane rootPane = new BorderPane();
+            BrowserPanelController controller = new BrowserPanelController(panel, button, rootPane);
+            controller.initialize();
+
+            boolean[] callbackInvoked = {false};
+            controller.setOnVisibilityChanged(() -> callbackInvoked[0] = true);
+
+            controller.toggleBrowserPanel();
+            assertThat(callbackInvoked[0]).isTrue();
+        });
+    }
+
+    @Test
+    void shouldNotFailWithoutVisibilityChangedCallback() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        runOnFxThread(() -> {
+            BrowserPanel panel = new BrowserPanel();
+            Button button = new Button("Library");
+            BorderPane rootPane = new BorderPane();
+            BrowserPanelController controller = new BrowserPanelController(panel, button, rootPane);
+            controller.initialize();
+
+            // No callback set — should not throw
+            controller.toggleBrowserPanel();
+            assertThat(controller.isPanelVisible()).isTrue();
+        });
+    }
 }
