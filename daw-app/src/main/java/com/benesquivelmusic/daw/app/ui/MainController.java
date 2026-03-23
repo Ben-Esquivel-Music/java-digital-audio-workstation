@@ -78,6 +78,9 @@ public final class MainController {
     /** Icon size for panel-header labels. */
     private static final double PANEL_ICON_SIZE = 16;
 
+    @FXML private Button skipBackButton;
+    @FXML private Button skipForwardButton;
+    @FXML private Button loopButton;
     @FXML private Button playButton;
     @FXML private Button pauseButton;
     @FXML private Button stopButton;
@@ -105,6 +108,7 @@ public final class MainController {
     private UndoManager undoManager;
     private int audioTrackCounter;
     private int midiTrackCounter;
+    private boolean loopEnabled;
 
     // ── Animation state ──────────────────────────────────────────────────────
     /** Drives all continuous frame-by-frame animations at ~60 fps. */
@@ -167,10 +171,13 @@ public final class MainController {
      */
     private void applyIcons() {
         // Transport controls
+        skipBackButton.setGraphic(IconNode.of(DawIcon.SKIP_BACK, TRANSPORT_ICON_SIZE));
         playButton.setGraphic(IconNode.of(DawIcon.PLAY, TRANSPORT_ICON_SIZE));
         pauseButton.setGraphic(IconNode.of(DawIcon.PAUSE, TRANSPORT_ICON_SIZE));
         stopButton.setGraphic(IconNode.of(DawIcon.STOP, TRANSPORT_ICON_SIZE));
         recordButton.setGraphic(IconNode.of(DawIcon.RECORD, TRANSPORT_ICON_SIZE));
+        skipForwardButton.setGraphic(IconNode.of(DawIcon.SKIP_FORWARD, TRANSPORT_ICON_SIZE));
+        loopButton.setGraphic(IconNode.of(DawIcon.LOOP, TRANSPORT_ICON_SIZE));
 
         // Toolbar buttons
         addAudioTrackButton.setGraphic(IconNode.of(DawIcon.MICROPHONE, TOOLBAR_ICON_SIZE));
@@ -190,7 +197,6 @@ public final class MainController {
         arrangementPlaceholder.setGraphic(IconNode.of(DawIcon.WAVEFORM, 24));
 
         // Status bar icons
-        projectInfoLabel.setGraphic(IconNode.of(DawIcon.FOLDER, 12));
         checkpointLabel.setGraphic(IconNode.of(DawIcon.SYNC, 12));
 
         LOG.fine("Applied SVG icons from DAW icon pack");
@@ -200,10 +206,13 @@ public final class MainController {
      * Applies descriptive tooltips with keyboard shortcut hints to all UI controls.
      */
     private void applyTooltips() {
+        skipBackButton.setTooltip(new Tooltip("Skip to Beginning (Home)"));
         playButton.setTooltip(new Tooltip("Play (Space)"));
         pauseButton.setTooltip(new Tooltip("Pause (P)"));
         stopButton.setTooltip(new Tooltip("Stop (Escape)"));
         recordButton.setTooltip(new Tooltip("Record (R)"));
+        skipForwardButton.setTooltip(new Tooltip("Skip Forward (End)"));
+        loopButton.setTooltip(new Tooltip("Toggle Loop (L)"));
         addAudioTrackButton.setTooltip(new Tooltip("Add Audio Track (Ctrl+Shift+A)"));
         addMidiTrackButton.setTooltip(new Tooltip("Add MIDI Track (Ctrl+Shift+M)"));
         undoButton.setTooltip(new Tooltip("Undo (Ctrl+Z)"));
@@ -221,6 +230,21 @@ public final class MainController {
             return;
         }
         ObservableMap<KeyCombination, Runnable> accelerators = scene.getAccelerators();
+
+        // Home — skip to beginning
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.HOME),
+                this::onSkipBack);
+
+        // End — skip forward
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.END),
+                this::onSkipForward);
+
+        // L — toggle loop
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.L),
+                this::onToggleLoop);
 
         // Space — toggle play/stop
         accelerators.put(
@@ -431,6 +455,35 @@ public final class MainController {
     }
 
     @FXML
+    private void onSkipBack() {
+        project.getTransport().setPositionInBeats(0.0);
+        stopTimeTicker();
+        timeDisplay.setText("00:00:00.0");
+        statusBarLabel.setText("Skipped to beginning");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.SKIP_BACK, 12));
+    }
+
+    @FXML
+    private void onSkipForward() {
+        Transport transport = project.getTransport();
+        double jump = 4.0 * transport.getTimeSignatureNumerator();
+        transport.setPositionInBeats(transport.getPositionInBeats() + jump);
+        statusBarLabel.setText("Skipped forward");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.SKIP_FORWARD, 12));
+    }
+
+    @FXML
+    private void onToggleLoop() {
+        loopEnabled = !loopEnabled;
+        loopButton.setStyle(loopEnabled
+                ? "-fx-background-color: #b388ff; -fx-text-fill: #0d0d0d;" : "");
+        String loopState = loopEnabled ? "Loop: ON" : "Loop: OFF";
+        statusBarLabel.setText(loopState);
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.LOOP, 12));
+        LOG.fine(loopState);
+    }
+
+    @FXML
     private void onAddAudioTrack() {
         audioTrackCounter++;
         String name = "Audio " + audioTrackCounter;
@@ -576,7 +629,7 @@ public final class MainController {
         });
         nameLabel.setTooltip(new Tooltip("Double-click to rename"));
 
-        // Volume slider
+        // Volume slider with icon decorations
         Slider volumeSlider = new Slider(0.0, 1.0, track.getVolume());
         volumeSlider.getStyleClass().add("track-volume-slider");
         volumeSlider.setPrefWidth(80);
@@ -584,6 +637,11 @@ public final class MainController {
         volumeSlider.valueProperty().addListener((_, _, newVal) -> {
             track.setVolume(newVal.doubleValue());
         });
+        HBox volRow = new HBox(4,
+                IconNode.of(DawIcon.VOLUME_DOWN, TRACK_CONTROL_ICON_SIZE),
+                volumeSlider,
+                IconNode.of(DawIcon.VOLUME_UP, TRACK_CONTROL_ICON_SIZE));
+        volRow.setAlignment(Pos.CENTER_LEFT);
 
         // Mute button with icon
         Button muteBtn = new Button();
@@ -653,7 +711,7 @@ public final class MainController {
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
         trackItem.getChildren().addAll(
-                typeIcon, nameLabel, volumeSlider, spacer,
+                typeIcon, nameLabel, volRow, spacer,
                 muteBtn, soloBtn, armBtn, removeBtn);
         trackListPanel.getChildren().add(trackItem);
 
@@ -867,7 +925,8 @@ public final class MainController {
      */
     private void applyButtonPressAnimations() {
         for (Button btn : new Button[]{
-                playButton, pauseButton, stopButton, recordButton,
+                skipBackButton, playButton, pauseButton, stopButton, recordButton,
+                skipForwardButton, loopButton,
                 addAudioTrackButton, addMidiTrackButton,
                 undoButton, redoButton, saveButton, pluginsButton}) {
             applyPressAnimation(btn);
@@ -951,6 +1010,13 @@ public final class MainController {
                 fmt.sampleRate() / 1000.0,
                 fmt.bitDepth(),
                 fmt.channels()));
+        // Use a FILE_TYPES icon appropriate to the audio format's bit depth
+        DawIcon fmtIcon = switch (fmt.bitDepth()) {
+            case 32 -> DawIcon.AIFF;
+            case 24 -> DawIcon.FLAC;
+            default -> DawIcon.WAV;
+        };
+        projectInfoLabel.setGraphic(IconNode.of(fmtIcon, 12));
     }
 
     private void updateCheckpointStatus() {

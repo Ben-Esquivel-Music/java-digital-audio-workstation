@@ -25,6 +25,8 @@
                 </padding>
 
                 <!-- Transport (icons applied programmatically via IconNode) -->
+                <Button fx:id="skipBackButton" text="Skip Back" onAction="#onSkipBack"
+                        styleClass="transport-button"/>
                 <Button fx:id="playButton" text="Play" onAction="#onPlay"
                         styleClass="transport-button, play-button"/>
                 <Button fx:id="pauseButton" text="Pause" onAction="#onPause"
@@ -33,6 +35,10 @@
                         styleClass="transport-button, stop-button"/>
                 <Button fx:id="recordButton" text="Record" onAction="#onRecord"
                         styleClass="transport-button, record-button"/>
+                <Button fx:id="skipForwardButton" text="Skip Forward" onAction="#onSkipForward"
+                        styleClass="transport-button"/>
+                <Button fx:id="loopButton" text="Loop" onAction="#onToggleLoop"
+                        styleClass="transport-button, loop-button"/>
 
                 <Separator orientation="VERTICAL"/>
 
