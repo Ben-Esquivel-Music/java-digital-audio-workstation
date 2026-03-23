@@ -8,15 +8,15 @@ An open-source, state-of-the-art Digital Audio Workstation (DAW) built with **Ja
 
 **Session View** — multi-track arrangement with waveform editing, visualization tiles (oscilloscope, spectrum, level meters, LUFS loudness, stereo correlation), and real-time transport controls:
 
-![DAW Main Session View](docs/screenshot-main.png)
+![DAW Main Session View](https://github.com/user-attachments/assets/1a26959c-9355-428f-ab96-ff5ac6e0742b)
 
 **Mixer & Recording View** — full channel-strip mixer with per-channel faders, pan knobs, mute/solo/arm, live input monitoring, and master bus metering during an active recording session:
 
-![DAW Mixer and Recording View](docs/screenshot-mixer.png)
+![DAW Mixer and Recording View](https://github.com/user-attachments/assets/19f13ddf-6567-40dd-8a1a-bd9714bf20e2)
 
 **Sound Wave Telemetry View** — top-down room visualizer showing sound sources, microphone placements, color-coded wave paths (cyan for direct, orange for reflected), animated energy particles, RT60 ambient glow, and actionable placement suggestions:
 
-![DAW Sound Wave Telemetry View](docs/screenshot-telemetry.png)
+![DAW Sound Wave Telemetry View](https://github.com/user-attachments/assets/b0bc18a7-1d45-4f60-9df2-1f84eefe2dee)
 
 ## Project Structure
 
