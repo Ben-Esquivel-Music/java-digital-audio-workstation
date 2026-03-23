@@ -1,0 +1,825 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Digital Audio Workstation — Sound Wave Telemetry View (HD Application Screenshot)
+  Size: 1440 × 900  |  Theme: Black / Neon  |  State: Stopped / Telemetry Active
+-->
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1440" height="900" viewBox="0 0 1440 900"
+     font-family="'Courier New', 'Lucida Console', monospace">
+
+  <defs>
+    <!-- Transport bar gradient -->
+    <linearGradient id="transportGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#181818"/>
+      <stop offset="100%" stop-color="#101010"/>
+    </linearGradient>
+
+    <!-- Cyan glow filter (direct paths, mic icons, panel headers) -->
+    <filter id="glowCyan" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <!-- Pink/red glow filter (sound sources) -->
+    <filter id="glowPink" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <!-- Green glow filter (microphones, RT60) -->
+    <filter id="glowGreen" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <!-- RT60 ambient border glow -->
+    <filter id="rt60Glow" x="-3%" y="-3%" width="106%" height="106%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <!-- Panel drop-shadow -->
+    <filter id="panelShadow" x="-5%" y="-5%" width="110%" height="115%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000000" flood-opacity="0.6"/>
+    </filter>
+
+    <!-- Room background radial gradient (deep dark indigo) -->
+    <radialGradient id="roomBgGrad" cx="50%" cy="50%" r="60%">
+      <stop offset="0%"   stop-color="#11112a"/>
+      <stop offset="100%" stop-color="#0a0a1e"/>
+    </radialGradient>
+
+    <!-- Source glow radial gradients -->
+    <radialGradient id="srcAGrad" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"   stop-color="#ff4081" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#ff4081" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="srcBGrad" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"   stop-color="#ff4081" stop-opacity="0.40"/>
+      <stop offset="100%" stop-color="#ff4081" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Mic glow radial gradients -->
+    <radialGradient id="mic1Grad" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"   stop-color="#69f0ae" stop-opacity="0.40"/>
+      <stop offset="100%" stop-color="#69f0ae" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="mic2Grad" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"   stop-color="#69f0ae" stop-opacity="0.40"/>
+      <stop offset="100%" stop-color="#69f0ae" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- RT60 meter gradient (green → yellow → red) -->
+    <linearGradient id="rt60MeterGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#00e676"/>
+      <stop offset="55%"  stop-color="#69f0ae"/>
+      <stop offset="80%"  stop-color="#ffea00"/>
+      <stop offset="100%" stop-color="#ff1744"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ═══ ROOT BACKGROUND ═══ -->
+  <rect width="1440" height="900" fill="#000000"/>
+
+  <!-- ═══════════════════════════════════════════════════════
+       TRANSPORT BAR  (y=0, h=52) — STOPPED state
+       ═══════════════════════════════════════════════════════ -->
+  <rect x="0" y="0" width="1440" height="52" fill="url(#transportGrad)"/>
+
+  <!-- Play button -->
+  <rect x="16" y="8" width="78" height="36" rx="6" fill="#2e2e2e" stroke="#3d3d3d" stroke-width="1"/>
+  <text x="55" y="31" fill="#e0e0e0" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">▶  Play</text>
+
+  <!-- Pause button -->
+  <rect x="100" y="8" width="78" height="36" rx="6" fill="#2e2e2e" stroke="#3d3d3d" stroke-width="1"/>
+  <text x="139" y="31" fill="#e0e0e0" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">⏸  Pause</text>
+
+  <!-- Stop button (active, cyan glow — stopped state) -->
+  <rect x="184" y="8" width="78" height="36" rx="6" fill="#0d2a3a" stroke="#00b0ff" stroke-width="1.5"/>
+  <text x="223" y="31" fill="#00b0ff" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">⏹  Stop</text>
+
+  <!-- Record button -->
+  <rect x="268" y="8" width="88" height="36" rx="6" fill="#2e2e2e" stroke="#b71c1c" stroke-width="1"/>
+  <text x="312" y="31" fill="#ff1744" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">⏺  Record</text>
+
+  <!-- Separator -->
+  <line x1="366" y1="10" x2="366" y2="42" stroke="#2a2a2a" stroke-width="1"/>
+
+  <!-- Time display -->
+  <text x="390" y="33" fill="#e0e0e0" font-size="18" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace">00:00:00.0</text>
+
+  <!-- Separator -->
+  <line x1="508" y1="10" x2="508" y2="42" stroke="#2a2a2a" stroke-width="1"/>
+
+  <!-- Tempo -->
+  <text x="524" y="33" fill="#ff9100" font-size="15" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace">♩ 128.0 BPM</text>
+
+  <!-- Separator -->
+  <line x1="658" y1="10" x2="658" y2="42" stroke="#2a2a2a" stroke-width="1"/>
+
+  <!-- Add Audio Track button -->
+  <rect x="672" y="8" width="108" height="36" rx="6" fill="#2e2e2e" stroke="#3d3d3d" stroke-width="1"/>
+  <text x="726" y="31" fill="#e0e0e0" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">+ Audio Track</text>
+
+  <!-- Add MIDI Track button -->
+  <rect x="786" y="8" width="106" height="36" rx="6" fill="#2e2e2e" stroke="#3d3d3d" stroke-width="1"/>
+  <text x="839" y="31" fill="#e0e0e0" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">+ MIDI Track</text>
+
+  <!-- Separator -->
+  <line x1="902" y1="10" x2="902" y2="42" stroke="#2a2a2a" stroke-width="1"/>
+
+  <!-- Undo button -->
+  <rect x="916" y="8" width="72" height="36" rx="6" fill="#2e2e2e" stroke="#3d3d3d" stroke-width="1"/>
+  <text x="952" y="31" fill="#e0e0e0" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">↩ Undo</text>
+
+  <!-- Redo button -->
+  <rect x="994" y="8" width="72" height="36" rx="6" fill="#2e2e2e" stroke="#3d3d3d" stroke-width="1"/>
+  <text x="1030" y="31" fill="#e0e0e0" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">↪ Redo</text>
+
+  <!-- Separator -->
+  <line x1="1076" y1="10" x2="1076" y2="42" stroke="#2a2a2a" stroke-width="1"/>
+
+  <!-- Save button -->
+  <rect x="1090" y="8" width="70" height="36" rx="6" fill="#2e2e2e" stroke="#e65100" stroke-width="1"/>
+  <text x="1125" y="31" fill="#ff9100" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">💾 Save</text>
+
+  <!-- Plugins button -->
+  <rect x="1166" y="8" width="82" height="36" rx="6" fill="#2e2e2e" stroke="#4a148c" stroke-width="1"/>
+  <text x="1207" y="31" fill="#e040fb" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">🔌 Plugins</text>
+
+  <!-- Status: STOPPED -->
+  <text x="1410" y="33" fill="#9e9e9e" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="end">● STOPPED</text>
+
+  <!-- Transport bar bottom separator -->
+  <line x1="0" y1="52" x2="1440" y2="52" stroke="#2a2a2a" stroke-width="1"/>
+
+
+  <!-- ═══════════════════════════════════════════════════════
+       CONTENT AREA  (y=53)
+       ═══════════════════════════════════════════════════════ -->
+
+  <!-- ══ LEFT PANEL: Sources & Microphones list (x=6, y=59, w=260, h=600) ══ -->
+  <rect x="6" y="59" width="260" height="600" rx="10" fill="#111111"
+        stroke="#2a2a2a" stroke-width="1" filter="url(#panelShadow)"/>
+
+  <!-- Panel header -->
+  <text x="22" y="85" fill="#00e5ff" font-size="14" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="2"
+        filter="url(#glowCyan)">◉  TELEMETRY</text>
+  <line x1="6" y1="93" x2="266" y2="93" stroke="#2a2a2a" stroke-width="1"/>
+
+  <!-- ── Section: Sound Sources ── -->
+  <text x="18" y="110" fill="#808080" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">SOUND SOURCES</text>
+  <line x1="14" y1="114" x2="258" y2="114" stroke="#1e1e1e" stroke-width="1"/>
+
+  <!-- Source A: Guitar -->
+  <rect x="14" y="118" width="248" height="68" rx="6" fill="#1a1a1a" stroke="#2a2a2a" stroke-width="1"/>
+  <rect x="14" y="118" width="5" height="68" rx="2" fill="#ff4081"/>
+  <circle cx="37" cy="152" r="8" fill="#ff4081" opacity="0.85" filter="url(#glowPink)"/>
+  <circle cx="37" cy="152" r="4" fill="#ffffff" opacity="0.9"/>
+  <text x="52" y="135" fill="#e0e0e0" font-size="12" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">Source A — Guitar</text>
+  <text x="52" y="150" fill="#ff4081" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">178.0, 291.0, 0.0 m</text>
+  <text x="52" y="165" fill="#808080" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">SPL: 94.2 dB  ·  2 paths</text>
+  <text x="248" y="135" fill="#00e676" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="end">ACTIVE</text>
+
+  <!-- Source B: Vocals -->
+  <rect x="14" y="190" width="248" height="68" rx="6" fill="#1a1a1a" stroke="#2a2a2a" stroke-width="1"/>
+  <rect x="14" y="190" width="5" height="68" rx="2" fill="#ff4081"/>
+  <circle cx="37" cy="224" r="8" fill="#ff4081" opacity="0.85" filter="url(#glowPink)"/>
+  <circle cx="37" cy="224" r="4" fill="#ffffff" opacity="0.9"/>
+  <text x="52" y="207" fill="#e0e0e0" font-size="12" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">Source B — Vocals</text>
+  <text x="52" y="222" fill="#ff4081" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">428.0, 141.0, 0.0 m</text>
+  <text x="52" y="237" fill="#808080" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">SPL: 88.7 dB  ·  2 paths</text>
+  <text x="248" y="207" fill="#00e676" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="end">ACTIVE</text>
+
+  <!-- ── Section: Microphones ── -->
+  <text x="18" y="276" fill="#808080" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">MICROPHONES</text>
+  <line x1="14" y1="280" x2="258" y2="280" stroke="#1e1e1e" stroke-width="1"/>
+
+  <!-- Mic 1: Overhead -->
+  <rect x="14" y="284" width="248" height="68" rx="6" fill="#1a1a1a" stroke="#2a2a2a" stroke-width="1"/>
+  <rect x="14" y="284" width="5" height="68" rx="2" fill="#69f0ae"/>
+  <circle cx="37" cy="318" r="7" fill="#69f0ae" opacity="0.85" filter="url(#glowGreen)"/>
+  <circle cx="37" cy="318" r="3.5" fill="#ffffff" opacity="0.9"/>
+  <text x="52" y="301" fill="#e0e0e0" font-size="12" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">Mic 1 — Overhead</text>
+  <text x="52" y="316" fill="#69f0ae" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">478.0, 419.0, 1.2 m</text>
+  <text x="52" y="331" fill="#808080" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">Cardioid  ·  4 paths inbound</text>
+  <text x="248" y="301" fill="#00e676" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="end">LIVE</text>
+
+  <!-- Mic 2: Close Mic -->
+  <rect x="14" y="356" width="248" height="68" rx="6" fill="#1a1a1a" stroke="#2a2a2a" stroke-width="1"/>
+  <rect x="14" y="356" width="5" height="68" rx="2" fill="#69f0ae"/>
+  <circle cx="37" cy="390" r="7" fill="#69f0ae" opacity="0.85" filter="url(#glowGreen)"/>
+  <circle cx="37" cy="390" r="3.5" fill="#ffffff" opacity="0.9"/>
+  <text x="52" y="373" fill="#e0e0e0" font-size="12" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">Mic 2 — Close Mic</text>
+  <text x="52" y="388" fill="#69f0ae" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">648.0, 291.0, 0.3 m</text>
+  <text x="52" y="403" fill="#808080" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">Hypercardioid  ·  4 paths</text>
+  <text x="248" y="373" fill="#00e676" font-size="10" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="end">LIVE</text>
+
+  <!-- ── Section: Room Parameters ── -->
+  <text x="18" y="442" fill="#808080" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">ROOM PARAMETERS</text>
+  <line x1="14" y1="446" x2="258" y2="446" stroke="#1e1e1e" stroke-width="1"/>
+
+  <rect x="14" y="450" width="248" height="128" rx="6" fill="#0e0e1a" stroke="#2a2a5a" stroke-width="1"/>
+  <text x="26" y="469" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Dimensions</text>
+  <text x="26" y="485" fill="#e0e0e0" font-size="12" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace">7.3 × 5.8 × 3.1 m</text>
+  <text x="26" y="505" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">RT60</text>
+  <text x="26" y="521" fill="#00e676" font-size="13" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace"
+        filter="url(#glowGreen)">0.42 s  ✓ Good</text>
+  <text x="26" y="542" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Wall Material</text>
+  <text x="26" y="557" fill="#e0e0e0" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Acoustic Panel + Drywall</text>
+  <text x="26" y="571" fill="#808080" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">Absorption coeff: 0.78</text>
+
+
+  <!-- ══ MAIN TELEMETRY ROOM VIEW (x=272, y=59, w=840, h=600) ══ -->
+  <rect x="272" y="59" width="840" height="600" rx="10" fill="#0a0a1e"
+        stroke="#2a2a5a" stroke-width="1" filter="url(#panelShadow)"/>
+
+  <!-- Panel header bar -->
+  <text x="290" y="82" fill="#00e5ff" font-size="14" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="2"
+        filter="url(#glowCyan)">◉  SOUND WAVE TELEMETRY</text>
+  <text x="1100" y="82" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="end">Top-Down Room View</text>
+  <line x1="272" y1="90" x2="1112" y2="90" stroke="#2a2a5a" stroke-width="1"/>
+
+  <!-- ─── Room area: x=322, y=109, w=740, h=500 ─── -->
+  <rect x="322" y="109" width="740" height="500" rx="6" fill="url(#roomBgGrad)"/>
+
+  <!-- RT60 ambient glow border (green = ideal reverb time) -->
+  <rect x="322" y="109" width="740" height="500" rx="6" fill="none"
+        stroke="#00e676" stroke-width="5" opacity="0.25" filter="url(#rt60Glow)"/>
+  <rect x="322" y="109" width="740" height="500" rx="6" fill="none"
+        stroke="#2a2a5a" stroke-width="1.5"/>
+
+  <!-- Grid lines inside room -->
+  <g stroke="#ffffff" stroke-width="0.5" opacity="0.04">
+    <line x1="372" y1="109" x2="372" y2="609"/>
+    <line x1="422" y1="109" x2="422" y2="609"/>
+    <line x1="472" y1="109" x2="472" y2="609"/>
+    <line x1="522" y1="109" x2="522" y2="609"/>
+    <line x1="572" y1="109" x2="572" y2="609"/>
+    <line x1="622" y1="109" x2="622" y2="609"/>
+    <line x1="672" y1="109" x2="672" y2="609"/>
+    <line x1="722" y1="109" x2="722" y2="609"/>
+    <line x1="772" y1="109" x2="772" y2="609"/>
+    <line x1="822" y1="109" x2="822" y2="609"/>
+    <line x1="872" y1="109" x2="872" y2="609"/>
+    <line x1="922" y1="109" x2="922" y2="609"/>
+    <line x1="972" y1="109" x2="972" y2="609"/>
+    <line x1="1022" y1="109" x2="1022" y2="609"/>
+    <line x1="322" y1="159" x2="1062" y2="159"/>
+    <line x1="322" y1="209" x2="1062" y2="209"/>
+    <line x1="322" y1="259" x2="1062" y2="259"/>
+    <line x1="322" y1="309" x2="1062" y2="309"/>
+    <line x1="322" y1="359" x2="1062" y2="359"/>
+    <line x1="322" y1="409" x2="1062" y2="409"/>
+    <line x1="322" y1="459" x2="1062" y2="459"/>
+    <line x1="322" y1="509" x2="1062" y2="509"/>
+    <line x1="322" y1="559" x2="1062" y2="559"/>
+  </g>
+
+
+  <!-- ═════════ WAVE PATHS ════════
+       Source A: (450, 350)   Source B: (700, 200)
+       Mic 1:    (750, 480)   Mic 2:    (920, 350)
+  ════════════════════════════════ -->
+
+  <!-- Direct path: Source A → Mic 1 (cyan dashed) -->
+  <line x1="450" y1="350" x2="750" y2="480"
+        stroke="#00e5ff" stroke-width="1.5" stroke-dasharray="8,4" opacity="0.7"/>
+  <polygon points="750,480 740,472 752,469" fill="#00e5ff" opacity="0.7"/>
+  <!-- Particles along path -->
+  <circle cx="520" cy="379" r="3"   fill="#00e5ff" opacity="0.90"/>
+  <circle cx="590" cy="408" r="2.5" fill="#00e5ff" opacity="0.70"/>
+  <circle cx="660" cy="436" r="2"   fill="#00e5ff" opacity="0.50"/>
+
+  <!-- Direct path: Source A → Mic 2 (cyan dashed) -->
+  <line x1="450" y1="350" x2="920" y2="350"
+        stroke="#00e5ff" stroke-width="1.5" stroke-dasharray="8,4" opacity="0.65"/>
+  <polygon points="920,350 910,343 910,357" fill="#00e5ff" opacity="0.65"/>
+  <!-- Particles -->
+  <circle cx="572" cy="350" r="3"   fill="#00e5ff" opacity="0.90"/>
+  <circle cx="694" cy="350" r="2.5" fill="#00e5ff" opacity="0.70"/>
+  <circle cx="816" cy="350" r="2"   fill="#00e5ff" opacity="0.50"/>
+
+  <!-- Direct path: Source B → Mic 1 (cyan dashed) -->
+  <line x1="700" y1="200" x2="750" y2="480"
+        stroke="#00e5ff" stroke-width="1.5" stroke-dasharray="8,4" opacity="0.60"/>
+  <polygon points="750,480 740,472 752,469" fill="#00e5ff" opacity="0.60"/>
+  <!-- Particles -->
+  <circle cx="712" cy="270" r="3"   fill="#00e5ff" opacity="0.85"/>
+  <circle cx="726" cy="355" r="2.5" fill="#00e5ff" opacity="0.65"/>
+  <circle cx="738" cy="422" r="2"   fill="#00e5ff" opacity="0.45"/>
+
+  <!-- Direct path: Source B → Mic 2 (cyan dashed) -->
+  <line x1="700" y1="200" x2="920" y2="350"
+        stroke="#00e5ff" stroke-width="1.5" stroke-dasharray="8,4" opacity="0.60"/>
+  <polygon points="920,350 912,339 924,337" fill="#00e5ff" opacity="0.60"/>
+  <!-- Particles -->
+  <circle cx="767" cy="250" r="3"   fill="#00e5ff" opacity="0.85"/>
+  <circle cx="834" cy="300" r="2.5" fill="#00e5ff" opacity="0.65"/>
+
+  <!-- Reflected path: Source A → left wall (x=322) → Mic 1 (orange) -->
+  <polyline points="450,350 322,413 750,480"
+            fill="none" stroke="#ff9100" stroke-width="1.5"
+            stroke-dasharray="6,4" opacity="0.60"/>
+  <!-- Wall reflection diamond -->
+  <polygon points="322,413 316,406 322,399 328,406" fill="#ff9100" opacity="0.75"/>
+  <!-- Particles -->
+  <circle cx="382" cy="384" r="3"   fill="#ffab40" opacity="0.85"/>
+  <circle cx="440" cy="430" r="2.5" fill="#ffab40" opacity="0.65"/>
+  <circle cx="572" cy="452" r="2"   fill="#ffab40" opacity="0.45"/>
+
+  <!-- Reflected path: Source B → top wall (y=109) → Mic 1 (orange) -->
+  <polyline points="700,200 742,109 750,480"
+            fill="none" stroke="#ff9100" stroke-width="1.5"
+            stroke-dasharray="6,4" opacity="0.55"/>
+  <!-- Wall reflection diamond -->
+  <polygon points="742,109 735,116 742,123 749,116" fill="#ff9100" opacity="0.75"/>
+  <!-- Particles -->
+  <circle cx="723" cy="152" r="3"   fill="#ffab40" opacity="0.80"/>
+  <circle cx="745" cy="285" r="2.5" fill="#ffab40" opacity="0.60"/>
+  <circle cx="748" cy="405" r="2"   fill="#ffab40" opacity="0.40"/>
+
+
+  <!-- ═════════ SOUND SOURCE A — Guitar (450, 350) ════════ -->
+  <!-- Outer glow halo -->
+  <circle cx="450" cy="350" r="42" fill="url(#srcAGrad)"/>
+  <!-- Ripple rings -->
+  <circle cx="450" cy="350" r="22" fill="none" stroke="#ff4081" stroke-width="1"   opacity="0.40"/>
+  <circle cx="450" cy="350" r="34" fill="none" stroke="#ff4081" stroke-width="1"   opacity="0.25"/>
+  <circle cx="450" cy="350" r="47" fill="none" stroke="#ff4081" stroke-width="0.8" opacity="0.14"/>
+  <!-- Source dot + core -->
+  <circle cx="450" cy="350" r="11" fill="#ff4081" filter="url(#glowPink)"/>
+  <circle cx="450" cy="350" r="5"  fill="#ffffff" opacity="0.92"/>
+  <!-- Label -->
+  <text x="466" y="340" fill="#ff4081" font-size="11" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">Source A</text>
+  <text x="466" y="353" fill="#ff4081" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">Guitar</text>
+
+
+  <!-- ═════════ SOUND SOURCE B — Vocals (700, 200) ════════ -->
+  <circle cx="700" cy="200" r="40" fill="url(#srcBGrad)"/>
+  <!-- Ripple rings -->
+  <circle cx="700" cy="200" r="20" fill="none" stroke="#ff4081" stroke-width="1"   opacity="0.40"/>
+  <circle cx="700" cy="200" r="32" fill="none" stroke="#ff4081" stroke-width="1"   opacity="0.25"/>
+  <circle cx="700" cy="200" r="44" fill="none" stroke="#ff4081" stroke-width="0.8" opacity="0.14"/>
+  <!-- Source dot + core -->
+  <circle cx="700" cy="200" r="11" fill="#ff4081" filter="url(#glowPink)"/>
+  <circle cx="700" cy="200" r="5"  fill="#ffffff" opacity="0.92"/>
+  <!-- Label -->
+  <text x="716" y="190" fill="#ff4081" font-size="11" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">Source B</text>
+  <text x="716" y="203" fill="#ff4081" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">Vocals</text>
+
+
+  <!-- ═════════ MIC 1 — Overhead (750, 480) ════════ -->
+  <circle cx="750" cy="480" r="34" fill="url(#mic1Grad)"/>
+  <!-- Mic icon -->
+  <circle cx="750" cy="480" r="9" fill="#69f0ae" filter="url(#glowGreen)"/>
+  <circle cx="750" cy="480" r="4" fill="#ffffff" opacity="0.92"/>
+  <!-- Flash ring (active) -->
+  <circle cx="750" cy="480" r="15" fill="none" stroke="#69f0ae" stroke-width="1.5" opacity="0.55"/>
+  <!-- Label -->
+  <text x="768" y="470" fill="#69f0ae" font-size="11" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">Mic 1</text>
+  <text x="768" y="483" fill="#69f0ae" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">Overhead</text>
+
+
+  <!-- ═════════ MIC 2 — Close Mic (920, 350) ════════ -->
+  <circle cx="920" cy="350" r="32" fill="url(#mic2Grad)"/>
+  <circle cx="920" cy="350" r="9" fill="#69f0ae" filter="url(#glowGreen)"/>
+  <circle cx="920" cy="350" r="4" fill="#ffffff" opacity="0.92"/>
+  <circle cx="920" cy="350" r="15" fill="none" stroke="#69f0ae" stroke-width="1.5" opacity="0.55"/>
+  <!-- Label -->
+  <text x="938" y="340" fill="#69f0ae" font-size="11" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">Mic 2</text>
+  <text x="938" y="353" fill="#69f0ae" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">Close Mic</text>
+
+
+  <!-- ═════════ SUGGESTION BADGES ════════ -->
+  <!-- Badge 1: Early reflection near Mic 1 -->
+  <polygon points="750,500 743,510 757,510" fill="#ffea00" opacity="0.40"/>
+  <rect x="624" y="510" width="196" height="40" rx="6"
+        fill="#ffea00" fill-opacity="0.12" stroke="#ffea00" stroke-width="1" stroke-opacity="0.60"/>
+  <text x="722" y="528" fill="#ffea00" font-size="11" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">⚠ Early reflection +2.3 ms</text>
+  <text x="722" y="542" fill="#ffea00" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">Add diffuser at left wall</text>
+
+  <!-- Badge 2: Phase issue near Source A -->
+  <polygon points="430,330 423,320 437,320" fill="#ffea00" opacity="0.40"/>
+  <rect x="330" y="280" width="138" height="38" rx="6"
+        fill="#ffea00" fill-opacity="0.12" stroke="#ffea00" stroke-width="1" stroke-opacity="0.60"/>
+  <text x="399" y="298" fill="#ffea00" font-size="11" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">⚠ Phase issue</text>
+  <text x="399" y="311" fill="#ffea00" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">Move Src A +0.4 m right</text>
+
+
+  <!-- ─── Room dimension overlay labels ─── -->
+  <!-- Width arrow + label (bottom edge) -->
+  <line x1="322" y1="618" x2="1062" y2="618" stroke="#ffffff" stroke-width="0.5" opacity="0.18"/>
+  <line x1="322" y1="614" x2="322" y2="622" stroke="#ffffff" stroke-width="0.5" opacity="0.18"/>
+  <line x1="1062" y1="614" x2="1062" y2="622" stroke="#ffffff" stroke-width="0.5" opacity="0.18"/>
+  <text x="692" y="629" fill="#ffffff" font-size="10" opacity="0.38"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">7.3 m</text>
+  <!-- Height arrow + label (left edge) -->
+  <line x1="313" y1="109" x2="313" y2="609" stroke="#ffffff" stroke-width="0.5" opacity="0.18"/>
+  <line x1="309" y1="109" x2="317" y2="109" stroke="#ffffff" stroke-width="0.5" opacity="0.18"/>
+  <line x1="309" y1="609" x2="317" y2="609" stroke="#ffffff" stroke-width="0.5" opacity="0.18"/>
+  <text x="302" y="364" fill="#ffffff" font-size="10" opacity="0.38"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle"
+        transform="rotate(-90, 302, 364)">5.8 m</text>
+
+  <!-- ─── Legend ─── -->
+  <line x1="336" y1="580" x2="361" y2="580" stroke="#00e5ff" stroke-width="1.5" stroke-dasharray="8,4" opacity="0.75"/>
+  <text x="366" y="584" fill="#00e5ff" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">Direct path</text>
+  <line x1="336" y1="596" x2="361" y2="596" stroke="#ff9100" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.70"/>
+  <text x="366" y="600" fill="#ff9100" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">Reflected path</text>
+  <circle cx="345" cy="611" r="4" fill="#ff4081" opacity="0.85"/>
+  <text x="354" y="615" fill="#ff4081" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">Sound source</text>
+  <circle cx="345" cy="626" r="4" fill="#69f0ae" opacity="0.85"/>
+  <text x="354" y="630" fill="#69f0ae" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">Microphone</text>
+
+  <!-- Scale bar -->
+  <line x1="490" y1="592" x2="540" y2="592" stroke="#ffffff" stroke-width="1" opacity="0.35"/>
+  <line x1="490" y1="588" x2="490" y2="596" stroke="#ffffff" stroke-width="1" opacity="0.35"/>
+  <line x1="540" y1="588" x2="540" y2="596" stroke="#ffffff" stroke-width="1" opacity="0.35"/>
+  <text x="515" y="603" fill="#ffffff" font-size="9" opacity="0.38"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">0.5 m</text>
+
+
+  <!-- ══ RIGHT PANEL: Path Details (x=1118, y=59, w=316, h=600) ══ -->
+  <rect x="1118" y="59" width="316" height="600" rx="10" fill="#111111"
+        stroke="#2a2a2a" stroke-width="1" filter="url(#panelShadow)"/>
+
+  <!-- Panel header -->
+  <text x="1134" y="85" fill="#ff9100" font-size="14" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="2">PATH DETAILS</text>
+  <line x1="1118" y1="93" x2="1434" y2="93" stroke="#2a2a2a" stroke-width="1"/>
+
+  <!-- Path 1: Source A → Mic 1 direct -->
+  <rect x="1126" y="99" width="300" height="74" rx="6" fill="#0e1a22" stroke="#00374a" stroke-width="1"/>
+  <rect x="1126" y="99" width="5" height="74" rx="2" fill="#00e5ff"/>
+  <text x="1140" y="116" fill="#00e5ff" font-size="12" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">Src A → Mic 1  (direct)</text>
+  <text x="1140" y="131" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Distance</text>
+  <text x="1340" y="131" fill="#e0e0e0" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace" text-anchor="end">3.28 m</text>
+  <text x="1140" y="147" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Delay</text>
+  <text x="1340" y="147" fill="#e0e0e0" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace" text-anchor="end">9.6 ms</text>
+  <text x="1140" y="163" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Attenuation</text>
+  <text x="1340" y="163" fill="#00e676" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace" text-anchor="end">-10.3 dB</text>
+
+  <!-- Path 2: Source A → Mic 2 direct -->
+  <rect x="1126" y="179" width="300" height="74" rx="6" fill="#0e1a22" stroke="#00374a" stroke-width="1"/>
+  <rect x="1126" y="179" width="5" height="74" rx="2" fill="#00e5ff"/>
+  <text x="1140" y="196" fill="#00e5ff" font-size="12" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">Src A → Mic 2  (direct)</text>
+  <text x="1140" y="211" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Distance</text>
+  <text x="1340" y="211" fill="#e0e0e0" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace" text-anchor="end">4.70 m</text>
+  <text x="1140" y="227" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Delay</text>
+  <text x="1340" y="227" fill="#e0e0e0" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace" text-anchor="end">13.7 ms</text>
+  <text x="1140" y="243" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Attenuation</text>
+  <text x="1340" y="243" fill="#00e676" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace" text-anchor="end">-13.4 dB</text>
+
+  <!-- Path 3: Source A → left wall → Mic 1 (reflected) -->
+  <rect x="1126" y="259" width="300" height="84" rx="6" fill="#1a1000" stroke="#3a2200" stroke-width="1"/>
+  <rect x="1126" y="259" width="5" height="84" rx="2" fill="#ff9100"/>
+  <text x="1140" y="276" fill="#ff9100" font-size="12" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">Src A → Wall → Mic 1</text>
+  <text x="1140" y="289" fill="#ff9100" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">1st reflection · left wall</text>
+  <text x="1140" y="305" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Distance</text>
+  <text x="1340" y="305" fill="#e0e0e0" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace" text-anchor="end">5.84 m</text>
+  <text x="1140" y="321" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Delay</text>
+  <text x="1340" y="321" fill="#e0e0e0" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace" text-anchor="end">17.0 ms</text>
+  <text x="1140" y="337" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Attenuation</text>
+  <text x="1340" y="337" fill="#ffab40" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace" text-anchor="end">-18.6 dB</text>
+
+  <!-- Path 4: Source B → top wall → Mic 1 (reflected) -->
+  <rect x="1126" y="349" width="300" height="84" rx="6" fill="#1a1000" stroke="#3a2200" stroke-width="1"/>
+  <rect x="1126" y="349" width="5" height="84" rx="2" fill="#ff9100"/>
+  <text x="1140" y="366" fill="#ff9100" font-size="12" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">Src B → Wall → Mic 1</text>
+  <text x="1140" y="379" fill="#ff9100" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">1st reflection · top wall</text>
+  <text x="1140" y="395" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Distance</text>
+  <text x="1340" y="395" fill="#e0e0e0" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace" text-anchor="end">4.52 m</text>
+  <text x="1140" y="411" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Delay</text>
+  <text x="1340" y="411" fill="#e0e0e0" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace" text-anchor="end">13.2 ms</text>
+  <text x="1140" y="427" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Attenuation</text>
+  <text x="1340" y="427" fill="#ffab40" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace" text-anchor="end">-15.2 dB</text>
+
+  <!-- ── Summary ── -->
+  <line x1="1126" y1="442" x2="1426" y2="442" stroke="#2a2a2a" stroke-width="1"/>
+  <text x="1134" y="460" fill="#808080" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">SUMMARY</text>
+  <rect x="1126" y="466" width="300" height="98" rx="6" fill="#0a0a1e" stroke="#2a2a5a" stroke-width="1"/>
+  <text x="1140" y="484" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Total paths</text>
+  <text x="1418" y="484" fill="#e0e0e0" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace" text-anchor="end">6</text>
+  <text x="1140" y="500" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Direct paths</text>
+  <text x="1418" y="500" fill="#00e5ff" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace" text-anchor="end">4</text>
+  <text x="1140" y="516" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Reflected paths</text>
+  <text x="1418" y="516" fill="#ff9100" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace" text-anchor="end">2</text>
+  <text x="1140" y="532" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Max delay spread</text>
+  <text x="1418" y="532" fill="#ffea00" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace" text-anchor="end">7.4 ms</text>
+  <text x="1140" y="548" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Suggestions</text>
+  <text x="1418" y="548" fill="#ff1744" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace" text-anchor="end">2</text>
+
+  <!-- ── Suggestions ── -->
+  <line x1="1126" y1="573" x2="1426" y2="573" stroke="#2a2a2a" stroke-width="1"/>
+  <text x="1134" y="592" fill="#ffea00" font-size="11" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">⚠ SUGGESTIONS (2)</text>
+  <rect x="1126" y="598" width="300" height="52" rx="6"
+        fill="#ffea00" fill-opacity="0.07" stroke="#ffea00" stroke-width="1" stroke-opacity="0.40"/>
+  <text x="1140" y="614" fill="#ffea00" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">1. Reflection +2.3 ms at Mic 1:</text>
+  <text x="1140" y="626" fill="#ffea00" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">   Add diffuser at left wall</text>
+  <text x="1140" y="642" fill="#ffea00" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">2. Phase: move Src A +0.4 m right</text>
+
+
+  <!-- ══ BOTTOM ROW — Statistics tiles (y=665, h=224) ══ -->
+
+  <!-- Tile 1: RT60 vs Frequency chart (x=6, y=665, w=340, h=224) -->
+  <rect x="6" y="665" width="340" height="224" rx="10" fill="#111111"
+        stroke="#2a2a2a" stroke-width="1" filter="url(#panelShadow)"/>
+  <text x="22" y="689" fill="#00e676" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1"
+        filter="url(#glowGreen)">RT60 vs FREQUENCY</text>
+  <line x1="22" y1="696" x2="338" y2="696" stroke="#2a2a2a" stroke-width="1"/>
+  <!-- Target line at 0.4 s (height=38 out of 60 total bar area) -->
+  <line x1="22" y1="818" x2="338" y2="818" stroke="#00e5ff" stroke-width="1"
+        stroke-dasharray="4,3" opacity="0.50"/>
+  <text x="337" y="816" fill="#00e5ff" font-size="9" text-anchor="end" opacity="0.70"
+        font-family="'Segoe UI',Arial,sans-serif">0.4 s target</text>
+  <!-- Bars: bar area y=758 to y=857  (max bar height=99 = 1.0 s scale) -->
+  <!-- 125 Hz: 0.62 s → height=61 -->
+  <rect x="26"  y="796" width="40" height="61" rx="3" fill="#00e676" opacity="0.60"/>
+  <text x="46"  y="792" fill="#e0e0e0" font-size="9" text-anchor="middle"
+        font-family="'Courier New','Lucida Console',monospace">0.62</text>
+  <!-- 250 Hz: 0.52 s → height=51 -->
+  <rect x="78"  y="806" width="40" height="51" rx="3" fill="#00e676" opacity="0.70"/>
+  <text x="98"  y="802" fill="#e0e0e0" font-size="9" text-anchor="middle"
+        font-family="'Courier New','Lucida Console',monospace">0.52</text>
+  <!-- 500 Hz: 0.42 s → height=41 -->
+  <rect x="130" y="816" width="40" height="41" rx="3" fill="#69f0ae" opacity="0.80"/>
+  <text x="150" y="812" fill="#e0e0e0" font-size="9" text-anchor="middle"
+        font-family="'Courier New','Lucida Console',monospace">0.42</text>
+  <!-- 1 kHz: 0.37 s → height=36 -->
+  <rect x="182" y="821" width="40" height="36" rx="3" fill="#69f0ae" opacity="0.85"/>
+  <text x="202" y="817" fill="#e0e0e0" font-size="9" text-anchor="middle"
+        font-family="'Courier New','Lucida Console',monospace">0.37</text>
+  <!-- 2 kHz: 0.30 s → height=29 -->
+  <rect x="234" y="828" width="40" height="29" rx="3" fill="#ffea00" opacity="0.75"/>
+  <text x="254" y="824" fill="#e0e0e0" font-size="9" text-anchor="middle"
+        font-family="'Courier New','Lucida Console',monospace">0.30</text>
+  <!-- 4 kHz: 0.24 s → height=23 -->
+  <rect x="286" y="834" width="36" height="23" rx="3" fill="#ffab40" opacity="0.70"/>
+  <text x="304" y="830" fill="#e0e0e0" font-size="9" text-anchor="middle"
+        font-family="'Courier New','Lucida Console',monospace">0.24</text>
+  <!-- Axis line and frequency labels -->
+  <line x1="22" y1="857" x2="338" y2="857" stroke="#2a2a2a" stroke-width="1"/>
+  <text x="46"  y="869" fill="#606060" font-size="9" text-anchor="middle"
+        font-family="'Segoe UI',Arial,sans-serif">125 Hz</text>
+  <text x="98"  y="869" fill="#606060" font-size="9" text-anchor="middle"
+        font-family="'Segoe UI',Arial,sans-serif">250 Hz</text>
+  <text x="150" y="869" fill="#606060" font-size="9" text-anchor="middle"
+        font-family="'Segoe UI',Arial,sans-serif">500 Hz</text>
+  <text x="202" y="869" fill="#606060" font-size="9" text-anchor="middle"
+        font-family="'Segoe UI',Arial,sans-serif">1 kHz</text>
+  <text x="254" y="869" fill="#606060" font-size="9" text-anchor="middle"
+        font-family="'Segoe UI',Arial,sans-serif">2 kHz</text>
+  <text x="304" y="869" fill="#606060" font-size="9" text-anchor="middle"
+        font-family="'Segoe UI',Arial,sans-serif">4 kHz</text>
+
+
+  <!-- Tile 2: Wave Path Energy / arrival timeline (x=352, y=665, w=420, h=224) -->
+  <rect x="352" y="665" width="420" height="224" rx="10" fill="#111111"
+        stroke="#2a2a2a" stroke-width="1" filter="url(#panelShadow)"/>
+  <text x="368" y="689" fill="#00e5ff" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">WAVE ARRIVAL ENERGY</text>
+  <line x1="368" y1="696" x2="764" y2="696" stroke="#2a2a2a" stroke-width="1"/>
+  <!-- Legend -->
+  <rect x="650" y="706" width="10" height="8" rx="2" fill="#00e5ff" opacity="0.80"/>
+  <text x="664" y="714" fill="#00e5ff" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">Direct</text>
+  <rect x="714" y="706" width="10" height="8" rx="2" fill="#ff9100" opacity="0.80"/>
+  <text x="728" y="714" fill="#ff9100" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif">Reflected</text>
+  <!-- Time axis: x=368 to x=764 → 396px for 40 ms → 9.9 px/ms -->
+  <!-- Src B→Mic1 direct:   8.2 ms → x = 368 + 8.2×9.9 = 449 -->
+  <rect x="443" y="788" width="12" height="65" rx="2" fill="#00e5ff" opacity="0.80"/>
+  <text x="449" y="784" fill="#00e5ff" font-size="9" text-anchor="middle"
+        font-family="'Courier New','Lucida Console',monospace">8.2</text>
+  <!-- Src A→Mic1 direct:   9.6 ms → x = 368 + 9.6×9.9 = 463 -->
+  <rect x="457" y="793" width="12" height="60" rx="2" fill="#00e5ff" opacity="0.75"/>
+  <text x="463" y="789" fill="#00e5ff" font-size="9" text-anchor="middle"
+        font-family="'Courier New','Lucida Console',monospace">9.6</text>
+  <!-- Src B→Wall→Mic1 refl: 13.2 ms → x = 368 + 13.2×9.9 = 499 -->
+  <rect x="493" y="818" width="12" height="35" rx="2" fill="#ff9100" opacity="0.70"/>
+  <text x="499" y="814" fill="#ff9100" font-size="9" text-anchor="middle"
+        font-family="'Courier New','Lucida Console',monospace">13.2</text>
+  <!-- Src A→Mic2 direct:   13.7 ms → x = 368 + 13.7×9.9 = 504 -->
+  <rect x="508" y="808" width="12" height="45" rx="2" fill="#00e5ff" opacity="0.65"/>
+  <text x="514" y="804" fill="#00e5ff" font-size="9" text-anchor="middle"
+        font-family="'Courier New','Lucida Console',monospace">13.7</text>
+  <!-- Src A→Wall→Mic1 refl: 17.0 ms → x = 368 + 17.0×9.9 = 536 -->
+  <rect x="530" y="825" width="12" height="28" rx="2" fill="#ff9100" opacity="0.65"/>
+  <text x="536" y="821" fill="#ff9100" font-size="9" text-anchor="middle"
+        font-family="'Courier New','Lucida Console',monospace">17.0</text>
+  <!-- Axis line and labels -->
+  <line x1="368" y1="857" x2="764" y2="857" stroke="#2a2a2a" stroke-width="1"/>
+  <text x="368" y="869" fill="#606060" font-size="9"
+        font-family="'Segoe UI',Arial,sans-serif">0 ms</text>
+  <text x="467" y="869" fill="#606060" font-size="9" text-anchor="middle"
+        font-family="'Segoe UI',Arial,sans-serif">10 ms</text>
+  <text x="566" y="869" fill="#606060" font-size="9" text-anchor="middle"
+        font-family="'Segoe UI',Arial,sans-serif">20 ms</text>
+  <text x="665" y="869" fill="#606060" font-size="9" text-anchor="middle"
+        font-family="'Segoe UI',Arial,sans-serif">30 ms</text>
+  <text x="760" y="869" fill="#606060" font-size="9" text-anchor="end"
+        font-family="'Segoe UI',Arial,sans-serif">40 ms</text>
+  <!-- Floor baseline for bars -->
+  <line x1="368" y1="853" x2="764" y2="853" stroke="#2a2a2a" stroke-width="1"/>
+
+
+  <!-- Tile 3: Telemetry Status (x=778, y=665, w=656, h=224) -->
+  <rect x="778" y="665" width="656" height="224" rx="10" fill="#111111"
+        stroke="#2a2a2a" stroke-width="1" filter="url(#panelShadow)"/>
+  <text x="794" y="689" fill="#e040fb" font-size="13" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">TELEMETRY STATUS</text>
+  <line x1="794" y1="696" x2="1426" y2="696" stroke="#2a2a2a" stroke-width="1"/>
+
+  <!-- Microphone activity section -->
+  <text x="794" y="713" fill="#808080" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">MICROPHONE ACTIVITY</text>
+  <line x1="794" y1="717" x2="1426" y2="717" stroke="#1e1e1e" stroke-width="1"/>
+
+  <!-- Mic 1 row -->
+  <circle cx="808" cy="734" r="6" fill="#69f0ae" opacity="0.90"/>
+  <text x="820" y="738" fill="#e0e0e0" font-size="12" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">Mic 1 — Overhead</text>
+  <text x="970" y="738" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Paths: 4</text>
+  <text x="1032" y="738" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Level:</text>
+  <rect x="1074" y="728" width="120" height="6" rx="2" fill="#2e2e2e"/>
+  <rect x="1074" y="728" width="86"  height="6" rx="2" fill="#00e676"/>
+  <text x="1210" y="738" fill="#e0e0e0" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace">-6.2 dB</text>
+  <text x="1292" y="738" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Max delay:</text>
+  <text x="1426" y="738" fill="#ffea00" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace" text-anchor="end">17.0 ms</text>
+
+  <!-- Mic 2 row -->
+  <circle cx="808" cy="757" r="6" fill="#69f0ae" opacity="0.90"/>
+  <text x="820" y="761" fill="#e0e0e0" font-size="12" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">Mic 2 — Close Mic</text>
+  <text x="970" y="761" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Paths: 2</text>
+  <text x="1032" y="761" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Level:</text>
+  <rect x="1074" y="751" width="120" height="6" rx="2" fill="#2e2e2e"/>
+  <rect x="1074" y="751" width="70"  height="6" rx="2" fill="#00e676"/>
+  <text x="1210" y="761" fill="#e0e0e0" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace">-9.8 dB</text>
+  <text x="1292" y="761" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Max delay:</text>
+  <text x="1426" y="761" fill="#00e5ff" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace" text-anchor="end">13.7 ms</text>
+
+  <!-- Source activity section -->
+  <line x1="794" y1="773" x2="1426" y2="773" stroke="#2a2a2a" stroke-width="1"/>
+  <text x="794" y="790" fill="#808080" font-size="10"
+        font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">SOURCE ACTIVITY</text>
+  <line x1="794" y1="794" x2="1426" y2="794" stroke="#1e1e1e" stroke-width="1"/>
+
+  <!-- Source A row -->
+  <circle cx="808" cy="812" r="6" fill="#ff4081" opacity="0.90"/>
+  <text x="820" y="816" fill="#e0e0e0" font-size="12" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">Source A — Guitar</text>
+  <text x="970" y="816" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Paths: 3</text>
+  <text x="1032" y="816" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">SPL:</text>
+  <rect x="1074" y="806" width="120" height="6" rx="2" fill="#2e2e2e"/>
+  <rect x="1074" y="806" width="100" height="6" rx="2" fill="#ff4081"/>
+  <text x="1210" y="816" fill="#e0e0e0" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace">94.2 dB</text>
+  <text x="1292" y="816" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Freq resp:</text>
+  <text x="1426" y="816" fill="#e0e0e0" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="end">80 Hz – 16 kHz</text>
+
+  <!-- Source B row -->
+  <circle cx="808" cy="838" r="6" fill="#ff4081" opacity="0.90"/>
+  <text x="820" y="842" fill="#e0e0e0" font-size="12" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif">Source B — Vocals</text>
+  <text x="970" y="842" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Paths: 3</text>
+  <text x="1032" y="842" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">SPL:</text>
+  <rect x="1074" y="832" width="120" height="6" rx="2" fill="#2e2e2e"/>
+  <rect x="1074" y="832" width="82"  height="6" rx="2" fill="#ff4081"/>
+  <text x="1210" y="842" fill="#e0e0e0" font-size="11" font-weight="bold"
+        font-family="'Courier New','Lucida Console',monospace">88.7 dB</text>
+  <text x="1292" y="842" fill="#808080" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif">Freq resp:</text>
+  <text x="1426" y="842" fill="#e0e0e0" font-size="11"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="end">120 Hz – 12 kHz</text>
+
+  <!-- Engine status badge -->
+  <line x1="794" y1="855" x2="1426" y2="855" stroke="#2a2a2a" stroke-width="1"/>
+  <rect x="794" y="861" width="632" height="20" rx="6"
+        fill="#00e676" fill-opacity="0.10" stroke="#00e676" stroke-width="1" stroke-opacity="0.40"/>
+  <text x="1110" y="875" fill="#00e676" font-size="11" font-weight="bold"
+        font-family="'Segoe UI',Arial,sans-serif" text-anchor="middle">
+    ✓ TELEMETRY ENGINE ACTIVE  ·  6 paths computed  ·  RT60 = 0.42 s</text>
+
+</svg>
