@@ -11,6 +11,7 @@ import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
+import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -54,13 +55,20 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.EnumMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.prefs.Preferences;
 import javafx.scene.Scene;
 import javafx.scene.Parent;
+import javafx.scene.control.Alert;
+import javafx.scene.control.ButtonType;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.StackPane;
+import javafx.stage.DirectoryChooser;
+import javafx.stage.Stage;
 import javafx.collections.ObservableMap;
 
 /**
@@ -121,7 +129,7 @@ public final class MainController {
     @FXML private Button newProjectButton;
     @FXML private Button openProjectButton;
     @FXML private Button saveProjectButton;
-    @FXML private Button projectFolderButton;
+    @FXML private Button recentProjectsButton;
     @FXML private Button browserButton;
     @FXML private Button searchButton;
     @FXML private Button pluginsSidebarButton;
@@ -138,6 +146,7 @@ public final class MainController {
     private int midiTrackCounter;
     private boolean loopEnabled;
     private boolean snapEnabled = true;
+    private boolean projectDirty;
 
     // ── View navigation state ────────────────────────────────────────────────
     /** Caches each view's content node so switching back preserves state. */
@@ -178,7 +187,9 @@ public final class MainController {
         undoManager = new UndoManager();
 
         CheckpointManager checkpointManager = new CheckpointManager(AutoSaveConfig.DEFAULT);
-        projectManager = new ProjectManager(checkpointManager);
+        Preferences prefs = Preferences.userNodeForPackage(MainController.class);
+        RecentProjectsStore recentProjectsStore = new RecentProjectsStore(prefs);
+        projectManager = new ProjectManager(checkpointManager, recentProjectsStore);
 
         audioTrackCounter = 0;
         midiTrackCounter = 0;
@@ -324,7 +335,7 @@ public final class MainController {
         newProjectButton.setGraphic(IconNode.of(DawIcon.FOLDER, TOOLBAR_ICON_SIZE));
         openProjectButton.setGraphic(IconNode.of(DawIcon.FOLDER, TOOLBAR_ICON_SIZE));
         saveProjectButton.setGraphic(IconNode.of(DawIcon.DOWNLOAD, TOOLBAR_ICON_SIZE));
-        projectFolderButton.setGraphic(IconNode.of(DawIcon.FOLDER, TOOLBAR_ICON_SIZE));
+        recentProjectsButton.setGraphic(IconNode.of(DawIcon.HISTORY, TOOLBAR_ICON_SIZE));
         browserButton.setGraphic(IconNode.of(DawIcon.LIBRARY, TOOLBAR_ICON_SIZE));
         searchButton.setGraphic(IconNode.of(DawIcon.SEARCH, TOOLBAR_ICON_SIZE));
         pluginsSidebarButton.setGraphic(IconNode.of(DawIcon.EQUALIZER, TOOLBAR_ICON_SIZE));
@@ -359,7 +370,7 @@ public final class MainController {
         newProjectButton.setTooltip(new Tooltip("New Project"));
         openProjectButton.setTooltip(new Tooltip("Open Project"));
         saveProjectButton.setTooltip(new Tooltip("Save Project"));
-        projectFolderButton.setTooltip(new Tooltip("Project Folder"));
+        recentProjectsButton.setTooltip(new Tooltip("Recent Projects"));
         browserButton.setTooltip(new Tooltip("Library"));
         searchButton.setTooltip(new Tooltip("Search"));
         pluginsSidebarButton.setTooltip(new Tooltip("Plugins"));
@@ -667,6 +678,7 @@ public final class MainController {
         updateUndoRedoState();
         statusBarLabel.setText("Added audio track: " + name);
         statusBarLabel.setGraphic(IconNode.of(DawIcon.INPUT, 12));
+        projectDirty = true;
         LOG.fine(() -> "Added audio track: " + name);
     }
 
@@ -702,6 +714,7 @@ public final class MainController {
         updateUndoRedoState();
         statusBarLabel.setText("Added MIDI track: " + name);
         statusBarLabel.setGraphic(IconNode.of(DawIcon.MUSIC_NOTE, 12));
+        projectDirty = true;
         LOG.fine(() -> "Added MIDI track: " + name);
     }
 
@@ -713,6 +726,7 @@ public final class MainController {
                 projectManager.createProject(project.getName(), tempDir.getParent());
             }
             projectManager.saveProject();
+            projectDirty = false;
             int count = projectManager.getCheckpointManager().getCheckpointCount();
             checkpointLabel.setText("Saved (checkpoint #" + count + ")");
             checkpointLabel.setGraphic(IconNode.of(DawIcon.SUCCESS, 12));
@@ -723,6 +737,150 @@ public final class MainController {
             statusBarLabel.setText("Save failed: " + e.getMessage());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
             LOG.log(Level.WARNING, "Failed to save project", e);
+        }
+    }
+
+    @FXML
+    private void onNewProject() {
+        if (!confirmDiscardUnsavedChanges()) {
+            return;
+        }
+        resetProjectState();
+        project = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
+        undoManager = new UndoManager();
+        audioTrackCounter = 0;
+        midiTrackCounter = 0;
+        projectDirty = false;
+        rebuildUI();
+        statusBarLabel.setText("New project created");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.FOLDER, 12));
+        LOG.info("Created new project");
+    }
+
+    @FXML
+    private void onOpenProject() {
+        if (!confirmDiscardUnsavedChanges()) {
+            return;
+        }
+        DirectoryChooser chooser = new DirectoryChooser();
+        chooser.setTitle("Open Project");
+        Stage stage = (Stage) rootPane.getScene().getWindow();
+        java.io.File selected = chooser.showDialog(stage);
+        if (selected == null) {
+            return;
+        }
+        loadProjectFromPath(selected.toPath());
+    }
+
+    @FXML
+    private void onRecentProjects() {
+        List<Path> recentPaths = projectManager.getRecentProjectPaths();
+        ContextMenu menu = new ContextMenu();
+        if (recentPaths.isEmpty()) {
+            MenuItem emptyItem = new MenuItem("No recent projects");
+            emptyItem.setDisable(true);
+            menu.getItems().add(emptyItem);
+        } else {
+            for (Path path : recentPaths) {
+                MenuItem item = new MenuItem(path.getFileName().toString());
+                item.setOnAction(_ -> {
+                    if (confirmDiscardUnsavedChanges()) {
+                        loadProjectFromPath(path);
+                    }
+                });
+                menu.getItems().add(item);
+            }
+            menu.getItems().add(new SeparatorMenuItem());
+            MenuItem clearItem = new MenuItem("Clear Recent Projects");
+            clearItem.setOnAction(_ -> {
+                RecentProjectsStore store = projectManager.getRecentProjectsStore();
+                if (store != null) {
+                    store.clear();
+                }
+                statusBarLabel.setText("Recent projects cleared");
+                statusBarLabel.setGraphic(IconNode.of(DawIcon.DELETE, 12));
+            });
+            menu.getItems().add(clearItem);
+        }
+        menu.show(recentProjectsButton,
+                javafx.geometry.Side.RIGHT, 0, 0);
+    }
+
+    /**
+     * Prompts the user to save unsaved changes before a destructive operation.
+     *
+     * @return {@code true} if the operation should proceed (saved, discarded, or no changes),
+     *         {@code false} if the user cancelled
+     */
+    private boolean confirmDiscardUnsavedChanges() {
+        if (!projectDirty) {
+            return true;
+        }
+        Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
+        alert.setTitle("Unsaved Changes");
+        alert.setHeaderText("You have unsaved changes.");
+        alert.setContentText("Do you want to save before continuing?");
+        ButtonType saveBtn = new ButtonType("Save");
+        ButtonType discardBtn = new ButtonType("Discard");
+        ButtonType cancelBtn = ButtonType.CANCEL;
+        alert.getButtonTypes().setAll(saveBtn, discardBtn, cancelBtn);
+
+        Optional<ButtonType> result = alert.showAndWait();
+        if (result.isEmpty() || result.get() == cancelBtn) {
+            return false;
+        }
+        if (result.get() == saveBtn) {
+            onSaveProject();
+        }
+        return true;
+    }
+
+    private void loadProjectFromPath(Path projectDir) {
+        try {
+            resetProjectState();
+            projectManager.openProject(projectDir);
+            project = new DawProject(
+                    projectManager.getCurrentProject().name(),
+                    AudioFormat.STUDIO_QUALITY);
+            undoManager = new UndoManager();
+            audioTrackCounter = 0;
+            midiTrackCounter = 0;
+            projectDirty = false;
+            rebuildUI();
+            statusBarLabel.setText("Opened: " + projectDir.getFileName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.FOLDER, 12));
+            LOG.info("Opened project from " + projectDir);
+        } catch (IOException e) {
+            statusBarLabel.setText("Open failed: " + e.getMessage());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+            LOG.log(Level.WARNING, "Failed to open project", e);
+        }
+    }
+
+    private void resetProjectState() {
+        try {
+            if (projectManager.getCurrentProject() != null) {
+                projectManager.closeProject();
+            }
+        } catch (IOException e) {
+            LOG.log(Level.WARNING, "Failed to close current project", e);
+        }
+    }
+
+    private void rebuildUI() {
+        trackListPanel.getChildren().clear();
+        Label header = new Label("TRACKS");
+        header.getStyleClass().add("panel-header");
+        header.setGraphic(IconNode.of(DawIcon.MIXER, PANEL_ICON_SIZE));
+        trackListPanel.getChildren().add(header);
+        mixerView = new MixerView(project);
+        viewCache.put(DawView.MIXER, mixerView);
+        updateProjectInfo();
+        updateTempoDisplay();
+        updateUndoRedoState();
+        updateArrangementPlaceholder();
+        if (activeView == DawView.MIXER) {
+            rootPane.setCenter(mixerView);
         }
     }
 
@@ -742,6 +900,7 @@ public final class MainController {
             statusBarLabel.setText("Undo: " + undoManager.redoDescription());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.UNDO, 12));
             updateTempoDisplay();
+            projectDirty = true;
         } else {
             statusBarLabel.setText("Nothing to undo");
             statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO_CIRCLE, 12));
@@ -755,6 +914,7 @@ public final class MainController {
             statusBarLabel.setText("Redo: " + undoManager.undoDescription());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.REDO, 12));
             updateTempoDisplay();
+            projectDirty = true;
         } else {
             statusBarLabel.setText("Nothing to redo");
             statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO_CIRCLE, 12));

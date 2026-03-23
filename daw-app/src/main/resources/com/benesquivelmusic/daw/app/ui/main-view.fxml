@@ -109,14 +109,15 @@
             <Separator styleClass="sidebar-separator"/>
 
             <!-- Project Management -->
+            <Label text="PROJECT" styleClass="toolbar-section-label"/>
             <Button fx:id="newProjectButton" text="New"
-                    styleClass="sidebar-button"/>
+                    styleClass="sidebar-button" onAction="#onNewProject"/>
             <Button fx:id="openProjectButton" text="Open"
-                    styleClass="sidebar-button"/>
+                    styleClass="sidebar-button" onAction="#onOpenProject"/>
             <Button fx:id="saveProjectButton" text="Save"
-                    styleClass="sidebar-button"/>
-            <Button fx:id="projectFolderButton" text="Project"
-                    styleClass="sidebar-button"/>
+                    styleClass="sidebar-button" onAction="#onSaveProject"/>
+            <Button fx:id="recentProjectsButton" text="Recent"
+                    styleClass="sidebar-button" onAction="#onRecentProjects"/>
 
             <Separator styleClass="sidebar-separator"/>
 
