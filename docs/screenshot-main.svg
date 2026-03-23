@@ -34,10 +34,10 @@
 
     <!-- Clip paths for waveform rows -->
     <clipPath id="clipTrack1"><rect x="322" y="96" width="1112" height="88"/></clipPath>
-    <clipPath id="clipTrack2"><rect x="322" y="190" width="1112" height="88"/></clipPath>
-    <clipPath id="clipTrack3"><rect x="322" y="284" width="1112" height="88"/></clipPath>
-    <clipPath id="clipTrack4"><rect x="322" y="378" width="1112" height="88"/></clipPath>
-    <clipPath id="clipTrack5"><rect x="322" y="472" width="1112" height="88"/></clipPath>
+    <clipPath id="clipTrack2"><rect x="322" y="184" width="1112" height="88"/></clipPath>
+    <clipPath id="clipTrack3"><rect x="322" y="272" width="1112" height="88"/></clipPath>
+    <clipPath id="clipTrack4"><rect x="322" y="360" width="1112" height="88"/></clipPath>
+    <clipPath id="clipTrack5"><rect x="322" y="448" width="1112" height="88"/></clipPath>
 
     <!-- Level meter gradient (green→orange→red) -->
     <linearGradient id="meterGrad" x1="0" y1="1" x2="0" y2="0">
@@ -586,12 +586,12 @@
         font-family="'Segoe UI',Arial,sans-serif" letter-spacing="1">LEVEL  L / R</text>
   <rect x="578"  y="691" width="264" height="142" rx="4" fill="#0a0a0a"/>
   <!-- dB scale labels -->
-  <text x="607" y="704"  fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace" text-anchor="end">0</text>
-  <text x="607" y="727"  fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace" text-anchor="end">-6</text>
-  <text x="607" y="750"  fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace" text-anchor="end">-12</text>
-  <text x="607" y="773"  fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace" text-anchor="end">-18</text>
-  <text x="607" y="796"  fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace" text-anchor="end">-24</text>
-  <text x="607" y="822"  fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace" text-anchor="end">-∞</text>
+  <text x="582" y="704"  fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">0</text>
+  <text x="582" y="727"  fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">-6</text>
+  <text x="575" y="750"  fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">-12</text>
+  <text x="575" y="773"  fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">-18</text>
+  <text x="575" y="796"  fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">-24</text>
+  <text x="575" y="822"  fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">-∞</text>
   <!-- L channel meter -->
   <rect x="610" y="700" width="40" height="124" rx="2" fill="#111111" stroke="#2a2a2a"/>
   <rect x="610" y="710" width="40" height="114" rx="2" fill="url(#meterGrad)"/>
@@ -644,16 +644,16 @@
   <rect x="1142" y="691" width="284" height="142" rx="4" fill="#0a0a0a"/>
   <!-- Correlation meter bar (horizontal) -->
   <!-- Scale: -1 (mono-negative) to +1 (mono-positive) -->
-  <line x1="1156" y1="730" x2="1412" y2="730" stroke="#1e1e1e" stroke-width="1"/>
+  <line x1="1150" y1="730" x2="1418" y2="730" stroke="#1e1e1e" stroke-width="1"/>
   <text x="1152" y="745" fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">-1</text>
-  <text x="1284" y="745" fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace" text-anchor="middle">0</text>
-  <text x="1412" y="745" fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace" text-anchor="end">+1</text>
+  <text x="1278" y="745" fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">0</text>
+  <text x="1406" y="745" fill="#3d3d3d" font-size="9" font-family="'Courier New',monospace">+1</text>
   <!-- Correlation bar track -->
-  <rect x="1156" y="720" width="256" height="16" rx="3" fill="#111111" stroke="#2a2a2a"/>
+  <rect x="1162" y="720" width="256" height="16" rx="3" fill="#111111" stroke="#2a2a2a"/>
   <!-- Correlation value fill (+0.72 = 72% of right half) -->
-  <rect x="1284" y="720" width="92" height="16" rx="0" fill="#00e676" opacity="0.8"/>
+  <rect x="1290" y="720" width="92" height="16" rx="0" fill="#00e676" opacity="0.8"/>
   <!-- Center marker -->
-  <line x1="1284" y1="718" x2="1284" y2="738" stroke="#808080" stroke-width="1.5"/>
+  <line x1="1290" y1="718" x2="1290" y2="738" stroke="#808080" stroke-width="1.5"/>
   <!-- Value label -->
   <text x="1284" y="767" fill="#00e676" font-size="18" font-weight="bold"
         font-family="'Courier New',monospace" text-anchor="middle">+0.72</text>
