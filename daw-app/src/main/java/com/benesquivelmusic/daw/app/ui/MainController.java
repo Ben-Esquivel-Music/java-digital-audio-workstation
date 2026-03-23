@@ -162,6 +162,10 @@ public final class MainController {
     /** Controls the visualization row toggle, context menu, and persistence. */
     private VisualizationPanelController vizPanelController;
 
+    // ── Browser panel controller ─────────────────────────────────────────────
+    /** Controls the browser/library side panel toggle. */
+    private BrowserPanelController browserPanelController;
+
     // ── Animation state ──────────────────────────────────────────────────────
     /** Drives all continuous frame-by-frame animations at ~60 fps. */
     private AnimationTimer mainAnimTimer;
@@ -203,6 +207,7 @@ public final class MainController {
         applyButtonPressAnimations();
         preventButtonTruncation();
         buildVisualizationTiles();
+        buildBrowserPanel();
         setupTempoEditor();
         updateStatus();
         updateTempoDisplay();
@@ -578,6 +583,18 @@ public final class MainController {
         vizPanelController.initialize();
 
         LOG.fine("Built visualization tile row with 5 display tiles");
+    }
+
+    /**
+     * Builds and wires the browser/library side panel and its toolbar controller.
+     */
+    private void buildBrowserPanel() {
+        BrowserPanel browserPanel = new BrowserPanel();
+        browserPanelController = new BrowserPanelController(
+                browserPanel, browserButton, rootPane);
+        browserPanelController.initialize();
+
+        LOG.fine("Built browser panel with toolbar toggle");
     }
 
     /**

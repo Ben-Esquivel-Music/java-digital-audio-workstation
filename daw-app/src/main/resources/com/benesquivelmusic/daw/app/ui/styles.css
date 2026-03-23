@@ -704,3 +704,87 @@
 .main-split {
     -fx-background-color: #000000;
 }
+
+/* ── Browser Panel ── */
+.browser-panel {
+    -fx-background-color: #0d0d0d;
+    -fx-border-color: #2a2a2a transparent transparent transparent;
+    -fx-border-width: 0 0 0 1;
+}
+
+.browser-search-field {
+    -fx-background-color: #1a1a1a;
+    -fx-text-fill: #e0e0e0;
+    -fx-prompt-text-fill: #606060;
+    -fx-border-color: #2a2a2a;
+    -fx-border-radius: 4;
+    -fx-background-radius: 4;
+    -fx-font-size: 11px;
+    -fx-padding: 4 8;
+}
+
+.browser-search-field:focused {
+    -fx-border-color: #7c4dff;
+    -fx-effect: dropshadow(gaussian, rgba(124, 77, 255, 0.3), 6, 0, 0, 0);
+}
+
+.browser-tab-pane > .tab-header-area > .tab-header-background {
+    -fx-background-color: #0d0d0d;
+}
+
+.browser-tab-pane > .tab-header-area > .headers-region > .tab {
+    -fx-background-color: #1a1a1a;
+    -fx-border-color: #2a2a2a;
+    -fx-padding: 4 8;
+}
+
+.browser-tab-pane > .tab-header-area > .headers-region > .tab:selected {
+    -fx-background-color: #242424;
+    -fx-border-color: transparent transparent #e040fb transparent;
+    -fx-border-width: 0 0 2 0;
+}
+
+.browser-tab-pane > .tab-header-area > .headers-region > .tab > .tab-container > .tab-label {
+    -fx-text-fill: #808080;
+    -fx-font-size: 10px;
+}
+
+.browser-tab-pane > .tab-header-area > .headers-region > .tab:selected > .tab-container > .tab-label {
+    -fx-text-fill: #e0e0e0;
+}
+
+.browser-tab-pane > .tab-content-area {
+    -fx-background-color: #0d0d0d;
+}
+
+.browser-tree {
+    -fx-background-color: #0d0d0d;
+    -fx-control-inner-background: #0d0d0d;
+    -fx-font-size: 11px;
+}
+
+.browser-tree .tree-cell {
+    -fx-text-fill: #b0b0b0;
+    -fx-background-color: transparent;
+}
+
+.browser-tree .tree-cell:selected {
+    -fx-background-color: #242424;
+    -fx-text-fill: #e040fb;
+}
+
+.browser-list {
+    -fx-background-color: #0d0d0d;
+    -fx-control-inner-background: #0d0d0d;
+    -fx-font-size: 11px;
+}
+
+.browser-list .list-cell {
+    -fx-text-fill: #b0b0b0;
+    -fx-background-color: transparent;
+}
+
+.browser-list .list-cell:selected {
+    -fx-background-color: #242424;
+    -fx-text-fill: #e040fb;
+}
