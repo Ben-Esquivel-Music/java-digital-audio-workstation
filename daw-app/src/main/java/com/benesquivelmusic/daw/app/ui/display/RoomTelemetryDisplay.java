@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
+import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomTelemetryData;
 import com.benesquivelmusic.daw.sdk.telemetry.SoundWavePath;
@@ -61,6 +62,8 @@ public final class RoomTelemetryDisplay extends Region {
     private static final Color RT60_LOW = Color.web("#00e676", 0.3);
     private static final Color RT60_MID = Color.web("#ffea00", 0.3);
     private static final Color RT60_HIGH = Color.web("#ff1744", 0.4);
+    private static final Color AUDIENCE_COLOR = Color.web("#b388ff");
+    private static final Color AUDIENCE_GLOW = Color.web("#b388ff", 0.20);
 
     // ── Animation constants ────────────────────────────────────────
     private static final double RIPPLE_INTERVAL = 0.8;
@@ -73,6 +76,7 @@ public final class RoomTelemetryDisplay extends Region {
     private static final double LABEL_OFFSET = 18.0;
     private static final double SOURCE_RADIUS = 10.0;
     private static final double MIC_RADIUS = 8.0;
+    private static final double AUDIENCE_RADIUS = 7.0;
 
     private final Canvas canvas;
     private RoomTelemetryData telemetryData;
@@ -223,6 +227,11 @@ public final class RoomTelemetryDisplay extends Region {
                 Position3D mp = path.waypoints().getLast();
                 drawMicrophone(gc, mp, path.microphoneName(), offsetX, offsetY, scale);
             }
+        }
+
+        // ── Draw audience members ──
+        for (AudienceMember member : telemetryData.audienceMembers()) {
+            drawAudienceMember(gc, member.position(), member.name(), offsetX, offsetY, scale);
         }
 
         // ── Draw RT60 glow on room border ──
@@ -427,6 +436,37 @@ public final class RoomTelemetryDisplay extends Region {
         gc.setFont(Font.font("System", 10));
         gc.setTextAlign(TextAlignment.CENTER);
         gc.fillText("🎙 " + name, cx, cy + MIC_RADIUS + LABEL_OFFSET + 4);
+    }
+
+    private void drawAudienceMember(GraphicsContext gc, Position3D pos, String name,
+                                     double offsetX, double offsetY, double scale) {
+        double cx = offsetX + pos.x() * scale;
+        double cy = offsetY + pos.y() * scale;
+
+        // Subtle pulse for audience members (slower than performers)
+        double pulse = 0.5 + 0.5 * Math.sin(animationTime * 1.8 + pos.x() * 0.5);
+
+        // Outer glow
+        double glowRadius = AUDIENCE_RADIUS + 4 * pulse;
+        gc.setFill(new RadialGradient(0, 0, cx, cy, glowRadius * 2, false, CycleMethod.NO_CYCLE,
+                new Stop(0.0, AUDIENCE_GLOW),
+                new Stop(1.0, Color.TRANSPARENT)
+        ));
+        gc.fillOval(cx - glowRadius * 2, cy - glowRadius * 2, glowRadius * 4, glowRadius * 4);
+
+        // Person silhouette: head (circle) + shoulders (arc)
+        double headR = AUDIENCE_RADIUS * 0.5;
+        gc.setFill(AUDIENCE_COLOR);
+        gc.fillOval(cx - headR, cy - AUDIENCE_RADIUS * 0.8 - headR, headR * 2, headR * 2);
+        gc.fillArc(cx - AUDIENCE_RADIUS, cy - AUDIENCE_RADIUS * 0.2,
+                AUDIENCE_RADIUS * 2, AUDIENCE_RADIUS * 1.4, 0, 180,
+                javafx.scene.shape.ArcType.ROUND);
+
+        // Label
+        gc.setFill(TEXT_COLOR);
+        gc.setFont(Font.font("System", 9));
+        gc.setTextAlign(TextAlignment.CENTER);
+        gc.fillText(name, cx, cy + AUDIENCE_RADIUS + LABEL_OFFSET);
     }
 
     private void drawRt60Glow(GraphicsContext gc, double x, double y, double w, double h) {

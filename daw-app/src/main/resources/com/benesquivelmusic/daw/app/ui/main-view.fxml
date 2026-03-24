@@ -111,6 +111,8 @@
                     styleClass="sidebar-button"/>
             <Button fx:id="editorViewButton" text="Editor"
                     styleClass="sidebar-button"/>
+            <Button fx:id="telemetryViewButton" text="Telemetry"
+                    styleClass="sidebar-button"/>
 
             <Separator styleClass="sidebar-separator"/>
 

@@ -129,6 +129,7 @@ public final class MainController {
     @FXML private Button arrangementViewButton;
     @FXML private Button mixerViewButton;
     @FXML private Button editorViewButton;
+    @FXML private Button telemetryViewButton;
     @FXML private Button newProjectButton;
     @FXML private Button openProjectButton;
     @FXML private Button saveProjectButton;
@@ -169,6 +170,8 @@ public final class MainController {
     private MixerView mixerView;
     /** The editor view panel — shows MIDI piano roll or audio waveform. */
     private EditorView editorView;
+    /** The telemetry view panel — sound wave telemetry room visualizer. */
+    private TelemetryView telemetryView;
 
     // ── Edit tool state ──────────────────────────────────────────────────────
     /** The currently active edit tool. Defaults to {@link EditTool#POINTER}. */
@@ -293,14 +296,23 @@ public final class MainController {
         editorView = new EditorView();
         viewCache.put(DawView.EDITOR, editorView);
 
+        // Telemetry view — sound wave telemetry room visualizer
+        telemetryView = new TelemetryView();
+        viewCache.put(DawView.TELEMETRY, telemetryView);
+
         // Wire sidebar view buttons
         arrangementViewButton.setOnAction(event -> switchView(DawView.ARRANGEMENT));
         mixerViewButton.setOnAction(event -> switchView(DawView.MIXER));
         editorViewButton.setOnAction(event -> switchView(DawView.EDITOR));
+        telemetryViewButton.setOnAction(event -> switchView(DawView.TELEMETRY));
 
         // Restore persisted active view (activeView was loaded in initialize())
         if (activeView != DawView.ARRANGEMENT) {
             rootPane.setCenter(viewCache.get(activeView));
+        }
+        // Start telemetry animation if telemetry view is active on startup
+        if (activeView == DawView.TELEMETRY) {
+            telemetryView.startAnimation();
         }
 
         // Set the active view styling
@@ -319,10 +331,18 @@ public final class MainController {
         if (view == activeView) {
             return;
         }
+        // Stop telemetry animation when leaving telemetry view
+        if (activeView == DawView.TELEMETRY && telemetryView != null) {
+            telemetryView.stopAnimation();
+        }
         activeView = view;
         toolbarStateStore.saveActiveView(view);
         rootPane.setCenter(viewCache.get(view));
         updateToolbarActiveState();
+        // Start telemetry animation when entering telemetry view
+        if (view == DawView.TELEMETRY && telemetryView != null) {
+            telemetryView.startAnimation();
+        }
         statusBarLabel.setText("Switched to " + view.name().charAt(0)
                 + view.name().substring(1).toLowerCase() + " view");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
@@ -334,7 +354,7 @@ public final class MainController {
      * corresponding to the active view and removes it from all others.
      */
     private void updateToolbarActiveState() {
-        Button[] viewButtons = { arrangementViewButton, mixerViewButton, editorViewButton };
+        Button[] viewButtons = { arrangementViewButton, mixerViewButton, editorViewButton, telemetryViewButton };
         DawView[] views = DawView.values();
         for (int i = 0; i < viewButtons.length; i++) {
             if (views[i] == activeView) {
@@ -710,6 +730,7 @@ public final class MainController {
         arrangementViewButton.setGraphic(IconNode.of(DawIcon.TIMELINE, TOOLBAR_ICON_SIZE));
         mixerViewButton.setGraphic(IconNode.of(DawIcon.MIXER, TOOLBAR_ICON_SIZE));
         editorViewButton.setGraphic(IconNode.of(DawIcon.WAVEFORM, TOOLBAR_ICON_SIZE));
+        telemetryViewButton.setGraphic(IconNode.of(DawIcon.OSCILLOSCOPE, TOOLBAR_ICON_SIZE));
         newProjectButton.setGraphic(IconNode.of(DawIcon.FOLDER, TOOLBAR_ICON_SIZE));
         openProjectButton.setGraphic(IconNode.of(DawIcon.FOLDER, TOOLBAR_ICON_SIZE));
         saveProjectButton.setGraphic(IconNode.of(DawIcon.DOWNLOAD, TOOLBAR_ICON_SIZE));
@@ -771,6 +792,7 @@ public final class MainController {
         arrangementViewButton.setTooltip(styledTooltip("Arrangement View (Ctrl+1)"));
         mixerViewButton.setTooltip(styledTooltip("Mixer View (Ctrl+2)"));
         editorViewButton.setTooltip(styledTooltip("Editor View (Ctrl+3)"));
+        telemetryViewButton.setTooltip(styledTooltip("Sound Wave Telemetry View (Ctrl+4)"));
         newProjectButton.setTooltip(styledTooltip("New Project (Ctrl+N)"));
         openProjectButton.setTooltip(styledTooltip("Open Project (Ctrl+O)"));
         saveProjectButton.setTooltip(styledTooltip("Save Project (Ctrl+S)"));
@@ -938,6 +960,11 @@ public final class MainController {
         accelerators.put(
                 new KeyCodeCombination(KeyCode.DIGIT3, KeyCombination.SHORTCUT_DOWN),
                 () -> switchView(DawView.EDITOR));
+
+        // Ctrl+4 — Telemetry View
+        accelerators.put(
+                new KeyCodeCombination(KeyCode.DIGIT4, KeyCombination.SHORTCUT_DOWN),
+                () -> switchView(DawView.TELEMETRY));
 
         // Ctrl+B — Toggle Browser
         accelerators.put(

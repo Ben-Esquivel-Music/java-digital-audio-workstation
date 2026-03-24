@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.telemetry;
 
+import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
 import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
 import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
@@ -14,8 +15,12 @@ import java.util.Objects;
  * Mutable configuration of a recording room for sound wave telemetry.
  *
  * <p>Aggregates the room dimensions, wall material, microphone placements,
- * and sound sources. This configuration is fed into the
+ * sound sources, and audience members. This configuration is fed into the
  * {@link SoundWaveTelemetryEngine} to compute telemetry data.</p>
+ *
+ * <p>Audience members represent non-performer occupants of the recording
+ * space (concert-goers, congregation members, students, etc.) whose
+ * presence affects room acoustics.</p>
  */
 public final class RoomConfiguration {
 
@@ -23,6 +28,7 @@ public final class RoomConfiguration {
     private WallMaterial wallMaterial;
     private final List<MicrophonePlacement> microphones = new ArrayList<>();
     private final List<SoundSource> soundSources = new ArrayList<>();
+    private final List<AudienceMember> audienceMembers = new ArrayList<>();
 
     /**
      * Creates a room configuration with the given dimensions and wall material.
@@ -111,5 +117,34 @@ public final class RoomConfiguration {
      */
     public List<SoundSource> getSoundSources() {
         return Collections.unmodifiableList(soundSources);
+    }
+
+    /**
+     * Adds an audience member to the room.
+     *
+     * @param member the audience member
+     */
+    public void addAudienceMember(AudienceMember member) {
+        Objects.requireNonNull(member, "member must not be null");
+        audienceMembers.add(member);
+    }
+
+    /**
+     * Removes an audience member by name.
+     *
+     * @param name the audience member name
+     * @return {@code true} if an audience member was removed
+     */
+    public boolean removeAudienceMember(String name) {
+        return audienceMembers.removeIf(m -> m.name().equals(name));
+    }
+
+    /**
+     * Returns an unmodifiable view of the audience members.
+     *
+     * @return the list of audience members
+     */
+    public List<AudienceMember> getAudienceMembers() {
+        return Collections.unmodifiableList(audienceMembers);
     }
 }

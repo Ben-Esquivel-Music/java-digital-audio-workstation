@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.telemetry;
 
+import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
 import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
@@ -96,5 +97,59 @@ class RoomConfigurationTest {
         assertThatThrownBy(() -> config.getSoundSources().add(
                 new SoundSource("Illegal", new Position3D(0, 0, 0), 80)))
                 .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void shouldAddAndRemoveAudienceMembers() {
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        AudienceMember member = new AudienceMember("Row 1 Seat 1", new Position3D(3, 5, 0));
+
+        config.addAudienceMember(member);
+        assertThat(config.getAudienceMembers()).hasSize(1);
+        assertThat(config.getAudienceMembers().get(0).name()).isEqualTo("Row 1 Seat 1");
+
+        assertThat(config.removeAudienceMember("Row 1 Seat 1")).isTrue();
+        assertThat(config.getAudienceMembers()).isEmpty();
+    }
+
+    @Test
+    void shouldReturnFalseWhenRemovingNonexistentAudienceMember() {
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+
+        assertThat(config.removeAudienceMember("nonexistent")).isFalse();
+    }
+
+    @Test
+    void shouldRejectNullAudienceMember() {
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+
+        assertThatThrownBy(() -> config.addAudienceMember(null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void shouldReturnUnmodifiableAudienceMemberList() {
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+
+        assertThatThrownBy(() -> config.getAudienceMembers().add(
+                new AudienceMember("Illegal", new Position3D(0, 0, 0))))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void shouldStartWithEmptyAudienceMembers() {
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+
+        assertThat(config.getAudienceMembers()).isEmpty();
+    }
+
+    @Test
+    void shouldSupportMultipleAudienceMembers() {
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        config.addAudienceMember(new AudienceMember("Row 1 Seat 1", new Position3D(2, 5, 0)));
+        config.addAudienceMember(new AudienceMember("Row 1 Seat 2", new Position3D(3, 5, 0)));
+        config.addAudienceMember(new AudienceMember("Row 2 Seat 1", new Position3D(2, 6, 0)));
+
+        assertThat(config.getAudienceMembers()).hasSize(3);
     }
 }
