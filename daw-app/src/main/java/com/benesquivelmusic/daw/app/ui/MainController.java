@@ -129,6 +129,8 @@ public final class MainController {
     @FXML private Label arrangementPanelHeader;
     @FXML private Label tracksPanelHeader;
     @FXML private Label ioRoutingLabel;
+    @FXML private Label recIndicator;
+    @FXML private HBox notificationBarContainer;
     @FXML private VBox trackListPanel;
     @FXML private HBox vizTileRow;
     @FXML private VBox sidebarToolbar;
@@ -169,6 +171,7 @@ public final class MainController {
     private boolean projectDirty;
     private AudioEngine audioEngine;
     private RecordingPipeline recordingPipeline;
+    private NotificationBar notificationBar;
 
     // ── View navigation state ────────────────────────────────────────────────
     /** Caches each view's content node so switching back preserves state. */
@@ -271,6 +274,7 @@ public final class MainController {
         buildVisualizationTiles();
         buildBrowserPanel(toolbarStateStore.loadBrowserVisible());
         setupTempoEditor();
+        initializeNotificationBar();
         updateStatus();
         updateTempoDisplay();
         updateProjectInfo();
@@ -292,6 +296,16 @@ public final class MainController {
         });
 
         LOG.info("DAW initialized with studio quality format");
+    }
+
+    /**
+     * Creates the {@link NotificationBar} and adds it to the notification container
+     * in the bottom section, just above the status bar.
+     */
+    private void initializeNotificationBar() {
+        notificationBar = new NotificationBar();
+        notificationBarContainer.getChildren().add(notificationBar);
+        HBox.setHgrow(notificationBar, Priority.ALWAYS);
     }
 
     // ── View navigation ──────────────────────────────────────────────────────
@@ -758,6 +772,7 @@ public final class MainController {
         checkpointLabel.setGraphic(IconNode.of(DawIcon.SYNC, 12));
         statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
         ioRoutingLabel.setGraphic(IconNode.of(DawIcon.USB, 12));
+        recIndicator.setGraphic(IconNode.of(DawIcon.RECORD, 14));
 
         // ── Sidebar toolbar buttons ─────────────────────────────────────────
         homeButton.setGraphic(IconNode.of(DawIcon.HOME, TOOLBAR_ICON_SIZE));
@@ -1103,6 +1118,7 @@ public final class MainController {
         } catch (IllegalArgumentException e) {
             statusBarLabel.setText("Invalid tempo — must be 20–999 BPM");
             statusBarLabel.setGraphic(IconNode.of(DawIcon.ALERT, 12));
+            notificationBar.show(NotificationLevel.ERROR, "Invalid tempo — must be 20–999 BPM");
         }
         updateTempoDisplay();
         hbox.getChildren().set(index, tempoLabel);
@@ -1235,6 +1251,9 @@ public final class MainController {
                 int segmentCount = clipMap.values().size();
                 statusBarLabel.setText("Recording stopped — " + segmentCount + " clip"
                         + (segmentCount > 1 ? "s" : "") + " created");
+                notificationBar.show(NotificationLevel.SUCCESS,
+                        "Recording stopped — " + segmentCount + " clip"
+                                + (segmentCount > 1 ? "s" : "") + " created");
             }
             recordingPipeline = null;
         }
@@ -1250,6 +1269,9 @@ public final class MainController {
         // Restore button appearance in case the record blink was active
         recordButton.setOpacity(1.0);
         recordButton.setStyle("");
+        // Hide the REC indicator
+        recIndicator.setVisible(false);
+        recIndicator.setManaged(false);
     }
 
     @FXML
@@ -1266,6 +1288,8 @@ public final class MainController {
         // Validate that at least one track is armed for recording
         List<Track> armedTracks = RecordingPipeline.findArmedTracks(project.getTracks());
         if (armedTracks.isEmpty()) {
+            notificationBar.show(NotificationLevel.WARNING,
+                    "No tracks armed for recording — arm at least one track first");
             Alert alert = new Alert(Alert.AlertType.WARNING,
                     "No tracks are armed for recording. Please arm at least one track before recording.",
                     ButtonType.OK);
@@ -1283,6 +1307,8 @@ public final class MainController {
             LOG.log(Level.SEVERE, "Failed to create recording output directory", e);
             statusBarLabel.setText("Recording failed — could not create output directory");
             statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
+            notificationBar.show(NotificationLevel.ERROR,
+                    "Recording failed — could not create output directory");
             return;
         }
 
@@ -1297,6 +1323,11 @@ public final class MainController {
         statusBarLabel.setText("Recording — " + trackCount + " track"
                 + (trackCount > 1 ? "s" : "") + " armed — auto-save active");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
+        notificationBar.show(NotificationLevel.INFO,
+                "Recording started — " + trackCount + " track"
+                        + (trackCount > 1 ? "s" : "") + " armed");
+        recIndicator.setVisible(true);
+        recIndicator.setManaged(true);
     }
 
     @FXML
@@ -1379,6 +1410,7 @@ public final class MainController {
         updateUndoRedoState();
         statusBarLabel.setText("Added audio track: " + name + " ← " + selectedDevice.name());
         statusBarLabel.setGraphic(IconNode.of(DawIcon.INPUT, 12));
+        notificationBar.show(NotificationLevel.SUCCESS, "Added audio track: " + name);
         projectDirty = true;
         LOG.fine(() -> "Added audio track: " + name + " with input: " + selectedDevice.name());
     }
@@ -1422,6 +1454,7 @@ public final class MainController {
         updateUndoRedoState();
         statusBarLabel.setText("Added MIDI track: " + name + " ← " + selectedMidi.getName());
         statusBarLabel.setGraphic(IconNode.of(DawIcon.MUSIC_NOTE, 12));
+        notificationBar.show(NotificationLevel.SUCCESS, "Added MIDI track: " + name);
         projectDirty = true;
         LOG.fine(() -> "Added MIDI track: " + name + " with input: " + selectedMidi.getName());
     }
@@ -1440,10 +1473,12 @@ public final class MainController {
             checkpointLabel.setGraphic(IconNode.of(DawIcon.SUCCESS, 12));
             statusBarLabel.setText("Project saved");
             statusBarLabel.setGraphic(IconNode.of(DawIcon.UPLOAD, 12));
+            notificationBar.show(NotificationLevel.SUCCESS, "Project saved");
             LOG.info("Project saved successfully");
         } catch (IOException e) {
             statusBarLabel.setText("Save failed: " + e.getMessage());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+            notificationBar.show(NotificationLevel.ERROR, "Save failed: " + e.getMessage());
             LOG.log(Level.WARNING, "Failed to save project", e);
         }
     }
@@ -1462,6 +1497,7 @@ public final class MainController {
         rebuildUI();
         statusBarLabel.setText("New project created");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.FOLDER, 12));
+        notificationBar.show(NotificationLevel.SUCCESS, "New project created");
         LOG.info("Created new project");
     }
 
@@ -1557,10 +1593,14 @@ public final class MainController {
             rebuildUI();
             statusBarLabel.setText("Opened: " + projectDir.getFileName());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.FOLDER, 12));
+            notificationBar.show(NotificationLevel.SUCCESS,
+                    "Opened project: " + projectDir.getFileName());
             LOG.info("Opened project from " + projectDir);
         } catch (IOException e) {
             statusBarLabel.setText("Open failed: " + e.getMessage());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+            notificationBar.show(NotificationLevel.ERROR,
+                    "Open failed: " + e.getMessage());
             LOG.log(Level.WARNING, "Failed to open project", e);
         }
     }
@@ -1872,6 +1912,8 @@ public final class MainController {
             updateUndoRedoState();
             statusBarLabel.setText("Removed track: " + track.getName());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.CUT, 12));
+            notificationBar.showWithUndo(NotificationLevel.SUCCESS,
+                    "Removed track: " + track.getName(), this::onUndo);
             LOG.fine(() -> "Removed track: " + track.getName());
         });
 
@@ -1973,6 +2015,8 @@ public final class MainController {
             updateUndoRedoState();
             statusBarLabel.setText("Copied: " + track.getName());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.COPY, 12));
+            notificationBar.showWithUndo(NotificationLevel.SUCCESS,
+                    "Copied: " + track.getName(), this::onUndo);
             projectDirty = true;
         });
 
@@ -1984,6 +2028,10 @@ public final class MainController {
             pasteItem.setStyle("-fx-opacity: 0.5;");
             Tooltip.install(pasteItem.getGraphic(), new Tooltip("Nothing copied to clipboard"));
         }
+        pasteItem.setOnAction(_ -> {
+            notificationBar.show(NotificationLevel.WARNING,
+                    "Paste Over — not yet implemented");
+        });
 
         MenuItem splitItem = new MenuItem("Split at Playhead");
         splitItem.setGraphic(IconNode.of(DawIcon.SPLIT, 14));
@@ -2039,6 +2087,9 @@ public final class MainController {
             updateUndoRedoState();
             statusBarLabel.setText("Split: " + track.getName() + " at beat " + String.format("%.1f", playhead));
             statusBarLabel.setGraphic(IconNode.of(DawIcon.SPLIT, 12));
+            notificationBar.showWithUndo(NotificationLevel.SUCCESS,
+                    "Split: " + track.getName() + " at beat " + String.format("%.1f", playhead),
+                    this::onUndo);
             projectDirty = true;
         });
 
@@ -2050,6 +2101,10 @@ public final class MainController {
             trimItem.setStyle("-fx-opacity: 0.5;");
             Tooltip.install(trimItem.getGraphic(), new Tooltip("No active time selection"));
         }
+        trimItem.setOnAction(_ -> {
+            notificationBar.show(NotificationLevel.WARNING,
+                    "Trim to Selection — not yet implemented");
+        });
 
         MenuItem cropItem = new MenuItem("Crop");
         cropItem.setGraphic(IconNode.of(DawIcon.CROP, 14));
@@ -2059,6 +2114,10 @@ public final class MainController {
             cropItem.setStyle("-fx-opacity: 0.5;");
             Tooltip.install(cropItem.getGraphic(), new Tooltip("No active time selection"));
         }
+        cropItem.setOnAction(_ -> {
+            notificationBar.show(NotificationLevel.WARNING,
+                    "Crop — not yet implemented");
+        });
 
         MenuItem moveItem = new MenuItem("Move");
         moveItem.setGraphic(IconNode.of(DawIcon.MOVE, 14));
@@ -2099,6 +2158,8 @@ public final class MainController {
             updateUndoRedoState();
             statusBarLabel.setText("Reversed: " + track.getName());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.REVERSE, 12));
+            notificationBar.showWithUndo(NotificationLevel.SUCCESS,
+                    "Reversed: " + track.getName(), this::onUndo);
             projectDirty = true;
         });
 
@@ -2148,6 +2209,8 @@ public final class MainController {
             updateUndoRedoState();
             statusBarLabel.setText("Fade in applied: " + track.getName());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.FADE_IN, 12));
+            notificationBar.showWithUndo(NotificationLevel.SUCCESS,
+                    "Fade in applied: " + track.getName(), this::onUndo);
             projectDirty = true;
         });
 
@@ -2190,6 +2253,8 @@ public final class MainController {
             updateUndoRedoState();
             statusBarLabel.setText("Fade out applied: " + track.getName());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.FADE_OUT, 12));
+            notificationBar.showWithUndo(NotificationLevel.SUCCESS,
+                    "Fade out applied: " + track.getName(), this::onUndo);
             projectDirty = true;
         });
 
@@ -2359,6 +2424,8 @@ public final class MainController {
             if (file != null) {
                 statusBarLabel.setText("Exported WAV: " + track.getName() + " → " + file.getName());
                 statusBarLabel.setGraphic(IconNode.of(DawIcon.WAV, 12));
+                notificationBar.show(NotificationLevel.SUCCESS,
+                        "Exported WAV: " + track.getName() + " → " + file.getName());
                 LOG.info(() -> "Exported track " + track.getName() + " as WAV to " + file.getAbsolutePath());
             }
         });

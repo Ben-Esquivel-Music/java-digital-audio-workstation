@@ -798,6 +798,101 @@
     -fx-text-fill: #e040fb;
 }
 
+/* ── Notification Bar (toast notifications above status bar) ── */
+.notification-bar {
+    -fx-background-radius: 4;
+    -fx-border-radius: 4;
+    -fx-border-width: 1;
+    -fx-font-size: 12px;
+    -fx-padding: 6 16;
+}
+
+.notification-success {
+    -fx-background-color: #1b3a1b;
+    -fx-border-color: #00e676;
+}
+
+.notification-success .notification-message {
+    -fx-text-fill: #00e676;
+}
+
+.notification-success .notification-icon {
+    -fx-text-fill: #00e676;
+}
+
+.notification-info {
+    -fx-background-color: #1a2a3a;
+    -fx-border-color: #00e5ff;
+}
+
+.notification-info .notification-message {
+    -fx-text-fill: #00e5ff;
+}
+
+.notification-info .notification-icon {
+    -fx-text-fill: #00e5ff;
+}
+
+.notification-warning {
+    -fx-background-color: #3a2a1a;
+    -fx-border-color: #ff9100;
+}
+
+.notification-warning .notification-message {
+    -fx-text-fill: #ff9100;
+}
+
+.notification-warning .notification-icon {
+    -fx-text-fill: #ff9100;
+}
+
+.notification-error {
+    -fx-background-color: #3a1a1a;
+    -fx-border-color: #ff1744;
+}
+
+.notification-error .notification-message {
+    -fx-text-fill: #ff1744;
+}
+
+.notification-error .notification-icon {
+    -fx-text-fill: #ff1744;
+}
+
+.notification-message {
+    -fx-text-fill: #e0e0e0;
+    -fx-font-size: 12px;
+    -fx-font-weight: bold;
+}
+
+.notification-dismiss {
+    -fx-text-fill: #808080;
+    -fx-font-size: 12px;
+    -fx-cursor: hand;
+}
+
+.notification-dismiss:hover {
+    -fx-text-fill: #e0e0e0;
+}
+
+.notification-undo-link {
+    -fx-text-fill: #7c4dff;
+    -fx-font-size: 11px;
+    -fx-border-color: transparent;
+    -fx-underline: true;
+}
+
+.notification-undo-link:hover {
+    -fx-text-fill: #e040fb;
+}
+
+/* ── Recording Indicator ── */
+.rec-indicator {
+    -fx-text-fill: #ff1744;
+    -fx-font-size: 13px;
+    -fx-font-weight: bold;
+}
+
 /* ── Tooltips (dark theme) ── */
 .tooltip {
     -fx-background-color: #1a1a1a;
