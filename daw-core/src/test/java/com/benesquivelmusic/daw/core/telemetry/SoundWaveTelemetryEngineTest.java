@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.telemetry;
 
+import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
 import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
@@ -179,6 +180,32 @@ class SoundWaveTelemetryEngineTest {
     void shouldRejectNullConfig() {
         assertThatThrownBy(() -> SoundWaveTelemetryEngine.compute(null))
                 .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void shouldPassAudienceMembersThroughToTelemetryData() {
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        config.addSoundSource(new SoundSource("Guitar", new Position3D(3, 2, 1), 85));
+        config.addMicrophone(new MicrophonePlacement("Mic1", new Position3D(5, 4, 1.5), 0, 0));
+        config.addAudienceMember(new AudienceMember("Row 1 Seat 1", new Position3D(2, 6, 0)));
+        config.addAudienceMember(new AudienceMember("Row 1 Seat 2", new Position3D(3, 6, 0)));
+
+        RoomTelemetryData data = SoundWaveTelemetryEngine.compute(config);
+
+        assertThat(data.audienceMembers()).hasSize(2);
+        assertThat(data.audienceMembers().get(0).name()).isEqualTo("Row 1 Seat 1");
+        assertThat(data.audienceMembers().get(1).name()).isEqualTo("Row 1 Seat 2");
+    }
+
+    @Test
+    void shouldReturnEmptyAudienceMembersWhenNoneConfigured() {
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        config.addSoundSource(new SoundSource("Guitar", new Position3D(3, 2, 1), 85));
+        config.addMicrophone(new MicrophonePlacement("Mic1", new Position3D(5, 4, 1.5), 0, 0));
+
+        RoomTelemetryData data = SoundWaveTelemetryEngine.compute(config);
+
+        assertThat(data.audienceMembers()).isEmpty();
     }
 
     @Test
