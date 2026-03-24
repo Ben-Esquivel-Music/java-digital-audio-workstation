@@ -1192,7 +1192,7 @@ public final class MainController {
                     public void execute() {
                         // Clips are already added by the pipeline on first execution;
                         // on redo, re-add them.
-                        for (var entry : clipMap.entrySet()) {
+                        for (Map.Entry<Track, AudioClip> entry : clipMap.entrySet()) {
                             if (!entry.getKey().getClips().contains(entry.getValue())) {
                                 entry.getKey().addClip(entry.getValue());
                             }
@@ -1201,7 +1201,7 @@ public final class MainController {
 
                     @Override
                     public void undo() {
-                        for (var entry : clipMap.entrySet()) {
+                        for (Map.Entry<Track, AudioClip> entry : clipMap.entrySet()) {
                             entry.getKey().removeClip(entry.getValue());
                         }
                     }
@@ -1315,7 +1315,7 @@ public final class MainController {
             }
         }
 
-        var dialog = new InputPortSelectionDialog(devices, Track.NO_INPUT_DEVICE);
+        InputPortSelectionDialog dialog = new InputPortSelectionDialog(devices, Track.NO_INPUT_DEVICE);
         Optional<AudioDeviceInfo> selected = dialog.showAndWait();
         if (selected.isEmpty()) {
             return; // user cancelled — abort track creation
@@ -1359,7 +1359,7 @@ public final class MainController {
 
     @FXML
     private void onAddMidiTrack() {
-        var dialog = new MidiInputPortSelectionDialog(null);
+        MidiInputPortSelectionDialog dialog = new MidiInputPortSelectionDialog(null);
         Optional<javax.sound.midi.MidiDevice.Info> selected = dialog.showAndWait();
         if (selected.isEmpty()) {
             return; // user cancelled — abort track creation
@@ -1670,7 +1670,7 @@ public final class MainController {
                             LOG.log(Level.WARNING, "Failed to enumerate audio devices", e);
                         }
                     }
-                    var dialog = new InputPortSelectionDialog(devices, track.getInputDeviceIndex());
+                    InputPortSelectionDialog dialog = new InputPortSelectionDialog(devices, track.getInputDeviceIndex());
                     dialog.showAndWait().ifPresent(device -> {
                         track.setInputDeviceIndex(device.index());
                         ioLabel.setTooltip(new Tooltip("Input: " + device.name()));
@@ -1684,7 +1684,7 @@ public final class MainController {
         } else if (track.getType() == TrackType.MIDI) {
             ioLabel.setOnMouseClicked(event -> {
                 if (event.getClickCount() == 2) {
-                    var dialog = new MidiInputPortSelectionDialog(null);
+                    MidiInputPortSelectionDialog dialog = new MidiInputPortSelectionDialog(null);
                     dialog.showAndWait().ifPresent(midiInfo -> {
                         ioLabel.setTooltip(new Tooltip("MIDI Input: " + midiInfo.getName()));
                         statusBarLabel.setText("MIDI input changed: " + track.getName()
