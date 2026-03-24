@@ -324,6 +324,8 @@ public final class MainController {
 
         // Editor view — MIDI piano-roll / audio waveform editor panel
         editorView = new EditorView();
+        editorView.setActiveEditTool(activeEditTool);
+        editorView.setOnToolChanged(this::selectEditTool);
         viewCache.put(DawView.EDITOR, editorView);
 
         // Telemetry view — sound wave telemetry room visualizer
@@ -424,6 +426,9 @@ public final class MainController {
         activeEditTool = tool;
         toolbarStateStore.saveEditTool(tool);
         updateEditToolActiveState();
+        if (editorView != null) {
+            editorView.setActiveEditTool(tool);
+        }
         statusBarLabel.setText("Selected " + tool.name().charAt(0)
                 + tool.name().substring(1).toLowerCase() + " tool");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
