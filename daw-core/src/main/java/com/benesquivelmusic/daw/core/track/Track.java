@@ -190,4 +190,26 @@ public final class Track {
     public List<AudioClip> getClips() {
         return Collections.unmodifiableList(clips);
     }
+
+    /**
+     * Creates a duplicate of this track with a new unique ID.
+     * Clips on the track are also duplicated.
+     *
+     * @param newName the name for the duplicated track
+     * @return a new {@code Track} with the same properties but a different ID
+     */
+    public Track duplicate(String newName) {
+        Objects.requireNonNull(newName, "newName must not be null");
+        Track copy = new Track(newName, type);
+        copy.setVolume(volume);
+        copy.setPan(pan);
+        copy.setMuted(muted);
+        copy.setSolo(solo);
+        copy.setArmed(false);
+        copy.setInputDeviceIndex(inputDeviceIndex);
+        for (AudioClip clip : clips) {
+            copy.addClip(clip.duplicate());
+        }
+        return copy;
+    }
 }

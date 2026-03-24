@@ -116,4 +116,156 @@ class AudioClipTest {
 
         assertThat(clip1.getId()).isNotEqualTo(clip2.getId());
     }
+
+    // ── Reversed flag tests ─────────────────────────────────────────────────
+
+    @Test
+    void shouldDefaultToNotReversed() {
+        AudioClip clip = new AudioClip("Test", 0.0, 4.0, null);
+
+        assertThat(clip.isReversed()).isFalse();
+    }
+
+    @Test
+    void shouldToggleReversed() {
+        AudioClip clip = new AudioClip("Test", 0.0, 4.0, null);
+
+        clip.setReversed(true);
+        assertThat(clip.isReversed()).isTrue();
+
+        clip.setReversed(false);
+        assertThat(clip.isReversed()).isFalse();
+    }
+
+    // ── Fade tests ──────────────────────────────────────────────────────────
+
+    @Test
+    void shouldDefaultToZeroFades() {
+        AudioClip clip = new AudioClip("Test", 0.0, 4.0, null);
+
+        assertThat(clip.getFadeInBeats()).isEqualTo(0.0);
+        assertThat(clip.getFadeOutBeats()).isEqualTo(0.0);
+    }
+
+    @Test
+    void shouldSetFadeIn() {
+        AudioClip clip = new AudioClip("Test", 0.0, 8.0, null);
+
+        clip.setFadeInBeats(2.0);
+        assertThat(clip.getFadeInBeats()).isEqualTo(2.0);
+    }
+
+    @Test
+    void shouldSetFadeOut() {
+        AudioClip clip = new AudioClip("Test", 0.0, 8.0, null);
+
+        clip.setFadeOutBeats(3.0);
+        assertThat(clip.getFadeOutBeats()).isEqualTo(3.0);
+    }
+
+    @Test
+    void shouldRejectNegativeFadeIn() {
+        AudioClip clip = new AudioClip("Test", 0.0, 4.0, null);
+
+        assertThatThrownBy(() -> clip.setFadeInBeats(-1.0))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void shouldRejectNegativeFadeOut() {
+        AudioClip clip = new AudioClip("Test", 0.0, 4.0, null);
+
+        assertThatThrownBy(() -> clip.setFadeOutBeats(-1.0))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    // ── Duplicate tests ─────────────────────────────────────────────────────
+
+    @Test
+    void shouldDuplicateClip() {
+        AudioClip original = new AudioClip("Lead", 4.0, 8.0, "/audio/lead.wav");
+        original.setSourceOffsetBeats(1.0);
+        original.setGainDb(-3.0);
+        original.setReversed(true);
+        original.setFadeInBeats(0.5);
+        original.setFadeOutBeats(1.5);
+
+        AudioClip copy = original.duplicate();
+
+        assertThat(copy.getId()).isNotEqualTo(original.getId());
+        assertThat(copy.getName()).isEqualTo("Lead");
+        assertThat(copy.getStartBeat()).isEqualTo(4.0);
+        assertThat(copy.getDurationBeats()).isEqualTo(8.0);
+        assertThat(copy.getSourceFilePath()).isEqualTo("/audio/lead.wav");
+        assertThat(copy.getSourceOffsetBeats()).isEqualTo(1.0);
+        assertThat(copy.getGainDb()).isEqualTo(-3.0);
+        assertThat(copy.isReversed()).isTrue();
+        assertThat(copy.getFadeInBeats()).isEqualTo(0.5);
+        assertThat(copy.getFadeOutBeats()).isEqualTo(1.5);
+    }
+
+    // ── Split tests ─────────────────────────────────────────────────────────
+
+    @Test
+    void shouldSplitClipAtPlayhead() {
+        AudioClip clip = new AudioClip("Vocal", 4.0, 8.0, "/audio/vocal.wav");
+        clip.setGainDb(-2.0);
+
+        AudioClip second = clip.splitAt(8.0);
+
+        // First half: beats 4..8
+        assertThat(clip.getStartBeat()).isEqualTo(4.0);
+        assertThat(clip.getDurationBeats()).isEqualTo(4.0);
+        assertThat(clip.getEndBeat()).isEqualTo(8.0);
+
+        // Second half: beats 8..12
+        assertThat(second.getStartBeat()).isEqualTo(8.0);
+        assertThat(second.getDurationBeats()).isEqualTo(4.0);
+        assertThat(second.getEndBeat()).isEqualTo(12.0);
+        assertThat(second.getName()).isEqualTo("Vocal (split)");
+        assertThat(second.getSourceFilePath()).isEqualTo("/audio/vocal.wav");
+        assertThat(second.getSourceOffsetBeats()).isEqualTo(4.0);
+        assertThat(second.getGainDb()).isEqualTo(-2.0);
+    }
+
+    @Test
+    void shouldPreserveFadesOnSplit() {
+        AudioClip clip = new AudioClip("Vocal", 0.0, 16.0, null);
+        clip.setFadeInBeats(2.0);
+        clip.setFadeOutBeats(3.0);
+
+        AudioClip second = clip.splitAt(8.0);
+
+        // First half keeps fade-in, loses fade-out
+        assertThat(clip.getFadeInBeats()).isEqualTo(2.0);
+        assertThat(clip.getFadeOutBeats()).isEqualTo(0.0);
+
+        // Second half loses fade-in, keeps fade-out
+        assertThat(second.getFadeInBeats()).isEqualTo(0.0);
+        assertThat(second.getFadeOutBeats()).isEqualTo(3.0);
+    }
+
+    @Test
+    void shouldRejectSplitAtStart() {
+        AudioClip clip = new AudioClip("Test", 4.0, 8.0, null);
+
+        assertThatThrownBy(() -> clip.splitAt(4.0))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void shouldRejectSplitAtEnd() {
+        AudioClip clip = new AudioClip("Test", 4.0, 8.0, null);
+
+        assertThatThrownBy(() -> clip.splitAt(12.0))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void shouldRejectSplitOutsideBounds() {
+        AudioClip clip = new AudioClip("Test", 4.0, 8.0, null);
+
+        assertThatThrownBy(() -> clip.splitAt(20.0))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 }

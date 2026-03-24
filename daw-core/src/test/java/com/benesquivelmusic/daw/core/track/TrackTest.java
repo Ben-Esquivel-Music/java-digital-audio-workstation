@@ -169,4 +169,53 @@ class TrackTest {
         track.setInputDeviceIndex(0);
         assertThat(track.getInputDeviceIndex()).isEqualTo(0);
     }
+
+    // ── Duplicate tests ─────────────────────────────────────────────────────
+
+    @Test
+    void shouldDuplicateTrackProperties() {
+        Track original = new Track("Vocals", TrackType.AUDIO);
+        original.setVolume(0.8);
+        original.setPan(-0.5);
+        original.setMuted(true);
+        original.setSolo(true);
+        original.setArmed(true);
+        original.setInputDeviceIndex(3);
+
+        Track copy = original.duplicate("Vocals (copy)");
+
+        assertThat(copy.getId()).isNotEqualTo(original.getId());
+        assertThat(copy.getName()).isEqualTo("Vocals (copy)");
+        assertThat(copy.getType()).isEqualTo(TrackType.AUDIO);
+        assertThat(copy.getVolume()).isEqualTo(0.8);
+        assertThat(copy.getPan()).isEqualTo(-0.5);
+        assertThat(copy.isMuted()).isTrue();
+        assertThat(copy.isSolo()).isTrue();
+        assertThat(copy.isArmed()).isFalse(); // armed is never copied
+        assertThat(copy.getInputDeviceIndex()).isEqualTo(3);
+    }
+
+    @Test
+    void shouldDuplicateTrackWithClips() {
+        Track original = new Track("Guitar", TrackType.AUDIO);
+        original.addClip(new AudioClip("Riff A", 0.0, 4.0, "/riff_a.wav"));
+        original.addClip(new AudioClip("Riff B", 4.0, 4.0, "/riff_b.wav"));
+
+        Track copy = original.duplicate("Guitar (copy)");
+
+        assertThat(copy.getClips()).hasSize(2);
+        assertThat(copy.getClips().get(0).getName()).isEqualTo("Riff A");
+        assertThat(copy.getClips().get(1).getName()).isEqualTo("Riff B");
+        // Verify clips are copies, not the same objects
+        assertThat(copy.getClips().get(0).getId())
+                .isNotEqualTo(original.getClips().get(0).getId());
+    }
+
+    @Test
+    void shouldRejectNullNameInDuplicate() {
+        Track track = new Track("Test", TrackType.AUDIO);
+
+        assertThatThrownBy(() -> track.duplicate(null))
+                .isInstanceOf(NullPointerException.class);
+    }
 }
