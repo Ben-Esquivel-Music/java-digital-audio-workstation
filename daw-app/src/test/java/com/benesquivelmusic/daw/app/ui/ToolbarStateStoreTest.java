@@ -41,11 +41,25 @@ class ToolbarStateStoreTest {
     }
 
     @Test
+    void shouldPersistTelemetryView() {
+        store.saveActiveView(DawView.TELEMETRY);
+        assertThat(store.loadActiveView()).isEqualTo(DawView.TELEMETRY);
+    }
+
+    @Test
     void shouldPersistActiveViewAcrossInstances() {
         store.saveActiveView(DawView.EDITOR);
 
         ToolbarStateStore reloaded = new ToolbarStateStore(prefs);
         assertThat(reloaded.loadActiveView()).isEqualTo(DawView.EDITOR);
+    }
+
+    @Test
+    void shouldPersistTelemetryViewAcrossInstances() {
+        store.saveActiveView(DawView.TELEMETRY);
+
+        ToolbarStateStore reloaded = new ToolbarStateStore(prefs);
+        assertThat(reloaded.loadActiveView()).isEqualTo(DawView.TELEMETRY);
     }
 
     @Test
