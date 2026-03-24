@@ -61,7 +61,7 @@ public final class EditorView extends VBox {
     private static final double TOOLBAR_ICON_SIZE = 14;
     private static final int PIANO_ROLL_OCTAVES = 8;
     private static final int NOTES_PER_OCTAVE = 12;
-    static final int TOTAL_KEYS = PIANO_ROLL_OCTAVES * NOTES_PER_OCTAVE;
+    private static final int TOTAL_KEYS = PIANO_ROLL_OCTAVES * NOTES_PER_OCTAVE;
     private static final double KEY_HEIGHT = 12;
     private static final double GRID_COLUMNS = 32;
     private static final double PIANO_KEY_WIDTH = 48;
