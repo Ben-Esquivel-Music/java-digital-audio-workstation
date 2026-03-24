@@ -1,5 +1,10 @@
 package com.benesquivelmusic.daw.core.track;
 
+import com.benesquivelmusic.daw.core.audio.AudioClip;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -7,7 +12,9 @@ import java.util.UUID;
  * Represents a single track in the DAW project.
  *
  * <p>A track holds audio or MIDI data and has properties such as volume,
- * pan, mute, solo, and armed (record-ready) state.</p>
+ * pan, mute, solo, and armed (record-ready) state. Audio clips recorded
+ * or imported onto this track are managed via {@link #addClip(AudioClip)},
+ * {@link #removeClip(AudioClip)}, and {@link #getClips()}.</p>
  */
 public final class Track {
 
@@ -19,6 +26,7 @@ public final class Track {
     private boolean muted;
     private boolean solo;
     private boolean armed;
+    private final List<AudioClip> clips = new ArrayList<>();
 
     /**
      * Creates a new track with the given name and type.
@@ -121,5 +129,34 @@ public final class Track {
     /** Sets the armed (record-ready) state. */
     public void setArmed(boolean armed) {
         this.armed = armed;
+    }
+
+    /**
+     * Adds an audio clip to this track.
+     *
+     * @param clip the clip to add
+     */
+    public void addClip(AudioClip clip) {
+        Objects.requireNonNull(clip, "clip must not be null");
+        clips.add(clip);
+    }
+
+    /**
+     * Removes an audio clip from this track.
+     *
+     * @param clip the clip to remove
+     * @return {@code true} if the clip was removed
+     */
+    public boolean removeClip(AudioClip clip) {
+        return clips.remove(clip);
+    }
+
+    /**
+     * Returns an unmodifiable view of the audio clips on this track.
+     *
+     * @return the list of clips
+     */
+    public List<AudioClip> getClips() {
+        return Collections.unmodifiableList(clips);
     }
 }

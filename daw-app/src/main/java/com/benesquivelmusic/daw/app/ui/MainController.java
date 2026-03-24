@@ -7,12 +7,15 @@ import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplay;
 import com.benesquivelmusic.daw.app.ui.display.WaveformDisplay;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
+import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -160,6 +163,8 @@ public final class MainController {
     private boolean snapEnabled = true;
     private GridResolution gridResolution = GridResolution.QUARTER;
     private boolean projectDirty;
+    private AudioEngine audioEngine;
+    private RecordingPipeline recordingPipeline;
 
     // ── View navigation state ────────────────────────────────────────────────
     /** Caches each view's content node so switching back preserves state. */
@@ -232,6 +237,7 @@ public final class MainController {
         project = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
         pluginRegistry = new PluginRegistry();
         undoManager = new UndoManager();
+        audioEngine = new AudioEngine(project.getFormat());
 
         CheckpointManager checkpointManager = new CheckpointManager(AutoSaveConfig.DEFAULT);
         Preferences prefs = Preferences.userNodeForPackage(MainController.class);
@@ -1170,11 +1176,48 @@ public final class MainController {
 
     @FXML
     private void onStop() {
+        // Finalize recording if a recording pipeline is active
+        if (recordingPipeline != null && recordingPipeline.isActive()) {
+            List<AudioClip> recordedClips = recordingPipeline.stop();
+            if (!recordedClips.isEmpty()) {
+                // Register undo action for the recorded clips
+                Map<Track, AudioClip> clipMap = Map.copyOf(recordingPipeline.getRecordedClips());
+                undoManager.execute(new UndoableAction() {
+                    @Override
+                    public String description() { return "Record Audio"; }
+
+                    @Override
+                    public void execute() {
+                        // Clips are already added by the pipeline on first execution;
+                        // on redo, re-add them.
+                        for (var entry : clipMap.entrySet()) {
+                            if (!entry.getKey().getClips().contains(entry.getValue())) {
+                                entry.getKey().addClip(entry.getValue());
+                            }
+                        }
+                    }
+
+                    @Override
+                    public void undo() {
+                        for (var entry : clipMap.entrySet()) {
+                            entry.getKey().removeClip(entry.getValue());
+                        }
+                    }
+                });
+                int segmentCount = clipMap.values().size();
+                statusBarLabel.setText("Recording stopped — " + segmentCount + " clip"
+                        + (segmentCount > 1 ? "s" : "") + " created");
+            }
+            recordingPipeline = null;
+        }
+
         project.getTransport().stop();
         stopTimeTicker();
         updateStatus();
         timeDisplay.setText("00:00:00.0");
-        statusBarLabel.setText("Stopped");
+        if (statusBarLabel.getText() == null || !statusBarLabel.getText().startsWith("Recording stopped")) {
+            statusBarLabel.setText("Stopped");
+        }
         statusBarLabel.setGraphic(IconNode.of(DawIcon.POWER, 12));
         // Restore button appearance in case the record blink was active
         recordButton.setOpacity(1.0);
@@ -1192,10 +1235,39 @@ public final class MainController {
 
     @FXML
     private void onRecord() {
-        project.getTransport().record();
+        // Validate that at least one track is armed for recording
+        List<Track> armedTracks = RecordingPipeline.findArmedTracks(project.getTracks());
+        if (armedTracks.isEmpty()) {
+            Alert alert = new Alert(Alert.AlertType.WARNING,
+                    "No tracks are armed for recording. Please arm at least one track before recording.",
+                    ButtonType.OK);
+            alert.setTitle("Cannot Record");
+            alert.setHeaderText("No Armed Tracks");
+            alert.showAndWait();
+            return;
+        }
+
+        // Create output directory for recording segments
+        Path outputDir;
+        try {
+            outputDir = Files.createTempDirectory("daw-recording-");
+        } catch (IOException e) {
+            LOG.log(Level.SEVERE, "Failed to create recording output directory", e);
+            statusBarLabel.setText("Recording failed — could not create output directory");
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
+            return;
+        }
+
+        // Create and start the recording pipeline
+        recordingPipeline = new RecordingPipeline(
+                audioEngine, project.getTransport(), project.getFormat(), outputDir, armedTracks);
+        recordingPipeline.start();
+
         startTimeTicker();
         updateStatus();
-        statusBarLabel.setText("Recording — auto-save active");
+        int trackCount = armedTracks.size();
+        statusBarLabel.setText("Recording — " + trackCount + " track"
+                + (trackCount > 1 ? "s" : "") + " armed — auto-save active");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
     }
 
