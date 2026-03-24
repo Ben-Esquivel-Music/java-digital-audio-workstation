@@ -15,5 +15,8 @@ public enum DawView {
     MIXER,
 
     /** Audio/MIDI clip editor view. */
-    EDITOR
+    EDITOR,
+
+    /** Sound wave telemetry — top-down room visualizer. */
+    TELEMETRY
 }
