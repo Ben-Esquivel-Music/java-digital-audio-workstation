@@ -515,7 +515,8 @@ class ToolbarContextMenuControllerTest {
             Button arrangementBtn = new Button("Arrangement");
             Button mixerBtn = new Button("Mixer");
             Button editorBtn = new Button("Editor");
-            Button[] viewButtons = { arrangementBtn, mixerBtn, editorBtn };
+            Button telemetryBtn = new Button("Telemetry");
+            Button[] viewButtons = { arrangementBtn, mixerBtn, editorBtn, telemetryBtn };
             Button[] projectButtons = { new Button("New") };
             Button[] toolButtons = { new Button("Plugins") };
             ToolbarContextMenuController controller = createController(
@@ -525,6 +526,7 @@ class ToolbarContextMenuControllerTest {
             assertThat(arrangementBtn.getOnContextMenuRequested()).isNotNull();
             assertThat(mixerBtn.getOnContextMenuRequested()).isNotNull();
             assertThat(editorBtn.getOnContextMenuRequested()).isNotNull();
+            assertThat(telemetryBtn.getOnContextMenuRequested()).isNotNull();
         });
     }
 }

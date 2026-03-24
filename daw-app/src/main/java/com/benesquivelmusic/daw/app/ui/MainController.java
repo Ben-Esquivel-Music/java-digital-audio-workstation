@@ -509,7 +509,7 @@ public final class MainController {
      * sections.
      */
     private void initializeToolbarContextMenus() {
-        Button[] viewBtns = { arrangementViewButton, mixerViewButton, editorViewButton };
+        Button[] viewBtns = { arrangementViewButton, mixerViewButton, editorViewButton, telemetryViewButton };
         Button[] projectBtns = { newProjectButton, openProjectButton, saveProjectButton, recentProjectsButton };
         Button[] toolBtns = { pluginsSidebarButton, settingsButton };
 
