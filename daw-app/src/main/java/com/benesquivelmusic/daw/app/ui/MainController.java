@@ -182,6 +182,12 @@ public final class MainController {
     /** The telemetry view panel — sound wave telemetry room visualizer. */
     private TelemetryView telemetryView;
 
+    // ── Clipboard & selection state ─────────────────────────────────────────
+    /** Tracks whether the in-app clipboard has content for paste operations. */
+    private final ClipboardManager clipboardManager = new ClipboardManager();
+    /** Tracks the current time selection range for trim/crop operations. */
+    private final SelectionModel selectionModel = new SelectionModel();
+
     // ── Edit tool state ──────────────────────────────────────────────────────
     /** The currently active edit tool. Defaults to {@link EditTool#POINTER}. */
     private EditTool activeEditTool = EditTool.POINTER;
@@ -689,6 +695,24 @@ public final class MainController {
      */
     public ZoomLevel getZoomLevel(DawView view) {
         return viewZoomLevels.get(view);
+    }
+
+    /**
+     * Returns the clipboard manager for tracking copy/paste state.
+     *
+     * @return the clipboard manager
+     */
+    public ClipboardManager getClipboardManager() {
+        return clipboardManager;
+    }
+
+    /**
+     * Returns the selection model for tracking the current time selection.
+     *
+     * @return the selection model
+     */
+    public SelectionModel getSelectionModel() {
+        return selectionModel;
     }
 
     /**
@@ -1954,12 +1978,21 @@ public final class MainController {
 
         MenuItem pasteItem = new MenuItem("Paste Over");
         pasteItem.setGraphic(IconNode.of(DawIcon.PASTE, 14));
-        pasteItem.setDisable(true);
-        pasteItem.setStyle("-fx-opacity: 0.5;");
-        Tooltip.install(pasteItem.getGraphic(), new Tooltip("Coming soon"));
+        boolean clipboardEmpty = !clipboardManager.hasContent();
+        pasteItem.setDisable(clipboardEmpty);
+        if (clipboardEmpty) {
+            pasteItem.setStyle("-fx-opacity: 0.5;");
+            Tooltip.install(pasteItem.getGraphic(), new Tooltip("Nothing copied to clipboard"));
+        }
 
         MenuItem splitItem = new MenuItem("Split at Playhead");
         splitItem.setGraphic(IconNode.of(DawIcon.SPLIT, 14));
+        boolean noClipsForSplit = track.getClips().isEmpty();
+        if (noClipsForSplit) {
+            splitItem.setDisable(true);
+            splitItem.setStyle("-fx-opacity: 0.5;");
+            Tooltip.install(splitItem.getGraphic(), new Tooltip("No audio clip on track"));
+        }
         splitItem.setOnAction(_ -> {
             double playhead = project.getTransport().getPositionInBeats();
             List<AudioClip> clipsToSplit = new ArrayList<>();
@@ -2011,15 +2044,21 @@ public final class MainController {
 
         MenuItem trimItem = new MenuItem("Trim to Selection");
         trimItem.setGraphic(IconNode.of(DawIcon.TRIM, 14));
-        trimItem.setDisable(true);
-        trimItem.setStyle("-fx-opacity: 0.5;");
-        Tooltip.install(trimItem.getGraphic(), new Tooltip("Coming soon — requires selection model"));
+        boolean noSelectionForTrim = !selectionModel.hasSelection();
+        trimItem.setDisable(noSelectionForTrim);
+        if (noSelectionForTrim) {
+            trimItem.setStyle("-fx-opacity: 0.5;");
+            Tooltip.install(trimItem.getGraphic(), new Tooltip("No active time selection"));
+        }
 
         MenuItem cropItem = new MenuItem("Crop");
         cropItem.setGraphic(IconNode.of(DawIcon.CROP, 14));
-        cropItem.setDisable(true);
-        cropItem.setStyle("-fx-opacity: 0.5;");
-        Tooltip.install(cropItem.getGraphic(), new Tooltip("Coming soon"));
+        boolean noSelectionForCrop = !selectionModel.hasSelection();
+        cropItem.setDisable(noSelectionForCrop);
+        if (noSelectionForCrop) {
+            cropItem.setStyle("-fx-opacity: 0.5;");
+            Tooltip.install(cropItem.getGraphic(), new Tooltip("No active time selection"));
+        }
 
         MenuItem moveItem = new MenuItem("Move");
         moveItem.setGraphic(IconNode.of(DawIcon.MOVE, 14));
@@ -2029,6 +2068,14 @@ public final class MainController {
 
         MenuItem reverseItem = new MenuItem("Reverse");
         reverseItem.setGraphic(IconNode.of(DawIcon.REVERSE, 14));
+        boolean isMidiTrack = track.getType() == TrackType.MIDI;
+        boolean noAudioClipsForReverse = isMidiTrack || track.getClips().isEmpty();
+        if (noAudioClipsForReverse) {
+            reverseItem.setDisable(true);
+            reverseItem.setStyle("-fx-opacity: 0.5;");
+            Tooltip.install(reverseItem.getGraphic(), new Tooltip(
+                    isMidiTrack ? "Reverse is not available for MIDI tracks" : "No audio clip on track"));
+        }
         reverseItem.setOnAction(_ -> {
             List<AudioClip> clips = track.getClips();
             if (clips.isEmpty()) {
@@ -2064,6 +2111,13 @@ public final class MainController {
         // ── Fade operations (Editing category) ──────────────────────────────
         MenuItem fadeInItem = new MenuItem("Fade In");
         fadeInItem.setGraphic(IconNode.of(DawIcon.FADE_IN, 14));
+        boolean noAudioClipsForFadeIn = isMidiTrack || track.getClips().isEmpty();
+        if (noAudioClipsForFadeIn) {
+            fadeInItem.setDisable(true);
+            fadeInItem.setStyle("-fx-opacity: 0.5;");
+            Tooltip.install(fadeInItem.getGraphic(), new Tooltip(
+                    isMidiTrack ? "Fade In is not available for MIDI tracks" : "No audio clip on track"));
+        }
         fadeInItem.setOnAction(_ -> {
             List<AudioClip> clips = track.getClips();
             if (clips.isEmpty()) {
@@ -2099,6 +2153,13 @@ public final class MainController {
 
         MenuItem fadeOutItem = new MenuItem("Fade Out");
         fadeOutItem.setGraphic(IconNode.of(DawIcon.FADE_OUT, 14));
+        boolean noAudioClipsForFadeOut = isMidiTrack || track.getClips().isEmpty();
+        if (noAudioClipsForFadeOut) {
+            fadeOutItem.setDisable(true);
+            fadeOutItem.setStyle("-fx-opacity: 0.5;");
+            Tooltip.install(fadeOutItem.getGraphic(), new Tooltip(
+                    isMidiTrack ? "Fade Out is not available for MIDI tracks" : "No audio clip on track"));
+        }
         fadeOutItem.setOnAction(_ -> {
             List<AudioClip> clips = track.getClips();
             if (clips.isEmpty()) {
@@ -2133,17 +2194,33 @@ public final class MainController {
         });
 
         // ── Zoom controls (Editing category) ────────────────────────────────
+        ZoomLevel currentZoom = viewZoomLevels.get(activeView);
+
         MenuItem zoomInItem = new MenuItem("Zoom In");
         zoomInItem.setGraphic(IconNode.of(DawIcon.ZOOM_IN, 14));
-        zoomInItem.setDisable(true);
-        zoomInItem.setStyle("-fx-opacity: 0.5;");
-        Tooltip.install(zoomInItem.getGraphic(), new Tooltip("Coming soon"));
+        if (!currentZoom.canZoomIn()) {
+            zoomInItem.setDisable(true);
+            zoomInItem.setStyle("-fx-opacity: 0.5;");
+            Tooltip.install(zoomInItem.getGraphic(), new Tooltip("Already at maximum zoom level"));
+        }
+        zoomInItem.setOnAction(_ -> {
+            onZoomIn();
+            statusBarLabel.setText("Zoom in: " + viewZoomLevels.get(activeView).toPercentageString());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.ZOOM_IN, 12));
+        });
 
         MenuItem zoomOutItem = new MenuItem("Zoom Out");
         zoomOutItem.setGraphic(IconNode.of(DawIcon.ZOOM_OUT, 14));
-        zoomOutItem.setDisable(true);
-        zoomOutItem.setStyle("-fx-opacity: 0.5;");
-        Tooltip.install(zoomOutItem.getGraphic(), new Tooltip("Coming soon"));
+        if (!currentZoom.canZoomOut()) {
+            zoomOutItem.setDisable(true);
+            zoomOutItem.setStyle("-fx-opacity: 0.5;");
+            Tooltip.install(zoomOutItem.getGraphic(), new Tooltip("Already at minimum zoom level"));
+        }
+        zoomOutItem.setOnAction(_ -> {
+            onZoomOut();
+            statusBarLabel.setText("Zoom out: " + viewZoomLevels.get(activeView).toPercentageString());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.ZOOM_OUT, 12));
+        });
 
         // ── Snap toggle (Editing category) ──────────────────────────────────
         MenuItem snapItem = new MenuItem(snapEnabled ? "Snap: ON" : "Snap: OFF");
@@ -2261,8 +2338,16 @@ public final class MainController {
         Tooltip.install(followItem.getGraphic(), new Tooltip("Coming soon — social features planned for future release"));
 
         // ── Export sub-options (File Types category) ─────────────────────────
+        boolean noAudioData = track.getClips().isEmpty();
+        boolean isNotMidiTrack = track.getType() != TrackType.MIDI;
+
         MenuItem exportWav = new MenuItem("Export as WAV");
         exportWav.setGraphic(IconNode.of(DawIcon.WAV, 14));
+        if (noAudioData) {
+            exportWav.setDisable(true);
+            exportWav.setStyle("-fx-opacity: 0.5;");
+            Tooltip.install(exportWav.getGraphic(), new Tooltip("No audio data to export"));
+        }
         exportWav.setOnAction(_ -> {
             FileChooser fileChooser = new FileChooser();
             fileChooser.setTitle("Export Track as WAV");
@@ -2282,25 +2367,29 @@ public final class MainController {
         exportMp3.setGraphic(IconNode.of(DawIcon.MP3, 14));
         exportMp3.setDisable(true);
         exportMp3.setStyle("-fx-opacity: 0.5;");
-        Tooltip.install(exportMp3.getGraphic(), new Tooltip("Format not yet supported"));
+        Tooltip.install(exportMp3.getGraphic(), new Tooltip(
+                noAudioData ? "No audio data to export" : "Format not yet supported"));
 
         MenuItem exportAac = new MenuItem("Export as AAC");
         exportAac.setGraphic(IconNode.of(DawIcon.AAC, 14));
         exportAac.setDisable(true);
         exportAac.setStyle("-fx-opacity: 0.5;");
-        Tooltip.install(exportAac.getGraphic(), new Tooltip("Format not yet supported"));
+        Tooltip.install(exportAac.getGraphic(), new Tooltip(
+                noAudioData ? "No audio data to export" : "Format not yet supported"));
 
         MenuItem exportMidi = new MenuItem("Export as MIDI");
         exportMidi.setGraphic(IconNode.of(DawIcon.MIDI_FILE, 14));
         exportMidi.setDisable(true);
         exportMidi.setStyle("-fx-opacity: 0.5;");
-        Tooltip.install(exportMidi.getGraphic(), new Tooltip("Format not yet supported"));
+        Tooltip.install(exportMidi.getGraphic(), new Tooltip(
+                isNotMidiTrack ? "Track is not a MIDI track" : "Format not yet supported"));
 
         MenuItem exportWma = new MenuItem("Export as WMA");
         exportWma.setGraphic(IconNode.of(DawIcon.WMA, 14));
         exportWma.setDisable(true);
         exportWma.setStyle("-fx-opacity: 0.5;");
-        Tooltip.install(exportWma.getGraphic(), new Tooltip("Format not yet supported"));
+        Tooltip.install(exportWma.getGraphic(), new Tooltip(
+                noAudioData ? "No audio data to export" : "Format not yet supported"));
 
         // ── General category items ──────────────────────────────────────────
         MenuItem favoriteItem = new MenuItem("Add to Favorites");
