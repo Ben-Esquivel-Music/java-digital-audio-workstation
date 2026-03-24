@@ -34,6 +34,9 @@ public final class AudioEngine {
     // Pre-allocated mix buffer used by processBlock
     private float[][] mixBuffer;
 
+    // Optional callback invoked from processBlock when recording is active
+    private volatile RecordingCallback recordingCallback;
+
     /**
      * Creates a new audio engine with the specified format.
      *
@@ -143,6 +146,25 @@ public final class AudioEngine {
     }
 
     /**
+     * Sets the callback invoked from {@link #processBlock(float[][], float[][], int)}
+     * to capture input audio data during recording.
+     *
+     * @param callback the recording callback, or {@code null} to disable recording capture
+     */
+    public void setRecordingCallback(RecordingCallback callback) {
+        this.recordingCallback = callback;
+    }
+
+    /**
+     * Returns the currently configured recording callback, or {@code null}.
+     *
+     * @return the recording callback
+     */
+    public RecordingCallback getRecordingCallback() {
+        return recordingCallback;
+    }
+
+    /**
      * Processes a single block of audio through the master effects chain.
      *
      * <p>This method is designed to be called from the audio callback thread.
@@ -170,7 +192,29 @@ public final class AudioEngine {
             System.arraycopy(inputBuffer[ch], 0, mixBuffer[ch], 0, numFrames);
         }
 
+        // Notify recording callback with the captured input
+        RecordingCallback cb = recordingCallback;
+        if (cb != null) {
+            cb.onAudioCaptured(inputBuffer, numFrames);
+        }
+
         // Process through the master effects chain
         masterChain.process(mixBuffer, outputBuffer, numFrames);
+    }
+
+    /**
+     * Callback interface invoked from the audio thread to capture input audio
+     * data during recording.
+     */
+    @FunctionalInterface
+    public interface RecordingCallback {
+
+        /**
+         * Called from the audio thread with captured input audio data.
+         *
+         * @param inputBuffer the input audio data {@code [channel][frame]}
+         * @param numFrames   the number of sample frames captured
+         */
+        void onAudioCaptured(float[][] inputBuffer, int numFrames);
     }
 }

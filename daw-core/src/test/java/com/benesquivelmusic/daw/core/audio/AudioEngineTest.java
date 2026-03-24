@@ -89,6 +89,57 @@ class AudioEngineTest {
                 .isInstanceOf(IllegalStateException.class);
     }
 
+    @Test
+    void shouldInvokeRecordingCallbackDuringProcessBlock() {
+        AudioFormat format = new AudioFormat(44_100.0, 1, 16, 4);
+        AudioEngine engine = new AudioEngine(format);
+        engine.start();
+
+        int[] callbackCount = {0};
+        int[] capturedFrames = {0};
+        engine.setRecordingCallback((inputBuffer, numFrames) -> {
+            callbackCount[0]++;
+            capturedFrames[0] = numFrames;
+        });
+
+        float[][] input = {{0.5f, -0.3f, 0.8f, -1.0f}};
+        float[][] output = {{0.0f, 0.0f, 0.0f, 0.0f}};
+        engine.processBlock(input, output, 4);
+
+        assertThat(callbackCount[0]).isEqualTo(1);
+        assertThat(capturedFrames[0]).isEqualTo(4);
+    }
+
+    @Test
+    void shouldNotInvokeCallbackWhenNull() {
+        AudioFormat format = new AudioFormat(44_100.0, 1, 16, 4);
+        AudioEngine engine = new AudioEngine(format);
+        engine.start();
+
+        assertThat(engine.getRecordingCallback()).isNull();
+
+        // Should not throw when no callback is set
+        float[][] input = {{0.5f, -0.3f, 0.8f, -1.0f}};
+        float[][] output = {{0.0f, 0.0f, 0.0f, 0.0f}};
+        engine.processBlock(input, output, 4);
+
+        assertThat(output[0]).containsExactly(0.5f, -0.3f, 0.8f, -1.0f);
+    }
+
+    @Test
+    void shouldSetAndGetRecordingCallback() {
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+
+        assertThat(engine.getRecordingCallback()).isNull();
+
+        AudioEngine.RecordingCallback cb = (inputBuffer, numFrames) -> {};
+        engine.setRecordingCallback(cb);
+        assertThat(engine.getRecordingCallback()).isSameAs(cb);
+
+        engine.setRecordingCallback(null);
+        assertThat(engine.getRecordingCallback()).isNull();
+    }
+
     private static class HalfGainProcessor implements AudioProcessor {
         @Override
         public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {

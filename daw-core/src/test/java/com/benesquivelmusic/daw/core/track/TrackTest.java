@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.track;
 
+import com.benesquivelmusic.daw.core.audio.AudioClip;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -79,5 +81,57 @@ class TrackTest {
         Track a = new Track("A", TrackType.AUDIO);
         Track b = new Track("B", TrackType.AUDIO);
         assertThat(a.getId()).isNotEqualTo(b.getId());
+    }
+
+    @Test
+    void shouldStartWithEmptyClipsList() {
+        Track track = new Track("Track", TrackType.AUDIO);
+        assertThat(track.getClips()).isEmpty();
+    }
+
+    @Test
+    void shouldAddClip() {
+        Track track = new Track("Track", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("Clip 1", 0.0, 4.0, null);
+
+        track.addClip(clip);
+
+        assertThat(track.getClips()).containsExactly(clip);
+    }
+
+    @Test
+    void shouldRemoveClip() {
+        Track track = new Track("Track", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("Clip 1", 0.0, 4.0, null);
+        track.addClip(clip);
+
+        boolean removed = track.removeClip(clip);
+
+        assertThat(removed).isTrue();
+        assertThat(track.getClips()).isEmpty();
+    }
+
+    @Test
+    void shouldReturnFalseWhenRemovingAbsentClip() {
+        Track track = new Track("Track", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("Clip 1", 0.0, 4.0, null);
+
+        assertThat(track.removeClip(clip)).isFalse();
+    }
+
+    @Test
+    void shouldReturnUnmodifiableClipsList() {
+        Track track = new Track("Track", TrackType.AUDIO);
+        track.addClip(new AudioClip("Clip 1", 0.0, 4.0, null));
+
+        assertThatThrownBy(() -> track.getClips().clear())
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void shouldRejectNullClip() {
+        Track track = new Track("Track", TrackType.AUDIO);
+        assertThatThrownBy(() -> track.addClip(null))
+                .isInstanceOf(NullPointerException.class);
     }
 }
