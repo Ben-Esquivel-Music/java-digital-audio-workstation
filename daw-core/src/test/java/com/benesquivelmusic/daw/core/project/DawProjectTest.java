@@ -142,4 +142,49 @@ class DawProjectTest {
         assertThatThrownBy(() -> project.getMixerChannelForTrack(null))
                 .isInstanceOf(NullPointerException.class);
     }
+
+    // ── Duplicate track tests ───────────────────────────────────────────────
+
+    @Test
+    void shouldDuplicateTrack() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track original = project.createAudioTrack("Vocals");
+
+        Track copy = project.duplicateTrack(original);
+
+        assertThat(project.getTracks()).hasSize(2);
+        assertThat(copy.getName()).isEqualTo("Vocals (copy)");
+        assertThat(copy.getId()).isNotEqualTo(original.getId());
+    }
+
+    @Test
+    void shouldInsertDuplicateAfterOriginal() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track first = project.createAudioTrack("First");
+        Track second = project.createAudioTrack("Second");
+
+        Track copy = project.duplicateTrack(first);
+
+        assertThat(project.getTracks()).containsExactly(first, copy, second);
+    }
+
+    @Test
+    void shouldCreateMixerChannelForDuplicate() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track original = project.createAudioTrack("Bass");
+
+        Track copy = project.duplicateTrack(original);
+
+        assertThat(project.getMixerChannelForTrack(copy)).isNotNull();
+        assertThat(project.getMixer().getChannelCount()).isEqualTo(2);
+    }
+
+    @Test
+    void shouldRejectDuplicateOfUnknownTrack() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track unknown = new Track("Unknown", TrackType.AUDIO);
+
+        assertThatThrownBy(() -> project.duplicateTrack(unknown))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 }

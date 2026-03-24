@@ -153,6 +153,31 @@ public final class DawProject {
         return trackChannelMap.get(track.getId());
     }
 
+    /**
+     * Duplicates the given track and adds the copy to the project.
+     *
+     * <p>The duplicated track receives a new unique ID, a new mixer channel,
+     * and copies of all clips. The new track is inserted immediately after
+     * the original in the track list.</p>
+     *
+     * @param track the track to duplicate
+     * @return the new duplicated track
+     * @throws IllegalArgumentException if the track is not in this project
+     */
+    public Track duplicateTrack(Track track) {
+        Objects.requireNonNull(track, "track must not be null");
+        int index = tracks.indexOf(track);
+        if (index < 0) {
+            throw new IllegalArgumentException("track is not in this project");
+        }
+        Track copy = track.duplicate(track.getName() + " (copy)");
+        tracks.add(index + 1, copy);
+        MixerChannel channel = new MixerChannel(copy.getName());
+        trackChannelMap.put(copy.getId(), channel);
+        mixer.addChannel(channel);
+        return copy;
+    }
+
     /** Returns the mixer. */
     public Mixer getMixer() {
         return mixer;

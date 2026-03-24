@@ -20,6 +20,9 @@ public final class AudioClip implements TimelineRegion {
     private double sourceOffsetBeats;
     private String sourceFilePath;
     private double gainDb;
+    private boolean reversed;
+    private double fadeInBeats;
+    private double fadeOutBeats;
 
     /**
      * Creates a new audio clip.
@@ -43,6 +46,9 @@ public final class AudioClip implements TimelineRegion {
         this.sourceOffsetBeats = 0.0;
         this.sourceFilePath = sourceFilePath;
         this.gainDb = 0.0;
+        this.reversed = false;
+        this.fadeInBeats = 0.0;
+        this.fadeOutBeats = 0.0;
     }
 
     @Override
@@ -112,8 +118,102 @@ public final class AudioClip implements TimelineRegion {
         this.gainDb = gainDb;
     }
 
+    /** Returns whether this clip's audio is reversed. */
+    public boolean isReversed() {
+        return reversed;
+    }
+
+    /** Sets whether this clip's audio is reversed. */
+    public void setReversed(boolean reversed) {
+        this.reversed = reversed;
+    }
+
+    /** Returns the fade-in duration in beats. */
+    public double getFadeInBeats() {
+        return fadeInBeats;
+    }
+
+    /**
+     * Sets the fade-in duration in beats.
+     *
+     * @param fadeInBeats the fade-in duration (must not be negative)
+     */
+    public void setFadeInBeats(double fadeInBeats) {
+        if (fadeInBeats < 0) {
+            throw new IllegalArgumentException("fadeInBeats must not be negative: " + fadeInBeats);
+        }
+        this.fadeInBeats = fadeInBeats;
+    }
+
+    /** Returns the fade-out duration in beats. */
+    public double getFadeOutBeats() {
+        return fadeOutBeats;
+    }
+
+    /**
+     * Sets the fade-out duration in beats.
+     *
+     * @param fadeOutBeats the fade-out duration (must not be negative)
+     */
+    public void setFadeOutBeats(double fadeOutBeats) {
+        if (fadeOutBeats < 0) {
+            throw new IllegalArgumentException("fadeOutBeats must not be negative: " + fadeOutBeats);
+        }
+        this.fadeOutBeats = fadeOutBeats;
+    }
+
     /** Returns the end beat position (start + duration). */
     public double getEndBeat() {
         return startBeat + durationBeats;
+    }
+
+    /**
+     * Creates a duplicate of this clip with a new unique ID.
+     *
+     * @return a new {@code AudioClip} with the same properties but a different ID
+     */
+    public AudioClip duplicate() {
+        AudioClip copy = new AudioClip(name, startBeat, durationBeats, sourceFilePath);
+        copy.setSourceOffsetBeats(sourceOffsetBeats);
+        copy.setGainDb(gainDb);
+        copy.setReversed(reversed);
+        copy.setFadeInBeats(fadeInBeats);
+        copy.setFadeOutBeats(fadeOutBeats);
+        return copy;
+    }
+
+    /**
+     * Splits this clip at the given beat position, truncating this clip and
+     * returning a new clip that covers the remainder.
+     *
+     * <p>After the split, this clip's duration is reduced so that it ends at
+     * {@code splitBeat}, and the returned clip starts at {@code splitBeat}
+     * with the remaining duration.</p>
+     *
+     * @param splitBeat the beat position at which to split (must be strictly
+     *                  between {@code startBeat} and {@code getEndBeat()})
+     * @return the new clip covering the portion after the split point
+     * @throws IllegalArgumentException if {@code splitBeat} is not within this clip's bounds
+     */
+    public AudioClip splitAt(double splitBeat) {
+        if (splitBeat <= startBeat || splitBeat >= getEndBeat()) {
+            throw new IllegalArgumentException(
+                    "splitBeat must be strictly between startBeat and endBeat: " + splitBeat);
+        }
+        double remainingDuration = getEndBeat() - splitBeat;
+        double splitSourceOffset = sourceOffsetBeats + (splitBeat - startBeat);
+
+        AudioClip second = new AudioClip(name + " (split)", splitBeat, remainingDuration, sourceFilePath);
+        second.setSourceOffsetBeats(splitSourceOffset);
+        second.setGainDb(gainDb);
+        second.setReversed(reversed);
+        second.setFadeInBeats(0.0);
+        second.setFadeOutBeats(fadeOutBeats);
+
+        // Truncate this clip
+        this.durationBeats = splitBeat - startBeat;
+        this.fadeOutBeats = 0.0;
+
+        return second;
     }
 }

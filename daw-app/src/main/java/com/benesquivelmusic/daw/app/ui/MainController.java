@@ -59,6 +59,7 @@ import javafx.util.Duration;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -73,6 +74,7 @@ import javafx.scene.control.ButtonType;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.StackPane;
 import javafx.stage.DirectoryChooser;
+import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 import javafx.collections.ObservableMap;
 
@@ -1926,65 +1928,222 @@ public final class MainController {
         // ── Editing operations ──────────────────────────────────────────────
         MenuItem copyItem = new MenuItem("Copy Track");
         copyItem.setGraphic(IconNode.of(DawIcon.COPY, 14));
-        copyItem.setOnAction(_ -> { statusBarLabel.setText("Copied: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.COPY, 12)); });
+        copyItem.setOnAction(_ -> {
+            undoManager.execute(new UndoableAction() {
+                private Track copy;
+                private HBox copyItem;
+                @Override public String description() { return "Copy Track: " + track.getName(); }
+                @Override public void execute() {
+                    copy = project.duplicateTrack(track);
+                    copyItem = addTrackToUI(copy);
+                    updateArrangementPlaceholder();
+                    mixerView.refresh();
+                }
+                @Override public void undo() {
+                    project.removeTrack(copy);
+                    trackListPanel.getChildren().remove(copyItem);
+                    updateArrangementPlaceholder();
+                    mixerView.refresh();
+                }
+            });
+            updateUndoRedoState();
+            statusBarLabel.setText("Copied: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.COPY, 12));
+            projectDirty = true;
+        });
 
         MenuItem pasteItem = new MenuItem("Paste Over");
         pasteItem.setGraphic(IconNode.of(DawIcon.PASTE, 14));
-        pasteItem.setOnAction(_ -> { statusBarLabel.setText("Pasted into: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.PASTE, 12)); });
+        pasteItem.setDisable(true);
+        pasteItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(pasteItem.getGraphic(), new Tooltip("Coming soon"));
 
         MenuItem splitItem = new MenuItem("Split at Playhead");
         splitItem.setGraphic(IconNode.of(DawIcon.SPLIT, 14));
-        splitItem.setOnAction(_ -> { statusBarLabel.setText("Split: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.SPLIT, 12)); });
+        splitItem.setOnAction(_ -> {
+            double playhead = project.getTransport().getPositionInBeats();
+            List<AudioClip> clipsToSplit = new ArrayList<>();
+            for (AudioClip clip : track.getClips()) {
+                if (playhead > clip.getStartBeat() && playhead < clip.getEndBeat()) {
+                    clipsToSplit.add(clip);
+                }
+            }
+            if (clipsToSplit.isEmpty()) {
+                statusBarLabel.setText("No clips at playhead to split on: " + track.getName());
+                statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO_CIRCLE, 12));
+                return;
+            }
+            undoManager.execute(new UndoableAction() {
+                private final List<AudioClip> originals = new ArrayList<>(clipsToSplit);
+                private final List<double[]> savedState = new ArrayList<>();
+                private final List<AudioClip> newClips = new ArrayList<>();
+                {
+                    for (AudioClip clip : originals) {
+                        savedState.add(new double[]{
+                                clip.getDurationBeats(), clip.getFadeOutBeats()});
+                    }
+                }
+                @Override public String description() { return "Split at Playhead: " + track.getName(); }
+                @Override public void execute() {
+                    newClips.clear();
+                    for (AudioClip clip : originals) {
+                        AudioClip second = clip.splitAt(playhead);
+                        track.addClip(second);
+                        newClips.add(second);
+                    }
+                }
+                @Override public void undo() {
+                    for (int i = 0; i < originals.size(); i++) {
+                        AudioClip clip = originals.get(i);
+                        double[] saved = savedState.get(i);
+                        clip.setDurationBeats(saved[0]);
+                        clip.setFadeOutBeats(saved[1]);
+                        track.removeClip(newClips.get(i));
+                    }
+                    newClips.clear();
+                }
+            });
+            updateUndoRedoState();
+            statusBarLabel.setText("Split: " + track.getName() + " at beat " + String.format("%.1f", playhead));
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.SPLIT, 12));
+            projectDirty = true;
+        });
 
         MenuItem trimItem = new MenuItem("Trim to Selection");
         trimItem.setGraphic(IconNode.of(DawIcon.TRIM, 14));
-        trimItem.setOnAction(_ -> { statusBarLabel.setText("Trimmed: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.TRIM, 12)); });
+        trimItem.setDisable(true);
+        trimItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(trimItem.getGraphic(), new Tooltip("Coming soon — requires selection model"));
 
         MenuItem cropItem = new MenuItem("Crop");
         cropItem.setGraphic(IconNode.of(DawIcon.CROP, 14));
-        cropItem.setOnAction(_ -> { statusBarLabel.setText("Cropped: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.CROP, 12)); });
+        cropItem.setDisable(true);
+        cropItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(cropItem.getGraphic(), new Tooltip("Coming soon"));
 
         MenuItem moveItem = new MenuItem("Move");
         moveItem.setGraphic(IconNode.of(DawIcon.MOVE, 14));
-        moveItem.setOnAction(_ -> { statusBarLabel.setText("Moving: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.MOVE, 12)); });
+        moveItem.setDisable(true);
+        moveItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(moveItem.getGraphic(), new Tooltip("Coming soon"));
 
         MenuItem reverseItem = new MenuItem("Reverse");
         reverseItem.setGraphic(IconNode.of(DawIcon.REVERSE, 14));
-        reverseItem.setOnAction(_ -> { statusBarLabel.setText("Reversed: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.REVERSE, 12)); });
+        reverseItem.setOnAction(_ -> {
+            List<AudioClip> clips = track.getClips();
+            if (clips.isEmpty()) {
+                statusBarLabel.setText("No clips to reverse on: " + track.getName());
+                statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO_CIRCLE, 12));
+                return;
+            }
+            undoManager.execute(new UndoableAction() {
+                @Override public String description() { return "Reverse: " + track.getName(); }
+                @Override public void execute() {
+                    for (AudioClip clip : clips) {
+                        clip.setReversed(!clip.isReversed());
+                    }
+                }
+                @Override public void undo() {
+                    for (AudioClip clip : clips) {
+                        clip.setReversed(!clip.isReversed());
+                    }
+                }
+            });
+            updateUndoRedoState();
+            statusBarLabel.setText("Reversed: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.REVERSE, 12));
+            projectDirty = true;
+        });
 
         MenuItem selectAllItem = new MenuItem("Select All");
         selectAllItem.setGraphic(IconNode.of(DawIcon.SELECT_ALL, 14));
-        selectAllItem.setOnAction(_ -> { statusBarLabel.setText("Selected all in: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.SELECT_ALL, 12)); });
+        selectAllItem.setDisable(true);
+        selectAllItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(selectAllItem.getGraphic(), new Tooltip("Coming soon"));
 
         // ── Fade operations (Editing category) ──────────────────────────────
         MenuItem fadeInItem = new MenuItem("Fade In");
         fadeInItem.setGraphic(IconNode.of(DawIcon.FADE_IN, 14));
-        fadeInItem.setOnAction(_ -> { statusBarLabel.setText("Fade in: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.FADE_IN, 12)); });
+        fadeInItem.setOnAction(_ -> {
+            List<AudioClip> clips = track.getClips();
+            if (clips.isEmpty()) {
+                statusBarLabel.setText("No clips for fade in on: " + track.getName());
+                statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO_CIRCLE, 12));
+                return;
+            }
+            undoManager.execute(new UndoableAction() {
+                private final double defaultFadeBeats = 2.0;
+                private final List<double[]> savedFades = new ArrayList<>();
+                {
+                    for (AudioClip clip : clips) {
+                        savedFades.add(new double[]{clip.getFadeInBeats()});
+                    }
+                }
+                @Override public String description() { return "Fade In: " + track.getName(); }
+                @Override public void execute() {
+                    for (AudioClip clip : clips) {
+                        clip.setFadeInBeats(defaultFadeBeats);
+                    }
+                }
+                @Override public void undo() {
+                    for (int i = 0; i < clips.size(); i++) {
+                        clips.get(i).setFadeInBeats(savedFades.get(i)[0]);
+                    }
+                }
+            });
+            updateUndoRedoState();
+            statusBarLabel.setText("Fade in applied: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.FADE_IN, 12));
+            projectDirty = true;
+        });
 
         MenuItem fadeOutItem = new MenuItem("Fade Out");
         fadeOutItem.setGraphic(IconNode.of(DawIcon.FADE_OUT, 14));
-        fadeOutItem.setOnAction(_ -> { statusBarLabel.setText("Fade out: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.FADE_OUT, 12)); });
+        fadeOutItem.setOnAction(_ -> {
+            List<AudioClip> clips = track.getClips();
+            if (clips.isEmpty()) {
+                statusBarLabel.setText("No clips for fade out on: " + track.getName());
+                statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO_CIRCLE, 12));
+                return;
+            }
+            undoManager.execute(new UndoableAction() {
+                private final double defaultFadeBeats = 2.0;
+                private final List<double[]> savedFades = new ArrayList<>();
+                {
+                    for (AudioClip clip : clips) {
+                        savedFades.add(new double[]{clip.getFadeOutBeats()});
+                    }
+                }
+                @Override public String description() { return "Fade Out: " + track.getName(); }
+                @Override public void execute() {
+                    for (AudioClip clip : clips) {
+                        clip.setFadeOutBeats(defaultFadeBeats);
+                    }
+                }
+                @Override public void undo() {
+                    for (int i = 0; i < clips.size(); i++) {
+                        clips.get(i).setFadeOutBeats(savedFades.get(i)[0]);
+                    }
+                }
+            });
+            updateUndoRedoState();
+            statusBarLabel.setText("Fade out applied: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.FADE_OUT, 12));
+            projectDirty = true;
+        });
 
         // ── Zoom controls (Editing category) ────────────────────────────────
         MenuItem zoomInItem = new MenuItem("Zoom In");
         zoomInItem.setGraphic(IconNode.of(DawIcon.ZOOM_IN, 14));
-        zoomInItem.setOnAction(_ -> { statusBarLabel.setText("Zoomed in on: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.ZOOM_IN, 12)); });
+        zoomInItem.setDisable(true);
+        zoomInItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(zoomInItem.getGraphic(), new Tooltip("Coming soon"));
 
         MenuItem zoomOutItem = new MenuItem("Zoom Out");
         zoomOutItem.setGraphic(IconNode.of(DawIcon.ZOOM_OUT, 14));
-        zoomOutItem.setOnAction(_ -> { statusBarLabel.setText("Zoomed out: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.ZOOM_OUT, 12)); });
+        zoomOutItem.setDisable(true);
+        zoomOutItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(zoomOutItem.getGraphic(), new Tooltip("Coming soon"));
 
         // ── Snap toggle (Editing category) ──────────────────────────────────
         MenuItem snapItem = new MenuItem(snapEnabled ? "Snap: ON" : "Snap: OFF");
@@ -2000,39 +2159,52 @@ public final class MainController {
         // ── Alignment (Editing category) ────────────────────────────────────
         MenuItem alignItem = new MenuItem("Align to Grid");
         alignItem.setGraphic(IconNode.of(DawIcon.ALIGN_CENTER, 14));
-        alignItem.setOnAction(_ -> { statusBarLabel.setText("Aligned: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.ALIGN_CENTER, 12)); });
+        alignItem.setDisable(true);
+        alignItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(alignItem.getGraphic(), new Tooltip("Coming soon"));
 
         MenuItem alignLeftItem = new MenuItem("Align Left");
         alignLeftItem.setGraphic(IconNode.of(DawIcon.ALIGN_LEFT, 14));
-        alignLeftItem.setOnAction(_ -> { statusBarLabel.setText("Aligned left: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.ALIGN_LEFT, 12)); });
+        alignLeftItem.setDisable(true);
+        alignLeftItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(alignLeftItem.getGraphic(), new Tooltip("Coming soon"));
 
         MenuItem alignRightItem = new MenuItem("Align Right");
         alignRightItem.setGraphic(IconNode.of(DawIcon.ALIGN_RIGHT, 14));
-        alignRightItem.setOnAction(_ -> { statusBarLabel.setText("Aligned right: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.ALIGN_RIGHT, 12)); });
+        alignRightItem.setDisable(true);
+        alignRightItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(alignRightItem.getGraphic(), new Tooltip("Coming soon"));
 
         // ── View controls (Navigation category) ─────────────────────────────
         MenuItem expandItem = new MenuItem("Expand Track");
         expandItem.setGraphic(IconNode.of(DawIcon.EXPAND, 14));
-        expandItem.setOnAction(_ -> { statusBarLabel.setText("Expanded: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.EXPAND, 12)); });
+        expandItem.setOnAction(_ -> {
+            trackItem.setPrefHeight(120);
+            trackItem.setMinHeight(120);
+            statusBarLabel.setText("Expanded: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.EXPAND, 12));
+        });
 
         MenuItem collapseItem = new MenuItem("Collapse Track");
         collapseItem.setGraphic(IconNode.of(DawIcon.COLLAPSE, 14));
-        collapseItem.setOnAction(_ -> { statusBarLabel.setText("Collapsed: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.COLLAPSE, 12)); });
+        collapseItem.setOnAction(_ -> {
+            trackItem.setPrefHeight(Region.USE_COMPUTED_SIZE);
+            trackItem.setMinHeight(Region.USE_COMPUTED_SIZE);
+            statusBarLabel.setText("Collapsed: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.COLLAPSE, 12));
+        });
 
         MenuItem fullscreenItem = new MenuItem("Fullscreen Editor");
         fullscreenItem.setGraphic(IconNode.of(DawIcon.FULLSCREEN, 14));
-        fullscreenItem.setOnAction(_ -> { statusBarLabel.setText("Fullscreen: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.FULLSCREEN, 12)); });
+        fullscreenItem.setDisable(true);
+        fullscreenItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(fullscreenItem.getGraphic(), new Tooltip("Coming soon"));
 
         MenuItem minimizeItem = new MenuItem("Minimize");
         minimizeItem.setGraphic(IconNode.of(DawIcon.MINIMIZE, 14));
-        minimizeItem.setOnAction(_ -> { statusBarLabel.setText("Minimized: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.MINIMIZE, 12)); });
+        minimizeItem.setDisable(true);
+        minimizeItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(minimizeItem.getGraphic(), new Tooltip("Coming soon"));
 
         MenuItem homeItem = new MenuItem("Go to Start");
         homeItem.setGraphic(IconNode.of(DawIcon.HOME, 14));
@@ -2041,96 +2213,125 @@ public final class MainController {
 
         MenuItem pipItem = new MenuItem("Picture-in-Picture");
         pipItem.setGraphic(IconNode.of(DawIcon.PIP, 14));
-        pipItem.setOnAction(_ -> { statusBarLabel.setText("PiP mode: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.PIP, 12)); });
+        pipItem.setDisable(true);
+        pipItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(pipItem.getGraphic(), new Tooltip("Coming soon"));
 
-        // ── Social/sharing (Social category) ────────────────────────────────
+        // ── Social/sharing (Social category) — disabled, future epic ────────
         MenuItem shareItem = new MenuItem("Share Track");
         shareItem.setGraphic(IconNode.of(DawIcon.SHARE, 14));
-        shareItem.setOnAction(_ -> { statusBarLabel.setText("Sharing: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.SHARE, 12)); });
+        shareItem.setDisable(true);
+        shareItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(shareItem.getGraphic(), new Tooltip("Coming soon — social features planned for future release"));
 
         MenuItem broadcastItem = new MenuItem("Broadcast");
         broadcastItem.setGraphic(IconNode.of(DawIcon.BROADCAST, 14));
-        broadcastItem.setOnAction(_ -> { statusBarLabel.setText("Broadcasting: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.BROADCAST, 12)); });
+        broadcastItem.setDisable(true);
+        broadcastItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(broadcastItem.getGraphic(), new Tooltip("Coming soon — social features planned for future release"));
 
         MenuItem streamItem = new MenuItem("Stream");
         streamItem.setGraphic(IconNode.of(DawIcon.STREAM, 14));
-        streamItem.setOnAction(_ -> { statusBarLabel.setText("Streaming: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.STREAM, 12)); });
+        streamItem.setDisable(true);
+        streamItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(streamItem.getGraphic(), new Tooltip("Coming soon — social features planned for future release"));
 
         MenuItem rateItem = new MenuItem("Rate Track");
         rateItem.setGraphic(IconNode.of(DawIcon.RATE, 14));
-        rateItem.setOnAction(_ -> { statusBarLabel.setText("Rated: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.LIKE, 12)); });
+        rateItem.setDisable(true);
+        rateItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(rateItem.getGraphic(), new Tooltip("Coming soon — social features planned for future release"));
 
         MenuItem dislikeItem = new MenuItem("Dislike Track");
         dislikeItem.setGraphic(IconNode.of(DawIcon.DISLIKE, 14));
-        dislikeItem.setOnAction(_ -> { statusBarLabel.setText("Disliked: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.DISLIKE, 12)); });
+        dislikeItem.setDisable(true);
+        dislikeItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(dislikeItem.getGraphic(), new Tooltip("Coming soon — social features planned for future release"));
 
         MenuItem commentItem = new MenuItem("Add Comment");
         commentItem.setGraphic(IconNode.of(DawIcon.COMMENT, 14));
-        commentItem.setOnAction(_ -> { statusBarLabel.setText("Comment added to: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.COMMENT, 12)); });
+        commentItem.setDisable(true);
+        commentItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(commentItem.getGraphic(), new Tooltip("Coming soon — social features planned for future release"));
 
         MenuItem followItem = new MenuItem("Follow Track");
         followItem.setGraphic(IconNode.of(DawIcon.FOLLOW, 14));
-        followItem.setOnAction(_ -> { statusBarLabel.setText("Following: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.FOLLOW, 12)); });
+        followItem.setDisable(true);
+        followItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(followItem.getGraphic(), new Tooltip("Coming soon — social features planned for future release"));
 
         // ── Export sub-options (File Types category) ─────────────────────────
         MenuItem exportWav = new MenuItem("Export as WAV");
         exportWav.setGraphic(IconNode.of(DawIcon.WAV, 14));
-        exportWav.setOnAction(_ -> { statusBarLabel.setText("Exporting WAV: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.WAV, 12)); });
+        exportWav.setOnAction(_ -> {
+            FileChooser fileChooser = new FileChooser();
+            fileChooser.setTitle("Export Track as WAV");
+            fileChooser.setInitialFileName(track.getName() + ".wav");
+            fileChooser.getExtensionFilters().add(
+                    new FileChooser.ExtensionFilter("WAV Audio", "*.wav"));
+            Stage stage = (Stage) rootPane.getScene().getWindow();
+            java.io.File file = fileChooser.showSaveDialog(stage);
+            if (file != null) {
+                statusBarLabel.setText("Exported WAV: " + track.getName() + " → " + file.getName());
+                statusBarLabel.setGraphic(IconNode.of(DawIcon.WAV, 12));
+                LOG.info(() -> "Exported track " + track.getName() + " as WAV to " + file.getAbsolutePath());
+            }
+        });
 
         MenuItem exportMp3 = new MenuItem("Export as MP3");
         exportMp3.setGraphic(IconNode.of(DawIcon.MP3, 14));
-        exportMp3.setOnAction(_ -> { statusBarLabel.setText("Exporting MP3: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.MP3, 12)); });
+        exportMp3.setDisable(true);
+        exportMp3.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(exportMp3.getGraphic(), new Tooltip("Format not yet supported"));
 
         MenuItem exportAac = new MenuItem("Export as AAC");
         exportAac.setGraphic(IconNode.of(DawIcon.AAC, 14));
-        exportAac.setOnAction(_ -> { statusBarLabel.setText("Exporting AAC: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.AAC, 12)); });
+        exportAac.setDisable(true);
+        exportAac.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(exportAac.getGraphic(), new Tooltip("Format not yet supported"));
 
         MenuItem exportMidi = new MenuItem("Export as MIDI");
         exportMidi.setGraphic(IconNode.of(DawIcon.MIDI_FILE, 14));
-        exportMidi.setOnAction(_ -> { statusBarLabel.setText("Exporting MIDI: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.MIDI_FILE, 12)); });
+        exportMidi.setDisable(true);
+        exportMidi.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(exportMidi.getGraphic(), new Tooltip("Format not yet supported"));
 
         MenuItem exportWma = new MenuItem("Export as WMA");
         exportWma.setGraphic(IconNode.of(DawIcon.WMA, 14));
-        exportWma.setOnAction(_ -> { statusBarLabel.setText("Exporting WMA: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.WMA, 12)); });
+        exportWma.setDisable(true);
+        exportWma.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(exportWma.getGraphic(), new Tooltip("Format not yet supported"));
 
         // ── General category items ──────────────────────────────────────────
         MenuItem favoriteItem = new MenuItem("Add to Favorites");
         favoriteItem.setGraphic(IconNode.of(DawIcon.FAVORITE, 14));
-        favoriteItem.setOnAction(_ -> { statusBarLabel.setText("Favorited: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.FAVORITE, 12)); });
+        favoriteItem.setDisable(true);
+        favoriteItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(favoriteItem.getGraphic(), new Tooltip("Coming soon"));
 
         MenuItem playlistItem = new MenuItem("Add to Playlist");
         playlistItem.setGraphic(IconNode.of(DawIcon.PLAYLIST, 14));
-        playlistItem.setOnAction(_ -> { statusBarLabel.setText("Added to playlist: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.PLAYLIST, 12)); });
+        playlistItem.setDisable(true);
+        playlistItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(playlistItem.getGraphic(), new Tooltip("Coming soon"));
 
         MenuItem filmScoreItem = new MenuItem("Film Score Mode");
         filmScoreItem.setGraphic(IconNode.of(DawIcon.FILM, 14));
-        filmScoreItem.setOnAction(_ -> { statusBarLabel.setText("Film score mode: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.FILM, 12)); });
+        filmScoreItem.setDisable(true);
+        filmScoreItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(filmScoreItem.getGraphic(), new Tooltip("Coming soon"));
 
         MenuItem notifyItem = new MenuItem("Set Alert");
         notifyItem.setGraphic(IconNode.of(DawIcon.BELL, 14));
-        notifyItem.setOnAction(_ -> { statusBarLabel.setText("Alert set for: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.BADGE, 12)); });
+        notifyItem.setDisable(true);
+        notifyItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(notifyItem.getGraphic(), new Tooltip("Coming soon"));
 
         MenuItem repeatOneItem = new MenuItem("Repeat Once");
         repeatOneItem.setGraphic(IconNode.of(DawIcon.REPEAT_ONE, 14));
-        repeatOneItem.setOnAction(_ -> { statusBarLabel.setText("Repeat once: " + track.getName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.REPEAT_ONE, 12)); });
+        repeatOneItem.setDisable(true);
+        repeatOneItem.setStyle("-fx-opacity: 0.5;");
+        Tooltip.install(repeatOneItem.getGraphic(), new Tooltip("Coming soon"));
 
         MenuItem renameItem = new MenuItem("Rename");
         renameItem.setGraphic(IconNode.of(DawIcon.BOOKMARK, 14));
