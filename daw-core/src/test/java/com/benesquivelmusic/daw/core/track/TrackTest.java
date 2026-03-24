@@ -134,4 +134,39 @@ class TrackTest {
         assertThatThrownBy(() -> track.addClip(null))
                 .isInstanceOf(NullPointerException.class);
     }
+
+    @Test
+    void shouldDefaultToNoInputDevice() {
+        Track track = new Track("Track", TrackType.AUDIO);
+        assertThat(track.getInputDeviceIndex()).isEqualTo(Track.NO_INPUT_DEVICE);
+    }
+
+    @Test
+    void shouldSetInputDeviceIndex() {
+        Track track = new Track("Track", TrackType.AUDIO);
+        track.setInputDeviceIndex(3);
+        assertThat(track.getInputDeviceIndex()).isEqualTo(3);
+    }
+
+    @Test
+    void shouldClearInputDeviceIndex() {
+        Track track = new Track("Track", TrackType.AUDIO);
+        track.setInputDeviceIndex(5);
+        track.setInputDeviceIndex(Track.NO_INPUT_DEVICE);
+        assertThat(track.getInputDeviceIndex()).isEqualTo(Track.NO_INPUT_DEVICE);
+    }
+
+    @Test
+    void shouldRejectInvalidInputDeviceIndex() {
+        Track track = new Track("Track", TrackType.AUDIO);
+        assertThatThrownBy(() -> track.setInputDeviceIndex(-2))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void shouldAcceptZeroInputDeviceIndex() {
+        Track track = new Track("Track", TrackType.AUDIO);
+        track.setInputDeviceIndex(0);
+        assertThat(track.getInputDeviceIndex()).isEqualTo(0);
+    }
 }

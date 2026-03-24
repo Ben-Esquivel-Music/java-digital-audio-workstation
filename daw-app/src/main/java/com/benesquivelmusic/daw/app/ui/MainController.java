@@ -23,6 +23,8 @@ import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
+import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
 import com.benesquivelmusic.daw.sdk.visualization.LevelData;
 import com.benesquivelmusic.daw.sdk.visualization.SpectrumData;
 
@@ -1302,6 +1304,24 @@ public final class MainController {
 
     @FXML
     private void onAddAudioTrack() {
+        // Enumerate available audio input devices from the backend (empty list if no backend)
+        List<AudioDeviceInfo> devices = List.of();
+        NativeAudioBackend backend = audioEngine.getAudioBackend();
+        if (backend != null) {
+            try {
+                devices = backend.getAvailableDevices();
+            } catch (Exception e) {
+                LOG.log(Level.WARNING, "Failed to enumerate audio devices", e);
+            }
+        }
+
+        var dialog = new InputPortSelectionDialog(devices, Track.NO_INPUT_DEVICE);
+        Optional<AudioDeviceInfo> selected = dialog.showAndWait();
+        if (selected.isEmpty()) {
+            return; // user cancelled — abort track creation
+        }
+
+        AudioDeviceInfo selectedDevice = selected.get();
         audioTrackCounter++;
         String name = "Audio " + audioTrackCounter;
         undoManager.execute(new UndoableAction() {
@@ -1312,6 +1332,7 @@ public final class MainController {
             @Override public void execute() {
                 if (initialExecute) {
                     track = project.createAudioTrack(name);
+                    track.setInputDeviceIndex(selectedDevice.index());
                     trackItem = addTrackToUI(track);
                     initialExecute = false;
                 } else {
@@ -1330,14 +1351,21 @@ public final class MainController {
             }
         });
         updateUndoRedoState();
-        statusBarLabel.setText("Added audio track: " + name);
+        statusBarLabel.setText("Added audio track: " + name + " ← " + selectedDevice.name());
         statusBarLabel.setGraphic(IconNode.of(DawIcon.INPUT, 12));
         projectDirty = true;
-        LOG.fine(() -> "Added audio track: " + name);
+        LOG.fine(() -> "Added audio track: " + name + " with input: " + selectedDevice.name());
     }
 
     @FXML
     private void onAddMidiTrack() {
+        var dialog = new MidiInputPortSelectionDialog(null);
+        Optional<javax.sound.midi.MidiDevice.Info> selected = dialog.showAndWait();
+        if (selected.isEmpty()) {
+            return; // user cancelled — abort track creation
+        }
+
+        javax.sound.midi.MidiDevice.Info selectedMidi = selected.get();
         midiTrackCounter++;
         String name = "MIDI " + midiTrackCounter;
         undoManager.execute(new UndoableAction() {
@@ -1366,10 +1394,10 @@ public final class MainController {
             }
         });
         updateUndoRedoState();
-        statusBarLabel.setText("Added MIDI track: " + name);
+        statusBarLabel.setText("Added MIDI track: " + name + " ← " + selectedMidi.getName());
         statusBarLabel.setGraphic(IconNode.of(DawIcon.MUSIC_NOTE, 12));
         projectDirty = true;
-        LOG.fine(() -> "Added MIDI track: " + name);
+        LOG.fine(() -> "Added MIDI track: " + name + " with input: " + selectedMidi.getName());
     }
 
     @FXML
@@ -1625,8 +1653,48 @@ public final class MainController {
         };
         Label ioLabel = new Label();
         ioLabel.setGraphic(IconNode.of(ioIcon, 10));
-        ioLabel.setTooltip(new Tooltip("I/O: " + ioIcon.name().replace('_', ' ')));
+        ioLabel.setTooltip(new Tooltip("I/O: " + ioIcon.name().replace('_', ' ')
+                + " — Double-click to change input"));
         ioLabel.getStyleClass().add("status-bar-label");
+
+        // Double-click to re-open input port selection dialog
+        if (track.getType() == TrackType.AUDIO) {
+            ioLabel.setOnMouseClicked(event -> {
+                if (event.getClickCount() == 2) {
+                    List<AudioDeviceInfo> devices = List.of();
+                    NativeAudioBackend backend = audioEngine.getAudioBackend();
+                    if (backend != null) {
+                        try {
+                            devices = backend.getAvailableDevices();
+                        } catch (Exception e) {
+                            LOG.log(Level.WARNING, "Failed to enumerate audio devices", e);
+                        }
+                    }
+                    var dialog = new InputPortSelectionDialog(devices, track.getInputDeviceIndex());
+                    dialog.showAndWait().ifPresent(device -> {
+                        track.setInputDeviceIndex(device.index());
+                        ioLabel.setTooltip(new Tooltip("Input: " + device.name()));
+                        statusBarLabel.setText("Input changed: " + track.getName()
+                                + " ← " + device.name());
+                        statusBarLabel.setGraphic(IconNode.of(DawIcon.INPUT, 12));
+                        projectDirty = true;
+                    });
+                }
+            });
+        } else if (track.getType() == TrackType.MIDI) {
+            ioLabel.setOnMouseClicked(event -> {
+                if (event.getClickCount() == 2) {
+                    var dialog = new MidiInputPortSelectionDialog(null);
+                    dialog.showAndWait().ifPresent(midiInfo -> {
+                        ioLabel.setTooltip(new Tooltip("MIDI Input: " + midiInfo.getName()));
+                        statusBarLabel.setText("MIDI input changed: " + track.getName()
+                                + " ← " + midiInfo.getName());
+                        statusBarLabel.setGraphic(IconNode.of(DawIcon.MIDI, 12));
+                        projectDirty = true;
+                    });
+                }
+            });
+        }
 
         // ── Volume slider with icon decorations (Volume category) ───────────
         Slider volumeSlider = new Slider(0.0, 1.0, track.getVolume());

@@ -18,6 +18,9 @@ import java.util.UUID;
  */
 public final class Track {
 
+    /** Sentinel value indicating no input device has been assigned. */
+    public static final int NO_INPUT_DEVICE = -1;
+
     private final String id;
     private final TrackType type;
     private String name;
@@ -26,6 +29,7 @@ public final class Track {
     private boolean muted;
     private boolean solo;
     private boolean armed;
+    private int inputDeviceIndex = NO_INPUT_DEVICE;
     private final List<AudioClip> clips = new ArrayList<>();
 
     /**
@@ -129,6 +133,33 @@ public final class Track {
     /** Sets the armed (record-ready) state. */
     public void setArmed(boolean armed) {
         this.armed = armed;
+    }
+
+    /**
+     * Returns the index of the input device assigned to this track, or
+     * {@link #NO_INPUT_DEVICE} ({@value #NO_INPUT_DEVICE}) if no device
+     * has been assigned.
+     *
+     * @return the input device index, or {@code -1} if unassigned
+     */
+    public int getInputDeviceIndex() {
+        return inputDeviceIndex;
+    }
+
+    /**
+     * Assigns an input device to this track by its index.
+     *
+     * <p>Use {@link #NO_INPUT_DEVICE} to clear the assignment.</p>
+     *
+     * @param inputDeviceIndex the device index, or {@code -1} to unassign
+     * @throws IllegalArgumentException if the index is less than {@code -1}
+     */
+    public void setInputDeviceIndex(int inputDeviceIndex) {
+        if (inputDeviceIndex < NO_INPUT_DEVICE) {
+            throw new IllegalArgumentException(
+                    "inputDeviceIndex must be >= -1: " + inputDeviceIndex);
+        }
+        this.inputDeviceIndex = inputDeviceIndex;
     }
 
     /**
