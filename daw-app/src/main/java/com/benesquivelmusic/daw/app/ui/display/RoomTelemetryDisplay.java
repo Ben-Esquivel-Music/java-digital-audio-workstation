@@ -77,6 +77,8 @@ public final class RoomTelemetryDisplay extends Region {
     private static final double SOURCE_RADIUS = 10.0;
     private static final double MIC_RADIUS = 8.0;
     private static final double AUDIENCE_RADIUS = 7.0;
+    private static final double AUDIENCE_PULSE_SPEED = 1.8;
+    private static final double AUDIENCE_LABEL_STAGGER = 12.0;
 
     private final Canvas canvas;
     private RoomTelemetryData telemetryData;
@@ -230,8 +232,10 @@ public final class RoomTelemetryDisplay extends Region {
         }
 
         // ── Draw audience members ──
-        for (AudienceMember member : telemetryData.audienceMembers()) {
-            drawAudienceMember(gc, member.position(), member.name(), offsetX, offsetY, scale);
+        List<AudienceMember> audience = telemetryData.audienceMembers();
+        for (int i = 0; i < audience.size(); i++) {
+            AudienceMember member = audience.get(i);
+            drawAudienceMember(gc, member.position(), member.name(), offsetX, offsetY, scale, i);
         }
 
         // ── Draw RT60 glow on room border ──
@@ -439,12 +443,13 @@ public final class RoomTelemetryDisplay extends Region {
     }
 
     private void drawAudienceMember(GraphicsContext gc, Position3D pos, String name,
-                                     double offsetX, double offsetY, double scale) {
+                                     double offsetX, double offsetY, double scale,
+                                     int index) {
         double cx = offsetX + pos.x() * scale;
         double cy = offsetY + pos.y() * scale;
 
         // Subtle pulse for audience members (slower than performers)
-        double pulse = 0.5 + 0.5 * Math.sin(animationTime * 1.8 + pos.x() * 0.5);
+        double pulse = 0.5 + 0.5 * Math.sin(animationTime * AUDIENCE_PULSE_SPEED + pos.x() * 0.5);
 
         // Outer glow
         double glowRadius = AUDIENCE_RADIUS + 4 * pulse;
@@ -462,11 +467,12 @@ public final class RoomTelemetryDisplay extends Region {
                 AUDIENCE_RADIUS * 2, AUDIENCE_RADIUS * 1.4, 0, 180,
                 javafx.scene.shape.ArcType.ROUND);
 
-        // Label
+        // Label — alternate above/below silhouette for dense groups
         gc.setFill(TEXT_COLOR);
         gc.setFont(Font.font("System", 9));
         gc.setTextAlign(TextAlignment.CENTER);
-        gc.fillText(name, cx, cy + AUDIENCE_RADIUS + LABEL_OFFSET);
+        double labelY = computeAudienceLabelY(cy, index);
+        gc.fillText(name, cx, labelY);
     }
 
     private void drawRt60Glow(GraphicsContext gc, double x, double y, double w, double h) {
@@ -536,6 +542,24 @@ public final class RoomTelemetryDisplay extends Region {
 
     private static String pathKey(SoundWavePath path) {
         return path.sourceName() + "→" + path.microphoneName() + ":" + path.reflected();
+    }
+
+    /**
+     * Computes the Y-coordinate for an audience member label.
+     *
+     * <p>Even-indexed members place the label below the silhouette;
+     * odd-indexed members place it above. This staggers labels when
+     * many audience members share similar positions, reducing overlap.</p>
+     *
+     * @param cy    the canvas Y center of the audience member silhouette
+     * @param index the zero-based index of the audience member in the list
+     * @return the Y-coordinate for the label text baseline
+     */
+    static double computeAudienceLabelY(double cy, int index) {
+        if (index % 2 == 0) {
+            return cy + AUDIENCE_RADIUS + LABEL_OFFSET;
+        }
+        return cy - AUDIENCE_RADIUS - AUDIENCE_LABEL_STAGGER;
     }
 
     /**
