@@ -81,6 +81,10 @@
                 <Button fx:id="pluginsButton" text="Plugins" onAction="#onManagePlugins"
                         styleClass="transport-button, plugin-button"/>
 
+                <!-- REC indicator (visible only during recording) -->
+                <Label fx:id="recIndicator" text="● REC" styleClass="rec-indicator"
+                       visible="false" managed="false"/>
+
                 <!-- Spacer -->
                 <Region HBox.hgrow="ALWAYS"/>
 
@@ -223,10 +227,11 @@
         </VBox>
     </center>
 
-    <!-- Bottom: Status Bar -->
+    <!-- Bottom: Notification Bar + Status Bar -->
     <bottom>
         <VBox>
             <Separator/>
+            <HBox fx:id="notificationBarContainer"/>
             <HBox alignment="CENTER_LEFT" spacing="16" styleClass="status-bar">
                 <padding>
                     <Insets top="4" right="16" bottom="4" left="16"/>
