@@ -222,4 +222,118 @@ class MixerTest {
         assertThat(output[0][0]).isCloseTo(expected, org.assertj.core.data.Offset.offset(1e-5f));
         assertThat(output[1][0]).isCloseTo(expected, org.assertj.core.data.Offset.offset(1e-5f));
     }
+
+    @Test
+    void shouldHaveAuxBus() {
+        Mixer mixer = new Mixer();
+        assertThat(mixer.getAuxBus()).isNotNull();
+        assertThat(mixer.getAuxBus().getName()).isEqualTo("Reverb Return");
+    }
+
+    @Test
+    void shouldRouteSendToAuxBuffer() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.setSendLevel(0.5);
+        mixer.addChannel(ch);
+
+        float[][][] channelBuffers = {{{1.0f, -1.0f}}};
+        float[][] output = {{0.0f, 0.0f}};
+        float[][] auxOutput = {{0.0f, 0.0f}};
+
+        mixer.mixDown(channelBuffers, output, auxOutput, 2);
+
+        assertThat(auxOutput[0][0]).isEqualTo(0.5f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(auxOutput[0][1]).isEqualTo(-0.5f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
+
+    @Test
+    void shouldNotRouteSendWhenSendLevelIsZero() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.setSendLevel(0.0);
+        mixer.addChannel(ch);
+
+        float[][][] channelBuffers = {{{1.0f}}};
+        float[][] output = {{0.0f}};
+        float[][] auxOutput = {{0.0f}};
+
+        mixer.mixDown(channelBuffers, output, auxOutput, 1);
+
+        assertThat(auxOutput[0][0]).isEqualTo(0.0f);
+    }
+
+    @Test
+    void shouldApplyAuxBusVolumeToSendOutput() {
+        Mixer mixer = new Mixer();
+        mixer.getAuxBus().setVolume(0.5);
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.setSendLevel(1.0);
+        mixer.addChannel(ch);
+
+        float[][][] channelBuffers = {{{1.0f}}};
+        float[][] output = {{0.0f}};
+        float[][] auxOutput = {{0.0f}};
+
+        mixer.mixDown(channelBuffers, output, auxOutput, 1);
+
+        assertThat(auxOutput[0][0]).isEqualTo(0.5f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
+
+    @Test
+    void shouldSilenceAuxOutputWhenAuxBusIsMuted() {
+        Mixer mixer = new Mixer();
+        mixer.getAuxBus().setMuted(true);
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.setSendLevel(1.0);
+        mixer.addChannel(ch);
+
+        float[][][] channelBuffers = {{{1.0f}}};
+        float[][] output = {{0.0f}};
+        float[][] auxOutput = {{0.0f}};
+
+        mixer.mixDown(channelBuffers, output, auxOutput, 1);
+
+        assertThat(auxOutput[0][0]).isEqualTo(0.0f);
+    }
+
+    @Test
+    void shouldNotRouteSendForMutedChannel() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.setSendLevel(1.0);
+        ch.setMuted(true);
+        mixer.addChannel(ch);
+
+        float[][][] channelBuffers = {{{1.0f}}};
+        float[][] output = {{0.0f}};
+        float[][] auxOutput = {{0.0f}};
+
+        mixer.mixDown(channelBuffers, output, auxOutput, 1);
+
+        assertThat(auxOutput[0][0]).isEqualTo(0.0f);
+    }
+
+    @Test
+    void shouldSumMultipleChannelSendsIntoAuxBuffer() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch1 = new MixerChannel("Ch1");
+        ch1.setSendLevel(0.5);
+        MixerChannel ch2 = new MixerChannel("Ch2");
+        ch2.setSendLevel(0.3);
+        mixer.addChannel(ch1);
+        mixer.addChannel(ch2);
+
+        float[][][] channelBuffers = {
+                {{1.0f}},
+                {{1.0f}}
+        };
+        float[][] output = {{0.0f}};
+        float[][] auxOutput = {{0.0f}};
+
+        mixer.mixDown(channelBuffers, output, auxOutput, 1);
+
+        // 1.0 * 0.5 + 1.0 * 0.3 = 0.8
+        assertThat(auxOutput[0][0]).isEqualTo(0.8f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
 }

@@ -5,8 +5,9 @@ import java.util.Objects;
 /**
  * Represents a single channel strip in the mixer.
  *
- * <p>Each mixer channel has independent volume, pan, mute, and solo controls.
- * Channels can host an insert effects chain (to be implemented).</p>
+ * <p>Each mixer channel has independent volume, pan, mute, solo, and send level
+ * controls. The send level controls how much of this channel's audio is routed
+ * to the auxiliary/return bus (e.g., reverb, delay return).</p>
  */
 public final class MixerChannel {
 
@@ -15,6 +16,7 @@ public final class MixerChannel {
     private double pan;
     private boolean muted;
     private boolean solo;
+    private double sendLevel;
 
     /**
      * Creates a new mixer channel with the specified name.
@@ -27,6 +29,7 @@ public final class MixerChannel {
         this.pan = 0.0;
         this.muted = false;
         this.solo = false;
+        this.sendLevel = 0.0;
     }
 
     /** Returns the channel name. */
@@ -78,5 +81,18 @@ public final class MixerChannel {
     /** Sets the solo state. */
     public void setSolo(boolean solo) {
         this.solo = solo;
+    }
+
+    /** Returns the send level (0.0 – 1.0). */
+    public double getSendLevel() {
+        return sendLevel;
+    }
+
+    /** Sets the send level. */
+    public void setSendLevel(double sendLevel) {
+        if (sendLevel < 0.0 || sendLevel > 1.0) {
+            throw new IllegalArgumentException("sendLevel must be between 0.0 and 1.0: " + sendLevel);
+        }
+        this.sendLevel = sendLevel;
     }
 }

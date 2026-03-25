@@ -13,7 +13,9 @@ import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
+import javafx.scene.control.ContextMenu;
 import javafx.scene.control.Label;
+import javafx.scene.control.MenuItem;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
 import javafx.scene.control.Slider;
@@ -214,10 +216,20 @@ public final class MixerView extends VBox {
         // Send level control
         Label sendLabel = new Label("SEND");
         sendLabel.getStyleClass().add("mixer-channel-name");
-        Slider sendSlider = new Slider(0.0, 1.0, 0.0);
+        Slider sendSlider = new Slider(0.0, 1.0, mixerChannel.getSendLevel());
         sendSlider.setPrefWidth(SEND_SLIDER_WIDTH);
         sendSlider.getStyleClass().add("mixer-fader");
         sendSlider.setTooltip(new Tooltip("Send Level"));
+        sendSlider.valueProperty().addListener((_, _, newVal) ->
+                mixerChannel.setSendLevel(newVal.doubleValue()));
+
+        // Right-click context menu on send label to select destination bus
+        ContextMenu sendMenu = new ContextMenu();
+        MixerChannel auxBus = project.getMixer().getAuxBus();
+        MenuItem auxItem = new MenuItem(auxBus.getName());
+        auxItem.setOnAction(_ -> sendLabel.setText("SEND: " + auxBus.getName()));
+        sendMenu.getItems().add(auxItem);
+        sendLabel.setContextMenu(sendMenu);
 
         // Track type icon
         Node typeIcon = trackTypeIcon(track.getType());

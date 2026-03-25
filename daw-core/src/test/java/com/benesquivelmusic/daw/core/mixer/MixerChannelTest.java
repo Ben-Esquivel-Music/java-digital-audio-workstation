@@ -53,4 +53,30 @@ class MixerChannelTest {
         assertThatThrownBy(() -> channel.setPan(1.1))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void shouldDefaultSendLevelToZero() {
+        MixerChannel channel = new MixerChannel("Ch");
+        assertThat(channel.getSendLevel()).isEqualTo(0.0);
+    }
+
+    @Test
+    void shouldSetSendLevelWithinRange() {
+        MixerChannel channel = new MixerChannel("Ch");
+        channel.setSendLevel(0.0);
+        assertThat(channel.getSendLevel()).isEqualTo(0.0);
+        channel.setSendLevel(0.5);
+        assertThat(channel.getSendLevel()).isEqualTo(0.5);
+        channel.setSendLevel(1.0);
+        assertThat(channel.getSendLevel()).isEqualTo(1.0);
+    }
+
+    @Test
+    void shouldRejectInvalidSendLevel() {
+        MixerChannel channel = new MixerChannel("Ch");
+        assertThatThrownBy(() -> channel.setSendLevel(-0.1))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> channel.setSendLevel(1.1))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 }
