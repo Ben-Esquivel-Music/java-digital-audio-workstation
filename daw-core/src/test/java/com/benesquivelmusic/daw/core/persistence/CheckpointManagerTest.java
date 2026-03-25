@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class CheckpointManagerTest {
 
@@ -167,6 +168,65 @@ class CheckpointManagerTest {
         assertThat(content).contains("# DAW Checkpoint");
         assertThat(content).contains("id=chk-1-");
         assertThat(content).contains("index=1");
+
+        manager.stop();
+    }
+
+    // ── Reconfigure ──────────────────────────────────────────────────────────
+
+    @Test
+    void shouldReconfigureWhileRunning() {
+        AutoSaveConfig config = new AutoSaveConfig(Duration.ofMinutes(5), 10, true);
+        CheckpointManager manager = new CheckpointManager(config);
+        manager.start(tempDir);
+        assertThat(manager.isRunning()).isTrue();
+
+        AutoSaveConfig newConfig = new AutoSaveConfig(Duration.ofSeconds(30), 20, true);
+        manager.reconfigure(newConfig);
+
+        assertThat(manager.isRunning()).isTrue();
+        assertThat(manager.getConfig()).isSameAs(newConfig);
+        assertThat(manager.getConfig().autoSaveInterval()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(manager.getConfig().maxCheckpoints()).isEqualTo(20);
+
+        manager.stop();
+    }
+
+    @Test
+    void shouldReconfigureWhileStopped() {
+        AutoSaveConfig config = new AutoSaveConfig(Duration.ofMinutes(5), 10, true);
+        CheckpointManager manager = new CheckpointManager(config);
+
+        AutoSaveConfig newConfig = new AutoSaveConfig(Duration.ofSeconds(60), 5, true);
+        manager.reconfigure(newConfig);
+
+        assertThat(manager.isRunning()).isFalse();
+        assertThat(manager.getConfig()).isSameAs(newConfig);
+    }
+
+    @Test
+    void shouldRejectNullConfigOnReconfigure() {
+        AutoSaveConfig config = new AutoSaveConfig(Duration.ofMinutes(5), 10, true);
+        CheckpointManager manager = new CheckpointManager(config);
+
+        assertThatThrownBy(() -> manager.reconfigure(null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void shouldPreserveCheckpointsAfterReconfigure() {
+        AutoSaveConfig config = new AutoSaveConfig(Duration.ofHours(1), 10, true);
+        CheckpointManager manager = new CheckpointManager(config);
+        manager.start(tempDir);
+
+        manager.performCheckpoint();
+        assertThat(manager.getCheckpointCount()).isEqualTo(1);
+
+        AutoSaveConfig newConfig = new AutoSaveConfig(Duration.ofSeconds(30), 10, true);
+        manager.reconfigure(newConfig);
+
+        assertThat(manager.getCheckpointCount()).isEqualTo(1);
+        assertThat(manager.getCheckpointFiles()).hasSize(1);
 
         manager.stop();
     }

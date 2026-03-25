@@ -73,6 +73,7 @@ import javafx.scene.control.Alert;
 import javafx.scene.control.ButtonType;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.StackPane;
+import javafx.scene.transform.Scale;
 import javafx.stage.DirectoryChooser;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
@@ -1730,10 +1731,60 @@ public final class MainController {
         statusBarLabel.setGraphic(IconNode.of(DawIcon.SETTINGS, 12));
         Preferences settingsPrefs = Preferences.userNodeForPackage(SettingsModel.class);
         SettingsModel settingsModel = new SettingsModel(settingsPrefs);
+        String previousPluginPaths = settingsModel.getPluginScanPaths();
         SettingsDialog dialog = new SettingsDialog(settingsModel);
+        dialog.setSettingsChangeListener(model -> applyLiveSettings(model, previousPluginPaths));
         dialog.showAndWait();
         statusBarLabel.setText("Settings closed");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
+    }
+
+    /**
+     * Propagates live settings changes to the running subsystems.
+     *
+     * <p>Applies the UI scale transform, reconfigures the checkpoint manager
+     * auto-save interval, updates the transport tempo, and triggers a plugin
+     * re-scan if scan paths changed.</p>
+     *
+     * @param model               the updated settings model
+     * @param previousPluginPaths the plugin scan paths before the change
+     */
+    private void applyLiveSettings(SettingsModel model, String previousPluginPaths) {
+        // UI scale
+        Scene scene = rootPane.getScene();
+        if (scene != null && scene.getRoot() != null) {
+            double scale = model.getUiScale();
+            scene.getRoot().getTransforms().clear();
+            scene.getRoot().getTransforms().add(new Scale(scale, scale));
+        }
+
+        // Auto-save interval
+        CheckpointManager checkpointManager = projectManager.getCheckpointManager();
+        AutoSaveConfig currentConfig = checkpointManager.getConfig();
+        java.time.Duration newInterval = java.time.Duration.ofSeconds(model.getAutoSaveIntervalSeconds());
+        if (!currentConfig.autoSaveInterval().equals(newInterval)) {
+            AutoSaveConfig newConfig = new AutoSaveConfig(
+                    newInterval, currentConfig.maxCheckpoints(), currentConfig.enabled());
+            checkpointManager.reconfigure(newConfig);
+        }
+
+        // Transport tempo
+        project.getTransport().setTempo(model.getDefaultTempo());
+
+        // Plugin re-scan if paths changed
+        String newPluginPaths = model.getPluginScanPaths();
+        if (!newPluginPaths.equals(previousPluginPaths) && !newPluginPaths.isBlank()) {
+            List<Path> paths = new ArrayList<>();
+            for (String p : newPluginPaths.split(";")) {
+                String trimmed = p.trim();
+                if (!trimmed.isEmpty()) {
+                    paths.add(Path.of(trimmed));
+                }
+            }
+            if (!paths.isEmpty()) {
+                pluginRegistry.scanClapPlugins(paths);
+            }
+        }
     }
 
     @FXML
