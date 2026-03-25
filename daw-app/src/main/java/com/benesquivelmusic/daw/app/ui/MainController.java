@@ -859,7 +859,7 @@ public final class MainController {
         arrangementViewButton.setGraphic(IconNode.of(DawIcon.TIMELINE, TOOLBAR_ICON_SIZE));
         mixerViewButton.setGraphic(IconNode.of(DawIcon.MIXER, TOOLBAR_ICON_SIZE));
         editorViewButton.setGraphic(IconNode.of(DawIcon.WAVEFORM, TOOLBAR_ICON_SIZE));
-        telemetryViewButton.setGraphic(IconNode.of(DawIcon.OSCILLOSCOPE, TOOLBAR_ICON_SIZE));
+        telemetryViewButton.setGraphic(IconNode.of(DawIcon.SURROUND, TOOLBAR_ICON_SIZE));
         newProjectButton.setGraphic(IconNode.of(DawIcon.FOLDER, TOOLBAR_ICON_SIZE));
         openProjectButton.setGraphic(IconNode.of(DawIcon.FOLDER, TOOLBAR_ICON_SIZE));
         saveProjectButton.setGraphic(IconNode.of(DawIcon.DOWNLOAD, TOOLBAR_ICON_SIZE));
