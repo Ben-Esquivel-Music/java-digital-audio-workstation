@@ -268,4 +268,63 @@ class AudioClipTest {
         assertThatThrownBy(() -> clip.splitAt(20.0))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    // ── Trim tests ──────────────────────────────────────────────────────────
+
+    @Test
+    void shouldTrimClipToSmallerRange() {
+        AudioClip clip = new AudioClip("Vocal", 4.0, 8.0, "/audio/vocal.wav");
+        clip.setSourceOffsetBeats(1.0);
+
+        clip.trimTo(6.0, 10.0);
+
+        assertThat(clip.getStartBeat()).isEqualTo(6.0);
+        assertThat(clip.getDurationBeats()).isEqualTo(4.0);
+        assertThat(clip.getEndBeat()).isEqualTo(10.0);
+        assertThat(clip.getSourceOffsetBeats()).isEqualTo(3.0);
+    }
+
+    @Test
+    void shouldTrimClipToFullRange() {
+        AudioClip clip = new AudioClip("Vocal", 4.0, 8.0, "/audio/vocal.wav");
+
+        clip.trimTo(4.0, 12.0);
+
+        assertThat(clip.getStartBeat()).isEqualTo(4.0);
+        assertThat(clip.getDurationBeats()).isEqualTo(8.0);
+        assertThat(clip.getEndBeat()).isEqualTo(12.0);
+        assertThat(clip.getSourceOffsetBeats()).isEqualTo(0.0);
+    }
+
+    @Test
+    void shouldRejectTrimStartBeforeClip() {
+        AudioClip clip = new AudioClip("Test", 4.0, 8.0, null);
+
+        assertThatThrownBy(() -> clip.trimTo(2.0, 10.0))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void shouldRejectTrimEndAfterClip() {
+        AudioClip clip = new AudioClip("Test", 4.0, 8.0, null);
+
+        assertThatThrownBy(() -> clip.trimTo(4.0, 14.0))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void shouldRejectTrimEndBeforeStart() {
+        AudioClip clip = new AudioClip("Test", 4.0, 8.0, null);
+
+        assertThatThrownBy(() -> clip.trimTo(8.0, 6.0))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void shouldRejectTrimEqualStartAndEnd() {
+        AudioClip clip = new AudioClip("Test", 4.0, 8.0, null);
+
+        assertThatThrownBy(() -> clip.trimTo(6.0, 6.0))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 }

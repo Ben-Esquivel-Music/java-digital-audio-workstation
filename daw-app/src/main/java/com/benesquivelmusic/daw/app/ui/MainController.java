@@ -326,6 +326,9 @@ public final class MainController {
         editorView = new EditorView();
         editorView.setActiveEditTool(activeEditTool);
         editorView.setOnToolChanged(this::selectEditTool);
+        editorView.setOnTrimAction(this::onEditorTrim);
+        editorView.setOnFadeInAction(this::onEditorFadeIn);
+        editorView.setOnFadeOutAction(this::onEditorFadeOut);
         viewCache.put(DawView.EDITOR, editorView);
 
         // Telemetry view — sound wave telemetry room visualizer
@@ -1685,6 +1688,116 @@ public final class MainController {
             statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO_CIRCLE, 12));
         }
         updateUndoRedoState();
+    }
+
+    // ── Editor audio handle actions ──────────────────────────────────────────
+
+    private void onEditorTrim() {
+        Track track = editorView.getSelectedTrack();
+        if (track == null || track.getClips().isEmpty()) {
+            return;
+        }
+        List<AudioClip> clips = track.getClips();
+        undoManager.execute(new UndoableAction() {
+            private final List<double[]> savedState = new ArrayList<>();
+            {
+                for (AudioClip clip : clips) {
+                    savedState.add(new double[]{
+                            clip.getStartBeat(), clip.getDurationBeats(),
+                            clip.getSourceOffsetBeats()});
+                }
+            }
+            @Override public String description() { return "Trim: " + track.getName(); }
+            @Override public void execute() {
+                for (AudioClip clip : clips) {
+                    double trimAmount = clip.getDurationBeats() * 0.1;
+                    if (trimAmount > 0 && clip.getDurationBeats() > trimAmount * 2) {
+                        clip.trimTo(clip.getStartBeat() + trimAmount,
+                                clip.getEndBeat() - trimAmount);
+                    }
+                }
+            }
+            @Override public void undo() {
+                for (int i = 0; i < clips.size(); i++) {
+                    AudioClip clip = clips.get(i);
+                    double[] saved = savedState.get(i);
+                    clip.setStartBeat(saved[0]);
+                    clip.setDurationBeats(saved[1]);
+                    clip.setSourceOffsetBeats(saved[2]);
+                }
+            }
+        });
+        updateUndoRedoState();
+        editorView.getWaveformDisplay().refresh();
+        notificationBar.showWithUndo(NotificationLevel.SUCCESS,
+                "Trimmed: " + track.getName(), this::onUndo);
+        projectDirty = true;
+    }
+
+    private void onEditorFadeIn() {
+        Track track = editorView.getSelectedTrack();
+        if (track == null || track.getClips().isEmpty()) {
+            return;
+        }
+        List<AudioClip> clips = track.getClips();
+        double defaultFadeBeats = 2.0;
+        undoManager.execute(new UndoableAction() {
+            private final List<double[]> savedFades = new ArrayList<>();
+            {
+                for (AudioClip clip : clips) {
+                    savedFades.add(new double[]{clip.getFadeInBeats()});
+                }
+            }
+            @Override public String description() { return "Fade In: " + track.getName(); }
+            @Override public void execute() {
+                for (AudioClip clip : clips) {
+                    clip.setFadeInBeats(defaultFadeBeats);
+                }
+            }
+            @Override public void undo() {
+                for (int i = 0; i < clips.size(); i++) {
+                    clips.get(i).setFadeInBeats(savedFades.get(i)[0]);
+                }
+            }
+        });
+        updateUndoRedoState();
+        editorView.getWaveformDisplay().refresh();
+        notificationBar.showWithUndo(NotificationLevel.SUCCESS,
+                "Fade in applied: " + track.getName(), this::onUndo);
+        projectDirty = true;
+    }
+
+    private void onEditorFadeOut() {
+        Track track = editorView.getSelectedTrack();
+        if (track == null || track.getClips().isEmpty()) {
+            return;
+        }
+        List<AudioClip> clips = track.getClips();
+        double defaultFadeBeats = 2.0;
+        undoManager.execute(new UndoableAction() {
+            private final List<double[]> savedFades = new ArrayList<>();
+            {
+                for (AudioClip clip : clips) {
+                    savedFades.add(new double[]{clip.getFadeOutBeats()});
+                }
+            }
+            @Override public String description() { return "Fade Out: " + track.getName(); }
+            @Override public void execute() {
+                for (AudioClip clip : clips) {
+                    clip.setFadeOutBeats(defaultFadeBeats);
+                }
+            }
+            @Override public void undo() {
+                for (int i = 0; i < clips.size(); i++) {
+                    clips.get(i).setFadeOutBeats(savedFades.get(i)[0]);
+                }
+            }
+        });
+        updateUndoRedoState();
+        editorView.getWaveformDisplay().refresh();
+        notificationBar.showWithUndo(NotificationLevel.SUCCESS,
+                "Fade out applied: " + track.getName(), this::onUndo);
+        projectDirty = true;
     }
 
     private HBox addTrackToUI(Track track) {

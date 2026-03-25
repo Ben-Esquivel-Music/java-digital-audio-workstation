@@ -168,6 +168,36 @@ public final class AudioClip implements TimelineRegion {
     }
 
     /**
+     * Trims this clip to the specified beat range by adjusting the start,
+     * duration, and source offset so that only the audio between
+     * {@code newStartBeat} and {@code newEndBeat} is retained.
+     *
+     * <p>The new range must be within the clip's current bounds.</p>
+     *
+     * @param newStartBeat the new start beat (must be &ge; current start)
+     * @param newEndBeat   the new end beat (must be &le; current end and &gt; newStartBeat)
+     * @throws IllegalArgumentException if the range is invalid
+     */
+    public void trimTo(double newStartBeat, double newEndBeat) {
+        if (newStartBeat < startBeat) {
+            throw new IllegalArgumentException(
+                    "newStartBeat must be >= startBeat: " + newStartBeat);
+        }
+        if (newEndBeat > getEndBeat()) {
+            throw new IllegalArgumentException(
+                    "newEndBeat must be <= endBeat: " + newEndBeat);
+        }
+        if (newEndBeat <= newStartBeat) {
+            throw new IllegalArgumentException(
+                    "newEndBeat must be > newStartBeat: " + newEndBeat);
+        }
+        double offsetDelta = newStartBeat - startBeat;
+        this.sourceOffsetBeats += offsetDelta;
+        this.startBeat = newStartBeat;
+        this.durationBeats = newEndBeat - newStartBeat;
+    }
+
+    /**
      * Creates a duplicate of this clip with a new unique ID.
      *
      * @return a new {@code AudioClip} with the same properties but a different ID

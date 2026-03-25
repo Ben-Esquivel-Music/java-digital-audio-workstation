@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.display.WaveformDisplay;
+import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 
@@ -533,5 +534,116 @@ class EditorViewTest {
                 .doesNotContain("editor-tool-button-active");
         assertThat(view.getToolBar().getChildren().get(1).getStyleClass())
                 .contains("editor-tool-button-active");
+    }
+
+    // ── Audio handle button tests ───────────────────────────────────────────
+
+    @Test
+    void audioHandleButtonsShouldBeDisabledByDefault() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        EditorView view = createOnFxThread();
+
+        assertThat(view.getTrimButton()).isNotNull();
+        assertThat(view.getTrimButton().isDisabled()).isTrue();
+        assertThat(view.getFadeInButton().isDisabled()).isTrue();
+        assertThat(view.getFadeOutButton().isDisabled()).isTrue();
+    }
+
+    @Test
+    void audioHandleButtonsShouldBeDisabledForMidiTrack() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        EditorView view = createOnFxThread();
+        Track midiTrack = new Track("Keys", TrackType.MIDI);
+
+        runOnFxThread(() -> view.setTrack(midiTrack));
+
+        assertThat(view.getTrimButton().isDisabled()).isTrue();
+        assertThat(view.getFadeInButton().isDisabled()).isTrue();
+        assertThat(view.getFadeOutButton().isDisabled()).isTrue();
+    }
+
+    @Test
+    void audioHandleButtonsShouldBeDisabledForEmptyAudioTrack() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        EditorView view = createOnFxThread();
+        Track audioTrack = new Track("Vocals", TrackType.AUDIO);
+
+        runOnFxThread(() -> view.setTrack(audioTrack));
+
+        assertThat(view.getTrimButton().isDisabled()).isTrue();
+        assertThat(view.getFadeInButton().isDisabled()).isTrue();
+        assertThat(view.getFadeOutButton().isDisabled()).isTrue();
+    }
+
+    @Test
+    void audioHandleButtonsShouldBeEnabledForAudioTrackWithClip() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        EditorView view = createOnFxThread();
+        Track audioTrack = new Track("Vocals", TrackType.AUDIO);
+        audioTrack.addClip(new AudioClip("Take 1", 0.0, 8.0, "/audio/take1.wav"));
+
+        runOnFxThread(() -> view.setTrack(audioTrack));
+
+        assertThat(view.getTrimButton().isDisabled()).isFalse();
+        assertThat(view.getFadeInButton().isDisabled()).isFalse();
+        assertThat(view.getFadeOutButton().isDisabled()).isFalse();
+    }
+
+    @Test
+    void trimButtonShouldFireCallback() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        EditorView view = createOnFxThread();
+        AtomicReference<Boolean> trimFired = new AtomicReference<>(false);
+
+        runOnFxThread(() -> {
+            view.setOnTrimAction(() -> trimFired.set(true));
+            view.getTrimButton().fire();
+        });
+
+        assertThat(trimFired.get()).isTrue();
+    }
+
+    @Test
+    void fadeInButtonShouldFireCallback() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        EditorView view = createOnFxThread();
+        AtomicReference<Boolean> fadeInFired = new AtomicReference<>(false);
+
+        runOnFxThread(() -> {
+            view.setOnFadeInAction(() -> fadeInFired.set(true));
+            view.getFadeInButton().fire();
+        });
+
+        assertThat(fadeInFired.get()).isTrue();
+    }
+
+    @Test
+    void fadeOutButtonShouldFireCallback() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        EditorView view = createOnFxThread();
+        AtomicReference<Boolean> fadeOutFired = new AtomicReference<>(false);
+
+        runOnFxThread(() -> {
+            view.setOnFadeOutAction(() -> fadeOutFired.set(true));
+            view.getFadeOutButton().fire();
+        });
+
+        assertThat(fadeOutFired.get()).isTrue();
+    }
+
+    @Test
+    void audioHandleButtonsShouldDisableWhenTrackCleared() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        EditorView view = createOnFxThread();
+        Track audioTrack = new Track("Vocals", TrackType.AUDIO);
+        audioTrack.addClip(new AudioClip("Take 1", 0.0, 8.0, null));
+
+        runOnFxThread(() -> view.setTrack(audioTrack));
+        assertThat(view.getTrimButton().isDisabled()).isFalse();
+
+        runOnFxThread(() -> view.setTrack(null));
+        assertThat(view.getTrimButton().isDisabled()).isTrue();
+        assertThat(view.getFadeInButton().isDisabled()).isTrue();
+        assertThat(view.getFadeOutButton().isDisabled()).isTrue();
     }
 }

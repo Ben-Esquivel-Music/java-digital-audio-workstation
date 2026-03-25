@@ -91,6 +91,16 @@ public final class WaveformDisplay extends Region {
     }
 
     /**
+     * Forces a re-render of the waveform display.
+     *
+     * <p>Call this after an editing operation (trim, fade) has modified the
+     * underlying audio data so the visual representation is updated.</p>
+     */
+    public void refresh() {
+        render();
+    }
+
+    /**
      * Renders the waveform to the canvas.
      */
     private void render() {
