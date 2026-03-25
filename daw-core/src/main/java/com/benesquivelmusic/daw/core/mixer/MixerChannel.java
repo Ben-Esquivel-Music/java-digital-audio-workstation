@@ -17,6 +17,7 @@ public final class MixerChannel {
     private boolean muted;
     private boolean solo;
     private double sendLevel;
+    private boolean phaseInverted;
 
     /**
      * Creates a new mixer channel with the specified name.
@@ -30,6 +31,7 @@ public final class MixerChannel {
         this.muted = false;
         this.solo = false;
         this.sendLevel = 0.0;
+        this.phaseInverted = false;
     }
 
     /** Returns the channel name. */
@@ -94,5 +96,15 @@ public final class MixerChannel {
             throw new IllegalArgumentException("sendLevel must be between 0.0 and 1.0: " + sendLevel);
         }
         this.sendLevel = sendLevel;
+    }
+
+    /** Returns whether this channel's phase is inverted. */
+    public boolean isPhaseInverted() {
+        return phaseInverted;
+    }
+
+    /** Sets the phase-inverted state. */
+    public void setPhaseInverted(boolean phaseInverted) {
+        this.phaseInverted = phaseInverted;
     }
 }

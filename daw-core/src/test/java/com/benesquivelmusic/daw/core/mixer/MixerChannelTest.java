@@ -16,6 +16,7 @@ class MixerChannelTest {
         assertThat(channel.getPan()).isEqualTo(0.0);
         assertThat(channel.isMuted()).isFalse();
         assertThat(channel.isSolo()).isFalse();
+        assertThat(channel.isPhaseInverted()).isFalse();
     }
 
     @Test
@@ -78,5 +79,15 @@ class MixerChannelTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> channel.setSendLevel(1.1))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void shouldTogglePhaseInverted() {
+        MixerChannel channel = new MixerChannel("Ch");
+        assertThat(channel.isPhaseInverted()).isFalse();
+        channel.setPhaseInverted(true);
+        assertThat(channel.isPhaseInverted()).isTrue();
+        channel.setPhaseInverted(false);
+        assertThat(channel.isPhaseInverted()).isFalse();
     }
 }

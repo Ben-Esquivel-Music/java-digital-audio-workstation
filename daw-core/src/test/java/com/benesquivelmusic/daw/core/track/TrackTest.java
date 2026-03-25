@@ -21,6 +21,7 @@ class TrackTest {
         assertThat(track.isMuted()).isFalse();
         assertThat(track.isSolo()).isFalse();
         assertThat(track.isArmed()).isFalse();
+        assertThat(track.isPhaseInverted()).isFalse();
     }
 
     @Test
@@ -74,6 +75,16 @@ class TrackTest {
         assertThat(track.isArmed()).isTrue();
         track.setArmed(false);
         assertThat(track.isArmed()).isFalse();
+    }
+
+    @Test
+    void shouldTogglePhaseInverted() {
+        Track track = new Track("Track", TrackType.AUDIO);
+        assertThat(track.isPhaseInverted()).isFalse();
+        track.setPhaseInverted(true);
+        assertThat(track.isPhaseInverted()).isTrue();
+        track.setPhaseInverted(false);
+        assertThat(track.isPhaseInverted()).isFalse();
     }
 
     @Test
@@ -180,6 +191,7 @@ class TrackTest {
         original.setMuted(true);
         original.setSolo(true);
         original.setArmed(true);
+        original.setPhaseInverted(true);
         original.setInputDeviceIndex(3);
 
         Track copy = original.duplicate("Vocals (copy)");
@@ -192,6 +204,7 @@ class TrackTest {
         assertThat(copy.isMuted()).isTrue();
         assertThat(copy.isSolo()).isTrue();
         assertThat(copy.isArmed()).isFalse(); // armed is never copied
+        assertThat(copy.isPhaseInverted()).isTrue();
         assertThat(copy.getInputDeviceIndex()).isEqualTo(3);
     }
 
