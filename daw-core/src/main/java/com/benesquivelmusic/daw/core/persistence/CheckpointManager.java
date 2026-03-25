@@ -43,7 +43,7 @@ public final class CheckpointManager {
     private static final DateTimeFormatter TIMESTAMP_FMT =
             DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss").withZone(ZoneId.systemDefault());
 
-    private final AutoSaveConfig config;
+    private AutoSaveConfig config;
     private final List<AutoSaveListener> listeners = new CopyOnWriteArrayList<>();
     private final AtomicInteger checkpointCounter = new AtomicInteger(0);
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -106,6 +106,28 @@ public final class CheckpointManager {
                 Thread.currentThread().interrupt();
             }
             scheduler = null;
+        }
+    }
+
+    /**
+     * Reconfigures the checkpoint manager with a new auto-save configuration.
+     *
+     * <p>If the scheduler is currently running, it is stopped and restarted
+     * with the new configuration. If it is not running, only the configuration
+     * is updated.</p>
+     *
+     * @param newConfig the new auto-save configuration
+     */
+    public void reconfigure(AutoSaveConfig newConfig) {
+        Objects.requireNonNull(newConfig, "newConfig must not be null");
+        Path savedProjectDirectory = this.projectDirectory;
+        boolean wasRunning = running.get();
+        if (wasRunning) {
+            stop();
+        }
+        this.config = newConfig;
+        if (wasRunning && savedProjectDirectory != null) {
+            start(savedProjectDirectory);
         }
     }
 

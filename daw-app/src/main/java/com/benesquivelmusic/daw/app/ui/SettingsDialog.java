@@ -25,14 +25,38 @@ import javafx.scene.layout.VBox;
  * through the supplied {@link SettingsModel} using the Java
  * {@link java.util.prefs.Preferences} API.</p>
  *
+ * <p>An optional {@link SettingsChangeListener} can be registered to receive
+ * a callback after settings are applied, allowing the caller to propagate
+ * changes to the running audio engine, transport, UI, or other subsystems.</p>
+ *
  * <p>Uses the {@link DawIcon} icon pack for all tab and header graphics.</p>
  */
 public final class SettingsDialog extends Dialog<Void> {
+
+    /**
+     * Callback interface invoked after settings are applied.
+     *
+     * <p>Implementations should propagate the updated settings to the
+     * appropriate subsystems (e.g., audio engine, transport, UI scale).</p>
+     */
+    @FunctionalInterface
+    public interface SettingsChangeListener {
+
+        /**
+         * Called after all settings have been written to the {@link SettingsModel}.
+         *
+         * @param model the updated settings model
+         */
+        void onSettingsChanged(SettingsModel model);
+    }
 
     private static final double HEADER_ICON_SIZE = 18;
     private static final double TAB_ICON_SIZE = 14;
 
     private final SettingsModel model;
+
+    // ── Callback ─────────────────────────────────────────────────────────────
+    private SettingsChangeListener settingsChangeListener;
 
     // ── Audio tab controls ───────────────────────────────────────────────────
     private final ComboBox<String> sampleRateCombo;
@@ -132,6 +156,15 @@ public final class SettingsDialog extends Dialog<Void> {
             }
             return null;
         });
+    }
+
+    /**
+     * Sets the listener to be notified after settings are applied.
+     *
+     * @param listener the settings change listener, or {@code null} to clear
+     */
+    public void setSettingsChangeListener(SettingsChangeListener listener) {
+        this.settingsChangeListener = listener;
     }
 
     // ── Tab builders ─────────────────────────────────────────────────────────
@@ -295,6 +328,11 @@ public final class SettingsDialog extends Dialog<Void> {
         String paths = pluginScanPathsField.getText();
         if (paths != null) {
             model.setPluginScanPaths(paths);
+        }
+
+        // Notify listener of applied changes
+        if (settingsChangeListener != null) {
+            settingsChangeListener.onSettingsChanged(model);
         }
     }
 
