@@ -29,6 +29,7 @@ public final class Track {
     private boolean muted;
     private boolean solo;
     private boolean armed;
+    private boolean phaseInverted;
     private int inputDeviceIndex = NO_INPUT_DEVICE;
     private final List<AudioClip> clips = new ArrayList<>();
 
@@ -47,6 +48,7 @@ public final class Track {
         this.muted = false;
         this.solo = false;
         this.armed = false;
+        this.phaseInverted = false;
     }
 
     /** Returns the unique identifier for this track. */
@@ -135,6 +137,16 @@ public final class Track {
         this.armed = armed;
     }
 
+    /** Returns whether this track's phase is inverted. */
+    public boolean isPhaseInverted() {
+        return phaseInverted;
+    }
+
+    /** Sets the phase-inverted state. */
+    public void setPhaseInverted(boolean phaseInverted) {
+        this.phaseInverted = phaseInverted;
+    }
+
     /**
      * Returns the index of the input device assigned to this track, or
      * {@link #NO_INPUT_DEVICE} ({@value #NO_INPUT_DEVICE}) if no device
@@ -206,6 +218,7 @@ public final class Track {
         copy.setMuted(muted);
         copy.setSolo(solo);
         copy.setArmed(false);
+        copy.setPhaseInverted(phaseInverted);
         copy.setInputDeviceIndex(inputDeviceIndex);
         for (AudioClip clip : clips) {
             copy.addClip(clip.duplicate());

@@ -1998,7 +1998,12 @@ public final class MainController {
         phaseBtn.getStyleClass().add("track-mute-button");
         phaseBtn.setTooltip(new Tooltip("Phase Invert (Ø)"));
         phaseBtn.setOnAction(_ -> {
-            statusBarLabel.setText("Phase inverted: " + track.getName());
+            track.setPhaseInverted(!track.isPhaseInverted());
+            phaseBtn.setStyle(track.isPhaseInverted()
+                    ? "-fx-background-color: #448aff; -fx-text-fill: #ffffff;" : "");
+            statusBarLabel.setText(track.isPhaseInverted()
+                    ? "Phase inverted: " + track.getName()
+                    : "Phase normal: " + track.getName());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.PHASE, 12));
         });
 
