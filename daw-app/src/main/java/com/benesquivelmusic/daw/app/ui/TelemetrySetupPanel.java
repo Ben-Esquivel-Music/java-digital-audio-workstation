@@ -1,17 +1,24 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomPreset;
+import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
 import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
 
+import javafx.collections.FXCollections;
+import javafx.collections.ObservableList;
 import javafx.geometry.Insets;
+import javafx.scene.control.Button;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListCell;
+import javafx.scene.control.ListView;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
 import javafx.scene.control.TextField;
 import javafx.scene.layout.GridPane;
+import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 
 /**
@@ -48,6 +55,12 @@ public final class TelemetrySetupPanel extends ScrollPane {
             "-fx-text-fill: #9c27b0; -fx-font-size: 13px; -fx-font-weight: bold;";
     private static final String SEPARATOR_STYLE =
             "-fx-background-color: #3a3a6a;";
+    private static final String BUTTON_STYLE =
+            "-fx-background-color: #3a3a6a; -fx-text-fill: #e0e0e0; "
+                    + "-fx-border-color: #5a5a8a; -fx-border-radius: 3; "
+                    + "-fx-background-radius: 3; -fx-cursor: hand;";
+
+    static final double DEFAULT_POWER_DB = 85.0;
 
     private final ComboBox<RoomPreset> presetCombo;
     private final TextField widthField;
@@ -55,6 +68,16 @@ public final class TelemetrySetupPanel extends ScrollPane {
     private final TextField heightField;
     private final ComboBox<WallMaterial> wallMaterialCombo;
     private final Label errorLabel;
+
+    private final TextField sourceNameField;
+    private final TextField sourceXField;
+    private final TextField sourceYField;
+    private final TextField sourceZField;
+    private final Button addSourceButton;
+    private final Button removeSourceButton;
+    private final ListView<SoundSource> sourceListView;
+    private final ObservableList<SoundSource> soundSources;
+    private final Label sourceErrorLabel;
 
     /**
      * Creates a new telemetry setup panel with sensible defaults.
@@ -99,6 +122,36 @@ public final class TelemetrySetupPanel extends ScrollPane {
         errorLabel.setVisible(false);
         errorLabel.setManaged(false);
 
+        // ── Sound source fields ──────────────────────────────────────
+        sourceNameField = new TextField();
+        sourceNameField.setStyle(FIELD_STYLE);
+        sourceNameField.setPromptText("Source name (e.g. Guitar)");
+        sourceNameField.setPrefColumnCount(12);
+
+        sourceXField = createNumericField("0.0");
+        sourceYField = createNumericField("0.0");
+        sourceZField = createNumericField("0.0");
+
+        addSourceButton = new Button("+ Add Source");
+        addSourceButton.setStyle(BUTTON_STYLE);
+        addSourceButton.setOnAction(event -> addSource());
+
+        removeSourceButton = new Button("- Remove");
+        removeSourceButton.setStyle(BUTTON_STYLE);
+        removeSourceButton.setOnAction(event -> removeSelectedSource());
+
+        soundSources = FXCollections.observableArrayList();
+        sourceListView = new ListView<>(soundSources);
+        sourceListView.setPrefHeight(120);
+        sourceListView.setStyle("-fx-background-color: #2a2a4a; -fx-border-color: #3a3a6a;");
+        sourceListView.setCellFactory(list -> new SoundSourceCell());
+
+        sourceErrorLabel = new Label();
+        sourceErrorLabel.setStyle(ERROR_STYLE);
+        sourceErrorLabel.setWrapText(true);
+        sourceErrorLabel.setVisible(false);
+        sourceErrorLabel.setManaged(false);
+
         // ── Auto-fill on preset selection ────────────────────────────
         presetCombo.valueProperty().addListener((observable, oldValue, newValue) -> {
             if (newValue != null) {
@@ -138,6 +191,13 @@ public final class TelemetrySetupPanel extends ScrollPane {
         Label materialSectionLabel = new Label("Wall Material");
         materialSectionLabel.setStyle(SECTION_LABEL_STYLE);
 
+        Label sourceSectionLabel = new Label("Sound Sources");
+        sourceSectionLabel.setStyle(SECTION_LABEL_STYLE);
+
+        GridPane sourceGrid = createSourceGrid();
+
+        HBox sourceButtons = new HBox(8, addSourceButton, removeSourceButton);
+
         content.getChildren().addAll(
                 header,
                 headerSep,
@@ -149,7 +209,13 @@ public final class TelemetrySetupPanel extends ScrollPane {
                 new Separator() {{ setStyle(SEPARATOR_STYLE); }},
                 materialSectionLabel,
                 wallMaterialCombo,
-                errorLabel
+                errorLabel,
+                new Separator() {{ setStyle(SEPARATOR_STYLE); }},
+                sourceSectionLabel,
+                sourceGrid,
+                sourceButtons,
+                sourceErrorLabel,
+                sourceListView
         );
 
         setContent(content);
@@ -212,6 +278,87 @@ public final class TelemetrySetupPanel extends ScrollPane {
     }
 
     /**
+     * Returns the source name text field.
+     *
+     * @return the source name field
+     */
+    public TextField getSourceNameField() {
+        return sourceNameField;
+    }
+
+    /**
+     * Returns the source X position text field.
+     *
+     * @return the source X field
+     */
+    public TextField getSourceXField() {
+        return sourceXField;
+    }
+
+    /**
+     * Returns the source Y position text field.
+     *
+     * @return the source Y field
+     */
+    public TextField getSourceYField() {
+        return sourceYField;
+    }
+
+    /**
+     * Returns the source Z position text field.
+     *
+     * @return the source Z field
+     */
+    public TextField getSourceZField() {
+        return sourceZField;
+    }
+
+    /**
+     * Returns the add source button.
+     *
+     * @return the add source button
+     */
+    public Button getAddSourceButton() {
+        return addSourceButton;
+    }
+
+    /**
+     * Returns the remove source button.
+     *
+     * @return the remove source button
+     */
+    public Button getRemoveSourceButton() {
+        return removeSourceButton;
+    }
+
+    /**
+     * Returns the list view displaying configured sound sources.
+     *
+     * @return the source list view
+     */
+    public ListView<SoundSource> getSourceListView() {
+        return sourceListView;
+    }
+
+    /**
+     * Returns the observable list of sound sources.
+     *
+     * @return the sound sources list
+     */
+    public ObservableList<SoundSource> getSoundSources() {
+        return soundSources;
+    }
+
+    /**
+     * Returns the error label used for source validation messages.
+     *
+     * @return the source error label
+     */
+    public Label getSourceErrorLabel() {
+        return sourceErrorLabel;
+    }
+
+    /**
      * Returns the currently configured room dimensions, or {@code null}
      * if any input is invalid.
      *
@@ -269,6 +416,65 @@ public final class TelemetrySetupPanel extends ScrollPane {
         }
     }
 
+    // ── Source management ───────────────────────────────────────────
+
+    /**
+     * Validates source inputs and adds a new sound source to the list.
+     * Displays an error message if validation fails.
+     */
+    void addSource() {
+        StringBuilder errors = new StringBuilder();
+
+        String name = sourceNameField.getText();
+        if (name == null || name.isBlank()) {
+            errors.append("Source name is required. ");
+        }
+
+        Double xVal = parseNonNegativeDouble(sourceXField.getText());
+        if (xVal == null) {
+            errors.append("X must be a non-negative number. ");
+        }
+
+        Double yVal = parseNonNegativeDouble(sourceYField.getText());
+        if (yVal == null) {
+            errors.append("Y must be a non-negative number. ");
+        }
+
+        Double zVal = parseNonNegativeDouble(sourceZField.getText());
+        if (zVal == null) {
+            errors.append("Z must be a non-negative number. ");
+        }
+
+        if (!errors.isEmpty()) {
+            sourceErrorLabel.setText(errors.toString().trim());
+            sourceErrorLabel.setVisible(true);
+            sourceErrorLabel.setManaged(true);
+            return;
+        }
+
+        Position3D position = new Position3D(xVal, yVal, zVal);
+        SoundSource source = new SoundSource(name.trim(), position, DEFAULT_POWER_DB);
+        soundSources.add(source);
+
+        sourceNameField.clear();
+        sourceXField.setText("0.0");
+        sourceYField.setText("0.0");
+        sourceZField.setText("0.0");
+        sourceErrorLabel.setText("");
+        sourceErrorLabel.setVisible(false);
+        sourceErrorLabel.setManaged(false);
+    }
+
+    /**
+     * Removes the currently selected sound source from the list.
+     */
+    void removeSelectedSource() {
+        SoundSource selected = sourceListView.getSelectionModel().getSelectedItem();
+        if (selected != null) {
+            soundSources.remove(selected);
+        }
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────
 
     private TextField createNumericField(String defaultValue) {
@@ -300,6 +506,32 @@ public final class TelemetrySetupPanel extends ScrollPane {
         return grid;
     }
 
+    private GridPane createSourceGrid() {
+        GridPane grid = new GridPane();
+        grid.setHgap(12);
+        grid.setVgap(8);
+
+        Label nameLabel = new Label("Name:");
+        nameLabel.setStyle(LABEL_STYLE);
+        Label xLabel = new Label("X (m):");
+        xLabel.setStyle(LABEL_STYLE);
+        Label yLabel = new Label("Y (m):");
+        yLabel.setStyle(LABEL_STYLE);
+        Label zLabel = new Label("Z (m):");
+        zLabel.setStyle(LABEL_STYLE);
+
+        grid.add(nameLabel, 0, 0);
+        grid.add(sourceNameField, 1, 0);
+        grid.add(xLabel, 0, 1);
+        grid.add(sourceXField, 1, 1);
+        grid.add(yLabel, 0, 2);
+        grid.add(sourceYField, 1, 2);
+        grid.add(zLabel, 0, 3);
+        grid.add(sourceZField, 1, 3);
+
+        return grid;
+    }
+
     private static Double parsePositiveDouble(String text) {
         if (text == null || text.isBlank()) {
             return null;
@@ -307,6 +539,21 @@ public final class TelemetrySetupPanel extends ScrollPane {
         try {
             double value = Double.parseDouble(text.trim());
             if (value > 0) {
+                return value;
+            }
+            return null;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    static Double parseNonNegativeDouble(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        try {
+            double value = Double.parseDouble(text.trim());
+            if (value >= 0) {
                 return value;
             }
             return null;
@@ -363,6 +610,20 @@ public final class TelemetrySetupPanel extends ScrollPane {
                 setText(null);
             } else {
                 setText(formatMaterialName(material));
+            }
+        }
+    }
+
+    private static final class SoundSourceCell extends ListCell<SoundSource> {
+        @Override
+        protected void updateItem(SoundSource source, boolean empty) {
+            super.updateItem(source, empty);
+            if (empty || source == null) {
+                setText(null);
+            } else {
+                Position3D pos = source.position();
+                setText(String.format("%s  (%.1f, %.1f, %.1f)",
+                        source.name(), pos.x(), pos.y(), pos.z()));
             }
         }
     }
