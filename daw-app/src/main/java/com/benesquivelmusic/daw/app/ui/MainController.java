@@ -10,6 +10,9 @@ import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.export.MidiFileExporter;
+import com.benesquivelmusic.daw.core.export.TrackBouncer;
+import com.benesquivelmusic.daw.core.export.WavExporter;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
@@ -2671,11 +2674,34 @@ public final class MainController {
             Stage stage = (Stage) rootPane.getScene().getWindow();
             java.io.File file = fileChooser.showSaveDialog(stage);
             if (file != null) {
-                statusBarLabel.setText("Exported WAV: " + track.getName() + " → " + file.getName());
+                int sampleRate = (int) project.getFormat().sampleRate();
+                int bitDepth = project.getFormat().bitDepth();
+                int channels = project.getFormat().channels();
+                double tempo = project.getTransport().getTempo();
+                float[][] audioData = TrackBouncer.bounce(track, sampleRate, tempo, channels);
+                if (audioData == null) {
+                    notificationBar.show(NotificationLevel.WARNING,
+                            "No audio data to export for track: " + track.getName());
+                    return;
+                }
+                statusBarLabel.setText("Exporting WAV: " + track.getName() + "…");
                 statusBarLabel.setGraphic(IconNode.of(DawIcon.WAV, 12));
-                notificationBar.show(NotificationLevel.SUCCESS,
-                        "Exported WAV: " + track.getName() + " → " + file.getName());
-                LOG.info(() -> "Exported track " + track.getName() + " as WAV to " + file.getAbsolutePath());
+                try {
+                    WavExporter.write(audioData, sampleRate, bitDepth,
+                            com.benesquivelmusic.daw.sdk.export.DitherType.TPDF,
+                            com.benesquivelmusic.daw.sdk.export.AudioMetadata.EMPTY,
+                            file.toPath());
+                    statusBarLabel.setText("Exported WAV: " + track.getName() + " → " + file.getName());
+                    notificationBar.show(NotificationLevel.SUCCESS,
+                            "Exported WAV: " + track.getName() + " → " + file.getAbsolutePath());
+                    LOG.info(() -> "Exported track " + track.getName() + " as WAV to " + file.getAbsolutePath());
+                } catch (IOException ex) {
+                    statusBarLabel.setText("WAV export failed: " + ex.getMessage());
+                    statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+                    notificationBar.show(NotificationLevel.ERROR,
+                            "WAV export failed: " + ex.getMessage());
+                    LOG.log(Level.WARNING, "WAV export failed for track " + track.getName(), ex);
+                }
             }
         });
 
@@ -2684,28 +2710,69 @@ public final class MainController {
         exportMp3.setDisable(true);
         exportMp3.setStyle("-fx-opacity: 0.5;");
         Tooltip.install(exportMp3.getGraphic(), new Tooltip(
-                noAudioData ? "No audio data to export" : "Format not yet supported"));
+                noAudioData ? "No audio data to export" : "Format not yet supported — export as WAV and convert externally"));
 
         MenuItem exportAac = new MenuItem("Export as AAC");
         exportAac.setGraphic(IconNode.of(DawIcon.AAC, 14));
         exportAac.setDisable(true);
         exportAac.setStyle("-fx-opacity: 0.5;");
         Tooltip.install(exportAac.getGraphic(), new Tooltip(
-                noAudioData ? "No audio data to export" : "Format not yet supported"));
+                noAudioData ? "No audio data to export" : "Format not yet supported — export as WAV and convert externally"));
 
         MenuItem exportMidi = new MenuItem("Export as MIDI");
         exportMidi.setGraphic(IconNode.of(DawIcon.MIDI_FILE, 14));
-        exportMidi.setDisable(true);
-        exportMidi.setStyle("-fx-opacity: 0.5;");
-        Tooltip.install(exportMidi.getGraphic(), new Tooltip(
-                isNotMidiTrack ? "Track is not a MIDI track" : "Format not yet supported"));
+        if (isNotMidiTrack) {
+            exportMidi.setDisable(true);
+            exportMidi.setStyle("-fx-opacity: 0.5;");
+            Tooltip.install(exportMidi.getGraphic(), new Tooltip("Track is not a MIDI track"));
+        }
+        exportMidi.setOnAction(_ -> {
+            List<MidiNote> notes = editorView != null ? editorView.getNotes() : List.of();
+            if (notes.isEmpty()) {
+                notificationBar.show(NotificationLevel.WARNING,
+                        "No MIDI notes to export for track: " + track.getName());
+                return;
+            }
+            FileChooser fileChooser = new FileChooser();
+            fileChooser.setTitle("Export Track as MIDI");
+            fileChooser.setInitialFileName(track.getName() + ".mid");
+            fileChooser.getExtensionFilters().add(
+                    new FileChooser.ExtensionFilter("MIDI File", "*.mid"));
+            Stage stage = (Stage) rootPane.getScene().getWindow();
+            java.io.File file = fileChooser.showSaveDialog(stage);
+            if (file != null) {
+                double tempo = project.getTransport().getTempo();
+                List<MidiFileExporter.NoteDescriptor> descriptors = new java.util.ArrayList<>();
+                for (MidiNote note : notes) {
+                    int midiNoteNumber = MidiNote.MAX_NOTE - note.note();
+                    descriptors.add(new MidiFileExporter.NoteDescriptor(
+                            midiNoteNumber, note.startColumn(),
+                            note.durationColumns(), note.velocity(), 0));
+                }
+                statusBarLabel.setText("Exporting MIDI: " + track.getName() + "…");
+                statusBarLabel.setGraphic(IconNode.of(DawIcon.MIDI_FILE, 12));
+                try {
+                    MidiFileExporter.write(descriptors, tempo, file.toPath());
+                    statusBarLabel.setText("Exported MIDI: " + track.getName() + " → " + file.getName());
+                    notificationBar.show(NotificationLevel.SUCCESS,
+                            "Exported MIDI: " + track.getName() + " → " + file.getAbsolutePath());
+                    LOG.info(() -> "Exported track " + track.getName() + " as MIDI to " + file.getAbsolutePath());
+                } catch (IOException ex) {
+                    statusBarLabel.setText("MIDI export failed: " + ex.getMessage());
+                    statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+                    notificationBar.show(NotificationLevel.ERROR,
+                            "MIDI export failed: " + ex.getMessage());
+                    LOG.log(Level.WARNING, "MIDI export failed for track " + track.getName(), ex);
+                }
+            }
+        });
 
         MenuItem exportWma = new MenuItem("Export as WMA");
         exportWma.setGraphic(IconNode.of(DawIcon.WMA, 14));
         exportWma.setDisable(true);
         exportWma.setStyle("-fx-opacity: 0.5;");
         Tooltip.install(exportWma.getGraphic(), new Tooltip(
-                noAudioData ? "No audio data to export" : "Format not yet supported"));
+                noAudioData ? "No audio data to export" : "Format not yet supported — export as WAV and convert externally"));
 
         // ── General category items ──────────────────────────────────────────
         MenuItem favoriteItem = new MenuItem("Add to Favorites");

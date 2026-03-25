@@ -29,7 +29,7 @@ import java.util.Objects;
  * <p>Dithering is applied automatically when reducing bit depth below 32 bits,
  * using the algorithm specified in the {@link AudioExportConfig}.</p>
  */
-final class WavExporter {
+public final class WavExporter {
 
     /** WAV format code for PCM integer data. */
     private static final short FORMAT_PCM = 1;
@@ -68,7 +68,7 @@ final class WavExporter {
      * @param outputPath      the output file path
      * @throws IOException if an I/O error occurs
      */
-    static void write(float[][] audioData, int sampleRate, int bitDepth,
+    public static void write(float[][] audioData, int sampleRate, int bitDepth,
                       DitherType ditherType, AudioMetadata metadata,
                       Path outputPath) throws IOException {
 

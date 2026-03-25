@@ -23,6 +23,7 @@ public final class AudioClip implements TimelineRegion {
     private boolean reversed;
     private double fadeInBeats;
     private double fadeOutBeats;
+    private float[][] audioData;
 
     /**
      * Creates a new audio clip.
@@ -162,6 +163,25 @@ public final class AudioClip implements TimelineRegion {
         this.fadeOutBeats = fadeOutBeats;
     }
 
+    /**
+     * Returns the raw audio sample data, or {@code null} if this clip
+     * references an external file rather than an in-memory buffer.
+     *
+     * @return audio data as {@code [channel][sample]} in [-1.0, 1.0], or {@code null}
+     */
+    public float[][] getAudioData() {
+        return audioData;
+    }
+
+    /**
+     * Sets the raw audio sample data for this clip.
+     *
+     * @param audioData audio data as {@code [channel][sample]}, or {@code null}
+     */
+    public void setAudioData(float[][] audioData) {
+        this.audioData = audioData;
+    }
+
     /** Returns the end beat position (start + duration). */
     public double getEndBeat() {
         return startBeat + durationBeats;
@@ -209,6 +229,7 @@ public final class AudioClip implements TimelineRegion {
         copy.setReversed(reversed);
         copy.setFadeInBeats(fadeInBeats);
         copy.setFadeOutBeats(fadeOutBeats);
+        copy.setAudioData(audioData);
         return copy;
     }
 
