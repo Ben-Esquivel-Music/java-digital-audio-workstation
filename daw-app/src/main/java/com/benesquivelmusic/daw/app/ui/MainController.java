@@ -329,6 +329,8 @@ public final class MainController {
         editorView.setOnTrimAction(this::onEditorTrim);
         editorView.setOnFadeInAction(this::onEditorFadeIn);
         editorView.setOnFadeOutAction(this::onEditorFadeOut);
+        editorView.setSnapState(snapEnabled, gridResolution,
+                project.getTransport().getTimeSignatureNumerator());
         viewCache.put(DawView.EDITOR, editorView);
 
         // Telemetry view — sound wave telemetry room visualizer
@@ -487,6 +489,7 @@ public final class MainController {
         snapEnabled = !snapEnabled;
         toolbarStateStore.saveSnapEnabled(snapEnabled);
         updateSnapButtonStyle();
+        syncSnapStateToEditorView();
         String snapState = snapEnabled ? "Snap to grid enabled" : "Snap to grid disabled";
         statusBarLabel.setText(snapState);
         statusBarLabel.setGraphic(IconNode.of(DawIcon.SNAP, 12));
@@ -602,6 +605,7 @@ public final class MainController {
     private void selectGridResolution(GridResolution resolution) {
         gridResolution = resolution;
         toolbarStateStore.saveGridResolution(resolution);
+        syncSnapStateToEditorView();
         statusBarLabel.setText("Grid: " + resolution.displayName());
         statusBarLabel.setGraphic(IconNode.of(DawIcon.SNAP, 12));
         LOG.fine(() -> "Grid resolution changed to: " + resolution.displayName());
@@ -623,6 +627,18 @@ public final class MainController {
      */
     public GridResolution getGridResolution() {
         return gridResolution;
+    }
+
+    /**
+     * Pushes the current snap-to-grid state from this controller to the
+     * {@link EditorView} so that note placement and other editor operations
+     * respect the active snap settings.
+     */
+    private void syncSnapStateToEditorView() {
+        if (editorView != null) {
+            editorView.setSnapState(snapEnabled, gridResolution,
+                    project.getTransport().getTimeSignatureNumerator());
+        }
     }
 
     // ── Zoom controls ────────────────────────────────────────────────────────
@@ -1351,7 +1367,12 @@ public final class MainController {
     private void onSkipForward() {
         Transport transport = project.getTransport();
         double jump = 4.0 * transport.getTimeSignatureNumerator();
-        transport.setPositionInBeats(transport.getPositionInBeats() + jump);
+        double newPosition = transport.getPositionInBeats() + jump;
+        if (snapEnabled) {
+            newPosition = SnapQuantizer.quantize(newPosition, gridResolution,
+                    transport.getTimeSignatureNumerator());
+        }
+        transport.setPositionInBeats(newPosition);
         statusBarLabel.setText("Skipped forward");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.SKIP_FORWARD, 12));
     }
@@ -2417,6 +2438,7 @@ public final class MainController {
         snapItem.setOnAction(_ -> {
             snapEnabled = !snapEnabled;
             updateSnapButtonStyle();
+            syncSnapStateToEditorView();
             snapItem.setText(snapEnabled ? "Snap: ON" : "Snap: OFF");
             statusBarLabel.setText(snapEnabled ? "Snap to grid enabled" : "Snap to grid disabled");
             statusBarLabel.setGraphic(IconNode.of(DawIcon.SNAP, 12));
