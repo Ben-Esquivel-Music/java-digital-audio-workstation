@@ -68,6 +68,12 @@ public final class EditorView extends VBox {
     private static final double BASE_COL_WIDTH = 20;
     private static final double VELOCITY_BAR_HEIGHT = 40;
 
+    /**
+     * The number of beats each grid column represents. With 32 columns
+     * covering 8 beats (2 bars of 4/4), each column equals a sixteenth note.
+     */
+    static final double BEATS_PER_COLUMN = 0.25;
+
     private static final Color GRID_BG = Color.web("#1a1a2e");
     private static final Color GRID_LINE = Color.web("#ffffff", 0.08);
     private static final Color OCTAVE_LINE = Color.web("#7c4dff", 0.25);
@@ -109,6 +115,11 @@ public final class EditorView extends VBox {
 
     // ── Zoom state ───────────────────────────────────────────────────────────
     private final ZoomLevel zoomLevel = new ZoomLevel();
+
+    // ── Snap state ──────────────────────────────────────────────────────────
+    private boolean snapEnabled;
+    private GridResolution gridResolution = GridResolution.QUARTER;
+    private int beatsPerBar = 4;
 
     // ── Note state ───────────────────────────────────────────────────────────
     private final List<MidiNote> notes = new ArrayList<>();
@@ -305,6 +316,40 @@ public final class EditorView extends VBox {
      */
     public void setOnToolChanged(Consumer<EditTool> handler) {
         this.onToolChanged = handler;
+    }
+
+    // ── Snap-to-grid API ─────────────────────────────────────────────────────
+
+    /**
+     * Updates the snap-to-grid state used by note placement and other editing
+     * operations within this editor view.
+     *
+     * @param snapEnabled    whether snap-to-grid is enabled
+     * @param gridResolution the active grid resolution
+     * @param beatsPerBar    the number of beats per bar (time-signature numerator)
+     */
+    public void setSnapState(boolean snapEnabled, GridResolution gridResolution, int beatsPerBar) {
+        this.snapEnabled = snapEnabled;
+        this.gridResolution = gridResolution;
+        this.beatsPerBar = beatsPerBar;
+    }
+
+    /**
+     * Returns whether snap-to-grid is currently enabled for this editor view.
+     *
+     * @return {@code true} if snap is enabled
+     */
+    public boolean isSnapEnabled() {
+        return snapEnabled;
+    }
+
+    /**
+     * Returns the active grid resolution for this editor view.
+     *
+     * @return the grid resolution
+     */
+    public GridResolution getGridResolution() {
+        return gridResolution;
     }
 
     // ── Audio handle API ─────────────────────────────────────────────────────
@@ -678,12 +723,28 @@ public final class EditorView extends VBox {
             return;
         }
 
+        if (snapEnabled) {
+            column = snapColumn(column);
+        }
+
         switch (activeEditTool) {
             case POINTER -> selectNoteAt(noteRow, column);
             case PENCIL -> insertNoteAt(noteRow, column);
             case ERASER -> eraseNoteAt(noteRow, column);
             default -> { /* scissors, glue — not applicable in editor */ }
         }
+    }
+
+    /**
+     * Snaps a grid column index to the nearest column aligned with the active
+     * {@link GridResolution}. The column is converted to a beat position,
+     * quantized, and converted back.
+     */
+    int snapColumn(int column) {
+        double beatPosition = column * BEATS_PER_COLUMN;
+        double snapped = SnapQuantizer.quantize(beatPosition, gridResolution, beatsPerBar);
+        int snappedColumn = (int) Math.round(snapped / BEATS_PER_COLUMN);
+        return Math.max(0, Math.min(snappedColumn, (int) GRID_COLUMNS - 1));
     }
 
     /**

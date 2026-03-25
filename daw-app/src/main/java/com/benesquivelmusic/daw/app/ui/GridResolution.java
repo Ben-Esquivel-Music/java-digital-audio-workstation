@@ -53,4 +53,34 @@ public enum GridResolution {
     public String displayName() {
         return displayName;
     }
+
+    /**
+     * Returns the grid size in beats for this resolution.
+     *
+     * <p>Straight subdivisions are fractions of a whole note (4 beats in common
+     * time). Triplet variants divide the corresponding straight value into three
+     * equal parts. The {@link #BAR} resolution uses the given
+     * {@code beatsPerBar} directly.</p>
+     *
+     * @param beatsPerBar the number of beats in a bar (e.g. 4 for 4/4 time)
+     * @return the grid size in beats
+     * @throws IllegalArgumentException if {@code beatsPerBar} is not positive
+     */
+    public double beatsPerGrid(int beatsPerBar) {
+        if (beatsPerBar <= 0) {
+            throw new IllegalArgumentException("beatsPerBar must be positive: " + beatsPerBar);
+        }
+        return switch (this) {
+            case BAR -> beatsPerBar;
+            case HALF -> 2.0;
+            case QUARTER -> 1.0;
+            case EIGHTH -> 0.5;
+            case SIXTEENTH -> 0.25;
+            case THIRTY_SECOND -> 0.125;
+            case HALF_TRIPLET -> 2.0 / 3.0;
+            case QUARTER_TRIPLET -> 1.0 / 3.0;
+            case EIGHTH_TRIPLET -> 0.5 / 3.0;
+            case SIXTEENTH_TRIPLET -> 0.25 / 3.0;
+        };
+    }
 }
