@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomPreset;
@@ -79,6 +80,18 @@ public final class TelemetrySetupPanel extends ScrollPane {
     private final ObservableList<SoundSource> soundSources;
     private final Label sourceErrorLabel;
 
+    private final TextField micNameField;
+    private final TextField micXField;
+    private final TextField micYField;
+    private final TextField micZField;
+    private final TextField micAzimuthField;
+    private final TextField micElevationField;
+    private final Button addMicButton;
+    private final Button removeMicButton;
+    private final ListView<MicrophonePlacement> micListView;
+    private final ObservableList<MicrophonePlacement> microphones;
+    private final Label micErrorLabel;
+
     /**
      * Creates a new telemetry setup panel with sensible defaults.
      */
@@ -152,6 +165,38 @@ public final class TelemetrySetupPanel extends ScrollPane {
         sourceErrorLabel.setVisible(false);
         sourceErrorLabel.setManaged(false);
 
+        // ── Microphone fields ────────────────────────────────────────
+        micNameField = new TextField();
+        micNameField.setStyle(FIELD_STYLE);
+        micNameField.setPromptText("Mic name (e.g. Overhead L)");
+        micNameField.setPrefColumnCount(12);
+
+        micXField = createNumericField("0.0");
+        micYField = createNumericField("0.0");
+        micZField = createNumericField("0.0");
+        micAzimuthField = createNumericField("0.0");
+        micElevationField = createNumericField("0.0");
+
+        addMicButton = new Button("+ Add Mic");
+        addMicButton.setStyle(BUTTON_STYLE);
+        addMicButton.setOnAction(event -> addMic());
+
+        removeMicButton = new Button("- Remove");
+        removeMicButton.setStyle(BUTTON_STYLE);
+        removeMicButton.setOnAction(event -> removeSelectedMic());
+
+        microphones = FXCollections.observableArrayList();
+        micListView = new ListView<>(microphones);
+        micListView.setPrefHeight(120);
+        micListView.setStyle("-fx-background-color: #2a2a4a; -fx-border-color: #3a3a6a;");
+        micListView.setCellFactory(list -> new MicrophonePlacementCell());
+
+        micErrorLabel = new Label();
+        micErrorLabel.setStyle(ERROR_STYLE);
+        micErrorLabel.setWrapText(true);
+        micErrorLabel.setVisible(false);
+        micErrorLabel.setManaged(false);
+
         // ── Auto-fill on preset selection ────────────────────────────
         presetCombo.valueProperty().addListener((observable, oldValue, newValue) -> {
             if (newValue != null) {
@@ -198,6 +243,13 @@ public final class TelemetrySetupPanel extends ScrollPane {
 
         HBox sourceButtons = new HBox(8, addSourceButton, removeSourceButton);
 
+        Label micSectionLabel = new Label("Microphones");
+        micSectionLabel.setStyle(SECTION_LABEL_STYLE);
+
+        GridPane micGrid = createMicGrid();
+
+        HBox micButtons = new HBox(8, addMicButton, removeMicButton);
+
         content.getChildren().addAll(
                 header,
                 headerSep,
@@ -215,7 +267,13 @@ public final class TelemetrySetupPanel extends ScrollPane {
                 sourceGrid,
                 sourceButtons,
                 sourceErrorLabel,
-                sourceListView
+                sourceListView,
+                new Separator() {{ setStyle(SEPARATOR_STYLE); }},
+                micSectionLabel,
+                micGrid,
+                micButtons,
+                micErrorLabel,
+                micListView
         );
 
         setContent(content);
@@ -359,6 +417,105 @@ public final class TelemetrySetupPanel extends ScrollPane {
     }
 
     /**
+     * Returns the microphone name text field.
+     *
+     * @return the mic name field
+     */
+    public TextField getMicNameField() {
+        return micNameField;
+    }
+
+    /**
+     * Returns the microphone X position text field.
+     *
+     * @return the mic X field
+     */
+    public TextField getMicXField() {
+        return micXField;
+    }
+
+    /**
+     * Returns the microphone Y position text field.
+     *
+     * @return the mic Y field
+     */
+    public TextField getMicYField() {
+        return micYField;
+    }
+
+    /**
+     * Returns the microphone Z position text field.
+     *
+     * @return the mic Z field
+     */
+    public TextField getMicZField() {
+        return micZField;
+    }
+
+    /**
+     * Returns the microphone azimuth text field.
+     *
+     * @return the mic azimuth field
+     */
+    public TextField getMicAzimuthField() {
+        return micAzimuthField;
+    }
+
+    /**
+     * Returns the microphone elevation text field.
+     *
+     * @return the mic elevation field
+     */
+    public TextField getMicElevationField() {
+        return micElevationField;
+    }
+
+    /**
+     * Returns the add mic button.
+     *
+     * @return the add mic button
+     */
+    public Button getAddMicButton() {
+        return addMicButton;
+    }
+
+    /**
+     * Returns the remove mic button.
+     *
+     * @return the remove mic button
+     */
+    public Button getRemoveMicButton() {
+        return removeMicButton;
+    }
+
+    /**
+     * Returns the list view displaying configured microphones.
+     *
+     * @return the mic list view
+     */
+    public ListView<MicrophonePlacement> getMicListView() {
+        return micListView;
+    }
+
+    /**
+     * Returns the observable list of microphone placements.
+     *
+     * @return the microphones list
+     */
+    public ObservableList<MicrophonePlacement> getMicrophones() {
+        return microphones;
+    }
+
+    /**
+     * Returns the error label used for microphone validation messages.
+     *
+     * @return the mic error label
+     */
+    public Label getMicErrorLabel() {
+        return micErrorLabel;
+    }
+
+    /**
      * Returns the currently configured room dimensions, or {@code null}
      * if any input is invalid.
      *
@@ -475,6 +632,77 @@ public final class TelemetrySetupPanel extends ScrollPane {
         }
     }
 
+    // ── Mic management ─────────────────────────────────────────────
+
+    /**
+     * Validates microphone inputs and adds a new microphone placement to
+     * the list. Displays an error message if validation fails.
+     */
+    void addMic() {
+        StringBuilder errors = new StringBuilder();
+
+        String name = micNameField.getText();
+        if (name == null || name.isBlank()) {
+            errors.append("Mic name is required. ");
+        }
+
+        Double xVal = parseNonNegativeDouble(micXField.getText());
+        if (xVal == null) {
+            errors.append("X must be a non-negative number. ");
+        }
+
+        Double yVal = parseNonNegativeDouble(micYField.getText());
+        if (yVal == null) {
+            errors.append("Y must be a non-negative number. ");
+        }
+
+        Double zVal = parseNonNegativeDouble(micZField.getText());
+        if (zVal == null) {
+            errors.append("Z must be a non-negative number. ");
+        }
+
+        Double azimuthVal = parseAzimuth(micAzimuthField.getText());
+        if (azimuthVal == null) {
+            errors.append("Azimuth must be a number in [0, 360). ");
+        }
+
+        Double elevationVal = parseElevation(micElevationField.getText());
+        if (elevationVal == null) {
+            errors.append("Elevation must be a number in [-90, 90]. ");
+        }
+
+        if (!errors.isEmpty()) {
+            micErrorLabel.setText(errors.toString().trim());
+            micErrorLabel.setVisible(true);
+            micErrorLabel.setManaged(true);
+            return;
+        }
+
+        Position3D position = new Position3D(xVal, yVal, zVal);
+        MicrophonePlacement mic = new MicrophonePlacement(name.trim(), position, azimuthVal, elevationVal);
+        microphones.add(mic);
+
+        micNameField.clear();
+        micXField.setText("0.0");
+        micYField.setText("0.0");
+        micZField.setText("0.0");
+        micAzimuthField.setText("0.0");
+        micElevationField.setText("0.0");
+        micErrorLabel.setText("");
+        micErrorLabel.setVisible(false);
+        micErrorLabel.setManaged(false);
+    }
+
+    /**
+     * Removes the currently selected microphone from the list.
+     */
+    void removeSelectedMic() {
+        MicrophonePlacement selected = micListView.getSelectionModel().getSelectedItem();
+        if (selected != null) {
+            microphones.remove(selected);
+        }
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────
 
     private TextField createNumericField(String defaultValue) {
@@ -532,6 +760,40 @@ public final class TelemetrySetupPanel extends ScrollPane {
         return grid;
     }
 
+    private GridPane createMicGrid() {
+        GridPane grid = new GridPane();
+        grid.setHgap(12);
+        grid.setVgap(8);
+
+        Label nameLabel = new Label("Name:");
+        nameLabel.setStyle(LABEL_STYLE);
+        Label xLabel = new Label("X (m):");
+        xLabel.setStyle(LABEL_STYLE);
+        Label yLabel = new Label("Y (m):");
+        yLabel.setStyle(LABEL_STYLE);
+        Label zLabel = new Label("Z (m):");
+        zLabel.setStyle(LABEL_STYLE);
+        Label azimuthLabel = new Label("Azimuth (°):");
+        azimuthLabel.setStyle(LABEL_STYLE);
+        Label elevationLabel = new Label("Elevation (°):");
+        elevationLabel.setStyle(LABEL_STYLE);
+
+        grid.add(nameLabel, 0, 0);
+        grid.add(micNameField, 1, 0);
+        grid.add(xLabel, 0, 1);
+        grid.add(micXField, 1, 1);
+        grid.add(yLabel, 0, 2);
+        grid.add(micYField, 1, 2);
+        grid.add(zLabel, 0, 3);
+        grid.add(micZField, 1, 3);
+        grid.add(azimuthLabel, 0, 4);
+        grid.add(micAzimuthField, 1, 4);
+        grid.add(elevationLabel, 0, 5);
+        grid.add(micElevationField, 1, 5);
+
+        return grid;
+    }
+
     private static Double parsePositiveDouble(String text) {
         if (text == null || text.isBlank()) {
             return null;
@@ -554,6 +816,36 @@ public final class TelemetrySetupPanel extends ScrollPane {
         try {
             double value = Double.parseDouble(text.trim());
             if (value >= 0) {
+                return value;
+            }
+            return null;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    static Double parseAzimuth(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        try {
+            double value = Double.parseDouble(text.trim());
+            if (value >= 0 && value < 360) {
+                return value;
+            }
+            return null;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    static Double parseElevation(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        try {
+            double value = Double.parseDouble(text.trim());
+            if (value >= -90 && value <= 90) {
                 return value;
             }
             return null;
@@ -624,6 +916,21 @@ public final class TelemetrySetupPanel extends ScrollPane {
                 Position3D pos = source.position();
                 setText(String.format("%s  (%.1f, %.1f, %.1f)",
                         source.name(), pos.x(), pos.y(), pos.z()));
+            }
+        }
+    }
+
+    private static final class MicrophonePlacementCell extends ListCell<MicrophonePlacement> {
+        @Override
+        protected void updateItem(MicrophonePlacement mic, boolean empty) {
+            super.updateItem(mic, empty);
+            if (empty || mic == null) {
+                setText(null);
+            } else {
+                Position3D pos = mic.position();
+                setText(String.format("%s  (%.1f, %.1f, %.1f)  az=%.1f° el=%.1f°",
+                        mic.name(), pos.x(), pos.y(), pos.z(),
+                        mic.azimuth(), mic.elevation()));
             }
         }
     }

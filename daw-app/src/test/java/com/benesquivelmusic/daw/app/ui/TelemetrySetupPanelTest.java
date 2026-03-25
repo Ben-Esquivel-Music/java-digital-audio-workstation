@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
 import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
 
@@ -588,5 +589,671 @@ class TelemetrySetupPanelTest {
 
         assertThat(panel.getSourceListView().getItems())
                 .isSameAs(panel.getSoundSources());
+    }
+
+    // ── Mic field accessors ──────────────────────────────────────────
+
+    @Test
+    void shouldExposeMicNameField() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        assertThat(panel.getMicNameField()).isNotNull();
+    }
+
+    @Test
+    void shouldExposeMicPositionFields() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        assertThat(panel.getMicXField()).isNotNull();
+        assertThat(panel.getMicYField()).isNotNull();
+        assertThat(panel.getMicZField()).isNotNull();
+    }
+
+    @Test
+    void shouldExposeMicAngleFields() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        assertThat(panel.getMicAzimuthField()).isNotNull();
+        assertThat(panel.getMicElevationField()).isNotNull();
+    }
+
+    @Test
+    void shouldExposeMicAddAndRemoveButtons() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        assertThat(panel.getAddMicButton()).isNotNull();
+        assertThat(panel.getAddMicButton().getText()).isEqualTo("+ Add Mic");
+        assertThat(panel.getRemoveMicButton()).isNotNull();
+        assertThat(panel.getRemoveMicButton().getText()).isEqualTo("- Remove");
+    }
+
+    @Test
+    void shouldExposeMicListView() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        assertThat(panel.getMicListView()).isNotNull();
+        assertThat(panel.getMicrophones()).isNotNull();
+        assertThat(panel.getMicrophones()).isEmpty();
+    }
+
+    @Test
+    void shouldExposeMicErrorLabel() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        assertThat(panel.getMicErrorLabel()).isNotNull();
+        assertThat(panel.getMicErrorLabel().isVisible()).isFalse();
+    }
+
+    @Test
+    void micListViewShouldBeBackedByObservableList() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        assertThat(panel.getMicListView().getItems())
+                .isSameAs(panel.getMicrophones());
+    }
+
+    // ── Add mic ─────────────────────────────────────────────────────
+
+    @Test
+    void addMicShouldAddValidMic() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("Overhead L");
+            panel.getMicXField().setText("2.0");
+            panel.getMicYField().setText("3.0");
+            panel.getMicZField().setText("4.0");
+            panel.getMicAzimuthField().setText("90.0");
+            panel.getMicElevationField().setText("-45.0");
+            panel.addMic();
+        });
+
+        assertThat(panel.getMicrophones()).hasSize(1);
+        MicrophonePlacement mic = panel.getMicrophones().get(0);
+        assertThat(mic.name()).isEqualTo("Overhead L");
+        assertThat(mic.position()).isEqualTo(new Position3D(2.0, 3.0, 4.0));
+        assertThat(mic.azimuth()).isEqualTo(90.0);
+        assertThat(mic.elevation()).isEqualTo(-45.0);
+    }
+
+    @Test
+    void addMicShouldClearFieldsAfterSuccess() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("Room Mic");
+            panel.getMicXField().setText("1.5");
+            panel.getMicYField().setText("2.5");
+            panel.getMicZField().setText("3.5");
+            panel.getMicAzimuthField().setText("180.0");
+            panel.getMicElevationField().setText("45.0");
+            panel.addMic();
+        });
+
+        assertThat(panel.getMicNameField().getText()).isEmpty();
+        assertThat(panel.getMicXField().getText()).isEqualTo("0.0");
+        assertThat(panel.getMicYField().getText()).isEqualTo("0.0");
+        assertThat(panel.getMicZField().getText()).isEqualTo("0.0");
+        assertThat(panel.getMicAzimuthField().getText()).isEqualTo("0.0");
+        assertThat(panel.getMicElevationField().getText()).isEqualTo("0.0");
+    }
+
+    @Test
+    void addMicShouldTrimName() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("  Close Mic  ");
+            panel.getMicXField().setText("1.0");
+            panel.getMicYField().setText("1.0");
+            panel.getMicZField().setText("1.0");
+            panel.getMicAzimuthField().setText("0.0");
+            panel.getMicElevationField().setText("0.0");
+            panel.addMic();
+        });
+
+        assertThat(panel.getMicrophones()).hasSize(1);
+        assertThat(panel.getMicrophones().get(0).name()).isEqualTo("Close Mic");
+    }
+
+    @Test
+    void addMicShouldAcceptZeroPositionValues() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("Corner Mic");
+            panel.getMicXField().setText("0");
+            panel.getMicYField().setText("0");
+            panel.getMicZField().setText("0");
+            panel.getMicAzimuthField().setText("0");
+            panel.getMicElevationField().setText("0");
+            panel.addMic();
+        });
+
+        assertThat(panel.getMicrophones()).hasSize(1);
+        assertThat(panel.getMicrophones().get(0).position()).isEqualTo(new Position3D(0, 0, 0));
+    }
+
+    @Test
+    void addMultipleMicsShouldAccumulate() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("Overhead L");
+            panel.getMicXField().setText("1.0");
+            panel.getMicYField().setText("1.0");
+            panel.getMicZField().setText("3.0");
+            panel.getMicAzimuthField().setText("0.0");
+            panel.getMicElevationField().setText("-90.0");
+            panel.addMic();
+
+            panel.getMicNameField().setText("Overhead R");
+            panel.getMicXField().setText("2.0");
+            panel.getMicYField().setText("1.0");
+            panel.getMicZField().setText("3.0");
+            panel.getMicAzimuthField().setText("0.0");
+            panel.getMicElevationField().setText("-90.0");
+            panel.addMic();
+        });
+
+        assertThat(panel.getMicrophones()).hasSize(2);
+        assertThat(panel.getMicrophones().get(0).name()).isEqualTo("Overhead L");
+        assertThat(panel.getMicrophones().get(1).name()).isEqualTo("Overhead R");
+    }
+
+    // ── Mic validation failures ─────────────────────────────────────
+
+    @Test
+    void addMicShouldRejectEmptyName() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("");
+            panel.getMicXField().setText("1.0");
+            panel.getMicYField().setText("2.0");
+            panel.getMicZField().setText("0.5");
+            panel.getMicAzimuthField().setText("0.0");
+            panel.getMicElevationField().setText("0.0");
+            panel.addMic();
+        });
+
+        assertThat(panel.getMicrophones()).isEmpty();
+        assertThat(panel.getMicErrorLabel().isVisible()).isTrue();
+        assertThat(panel.getMicErrorLabel().getText()).contains("Mic name is required");
+    }
+
+    @Test
+    void addMicShouldRejectBlankName() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("   ");
+            panel.getMicXField().setText("1.0");
+            panel.getMicYField().setText("2.0");
+            panel.getMicZField().setText("0.5");
+            panel.getMicAzimuthField().setText("0.0");
+            panel.getMicElevationField().setText("0.0");
+            panel.addMic();
+        });
+
+        assertThat(panel.getMicrophones()).isEmpty();
+        assertThat(panel.getMicErrorLabel().isVisible()).isTrue();
+        assertThat(panel.getMicErrorLabel().getText()).contains("Mic name is required");
+    }
+
+    @Test
+    void addMicShouldRejectNegativeX() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("Mic");
+            panel.getMicXField().setText("-1.0");
+            panel.getMicYField().setText("2.0");
+            panel.getMicZField().setText("0.5");
+            panel.getMicAzimuthField().setText("0.0");
+            panel.getMicElevationField().setText("0.0");
+            panel.addMic();
+        });
+
+        assertThat(panel.getMicrophones()).isEmpty();
+        assertThat(panel.getMicErrorLabel().isVisible()).isTrue();
+        assertThat(panel.getMicErrorLabel().getText()).contains("X must be a non-negative number");
+    }
+
+    @Test
+    void addMicShouldRejectNegativeY() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("Mic");
+            panel.getMicXField().setText("1.0");
+            panel.getMicYField().setText("-2.0");
+            panel.getMicZField().setText("0.5");
+            panel.getMicAzimuthField().setText("0.0");
+            panel.getMicElevationField().setText("0.0");
+            panel.addMic();
+        });
+
+        assertThat(panel.getMicrophones()).isEmpty();
+        assertThat(panel.getMicErrorLabel().isVisible()).isTrue();
+        assertThat(panel.getMicErrorLabel().getText()).contains("Y must be a non-negative number");
+    }
+
+    @Test
+    void addMicShouldRejectNegativeZ() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("Mic");
+            panel.getMicXField().setText("1.0");
+            panel.getMicYField().setText("2.0");
+            panel.getMicZField().setText("-0.5");
+            panel.getMicAzimuthField().setText("0.0");
+            panel.getMicElevationField().setText("0.0");
+            panel.addMic();
+        });
+
+        assertThat(panel.getMicrophones()).isEmpty();
+        assertThat(panel.getMicErrorLabel().isVisible()).isTrue();
+        assertThat(panel.getMicErrorLabel().getText()).contains("Z must be a non-negative number");
+    }
+
+    @Test
+    void addMicShouldRejectAzimuthAt360() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("Mic");
+            panel.getMicXField().setText("1.0");
+            panel.getMicYField().setText("2.0");
+            panel.getMicZField().setText("0.5");
+            panel.getMicAzimuthField().setText("360.0");
+            panel.getMicElevationField().setText("0.0");
+            panel.addMic();
+        });
+
+        assertThat(panel.getMicrophones()).isEmpty();
+        assertThat(panel.getMicErrorLabel().isVisible()).isTrue();
+        assertThat(panel.getMicErrorLabel().getText()).contains("Azimuth must be a number in [0, 360)");
+    }
+
+    @Test
+    void addMicShouldRejectNegativeAzimuth() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("Mic");
+            panel.getMicXField().setText("1.0");
+            panel.getMicYField().setText("2.0");
+            panel.getMicZField().setText("0.5");
+            panel.getMicAzimuthField().setText("-10.0");
+            panel.getMicElevationField().setText("0.0");
+            panel.addMic();
+        });
+
+        assertThat(panel.getMicrophones()).isEmpty();
+        assertThat(panel.getMicErrorLabel().isVisible()).isTrue();
+        assertThat(panel.getMicErrorLabel().getText()).contains("Azimuth must be a number in [0, 360)");
+    }
+
+    @Test
+    void addMicShouldRejectElevationBelow90() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("Mic");
+            panel.getMicXField().setText("1.0");
+            panel.getMicYField().setText("2.0");
+            panel.getMicZField().setText("0.5");
+            panel.getMicAzimuthField().setText("0.0");
+            panel.getMicElevationField().setText("-91.0");
+            panel.addMic();
+        });
+
+        assertThat(panel.getMicrophones()).isEmpty();
+        assertThat(panel.getMicErrorLabel().isVisible()).isTrue();
+        assertThat(panel.getMicErrorLabel().getText()).contains("Elevation must be a number in [-90, 90]");
+    }
+
+    @Test
+    void addMicShouldRejectElevationAbove90() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("Mic");
+            panel.getMicXField().setText("1.0");
+            panel.getMicYField().setText("2.0");
+            panel.getMicZField().setText("0.5");
+            panel.getMicAzimuthField().setText("0.0");
+            panel.getMicElevationField().setText("91.0");
+            panel.addMic();
+        });
+
+        assertThat(panel.getMicrophones()).isEmpty();
+        assertThat(panel.getMicErrorLabel().isVisible()).isTrue();
+        assertThat(panel.getMicErrorLabel().getText()).contains("Elevation must be a number in [-90, 90]");
+    }
+
+    @Test
+    void addMicShouldAcceptBoundaryAzimuth359() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("Mic");
+            panel.getMicXField().setText("1.0");
+            panel.getMicYField().setText("1.0");
+            panel.getMicZField().setText("1.0");
+            panel.getMicAzimuthField().setText("359.9");
+            panel.getMicElevationField().setText("0.0");
+            panel.addMic();
+        });
+
+        assertThat(panel.getMicrophones()).hasSize(1);
+        assertThat(panel.getMicrophones().get(0).azimuth()).isEqualTo(359.9);
+    }
+
+    @Test
+    void addMicShouldAcceptBoundaryElevationMinus90() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("Floor Mic");
+            panel.getMicXField().setText("1.0");
+            panel.getMicYField().setText("1.0");
+            panel.getMicZField().setText("1.0");
+            panel.getMicAzimuthField().setText("0.0");
+            panel.getMicElevationField().setText("-90.0");
+            panel.addMic();
+        });
+
+        assertThat(panel.getMicrophones()).hasSize(1);
+        assertThat(panel.getMicrophones().get(0).elevation()).isEqualTo(-90.0);
+    }
+
+    @Test
+    void addMicShouldAcceptBoundaryElevation90() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("Ceiling Mic");
+            panel.getMicXField().setText("1.0");
+            panel.getMicYField().setText("1.0");
+            panel.getMicZField().setText("1.0");
+            panel.getMicAzimuthField().setText("0.0");
+            panel.getMicElevationField().setText("90.0");
+            panel.addMic();
+        });
+
+        assertThat(panel.getMicrophones()).hasSize(1);
+        assertThat(panel.getMicrophones().get(0).elevation()).isEqualTo(90.0);
+    }
+
+    @Test
+    void addMicShouldShowMultipleErrors() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("");
+            panel.getMicXField().setText("-1.0");
+            panel.getMicYField().setText("abc");
+            panel.getMicZField().setText("");
+            panel.getMicAzimuthField().setText("400");
+            panel.getMicElevationField().setText("-100");
+            panel.addMic();
+        });
+
+        assertThat(panel.getMicrophones()).isEmpty();
+        assertThat(panel.getMicErrorLabel().isVisible()).isTrue();
+        assertThat(panel.getMicErrorLabel().getText())
+                .contains("Mic name is required")
+                .contains("X must be a non-negative number")
+                .contains("Y must be a non-negative number")
+                .contains("Z must be a non-negative number")
+                .contains("Azimuth must be a number in [0, 360)")
+                .contains("Elevation must be a number in [-90, 90]");
+    }
+
+    @Test
+    void successfulAddMicShouldClearPreviousError() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("");
+            panel.addMic();
+        });
+
+        assertThat(panel.getMicErrorLabel().isVisible()).isTrue();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("Room Mic");
+            panel.getMicXField().setText("1.0");
+            panel.getMicYField().setText("1.0");
+            panel.getMicZField().setText("1.0");
+            panel.getMicAzimuthField().setText("0.0");
+            panel.getMicElevationField().setText("0.0");
+            panel.addMic();
+        });
+
+        assertThat(panel.getMicErrorLabel().isVisible()).isFalse();
+        assertThat(panel.getMicrophones()).hasSize(1);
+    }
+
+    // ── Remove mic ──────────────────────────────────────────────────
+
+    @Test
+    void removeSelectedMicShouldRemoveWhenSelected() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("Overhead L");
+            panel.getMicXField().setText("1.0");
+            panel.getMicYField().setText("2.0");
+            panel.getMicZField().setText("3.0");
+            panel.getMicAzimuthField().setText("0.0");
+            panel.getMicElevationField().setText("0.0");
+            panel.addMic();
+
+            panel.getMicListView().getSelectionModel().select(0);
+            panel.removeSelectedMic();
+        });
+
+        assertThat(panel.getMicrophones()).isEmpty();
+    }
+
+    @Test
+    void removeSelectedMicShouldDoNothingWhenNoneSelected() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("Overhead L");
+            panel.getMicXField().setText("1.0");
+            panel.getMicYField().setText("2.0");
+            panel.getMicZField().setText("3.0");
+            panel.getMicAzimuthField().setText("0.0");
+            panel.getMicElevationField().setText("0.0");
+            panel.addMic();
+
+            panel.getMicListView().getSelectionModel().clearSelection();
+            panel.removeSelectedMic();
+        });
+
+        assertThat(panel.getMicrophones()).hasSize(1);
+    }
+
+    @Test
+    void removeSelectedMicShouldRemoveOnlySelected() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getMicNameField().setText("Overhead L");
+            panel.getMicXField().setText("1.0");
+            panel.getMicYField().setText("1.0");
+            panel.getMicZField().setText("3.0");
+            panel.getMicAzimuthField().setText("0.0");
+            panel.getMicElevationField().setText("-90.0");
+            panel.addMic();
+
+            panel.getMicNameField().setText("Overhead R");
+            panel.getMicXField().setText("2.0");
+            panel.getMicYField().setText("1.0");
+            panel.getMicZField().setText("3.0");
+            panel.getMicAzimuthField().setText("0.0");
+            panel.getMicElevationField().setText("-90.0");
+            panel.addMic();
+
+            panel.getMicListView().getSelectionModel().select(0);
+            panel.removeSelectedMic();
+        });
+
+        assertThat(panel.getMicrophones()).hasSize(1);
+        assertThat(panel.getMicrophones().get(0).name()).isEqualTo("Overhead R");
+    }
+
+    // ── parseAzimuth ────────────────────────────────────────────────
+
+    @Test
+    void parseAzimuthShouldAcceptZero() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        AtomicReference<Double> result = new AtomicReference<>();
+        runOnFxThread(() -> result.set(TelemetrySetupPanel.parseAzimuth("0")));
+        assertThat(result.get()).isEqualTo(0.0);
+    }
+
+    @Test
+    void parseAzimuthShouldAcceptJustBelow360() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        AtomicReference<Double> result = new AtomicReference<>();
+        runOnFxThread(() -> result.set(TelemetrySetupPanel.parseAzimuth("359.99")));
+        assertThat(result.get()).isEqualTo(359.99);
+    }
+
+    @Test
+    void parseAzimuthShouldReject360() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        AtomicReference<Double> result = new AtomicReference<>();
+        runOnFxThread(() -> result.set(TelemetrySetupPanel.parseAzimuth("360")));
+        assertThat(result.get()).isNull();
+    }
+
+    @Test
+    void parseAzimuthShouldRejectNegative() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        AtomicReference<Double> result = new AtomicReference<>();
+        runOnFxThread(() -> result.set(TelemetrySetupPanel.parseAzimuth("-1")));
+        assertThat(result.get()).isNull();
+    }
+
+    @Test
+    void parseAzimuthShouldRejectNullAndBlank() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        AtomicReference<Double> result1 = new AtomicReference<>();
+        AtomicReference<Double> result2 = new AtomicReference<>();
+        AtomicReference<Double> result3 = new AtomicReference<>();
+        runOnFxThread(() -> {
+            result1.set(TelemetrySetupPanel.parseAzimuth(null));
+            result2.set(TelemetrySetupPanel.parseAzimuth(""));
+            result3.set(TelemetrySetupPanel.parseAzimuth("   "));
+        });
+        assertThat(result1.get()).isNull();
+        assertThat(result2.get()).isNull();
+        assertThat(result3.get()).isNull();
+    }
+
+    // ── parseElevation ──────────────────────────────────────────────
+
+    @Test
+    void parseElevationShouldAcceptZero() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        AtomicReference<Double> result = new AtomicReference<>();
+        runOnFxThread(() -> result.set(TelemetrySetupPanel.parseElevation("0")));
+        assertThat(result.get()).isEqualTo(0.0);
+    }
+
+    @Test
+    void parseElevationShouldAcceptMinus90() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        AtomicReference<Double> result = new AtomicReference<>();
+        runOnFxThread(() -> result.set(TelemetrySetupPanel.parseElevation("-90")));
+        assertThat(result.get()).isEqualTo(-90.0);
+    }
+
+    @Test
+    void parseElevationShouldAccept90() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        AtomicReference<Double> result = new AtomicReference<>();
+        runOnFxThread(() -> result.set(TelemetrySetupPanel.parseElevation("90")));
+        assertThat(result.get()).isEqualTo(90.0);
+    }
+
+    @Test
+    void parseElevationShouldRejectBelow90() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        AtomicReference<Double> result = new AtomicReference<>();
+        runOnFxThread(() -> result.set(TelemetrySetupPanel.parseElevation("-91")));
+        assertThat(result.get()).isNull();
+    }
+
+    @Test
+    void parseElevationShouldRejectAbove90() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        AtomicReference<Double> result = new AtomicReference<>();
+        runOnFxThread(() -> result.set(TelemetrySetupPanel.parseElevation("91")));
+        assertThat(result.get()).isNull();
+    }
+
+    @Test
+    void parseElevationShouldRejectNullAndBlank() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        AtomicReference<Double> result1 = new AtomicReference<>();
+        AtomicReference<Double> result2 = new AtomicReference<>();
+        AtomicReference<Double> result3 = new AtomicReference<>();
+        runOnFxThread(() -> {
+            result1.set(TelemetrySetupPanel.parseElevation(null));
+            result2.set(TelemetrySetupPanel.parseElevation(""));
+            result3.set(TelemetrySetupPanel.parseElevation("   "));
+        });
+        assertThat(result1.get()).isNull();
+        assertThat(result2.get()).isNull();
+        assertThat(result3.get()).isNull();
     }
 }
