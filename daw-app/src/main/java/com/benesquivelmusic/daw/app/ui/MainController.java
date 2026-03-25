@@ -287,6 +287,7 @@ public final class MainController {
         initializeZoomControls();
         initializeToolbarCollapse(prefs);
         initializeToolbarContextMenus();
+        initializeSidebarActions();
 
         // Register keyboard shortcuts after the scene is available
         playButton.sceneProperty().addListener((_, _, scene) -> {
@@ -558,6 +559,57 @@ public final class MainController {
         );
         toolbarContextMenuController.initialize();
         LOG.fine("Toolbar context menus initialized");
+    }
+
+    /**
+     * Wires the Home, Search, and Help sidebar buttons to their action handlers.
+     */
+    private void initializeSidebarActions() {
+        homeButton.setOnAction(event -> onHome());
+        searchButton.setOnAction(event -> onSearch());
+        helpButton.setOnAction(event -> onHelp());
+        LOG.fine("Sidebar action buttons initialized");
+    }
+
+    /**
+     * Handles the Home button action: switches to the arrangement view,
+     * resets zoom to fit, clears the selection, and updates the status bar.
+     */
+    void onHome() {
+        switchView(DawView.ARRANGEMENT);
+        ZoomLevel zoom = viewZoomLevels.get(DawView.ARRANGEMENT);
+        zoom.zoomToFit();
+        selectionModel.clearSelection();
+        statusBarLabel.setText("Home \u2014 returned to default arrangement view");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.HOME, 12));
+        LOG.fine("Home action: switched to arrangement view, reset zoom, cleared selection");
+    }
+
+    /**
+     * Handles the Search button action: ensures the browser panel is visible
+     * and moves focus to the browser search field.
+     */
+    void onSearch() {
+        if (!browserPanelController.isPanelVisible()) {
+            browserPanelController.toggleBrowserPanel();
+        }
+        BrowserPanel browserPanel = browserPanelController.getBrowserPanel();
+        browserPanel.getSearchField().requestFocus();
+        statusBarLabel.setText("Search \u2014 browser panel opened");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.SEARCH, 12));
+        LOG.fine("Search action: opened browser panel and focused search field");
+    }
+
+    /**
+     * Handles the Help button action: opens the {@link HelpDialog}.
+     */
+    void onHelp() {
+        statusBarLabel.setText("Opening help...");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO, 12));
+        HelpDialog dialog = new HelpDialog();
+        dialog.showAndWait();
+        statusBarLabel.setText("Help closed");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
     }
 
     /**
