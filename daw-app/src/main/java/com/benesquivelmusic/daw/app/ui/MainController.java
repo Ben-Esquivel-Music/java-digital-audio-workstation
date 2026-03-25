@@ -1359,6 +1359,7 @@ public final class MainController {
     @FXML
     private void onToggleLoop() {
         loopEnabled = !loopEnabled;
+        project.getTransport().setLoopEnabled(loopEnabled);
         loopButton.setStyle(loopEnabled
                 ? "-fx-background-color: #b388ff; -fx-text-fill: #0d0d0d;" : "");
         String loopState = loopEnabled ? "Loop: ON" : "Loop: OFF";

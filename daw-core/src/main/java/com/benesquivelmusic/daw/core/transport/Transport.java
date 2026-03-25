@@ -8,11 +8,17 @@ package com.benesquivelmusic.daw.core.transport;
  */
 public final class Transport {
 
+    private static final double DEFAULT_LOOP_START = 0.0;
+    private static final double DEFAULT_LOOP_END = 16.0;
+
     private TransportState state = TransportState.STOPPED;
     private double positionInBeats = 0.0;
     private double tempo = 120.0;
     private int timeSignatureNumerator = 4;
     private int timeSignatureDenominator = 4;
+    private boolean loopEnabled = false;
+    private double loopStartInBeats = DEFAULT_LOOP_START;
+    private double loopEndInBeats = DEFAULT_LOOP_END;
 
     /** Starts playback from the current position. */
     public void play() {
@@ -97,5 +103,64 @@ public final class Transport {
         }
         this.timeSignatureNumerator = numerator;
         this.timeSignatureDenominator = denominator;
+    }
+
+    /** Returns {@code true} if loop mode is enabled. */
+    public boolean isLoopEnabled() {
+        return loopEnabled;
+    }
+
+    /** Enables or disables loop mode. */
+    public void setLoopEnabled(boolean loopEnabled) {
+        this.loopEnabled = loopEnabled;
+    }
+
+    /** Returns the loop start position in beats. */
+    public double getLoopStartInBeats() {
+        return loopStartInBeats;
+    }
+
+    /** Returns the loop end position in beats. */
+    public double getLoopEndInBeats() {
+        return loopEndInBeats;
+    }
+
+    /**
+     * Sets the loop region boundaries in beats.
+     *
+     * @param startInBeats loop start position (must be &ge; 0)
+     * @param endInBeats   loop end position (must be greater than {@code startInBeats})
+     */
+    public void setLoopRegion(double startInBeats, double endInBeats) {
+        if (startInBeats < 0) {
+            throw new IllegalArgumentException("loop start must not be negative: " + startInBeats);
+        }
+        if (endInBeats <= startInBeats) {
+            throw new IllegalArgumentException(
+                    "loop end must be greater than loop start: start=" + startInBeats + ", end=" + endInBeats);
+        }
+        this.loopStartInBeats = startInBeats;
+        this.loopEndInBeats = endInBeats;
+    }
+
+    /**
+     * Advances the playback position by the given number of beats.
+     *
+     * <p>When loop mode is enabled, the position wraps back to the loop start
+     * if it reaches or exceeds the loop end.</p>
+     *
+     * @param deltaBeats number of beats to advance (must be &ge; 0)
+     */
+    public void advancePosition(double deltaBeats) {
+        if (deltaBeats < 0) {
+            throw new IllegalArgumentException("deltaBeats must not be negative: " + deltaBeats);
+        }
+        positionInBeats += deltaBeats;
+        if (loopEnabled && loopEndInBeats > loopStartInBeats) {
+            double loopLength = loopEndInBeats - loopStartInBeats;
+            while (positionInBeats >= loopEndInBeats) {
+                positionInBeats -= loopLength;
+            }
+        }
     }
 }
