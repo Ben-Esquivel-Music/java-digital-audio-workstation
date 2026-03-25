@@ -1,14 +1,19 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.display.RoomTelemetryDisplay;
+import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomTelemetryData;
+import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
 import com.benesquivelmusic.daw.sdk.telemetry.SoundWavePath;
+import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
 
 import javafx.application.Platform;
 import javafx.scene.Node;
+import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 
@@ -93,22 +98,36 @@ class TelemetryViewTest {
     }
 
     @Test
-    void shouldContainHeaderAndDisplay() throws Exception {
+    void shouldShowSetupPanelInitially() throws Exception {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
-        assertThat(view.getChildren()).hasSize(2);
-        assertThat(view.getChildren().get(0)).isInstanceOf(Label.class);
-        assertThat(view.getChildren().get(1)).isInstanceOf(RoomTelemetryDisplay.class);
+        assertThat(view.isDisplayingTelemetry()).isFalse();
+        assertThat(view.getChildren().get(0)).isInstanceOf(HBox.class);
+        assertThat(view.getChildren().get(1)).isInstanceOf(TelemetrySetupPanel.class);
     }
 
     @Test
-    void headerShouldHavePanelHeaderStyleClass() throws Exception {
+    void shouldContainHeaderBarAndSetupPanelInSetupState() throws Exception {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
-        Label header = (Label) view.getChildren().get(0);
-        assertThat(header.getStyleClass()).contains("panel-header");
+        // Setup state: headerBar, setupPanel, generateErrorLabel, generateButton
+        assertThat(view.getChildren()).hasSize(4);
+        assertThat(view.getChildren().get(0)).isInstanceOf(HBox.class);
+        assertThat(view.getChildren().get(1)).isInstanceOf(TelemetrySetupPanel.class);
+        assertThat(view.getChildren().get(2)).isInstanceOf(Label.class);
+        assertThat(view.getChildren().get(3)).isInstanceOf(Button.class);
+    }
+
+    @Test
+    void headerBarShouldContainLabelWithPanelHeaderStyleClass() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+
+        HBox headerBar = view.getHeaderBar();
+        Label headerLabel = (Label) headerBar.getChildren().get(0);
+        assertThat(headerLabel.getStyleClass()).contains("panel-header");
     }
 
     @Test
@@ -116,8 +135,9 @@ class TelemetryViewTest {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
-        Label header = (Label) view.getChildren().get(0);
-        assertThat(header.getText()).isEqualTo("Sound Wave Telemetry");
+        HBox headerBar = view.getHeaderBar();
+        Label headerLabel = (Label) headerBar.getChildren().get(0);
+        assertThat(headerLabel.getText()).isEqualTo("Sound Wave Telemetry");
     }
 
     @Test
@@ -125,17 +145,27 @@ class TelemetryViewTest {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
-        Label header = (Label) view.getChildren().get(0);
-        assertThat(header.getGraphic()).isNotNull();
+        HBox headerBar = view.getHeaderBar();
+        Label headerLabel = (Label) headerBar.getChildren().get(0);
+        assertThat(headerLabel.getGraphic()).isNotNull();
     }
 
     @Test
-    void displayShouldFillAvailableSpace() throws Exception {
+    void reconfigureButtonShouldBeHiddenInSetupState() throws Exception {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
-        Node display = view.getChildren().get(1);
-        assertThat(VBox.getVgrow(display)).isEqualTo(Priority.ALWAYS);
+        assertThat(view.getReconfigureButton().isVisible()).isFalse();
+        assertThat(view.getReconfigureButton().isManaged()).isFalse();
+    }
+
+    @Test
+    void setupPanelShouldFillAvailableSpace() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+
+        Node setupPanel = view.getChildren().get(1);
+        assertThat(VBox.getVgrow(setupPanel)).isEqualTo(Priority.ALWAYS);
     }
 
     @Test
@@ -145,11 +175,10 @@ class TelemetryViewTest {
 
         assertThat(view.getDisplay()).isNotNull();
         assertThat(view.getDisplay()).isInstanceOf(RoomTelemetryDisplay.class);
-        assertThat(view.getDisplay()).isSameAs(view.getChildren().get(1));
     }
 
     @Test
-    void setTelemetryDataShouldDelegateToDisplay() throws Exception {
+    void setTelemetryDataWithNonNullShouldSwitchToDisplayState() throws Exception {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
@@ -161,17 +190,54 @@ class TelemetryViewTest {
         RoomTelemetryData data = RoomTelemetryData.withoutAudience(
                 dimensions, List.of(path), 0.5, List.of());
 
-        // Should not throw when passing data through
         runOnFxThread(() -> view.setTelemetryData(data));
+
+        assertThat(view.isDisplayingTelemetry()).isTrue();
+        // Display state: headerBar, display
+        assertThat(view.getChildren()).hasSize(2);
+        assertThat(view.getChildren().get(1)).isInstanceOf(RoomTelemetryDisplay.class);
+        assertThat(view.getReconfigureButton().isVisible()).isTrue();
     }
 
     @Test
-    void setTelemetryDataShouldAcceptNull() throws Exception {
+    void setTelemetryDataWithNullShouldShowSetupState() throws Exception {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
-        // Should not throw when passing null
+        // First switch to display state
+        RoomDimensions dimensions = new RoomDimensions(10.0, 8.0, 3.0);
+        SoundWavePath path = new SoundWavePath(
+                "Source1", "Mic1",
+                List.of(new Position3D(1.0, 2.0, 1.5), new Position3D(5.0, 4.0, 1.5)),
+                5.0, 0.01, -3.0, false);
+        RoomTelemetryData data = RoomTelemetryData.withoutAudience(
+                dimensions, List.of(path), 0.5, List.of());
+        runOnFxThread(() -> view.setTelemetryData(data));
+        assertThat(view.isDisplayingTelemetry()).isTrue();
+
+        // Now set null — should return to setup state
         runOnFxThread(() -> view.setTelemetryData(null));
+        assertThat(view.isDisplayingTelemetry()).isFalse();
+        assertThat(view.getReconfigureButton().isVisible()).isFalse();
+    }
+
+    @Test
+    void displayShouldFillAvailableSpaceInDisplayState() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+
+        RoomDimensions dimensions = new RoomDimensions(10.0, 8.0, 3.0);
+        SoundWavePath path = new SoundWavePath(
+                "Source1", "Mic1",
+                List.of(new Position3D(1.0, 2.0, 1.5), new Position3D(5.0, 4.0, 1.5)),
+                5.0, 0.01, -3.0, false);
+        RoomTelemetryData data = RoomTelemetryData.withoutAudience(
+                dimensions, List.of(path), 0.5, List.of());
+
+        runOnFxThread(() -> view.setTelemetryData(data));
+
+        Node display = view.getChildren().get(1);
+        assertThat(VBox.getVgrow(display)).isEqualTo(Priority.ALWAYS);
     }
 
     @Test
@@ -189,5 +255,143 @@ class TelemetryViewTest {
         TelemetryView view = createOnFxThread();
 
         assertThat(view.getSpacing()).isEqualTo(0);
+    }
+
+    @Test
+    void generateWithNoSourcesShouldShowError() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+
+        // Add a mic but no sources
+        runOnFxThread(() -> {
+            TelemetrySetupPanel panel = view.getSetupPanel();
+            panel.getMicNameField().setText("Mic1");
+            panel.getMicXField().setText("1.0");
+            panel.getMicYField().setText("1.0");
+            panel.getMicZField().setText("1.0");
+            panel.getAddMicButton().fire();
+            view.getGenerateButton().fire();
+        });
+
+        assertThat(view.isDisplayingTelemetry()).isFalse();
+        assertThat(view.getGenerateErrorLabel().isVisible()).isTrue();
+        assertThat(view.getGenerateErrorLabel().getText())
+                .contains("At least one sound source is required");
+    }
+
+    @Test
+    void generateWithNoMicsShouldShowError() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+
+        // Add a source but no mics
+        runOnFxThread(() -> {
+            TelemetrySetupPanel panel = view.getSetupPanel();
+            panel.getSourceNameField().setText("Guitar");
+            panel.getSourceXField().setText("1.0");
+            panel.getSourceYField().setText("1.0");
+            panel.getSourceZField().setText("1.0");
+            panel.getAddSourceButton().fire();
+            view.getGenerateButton().fire();
+        });
+
+        assertThat(view.isDisplayingTelemetry()).isFalse();
+        assertThat(view.getGenerateErrorLabel().isVisible()).isTrue();
+        assertThat(view.getGenerateErrorLabel().getText())
+                .contains("At least one microphone is required");
+    }
+
+    @Test
+    void generateWithValidInputsShouldSwitchToDisplayState() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+
+        runOnFxThread(() -> {
+            TelemetrySetupPanel panel = view.getSetupPanel();
+            // Add a source
+            panel.getSourceNameField().setText("Guitar");
+            panel.getSourceXField().setText("2.0");
+            panel.getSourceYField().setText("3.0");
+            panel.getSourceZField().setText("1.0");
+            panel.getAddSourceButton().fire();
+            // Add a mic
+            panel.getMicNameField().setText("Overhead");
+            panel.getMicXField().setText("3.0");
+            panel.getMicYField().setText("4.0");
+            panel.getMicZField().setText("1.5");
+            panel.getAddMicButton().fire();
+            // Generate
+            view.getGenerateButton().fire();
+        });
+
+        assertThat(view.isDisplayingTelemetry()).isTrue();
+        assertThat(view.getChildren()).hasSize(2);
+        assertThat(view.getChildren().get(1)).isInstanceOf(RoomTelemetryDisplay.class);
+        assertThat(view.getReconfigureButton().isVisible()).isTrue();
+    }
+
+    @Test
+    void reconfigureButtonShouldReturnToSetupState() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+
+        // Switch to display state first
+        RoomDimensions dimensions = new RoomDimensions(10.0, 8.0, 3.0);
+        SoundWavePath path = new SoundWavePath(
+                "Source1", "Mic1",
+                List.of(new Position3D(1.0, 2.0, 1.5), new Position3D(5.0, 4.0, 1.5)),
+                5.0, 0.01, -3.0, false);
+        RoomTelemetryData data = RoomTelemetryData.withoutAudience(
+                dimensions, List.of(path), 0.5, List.of());
+
+        runOnFxThread(() -> view.setTelemetryData(data));
+        assertThat(view.isDisplayingTelemetry()).isTrue();
+
+        // Click reconfigure
+        runOnFxThread(() -> view.getReconfigureButton().fire());
+
+        assertThat(view.isDisplayingTelemetry()).isFalse();
+        assertThat(view.getReconfigureButton().isVisible()).isFalse();
+        assertThat(view.getChildren().get(1)).isInstanceOf(TelemetrySetupPanel.class);
+    }
+
+    @Test
+    void generateWithInvalidDimensionsShouldShowError() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+
+        runOnFxThread(() -> {
+            TelemetrySetupPanel panel = view.getSetupPanel();
+            // Set invalid dimensions
+            panel.getWidthField().setText("abc");
+            // Add source and mic
+            panel.getSourceNameField().setText("Guitar");
+            panel.getSourceXField().setText("1.0");
+            panel.getSourceYField().setText("1.0");
+            panel.getSourceZField().setText("1.0");
+            panel.getAddSourceButton().fire();
+            panel.getMicNameField().setText("Mic1");
+            panel.getMicXField().setText("1.0");
+            panel.getMicYField().setText("1.0");
+            panel.getMicZField().setText("1.0");
+            panel.getAddMicButton().fire();
+            view.getGenerateButton().fire();
+        });
+
+        assertThat(view.isDisplayingTelemetry()).isFalse();
+        assertThat(view.getGenerateErrorLabel().isVisible()).isTrue();
+        assertThat(view.getGenerateErrorLabel().getText())
+                .contains("Room dimensions are invalid");
+    }
+
+    @Test
+    void startAnimationInSetupStateShouldNotThrow() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+
+        // Should not start animation in setup state
+        assertThat(view.isDisplayingTelemetry()).isFalse();
+        runOnFxThread(view::startAnimation);
+        // No exception means success
     }
 }
