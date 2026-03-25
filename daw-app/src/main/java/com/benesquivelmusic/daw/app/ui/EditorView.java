@@ -99,6 +99,14 @@ public final class EditorView extends VBox {
     private Button eraserBtn;
     private Consumer<EditTool> onToolChanged;
 
+    // ── Audio handle state ──────────────────────────────────────────────────
+    private Button trimBtn;
+    private Button fadeInBtn;
+    private Button fadeOutBtn;
+    private Runnable onTrimAction;
+    private Runnable onFadeInAction;
+    private Runnable onFadeOutAction;
+
     // ── Zoom state ───────────────────────────────────────────────────────────
     private final ZoomLevel zoomLevel = new ZoomLevel();
 
@@ -159,6 +167,7 @@ public final class EditorView extends VBox {
         } else {
             switchMode(Mode.AUDIO);
         }
+        updateAudioHandleButtons();
     }
 
     /**
@@ -237,6 +246,33 @@ public final class EditorView extends VBox {
         return placeholderLabel;
     }
 
+    /**
+     * Returns the Trim button. Visible for testing.
+     *
+     * @return the trim button
+     */
+    Button getTrimButton() {
+        return trimBtn;
+    }
+
+    /**
+     * Returns the Fade In button. Visible for testing.
+     *
+     * @return the fade-in button
+     */
+    Button getFadeInButton() {
+        return fadeInBtn;
+    }
+
+    /**
+     * Returns the Fade Out button. Visible for testing.
+     *
+     * @return the fade-out button
+     */
+    Button getFadeOutButton() {
+        return fadeOutBtn;
+    }
+
     // ── Edit tool API ────────────────────────────────────────────────────────
 
     /**
@@ -269,6 +305,35 @@ public final class EditorView extends VBox {
      */
     public void setOnToolChanged(Consumer<EditTool> handler) {
         this.onToolChanged = handler;
+    }
+
+    // ── Audio handle API ─────────────────────────────────────────────────────
+
+    /**
+     * Registers a callback invoked when the Trim button is clicked.
+     *
+     * @param handler the callback, or {@code null} to clear
+     */
+    public void setOnTrimAction(Runnable handler) {
+        this.onTrimAction = handler;
+    }
+
+    /**
+     * Registers a callback invoked when the Fade In button is clicked.
+     *
+     * @param handler the callback, or {@code null} to clear
+     */
+    public void setOnFadeInAction(Runnable handler) {
+        this.onFadeInAction = handler;
+    }
+
+    /**
+     * Registers a callback invoked when the Fade Out button is clicked.
+     *
+     * @param handler the callback, or {@code null} to clear
+     */
+    public void setOnFadeOutAction(Runnable handler) {
+        this.onFadeOutAction = handler;
     }
 
     // ── Zoom API ─────────────────────────────────────────────────────────────
@@ -733,26 +798,62 @@ public final class EditorView extends VBox {
     }
 
     private HBox buildAudioHandles() {
-        Button trimBtn = new Button("Trim");
+        trimBtn = new Button("Trim");
         trimBtn.setGraphic(IconNode.of(DawIcon.TRIM, TOOLBAR_ICON_SIZE));
         trimBtn.setTooltip(new Tooltip("Trim selection"));
         trimBtn.getStyleClass().add("editor-tool-button");
+        trimBtn.setOnAction(event -> {
+            if (onTrimAction != null) {
+                onTrimAction.run();
+            }
+        });
 
-        Button fadeInBtn = new Button("Fade In");
+        fadeInBtn = new Button("Fade In");
         fadeInBtn.setGraphic(IconNode.of(DawIcon.FADE_IN, TOOLBAR_ICON_SIZE));
         fadeInBtn.setTooltip(new Tooltip("Apply fade in"));
         fadeInBtn.getStyleClass().add("editor-tool-button");
+        fadeInBtn.setOnAction(event -> {
+            if (onFadeInAction != null) {
+                onFadeInAction.run();
+            }
+        });
 
-        Button fadeOutBtn = new Button("Fade Out");
+        fadeOutBtn = new Button("Fade Out");
         fadeOutBtn.setGraphic(IconNode.of(DawIcon.FADE_OUT, TOOLBAR_ICON_SIZE));
         fadeOutBtn.setTooltip(new Tooltip("Apply fade out"));
         fadeOutBtn.getStyleClass().add("editor-tool-button");
+        fadeOutBtn.setOnAction(event -> {
+            if (onFadeOutAction != null) {
+                onFadeOutAction.run();
+            }
+        });
+
+        updateAudioHandleButtons();
 
         HBox handles = new HBox(4, trimBtn, fadeInBtn, fadeOutBtn);
         handles.setAlignment(Pos.CENTER_LEFT);
         handles.setPadding(new Insets(4, 0, 0, 0));
         handles.getStyleClass().add("editor-audio-handles");
         return handles;
+    }
+
+    /**
+     * Enables or disables the Trim, Fade In, and Fade Out buttons based on
+     * whether the selected track is an audio track with at least one clip.
+     */
+    private void updateAudioHandleButtons() {
+        boolean disabled = selectedTrack == null
+                || selectedTrack.getType() == TrackType.MIDI
+                || selectedTrack.getClips().isEmpty();
+        if (trimBtn != null) {
+            trimBtn.setDisable(disabled);
+        }
+        if (fadeInBtn != null) {
+            fadeInBtn.setDisable(disabled);
+        }
+        if (fadeOutBtn != null) {
+            fadeOutBtn.setDisable(disabled);
+        }
     }
 
     // ── Utility ──────────────────────────────────────────────────────────────
