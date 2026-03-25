@@ -20,10 +20,12 @@ public final class Mixer {
 
     private final List<MixerChannel> channels = new ArrayList<>();
     private final MixerChannel masterChannel;
+    private final MixerChannel auxBus;
 
-    /** Creates a new mixer with an empty channel list and a default master channel. */
+    /** Creates a new mixer with an empty channel list, a default master channel, and a reverb return aux bus. */
     public Mixer() {
         this.masterChannel = new MixerChannel("Master");
+        this.auxBus = new MixerChannel("Reverb Return");
     }
 
     /**
@@ -62,6 +64,15 @@ public final class Mixer {
      */
     public MixerChannel getMasterChannel() {
         return masterChannel;
+    }
+
+    /**
+     * Returns the shared auxiliary/return bus used for send effects (e.g., reverb).
+     *
+     * @return the aux bus channel
+     */
+    public MixerChannel getAuxBus() {
+        return auxBus;
     }
 
     /**
@@ -162,6 +173,80 @@ public final class Mixer {
             }
         } else {
             for (float[] ch : outputBuffer) {
+                Arrays.fill(ch, 0, numFrames, 0.0f);
+            }
+        }
+    }
+
+    /**
+     * Sums all channel audio into the output buffer and routes send audio
+     * into the auxiliary output buffer, applying per-channel volume, mute,
+     * solo, and send level. This method is allocation-free and lock-free.
+     *
+     * <p>For each non-muted channel with a non-zero send level, a copy of
+     * the channel's pre-fader audio is scaled by the send level and summed
+     * into {@code auxOutputBuffer}. The aux bus volume is applied to the
+     * final aux output.</p>
+     *
+     * @param channelBuffers  per-channel audio data {@code [mixerChannel][audioChannel][frame]}
+     * @param outputBuffer    the destination main output buffer {@code [audioChannel][frame]}
+     * @param auxOutputBuffer the destination aux/send output buffer {@code [audioChannel][frame]}
+     * @param numFrames       the number of sample frames to mix
+     */
+    @RealTimeSafe
+    public void mixDown(float[][][] channelBuffers, float[][] outputBuffer,
+                        float[][] auxOutputBuffer, int numFrames) {
+        // Perform the main mix-down into outputBuffer
+        mixDown(channelBuffers, outputBuffer, numFrames);
+
+        // Clear aux output
+        for (float[] ch : auxOutputBuffer) {
+            Arrays.fill(ch, 0, numFrames, 0.0f);
+        }
+
+        boolean anySolo = false;
+        for (MixerChannel channel : channels) {
+            if (channel.isSolo()) {
+                anySolo = true;
+                break;
+            }
+        }
+
+        // Route sends to aux bus
+        int channelCount = Math.min(channels.size(), channelBuffers.length);
+        for (int i = 0; i < channelCount; i++) {
+            MixerChannel channel = channels.get(i);
+            if (channel.isMuted()) {
+                continue;
+            }
+            if (anySolo && !channel.isSolo()) {
+                continue;
+            }
+
+            float sendLevel = (float) channel.getSendLevel();
+            if (sendLevel <= 0.0f) {
+                continue;
+            }
+
+            float[][] src = channelBuffers[i];
+            int audioChannels = Math.min(src.length, auxOutputBuffer.length);
+            for (int ch = 0; ch < audioChannels; ch++) {
+                for (int f = 0; f < numFrames; f++) {
+                    auxOutputBuffer[ch][f] += src[ch][f] * sendLevel;
+                }
+            }
+        }
+
+        // Apply aux bus volume
+        float auxVolume = (float) auxBus.getVolume();
+        if (!auxBus.isMuted()) {
+            for (float[] ch : auxOutputBuffer) {
+                for (int f = 0; f < numFrames; f++) {
+                    ch[f] *= auxVolume;
+                }
+            }
+        } else {
+            for (float[] ch : auxOutputBuffer) {
                 Arrays.fill(ch, 0, numFrames, 0.0f);
             }
         }
