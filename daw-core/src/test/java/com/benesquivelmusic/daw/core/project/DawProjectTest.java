@@ -187,4 +187,95 @@ class DawProjectTest {
         assertThatThrownBy(() -> project.duplicateTrack(unknown))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    // ── Move track tests ────────────────────────────────────────────────────
+
+    @Test
+    void shouldMoveTrackForward() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track drums = project.createAudioTrack("Drums");
+        Track bass = project.createAudioTrack("Bass");
+        Track vocals = project.createAudioTrack("Vocals");
+
+        project.moveTrack(0, 2);
+
+        assertThat(project.getTracks()).containsExactly(bass, vocals, drums);
+    }
+
+    @Test
+    void shouldMoveTrackBackward() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track drums = project.createAudioTrack("Drums");
+        Track bass = project.createAudioTrack("Bass");
+        Track vocals = project.createAudioTrack("Vocals");
+
+        project.moveTrack(2, 0);
+
+        assertThat(project.getTracks()).containsExactly(vocals, drums, bass);
+    }
+
+    @Test
+    void shouldSyncMixerChannelOrderOnMoveTrack() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track drums = project.createAudioTrack("Drums");
+        Track bass = project.createAudioTrack("Bass");
+        Track vocals = project.createAudioTrack("Vocals");
+
+        project.moveTrack(0, 2);
+
+        assertThat(project.getMixer().getChannels().get(0).getName()).isEqualTo("Bass");
+        assertThat(project.getMixer().getChannels().get(1).getName()).isEqualTo("Vocals");
+        assertThat(project.getMixer().getChannels().get(2).getName()).isEqualTo("Drums");
+    }
+
+    @Test
+    void shouldNoOpWhenMoveTrackToSameIndex() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track drums = project.createAudioTrack("Drums");
+        Track bass = project.createAudioTrack("Bass");
+
+        project.moveTrack(0, 0);
+
+        assertThat(project.getTracks()).containsExactly(drums, bass);
+    }
+
+    @Test
+    void shouldRejectMoveTrackWithNegativeFromIndex() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        project.createAudioTrack("Drums");
+
+        assertThatThrownBy(() -> project.moveTrack(-1, 0))
+                .isInstanceOf(IndexOutOfBoundsException.class);
+    }
+
+    @Test
+    void shouldRejectMoveTrackWithFromIndexOutOfRange() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        project.createAudioTrack("Drums");
+
+        assertThatThrownBy(() -> project.moveTrack(1, 0))
+                .isInstanceOf(IndexOutOfBoundsException.class);
+    }
+
+    @Test
+    void shouldRejectMoveTrackWithToIndexOutOfRange() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        project.createAudioTrack("Drums");
+
+        assertThatThrownBy(() -> project.moveTrack(0, 1))
+                .isInstanceOf(IndexOutOfBoundsException.class);
+    }
+
+    @Test
+    void shouldMoveTrackToAdjacentPosition() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track drums = project.createAudioTrack("Drums");
+        Track bass = project.createAudioTrack("Bass");
+
+        project.moveTrack(0, 1);
+
+        assertThat(project.getTracks()).containsExactly(bass, drums);
+        assertThat(project.getMixer().getChannels().get(0).getName()).isEqualTo("Bass");
+        assertThat(project.getMixer().getChannels().get(1).getName()).isEqualTo("Drums");
+    }
 }
