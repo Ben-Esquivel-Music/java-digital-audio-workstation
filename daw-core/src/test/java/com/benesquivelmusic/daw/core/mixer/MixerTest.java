@@ -337,6 +337,236 @@ class MixerTest {
         assertThat(auxOutput[0][0]).isEqualTo(0.8f, org.assertj.core.data.Offset.offset(1e-6f));
     }
 
+    // ── Multiple return bus tests ───────────────────────────────────────────
+
+    @Test
+    void shouldStartWithOneDefaultReturnBus() {
+        Mixer mixer = new Mixer();
+        assertThat(mixer.getReturnBuses()).hasSize(1);
+        assertThat(mixer.getReturnBuses().get(0).getName()).isEqualTo("Reverb Return");
+        assertThat(mixer.getAuxBus()).isSameAs(mixer.getReturnBuses().get(0));
+    }
+
+    @Test
+    void shouldAddReturnBus() {
+        Mixer mixer = new Mixer();
+        MixerChannel delayBus = mixer.addReturnBus("Delay Return");
+
+        assertThat(mixer.getReturnBuses()).hasSize(2);
+        assertThat(delayBus.getName()).isEqualTo("Delay Return");
+        assertThat(mixer.getReturnBuses()).contains(delayBus);
+    }
+
+    @Test
+    void shouldRemoveReturnBus() {
+        Mixer mixer = new Mixer();
+        MixerChannel delayBus = mixer.addReturnBus("Delay Return");
+
+        boolean removed = mixer.removeReturnBus(delayBus);
+
+        assertThat(removed).isTrue();
+        assertThat(mixer.getReturnBuses()).hasSize(1);
+    }
+
+    @Test
+    void shouldRemoveSendsWhenReturnBusIsRemoved() {
+        Mixer mixer = new Mixer();
+        MixerChannel delayBus = mixer.addReturnBus("Delay Return");
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.addSend(new Send(delayBus, 0.5, SendMode.POST_FADER));
+        mixer.addChannel(ch);
+
+        mixer.removeReturnBus(delayBus);
+
+        assertThat(ch.getSends()).isEmpty();
+    }
+
+    @Test
+    void shouldReturnUnmodifiableReturnBusList() {
+        Mixer mixer = new Mixer();
+        assertThatThrownBy(() -> mixer.getReturnBuses().add(new MixerChannel("Illegal")))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void shouldReAddExistingReturnBus() {
+        Mixer mixer = new Mixer();
+        MixerChannel delayBus = mixer.addReturnBus("Delay Return");
+        mixer.removeReturnBus(delayBus);
+        assertThat(mixer.getReturnBuses()).hasSize(1);
+
+        mixer.addReturnBus(delayBus);
+        assertThat(mixer.getReturnBuses()).hasSize(2);
+        assertThat(mixer.getReturnBuses()).contains(delayBus);
+    }
+
+    @Test
+    void shouldNotDuplicateReturnBusOnReAdd() {
+        Mixer mixer = new Mixer();
+        MixerChannel delayBus = mixer.addReturnBus("Delay Return");
+        assertThat(mixer.getReturnBuses()).hasSize(2);
+
+        mixer.addReturnBus(delayBus);
+        assertThat(mixer.getReturnBuses()).hasSize(2);
+    }
+
+    // ── Multi-bus mixDown tests ─────────────────────────────────────────────
+
+    @Test
+    void shouldRoutePreFaderSendToReturnBus() {
+        Mixer mixer = new Mixer();
+        MixerChannel reverbBus = mixer.getAuxBus();
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.setVolume(0.5);
+        ch.addSend(new Send(reverbBus, 0.8, SendMode.PRE_FADER));
+        mixer.addChannel(ch);
+
+        float[][][] channelBuffers = {{{1.0f}}};
+        float[][] output = {{0.0f}};
+        float[][][] returnBuffers = {{{0.0f}}};
+
+        mixer.mixDown(channelBuffers, output, returnBuffers, 1);
+
+        // Pre-fader: send level * raw signal, then return bus volume (1.0)
+        assertThat(returnBuffers[0][0][0]).isEqualTo(0.8f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
+
+    @Test
+    void shouldRoutePostFaderSendToReturnBus() {
+        Mixer mixer = new Mixer();
+        MixerChannel reverbBus = mixer.getAuxBus();
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.setVolume(0.5);
+        ch.addSend(new Send(reverbBus, 0.8, SendMode.POST_FADER));
+        mixer.addChannel(ch);
+
+        float[][][] channelBuffers = {{{1.0f}}};
+        float[][] output = {{0.0f}};
+        float[][][] returnBuffers = {{{0.0f}}};
+
+        mixer.mixDown(channelBuffers, output, returnBuffers, 1);
+
+        // Post-fader: channel volume * send level * raw signal, then return bus volume (1.0)
+        assertThat(returnBuffers[0][0][0]).isEqualTo(0.4f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
+
+    @Test
+    void shouldSumReturnBusIntoMasterOutput() {
+        Mixer mixer = new Mixer();
+        MixerChannel reverbBus = mixer.getAuxBus();
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.addSend(new Send(reverbBus, 1.0, SendMode.PRE_FADER));
+        mixer.addChannel(ch);
+
+        float[][][] channelBuffers = {{{1.0f}}};
+        float[][] output = {{0.0f}};
+        float[][][] returnBuffers = {{{0.0f}}};
+
+        mixer.mixDown(channelBuffers, output, returnBuffers, 1);
+
+        // Main output = channel (1.0) + return bus (1.0) = 2.0
+        assertThat(output[0][0]).isEqualTo(2.0f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
+
+    @Test
+    void shouldRouteToMultipleReturnBuses() {
+        Mixer mixer = new Mixer();
+        MixerChannel reverbBus = mixer.getAuxBus();
+        MixerChannel delayBus = mixer.addReturnBus("Delay Return");
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.addSend(new Send(reverbBus, 0.5, SendMode.PRE_FADER));
+        ch.addSend(new Send(delayBus, 0.3, SendMode.PRE_FADER));
+        mixer.addChannel(ch);
+
+        float[][][] channelBuffers = {{{1.0f}}};
+        float[][] output = {{0.0f}};
+        float[][][] returnBuffers = {{{0.0f}}, {{0.0f}}};
+
+        mixer.mixDown(channelBuffers, output, returnBuffers, 1);
+
+        assertThat(returnBuffers[0][0][0]).isEqualTo(0.5f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(returnBuffers[1][0][0]).isEqualTo(0.3f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
+
+    @Test
+    void shouldApplyReturnBusVolumeInMultiBusMixDown() {
+        Mixer mixer = new Mixer();
+        MixerChannel reverbBus = mixer.getAuxBus();
+        reverbBus.setVolume(0.5);
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.addSend(new Send(reverbBus, 1.0, SendMode.PRE_FADER));
+        mixer.addChannel(ch);
+
+        float[][][] channelBuffers = {{{1.0f}}};
+        float[][] output = {{0.0f}};
+        float[][][] returnBuffers = {{{0.0f}}};
+
+        mixer.mixDown(channelBuffers, output, returnBuffers, 1);
+
+        assertThat(returnBuffers[0][0][0]).isEqualTo(0.5f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
+
+    @Test
+    void shouldMuteReturnBusInMultiBusMixDown() {
+        Mixer mixer = new Mixer();
+        MixerChannel reverbBus = mixer.getAuxBus();
+        reverbBus.setMuted(true);
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.addSend(new Send(reverbBus, 1.0, SendMode.PRE_FADER));
+        mixer.addChannel(ch);
+
+        float[][][] channelBuffers = {{{1.0f}}};
+        float[][] output = {{0.0f}};
+        float[][][] returnBuffers = {{{0.0f}}};
+
+        mixer.mixDown(channelBuffers, output, returnBuffers, 1);
+
+        assertThat(returnBuffers[0][0][0]).isEqualTo(0.0f);
+        // Master output should only have the channel's direct contribution
+        assertThat(output[0][0]).isEqualTo(1.0f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
+
+    @Test
+    void shouldNotRouteSendForMutedChannelInMultiBusMixDown() {
+        Mixer mixer = new Mixer();
+        MixerChannel reverbBus = mixer.getAuxBus();
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.addSend(new Send(reverbBus, 1.0, SendMode.PRE_FADER));
+        ch.setMuted(true);
+        mixer.addChannel(ch);
+
+        float[][][] channelBuffers = {{{1.0f}}};
+        float[][] output = {{0.0f}};
+        float[][][] returnBuffers = {{{0.0f}}};
+
+        mixer.mixDown(channelBuffers, output, returnBuffers, 1);
+
+        assertThat(returnBuffers[0][0][0]).isEqualTo(0.0f);
+    }
+
+    @Test
+    void shouldSumMultipleChannelSendsInMultiBusMixDown() {
+        Mixer mixer = new Mixer();
+        MixerChannel reverbBus = mixer.getAuxBus();
+
+        MixerChannel ch1 = new MixerChannel("Ch1");
+        ch1.addSend(new Send(reverbBus, 0.5, SendMode.PRE_FADER));
+        mixer.addChannel(ch1);
+
+        MixerChannel ch2 = new MixerChannel("Ch2");
+        ch2.addSend(new Send(reverbBus, 0.3, SendMode.PRE_FADER));
+        mixer.addChannel(ch2);
+
+        float[][][] channelBuffers = {{{1.0f}}, {{1.0f}}};
+        float[][] output = {{0.0f}};
+        float[][][] returnBuffers = {{{0.0f}}};
+
+        mixer.mixDown(channelBuffers, output, returnBuffers, 1);
+
+        // 1.0 * 0.5 + 1.0 * 0.3 = 0.8
+        assertThat(returnBuffers[0][0][0]).isEqualTo(0.8f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
+
     // ── Move channel tests ──────────────────────────────────────────────────
 
     @Test

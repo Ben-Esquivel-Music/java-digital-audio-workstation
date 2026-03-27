@@ -1,5 +1,8 @@
 package com.benesquivelmusic.daw.core.mixer;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -8,6 +11,9 @@ import java.util.Objects;
  * <p>Each mixer channel has independent volume, pan, mute, solo, and send level
  * controls. The send level controls how much of this channel's audio is routed
  * to the auxiliary/return bus (e.g., reverb, delay return).</p>
+ *
+ * <p>A channel may have multiple {@link Send} objects, each routing audio to a
+ * different return bus with independent level and pre/post-fader mode.</p>
  */
 public final class MixerChannel {
 
@@ -18,6 +24,7 @@ public final class MixerChannel {
     private boolean solo;
     private double sendLevel;
     private boolean phaseInverted;
+    private final List<Send> sends = new ArrayList<>();
 
     /**
      * Creates a new mixer channel with the specified name.
@@ -106,5 +113,50 @@ public final class MixerChannel {
     /** Sets the phase-inverted state. */
     public void setPhaseInverted(boolean phaseInverted) {
         this.phaseInverted = phaseInverted;
+    }
+
+    /**
+     * Adds a send routing to a return bus.
+     *
+     * @param send the send to add
+     */
+    public void addSend(Send send) {
+        Objects.requireNonNull(send, "send must not be null");
+        sends.add(send);
+    }
+
+    /**
+     * Removes a send routing.
+     *
+     * @param send the send to remove
+     * @return {@code true} if the send was removed
+     */
+    public boolean removeSend(Send send) {
+        return sends.remove(send);
+    }
+
+    /**
+     * Returns an unmodifiable view of the sends on this channel.
+     *
+     * @return the list of sends
+     */
+    public List<Send> getSends() {
+        return Collections.unmodifiableList(sends);
+    }
+
+    /**
+     * Returns the send targeting the specified return bus, or {@code null} if
+     * no such send exists.
+     *
+     * @param target the return bus to look up
+     * @return the send for the given target, or {@code null}
+     */
+    public Send getSendForTarget(MixerChannel target) {
+        for (Send send : sends) {
+            if (send.getTarget() == target) {
+                return send;
+            }
+        }
+        return null;
     }
 }
