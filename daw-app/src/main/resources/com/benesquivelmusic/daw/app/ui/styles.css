@@ -60,16 +60,16 @@
 
 /* ── Transport Bar ── */
 .transport-bar {
-    -fx-background-color: linear-gradient(to bottom, #181818, #101010);
-    -fx-border-color: transparent transparent #2a2a2a transparent;
+    -fx-background-color: linear-gradient(to bottom, #151515, #0e0e0e);
+    -fx-border-color: transparent transparent #222222 transparent;
     -fx-border-width: 0 0 1 0;
 }
 
 /* ── Toolbar Button Groups ── */
 .toolbar-button-group {
-    -fx-padding: 2 4;
-    -fx-background-color: rgba(255, 255, 255, 0.03);
-    -fx-background-radius: 8;
+    -fx-padding: 1 3;
+    -fx-background-color: rgba(255, 255, 255, 0.02);
+    -fx-background-radius: 4;
 }
 
 /* ── Sidebar Toolbar ── */
@@ -110,26 +110,25 @@
 }
 
 .transport-button {
-    -fx-background-color: #2e2e2e;
-    -fx-text-fill: #e0e0e0;
-    -fx-font-size: 13px;
-    -fx-font-weight: bold;
-    -fx-padding: 6 12;
-    -fx-background-radius: 6;
+    -fx-background-color: #242424;
+    -fx-text-fill: #b0b0b0;
+    -fx-font-size: 11px;
+    -fx-padding: 3 8;
+    -fx-background-radius: 4;
     -fx-cursor: hand;
-    -fx-border-color: #3d3d3d;
+    -fx-border-color: #333333;
     -fx-border-width: 1;
-    -fx-border-radius: 6;
+    -fx-border-radius: 4;
 }
 
 .transport-button:hover {
-    -fx-background-color: #3d3d3d;
-    -fx-border-color: #7c4dff;
+    -fx-background-color: #2e2e2e;
+    -fx-border-color: #555555;
 }
 
 .transport-button:pressed {
-    -fx-background-color: #4a148c;
-    -fx-border-color: #e040fb;
+    -fx-background-color: #1a1a1a;
+    -fx-border-color: #7c4dff;
 }
 
 .transport-button:disabled {
@@ -143,15 +142,13 @@
 }
 
 .play-button:hover {
-    -fx-border-color: #00e676;
-    -fx-background-color: #1b3a1b;
-    -fx-effect: dropshadow(gaussian, #00e676, 14, 0.25, 0, 0);
+    -fx-border-color: #00c853;
+    -fx-background-color: #1a2e1a;
 }
 
 .play-button:pressed {
     -fx-background-color: #143d14;
     -fx-border-color: #00e676;
-    -fx-effect: dropshadow(gaussian, #00e676, 20, 0.4, 0, 0);
 }
 
 /* Record button — red accent */
@@ -162,14 +159,12 @@
 
 .record-button:hover {
     -fx-border-color: #ff1744;
-    -fx-background-color: #3a1a1a;
-    -fx-effect: dropshadow(gaussian, #ff1744, 14, 0.25, 0, 0);
+    -fx-background-color: #2e1a1a;
 }
 
 .record-button:pressed {
-    -fx-background-color: #4a0d0d;
+    -fx-background-color: #3a0d0d;
     -fx-border-color: #ff1744;
-    -fx-effect: dropshadow(gaussian, #ff1744, 20, 0.4, 0, 0);
 }
 
 /* Stop button — orange accent */
@@ -180,14 +175,12 @@
 
 .stop-button:hover {
     -fx-border-color: #ff9100;
-    -fx-background-color: #3a2a1a;
-    -fx-effect: dropshadow(gaussian, #ff9100, 12, 0.2, 0, 0);
+    -fx-background-color: #2e2418;
 }
 
 .stop-button:pressed {
     -fx-background-color: #3d1e00;
     -fx-border-color: #ff9100;
-    -fx-effect: dropshadow(gaussian, #ff9100, 18, 0.35, 0, 0);
 }
 
 /* Pause button — cyan accent */
@@ -198,14 +191,12 @@
 
 .pause-button:hover {
     -fx-border-color: #00e5ff;
-    -fx-background-color: #1a2a3a;
-    -fx-effect: dropshadow(gaussian, #00e5ff, 12, 0.2, 0, 0);
+    -fx-background-color: #182830;
 }
 
 .pause-button:pressed {
     -fx-background-color: #00293d;
     -fx-border-color: #00e5ff;
-    -fx-effect: dropshadow(gaussian, #00e5ff, 18, 0.35, 0, 0);
 }
 
 /* Loop button — purple accent */
@@ -216,14 +207,12 @@
 
 .loop-button:hover {
     -fx-border-color: #b388ff;
-    -fx-background-color: #2a1a3a;
-    -fx-effect: dropshadow(gaussian, #b388ff, 12, 0.2, 0, 0);
+    -fx-background-color: #221830;
 }
 
 .loop-button:pressed {
     -fx-background-color: #1a0d2a;
     -fx-border-color: #b388ff;
-    -fx-effect: dropshadow(gaussian, #b388ff, 18, 0.35, 0, 0);
 }
 
 /* Plugin button — purple accent */
@@ -234,8 +223,7 @@
 
 .plugin-button:hover {
     -fx-border-color: #e040fb;
-    -fx-background-color: #2a1a3a;
-    -fx-effect: dropshadow(gaussian, #e040fb, 10, 0.15, 0, 0);
+    -fx-background-color: #221830;
 }
 
 /* Project button — orange accent */
@@ -246,21 +234,20 @@
 
 .project-button:hover {
     -fx-border-color: #ff9100;
-    -fx-background-color: #3a2a1a;
-    -fx-effect: dropshadow(gaussian, #ff9100, 10, 0.15, 0, 0);
+    -fx-background-color: #2e2418;
 }
 
 /* ── Labels ── */
 .tempo-label {
     -fx-text-fill: #ff9100;
-    -fx-font-size: 15px;
+    -fx-font-size: 12px;
     -fx-font-weight: bold;
     -fx-font-family: "Monospaced";
 }
 
 .status-label {
     -fx-text-fill: #b0b0b0;
-    -fx-font-size: 13px;
+    -fx-font-size: 11px;
 }
 
 .status-recording {
@@ -285,10 +272,10 @@
 /* ── Time Display ── */
 .time-display {
     -fx-text-fill: #00e676;
-    -fx-font-size: 22px;
+    -fx-font-size: 15px;
     -fx-font-weight: bold;
     -fx-font-family: "Monospaced";
-    -fx-min-width: 130;
+    -fx-min-width: 110;
 }
 
 /* ── Track List Panel ── */
@@ -416,7 +403,7 @@
 .tempo-editor {
     -fx-background-color: #1a1a1a;
     -fx-text-fill: #ff9100;
-    -fx-font-size: 15px;
+    -fx-font-size: 12px;
     -fx-font-weight: bold;
     -fx-font-family: "Monospaced";
     -fx-border-color: #7c4dff;
@@ -424,7 +411,7 @@
     -fx-border-radius: 3;
     -fx-background-radius: 3;
     -fx-padding: 2 4;
-    -fx-pref-width: 80;
+    -fx-pref-width: 70;
 }
 
 /* ── Arrangement Panel ── */
@@ -609,16 +596,15 @@
     -fx-effect: dropshadow(gaussian, rgba(0, 229, 255, 0.15), 12, 0, 0, 0);
 }
 
-/* Transport button base — add slightly faster visual feedback */
+/* Transport button base — subtle visual feedback */
 .transport-button:hover {
-    -fx-background-color: #3d3d3d;
-    -fx-border-color: #7c4dff;
-    -fx-effect: dropshadow(gaussian, rgba(124, 77, 255, 0.2), 8, 0, 0, 0);
+    -fx-background-color: #2e2e2e;
+    -fx-border-color: #555555;
 }
 
 .transport-button:pressed {
-    -fx-background-color: #4a148c;
-    -fx-border-color: #e040fb;
+    -fx-background-color: #1a1a1a;
+    -fx-border-color: #7c4dff;
 }
 
 .viz-tile-label {
@@ -899,7 +885,7 @@
 /* ── Recording Indicator ── */
 .rec-indicator {
     -fx-text-fill: #ff1744;
-    -fx-font-size: 13px;
+    -fx-font-size: 11px;
     -fx-font-weight: bold;
 }
 

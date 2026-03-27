@@ -96,9 +96,9 @@ public final class MainController {
     private static final Logger LOG = Logger.getLogger(MainController.class.getName());
 
     /** Icon size for transport-bar buttons (play, stop, record). */
-    private static final double TRANSPORT_ICON_SIZE = 18;
+    private static final double TRANSPORT_ICON_SIZE = 14;
     /** Icon size for toolbar buttons (add track, save, plugins). */
-    private static final double TOOLBAR_ICON_SIZE = 16;
+    private static final double TOOLBAR_ICON_SIZE = 14;
     /** Icon size for track-strip controls (mute, solo, arm). */
     private static final double TRACK_CONTROL_ICON_SIZE = 14;
     /** Icon size for track-type indicators. */
