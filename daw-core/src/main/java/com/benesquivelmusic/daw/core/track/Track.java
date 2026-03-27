@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.track;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.automation.AutomationData;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -32,6 +33,7 @@ public final class Track {
     private boolean phaseInverted;
     private int inputDeviceIndex = NO_INPUT_DEVICE;
     private final List<AudioClip> clips = new ArrayList<>();
+    private final AutomationData automationData = new AutomationData();
 
     /**
      * Creates a new track with the given name and type.
@@ -201,6 +203,18 @@ public final class Track {
      */
     public List<AudioClip> getClips() {
         return Collections.unmodifiableList(clips);
+    }
+
+    /**
+     * Returns the automation data for this track.
+     *
+     * <p>Automation data holds per-parameter automation lanes that define
+     * envelope curves for volume, pan, mute, and send levels.</p>
+     *
+     * @return the automation data
+     */
+    public AutomationData getAutomationData() {
+        return automationData;
     }
 
     /**
