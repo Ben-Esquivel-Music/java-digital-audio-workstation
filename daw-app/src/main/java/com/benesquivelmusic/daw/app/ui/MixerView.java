@@ -4,6 +4,8 @@ import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.mixer.Send;
+import com.benesquivelmusic.daw.core.mixer.SendMode;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -37,11 +39,14 @@ import java.util.Objects;
  *   <li>Volume fader (vertical {@link Slider})</li>
  *   <li>Pan control (horizontal {@link Slider})</li>
  *   <li>Mute / Solo / Arm buttons</li>
- *   <li>Send level control</li>
+ *   <li>Send level controls (one per return bus)</li>
  * </ul>
  *
+ * <p>Return buses are displayed as distinct channel strips between the track
+ * channels and the master channel, separated by vertical separators.</p>
+ *
  * <p>The master channel strip is always displayed on the far right,
- * separated from the track channels by a vertical separator.</p>
+ * separated from the return bus channels by a vertical separator.</p>
  *
  * <p>Uses existing CSS classes: {@code .mixer-panel}, {@code .mixer-channel},
  * {@code .mixer-channel-name}, {@code .mixer-fader}.</p>
@@ -57,6 +62,7 @@ public final class MixerView extends VBox {
 
     private final DawProject project;
     private final HBox channelStrips;
+    private final HBox returnBusStrips;
     private final VBox masterStrip;
 
     /**
@@ -76,11 +82,19 @@ public final class MixerView extends VBox {
         channelStrips = new HBox(6);
         channelStrips.setAlignment(Pos.TOP_LEFT);
 
+        returnBusStrips = new HBox(6);
+        returnBusStrips.setAlignment(Pos.TOP_LEFT);
+
         masterStrip = buildMasterStrip();
 
         HBox allStrips = new HBox(6);
         allStrips.setAlignment(Pos.TOP_LEFT);
-        allStrips.getChildren().addAll(channelStrips, new Separator(Orientation.VERTICAL), masterStrip);
+        allStrips.getChildren().addAll(
+                channelStrips,
+                new Separator(Orientation.VERTICAL),
+                returnBusStrips,
+                new Separator(Orientation.VERTICAL),
+                masterStrip);
         HBox.setHgrow(channelStrips, Priority.ALWAYS);
 
         ScrollPane scrollPane = new ScrollPane(allStrips);
@@ -97,10 +111,11 @@ public final class MixerView extends VBox {
     }
 
     /**
-     * Rebuilds the channel strips from the current project tracks.
+     * Rebuilds the channel strips from the current project tracks and return
+     * buses.
      *
-     * <p>Call this method after adding or removing tracks to keep the
-     * mixer view synchronized with the project model.</p>
+     * <p>Call this method after adding or removing tracks or return buses to
+     * keep the mixer view synchronized with the project model.</p>
      */
     public void refresh() {
         channelStrips.getChildren().clear();
@@ -110,6 +125,21 @@ public final class MixerView extends VBox {
                 channelStrips.getChildren().add(buildChannelStrip(track, mixerChannel));
             }
         }
+
+        returnBusStrips.getChildren().clear();
+        for (MixerChannel returnBus : project.getMixer().getReturnBuses()) {
+            returnBusStrips.getChildren().add(buildReturnBusStrip(returnBus));
+        }
+        // "Add Return Bus" button at the end
+        Button addReturnBusBtn = new Button("+");
+        addReturnBusBtn.getStyleClass().add("track-arm-button");
+        addReturnBusBtn.setTooltip(new Tooltip("Add Return Bus"));
+        addReturnBusBtn.setOnAction(_ -> {
+            int busCount = project.getMixer().getReturnBusCount();
+            project.getMixer().addReturnBus("Return " + (busCount + 1));
+            refresh();
+        });
+        returnBusStrips.getChildren().add(addReturnBusBtn);
     }
 
     /**
@@ -118,6 +148,14 @@ public final class MixerView extends VBox {
      */
     HBox getChannelStrips() {
         return channelStrips;
+    }
+
+    /**
+     * Returns the container holding the return bus channel strips.
+     * Visible for testing.
+     */
+    HBox getReturnBusStrips() {
+        return returnBusStrips;
     }
 
     /**
@@ -213,7 +251,55 @@ public final class MixerView extends VBox {
         HBox buttonRow = new HBox(2, muteBtn, soloBtn, armBtn);
         buttonRow.setAlignment(Pos.CENTER);
 
-        // Send level control
+        // Send controls — one slider per return bus
+        VBox sendBox = new VBox(2);
+        for (MixerChannel returnBus : project.getMixer().getReturnBuses()) {
+            Label sendLabel = new Label("→ " + returnBus.getName());
+            sendLabel.getStyleClass().add("mixer-channel-name");
+            sendLabel.setMaxWidth(CHANNEL_WIDTH - 12);
+
+            Send existingSend = mixerChannel.getSendForTarget(returnBus);
+            double initialLevel = existingSend != null ? existingSend.getLevel() : 0.0;
+
+            Slider sendSlider = new Slider(0.0, 1.0, initialLevel);
+            sendSlider.setPrefWidth(SEND_SLIDER_WIDTH);
+            sendSlider.getStyleClass().add("mixer-fader");
+            sendSlider.setTooltip(new Tooltip("Send to " + returnBus.getName()));
+
+            MixerChannel targetBus = returnBus;
+            sendSlider.valueProperty().addListener((_, _, newVal) -> {
+                double value = newVal.doubleValue();
+                Send send = mixerChannel.getSendForTarget(targetBus);
+                if (send != null) {
+                    send.setLevel(value);
+                } else if (value > 0.0) {
+                    mixerChannel.addSend(new Send(targetBus, value, SendMode.POST_FADER));
+                }
+            });
+
+            // Right-click context menu to toggle pre/post fader
+            ContextMenu sendMenu = new ContextMenu();
+            MenuItem preFaderItem = new MenuItem("Pre-Fader");
+            preFaderItem.setOnAction(_ -> {
+                Send send = mixerChannel.getSendForTarget(targetBus);
+                if (send != null) {
+                    send.setMode(SendMode.PRE_FADER);
+                }
+            });
+            MenuItem postFaderItem = new MenuItem("Post-Fader");
+            postFaderItem.setOnAction(_ -> {
+                Send send = mixerChannel.getSendForTarget(targetBus);
+                if (send != null) {
+                    send.setMode(SendMode.POST_FADER);
+                }
+            });
+            sendMenu.getItems().addAll(preFaderItem, postFaderItem);
+            sendLabel.setContextMenu(sendMenu);
+
+            sendBox.getChildren().addAll(sendLabel, sendSlider);
+        }
+
+        // Legacy send level control (for backward compatibility)
         Label sendLabel = new Label("SEND");
         sendLabel.getStyleClass().add("mixer-channel-name");
         Slider sendSlider = new Slider(0.0, 1.0, mixerChannel.getSendLevel());
@@ -223,21 +309,73 @@ public final class MixerView extends VBox {
         sendSlider.valueProperty().addListener((_, _, newVal) ->
                 mixerChannel.setSendLevel(newVal.doubleValue()));
 
-        // Right-click context menu on send label to select destination bus
-        ContextMenu sendMenu = new ContextMenu();
-        MixerChannel auxBus = project.getMixer().getAuxBus();
-        MenuItem auxItem = new MenuItem(auxBus.getName());
-        auxItem.setOnAction(_ -> sendLabel.setText("SEND: " + auxBus.getName()));
-        sendMenu.getItems().add(auxItem);
-        sendLabel.setContextMenu(sendMenu);
-
         // Track type icon
         Node typeIcon = trackTypeIcon(track.getType());
 
         strip.getChildren().addAll(
                 nameLabel, typeIcon, levelMeter, volumeFader,
                 panLabel, panSlider, buttonRow,
-                sendLabel, sendSlider);
+                sendBox, sendLabel, sendSlider);
+
+        return strip;
+    }
+
+    private VBox buildReturnBusStrip(MixerChannel returnBus) {
+        VBox strip = new VBox(4);
+        strip.getStyleClass().add("mixer-channel");
+        strip.setAlignment(Pos.TOP_CENTER);
+        strip.setPrefWidth(CHANNEL_WIDTH);
+        strip.setMinWidth(CHANNEL_WIDTH);
+        strip.setStyle("-fx-border-color: #00bcd4;");
+
+        Label nameLabel = new Label(returnBus.getName());
+        nameLabel.getStyleClass().add("mixer-channel-name");
+        nameLabel.setMaxWidth(CHANNEL_WIDTH - 12);
+        nameLabel.setStyle("-fx-text-fill: #00e5ff; -fx-font-weight: bold;");
+
+        LevelMeterDisplay levelMeter = new LevelMeterDisplay(true);
+        levelMeter.setPrefWidth(METER_WIDTH);
+        levelMeter.setMinWidth(METER_WIDTH);
+        levelMeter.setMaxWidth(METER_WIDTH);
+        levelMeter.setPrefHeight(METER_HEIGHT);
+        levelMeter.setMinHeight(METER_HEIGHT);
+
+        Slider volumeFader = new Slider(0.0, 1.0, returnBus.getVolume());
+        volumeFader.setOrientation(Orientation.VERTICAL);
+        volumeFader.setPrefHeight(FADER_HEIGHT);
+        volumeFader.getStyleClass().add("mixer-fader");
+        volumeFader.setTooltip(new Tooltip("Return Bus Volume"));
+        volumeFader.valueProperty().addListener((_, _, newVal) ->
+                returnBus.setVolume(newVal.doubleValue()));
+
+        Slider panSlider = new Slider(-1.0, 1.0, returnBus.getPan());
+        panSlider.setPrefWidth(CHANNEL_WIDTH - 12);
+        panSlider.getStyleClass().add("mixer-fader");
+        panSlider.setTooltip(new Tooltip("Return Bus Pan"));
+        panSlider.valueProperty().addListener((_, _, newVal) ->
+                returnBus.setPan(newVal.doubleValue()));
+        Label panLabel = new Label("PAN");
+        panLabel.getStyleClass().add("mixer-channel-name");
+
+        Button muteBtn = new Button("M");
+        muteBtn.getStyleClass().add("track-mute-button");
+        muteBtn.setTooltip(new Tooltip("Mute Return Bus"));
+        muteBtn.setGraphic(IconNode.of(DawIcon.MUTE, CONTROL_ICON_SIZE));
+        muteBtn.setOnAction(_ -> {
+            boolean muted = !returnBus.isMuted();
+            returnBus.setMuted(muted);
+            muteBtn.setStyle(muted
+                    ? "-fx-background-color: #ff9100; -fx-text-fill: #0d0d0d;" : "");
+        });
+
+        HBox buttonRow = new HBox(2, muteBtn);
+        buttonRow.setAlignment(Pos.CENTER);
+
+        Node busIcon = IconNode.of(DawIcon.MIXER, CONTROL_ICON_SIZE);
+
+        strip.getChildren().addAll(
+                nameLabel, busIcon, levelMeter, volumeFader,
+                panLabel, panSlider, buttonRow);
 
         return strip;
     }

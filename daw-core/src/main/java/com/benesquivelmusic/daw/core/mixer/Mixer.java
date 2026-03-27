@@ -12,6 +12,11 @@ import java.util.Objects;
  * The DAW mixer manages a collection of {@link MixerChannel}s and produces
  * the final stereo mix routed to the master output.
  *
+ * <p>The mixer supports multiple auxiliary return buses. Each track channel can
+ * have {@link Send} objects that route audio to any return bus with independent
+ * level and pre/post-fader mode. Return bus outputs are summed into the master
+ * bus during mix-down.</p>
+ *
  * <p>The {@link #mixDown(float[][][], float[][], int)} method sums all channel
  * contributions into a single output buffer without allocations or locks —
  * safe to call on the real-time audio thread.</p>
@@ -19,13 +24,14 @@ import java.util.Objects;
 public final class Mixer {
 
     private final List<MixerChannel> channels = new ArrayList<>();
+    private final List<MixerChannel> returnBuses = new ArrayList<>();
     private final MixerChannel masterChannel;
-    private final MixerChannel auxBus;
 
     /** Creates a new mixer with an empty channel list, a default master channel, and a reverb return aux bus. */
     public Mixer() {
         this.masterChannel = new MixerChannel("Master");
-        this.auxBus = new MixerChannel("Reverb Return");
+        MixerChannel defaultReturn = new MixerChannel("Reverb Return");
+        returnBuses.add(defaultReturn);
     }
 
     /**
@@ -68,11 +74,76 @@ public final class Mixer {
 
     /**
      * Returns the shared auxiliary/return bus used for send effects (e.g., reverb).
+     * This is the first return bus created by default.
      *
      * @return the aux bus channel
      */
     public MixerChannel getAuxBus() {
-        return auxBus;
+        return returnBuses.get(0);
+    }
+
+    /**
+     * Returns an unmodifiable view of all return buses.
+     *
+     * @return the list of return buses
+     */
+    public List<MixerChannel> getReturnBuses() {
+        return Collections.unmodifiableList(returnBuses);
+    }
+
+    /**
+     * Adds a new return bus with the given name.
+     *
+     * @param name the display name for the return bus
+     * @return the newly created return bus channel
+     */
+    public MixerChannel addReturnBus(String name) {
+        Objects.requireNonNull(name, "name must not be null");
+        MixerChannel returnBus = new MixerChannel(name);
+        returnBuses.add(returnBus);
+        return returnBus;
+    }
+
+    /**
+     * Adds an existing return bus channel to the mixer. This is used by undo
+     * operations to re-add a previously removed return bus.
+     *
+     * @param returnBus the return bus to add
+     */
+    public void addReturnBus(MixerChannel returnBus) {
+        Objects.requireNonNull(returnBus, "returnBus must not be null");
+        if (!returnBuses.contains(returnBus)) {
+            returnBuses.add(returnBus);
+        }
+    }
+
+    /**
+     * Removes a return bus from the mixer. The sends on each channel that
+     * target this bus are also removed.
+     *
+     * @param returnBus the return bus to remove
+     * @return {@code true} if the return bus was removed
+     */
+    public boolean removeReturnBus(MixerChannel returnBus) {
+        boolean removed = returnBuses.remove(returnBus);
+        if (removed) {
+            for (MixerChannel channel : channels) {
+                Send send = channel.getSendForTarget(returnBus);
+                if (send != null) {
+                    channel.removeSend(send);
+                }
+            }
+        }
+        return removed;
+    }
+
+    /**
+     * Returns the total number of return buses.
+     *
+     * @return return bus count
+     */
+    public int getReturnBusCount() {
+        return returnBuses.size();
     }
 
     /**
@@ -233,6 +304,8 @@ public final class Mixer {
             }
         }
 
+        MixerChannel auxBus = getAuxBus();
+
         // Route sends to aux bus
         int channelCount = Math.min(channels.size(), channelBuffers.length);
         for (int i = 0; i < channelCount; i++) {
@@ -268,6 +341,161 @@ public final class Mixer {
             }
         } else {
             for (float[] ch : auxOutputBuffer) {
+                Arrays.fill(ch, 0, numFrames, 0.0f);
+            }
+        }
+    }
+
+    /**
+     * Performs a full mix-down with multi-bus send routing. Channel audio is
+     * summed into {@code outputBuffer}. Each return bus receives send contributions
+     * from channels that have {@link Send} objects targeting it. Return bus outputs
+     * are written to {@code returnBuffers} and also summed into the main output
+     * (before master volume).
+     *
+     * <p>Pre-fader sends tap the raw channel audio (independent of channel volume).
+     * Post-fader sends tap the audio after applying the channel volume.</p>
+     *
+     * @param channelBuffers per-channel audio data {@code [mixerChannel][audioChannel][frame]}
+     * @param outputBuffer   the destination main output buffer {@code [audioChannel][frame]}
+     * @param returnBuffers  per-return-bus output buffers {@code [returnBus][audioChannel][frame]}
+     * @param numFrames      the number of sample frames to mix
+     */
+    @RealTimeSafe
+    public void mixDown(float[][][] channelBuffers, float[][] outputBuffer,
+                        float[][][] returnBuffers, int numFrames) {
+        // Clear output
+        for (float[] ch : outputBuffer) {
+            Arrays.fill(ch, 0, numFrames, 0.0f);
+        }
+
+        // Clear all return buffers
+        int returnBusCount = Math.min(returnBuses.size(), returnBuffers.length);
+        for (int r = 0; r < returnBusCount; r++) {
+            for (float[] ch : returnBuffers[r]) {
+                Arrays.fill(ch, 0, numFrames, 0.0f);
+            }
+        }
+
+        boolean anySolo = false;
+        for (MixerChannel channel : channels) {
+            if (channel.isSolo()) {
+                anySolo = true;
+                break;
+            }
+        }
+
+        int channelCount = Math.min(channels.size(), channelBuffers.length);
+        for (int i = 0; i < channelCount; i++) {
+            MixerChannel channel = channels.get(i);
+            if (channel.isMuted()) {
+                continue;
+            }
+            if (anySolo && !channel.isSolo()) {
+                continue;
+            }
+
+            float volume = (float) channel.getVolume();
+            float[][] src = channelBuffers[i];
+            int audioChannels = Math.min(src.length, outputBuffer.length);
+
+            // Mix channel into main output with volume and pan
+            if (outputBuffer.length >= 2 && audioChannels >= 1) {
+                double pan = channel.getPan();
+                double angle = (pan + 1.0) * 0.25 * Math.PI;
+                float leftGain = (float) (Math.cos(angle) * volume);
+                float rightGain = (float) (Math.sin(angle) * volume);
+
+                for (int f = 0; f < numFrames; f++) {
+                    outputBuffer[0][f] += src[0][f] * leftGain;
+                }
+                if (audioChannels >= 2) {
+                    for (int f = 0; f < numFrames; f++) {
+                        outputBuffer[1][f] += src[1][f] * rightGain;
+                    }
+                } else {
+                    for (int f = 0; f < numFrames; f++) {
+                        outputBuffer[1][f] += src[0][f] * rightGain;
+                    }
+                }
+                for (int ch = 2; ch < audioChannels; ch++) {
+                    for (int f = 0; f < numFrames; f++) {
+                        outputBuffer[ch][f] += src[ch][f] * volume;
+                    }
+                }
+            } else {
+                for (int ch = 0; ch < audioChannels; ch++) {
+                    for (int f = 0; f < numFrames; f++) {
+                        outputBuffer[ch][f] += src[ch][f] * volume;
+                    }
+                }
+            }
+
+            // Route sends to return buses
+            List<Send> sends = channel.getSends();
+            for (int s = 0; s < sends.size(); s++) {
+                Send send = sends.get(s);
+                float sendLevel = (float) send.getLevel();
+                if (sendLevel <= 0.0f) {
+                    continue;
+                }
+
+                int returnIndex = returnBuses.indexOf(send.getTarget());
+                if (returnIndex < 0 || returnIndex >= returnBusCount) {
+                    continue;
+                }
+
+                float[][] returnBuf = returnBuffers[returnIndex];
+                int returnAudioChannels = Math.min(src.length, returnBuf.length);
+
+                if (send.getMode() == SendMode.PRE_FADER) {
+                    for (int ch = 0; ch < returnAudioChannels; ch++) {
+                        for (int f = 0; f < numFrames; f++) {
+                            returnBuf[ch][f] += src[ch][f] * sendLevel;
+                        }
+                    }
+                } else {
+                    // Post-fader: apply channel volume to send
+                    for (int ch = 0; ch < returnAudioChannels; ch++) {
+                        for (int f = 0; f < numFrames; f++) {
+                            returnBuf[ch][f] += src[ch][f] * volume * sendLevel;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply return bus volume and sum into main output
+        for (int r = 0; r < returnBusCount; r++) {
+            MixerChannel returnBus = returnBuses.get(r);
+            float[][] returnBuf = returnBuffers[r];
+            float returnVolume = (float) returnBus.getVolume();
+            int returnAudioChannels = Math.min(returnBuf.length, outputBuffer.length);
+
+            if (returnBus.isMuted()) {
+                for (float[] ch : returnBuf) {
+                    Arrays.fill(ch, 0, numFrames, 0.0f);
+                }
+            } else {
+                for (int ch = 0; ch < returnAudioChannels; ch++) {
+                    for (int f = 0; f < numFrames; f++) {
+                        returnBuf[ch][f] *= returnVolume;
+                        outputBuffer[ch][f] += returnBuf[ch][f];
+                    }
+                }
+            }
+        }
+
+        // Apply master volume
+        float masterVolume = (float) masterChannel.getVolume();
+        if (!masterChannel.isMuted()) {
+            for (float[] ch : outputBuffer) {
+                for (int f = 0; f < numFrames; f++) {
+                    ch[f] *= masterVolume;
+                }
+            }
+        } else {
+            for (float[] ch : outputBuffer) {
                 Arrays.fill(ch, 0, numFrames, 0.0f);
             }
         }

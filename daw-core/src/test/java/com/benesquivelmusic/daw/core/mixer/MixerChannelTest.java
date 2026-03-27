@@ -90,4 +90,75 @@ class MixerChannelTest {
         channel.setPhaseInverted(false);
         assertThat(channel.isPhaseInverted()).isFalse();
     }
+
+    // ── Send management tests ───────────────────────────────────────────────
+
+    @Test
+    void shouldStartWithEmptySends() {
+        MixerChannel channel = new MixerChannel("Ch");
+        assertThat(channel.getSends()).isEmpty();
+    }
+
+    @Test
+    void shouldAddSend() {
+        MixerChannel channel = new MixerChannel("Ch");
+        MixerChannel target = new MixerChannel("Bus");
+        Send send = new Send(target, 0.5, SendMode.POST_FADER);
+
+        channel.addSend(send);
+
+        assertThat(channel.getSends()).hasSize(1);
+        assertThat(channel.getSends().get(0)).isSameAs(send);
+    }
+
+    @Test
+    void shouldRemoveSend() {
+        MixerChannel channel = new MixerChannel("Ch");
+        MixerChannel target = new MixerChannel("Bus");
+        Send send = new Send(target, 0.5, SendMode.POST_FADER);
+        channel.addSend(send);
+
+        boolean removed = channel.removeSend(send);
+
+        assertThat(removed).isTrue();
+        assertThat(channel.getSends()).isEmpty();
+    }
+
+    @Test
+    void shouldGetSendForTarget() {
+        MixerChannel channel = new MixerChannel("Ch");
+        MixerChannel bus1 = new MixerChannel("Bus1");
+        MixerChannel bus2 = new MixerChannel("Bus2");
+        Send send1 = new Send(bus1, 0.3, SendMode.POST_FADER);
+        Send send2 = new Send(bus2, 0.7, SendMode.PRE_FADER);
+        channel.addSend(send1);
+        channel.addSend(send2);
+
+        assertThat(channel.getSendForTarget(bus1)).isSameAs(send1);
+        assertThat(channel.getSendForTarget(bus2)).isSameAs(send2);
+    }
+
+    @Test
+    void shouldReturnNullForUnknownSendTarget() {
+        MixerChannel channel = new MixerChannel("Ch");
+        MixerChannel unknownBus = new MixerChannel("Unknown");
+
+        assertThat(channel.getSendForTarget(unknownBus)).isNull();
+    }
+
+    @Test
+    void shouldReturnUnmodifiableSendList() {
+        MixerChannel channel = new MixerChannel("Ch");
+
+        assertThatThrownBy(() -> channel.getSends().add(new Send(new MixerChannel("Bus"))))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void shouldRejectNullSend() {
+        MixerChannel channel = new MixerChannel("Ch");
+
+        assertThatThrownBy(() -> channel.addSend(null))
+                .isInstanceOf(NullPointerException.class);
+    }
 }
