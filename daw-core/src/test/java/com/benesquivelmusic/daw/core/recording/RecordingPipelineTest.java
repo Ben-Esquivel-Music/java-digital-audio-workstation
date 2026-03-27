@@ -235,4 +235,245 @@ class RecordingPipelineTest {
         assertThat(pipeline.getRecordedClips()).containsKey(track);
         assertThat(pipeline.getRecordedClips().get(track)).isNotNull();
     }
+
+    @Test
+    void shouldCaptureRecordingStartBeat() {
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+        transport.setPositionInBeats(8.0);
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track));
+        pipeline.start();
+
+        assertThat(pipeline.getRecordingStartBeat()).isEqualTo(8.0);
+
+        // Simulate audio capture
+        float[][] input = new float[2][512];
+        float[][] output = new float[2][512];
+        audioEngine.processBlock(input, output, 512);
+
+        List<AudioClip> clips = pipeline.stop();
+
+        // Clip should be placed at the original start position, not at 0
+        assertThat(clips).hasSize(1);
+        assertThat(clips.getFirst().getStartBeat()).isEqualTo(8.0);
+    }
+
+    @Test
+    void shouldSetRecordingIndicatorOnArmedTracks() {
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+        assertThat(track.isRecording()).isFalse();
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track));
+        pipeline.start();
+
+        assertThat(track.isRecording()).isTrue();
+
+        pipeline.stop();
+
+        assertThat(track.isRecording()).isFalse();
+    }
+
+    @Test
+    void shouldDefaultToNoCountIn() {
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track));
+
+        assertThat(pipeline.getCountInMode()).isEqualTo(CountInMode.OFF);
+    }
+
+    @Test
+    void shouldDefaultToMonitoringOff() {
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track));
+
+        assertThat(pipeline.getMonitoringMode()).isEqualTo(InputMonitoringMode.OFF);
+    }
+
+    @Test
+    void shouldDefaultToNoPunchRange() {
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track));
+
+        assertThat(pipeline.getPunchRange()).isNull();
+    }
+
+    @Test
+    void shouldAcceptCountInMode() {
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track),
+                CountInMode.TWO_BARS, InputMonitoringMode.OFF, null);
+
+        assertThat(pipeline.getCountInMode()).isEqualTo(CountInMode.TWO_BARS);
+    }
+
+    @Test
+    void shouldAcceptMonitoringMode() {
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track),
+                CountInMode.OFF, InputMonitoringMode.ALWAYS, null);
+
+        assertThat(pipeline.getMonitoringMode()).isEqualTo(InputMonitoringMode.ALWAYS);
+    }
+
+    @Test
+    void shouldAcceptPunchRange() {
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+        PunchRange punch = new PunchRange(4.0, 12.0);
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track),
+                CountInMode.OFF, InputMonitoringMode.OFF, punch);
+
+        assertThat(pipeline.getPunchRange()).isEqualTo(punch);
+    }
+
+    @Test
+    void shouldUsePunchInBeatAsStartPosition() {
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+        PunchRange punch = new PunchRange(4.0, 12.0);
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track),
+                CountInMode.OFF, InputMonitoringMode.OFF, punch);
+        pipeline.start();
+
+        assertThat(pipeline.getRecordingStartBeat()).isEqualTo(4.0);
+    }
+
+    @Test
+    void shouldGenerateCountInAudio() {
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track),
+                CountInMode.ONE_BAR, InputMonitoringMode.OFF, null);
+
+        float[][] countInAudio = pipeline.generateCountInAudio();
+
+        // 4 beats at 120 BPM (default tempo), 44100 Hz = 88200 samples
+        assertThat(countInAudio).hasNumberOfRows(2);
+        assertThat(countInAudio[0].length).isEqualTo(88200);
+    }
+
+    @Test
+    void shouldReturnEmptyCountInAudioWhenOff() {
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track));
+
+        float[][] countInAudio = pipeline.generateCountInAudio();
+
+        assertThat(countInAudio[0]).isEmpty();
+    }
+
+    @Test
+    void monitoringShouldBeActiveWhenAlwaysAndRecording() {
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track),
+                CountInMode.OFF, InputMonitoringMode.ALWAYS, null);
+        pipeline.start();
+
+        assertThat(pipeline.isInputMonitoringActive()).isTrue();
+    }
+
+    @Test
+    void monitoringShouldBeActiveWhenAlwaysAndNotRecording() {
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track),
+                CountInMode.OFF, InputMonitoringMode.ALWAYS, null);
+
+        // Not started yet
+        assertThat(pipeline.isInputMonitoringActive()).isTrue();
+    }
+
+    @Test
+    void monitoringShouldBeActiveWhenAutoAndRecording() {
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track),
+                CountInMode.OFF, InputMonitoringMode.AUTO, null);
+        pipeline.start();
+
+        assertThat(pipeline.isInputMonitoringActive()).isTrue();
+    }
+
+    @Test
+    void monitoringShouldBeInactiveWhenAutoAndNotRecording() {
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track),
+                CountInMode.OFF, InputMonitoringMode.AUTO, null);
+
+        // Not started yet
+        assertThat(pipeline.isInputMonitoringActive()).isFalse();
+    }
+
+    @Test
+    void monitoringShouldBeInactiveWhenOff() {
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track),
+                CountInMode.OFF, InputMonitoringMode.OFF, null);
+        pipeline.start();
+
+        assertThat(pipeline.isInputMonitoringActive()).isFalse();
+    }
+
+    @Test
+    void shouldRejectNullCountInMode() {
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+
+        assertThatThrownBy(() -> new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track),
+                null, InputMonitoringMode.OFF, null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void shouldRejectNullMonitoringMode() {
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+
+        assertThatThrownBy(() -> new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track),
+                CountInMode.OFF, null, null))
+                .isInstanceOf(NullPointerException.class);
+    }
 }

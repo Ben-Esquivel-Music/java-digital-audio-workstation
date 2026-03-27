@@ -18,6 +18,17 @@ import java.util.Objects;
  * Orchestrates the recording pipeline by connecting the {@link AudioEngine},
  * {@link Transport}, and {@link RecordingSession} for each armed track.
  *
+ * <p>The pipeline supports:</p>
+ * <ul>
+ *   <li><strong>Count-in</strong> — An audible metronome click for a configurable
+ *       number of bars before recording starts (see {@link CountInMode}).</li>
+ *   <li><strong>Input monitoring</strong> — Routes the audio input through the
+ *       track's mixer channel so the performer can hear themselves in real time
+ *       (see {@link InputMonitoringMode}).</li>
+ *   <li><strong>Punch-in/punch-out</strong> — Records only within a specified
+ *       beat range on the timeline (see {@link PunchRange}).</li>
+ * </ul>
+ *
  * <p>Usage:</p>
  * <ol>
  *   <li>Call {@link #start()} to validate armed tracks, create recording sessions,
@@ -35,12 +46,17 @@ public final class RecordingPipeline {
     private final AudioFormat format;
     private final Path outputDirectory;
     private final List<Track> armedTracks;
+    private final CountInMode countInMode;
+    private final InputMonitoringMode monitoringMode;
+    private final PunchRange punchRange;
     private final Map<Track, RecordingSession> sessions = new LinkedHashMap<>();
     private final Map<Track, AudioClip> recordedClips = new LinkedHashMap<>();
     private boolean active;
+    private double recordingStartBeat;
 
     /**
-     * Creates a new recording pipeline.
+     * Creates a new recording pipeline with default settings (no count-in,
+     * monitoring off, no punch range).
      *
      * @param audioEngine     the audio engine providing input audio
      * @param transport       the transport controlling playback/recording state
@@ -51,6 +67,28 @@ public final class RecordingPipeline {
     public RecordingPipeline(AudioEngine audioEngine, Transport transport,
                              AudioFormat format, Path outputDirectory,
                              List<Track> armedTracks) {
+        this(audioEngine, transport, format, outputDirectory, armedTracks,
+                CountInMode.OFF, InputMonitoringMode.OFF, null);
+    }
+
+    /**
+     * Creates a new recording pipeline with full configuration.
+     *
+     * @param audioEngine     the audio engine providing input audio
+     * @param transport       the transport controlling playback/recording state
+     * @param format          the audio format for recording sessions
+     * @param outputDirectory the directory for recording segment files
+     * @param armedTracks     the tracks armed for recording (must not be empty)
+     * @param countInMode     the count-in mode (number of bars before recording)
+     * @param monitoringMode  the input monitoring mode
+     * @param punchRange      the punch-in/punch-out range, or {@code null} for no punch recording
+     */
+    public RecordingPipeline(AudioEngine audioEngine, Transport transport,
+                             AudioFormat format, Path outputDirectory,
+                             List<Track> armedTracks,
+                             CountInMode countInMode,
+                             InputMonitoringMode monitoringMode,
+                             PunchRange punchRange) {
         this.audioEngine = Objects.requireNonNull(audioEngine, "audioEngine must not be null");
         this.transport = Objects.requireNonNull(transport, "transport must not be null");
         this.format = Objects.requireNonNull(format, "format must not be null");
@@ -60,6 +98,9 @@ public final class RecordingPipeline {
             throw new IllegalArgumentException("At least one track must be armed for recording");
         }
         this.armedTracks = List.copyOf(armedTracks);
+        this.countInMode = Objects.requireNonNull(countInMode, "countInMode must not be null");
+        this.monitoringMode = Objects.requireNonNull(monitoringMode, "monitoringMode must not be null");
+        this.punchRange = punchRange;
     }
 
     /**
@@ -73,6 +114,16 @@ public final class RecordingPipeline {
             throw new IllegalStateException("Recording pipeline is already active");
         }
         active = true;
+
+        // Capture the recording start position before any transport changes
+        recordingStartBeat = punchRange != null
+                ? punchRange.punchInBeat()
+                : transport.getPositionInBeats();
+
+        // Set recording indicator on armed tracks
+        for (Track track : armedTracks) {
+            track.setRecording(true);
+        }
 
         // Create and start a recording session per armed track
         for (Track track : armedTracks) {
@@ -107,12 +158,16 @@ public final class RecordingPipeline {
         // Remove the recording callback
         audioEngine.setRecordingCallback(null);
 
-        // Stop the transport
+        // Clear recording indicator on armed tracks
+        for (Track track : armedTracks) {
+            track.setRecording(false);
+        }
+
+        // Stop the transport (this resets positionInBeats to 0)
         transport.stop();
 
-        // Finalize sessions and create clips
+        // Finalize sessions and create clips using the captured start position
         List<AudioClip> clips = new ArrayList<>();
-        double positionInBeats = transport.getPositionInBeats();
 
         for (Track track : armedTracks) {
             RecordingSession session = sessions.get(track);
@@ -131,7 +186,7 @@ public final class RecordingPipeline {
 
                 AudioClip clip = new AudioClip(
                         "Recording — " + track.getName(),
-                        positionInBeats,
+                        recordingStartBeat,
                         durationBeats,
                         segmentPath);
                 track.addClip(clip);
@@ -184,6 +239,77 @@ public final class RecordingPipeline {
     }
 
     /**
+     * Returns the count-in mode configured for this pipeline.
+     *
+     * @return the count-in mode
+     */
+    public CountInMode getCountInMode() {
+        return countInMode;
+    }
+
+    /**
+     * Returns the input monitoring mode configured for this pipeline.
+     *
+     * @return the monitoring mode
+     */
+    public InputMonitoringMode getMonitoringMode() {
+        return monitoringMode;
+    }
+
+    /**
+     * Returns the punch range configured for this pipeline, or {@code null}
+     * if no punch recording is active.
+     *
+     * @return the punch range, or {@code null}
+     */
+    public PunchRange getPunchRange() {
+        return punchRange;
+    }
+
+    /**
+     * Returns the beat position at which recording started.
+     *
+     * <p>This is captured when {@link #start()} is called and used to
+     * position recorded clips on the timeline.</p>
+     *
+     * @return the recording start beat position
+     */
+    public double getRecordingStartBeat() {
+        return recordingStartBeat;
+    }
+
+    /**
+     * Generates count-in click audio for this pipeline's configuration.
+     *
+     * <p>Returns audio data containing metronome clicks for the configured
+     * number of count-in bars. Returns an empty buffer if count-in is
+     * {@link CountInMode#OFF}.</p>
+     *
+     * @return audio data as {@code [channel][sample]} in [-1.0, 1.0]
+     */
+    public float[][] generateCountInAudio() {
+        Metronome metronome = new Metronome(format.sampleRate(), format.channels());
+        return metronome.generateCountIn(
+                countInMode,
+                transport.getTempo(),
+                transport.getTimeSignatureNumerator());
+    }
+
+    /**
+     * Returns whether input monitoring should be active, given the current
+     * monitoring mode and transport state.
+     *
+     * @return {@code true} if input monitoring is active
+     */
+    public boolean isInputMonitoringActive() {
+        return switch (monitoringMode) {
+            case OFF -> false;
+            case ALWAYS -> true;
+            case AUTO -> active;
+        };
+    }
+
+    /**
      * Finds all armed tracks in the given list.
      *
      * @param tracks the tracks to search
@@ -201,6 +327,14 @@ public final class RecordingPipeline {
     }
 
     private void onAudioCaptured(float[][] inputBuffer, int numFrames) {
+        // When punch recording is active, only record within the punch range
+        if (punchRange != null) {
+            double currentBeat = transport.getPositionInBeats();
+            if (!punchRange.contains(currentBeat)) {
+                return;
+            }
+        }
+
         int bytesPerSample = format.bitDepth() / 8;
         int channels = format.channels();
         long byteSize = (long) numFrames * channels * bytesPerSample;
