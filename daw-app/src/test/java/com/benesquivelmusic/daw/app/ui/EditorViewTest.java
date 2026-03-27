@@ -593,8 +593,11 @@ class EditorViewTest {
     void trimButtonShouldFireCallback() throws Exception {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
+        Track audioTrack = new Track("Vocals", TrackType.AUDIO);
+        audioTrack.addClip(new AudioClip("Take 1", 0.0, 8.0, null));
         AtomicReference<Boolean> trimFired = new AtomicReference<>(false);
 
+        runOnFxThread(() -> view.setTrack(audioTrack));
         runOnFxThread(() -> {
             view.setOnTrimAction(() -> trimFired.set(true));
             view.getTrimButton().fire();
@@ -607,8 +610,11 @@ class EditorViewTest {
     void fadeInButtonShouldFireCallback() throws Exception {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
+        Track audioTrack = new Track("Vocals", TrackType.AUDIO);
+        audioTrack.addClip(new AudioClip("Take 1", 0.0, 8.0, null));
         AtomicReference<Boolean> fadeInFired = new AtomicReference<>(false);
 
+        runOnFxThread(() -> view.setTrack(audioTrack));
         runOnFxThread(() -> {
             view.setOnFadeInAction(() -> fadeInFired.set(true));
             view.getFadeInButton().fire();
@@ -621,8 +627,11 @@ class EditorViewTest {
     void fadeOutButtonShouldFireCallback() throws Exception {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
+        Track audioTrack = new Track("Vocals", TrackType.AUDIO);
+        audioTrack.addClip(new AudioClip("Take 1", 0.0, 8.0, null));
         AtomicReference<Boolean> fadeOutFired = new AtomicReference<>(false);
 
+        runOnFxThread(() -> view.setTrack(audioTrack));
         runOnFxThread(() -> {
             view.setOnFadeOutAction(() -> fadeOutFired.set(true));
             view.getFadeOutButton().fire();
