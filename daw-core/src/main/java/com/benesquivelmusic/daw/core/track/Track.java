@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.track;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.automation.AutomationData;
+import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -31,6 +32,8 @@ public final class Track {
     private boolean solo;
     private boolean armed;
     private boolean phaseInverted;
+    private boolean recording;
+    private InputMonitoringMode inputMonitoringMode = InputMonitoringMode.OFF;
     private int inputDeviceIndex = NO_INPUT_DEVICE;
     private final List<AudioClip> clips = new ArrayList<>();
     private final AutomationData automationData = new AutomationData();
@@ -150,6 +153,47 @@ public final class Track {
     }
 
     /**
+     * Returns whether this track is currently recording.
+     *
+     * <p>This flag is set by the recording pipeline when recording is
+     * active. It can be used by the UI to show a recording indicator
+     * (e.g., red flashing) on the track header.</p>
+     *
+     * @return {@code true} if recording is in progress
+     */
+    public boolean isRecording() {
+        return recording;
+    }
+
+    /**
+     * Sets the recording state. Typically called by the recording pipeline.
+     *
+     * @param recording {@code true} if recording is active
+     */
+    public void setRecording(boolean recording) {
+        this.recording = recording;
+    }
+
+    /**
+     * Returns the input monitoring mode for this track.
+     *
+     * @return the monitoring mode (never {@code null})
+     */
+    public InputMonitoringMode getInputMonitoringMode() {
+        return inputMonitoringMode;
+    }
+
+    /**
+     * Sets the input monitoring mode for this track.
+     *
+     * @param mode the monitoring mode (must not be {@code null})
+     */
+    public void setInputMonitoringMode(InputMonitoringMode mode) {
+        this.inputMonitoringMode = Objects.requireNonNull(mode,
+                "inputMonitoringMode must not be null");
+    }
+
+    /**
      * Returns the index of the input device assigned to this track, or
      * {@link #NO_INPUT_DEVICE} ({@value #NO_INPUT_DEVICE}) if no device
      * has been assigned.
@@ -233,6 +277,7 @@ public final class Track {
         copy.setSolo(solo);
         copy.setArmed(false);
         copy.setPhaseInverted(phaseInverted);
+        copy.setInputMonitoringMode(inputMonitoringMode);
         copy.setInputDeviceIndex(inputDeviceIndex);
         for (AudioClip clip : clips) {
             copy.addClip(clip.duplicate());

@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.track;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
 
 import org.junit.jupiter.api.Test;
 
@@ -181,6 +182,48 @@ class TrackTest {
         assertThat(track.getInputDeviceIndex()).isEqualTo(0);
     }
 
+    // ── Recording indicator tests ───────────────────────────────────────────
+
+    @Test
+    void shouldDefaultToNotRecording() {
+        Track track = new Track("Track", TrackType.AUDIO);
+        assertThat(track.isRecording()).isFalse();
+    }
+
+    @Test
+    void shouldToggleRecordingIndicator() {
+        Track track = new Track("Track", TrackType.AUDIO);
+        track.setRecording(true);
+        assertThat(track.isRecording()).isTrue();
+        track.setRecording(false);
+        assertThat(track.isRecording()).isFalse();
+    }
+
+    // ── Input monitoring mode tests ─────────────────────────────────────────
+
+    @Test
+    void shouldDefaultToMonitoringOff() {
+        Track track = new Track("Track", TrackType.AUDIO);
+        assertThat(track.getInputMonitoringMode()).isEqualTo(InputMonitoringMode.OFF);
+    }
+
+    @Test
+    void shouldSetInputMonitoringMode() {
+        Track track = new Track("Track", TrackType.AUDIO);
+        track.setInputMonitoringMode(InputMonitoringMode.AUTO);
+        assertThat(track.getInputMonitoringMode()).isEqualTo(InputMonitoringMode.AUTO);
+
+        track.setInputMonitoringMode(InputMonitoringMode.ALWAYS);
+        assertThat(track.getInputMonitoringMode()).isEqualTo(InputMonitoringMode.ALWAYS);
+    }
+
+    @Test
+    void shouldRejectNullInputMonitoringMode() {
+        Track track = new Track("Track", TrackType.AUDIO);
+        assertThatThrownBy(() -> track.setInputMonitoringMode(null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
     // ── Duplicate tests ─────────────────────────────────────────────────────
 
     @Test
@@ -193,6 +236,7 @@ class TrackTest {
         original.setArmed(true);
         original.setPhaseInverted(true);
         original.setInputDeviceIndex(3);
+        original.setInputMonitoringMode(InputMonitoringMode.AUTO);
 
         Track copy = original.duplicate("Vocals (copy)");
 
@@ -206,6 +250,8 @@ class TrackTest {
         assertThat(copy.isArmed()).isFalse(); // armed is never copied
         assertThat(copy.isPhaseInverted()).isTrue();
         assertThat(copy.getInputDeviceIndex()).isEqualTo(3);
+        assertThat(copy.getInputMonitoringMode()).isEqualTo(InputMonitoringMode.AUTO);
+        assertThat(copy.isRecording()).isFalse(); // recording state is never copied
     }
 
     @Test
