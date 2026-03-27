@@ -220,7 +220,6 @@ echo ""
 
 created=0
 skipped=0
-errors=0
 
 for file in "${story_files[@]}"; do
     title=$(extract_title "$file")
