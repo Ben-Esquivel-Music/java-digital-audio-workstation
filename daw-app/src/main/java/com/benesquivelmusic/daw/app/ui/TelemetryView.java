@@ -81,7 +81,7 @@ public final class TelemetryView extends VBox {
         // Header label
         Label headerLabel = new Label("Sound Wave Telemetry");
         headerLabel.getStyleClass().add("panel-header");
-        headerLabel.setGraphic(IconNode.of(DawIcon.OSCILLOSCOPE, 16));
+        headerLabel.setGraphic(IconNode.of(DawIcon.SURROUND, 16));
         headerLabel.setPadding(new Insets(6, 10, 6, 10));
 
         Region spacer = new Region();
