@@ -133,6 +133,29 @@ public final class DawProject {
     }
 
     /**
+     * Moves a track from one position to another in the track list and
+     * reorders the corresponding mixer channel to match.
+     *
+     * @param fromIndex the current index of the track to move
+     * @param toIndex   the target index for the track
+     * @throws IndexOutOfBoundsException if either index is out of range
+     */
+    public void moveTrack(int fromIndex, int toIndex) {
+        if (fromIndex < 0 || fromIndex >= tracks.size()) {
+            throw new IndexOutOfBoundsException("fromIndex out of range: " + fromIndex);
+        }
+        if (toIndex < 0 || toIndex >= tracks.size()) {
+            throw new IndexOutOfBoundsException("toIndex out of range: " + toIndex);
+        }
+        if (fromIndex == toIndex) {
+            return;
+        }
+        Track track = tracks.remove(fromIndex);
+        tracks.add(toIndex, track);
+        mixer.moveChannel(fromIndex, toIndex);
+    }
+
+    /**
      * Returns an unmodifiable view of the tracks.
      *
      * @return the list of tracks

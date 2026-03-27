@@ -336,4 +336,76 @@ class MixerTest {
         // 1.0 * 0.5 + 1.0 * 0.3 = 0.8
         assertThat(auxOutput[0][0]).isEqualTo(0.8f, org.assertj.core.data.Offset.offset(1e-6f));
     }
+
+    // ── Move channel tests ──────────────────────────────────────────────────
+
+    @Test
+    void shouldMoveChannelForward() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch1 = new MixerChannel("Ch1");
+        MixerChannel ch2 = new MixerChannel("Ch2");
+        MixerChannel ch3 = new MixerChannel("Ch3");
+        mixer.addChannel(ch1);
+        mixer.addChannel(ch2);
+        mixer.addChannel(ch3);
+
+        mixer.moveChannel(0, 2);
+
+        assertThat(mixer.getChannels()).containsExactly(ch2, ch3, ch1);
+    }
+
+    @Test
+    void shouldMoveChannelBackward() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch1 = new MixerChannel("Ch1");
+        MixerChannel ch2 = new MixerChannel("Ch2");
+        MixerChannel ch3 = new MixerChannel("Ch3");
+        mixer.addChannel(ch1);
+        mixer.addChannel(ch2);
+        mixer.addChannel(ch3);
+
+        mixer.moveChannel(2, 0);
+
+        assertThat(mixer.getChannels()).containsExactly(ch3, ch1, ch2);
+    }
+
+    @Test
+    void shouldNoOpWhenMoveChannelToSameIndex() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch1 = new MixerChannel("Ch1");
+        MixerChannel ch2 = new MixerChannel("Ch2");
+        mixer.addChannel(ch1);
+        mixer.addChannel(ch2);
+
+        mixer.moveChannel(1, 1);
+
+        assertThat(mixer.getChannels()).containsExactly(ch1, ch2);
+    }
+
+    @Test
+    void shouldRejectMoveChannelWithNegativeFromIndex() {
+        Mixer mixer = new Mixer();
+        mixer.addChannel(new MixerChannel("Ch1"));
+
+        assertThatThrownBy(() -> mixer.moveChannel(-1, 0))
+                .isInstanceOf(IndexOutOfBoundsException.class);
+    }
+
+    @Test
+    void shouldRejectMoveChannelWithFromIndexOutOfRange() {
+        Mixer mixer = new Mixer();
+        mixer.addChannel(new MixerChannel("Ch1"));
+
+        assertThatThrownBy(() -> mixer.moveChannel(1, 0))
+                .isInstanceOf(IndexOutOfBoundsException.class);
+    }
+
+    @Test
+    void shouldRejectMoveChannelWithToIndexOutOfRange() {
+        Mixer mixer = new Mixer();
+        mixer.addChannel(new MixerChannel("Ch1"));
+
+        assertThatThrownBy(() -> mixer.moveChannel(0, 1))
+                .isInstanceOf(IndexOutOfBoundsException.class);
+    }
 }

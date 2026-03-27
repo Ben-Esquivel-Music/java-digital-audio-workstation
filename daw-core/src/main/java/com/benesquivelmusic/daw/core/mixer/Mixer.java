@@ -76,6 +76,27 @@ public final class Mixer {
     }
 
     /**
+     * Moves a channel from one position to another in the channel list.
+     *
+     * @param fromIndex the current index of the channel to move
+     * @param toIndex   the target index for the channel
+     * @throws IndexOutOfBoundsException if either index is out of range
+     */
+    public void moveChannel(int fromIndex, int toIndex) {
+        if (fromIndex < 0 || fromIndex >= channels.size()) {
+            throw new IndexOutOfBoundsException("fromIndex out of range: " + fromIndex);
+        }
+        if (toIndex < 0 || toIndex >= channels.size()) {
+            throw new IndexOutOfBoundsException("toIndex out of range: " + toIndex);
+        }
+        if (fromIndex == toIndex) {
+            return;
+        }
+        MixerChannel channel = channels.remove(fromIndex);
+        channels.add(toIndex, channel);
+    }
+
+    /**
      * Returns the total number of channels (excluding master).
      *
      * @return channel count
