@@ -135,14 +135,14 @@ LABEL_DESCRIPTIONS=(
 # Extract the title from YAML front matter
 extract_title() {
     local file="$1"
-    sed -n '/^---$/,/^---$/p' "$file" | grep '^title:' | sed 's/^title: *"//;s/" *$//'
+    sed -n '/^---$/,/^---$/p' "$file" | sed -n 's/^title: *"\(.*\)" *$/\1/p'
 }
 
 # Extract labels from YAML front matter as a newline-separated list
 extract_labels() {
     local file="$1"
     sed -n '/^---$/,/^---$/p' "$file" \
-        | grep -oP '(?<=\[)[^\]]+' \
+        | sed -n 's/^labels: *\[\(.*\)\] *$/\1/p' \
         | tr ',' '\n' \
         | sed 's/^ *"//;s/" *$//;s/^ *//;s/ *$//'
 }
@@ -220,6 +220,7 @@ echo ""
 
 created=0
 skipped=0
+failed=0
 
 for file in "${story_files[@]}"; do
     title=$(extract_title "$file")
@@ -261,15 +262,17 @@ for file in "${story_files[@]}"; do
     fi
 
     # Create the issue
-    gh issue create \
+    if gh issue create \
         --title "$title" \
         --body "$body" \
-        "${label_args[@]}" \
-        2>/dev/null
-
-    echo "  ✅ Issue created."
+        "${label_args[@]}"; then
+        echo "  ✅ Issue created."
+        created=$((created + 1))
+    else
+        echo "  ❌ Failed to create issue."
+        failed=$((failed + 1))
+    fi
     echo ""
-    created=$((created + 1))
 
     # Small delay to avoid rate limiting
     sleep 1
@@ -280,6 +283,7 @@ done
 echo "=== Summary ==="
 echo "Created: $created"
 echo "Skipped: $skipped"
+echo "Failed:  $failed"
 echo "Total:   ${#story_files[@]}"
 
 if $DRY_RUN; then
