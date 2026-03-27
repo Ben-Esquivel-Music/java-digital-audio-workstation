@@ -178,6 +178,15 @@ class TelemetryViewTest {
     }
 
     @Test
+    void shouldExposeSetupPanel() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+
+        assertThat(view.getSetupPanel()).isNotNull();
+        assertThat(view.getSetupPanel()).isInstanceOf(TelemetrySetupPanel.class);
+    }
+
+    @Test
     void setTelemetryDataWithNonNullShouldSwitchToDisplayState() throws Exception {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();

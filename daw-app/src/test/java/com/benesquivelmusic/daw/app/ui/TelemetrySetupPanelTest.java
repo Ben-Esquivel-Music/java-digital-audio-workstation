@@ -2,7 +2,9 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
+import com.benesquivelmusic.daw.sdk.telemetry.RoomPreset;
 import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
+import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
 
 import javafx.application.Platform;
 
@@ -1255,5 +1257,173 @@ class TelemetrySetupPanelTest {
         assertThat(result1.get()).isNull();
         assertThat(result2.get()).isNull();
         assertThat(result3.get()).isNull();
+    }
+
+    // ── parsePositiveDouble ─────────────────────────────────────────
+
+    @Test
+    void parsePositiveDoubleShouldAcceptValidPositive() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        AtomicReference<Double> result1 = new AtomicReference<>();
+        AtomicReference<Double> result2 = new AtomicReference<>();
+        AtomicReference<Double> result3 = new AtomicReference<>();
+        runOnFxThread(() -> {
+            result1.set(TelemetrySetupPanel.parsePositiveDouble("1.5"));
+            result2.set(TelemetrySetupPanel.parsePositiveDouble("100"));
+            result3.set(TelemetrySetupPanel.parsePositiveDouble("0.001"));
+        });
+        assertThat(result1.get()).isEqualTo(1.5);
+        assertThat(result2.get()).isEqualTo(100.0);
+        assertThat(result3.get()).isEqualTo(0.001);
+    }
+
+    @Test
+    void parsePositiveDoubleShouldRejectZero() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        AtomicReference<Double> result1 = new AtomicReference<>();
+        AtomicReference<Double> result2 = new AtomicReference<>();
+        runOnFxThread(() -> {
+            result1.set(TelemetrySetupPanel.parsePositiveDouble("0"));
+            result2.set(TelemetrySetupPanel.parsePositiveDouble("0.0"));
+        });
+        assertThat(result1.get()).isNull();
+        assertThat(result2.get()).isNull();
+    }
+
+    @Test
+    void parsePositiveDoubleShouldRejectNegative() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        AtomicReference<Double> result1 = new AtomicReference<>();
+        AtomicReference<Double> result2 = new AtomicReference<>();
+        runOnFxThread(() -> {
+            result1.set(TelemetrySetupPanel.parsePositiveDouble("-1.0"));
+            result2.set(TelemetrySetupPanel.parsePositiveDouble("-0.001"));
+        });
+        assertThat(result1.get()).isNull();
+        assertThat(result2.get()).isNull();
+    }
+
+    @Test
+    void parsePositiveDoubleShouldRejectNullEmptyAndWhitespace() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        AtomicReference<Double> result1 = new AtomicReference<>();
+        AtomicReference<Double> result2 = new AtomicReference<>();
+        AtomicReference<Double> result3 = new AtomicReference<>();
+        runOnFxThread(() -> {
+            result1.set(TelemetrySetupPanel.parsePositiveDouble(null));
+            result2.set(TelemetrySetupPanel.parsePositiveDouble(""));
+            result3.set(TelemetrySetupPanel.parsePositiveDouble("   "));
+        });
+        assertThat(result1.get()).isNull();
+        assertThat(result2.get()).isNull();
+        assertThat(result3.get()).isNull();
+    }
+
+    @Test
+    void parsePositiveDoubleShouldRejectNonNumeric() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        AtomicReference<Double> result1 = new AtomicReference<>();
+        AtomicReference<Double> result2 = new AtomicReference<>();
+        AtomicReference<Double> result3 = new AtomicReference<>();
+        runOnFxThread(() -> {
+            result1.set(TelemetrySetupPanel.parsePositiveDouble("abc"));
+            result2.set(TelemetrySetupPanel.parsePositiveDouble("1.2.3"));
+            result3.set(TelemetrySetupPanel.parsePositiveDouble("twelve"));
+        });
+        assertThat(result1.get()).isNull();
+        assertThat(result2.get()).isNull();
+        assertThat(result3.get()).isNull();
+    }
+
+    @Test
+    void parsePositiveDoubleShouldTrimWhitespace() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        AtomicReference<Double> result = new AtomicReference<>();
+        runOnFxThread(() -> result.set(TelemetrySetupPanel.parsePositiveDouble("  3.5  ")));
+        assertThat(result.get()).isEqualTo(3.5);
+    }
+
+    // ── formatPresetName ────────────────────────────────────────────
+
+    @Test
+    void formatPresetNameShouldProduceNonEmptyStringForAllPresets() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        for (RoomPreset preset : RoomPreset.values()) {
+            AtomicReference<String> result = new AtomicReference<>();
+            runOnFxThread(() -> result.set(TelemetrySetupPanel.formatPresetName(preset)));
+            assertThat(result.get()).isNotEmpty();
+        }
+    }
+
+    @Test
+    void formatPresetNameShouldContainDimensionValues() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        for (RoomPreset preset : RoomPreset.values()) {
+            AtomicReference<String> result = new AtomicReference<>();
+            runOnFxThread(() -> result.set(TelemetrySetupPanel.formatPresetName(preset)));
+            String formatted = result.get();
+            assertThat(formatted).contains("\u00d7");
+            assertThat(formatted).contains(
+                    String.format("%.1f", preset.dimensions().width()));
+            assertThat(formatted).contains(
+                    String.format("%.1f", preset.dimensions().length()));
+            assertThat(formatted).contains(
+                    String.format("%.1f", preset.dimensions().height()));
+        }
+    }
+
+    @Test
+    void formatPresetNameShouldContainFormattedEnumName() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        AtomicReference<String> result = new AtomicReference<>();
+        runOnFxThread(() -> result.set(
+                TelemetrySetupPanel.formatPresetName(RoomPreset.RECORDING_BOOTH)));
+        assertThat(result.get()).contains("Recording Booth");
+    }
+
+    // ── formatMaterialName ──────────────────────────────────────────
+
+    @Test
+    void formatMaterialNameShouldProduceNonEmptyStringForAllMaterials() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        for (WallMaterial material : WallMaterial.values()) {
+            AtomicReference<String> result = new AtomicReference<>();
+            runOnFxThread(() -> result.set(TelemetrySetupPanel.formatMaterialName(material)));
+            assertThat(result.get()).isNotEmpty();
+        }
+    }
+
+    @Test
+    void formatMaterialNameShouldContainAbsorptionAndCoefficient() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        for (WallMaterial material : WallMaterial.values()) {
+            AtomicReference<String> result = new AtomicReference<>();
+            runOnFxThread(() -> result.set(TelemetrySetupPanel.formatMaterialName(material)));
+            String formatted = result.get();
+            assertThat(formatted).contains("absorption");
+            assertThat(formatted).contains(
+                    String.format("%.2f", material.absorptionCoefficient()));
+        }
+    }
+
+    @Test
+    void formatMaterialNameShouldContainFormattedEnumName() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        AtomicReference<String> result = new AtomicReference<>();
+        runOnFxThread(() -> result.set(
+                TelemetrySetupPanel.formatMaterialName(WallMaterial.ACOUSTIC_FOAM)));
+        assertThat(result.get()).contains("Acoustic Foam");
     }
 }

@@ -794,7 +794,7 @@ public final class TelemetrySetupPanel extends ScrollPane {
         return grid;
     }
 
-    private static Double parsePositiveDouble(String text) {
+    static Double parsePositiveDouble(String text) {
         if (text == null || text.isBlank()) {
             return null;
         }
