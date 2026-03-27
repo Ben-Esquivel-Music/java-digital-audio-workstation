@@ -46,6 +46,7 @@ import javafx.scene.control.Button;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.Label;
 import javafx.scene.control.MenuItem;
+import javafx.scene.control.Separator;
 import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.Slider;
 import javafx.scene.control.TextField;
@@ -135,6 +136,10 @@ public final class MainController {
     @FXML private Label ioRoutingLabel;
     @FXML private Label recIndicator;
     @FXML private HBox notificationBarContainer;
+    @FXML private HBox transportGroup;
+    @FXML private HBox trackGroup;
+    @FXML private HBox undoRedoGroup;
+    @FXML private HBox utilityGroup;
     @FXML private VBox trackListPanel;
     @FXML private HBox vizTileRow;
     @FXML private VBox sidebarToolbar;
@@ -3055,6 +3060,8 @@ public final class MainController {
     /**
      * Prevents transport-bar buttons and the status label from truncating their
      * text by setting each control's minimum width to its preferred width.
+     * Also installs a responsive overflow listener that hides lower-priority
+     * button groups (utility, undo/redo, track) at narrow window widths.
      */
     private void preventButtonTruncation() {
         for (Button btn : new Button[]{
@@ -3065,6 +3072,54 @@ public final class MainController {
             btn.setMinWidth(Region.USE_PREF_SIZE);
         }
         statusLabel.setMinWidth(Region.USE_PREF_SIZE);
+        installToolbarOverflowListener();
+    }
+
+    /** Width threshold below which lower-priority toolbar groups are hidden. */
+    private static final double TOOLBAR_OVERFLOW_THRESHOLD = 1280.0;
+
+    /**
+     * Installs a listener that hides non-essential toolbar button groups when
+     * the window width drops at or below {@link #TOOLBAR_OVERFLOW_THRESHOLD}.
+     * The transport controls and time display always remain visible.
+     */
+    private void installToolbarOverflowListener() {
+        rootPane.sceneProperty().addListener((_, _, scene) -> {
+            if (scene != null) {
+                scene.widthProperty().addListener((_, _, newWidth) ->
+                        applyToolbarOverflow(newWidth.doubleValue()));
+                applyToolbarOverflow(scene.getWidth());
+            }
+        });
+    }
+
+    /**
+     * Shows or hides lower-priority toolbar groups based on the current
+     * scene width.  Groups are hidden in priority order: utility first,
+     * then undo/redo, then track management.
+     */
+    private void applyToolbarOverflow(double width) {
+        boolean narrow = width <= TOOLBAR_OVERFLOW_THRESHOLD;
+        setGroupVisible(utilityGroup, !narrow);
+        setGroupVisible(undoRedoGroup, !narrow);
+    }
+
+    private void setGroupVisible(HBox group, boolean visible) {
+        if (group != null) {
+            group.setVisible(visible);
+            group.setManaged(visible);
+            // Also hide the separator immediately before the group
+            int idx = group.getParent() instanceof HBox parent
+                    ? parent.getChildren().indexOf(group)
+                    : -1;
+            if (idx > 0) {
+                Node prev = ((HBox) group.getParent()).getChildren().get(idx - 1);
+                if (prev instanceof Separator) {
+                    prev.setVisible(visible);
+                    prev.setManaged(visible);
+                }
+            }
+        }
     }
 
     // ── Status update ────────────────────────────────────────────────────────

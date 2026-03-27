@@ -25,21 +25,24 @@
                     <Insets top="8" right="16" bottom="8" left="16"/>
                 </padding>
 
-                <!-- Transport (icons applied programmatically via IconNode) -->
-                <Button fx:id="skipBackButton" text="Skip Back" onAction="#onSkipBack"
-                        styleClass="transport-button"/>
-                <Button fx:id="playButton" text="Play" onAction="#onPlay"
-                        styleClass="transport-button, play-button"/>
-                <Button fx:id="pauseButton" text="Pause" onAction="#onPause"
-                        styleClass="transport-button, pause-button"/>
-                <Button fx:id="stopButton" text="Stop" onAction="#onStop"
-                        styleClass="transport-button, stop-button"/>
-                <Button fx:id="recordButton" text="Record" onAction="#onRecord"
-                        styleClass="transport-button, record-button"/>
-                <Button fx:id="skipForwardButton" text="Skip Forward" onAction="#onSkipForward"
-                        styleClass="transport-button"/>
-                <Button fx:id="loopButton" text="Loop" onAction="#onToggleLoop"
-                        styleClass="transport-button, loop-button"/>
+                <!-- Group 1: Transport (icons applied programmatically via IconNode) -->
+                <HBox fx:id="transportGroup" spacing="4" alignment="CENTER"
+                      styleClass="toolbar-button-group">
+                    <Button fx:id="skipBackButton" text="Skip Back" onAction="#onSkipBack"
+                            styleClass="transport-button"/>
+                    <Button fx:id="playButton" text="Play" onAction="#onPlay"
+                            styleClass="transport-button, play-button"/>
+                    <Button fx:id="pauseButton" text="Pause" onAction="#onPause"
+                            styleClass="transport-button, pause-button"/>
+                    <Button fx:id="stopButton" text="Stop" onAction="#onStop"
+                            styleClass="transport-button, stop-button"/>
+                    <Button fx:id="recordButton" text="Record" onAction="#onRecord"
+                            styleClass="transport-button, record-button"/>
+                    <Button fx:id="skipForwardButton" text="Skip Forward" onAction="#onSkipForward"
+                            styleClass="transport-button"/>
+                    <Button fx:id="loopButton" text="Loop" onAction="#onToggleLoop"
+                            styleClass="transport-button, loop-button"/>
+                </HBox>
 
                 <Separator orientation="VERTICAL"/>
 
@@ -53,33 +56,38 @@
 
                 <Separator orientation="VERTICAL"/>
 
-                <!-- Track controls (icons applied programmatically) -->
-                <Button fx:id="addAudioTrackButton" text="Audio Track" onAction="#onAddAudioTrack"
-                        styleClass="transport-button"/>
-                <Button fx:id="addMidiTrackButton" text="MIDI Track" onAction="#onAddMidiTrack"
-                        styleClass="transport-button"/>
+                <!-- Group 2: Track controls (icons applied programmatically) -->
+                <HBox fx:id="trackGroup" spacing="4" alignment="CENTER"
+                      styleClass="toolbar-button-group">
+                    <Button fx:id="addAudioTrackButton" text="Audio Track" onAction="#onAddAudioTrack"
+                            styleClass="transport-button"/>
+                    <Button fx:id="addMidiTrackButton" text="MIDI Track" onAction="#onAddMidiTrack"
+                            styleClass="transport-button"/>
+                </HBox>
 
                 <Separator orientation="VERTICAL"/>
 
-                <!-- Undo / Redo (icons applied programmatically) -->
-                <Button fx:id="undoButton" text="Undo" onAction="#onUndo"
-                        styleClass="transport-button"/>
-                <Button fx:id="redoButton" text="Redo" onAction="#onRedo"
-                        styleClass="transport-button"/>
+                <!-- Group 3: Undo / Redo (icons applied programmatically) -->
+                <HBox fx:id="undoRedoGroup" spacing="4" alignment="CENTER"
+                      styleClass="toolbar-button-group">
+                    <Button fx:id="undoButton" text="Undo" onAction="#onUndo"
+                            styleClass="transport-button"/>
+                    <Button fx:id="redoButton" text="Redo" onAction="#onRedo"
+                            styleClass="transport-button"/>
+                </HBox>
 
                 <Separator orientation="VERTICAL"/>
 
-                <!-- Snap toggle (icon + context menu applied programmatically) -->
-                <Button fx:id="snapButton" text="Snap"
-                        styleClass="transport-button"/>
-
-                <Separator orientation="VERTICAL"/>
-
-                <!-- Project / Plugins (icons applied programmatically) -->
-                <Button fx:id="saveButton" text="Save" onAction="#onSaveProject"
-                        styleClass="transport-button, project-button"/>
-                <Button fx:id="pluginsButton" text="Plugins" onAction="#onManagePlugins"
-                        styleClass="transport-button, plugin-button"/>
+                <!-- Group 4: Snap, Save, Plugins (icons applied programmatically) -->
+                <HBox fx:id="utilityGroup" spacing="4" alignment="CENTER"
+                      styleClass="toolbar-button-group">
+                    <Button fx:id="snapButton" text="Snap"
+                            styleClass="transport-button"/>
+                    <Button fx:id="saveButton" text="Save" onAction="#onSaveProject"
+                            styleClass="transport-button, project-button"/>
+                    <Button fx:id="pluginsButton" text="Plugins" onAction="#onManagePlugins"
+                            styleClass="transport-button, plugin-button"/>
+                </HBox>
 
                 <!-- REC indicator (visible only during recording) -->
                 <Label fx:id="recIndicator" text="● REC" styleClass="rec-indicator"
