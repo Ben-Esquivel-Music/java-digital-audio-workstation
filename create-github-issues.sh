@@ -164,16 +164,12 @@ ensure_label() {
         return
     fi
 
-    # Check if label exists; create it if not
-    if ! gh label list --limit 200 | grep -qw "$label"; then
-        echo "  Creating label: '$label' (color: #$color)"
-        if [[ -n "$description" ]]; then
-            gh label create "$label" --color "$color" --description "$description" 2>/dev/null || true
-        else
-            gh label create "$label" --color "$color" 2>/dev/null || true
-        fi
+    # Create the label, or update it if it already exists (--force)
+    echo "  Ensuring label: '$label' (color: #$color)"
+    if [[ -n "$description" ]]; then
+        gh label create "$label" --color "$color" --description "$description" --force
     else
-        echo "  Label exists: '$label'"
+        gh label create "$label" --color "$color" --force
     fi
 }
 
