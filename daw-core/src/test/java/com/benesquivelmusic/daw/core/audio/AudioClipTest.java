@@ -327,4 +327,77 @@ class AudioClipTest {
         assertThatThrownBy(() -> clip.trimTo(6.0, 6.0))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    // ── Fade curve type tests ───────────────────────────────────────────────
+
+    @Test
+    void shouldDefaultToLinearFadeCurveTypes() {
+        AudioClip clip = new AudioClip("Test", 0.0, 4.0, null);
+
+        assertThat(clip.getFadeInCurveType()).isEqualTo(FadeCurveType.LINEAR);
+        assertThat(clip.getFadeOutCurveType()).isEqualTo(FadeCurveType.LINEAR);
+    }
+
+    @Test
+    void shouldSetFadeInCurveType() {
+        AudioClip clip = new AudioClip("Test", 0.0, 8.0, null);
+
+        clip.setFadeInCurveType(FadeCurveType.EQUAL_POWER);
+        assertThat(clip.getFadeInCurveType()).isEqualTo(FadeCurveType.EQUAL_POWER);
+    }
+
+    @Test
+    void shouldSetFadeOutCurveType() {
+        AudioClip clip = new AudioClip("Test", 0.0, 8.0, null);
+
+        clip.setFadeOutCurveType(FadeCurveType.S_CURVE);
+        assertThat(clip.getFadeOutCurveType()).isEqualTo(FadeCurveType.S_CURVE);
+    }
+
+    @Test
+    void shouldRejectNullFadeInCurveType() {
+        AudioClip clip = new AudioClip("Test", 0.0, 4.0, null);
+
+        assertThatThrownBy(() -> clip.setFadeInCurveType(null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void shouldRejectNullFadeOutCurveType() {
+        AudioClip clip = new AudioClip("Test", 0.0, 4.0, null);
+
+        assertThatThrownBy(() -> clip.setFadeOutCurveType(null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void shouldDuplicateClipWithFadeCurveTypes() {
+        AudioClip original = new AudioClip("Lead", 4.0, 8.0, "/audio/lead.wav");
+        original.setFadeInBeats(1.0);
+        original.setFadeOutBeats(2.0);
+        original.setFadeInCurveType(FadeCurveType.EQUAL_POWER);
+        original.setFadeOutCurveType(FadeCurveType.S_CURVE);
+
+        AudioClip copy = original.duplicate();
+
+        assertThat(copy.getFadeInCurveType()).isEqualTo(FadeCurveType.EQUAL_POWER);
+        assertThat(copy.getFadeOutCurveType()).isEqualTo(FadeCurveType.S_CURVE);
+    }
+
+    @Test
+    void shouldPreserveFadeOutCurveTypeOnSplit() {
+        AudioClip clip = new AudioClip("Vocal", 0.0, 16.0, null);
+        clip.setFadeInBeats(2.0);
+        clip.setFadeInCurveType(FadeCurveType.S_CURVE);
+        clip.setFadeOutBeats(3.0);
+        clip.setFadeOutCurveType(FadeCurveType.EQUAL_POWER);
+
+        AudioClip second = clip.splitAt(8.0);
+
+        // First half keeps its fade-in curve type
+        assertThat(clip.getFadeInCurveType()).isEqualTo(FadeCurveType.S_CURVE);
+
+        // Second half gets the original fade-out curve type
+        assertThat(second.getFadeOutCurveType()).isEqualTo(FadeCurveType.EQUAL_POWER);
+    }
 }

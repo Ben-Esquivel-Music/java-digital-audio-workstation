@@ -23,6 +23,8 @@ public final class AudioClip implements TimelineRegion {
     private boolean reversed;
     private double fadeInBeats;
     private double fadeOutBeats;
+    private FadeCurveType fadeInCurveType;
+    private FadeCurveType fadeOutCurveType;
     private float[][] audioData;
 
     /**
@@ -50,6 +52,8 @@ public final class AudioClip implements TimelineRegion {
         this.reversed = false;
         this.fadeInBeats = 0.0;
         this.fadeOutBeats = 0.0;
+        this.fadeInCurveType = FadeCurveType.LINEAR;
+        this.fadeOutCurveType = FadeCurveType.LINEAR;
     }
 
     @Override
@@ -163,6 +167,34 @@ public final class AudioClip implements TimelineRegion {
         this.fadeOutBeats = fadeOutBeats;
     }
 
+    /** Returns the fade-in curve type. */
+    public FadeCurveType getFadeInCurveType() {
+        return fadeInCurveType;
+    }
+
+    /**
+     * Sets the fade-in curve type.
+     *
+     * @param fadeInCurveType the curve type (must not be {@code null})
+     */
+    public void setFadeInCurveType(FadeCurveType fadeInCurveType) {
+        this.fadeInCurveType = Objects.requireNonNull(fadeInCurveType, "fadeInCurveType must not be null");
+    }
+
+    /** Returns the fade-out curve type. */
+    public FadeCurveType getFadeOutCurveType() {
+        return fadeOutCurveType;
+    }
+
+    /**
+     * Sets the fade-out curve type.
+     *
+     * @param fadeOutCurveType the curve type (must not be {@code null})
+     */
+    public void setFadeOutCurveType(FadeCurveType fadeOutCurveType) {
+        this.fadeOutCurveType = Objects.requireNonNull(fadeOutCurveType, "fadeOutCurveType must not be null");
+    }
+
     /**
      * Returns the raw audio sample data, or {@code null} if this clip
      * references an external file rather than an in-memory buffer.
@@ -229,6 +261,8 @@ public final class AudioClip implements TimelineRegion {
         copy.setReversed(reversed);
         copy.setFadeInBeats(fadeInBeats);
         copy.setFadeOutBeats(fadeOutBeats);
+        copy.setFadeInCurveType(fadeInCurveType);
+        copy.setFadeOutCurveType(fadeOutCurveType);
         copy.setAudioData(audioData);
         return copy;
     }
@@ -260,6 +294,7 @@ public final class AudioClip implements TimelineRegion {
         second.setReversed(reversed);
         second.setFadeInBeats(0.0);
         second.setFadeOutBeats(fadeOutBeats);
+        second.setFadeOutCurveType(fadeOutCurveType);
 
         // Truncate this clip
         this.durationBeats = splitBeat - startBeat;
