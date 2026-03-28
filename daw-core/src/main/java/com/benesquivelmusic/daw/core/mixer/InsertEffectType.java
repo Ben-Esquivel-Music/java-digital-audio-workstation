@@ -17,7 +17,8 @@ public enum InsertEffectType {
     CHORUS("Chorus"),
     NOISE_GATE("Noise Gate"),
     STEREO_IMAGER("Stereo Imager"),
-    GRAPHIC_EQ("Graphic EQ");
+    GRAPHIC_EQ("Graphic EQ"),
+    CLAP_PLUGIN("CLAP Plugin");
 
     private final String displayName;
 
