@@ -146,6 +146,7 @@ public final class MainController {
     @FXML private Button mixerViewButton;
     @FXML private Button editorViewButton;
     @FXML private Button telemetryViewButton;
+    @FXML private Button masteringViewButton;
     @FXML private Button newProjectButton;
     @FXML private Button openProjectButton;
     @FXML private Button saveProjectButton;
@@ -191,6 +192,8 @@ public final class MainController {
     private EditorView editorView;
     /** The telemetry view panel — sound wave telemetry room visualizer. */
     private TelemetryView telemetryView;
+    /** The mastering view panel — mastering chain with presets and A/B comparison. */
+    private MasteringView masteringView;
 
     // ── Clipboard & selection state ─────────────────────────────────────────
     /** Tracks whether the in-app clipboard has content for paste operations. */
@@ -350,11 +353,16 @@ public final class MainController {
         telemetryView = new TelemetryView();
         viewCache.put(DawView.TELEMETRY, telemetryView);
 
+        // Mastering view — mastering chain with presets and A/B comparison
+        masteringView = new MasteringView();
+        viewCache.put(DawView.MASTERING, masteringView);
+
         // Wire sidebar view buttons
         arrangementViewButton.setOnAction(event -> switchView(DawView.ARRANGEMENT));
         mixerViewButton.setOnAction(event -> switchView(DawView.MIXER));
         editorViewButton.setOnAction(event -> switchView(DawView.EDITOR));
         telemetryViewButton.setOnAction(event -> switchView(DawView.TELEMETRY));
+        masteringViewButton.setOnAction(event -> switchView(DawView.MASTERING));
 
         // Restore persisted active view (activeView was loaded in initialize())
         if (activeView != DawView.ARRANGEMENT) {
@@ -404,7 +412,7 @@ public final class MainController {
      * corresponding to the active view and removes it from all others.
      */
     private void updateToolbarActiveState() {
-        Button[] viewButtons = { arrangementViewButton, mixerViewButton, editorViewButton, telemetryViewButton };
+        Button[] viewButtons = { arrangementViewButton, mixerViewButton, editorViewButton, telemetryViewButton, masteringViewButton };
         DawView[] views = DawView.values();
         for (int i = 0; i < viewButtons.length; i++) {
             if (views[i] == activeView) {
@@ -553,7 +561,7 @@ public final class MainController {
      * sections.
      */
     private void initializeToolbarContextMenus() {
-        Button[] viewBtns = { arrangementViewButton, mixerViewButton, editorViewButton, telemetryViewButton };
+        Button[] viewBtns = { arrangementViewButton, mixerViewButton, editorViewButton, telemetryViewButton, masteringViewButton };
         Button[] projectBtns = { newProjectButton, openProjectButton, saveProjectButton, recentProjectsButton };
         Button[] toolBtns = { pluginsSidebarButton, settingsButton };
 
@@ -868,6 +876,7 @@ public final class MainController {
         mixerViewButton.setGraphic(IconNode.of(DawIcon.MIXER, TOOLBAR_ICON_SIZE));
         editorViewButton.setGraphic(IconNode.of(DawIcon.WAVEFORM, TOOLBAR_ICON_SIZE));
         telemetryViewButton.setGraphic(IconNode.of(DawIcon.SURROUND, TOOLBAR_ICON_SIZE));
+        masteringViewButton.setGraphic(IconNode.of(DawIcon.LIMITER, TOOLBAR_ICON_SIZE));
         newProjectButton.setGraphic(IconNode.of(DawIcon.FOLDER, TOOLBAR_ICON_SIZE));
         openProjectButton.setGraphic(IconNode.of(DawIcon.FOLDER, TOOLBAR_ICON_SIZE));
         saveProjectButton.setGraphic(IconNode.of(DawIcon.DOWNLOAD, TOOLBAR_ICON_SIZE));
@@ -932,6 +941,7 @@ public final class MainController {
         mixerViewButton.setTooltip(styledTooltip(tooltipFor("Mixer View", DawAction.VIEW_MIXER)));
         editorViewButton.setTooltip(styledTooltip(tooltipFor("Editor View", DawAction.VIEW_EDITOR)));
         telemetryViewButton.setTooltip(styledTooltip(tooltipFor("Sound Wave Telemetry View", DawAction.VIEW_TELEMETRY)));
+        masteringViewButton.setTooltip(styledTooltip(tooltipFor("Mastering View", DawAction.VIEW_MASTERING)));
         newProjectButton.setTooltip(styledTooltip(tooltipFor("New Project", DawAction.NEW_PROJECT)));
         openProjectButton.setTooltip(styledTooltip(tooltipFor("Open Project", DawAction.OPEN_PROJECT)));
         saveProjectButton.setTooltip(styledTooltip(tooltipFor("Save Project", DawAction.SAVE)));
@@ -1047,6 +1057,7 @@ public final class MainController {
         actionHandlers.put(DawAction.VIEW_MIXER, () -> switchView(DawView.MIXER));
         actionHandlers.put(DawAction.VIEW_EDITOR, () -> switchView(DawView.EDITOR));
         actionHandlers.put(DawAction.VIEW_TELEMETRY, () -> switchView(DawView.TELEMETRY));
+        actionHandlers.put(DawAction.VIEW_MASTERING, () -> switchView(DawView.MASTERING));
         actionHandlers.put(DawAction.TOGGLE_BROWSER, () -> browserPanelController.toggleBrowserPanel());
         actionHandlers.put(DawAction.TOGGLE_VISUALIZATIONS, () -> vizPanelController.toggleRowVisibility());
         actionHandlers.put(DawAction.OPEN_SETTINGS, this::onOpenSettings);
