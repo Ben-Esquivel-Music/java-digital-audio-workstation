@@ -4,7 +4,6 @@ import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
 import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
-import com.benesquivelmusic.daw.sdk.telemetry.SoundWavePath;
 import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
 
 import java.util.ArrayList;
