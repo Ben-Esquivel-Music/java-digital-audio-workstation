@@ -25,6 +25,9 @@ public final class AudioClip implements TimelineRegion {
     private double fadeOutBeats;
     private FadeCurveType fadeInCurveType;
     private FadeCurveType fadeOutCurveType;
+    private double timeStretchRatio;
+    private double pitchShiftSemitones;
+    private StretchQuality stretchQuality;
     private float[][] audioData;
 
     /**
@@ -54,6 +57,9 @@ public final class AudioClip implements TimelineRegion {
         this.fadeOutBeats = 0.0;
         this.fadeInCurveType = FadeCurveType.LINEAR;
         this.fadeOutCurveType = FadeCurveType.LINEAR;
+        this.timeStretchRatio = 1.0;
+        this.pitchShiftSemitones = 0.0;
+        this.stretchQuality = StretchQuality.MEDIUM;
     }
 
     @Override
@@ -196,6 +202,78 @@ public final class AudioClip implements TimelineRegion {
     }
 
     /**
+     * Returns the time-stretch ratio applied to this clip.
+     *
+     * <p>A ratio of {@code 1.0} means no stretching. A ratio of {@code 2.0}
+     * doubles the duration (half speed). A ratio of {@code 0.5} halves the
+     * duration (double speed).</p>
+     *
+     * @return the time-stretch ratio (always positive)
+     */
+    public double getTimeStretchRatio() {
+        return timeStretchRatio;
+    }
+
+    /**
+     * Sets the time-stretch ratio for this clip.
+     *
+     * @param timeStretchRatio the stretch ratio (must be between 0.25 and 4.0 inclusive)
+     * @throws IllegalArgumentException if the ratio is outside the valid range
+     */
+    public void setTimeStretchRatio(double timeStretchRatio) {
+        if (timeStretchRatio < 0.25 || timeStretchRatio > 4.0) {
+            throw new IllegalArgumentException(
+                    "timeStretchRatio must be in [0.25, 4.0]: " + timeStretchRatio);
+        }
+        this.timeStretchRatio = timeStretchRatio;
+    }
+
+    /**
+     * Returns the pitch-shift amount in semitones applied to this clip.
+     *
+     * <p>A value of {@code 0.0} means no pitch shift. Positive values shift
+     * pitch up; negative values shift pitch down. Fractional values represent
+     * cent adjustments (e.g. {@code 0.5} = 50 cents up).</p>
+     *
+     * @return the pitch shift in semitones
+     */
+    public double getPitchShiftSemitones() {
+        return pitchShiftSemitones;
+    }
+
+    /**
+     * Sets the pitch-shift amount in semitones for this clip.
+     *
+     * @param pitchShiftSemitones the pitch shift in semitones (must be between -24 and 24 inclusive)
+     * @throws IllegalArgumentException if the shift is outside the valid range
+     */
+    public void setPitchShiftSemitones(double pitchShiftSemitones) {
+        if (pitchShiftSemitones < -24.0 || pitchShiftSemitones > 24.0) {
+            throw new IllegalArgumentException(
+                    "pitchShiftSemitones must be in [-24, 24]: " + pitchShiftSemitones);
+        }
+        this.pitchShiftSemitones = pitchShiftSemitones;
+    }
+
+    /**
+     * Returns the quality setting used for time-stretching and pitch-shifting.
+     *
+     * @return the stretch quality (never {@code null})
+     */
+    public StretchQuality getStretchQuality() {
+        return stretchQuality;
+    }
+
+    /**
+     * Sets the quality setting for time-stretching and pitch-shifting.
+     *
+     * @param stretchQuality the quality setting (must not be {@code null})
+     */
+    public void setStretchQuality(StretchQuality stretchQuality) {
+        this.stretchQuality = Objects.requireNonNull(stretchQuality, "stretchQuality must not be null");
+    }
+
+    /**
      * Returns the raw audio sample data, or {@code null} if this clip
      * references an external file rather than an in-memory buffer.
      *
@@ -263,6 +341,9 @@ public final class AudioClip implements TimelineRegion {
         copy.setFadeOutBeats(fadeOutBeats);
         copy.setFadeInCurveType(fadeInCurveType);
         copy.setFadeOutCurveType(fadeOutCurveType);
+        copy.setTimeStretchRatio(timeStretchRatio);
+        copy.setPitchShiftSemitones(pitchShiftSemitones);
+        copy.setStretchQuality(stretchQuality);
         copy.setAudioData(audioData);
         return copy;
     }
@@ -295,6 +376,9 @@ public final class AudioClip implements TimelineRegion {
         second.setFadeInBeats(0.0);
         second.setFadeOutBeats(fadeOutBeats);
         second.setFadeOutCurveType(fadeOutCurveType);
+        second.setTimeStretchRatio(timeStretchRatio);
+        second.setPitchShiftSemitones(pitchShiftSemitones);
+        second.setStretchQuality(stretchQuality);
 
         // Truncate this clip
         this.durationBeats = splitBeat - startBeat;
