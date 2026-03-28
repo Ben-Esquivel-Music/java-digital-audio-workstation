@@ -202,7 +202,6 @@ public final class PitchShiftProcessor implements AudioProcessor {
 
         // Shift input write position to keep accumulator bounded
         if (inputWritePos[ch] > ringSize * 2) {
-            int shift = inputWritePos[ch] - ringSize;
             inputWritePos[ch] = ringSize;
         }
     }
