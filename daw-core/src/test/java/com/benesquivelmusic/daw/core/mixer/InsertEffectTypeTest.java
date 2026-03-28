@@ -7,8 +7,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class InsertEffectTypeTest {
 
     @Test
-    void shouldHaveNineBuiltInTypes() {
-        assertThat(InsertEffectType.values()).hasSize(9);
+    void shouldHaveTenTypes() {
+        assertThat(InsertEffectType.values()).hasSize(10);
     }
 
     @Test
@@ -22,6 +22,7 @@ class InsertEffectTypeTest {
         assertThat(InsertEffectType.NOISE_GATE.getDisplayName()).isEqualTo("Noise Gate");
         assertThat(InsertEffectType.STEREO_IMAGER.getDisplayName()).isEqualTo("Stereo Imager");
         assertThat(InsertEffectType.GRAPHIC_EQ.getDisplayName()).isEqualTo("Graphic EQ");
+        assertThat(InsertEffectType.CLAP_PLUGIN.getDisplayName()).isEqualTo("CLAP Plugin");
     }
 
     @Test
