@@ -42,4 +42,16 @@ public record ExportPreset(String name, AudioExportConfig config) {
             "Vinyl Pre-Master",
             new AudioExportConfig(AudioExportFormat.WAV, 96_000, 24, DitherType.NONE)
     );
+
+    /** Spotify: 44.1 kHz, 16-bit WAV with TPDF dithering (target −14 LUFS). */
+    public static final ExportPreset SPOTIFY = new ExportPreset(
+            "Spotify",
+            new AudioExportConfig(AudioExportFormat.WAV, 44_100, 16, DitherType.TPDF)
+    );
+
+    /** Apple Music: 44.1 kHz, 16-bit WAV with noise-shaped dithering (target −16 LUFS). */
+    public static final ExportPreset APPLE_MUSIC = new ExportPreset(
+            "Apple Music",
+            new AudioExportConfig(AudioExportFormat.WAV, 44_100, 16, DitherType.NOISE_SHAPED)
+    );
 }
