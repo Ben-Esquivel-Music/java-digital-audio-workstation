@@ -173,10 +173,12 @@
 
             <Separator styleClass="sidebar-separator"/>
 
-            <!-- Browse &amp; Search -->
+            <!-- Browse, Search &amp; History -->
             <Button fx:id="browserButton" text="Library"
                     styleClass="sidebar-button"/>
             <Button fx:id="searchButton" text="Search"
+                    styleClass="sidebar-button"/>
+            <Button fx:id="historyButton" text="History"
                     styleClass="sidebar-button"/>
 
             <Separator styleClass="sidebar-separator"/>
