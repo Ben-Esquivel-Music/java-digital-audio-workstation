@@ -77,6 +77,8 @@ public enum DawAction {
             new KeyCodeCombination(KeyCode.DIGIT3, KeyCombination.SHORTCUT_DOWN)),
     VIEW_TELEMETRY("Telemetry View", Category.VIEWS,
             new KeyCodeCombination(KeyCode.DIGIT4, KeyCombination.SHORTCUT_DOWN)),
+    VIEW_MASTERING("Mastering View", Category.VIEWS,
+            new KeyCodeCombination(KeyCode.DIGIT5, KeyCombination.SHORTCUT_DOWN)),
     TOGGLE_BROWSER("Toggle Browser", Category.VIEWS,
             new KeyCodeCombination(KeyCode.B, KeyCombination.SHORTCUT_DOWN)),
     TOGGLE_VISUALIZATIONS("Toggle Visualizations", Category.VIEWS,

@@ -18,5 +18,8 @@ public enum DawView {
     EDITOR,
 
     /** Sound wave telemetry — top-down room visualizer. */
-    TELEMETRY
+    TELEMETRY,
+
+    /** Mastering chain view — signal chain with presets and A/B comparison. */
+    MASTERING
 }
