@@ -4,7 +4,6 @@ import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.export.SampleRateConverter;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
-import com.benesquivelmusic.daw.core.track.TrackType;
 
 import java.io.IOException;
 import java.nio.file.Path;
