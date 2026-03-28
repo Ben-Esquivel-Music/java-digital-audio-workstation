@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.mixer;
 
+import com.benesquivelmusic.daw.core.audio.EffectsChain;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -14,8 +16,15 @@ import java.util.Objects;
  *
  * <p>A channel may have multiple {@link Send} objects, each routing audio to a
  * different return bus with independent level and pre/post-fader mode.</p>
+ *
+ * <p>Each channel provides up to {@value #MAX_INSERT_SLOTS} insert effect slots.
+ * Insert effects are applied in order via an internal {@link EffectsChain}.
+ * Individual inserts can be bypassed, reordered, added, or removed.</p>
  */
 public final class MixerChannel {
+
+    /** Maximum number of insert effect slots per channel. */
+    public static final int MAX_INSERT_SLOTS = 8;
 
     private final String name;
     private double volume;
@@ -25,6 +34,8 @@ public final class MixerChannel {
     private double sendLevel;
     private boolean phaseInverted;
     private final List<Send> sends = new ArrayList<>();
+    private final List<InsertSlot> insertSlots = new ArrayList<>();
+    private final EffectsChain effectsChain = new EffectsChain();
 
     /**
      * Creates a new mixer channel with the specified name.
@@ -158,5 +169,157 @@ public final class MixerChannel {
             }
         }
         return null;
+    }
+
+    // ── Insert effect slot management ───────────────────────────────────────
+
+    /**
+     * Returns the {@link EffectsChain} wired to this channel's insert slots.
+     *
+     * <p>The chain contains only the processors from non-bypassed insert slots,
+     * in slot order. Use this chain in the audio processing pipeline.</p>
+     *
+     * @return the effects chain for this channel
+     */
+    public EffectsChain getEffectsChain() {
+        return effectsChain;
+    }
+
+    /**
+     * Adds an insert effect slot to the end of the insert chain.
+     *
+     * @param slot the insert slot to add
+     * @throws IllegalStateException if the channel already has {@value #MAX_INSERT_SLOTS} inserts
+     */
+    public void addInsert(InsertSlot slot) {
+        Objects.requireNonNull(slot, "slot must not be null");
+        if (insertSlots.size() >= MAX_INSERT_SLOTS) {
+            throw new IllegalStateException(
+                    "cannot exceed " + MAX_INSERT_SLOTS + " insert slots");
+        }
+        insertSlots.add(slot);
+        rebuildEffectsChain();
+    }
+
+    /**
+     * Inserts an effect slot at the specified index in the insert chain.
+     *
+     * @param index the insertion index
+     * @param slot  the insert slot to add
+     * @throws IllegalStateException if the channel already has {@value #MAX_INSERT_SLOTS} inserts
+     */
+    public void insertInsert(int index, InsertSlot slot) {
+        Objects.requireNonNull(slot, "slot must not be null");
+        if (insertSlots.size() >= MAX_INSERT_SLOTS) {
+            throw new IllegalStateException(
+                    "cannot exceed " + MAX_INSERT_SLOTS + " insert slots");
+        }
+        insertSlots.add(index, slot);
+        rebuildEffectsChain();
+    }
+
+    /**
+     * Removes the insert slot at the specified index.
+     *
+     * @param index the index of the slot to remove
+     * @return the removed insert slot
+     */
+    public InsertSlot removeInsert(int index) {
+        InsertSlot removed = insertSlots.remove(index);
+        rebuildEffectsChain();
+        return removed;
+    }
+
+    /**
+     * Removes the specified insert slot.
+     *
+     * @param slot the insert slot to remove
+     * @return {@code true} if the slot was removed
+     */
+    public boolean removeInsert(InsertSlot slot) {
+        boolean removed = insertSlots.remove(slot);
+        if (removed) {
+            rebuildEffectsChain();
+        }
+        return removed;
+    }
+
+    /**
+     * Moves an insert slot from one position to another in the insert chain.
+     *
+     * @param fromIndex the current index of the slot to move
+     * @param toIndex   the target index for the slot
+     * @throws IndexOutOfBoundsException if either index is out of range
+     */
+    public void moveInsert(int fromIndex, int toIndex) {
+        if (fromIndex < 0 || fromIndex >= insertSlots.size()) {
+            throw new IndexOutOfBoundsException("fromIndex out of range: " + fromIndex);
+        }
+        if (toIndex < 0 || toIndex >= insertSlots.size()) {
+            throw new IndexOutOfBoundsException("toIndex out of range: " + toIndex);
+        }
+        if (fromIndex == toIndex) {
+            return;
+        }
+        InsertSlot slot = insertSlots.remove(fromIndex);
+        insertSlots.add(toIndex, slot);
+        rebuildEffectsChain();
+    }
+
+    /**
+     * Sets the bypass state of the insert slot at the specified index and
+     * updates the effects chain accordingly.
+     *
+     * @param index    the index of the insert slot
+     * @param bypassed {@code true} to bypass the insert
+     */
+    public void setInsertBypassed(int index, boolean bypassed) {
+        insertSlots.get(index).setBypassed(bypassed);
+        rebuildEffectsChain();
+    }
+
+    /**
+     * Returns an unmodifiable view of the insert slots on this channel.
+     *
+     * @return the list of insert slots
+     */
+    public List<InsertSlot> getInsertSlots() {
+        return Collections.unmodifiableList(insertSlots);
+    }
+
+    /**
+     * Returns the insert slot at the specified index.
+     *
+     * @param index the slot index
+     * @return the insert slot
+     */
+    public InsertSlot getInsertSlot(int index) {
+        return insertSlots.get(index);
+    }
+
+    /**
+     * Returns the number of occupied insert slots.
+     *
+     * @return the insert count
+     */
+    public int getInsertCount() {
+        return insertSlots.size();
+    }
+
+    /**
+     * Rebuilds the internal {@link EffectsChain} from the current insert slots.
+     *
+     * <p>Only non-bypassed slots contribute their processors to the chain.
+     * This method is called automatically by all insert-mutating methods.</p>
+     */
+    private void rebuildEffectsChain() {
+        while (!effectsChain.isEmpty()) {
+            effectsChain.removeProcessor(0);
+        }
+        for (InsertSlot slot : insertSlots) {
+            if (!slot.isBypassed()) {
+                effectsChain.addProcessor(slot.getProcessor());
+            }
+        }
     }
 }
