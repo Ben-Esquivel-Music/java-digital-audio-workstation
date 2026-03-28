@@ -81,6 +81,7 @@ class LoudnessMeterTest {
         assertThat(LoudnessMeter.TARGET_SPOTIFY).isEqualTo(-14.0);
         assertThat(LoudnessMeter.TARGET_APPLE_MUSIC).isEqualTo(-16.0);
         assertThat(LoudnessMeter.TARGET_YOUTUBE).isEqualTo(-14.0);
+        assertThat(LoudnessMeter.TARGET_BROADCAST).isEqualTo(-23.0);
     }
 
     @Test
@@ -395,6 +396,86 @@ class LoudnessMeterTest {
 
         // Integrated should be at or near the floor since blocks are gated
         assertThat(meter.getLatestData().integratedLufs()).isLessThan(-70.0);
+    }
+
+    // ----------------------------------------------------------------
+    // resetIntegrated tests
+    // ----------------------------------------------------------------
+
+    @Test
+    void shouldResetOnlyIntegratedLoudness() {
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        float[] signal = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
+
+        // Process enough blocks to accumulate integrated loudness and history
+        for (int i = 0; i < 100; i++) {
+            meter.process(signal, signal, BLOCK_SIZE);
+        }
+
+        double momentaryBefore = meter.getLatestData().momentaryLufs();
+        int historyBefore = meter.getHistory().size();
+        assertThat(meter.getLatestData().integratedLufs()).isGreaterThan(-100.0);
+
+        meter.resetIntegrated();
+
+        // Process one more block to get updated data
+        meter.process(signal, signal, BLOCK_SIZE);
+
+        // History and momentary should still be intact
+        assertThat(meter.getHistory().size()).isEqualTo(historyBefore + 1);
+        assertThat(meter.getLatestData().momentaryLufs()).isCloseTo(momentaryBefore, org.assertj.core.data.Offset.offset(3.0));
+    }
+
+    @Test
+    void shouldResetIntegratedWithoutAffectingTruePeak() {
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        float[] signal = new float[BLOCK_SIZE];
+        signal[0] = 0.9f;
+        meter.process(signal, signal, BLOCK_SIZE);
+
+        double truePeakBefore = meter.getLatestData().truePeakDbfs();
+
+        meter.resetIntegrated();
+        meter.process(new float[BLOCK_SIZE], new float[BLOCK_SIZE], BLOCK_SIZE);
+
+        // True peak should persist (it tracks the overall max)
+        assertThat(meter.getLatestData().truePeakDbfs()).isEqualTo(truePeakBefore);
+    }
+
+    // ----------------------------------------------------------------
+    // isWithinTarget tests
+    // ----------------------------------------------------------------
+
+    @Test
+    void shouldRejectNullTargetInIsWithinTarget() {
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        assertThatThrownBy(() -> meter.isWithinTarget(null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void shouldNotBeWithinTargetForSilence() {
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        float[] silence = new float[BLOCK_SIZE];
+        meter.process(silence, silence, BLOCK_SIZE);
+
+        assertThat(meter.isWithinTarget(LoudnessTarget.SPOTIFY)).isFalse();
+    }
+
+    @Test
+    void shouldReturnConsistentResultWithValidation() {
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        float[] signal = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
+        for (int i = 0; i < 500; i++) {
+            meter.process(signal, signal, BLOCK_SIZE);
+        }
+
+        // isWithinTarget should agree with validateForExport's loudnessPass
+        for (LoudnessTarget target : LoudnessTarget.values()) {
+            boolean withinTarget = meter.isWithinTarget(target);
+            ExportValidationResult result = meter.validateForExport(target);
+            assertThat(withinTarget).isEqualTo(result.loudnessPass());
+        }
     }
 
     private static float[] generateSineWave(double frequency, double sampleRate, int length) {

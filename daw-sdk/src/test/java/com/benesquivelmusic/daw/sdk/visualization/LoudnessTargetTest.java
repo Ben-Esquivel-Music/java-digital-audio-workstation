@@ -40,6 +40,13 @@ class LoudnessTargetTest {
     }
 
     @Test
+    void shouldHaveBroadcastPreset() {
+        assertThat(LoudnessTarget.BROADCAST.targetIntegratedLufs()).isEqualTo(-23.0);
+        assertThat(LoudnessTarget.BROADCAST.maxTruePeakDbtp()).isEqualTo(-1.0);
+        assertThat(LoudnessTarget.BROADCAST.displayName()).isEqualTo("Broadcast");
+    }
+
+    @Test
     void shouldHaveCdPreset() {
         assertThat(LoudnessTarget.CD.targetIntegratedLufs()).isEqualTo(-9.0);
         assertThat(LoudnessTarget.CD.maxTruePeakDbtp()).isEqualTo(-0.3);
@@ -72,6 +79,6 @@ class LoudnessTargetTest {
 
     @Test
     void shouldContainAllExpectedPlatformAndGenrePresets() {
-        assertThat(LoudnessTarget.values()).hasSize(10);
+        assertThat(LoudnessTarget.values()).hasSize(11);
     }
 }
