@@ -5,6 +5,10 @@ package com.benesquivelmusic.daw.core.transport;
  *
  * <p>The transport maintains the current playback position and state,
  * coordinating with the audio engine to start and stop audio processing.</p>
+ *
+ * <p>Tempo and time signature data are managed by an associated
+ * {@link TempoMap}, which supports multiple tempo and time signature
+ * changes along the timeline.</p>
  */
 public final class Transport {
 
@@ -13,9 +17,7 @@ public final class Transport {
 
     private TransportState state = TransportState.STOPPED;
     private double positionInBeats = 0.0;
-    private double tempo = 120.0;
-    private int timeSignatureNumerator = 4;
-    private int timeSignatureDenominator = 4;
+    private final TempoMap tempoMap = new TempoMap();
     private boolean loopEnabled = false;
     private double loopStartInBeats = DEFAULT_LOOP_START;
     private double loopEndInBeats = DEFAULT_LOOP_END;
@@ -61,13 +63,27 @@ public final class Transport {
         this.positionInBeats = positionInBeats;
     }
 
-    /** Returns the tempo in beats per minute (BPM). */
-    public double getTempo() {
-        return tempo;
+    /**
+     * Returns the tempo map that manages tempo and time signature changes.
+     *
+     * @return the tempo map
+     */
+    public TempoMap getTempoMap() {
+        return tempoMap;
     }
 
     /**
-     * Sets the tempo in BPM.
+     * Returns the initial (default) tempo in beats per minute (BPM).
+     *
+     * <p>This is a convenience method equivalent to reading the first tempo
+     * change event from the {@link TempoMap}.</p>
+     */
+    public double getTempo() {
+        return tempoMap.getTempoChanges().get(0).bpm();
+    }
+
+    /**
+     * Sets the initial tempo in BPM by replacing the tempo change event at beat 0.
      *
      * @param tempo BPM value (must be between 20 and 999)
      */
@@ -75,21 +91,31 @@ public final class Transport {
         if (tempo < 20.0 || tempo > 999.0) {
             throw new IllegalArgumentException("tempo must be between 20 and 999 BPM: " + tempo);
         }
-        this.tempo = tempo;
-    }
-
-    /** Returns the time signature numerator. */
-    public int getTimeSignatureNumerator() {
-        return timeSignatureNumerator;
-    }
-
-    /** Returns the time signature denominator. */
-    public int getTimeSignatureDenominator() {
-        return timeSignatureDenominator;
+        tempoMap.addTempoChange(TempoChangeEvent.instant(0.0, tempo));
     }
 
     /**
-     * Sets the time signature.
+     * Returns the initial time signature numerator.
+     *
+     * <p>This is a convenience method equivalent to reading the first time
+     * signature change event from the {@link TempoMap}.</p>
+     */
+    public int getTimeSignatureNumerator() {
+        return tempoMap.getTimeSignatureChanges().get(0).numerator();
+    }
+
+    /**
+     * Returns the initial time signature denominator.
+     *
+     * <p>This is a convenience method equivalent to reading the first time
+     * signature change event from the {@link TempoMap}.</p>
+     */
+    public int getTimeSignatureDenominator() {
+        return tempoMap.getTimeSignatureChanges().get(0).denominator();
+    }
+
+    /**
+     * Sets the initial time signature by replacing the time signature change at beat 0.
      *
      * @param numerator   beats per bar (e.g., 4)
      * @param denominator note value of each beat (e.g., 4 for quarter note)
@@ -101,8 +127,7 @@ public final class Transport {
         if (denominator <= 0) {
             throw new IllegalArgumentException("denominator must be positive: " + denominator);
         }
-        this.timeSignatureNumerator = numerator;
-        this.timeSignatureDenominator = denominator;
+        tempoMap.addTimeSignatureChange(new TimeSignatureChangeEvent(0.0, numerator, denominator));
     }
 
     /** Returns {@code true} if loop mode is enabled. */
