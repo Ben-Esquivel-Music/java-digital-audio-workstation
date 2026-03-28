@@ -166,6 +166,10 @@
                     styleClass="sidebar-button" onAction="#onSaveProject"/>
             <Button fx:id="recentProjectsButton" text="Recent"
                     styleClass="sidebar-button" onAction="#onRecentProjects"/>
+            <Button fx:id="importSessionButton" text="Import Session"
+                    styleClass="sidebar-button" onAction="#onImportSession"/>
+            <Button fx:id="exportSessionButton" text="Export Session"
+                    styleClass="sidebar-button" onAction="#onExportSession"/>
 
             <Separator styleClass="sidebar-separator"/>
 
