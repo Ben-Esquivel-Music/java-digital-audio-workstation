@@ -37,6 +37,8 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
     public static final double TARGET_APPLE_MUSIC = -16.0;
     /** YouTube recommended integrated loudness target. */
     public static final double TARGET_YOUTUBE = -14.0;
+    /** EBU R128 broadcast recommended integrated loudness target. */
+    public static final double TARGET_BROADCAST = -23.0;
 
     private static final double LUFS_FLOOR = -120.0;
     private static final double GATE_ABSOLUTE = -70.0;
@@ -223,6 +225,38 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
         shortTermLufsReadings.clear();
         history.clear();
         latestData = LoudnessData.SILENCE;
+    }
+
+    /**
+     * Resets only the integrated loudness measurement without clearing
+     * filter state, momentary/short-term windows, history, or true peak.
+     *
+     * <p>This allows engineers to restart the integrated loudness
+     * measurement at any point (e.g., after repositioning the playhead)
+     * while keeping the running momentary and short-term meters intact.</p>
+     */
+    public void resetIntegrated() {
+        integratedSum = 0;
+        integratedBlocks = 0;
+        shortTermLufsReadings.clear();
+    }
+
+    /**
+     * Returns whether the current integrated loudness is within the
+     * acceptable range of the specified platform target.
+     *
+     * <p>The integrated loudness is considered "within target" if it
+     * falls within ±1 LU of the target's integrated LUFS value.</p>
+     *
+     * @param target the loudness target to check against
+     * @return {@code true} if integrated loudness is within ±1 LU of the target
+     * @throws NullPointerException if {@code target} is null
+     */
+    public boolean isWithinTarget(LoudnessTarget target) {
+        java.util.Objects.requireNonNull(target, "target must not be null");
+        LoudnessData data = latestData;
+        double measuredLufs = data.integratedLufs();
+        return Math.abs(measuredLufs - target.targetIntegratedLufs()) <= EXPORT_LOUDNESS_TOLERANCE_LU;
     }
 
     /**

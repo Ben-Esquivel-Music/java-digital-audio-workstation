@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
 import com.benesquivelmusic.daw.sdk.visualization.LoudnessData;
+import com.benesquivelmusic.daw.sdk.visualization.LoudnessTarget;
 
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
@@ -12,18 +13,20 @@ import javafx.scene.text.TextAlignment;
 /**
  * LUFS loudness history display with platform target markers.
  *
- * <p>Renders a rolling graph of momentary and short-term LUFS values
- * with horizontal target lines for streaming platform compliance.
+ * <p>Renders a rolling graph of momentary, short-term, and integrated LUFS
+ * values with horizontal target lines for streaming platform compliance.
  * Supports the loudness standards from the mastering-techniques
  * research (§8 — Loudness Standards and Metering).</p>
  *
  * <p>Features:
  * <ul>
- *   <li>Rolling loudness history graph</li>
- *   <li>Momentary (cyan) and short-term (green) traces</li>
- *   <li>Integrated loudness display</li>
- *   <li>Platform target markers (Spotify, Apple Music, YouTube)</li>
+ *   <li>Rolling loudness history graph with three traces</li>
+ *   <li>Momentary (cyan), short-term (green), and integrated (yellow) traces</li>
+ *   <li>Simultaneous momentary, short-term, and integrated LUFS readouts</li>
+ *   <li>Loudness range (LRA) indicator</li>
  *   <li>True-peak indicator</li>
+ *   <li>Platform target presets (Spotify, Apple Music, YouTube, CD, Broadcast)</li>
+ *   <li>Color-coded integrated reading based on target compliance</li>
  * </ul>
  */
 public final class LoudnessDisplay extends Region {
@@ -35,20 +38,30 @@ public final class LoudnessDisplay extends Region {
     private static final Color SHORT_TERM_COLOR = Color.web("#00e676");
     private static final Color INTEGRATED_COLOR = Color.web("#ffea00");
     private static final Color TARGET_COLOR = Color.web("#ff9100", 0.5);
+    private static final Color COMPLIANCE_OK_COLOR = Color.web("#00e676");
+    private static final Color COMPLIANCE_WARN_COLOR = Color.web("#ffea00");
+    private static final Color COMPLIANCE_FAIL_COLOR = Color.web("#ff1744");
+    private static final Color TRUE_PEAK_CLIP_COLOR = Color.web("#ff1744");
 
     private static final double MIN_LUFS = -60.0;
     private static final double MAX_LUFS = 0.0;
     private static final int HISTORY_SIZE = 300;
+    private static final double COMPLIANCE_TOLERANCE_LU = 1.0;
 
     private final Canvas canvas;
     private final double[] momentaryHistory;
     private final double[] shortTermHistory;
+    private final double[] integratedHistory;
     private int historyIndex;
     private int historyCount;
 
+    private double momentaryLufs = Double.NEGATIVE_INFINITY;
+    private double shortTermLufs = Double.NEGATIVE_INFINITY;
     private double integratedLufs = Double.NEGATIVE_INFINITY;
+    private double loudnessRange = 0.0;
     private double truePeakDbfs = Double.NEGATIVE_INFINITY;
     private double targetLufs = -14.0; // Default: Spotify/YouTube
+    private String targetName = "Spotify";
 
     /**
      * Creates a new loudness display.
@@ -63,8 +76,10 @@ public final class LoudnessDisplay extends Region {
 
         momentaryHistory = new double[HISTORY_SIZE];
         shortTermHistory = new double[HISTORY_SIZE];
+        integratedHistory = new double[HISTORY_SIZE];
         java.util.Arrays.fill(momentaryHistory, MIN_LUFS);
         java.util.Arrays.fill(shortTermHistory, MIN_LUFS);
+        java.util.Arrays.fill(integratedHistory, MIN_LUFS);
     }
 
     /**
@@ -77,10 +92,14 @@ public final class LoudnessDisplay extends Region {
 
         momentaryHistory[historyIndex] = Math.max(data.momentaryLufs(), MIN_LUFS);
         shortTermHistory[historyIndex] = Math.max(data.shortTermLufs(), MIN_LUFS);
+        integratedHistory[historyIndex] = Math.max(data.integratedLufs(), MIN_LUFS);
         historyIndex = (historyIndex + 1) % HISTORY_SIZE;
         historyCount = Math.min(historyCount + 1, HISTORY_SIZE);
 
+        momentaryLufs = data.momentaryLufs();
+        shortTermLufs = data.shortTermLufs();
         integratedLufs = data.integratedLufs();
+        loudnessRange = data.loudnessRange();
         truePeakDbfs = data.truePeakDbfs();
 
         render();
@@ -97,6 +116,27 @@ public final class LoudnessDisplay extends Region {
     }
 
     /**
+     * Sets the platform target preset for compliance checking and display.
+     *
+     * @param target the platform loudness target preset
+     */
+    public void setTarget(LoudnessTarget target) {
+        if (target == null) return;
+        this.targetLufs = target.targetIntegratedLufs();
+        this.targetName = target.displayName();
+        render();
+    }
+
+    /**
+     * Returns the current target name being displayed.
+     *
+     * @return the target display name
+     */
+    public String getTargetName() {
+        return targetName;
+    }
+
+    /**
      * Renders the loudness display.
      */
     private void render() {
@@ -110,7 +150,7 @@ public final class LoudnessDisplay extends Region {
         gc.setFill(BACKGROUND);
         gc.fillRect(0, 0, w, h);
 
-        double graphH = h - 30; // Reserve space for labels
+        double graphH = h - 48; // Reserve space for three rows of labels
         double graphY = 10;
 
         // Grid lines and dB labels
@@ -136,6 +176,19 @@ public final class LoudnessDisplay extends Region {
         // Draw history traces
         double colWidth = (w - 30) / HISTORY_SIZE;
         gc.setLineWidth(1.5);
+
+        // Integrated trace (drawn first, behind the others)
+        gc.setStroke(INTEGRATED_COLOR.deriveColor(0, 1.0, 1.0, 0.5));
+        gc.beginPath();
+        for (int i = 0; i < historyCount; i++) {
+            int idx = (historyIndex - historyCount + i + HISTORY_SIZE) % HISTORY_SIZE;
+            double x = 30 + i * colWidth;
+            double v = integratedHistory[idx];
+            double y = graphY + (1.0 - (v - MIN_LUFS) / (MAX_LUFS - MIN_LUFS)) * graphH;
+            if (i == 0) gc.moveTo(x, y);
+            else gc.lineTo(x, y);
+        }
+        gc.stroke();
 
         // Short-term trace
         gc.setStroke(SHORT_TERM_COLOR);
@@ -163,27 +216,78 @@ public final class LoudnessDisplay extends Region {
         }
         gc.stroke();
 
-        // Integrated loudness text (row 1 left)
-        gc.setTextAlign(TextAlignment.LEFT);
+        // --- Row 1: Momentary, Short-Term, Integrated LUFS readouts ---
+        double row1Y = h - 34;
         gc.setFont(Font.font(11));
-        gc.setFill(INTEGRATED_COLOR);
-        String intText = (integratedLufs > MIN_LUFS)
-                ? String.format("INT: %.1f LUFS", integratedLufs)
-                : "INT: ---";
-        gc.fillText(intText, 35, h - 16);
+        gc.setTextAlign(TextAlignment.LEFT);
 
-        // True peak (row 1 right)
-        gc.setTextAlign(TextAlignment.RIGHT);
+        // Momentary
+        gc.setFill(MOMENTARY_COLOR);
+        String momText = (momentaryLufs > MIN_LUFS)
+                ? String.format("M: %.1f", momentaryLufs)
+                : "M: ---";
+        gc.fillText(momText, 35, row1Y);
+
+        // Short-term
+        gc.setFill(SHORT_TERM_COLOR);
+        String stText = (shortTermLufs > MIN_LUFS)
+                ? String.format("S: %.1f", shortTermLufs)
+                : "S: ---";
+        gc.fillText(stText, 35 + (w - 35) * 0.33, row1Y);
+
+        // Integrated (color-coded for compliance)
+        Color intColor = getComplianceColor();
+        gc.setFill(intColor);
+        String intText = (integratedLufs > MIN_LUFS)
+                ? String.format("I: %.1f LUFS", integratedLufs)
+                : "I: ---";
+        gc.fillText(intText, 35 + (w - 35) * 0.66, row1Y);
+
+        // --- Row 2: LRA and True Peak ---
+        double row2Y = h - 20;
+        gc.setFont(Font.font(10));
+        gc.setTextAlign(TextAlignment.LEFT);
+
+        // LRA
         gc.setFill(TEXT_COLOR);
+        String lraText = (loudnessRange > 0.0)
+                ? String.format("LRA: %.1f LU", loudnessRange)
+                : "LRA: ---";
+        gc.fillText(lraText, 35, row2Y);
+
+        // True peak
+        boolean truePeakClipping = truePeakDbfs > -1.0;
+        gc.setFill(truePeakClipping ? TRUE_PEAK_CLIP_COLOR : TEXT_COLOR);
         String tpText = (truePeakDbfs > -100)
                 ? String.format("TP: %.1f dBFS", truePeakDbfs)
                 : "TP: ---";
-        gc.fillText(tpText, w - 5, h - 16);
+        gc.setTextAlign(TextAlignment.RIGHT);
+        gc.fillText(tpText, w - 5, row2Y);
 
-        // Target label (row 2 left)
+        // --- Row 3: Target label ---
+        double row3Y = h - 6;
         gc.setTextAlign(TextAlignment.LEFT);
         gc.setFill(TARGET_COLOR);
-        gc.fillText(String.format("Target: %.0f LUFS", targetLufs), 35, h - 4);
+        gc.fillText(String.format("%s: %.0f LUFS", targetName, targetLufs), 35, row3Y);
+    }
+
+    /**
+     * Returns a color reflecting how close the integrated loudness is
+     * to the current target: green for within ±1 LU, yellow for within
+     * ±3 LU, red otherwise.
+     */
+    private Color getComplianceColor() {
+        if (integratedLufs <= MIN_LUFS) {
+            return INTEGRATED_COLOR;
+        }
+        double diff = Math.abs(integratedLufs - targetLufs);
+        if (diff <= COMPLIANCE_TOLERANCE_LU) {
+            return COMPLIANCE_OK_COLOR;
+        } else if (diff <= 3.0) {
+            return COMPLIANCE_WARN_COLOR;
+        } else {
+            return COMPLIANCE_FAIL_COLOR;
+        }
     }
 
     @Override

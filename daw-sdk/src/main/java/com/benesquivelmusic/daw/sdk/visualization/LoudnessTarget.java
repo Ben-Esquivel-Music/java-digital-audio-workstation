@@ -33,6 +33,9 @@ public enum LoudnessTarget {
     /** Tidal loudness normalization target. */
     TIDAL("Tidal", -14.0, -1.0),
 
+    /** EBU R128 broadcast loudness target. */
+    BROADCAST("Broadcast", -23.0, -1.0),
+
     /** CD mastering reference (typical loud master). */
     CD("CD", -9.0, -0.3),
 
