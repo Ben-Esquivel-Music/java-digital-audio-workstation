@@ -5,6 +5,8 @@ import com.benesquivelmusic.daw.core.marker.MarkerManager;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
+import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
+import com.benesquivelmusic.daw.core.reference.ReferenceTrackManager;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackColor;
 import com.benesquivelmusic.daw.core.track.TrackGroup;
@@ -33,6 +35,7 @@ public final class DawProject {
     private final Mixer mixer;
     private final Transport transport;
     private final MarkerManager markerManager;
+    private final ReferenceTrackManager referenceTrackManager;
     private ProjectMetadata metadata;
     private boolean dirty;
 
@@ -58,6 +61,7 @@ public final class DawProject {
         this.mixer = new Mixer();
         this.transport = new Transport();
         this.markerManager = new MarkerManager();
+        this.referenceTrackManager = new ReferenceTrackManager();
         this.metadata = ProjectMetadata.createNew(name);
     }
 
@@ -226,6 +230,35 @@ public final class DawProject {
     /** Returns the marker manager. */
     public MarkerManager getMarkerManager() {
         return markerManager;
+    }
+
+    /** Returns the reference track manager for A/B comparison. */
+    public ReferenceTrackManager getReferenceTrackManager() {
+        return referenceTrackManager;
+    }
+
+    /**
+     * Adds a reference track for A/B comparison.
+     *
+     * <p>Reference tracks bypass the mixer effects chain and are excluded
+     * from export. The first added reference track becomes the active one.</p>
+     *
+     * @param referenceTrack the reference track to add
+     * @throws NullPointerException if referenceTrack is {@code null}
+     */
+    public void addReferenceTrack(ReferenceTrack referenceTrack) {
+        Objects.requireNonNull(referenceTrack, "referenceTrack must not be null");
+        referenceTrackManager.addReferenceTrack(referenceTrack);
+    }
+
+    /**
+     * Removes a reference track.
+     *
+     * @param referenceTrack the reference track to remove
+     * @return {@code true} if the track was removed
+     */
+    public boolean removeReferenceTrack(ReferenceTrack referenceTrack) {
+        return referenceTrackManager.removeReferenceTrack(referenceTrack);
     }
 
     /** Returns the project metadata. */
