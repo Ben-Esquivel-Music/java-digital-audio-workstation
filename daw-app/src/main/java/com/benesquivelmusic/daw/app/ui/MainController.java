@@ -51,8 +51,6 @@ import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.Slider;
 import javafx.scene.control.TextField;
 import javafx.scene.control.Tooltip;
-import javafx.scene.input.KeyCode;
-import javafx.scene.input.KeyCodeCombination;
 import javafx.scene.input.KeyCombination;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -232,6 +230,10 @@ public final class MainController {
     /** Persists toolbar state (view, tool, snap, grid, browser) across sessions. */
     private ToolbarStateStore toolbarStateStore;
 
+    // ── Key binding manager ──────────────────────────────────────────────────
+    /** Manages customizable keyboard shortcuts for DAW actions. */
+    private KeyBindingManager keyBindingManager;
+
     // ── Animation state ──────────────────────────────────────────────────────
     /** Drives all continuous frame-by-frame animations at ~60 fps. */
     private AnimationTimer mainAnimTimer;
@@ -266,6 +268,7 @@ public final class MainController {
         RecentProjectsStore recentProjectsStore = new RecentProjectsStore(prefs);
         projectManager = new ProjectManager(checkpointManager, recentProjectsStore);
         toolbarStateStore = new ToolbarStateStore(prefs);
+        keyBindingManager = new KeyBindingManager(prefs.node("keybindings"));
 
         // Restore persisted toolbar state before UI initialization
         activeView = toolbarStateStore.loadActiveView();
@@ -896,67 +899,94 @@ public final class MainController {
      * Applies descriptive tooltips with keyboard shortcut hints to all UI controls.
      *
      * <p>Tooltips follow the format {@code "Action Name (Shortcut)"} and use a
-     * 300&nbsp;ms show delay for quick discoverability. Ambiguous buttons include
-     * a brief description separated by an em-dash.</p>
+     * 300&nbsp;ms show delay for quick discoverability. Shortcut hints are
+     * resolved from the {@link KeyBindingManager} so they reflect any custom
+     * bindings. Ambiguous buttons include a brief description separated by an
+     * em-dash.</p>
      */
     private void applyTooltips() {
         // ── Transport controls ──────────────────────────────────────────────
-        skipBackButton.setTooltip(styledTooltip("Skip to Beginning (Home)"));
-        playButton.setTooltip(styledTooltip("Play (Space)"));
+        skipBackButton.setTooltip(styledTooltip(tooltipFor("Skip to Beginning", DawAction.SKIP_TO_START)));
+        playButton.setTooltip(styledTooltip(tooltipFor("Play", DawAction.PLAY_STOP)));
         pauseButton.setTooltip(styledTooltip("Pause"));
-        stopButton.setTooltip(styledTooltip("Stop (Escape)"));
-        recordButton.setTooltip(styledTooltip("Record (R)"));
-        skipForwardButton.setTooltip(styledTooltip("Skip Forward (End)"));
-        loopButton.setTooltip(styledTooltip("Toggle Loop (L)"));
+        stopButton.setTooltip(styledTooltip(tooltipFor("Stop", DawAction.STOP)));
+        recordButton.setTooltip(styledTooltip(tooltipFor("Record", DawAction.RECORD)));
+        skipForwardButton.setTooltip(styledTooltip(tooltipFor("Skip Forward", DawAction.SKIP_TO_END)));
+        loopButton.setTooltip(styledTooltip(tooltipFor("Toggle Loop", DawAction.TOGGLE_LOOP)));
 
         // ── Toolbar buttons ─────────────────────────────────────────────────
-        addAudioTrackButton.setTooltip(styledTooltip("Add Audio Track (Ctrl+Shift+A)"));
-        addMidiTrackButton.setTooltip(styledTooltip("Add MIDI Track (Ctrl+Shift+M)"));
-        undoButton.setTooltip(styledTooltip("Undo (Ctrl+Z)"));
-        redoButton.setTooltip(styledTooltip("Redo (Ctrl+Shift+Z)"));
+        addAudioTrackButton.setTooltip(styledTooltip(tooltipFor("Add Audio Track", DawAction.ADD_AUDIO_TRACK)));
+        addMidiTrackButton.setTooltip(styledTooltip(tooltipFor("Add MIDI Track", DawAction.ADD_MIDI_TRACK)));
+        undoButton.setTooltip(styledTooltip(tooltipFor("Undo", DawAction.UNDO)));
+        redoButton.setTooltip(styledTooltip(tooltipFor("Redo", DawAction.REDO)));
         snapButton.setTooltip(styledTooltip(
-                "Toggle Snap (Ctrl+Shift+S) \u00b7 Right-click for grid resolution"));
-        saveButton.setTooltip(styledTooltip("Save Project (Ctrl+S)"));
+                tooltipFor("Toggle Snap", DawAction.TOGGLE_SNAP) + " \u00b7 Right-click for grid resolution"));
+        saveButton.setTooltip(styledTooltip(tooltipFor("Save Project", DawAction.SAVE)));
         pluginsButton.setTooltip(styledTooltip(
                 "Manage Plugins \u2014 Add, remove, and configure audio plugins"));
 
         // ── Sidebar view buttons ────────────────────────────────────────────
         homeButton.setTooltip(styledTooltip(
                 "Home \u2014 Return to the default view"));
-        arrangementViewButton.setTooltip(styledTooltip("Arrangement View (Ctrl+1)"));
-        mixerViewButton.setTooltip(styledTooltip("Mixer View (Ctrl+2)"));
-        editorViewButton.setTooltip(styledTooltip("Editor View (Ctrl+3)"));
-        telemetryViewButton.setTooltip(styledTooltip("Sound Wave Telemetry View (Ctrl+4)"));
-        newProjectButton.setTooltip(styledTooltip("New Project (Ctrl+N)"));
-        openProjectButton.setTooltip(styledTooltip("Open Project (Ctrl+O)"));
-        saveProjectButton.setTooltip(styledTooltip("Save Project (Ctrl+S)"));
+        arrangementViewButton.setTooltip(styledTooltip(tooltipFor("Arrangement View", DawAction.VIEW_ARRANGEMENT)));
+        mixerViewButton.setTooltip(styledTooltip(tooltipFor("Mixer View", DawAction.VIEW_MIXER)));
+        editorViewButton.setTooltip(styledTooltip(tooltipFor("Editor View", DawAction.VIEW_EDITOR)));
+        telemetryViewButton.setTooltip(styledTooltip(tooltipFor("Sound Wave Telemetry View", DawAction.VIEW_TELEMETRY)));
+        newProjectButton.setTooltip(styledTooltip(tooltipFor("New Project", DawAction.NEW_PROJECT)));
+        openProjectButton.setTooltip(styledTooltip(tooltipFor("Open Project", DawAction.OPEN_PROJECT)));
+        saveProjectButton.setTooltip(styledTooltip(tooltipFor("Save Project", DawAction.SAVE)));
         recentProjectsButton.setTooltip(styledTooltip(
                 "Recent Projects \u2014 Open a recently saved project"));
         browserButton.setTooltip(styledTooltip(
-                "Browser \u2014 Browse samples, presets, and project files (Ctrl+B)"));
+                "Browser \u2014 Browse samples, presets, and project files"
+                        + shortcutSuffix(DawAction.TOGGLE_BROWSER)));
         searchButton.setTooltip(styledTooltip(
                 "Search \u2014 Find tracks, clips, and project items"));
         pluginsSidebarButton.setTooltip(styledTooltip(
                 "Plugins \u2014 Browse and manage audio plugins"));
         visualizationsButton.setTooltip(styledTooltip(
-                "Visualizations \u2014 Toggle audio visualization panels (Ctrl+Shift+V)"));
-        settingsButton.setTooltip(styledTooltip("Settings (Ctrl+,)"));
-        expandCollapseButton.setTooltip(styledTooltip(
-                "Collapse/Expand Toolbar (Ctrl+T)"));
+                "Visualizations \u2014 Toggle audio visualization panels"
+                        + shortcutSuffix(DawAction.TOGGLE_VISUALIZATIONS)));
+        settingsButton.setTooltip(styledTooltip(tooltipFor("Settings", DawAction.OPEN_SETTINGS)));
+        expandCollapseButton.setTooltip(styledTooltip(tooltipFor("Collapse/Expand Toolbar", DawAction.TOGGLE_TOOLBAR)));
         helpButton.setTooltip(styledTooltip(
                 "Help \u2014 View documentation and keyboard shortcuts"));
 
         // ── Edit tool buttons ───────────────────────────────────────────────
-        pointerToolButton.setTooltip(styledTooltip("Pointer Tool (V)"));
-        pencilToolButton.setTooltip(styledTooltip("Pencil Tool (P)"));
-        eraserToolButton.setTooltip(styledTooltip("Eraser Tool (E)"));
-        scissorsToolButton.setTooltip(styledTooltip("Scissors Tool (C)"));
-        glueToolButton.setTooltip(styledTooltip("Glue Tool (G)"));
+        pointerToolButton.setTooltip(styledTooltip(tooltipFor("Pointer Tool", DawAction.TOOL_POINTER)));
+        pencilToolButton.setTooltip(styledTooltip(tooltipFor("Pencil Tool", DawAction.TOOL_PENCIL)));
+        eraserToolButton.setTooltip(styledTooltip(tooltipFor("Eraser Tool", DawAction.TOOL_ERASER)));
+        scissorsToolButton.setTooltip(styledTooltip(tooltipFor("Scissors Tool", DawAction.TOOL_SCISSORS)));
+        glueToolButton.setTooltip(styledTooltip(tooltipFor("Glue Tool", DawAction.TOOL_GLUE)));
 
         // ── Zoom buttons ────────────────────────────────────────────────────
-        zoomInButton.setTooltip(styledTooltip("Zoom In (Ctrl+=)"));
-        zoomOutButton.setTooltip(styledTooltip("Zoom Out (Ctrl+-)"));
-        zoomToFitButton.setTooltip(styledTooltip("Zoom to Fit (Ctrl+0)"));
+        zoomInButton.setTooltip(styledTooltip(tooltipFor("Zoom In", DawAction.ZOOM_IN)));
+        zoomOutButton.setTooltip(styledTooltip(tooltipFor("Zoom Out", DawAction.ZOOM_OUT)));
+        zoomToFitButton.setTooltip(styledTooltip(tooltipFor("Zoom to Fit", DawAction.ZOOM_TO_FIT)));
+    }
+
+    /**
+     * Returns a tooltip string in the form {@code "label (shortcut)"}.
+     * If the action has no binding, returns just the label.
+     */
+    private String tooltipFor(String label, DawAction action) {
+        String shortcut = keyBindingManager.getDisplayText(action);
+        if (shortcut.isEmpty()) {
+            return label;
+        }
+        return label + " (" + shortcut + ")";
+    }
+
+    /**
+     * Returns a suffix string like {@code " (shortcut)"} or an empty string
+     * if the action has no binding. Useful for appending to longer tooltip text.
+     */
+    private String shortcutSuffix(DawAction action) {
+        String shortcut = keyBindingManager.getDisplayText(action);
+        if (shortcut.isEmpty()) {
+            return "";
+        }
+        return " (" + shortcut + ")";
     }
 
     /**
@@ -971,6 +1001,10 @@ public final class MainController {
 
     /**
      * Registers global keyboard shortcuts for transport and project actions.
+     *
+     * <p>Uses the {@link KeyBindingManager} to resolve the current key combination
+     * for each {@link DawAction}, allowing shortcuts to be user-customized
+     * through the Settings &gt; Key Bindings tab.</p>
      */
     private void registerKeyboardShortcuts() {
         Scene scene = playButton.getScene();
@@ -979,161 +1013,54 @@ public final class MainController {
         }
         ObservableMap<KeyCombination, Runnable> accelerators = scene.getAccelerators();
 
-        // Home — skip to beginning
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.HOME),
-                this::onSkipBack);
+        // Build a map from DawAction to its handler
+        Map<DawAction, Runnable> actionHandlers = new EnumMap<>(DawAction.class);
+        actionHandlers.put(DawAction.PLAY_STOP, () -> {
+            if (project.getTransport().getState() == TransportState.PLAYING) {
+                onStop();
+            } else {
+                onPlay();
+            }
+        });
+        actionHandlers.put(DawAction.STOP, this::onStop);
+        actionHandlers.put(DawAction.RECORD, this::onRecord);
+        actionHandlers.put(DawAction.SKIP_TO_START, this::onSkipBack);
+        actionHandlers.put(DawAction.SKIP_TO_END, this::onSkipForward);
+        actionHandlers.put(DawAction.TOGGLE_LOOP, this::onToggleLoop);
+        actionHandlers.put(DawAction.UNDO, this::onUndo);
+        actionHandlers.put(DawAction.REDO, this::onRedo);
+        actionHandlers.put(DawAction.SAVE, this::onSaveProject);
+        actionHandlers.put(DawAction.NEW_PROJECT, this::onNewProject);
+        actionHandlers.put(DawAction.OPEN_PROJECT, this::onOpenProject);
+        actionHandlers.put(DawAction.TOGGLE_SNAP, this::onToggleSnap);
+        actionHandlers.put(DawAction.ADD_AUDIO_TRACK, this::onAddAudioTrack);
+        actionHandlers.put(DawAction.ADD_MIDI_TRACK, this::onAddMidiTrack);
+        actionHandlers.put(DawAction.TOOL_POINTER, () -> selectEditTool(EditTool.POINTER));
+        actionHandlers.put(DawAction.TOOL_PENCIL, () -> selectEditTool(EditTool.PENCIL));
+        actionHandlers.put(DawAction.TOOL_ERASER, () -> selectEditTool(EditTool.ERASER));
+        actionHandlers.put(DawAction.TOOL_SCISSORS, () -> selectEditTool(EditTool.SCISSORS));
+        actionHandlers.put(DawAction.TOOL_GLUE, () -> selectEditTool(EditTool.GLUE));
+        actionHandlers.put(DawAction.ZOOM_IN, this::onZoomIn);
+        actionHandlers.put(DawAction.ZOOM_OUT, this::onZoomOut);
+        actionHandlers.put(DawAction.ZOOM_TO_FIT, this::onZoomToFit);
+        actionHandlers.put(DawAction.VIEW_ARRANGEMENT, () -> switchView(DawView.ARRANGEMENT));
+        actionHandlers.put(DawAction.VIEW_MIXER, () -> switchView(DawView.MIXER));
+        actionHandlers.put(DawAction.VIEW_EDITOR, () -> switchView(DawView.EDITOR));
+        actionHandlers.put(DawAction.VIEW_TELEMETRY, () -> switchView(DawView.TELEMETRY));
+        actionHandlers.put(DawAction.TOGGLE_BROWSER, () -> browserPanelController.toggleBrowserPanel());
+        actionHandlers.put(DawAction.TOGGLE_VISUALIZATIONS, () -> vizPanelController.toggleRowVisibility());
+        actionHandlers.put(DawAction.OPEN_SETTINGS, this::onOpenSettings);
+        actionHandlers.put(DawAction.TOGGLE_TOOLBAR, this::onToggleToolbar);
 
-        // End — skip forward
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.END),
-                this::onSkipForward);
-
-        // L — toggle loop
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.L),
-                this::onToggleLoop);
-
-        // Space — toggle play/stop
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.SPACE),
-                () -> {
-                    if (project.getTransport().getState() == TransportState.PLAYING) {
-                        onStop();
-                    } else {
-                        onPlay();
-                    }
-                });
-
-        // Escape — stop
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.ESCAPE),
-                this::onStop);
-
-        // R — record
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.R),
-                this::onRecord);
-
-        // Ctrl+S — save
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.S, KeyCombination.SHORTCUT_DOWN),
-                this::onSaveProject);
-
-        // Ctrl+Shift+A — add audio track
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.A, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN),
-                this::onAddAudioTrack);
-
-        // Ctrl+Shift+M — add MIDI track
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.M, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN),
-                this::onAddMidiTrack);
-
-        // Ctrl+Z — undo
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.Z, KeyCombination.SHORTCUT_DOWN),
-                this::onUndo);
-
-        // Ctrl+Shift+Z — redo
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.Z, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN),
-                this::onRedo);
-
-        // V — Pointer tool
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.V),
-                () -> selectEditTool(EditTool.POINTER));
-
-        // P — Pencil tool
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.P),
-                () -> selectEditTool(EditTool.PENCIL));
-
-        // E — Eraser tool
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.E),
-                () -> selectEditTool(EditTool.ERASER));
-
-        // C — Scissors tool
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.C),
-                () -> selectEditTool(EditTool.SCISSORS));
-
-        // G — Glue tool
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.G),
-                () -> selectEditTool(EditTool.GLUE));
-
-        // Ctrl+= — Zoom in
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.EQUALS, KeyCombination.SHORTCUT_DOWN),
-                this::onZoomIn);
-
-        // Ctrl+- — Zoom out
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.MINUS, KeyCombination.SHORTCUT_DOWN),
-                this::onZoomOut);
-
-        // Ctrl+0 — Zoom to fit
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.DIGIT0, KeyCombination.SHORTCUT_DOWN),
-                this::onZoomToFit);
-
-        // Ctrl+1 — Arrangement View
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.DIGIT1, KeyCombination.SHORTCUT_DOWN),
-                () -> switchView(DawView.ARRANGEMENT));
-
-        // Ctrl+2 — Mixer View
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.DIGIT2, KeyCombination.SHORTCUT_DOWN),
-                () -> switchView(DawView.MIXER));
-
-        // Ctrl+3 — Editor View
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.DIGIT3, KeyCombination.SHORTCUT_DOWN),
-                () -> switchView(DawView.EDITOR));
-
-        // Ctrl+4 — Telemetry View
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.DIGIT4, KeyCombination.SHORTCUT_DOWN),
-                () -> switchView(DawView.TELEMETRY));
-
-        // Ctrl+B — Toggle Browser
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.B, KeyCombination.SHORTCUT_DOWN),
-                () -> browserPanelController.toggleBrowserPanel());
-
-        // Ctrl+Shift+V — Toggle Visualizations
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.V, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN),
-                () -> vizPanelController.toggleRowVisibility());
-
-        // Ctrl+N — New Project
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.N, KeyCombination.SHORTCUT_DOWN),
-                this::onNewProject);
-
-        // Ctrl+O — Open Project
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.O, KeyCombination.SHORTCUT_DOWN),
-                this::onOpenProject);
-
-        // Ctrl+, — Settings
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.COMMA, KeyCombination.SHORTCUT_DOWN),
-                this::onOpenSettings);
-
-        // Ctrl+Shift+S — Toggle Snap
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.S, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN),
-                this::onToggleSnap);
-
-        // Ctrl+T — Collapse/Expand Toolbar
-        accelerators.put(
-                new KeyCodeCombination(KeyCode.T, KeyCombination.SHORTCUT_DOWN),
-                this::onToggleToolbar);
+        // Register each action's current binding from the KeyBindingManager
+        for (DawAction action : DawAction.values()) {
+            Runnable handler = actionHandlers.get(action);
+            if (handler == null) {
+                continue;
+            }
+            Optional<KeyCombination> binding = keyBindingManager.getBinding(action);
+            binding.ifPresent(kc -> accelerators.put(kc, handler));
+        }
 
         LOG.fine("Registered keyboard shortcuts");
     }
