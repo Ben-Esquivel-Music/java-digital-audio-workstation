@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.track;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.automation.AutomationData;
+import com.benesquivelmusic.daw.core.comping.TakeComping;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
 
@@ -45,6 +46,7 @@ public final class Track {
     private TrackColor color = TrackColor.RED;
     private boolean frozen;
     private float[][] frozenAudioData;
+    private final TakeComping takeComping = new TakeComping();
 
     /**
      * Creates a new track with the given name and type.
@@ -422,6 +424,21 @@ public final class Track {
      */
     void setFrozenAudioData(float[][] frozenAudioData) {
         this.frozenAudioData = frozenAudioData;
+    }
+
+    // ── Multi-take comping support ──────────────────────────────────────────
+
+    /**
+     * Returns the take comping manager for this track.
+     *
+     * <p>The take comping manager holds stacked take lanes recorded on this
+     * track and the user's comp selections. Use it to add takes, select
+     * comp regions, and compile the composite.</p>
+     *
+     * @return the take comping manager (never {@code null})
+     */
+    public TakeComping getTakeComping() {
+        return takeComping;
     }
 
     /**
