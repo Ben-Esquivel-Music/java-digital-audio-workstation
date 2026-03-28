@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.project;
 
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.marker.MarkerManager;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
@@ -31,6 +32,7 @@ public final class DawProject {
     private final List<Track> tracks = new ArrayList<>();
     private final Mixer mixer;
     private final Transport transport;
+    private final MarkerManager markerManager;
     private ProjectMetadata metadata;
     private boolean dirty;
 
@@ -55,6 +57,7 @@ public final class DawProject {
         this.format = Objects.requireNonNull(format, "format must not be null");
         this.mixer = new Mixer();
         this.transport = new Transport();
+        this.markerManager = new MarkerManager();
         this.metadata = ProjectMetadata.createNew(name);
     }
 
@@ -218,6 +221,11 @@ public final class DawProject {
     /** Returns the transport. */
     public Transport getTransport() {
         return transport;
+    }
+
+    /** Returns the marker manager. */
+    public MarkerManager getMarkerManager() {
+        return markerManager;
     }
 
     /** Returns the project metadata. */
