@@ -403,4 +403,48 @@ class TelemetryViewTest {
         runOnFxThread(view::startAnimation);
         // No exception means success
     }
+
+    // ── Drag-and-drop integration ────────────────────────────────────
+
+    @Test
+    void displayShouldHaveDragCallbacksWired() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+
+        assertThat(view.getDisplay().getOnSourceDragged()).isNotNull();
+        assertThat(view.getDisplay().getOnMicDragged()).isNotNull();
+    }
+
+    @Test
+    void generateShouldSaveLastConfig() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+
+        runOnFxThread(() -> {
+            TelemetrySetupPanel panel = view.getSetupPanel();
+            panel.getSourceNameField().setText("Guitar");
+            panel.getSourceXField().setText("2.0");
+            panel.getSourceYField().setText("3.0");
+            panel.getSourceZField().setText("1.0");
+            panel.getAddSourceButton().fire();
+            panel.getMicNameField().setText("Overhead");
+            panel.getMicXField().setText("3.0");
+            panel.getMicYField().setText("4.0");
+            panel.getMicZField().setText("1.5");
+            panel.getAddMicButton().fire();
+            view.getGenerateButton().fire();
+        });
+
+        assertThat(view.getLastConfig()).isNotNull();
+        assertThat(view.getLastConfig().getSoundSources()).hasSize(1);
+        assertThat(view.getLastConfig().getMicrophones()).hasSize(1);
+    }
+
+    @Test
+    void lastConfigShouldBeNullBeforeGeneration() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+
+        assertThat(view.getLastConfig()).isNull();
+    }
 }

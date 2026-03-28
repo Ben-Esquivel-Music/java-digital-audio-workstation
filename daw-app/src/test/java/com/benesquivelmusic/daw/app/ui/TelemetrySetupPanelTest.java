@@ -17,6 +17,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 class TelemetrySetupPanelTest {
 
@@ -1425,5 +1426,153 @@ class TelemetrySetupPanelTest {
         runOnFxThread(() -> result.set(
                 TelemetrySetupPanel.formatMaterialName(WallMaterial.ACOUSTIC_FOAM)));
         assertThat(result.get()).contains("Acoustic Foam");
+    }
+
+    // ── Slider accessors ────────────────────────────────────────────
+
+    @Test
+    void shouldExposeWidthSlider() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        assertThat(panel.getWidthSlider()).isNotNull();
+    }
+
+    @Test
+    void shouldExposeLengthSlider() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        assertThat(panel.getLengthSlider()).isNotNull();
+    }
+
+    @Test
+    void shouldExposeHeightSlider() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        assertThat(panel.getHeightSlider()).isNotNull();
+    }
+
+    @Test
+    void slidersShouldHaveDefaultStudioValues() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        RoomPreset studio = RoomPreset.STUDIO;
+        assertThat(panel.getWidthSlider().getValue()).isEqualTo(studio.dimensions().width());
+        assertThat(panel.getLengthSlider().getValue()).isEqualTo(studio.dimensions().length());
+        assertThat(panel.getHeightSlider().getValue()).isEqualTo(studio.dimensions().height());
+    }
+
+    @Test
+    void sliderChangeShouldUpdateTextField() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> panel.getWidthSlider().setValue(15.0));
+
+        assertThat(panel.getWidthField().getText()).isEqualTo("15.0");
+    }
+
+    @Test
+    void textFieldChangeShouldUpdateSlider() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> panel.getWidthField().setText("20.0"));
+
+        assertThat(panel.getWidthSlider().getValue()).isCloseTo(20.0, within(0.1));
+    }
+
+    @Test
+    void presetSelectionShouldUpdateSliders() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> panel.getPresetCombo().setValue(RoomPreset.CONCERT_HALL));
+
+        assertThat(panel.getWidthSlider().getValue())
+                .isEqualTo(RoomPreset.CONCERT_HALL.dimensions().width());
+        assertThat(panel.getLengthSlider().getValue())
+                .isEqualTo(RoomPreset.CONCERT_HALL.dimensions().length());
+        assertThat(panel.getHeightSlider().getValue())
+                .isEqualTo(RoomPreset.CONCERT_HALL.dimensions().height());
+    }
+
+    // ── RT60 display ────────────────────────────────────────────────
+
+    @Test
+    void shouldExposeRt60Label() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        assertThat(panel.getRt60Label()).isNotNull();
+    }
+
+    @Test
+    void rt60LabelShouldContainRt60Text() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        assertThat(panel.getRt60Label().getText()).contains("RT60");
+    }
+
+    @Test
+    void rt60LabelShouldUpdateWhenDimensionsChange() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        AtomicReference<String> initial = new AtomicReference<>();
+        runOnFxThread(() -> initial.set(panel.getRt60Label().getText()));
+
+        runOnFxThread(() -> panel.getWidthField().setText("50.0"));
+
+        assertThat(panel.getRt60Label().getText()).isNotEqualTo(initial.get());
+    }
+
+    @Test
+    void rt60LabelShouldUpdateWhenMaterialChanges() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        AtomicReference<String> initial = new AtomicReference<>();
+        runOnFxThread(() -> initial.set(panel.getRt60Label().getText()));
+
+        runOnFxThread(() -> panel.getWallMaterialCombo().setValue(WallMaterial.CONCRETE));
+
+        assertThat(panel.getRt60Label().getText()).isNotEqualTo(initial.get());
+    }
+
+    // ── Absorption display ──────────────────────────────────────────
+
+    @Test
+    void shouldExposeAbsorptionLabel() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        assertThat(panel.getAbsorptionLabel()).isNotNull();
+        assertThat(panel.getAbsorptionLabel().getText()).contains("Absorption");
+    }
+
+    @Test
+    void shouldExposeAbsorptionBar() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        assertThat(panel.getAbsorptionBar()).isNotNull();
+        assertThat(panel.getAbsorptionBar().getProgress()).isGreaterThan(0);
+    }
+
+    @Test
+    void absorptionShouldUpdateWhenMaterialChanges() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> panel.getWallMaterialCombo().setValue(WallMaterial.ACOUSTIC_FOAM));
+
+        assertThat(panel.getAbsorptionBar().getProgress())
+                .isEqualTo(WallMaterial.ACOUSTIC_FOAM.absorptionCoefficient());
+        assertThat(panel.getAbsorptionLabel().getText()).contains("70%");
     }
 }
