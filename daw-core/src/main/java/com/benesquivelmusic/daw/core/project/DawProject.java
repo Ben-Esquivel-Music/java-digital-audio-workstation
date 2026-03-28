@@ -31,6 +31,7 @@ public final class DawProject {
     private final Mixer mixer;
     private final Transport transport;
     private ProjectMetadata metadata;
+    private boolean dirty;
 
     /**
      * Tracks the mixer channel associated with each track, keyed by track ID.
@@ -221,6 +222,29 @@ public final class DawProject {
     /** Sets the project metadata. */
     public void setMetadata(ProjectMetadata metadata) {
         this.metadata = Objects.requireNonNull(metadata, "metadata must not be null");
+    }
+
+    /**
+     * Returns whether the project has unsaved changes.
+     *
+     * @return {@code true} if the project has been modified since the last save
+     */
+    public boolean isDirty() {
+        return dirty;
+    }
+
+    /**
+     * Marks the project as having unsaved changes.
+     */
+    public void markDirty() {
+        this.dirty = true;
+    }
+
+    /**
+     * Marks the project as clean (all changes saved).
+     */
+    public void markClean() {
+        this.dirty = false;
     }
 
     // ── Folder track support ────────────────────────────────────────────────

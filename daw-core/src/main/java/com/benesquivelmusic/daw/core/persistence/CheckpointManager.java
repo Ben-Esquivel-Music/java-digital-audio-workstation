@@ -18,6 +18,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 /**
  * Manages automatic checkpoints for long-running DAW projects.
@@ -51,6 +52,7 @@ public final class CheckpointManager {
 
     private ScheduledExecutorService scheduler;
     private Path projectDirectory;
+    private Supplier<String> projectDataSupplier;
 
     /**
      * Creates a new checkpoint manager with the given auto-save configuration.
@@ -189,6 +191,18 @@ public final class CheckpointManager {
     }
 
     /**
+     * Sets a supplier that provides the full project state as a string for
+     * inclusion in checkpoint files. When set, checkpoint files contain the
+     * complete serialized project state instead of a minimal summary.
+     *
+     * @param supplier the project data supplier, or {@code null} to revert
+     *                 to the default summary format
+     */
+    public void setProjectDataSupplier(Supplier<String> supplier) {
+        this.projectDataSupplier = supplier;
+    }
+
+    /**
      * Performs a single checkpoint. Called automatically by the scheduler,
      * but may also be invoked manually for an explicit save.
      */
@@ -227,6 +241,12 @@ public final class CheckpointManager {
     }
 
     private String buildCheckpointContent(String checkpointId, int index) {
+        if (projectDataSupplier != null) {
+            String data = projectDataSupplier.get();
+            if (data != null) {
+                return data;
+            }
+        }
         return String.format("""
                 # DAW Checkpoint
                 id=%s

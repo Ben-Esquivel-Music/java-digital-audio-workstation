@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.persistence;
 
+import com.benesquivelmusic.daw.core.project.DawProject;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -19,10 +21,14 @@ import java.util.Objects;
  * {@link CheckpointManager} to automatically save project state during
  * long-running recording sessions.</p>
  *
+ * <p>Full project state — tracks, clips, mixer settings, transport, and
+ * metadata — is serialized to XML via {@link ProjectSerializer} and
+ * restored via {@link ProjectDeserializer}.</p>
+ *
  * <h2>Project Directory Layout</h2>
  * <pre>
  *   MyProject/
- *     project.daw            — project metadata and state
+ *     project.daw            — full project state (XML)
  *     audio/                 — recorded audio files
  *     checkpoints/           — auto-save checkpoints
  * </pre>
@@ -35,8 +41,11 @@ public final class ProjectManager {
     private final Map<String, ProjectMetadata> recentProjects = new LinkedHashMap<>();
     private final CheckpointManager checkpointManager;
     private final RecentProjectsStore recentProjectsStore;
+    private final ProjectSerializer serializer = new ProjectSerializer();
+    private final ProjectDeserializer deserializer = new ProjectDeserializer();
 
     private ProjectMetadata currentProject;
+    private DawProject currentDawProject;
 
     /**
      * Creates a project manager with the given checkpoint manager.
@@ -80,6 +89,7 @@ public final class ProjectManager {
         writeProjectFile(metadata);
 
         currentProject = metadata;
+        currentDawProject = null;
         recentProjects.put(projectDir.toString(), metadata);
         recordRecentProject(projectDir);
         checkpointManager.start(projectDir);
@@ -88,6 +98,10 @@ public final class ProjectManager {
 
     /**
      * Opens an existing project from the specified directory.
+     *
+     * <p>If the project file contains full XML project state, it is deserialized
+     * into a {@link DawProject} accessible via {@link #getCurrentDawProject()}.
+     * Legacy project files that contain only metadata are also supported.</p>
      *
      * @param projectDirectory the project directory
      * @return the project metadata
@@ -102,17 +116,30 @@ public final class ProjectManager {
         }
 
         String content = Files.readString(projectFile);
-        ProjectMetadata metadata = parseProjectFile(content, projectDirectory);
 
-        currentProject = metadata;
-        recentProjects.put(projectDirectory.toString(), metadata);
+        if (content.strip().startsWith("<?xml") || content.strip().startsWith("<daw-project")) {
+            DawProject dawProject = deserializer.deserialize(content);
+            ProjectMetadata metadata = dawProject.getMetadata().withPath(projectDirectory);
+            dawProject.setMetadata(metadata);
+            dawProject.markClean();
+            currentDawProject = dawProject;
+            currentProject = metadata;
+        } else {
+            ProjectMetadata metadata = parseProjectFile(content, projectDirectory);
+            currentProject = metadata;
+            currentDawProject = null;
+        }
+
+        recentProjects.put(projectDirectory.toString(), currentProject);
         recordRecentProject(projectDirectory);
         checkpointManager.start(projectDirectory);
-        return metadata;
+        return currentProject;
     }
 
     /**
-     * Saves the current project state.
+     * Saves the current project state. If a {@link DawProject} has been set
+     * via {@link #saveDawProject(DawProject)}, the full project state is
+     * serialized to XML. Otherwise, only metadata is written.
      *
      * @throws IOException    if the project cannot be saved
      * @throws IllegalStateException if no project is currently open
@@ -122,7 +149,34 @@ public final class ProjectManager {
             throw new IllegalStateException("No project is currently open");
         }
         currentProject = currentProject.touch();
-        writeProjectFile(currentProject);
+        if (currentDawProject != null) {
+            currentDawProject.setMetadata(currentProject);
+            writeDawProjectFile(currentDawProject, currentProject.projectPath());
+            currentDawProject.markClean();
+        } else {
+            writeProjectFile(currentProject);
+        }
+        checkpointManager.performCheckpoint();
+    }
+
+    /**
+     * Saves the full state of the given {@link DawProject} to disk. The project
+     * is associated with this manager and its metadata is updated.
+     *
+     * @param dawProject the project to save
+     * @throws IOException if the project cannot be saved
+     * @throws IllegalStateException if no project is currently open
+     */
+    public void saveDawProject(DawProject dawProject) throws IOException {
+        Objects.requireNonNull(dawProject, "dawProject must not be null");
+        if (currentProject == null) {
+            throw new IllegalStateException("No project is currently open");
+        }
+        currentDawProject = dawProject;
+        currentProject = currentProject.touch();
+        dawProject.setMetadata(currentProject);
+        writeDawProjectFile(dawProject, currentProject.projectPath());
+        dawProject.markClean();
         checkpointManager.performCheckpoint();
     }
 
@@ -138,6 +192,7 @@ public final class ProjectManager {
         saveProject();
         checkpointManager.stop();
         currentProject = null;
+        currentDawProject = null;
     }
 
     /**
@@ -147,6 +202,28 @@ public final class ProjectManager {
      */
     public ProjectMetadata getCurrentProject() {
         return currentProject;
+    }
+
+    /**
+     * Returns the currently loaded {@link DawProject}, or {@code null} if
+     * only metadata is available (e.g., a legacy project file was opened).
+     *
+     * @return the current DAW project, or {@code null}
+     */
+    public DawProject getCurrentDawProject() {
+        return currentDawProject;
+    }
+
+    /**
+     * Returns whether the current project has unsaved changes.
+     *
+     * @return {@code true} if there are unsaved changes
+     */
+    public boolean hasUnsavedChanges() {
+        if (currentDawProject != null) {
+            return currentDawProject.isDirty();
+        }
+        return false;
     }
 
     /**
@@ -193,6 +270,15 @@ public final class ProjectManager {
         if (recentProjectsStore != null) {
             recentProjectsStore.addRecentProject(projectDir);
         }
+    }
+
+    private void writeDawProjectFile(DawProject dawProject, Path projectDir) throws IOException {
+        if (projectDir == null) {
+            return;
+        }
+        Path projectFile = projectDir.resolve(PROJECT_FILE_NAME);
+        String xml = serializer.serialize(dawProject);
+        Files.writeString(projectFile, xml);
     }
 
     private void writeProjectFile(ProjectMetadata metadata) throws IOException {

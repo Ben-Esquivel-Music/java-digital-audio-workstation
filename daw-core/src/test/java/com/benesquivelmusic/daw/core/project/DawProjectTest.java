@@ -278,4 +278,27 @@ class DawProjectTest {
         assertThat(project.getMixer().getChannels().get(0).getName()).isEqualTo("Bass");
         assertThat(project.getMixer().getChannels().get(1).getName()).isEqualTo("Drums");
     }
+
+    // ── Dirty flag tests ────────────────────────────────────────────────────
+
+    @Test
+    void shouldNotBeDirtyByDefault() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        assertThat(project.isDirty()).isFalse();
+    }
+
+    @Test
+    void shouldMarkDirty() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        project.markDirty();
+        assertThat(project.isDirty()).isTrue();
+    }
+
+    @Test
+    void shouldMarkClean() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        project.markDirty();
+        project.markClean();
+        assertThat(project.isDirty()).isFalse();
+    }
 }

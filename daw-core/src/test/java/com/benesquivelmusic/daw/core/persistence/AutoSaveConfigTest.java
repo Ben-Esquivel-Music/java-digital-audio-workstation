@@ -13,7 +13,7 @@ class AutoSaveConfigTest {
     void shouldCreateDefaultConfig() {
         AutoSaveConfig config = AutoSaveConfig.DEFAULT;
 
-        assertThat(config.autoSaveInterval()).isEqualTo(Duration.ofMinutes(2));
+        assertThat(config.autoSaveInterval()).isEqualTo(Duration.ofMinutes(5));
         assertThat(config.maxCheckpoints()).isEqualTo(50);
         assertThat(config.enabled()).isTrue();
     }

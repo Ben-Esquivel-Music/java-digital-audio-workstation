@@ -19,9 +19,9 @@ public record AutoSaveConfig(
         int maxCheckpoints,
         boolean enabled
 ) {
-    /** Default configuration: auto-save every 2 minutes, keep 50 checkpoints. */
+    /** Default configuration: auto-save every 5 minutes, keep 50 checkpoints. */
     public static final AutoSaveConfig DEFAULT =
-            new AutoSaveConfig(Duration.ofMinutes(2), 50, true);
+            new AutoSaveConfig(Duration.ofMinutes(5), 50, true);
 
     /** Aggressive configuration for long sessions: save every 30 seconds, keep 200 checkpoints. */
     public static final AutoSaveConfig LONG_SESSION =
