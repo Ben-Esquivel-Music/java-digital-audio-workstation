@@ -232,6 +232,15 @@ public final class MainController {
     /** Whether the undo history panel is currently visible. */
     private boolean historyPanelVisible;
 
+    // ── Notification history ─────────────────────────────────────────────────
+    /** In-memory store for warning/error notifications. */
+    private final NotificationHistoryService notificationHistoryService =
+            new NotificationHistoryService();
+    /** The notification history panel displayed on the right side of the root pane. */
+    private NotificationHistoryPanel notificationHistoryPanel;
+    /** Whether the notification history panel is currently visible. */
+    private boolean notificationHistoryPanelVisible;
+
     // ── Toolbar collapse controller ──────────────────────────────────────────
     /** Controls the sidebar toolbar collapse/expand toggle and persistence. */
     private ToolbarCollapseController toolbarCollapseController;
@@ -339,12 +348,16 @@ public final class MainController {
 
     /**
      * Creates the {@link NotificationBar} and adds it to the notification container
-     * in the bottom section, just above the status bar.
+     * in the bottom section, just above the status bar. Also wires the
+     * {@link NotificationHistoryService} so that warnings and errors are
+     * recorded for the notification history panel.
      */
     private void initializeNotificationBar() {
         notificationBar = new NotificationBar();
+        notificationBar.setHistoryService(notificationHistoryService);
         notificationBarContainer.getChildren().add(notificationBar);
         HBox.setHgrow(notificationBar, Priority.ALWAYS);
+        notificationHistoryPanel = new NotificationHistoryPanel(notificationHistoryService);
     }
 
     // ── View navigation ──────────────────────────────────────────────────────
@@ -1102,6 +1115,7 @@ public final class MainController {
             browserPanelController.toggleBrowserPanel();
         });
         actionHandlers.put(DawAction.TOGGLE_HISTORY, this::toggleHistoryPanel);
+        actionHandlers.put(DawAction.TOGGLE_NOTIFICATION_HISTORY, this::toggleNotificationHistoryPanel);
         actionHandlers.put(DawAction.TOGGLE_VISUALIZATIONS, () -> vizPanelController.toggleRowVisibility());
         actionHandlers.put(DawAction.OPEN_SETTINGS, this::onOpenSettings);
         actionHandlers.put(DawAction.TOGGLE_TOOLBAR, this::onToggleToolbar);
@@ -1251,6 +1265,9 @@ public final class MainController {
                 historyPanelVisible = false;
                 updateHistoryButtonActiveState();
             }
+            if (browserPanelController.isPanelVisible() && notificationHistoryPanelVisible) {
+                notificationHistoryPanelVisible = false;
+            }
         });
         browserPanelController.initialize();
 
@@ -1303,6 +1320,9 @@ public final class MainController {
             if (browserPanelController.isPanelVisible()) {
                 browserPanelController.toggleBrowserPanel();
             }
+            if (notificationHistoryPanelVisible) {
+                toggleNotificationHistoryPanel();
+            }
             undoHistoryPanel.setOpacity(0.0);
             rootPane.setRight(undoHistoryPanel);
             javafx.animation.Timeline timeline = new javafx.animation.Timeline(
@@ -1335,6 +1355,46 @@ public final class MainController {
             }
         } else {
             styles.remove("toolbar-button-active");
+        }
+    }
+
+    // ── Notification history panel ───────────────────────────────────────────
+
+    /**
+     * Toggles the notification history panel on the right side of the root pane.
+     * If the browser panel or undo history panel is visible, it is hidden first.
+     */
+    void toggleNotificationHistoryPanel() {
+        notificationHistoryPanelVisible = !notificationHistoryPanelVisible;
+        if (notificationHistoryPanelVisible) {
+            if (browserPanelController.isPanelVisible()) {
+                browserPanelController.toggleBrowserPanel();
+            }
+            if (historyPanelVisible) {
+                toggleHistoryPanel();
+            }
+            notificationHistoryPanel.setOpacity(0.0);
+            rootPane.setRight(notificationHistoryPanel);
+            javafx.animation.Timeline timeline = new javafx.animation.Timeline(
+                    new javafx.animation.KeyFrame(
+                            javafx.util.Duration.millis(250),
+                            new javafx.animation.KeyValue(
+                                    notificationHistoryPanel.opacityProperty(), 1.0))
+            );
+            timeline.play();
+            statusBarLabel.setText("Notification History panel opened");
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.BELL_RING, 12));
+        } else {
+            javafx.animation.Timeline timeline = new javafx.animation.Timeline(
+                    new javafx.animation.KeyFrame(
+                            javafx.util.Duration.millis(250),
+                            new javafx.animation.KeyValue(
+                                    notificationHistoryPanel.opacityProperty(), 0.0))
+            );
+            timeline.setOnFinished(event -> rootPane.setRight(null));
+            timeline.play();
+            statusBarLabel.setText("Notification History panel closed");
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.BELL_RING, 12));
         }
     }
 

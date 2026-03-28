@@ -89,6 +89,8 @@ public enum DawAction {
             new KeyCodeCombination(KeyCode.B, KeyCombination.SHORTCUT_DOWN)),
     TOGGLE_HISTORY("Toggle Undo History", Category.VIEWS,
             new KeyCodeCombination(KeyCode.H, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
+    TOGGLE_NOTIFICATION_HISTORY("Toggle Notification History", Category.VIEWS,
+            new KeyCodeCombination(KeyCode.N, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
     TOGGLE_VISUALIZATIONS("Toggle Visualizations", Category.VIEWS,
             new KeyCodeCombination(KeyCode.V, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
 
