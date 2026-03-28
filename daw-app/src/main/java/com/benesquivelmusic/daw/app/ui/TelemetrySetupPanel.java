@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.core.telemetry.RoomParameterController;
 import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
@@ -15,11 +16,14 @@ import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
+import javafx.scene.control.ProgressBar;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
+import javafx.scene.control.Slider;
 import javafx.scene.control.TextField;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 
 /**
@@ -60,6 +64,12 @@ public final class TelemetrySetupPanel extends ScrollPane {
             "-fx-background-color: #3a3a6a; -fx-text-fill: #e0e0e0; "
                     + "-fx-border-color: #5a5a8a; -fx-border-radius: 3; "
                     + "-fx-background-radius: 3; -fx-cursor: hand;";
+    private static final String RT60_LABEL_STYLE =
+            "-fx-text-fill: #69f0ae; -fx-font-size: 14px; -fx-font-weight: bold;";
+    private static final String ABSORPTION_LABEL_STYLE =
+            "-fx-text-fill: #ffab40; -fx-font-size: 12px;";
+    private static final String SLIDER_STYLE =
+            "-fx-control-inner-background: #2a2a4a;";
 
     static final double DEFAULT_POWER_DB = 85.0;
 
@@ -67,8 +77,14 @@ public final class TelemetrySetupPanel extends ScrollPane {
     private final TextField widthField;
     private final TextField lengthField;
     private final TextField heightField;
+    private final Slider widthSlider;
+    private final Slider lengthSlider;
+    private final Slider heightSlider;
     private final ComboBox<WallMaterial> wallMaterialCombo;
     private final Label errorLabel;
+    private final Label rt60Label;
+    private final Label absorptionLabel;
+    private final ProgressBar absorptionBar;
 
     private final TextField sourceNameField;
     private final TextField sourceXField;
@@ -119,6 +135,15 @@ public final class TelemetrySetupPanel extends ScrollPane {
         lengthField = createNumericField(String.valueOf(defaultDimensions.length()));
         heightField = createNumericField(String.valueOf(defaultDimensions.height()));
 
+        // ── Dimension sliders ────────────────────────────────────────
+        widthSlider = createDimensionSlider(1.0, 60.0, defaultDimensions.width());
+        lengthSlider = createDimensionSlider(1.0, 80.0, defaultDimensions.length());
+        heightSlider = createDimensionSlider(1.5, 30.0, defaultDimensions.height());
+
+        bindSliderToField(widthSlider, widthField);
+        bindSliderToField(lengthSlider, lengthField);
+        bindSliderToField(heightSlider, heightField);
+
         // ── Wall material combo ──────────────────────────────────────
         wallMaterialCombo = new ComboBox<>();
         wallMaterialCombo.getItems().addAll(WallMaterial.values());
@@ -127,6 +152,27 @@ public final class TelemetrySetupPanel extends ScrollPane {
         wallMaterialCombo.setValue(defaultPreset.wallMaterial());
         wallMaterialCombo.setCellFactory(list -> new WallMaterialCell());
         wallMaterialCombo.setButtonCell(new WallMaterialCell());
+
+        // ── Absorption indicator ─────────────────────────────────────
+        absorptionLabel = new Label();
+        absorptionLabel.setStyle(ABSORPTION_LABEL_STYLE);
+        absorptionBar = new ProgressBar(defaultPreset.wallMaterial().absorptionCoefficient());
+        absorptionBar.setMaxWidth(Double.MAX_VALUE);
+        absorptionBar.setPrefHeight(8);
+        absorptionBar.setStyle("-fx-accent: #ffab40;");
+        updateAbsorptionDisplay(defaultPreset.wallMaterial());
+
+        wallMaterialCombo.valueProperty().addListener((observable, oldValue, newValue) -> {
+            if (newValue != null) {
+                updateAbsorptionDisplay(newValue);
+                updateRt60Display();
+            }
+        });
+
+        // ── RT60 display label ───────────────────────────────────────
+        rt60Label = new Label();
+        rt60Label.setStyle(RT60_LABEL_STYLE);
+        updateRt60Display();
 
         // ── Error label ──────────────────────────────────────────────
         errorLabel = new Label();
@@ -204,15 +250,27 @@ public final class TelemetrySetupPanel extends ScrollPane {
                 widthField.setText(String.valueOf(dimensions.width()));
                 lengthField.setText(String.valueOf(dimensions.length()));
                 heightField.setText(String.valueOf(dimensions.height()));
+                widthSlider.setValue(dimensions.width());
+                lengthSlider.setValue(dimensions.length());
+                heightSlider.setValue(dimensions.height());
                 wallMaterialCombo.setValue(newValue.wallMaterial());
                 validateInputs();
             }
         });
 
-        // ── Validate on text change ──────────────────────────────────
-        widthField.textProperty().addListener((observable, oldValue, newValue) -> validateInputs());
-        lengthField.textProperty().addListener((observable, oldValue, newValue) -> validateInputs());
-        heightField.textProperty().addListener((observable, oldValue, newValue) -> validateInputs());
+        // ── Validate on text change and update RT60 ──────────────────
+        widthField.textProperty().addListener((observable, oldValue, newValue) -> {
+            validateInputs();
+            updateRt60Display();
+        });
+        lengthField.textProperty().addListener((observable, oldValue, newValue) -> {
+            validateInputs();
+            updateRt60Display();
+        });
+        heightField.textProperty().addListener((observable, oldValue, newValue) -> {
+            validateInputs();
+            updateRt60Display();
+        });
 
         // ── Build layout ─────────────────────────────────────────────
         VBox content = new VBox(12);
@@ -250,6 +308,9 @@ public final class TelemetrySetupPanel extends ScrollPane {
 
         HBox micButtons = new HBox(8, addMicButton, removeMicButton);
 
+        Label rt60SectionLabel = new Label("Reverberation Time (RT60)");
+        rt60SectionLabel.setStyle(SECTION_LABEL_STYLE);
+
         content.getChildren().addAll(
                 header,
                 headerSep,
@@ -261,7 +322,12 @@ public final class TelemetrySetupPanel extends ScrollPane {
                 new Separator() {{ setStyle(SEPARATOR_STYLE); }},
                 materialSectionLabel,
                 wallMaterialCombo,
+                absorptionLabel,
+                absorptionBar,
                 errorLabel,
+                new Separator() {{ setStyle(SEPARATOR_STYLE); }},
+                rt60SectionLabel,
+                rt60Label,
                 new Separator() {{ setStyle(SEPARATOR_STYLE); }},
                 sourceSectionLabel,
                 sourceGrid,
@@ -333,6 +399,60 @@ public final class TelemetrySetupPanel extends ScrollPane {
      */
     public Label getErrorLabel() {
         return errorLabel;
+    }
+
+    /**
+     * Returns the width dimension slider.
+     *
+     * @return the width slider
+     */
+    public Slider getWidthSlider() {
+        return widthSlider;
+    }
+
+    /**
+     * Returns the length dimension slider.
+     *
+     * @return the length slider
+     */
+    public Slider getLengthSlider() {
+        return lengthSlider;
+    }
+
+    /**
+     * Returns the height dimension slider.
+     *
+     * @return the height slider
+     */
+    public Slider getHeightSlider() {
+        return heightSlider;
+    }
+
+    /**
+     * Returns the RT60 reverberation time display label.
+     *
+     * @return the RT60 label
+     */
+    public Label getRt60Label() {
+        return rt60Label;
+    }
+
+    /**
+     * Returns the absorption coefficient display label.
+     *
+     * @return the absorption label
+     */
+    public Label getAbsorptionLabel() {
+        return absorptionLabel;
+    }
+
+    /**
+     * Returns the absorption coefficient progress bar.
+     *
+     * @return the absorption bar
+     */
+    public ProgressBar getAbsorptionBar() {
+        return absorptionBar;
     }
 
     /**
@@ -724,12 +844,19 @@ public final class TelemetrySetupPanel extends ScrollPane {
         Label heightLabel = new Label("Height (m):");
         heightLabel.setStyle(LABEL_STYLE);
 
+        HBox.setHgrow(widthSlider, Priority.ALWAYS);
+        HBox.setHgrow(lengthSlider, Priority.ALWAYS);
+        HBox.setHgrow(heightSlider, Priority.ALWAYS);
+
         grid.add(widthLabel, 0, 0);
         grid.add(widthField, 1, 0);
+        grid.add(widthSlider, 2, 0);
         grid.add(lengthLabel, 0, 1);
         grid.add(lengthField, 1, 1);
+        grid.add(lengthSlider, 2, 1);
         grid.add(heightLabel, 0, 2);
         grid.add(heightField, 1, 2);
+        grid.add(heightSlider, 2, 2);
 
         return grid;
     }
@@ -852,6 +979,55 @@ public final class TelemetrySetupPanel extends ScrollPane {
         } catch (NumberFormatException ignored) {
             return null;
         }
+    }
+
+    private Slider createDimensionSlider(double min, double max, double value) {
+        Slider slider = new Slider(min, max, value);
+        slider.setStyle(SLIDER_STYLE);
+        slider.setShowTickLabels(true);
+        slider.setShowTickMarks(true);
+        slider.setMajorTickUnit((max - min) / 4);
+        slider.setBlockIncrement(0.5);
+        slider.setPrefWidth(180);
+        return slider;
+    }
+
+    private void bindSliderToField(Slider slider, TextField field) {
+        // Slider → field (user drags slider)
+        slider.valueProperty().addListener((observable, oldValue, newValue) -> {
+            String formatted = String.format("%.1f", newValue.doubleValue());
+            if (!formatted.equals(field.getText())) {
+                field.setText(formatted);
+            }
+        });
+        // Field → slider (user types value)
+        field.textProperty().addListener((observable, oldValue, newValue) -> {
+            Double val = parsePositiveDouble(newValue);
+            if (val != null && Math.abs(val - slider.getValue()) > 0.01) {
+                slider.setValue(val);
+            }
+        });
+    }
+
+    private void updateRt60Display() {
+        RoomDimensions dims = getRoomDimensions();
+        WallMaterial material = wallMaterialCombo.getValue();
+        if (dims != null && material != null) {
+            double rt60 = RoomParameterController.computeRt60(dims, material);
+            if (rt60 < 100) {
+                rt60Label.setText(String.format("RT60: %.2f s", rt60));
+            } else {
+                rt60Label.setText("RT60: ∞ (no absorption)");
+            }
+        } else {
+            rt60Label.setText("RT60: —");
+        }
+    }
+
+    private void updateAbsorptionDisplay(WallMaterial material) {
+        double coeff = material.absorptionCoefficient();
+        absorptionLabel.setText(String.format("Absorption: %.0f%%", coeff * 100));
+        absorptionBar.setProgress(coeff);
     }
 
     static String formatPresetName(RoomPreset preset) {
