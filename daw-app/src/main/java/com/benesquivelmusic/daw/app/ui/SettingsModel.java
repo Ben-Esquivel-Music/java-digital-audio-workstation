@@ -45,6 +45,7 @@ public final class SettingsModel {
     private double defaultTempo;
     private double uiScale;
     private String pluginScanPaths;
+    private KeyBindingManager keyBindingManager;
 
     /**
      * Creates a new settings model backed by the given {@link Preferences} node.
@@ -200,6 +201,22 @@ public final class SettingsModel {
         Objects.requireNonNull(paths, "paths must not be null");
         this.pluginScanPaths = paths;
         prefs.put(KEY_PLUGIN_SCAN_PATHS, paths);
+    }
+
+    // ── Key Bindings ────────────────────────────────────────────────────────
+
+    /**
+     * Returns the {@link KeyBindingManager} that manages keyboard shortcut
+     * customization. The manager is lazily created and backed by a child
+     * preferences node so key binding keys do not collide with other settings.
+     *
+     * @return the key binding manager (never {@code null})
+     */
+    public KeyBindingManager getKeyBindingManager() {
+        if (keyBindingManager == null) {
+            keyBindingManager = new KeyBindingManager(prefs.node("keybindings"));
+        }
+        return keyBindingManager;
     }
 
     // ── Reset ────────────────────────────────────────────────────────────────

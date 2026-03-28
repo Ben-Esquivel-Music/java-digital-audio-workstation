@@ -271,4 +271,26 @@ class SettingsModelTest {
         model.setUiScale(3.0);
         assertThat(model.getUiScale()).isCloseTo(3.0, within(0.01));
     }
+
+    // ── Key Bindings ─────────────────────────────────────────────────────────
+
+    @Test
+    void shouldReturnNonNullKeyBindingManager() {
+        assertThat(model.getKeyBindingManager()).isNotNull();
+    }
+
+    @Test
+    void shouldReturnSameKeyBindingManagerInstance() {
+        KeyBindingManager first = model.getKeyBindingManager();
+        KeyBindingManager second = model.getKeyBindingManager();
+        assertThat(first).isSameAs(second);
+    }
+
+    @Test
+    void keyBindingManagerShouldHaveDefaultBindings() {
+        KeyBindingManager manager = model.getKeyBindingManager();
+        assertThat(manager.getBinding(DawAction.PLAY_STOP)).isPresent();
+        assertThat(manager.getBinding(DawAction.SAVE)).isPresent();
+        assertThat(manager.getBinding(DawAction.UNDO)).isPresent();
+    }
 }

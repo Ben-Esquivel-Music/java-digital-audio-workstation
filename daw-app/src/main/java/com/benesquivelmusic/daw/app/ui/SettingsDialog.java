@@ -5,17 +5,27 @@ import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 
 import javafx.geometry.Insets;
 import javafx.scene.Node;
+import javafx.scene.control.Button;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
+import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
 import javafx.scene.control.Slider;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
 import javafx.scene.control.TextField;
+import javafx.scene.input.KeyCombination;
+import javafx.scene.input.KeyEvent;
 import javafx.scene.layout.GridPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
+
+import java.util.EnumMap;
+import java.util.Map;
+import java.util.Optional;
 
 /**
  * Modal dialog for configuring application settings.
@@ -73,6 +83,10 @@ public final class SettingsDialog extends Dialog<Void> {
 
     // ── Plugins tab controls ─────────────────────────────────────────────────
     private final TextField pluginScanPathsField;
+
+    // ── Key Bindings tab state ───────────────────────────────────────────────
+    private final Map<DawAction, TextField> keyBindingFields = new EnumMap<>(DawAction.class);
+    private final Map<DawAction, KeyCombination> pendingBindings = new EnumMap<>(DawAction.class);
 
     /**
      * Creates a new settings dialog backed by the given model.
@@ -239,30 +253,156 @@ public final class SettingsDialog extends Dialog<Void> {
         header.setGraphic(IconNode.of(DawIcon.KEYBOARD, HEADER_ICON_SIZE));
         header.setStyle("-fx-font-weight: bold;");
 
-        GridPane grid = createGrid();
-        grid.add(new Label("Play / Pause:"), 0, 0);
-        grid.add(new Label("Space"), 1, 0);
-        grid.add(new Label("Stop:"), 0, 1);
-        grid.add(new Label("Escape"), 1, 1);
-        grid.add(new Label("Record:"), 0, 2);
-        grid.add(new Label("R"), 1, 2);
-        grid.add(new Label("Undo:"), 0, 3);
-        grid.add(new Label("Ctrl+Z"), 1, 3);
-        grid.add(new Label("Redo:"), 0, 4);
-        grid.add(new Label("Ctrl+Shift+Z"), 1, 4);
-        grid.add(new Label("Save:"), 0, 5);
-        grid.add(new Label("Ctrl+S"), 1, 5);
-        grid.add(new Label("Add Audio Track:"), 0, 6);
-        grid.add(new Label("Ctrl+Shift+A"), 1, 6);
-        grid.add(new Label("Add MIDI Track:"), 0, 7);
-        grid.add(new Label("Ctrl+Shift+M"), 1, 7);
+        Label instructions = new Label(
+                "Click a shortcut field and press a new key combination to reassign. "
+                        + "Press Escape in the field to clear the binding.");
+        instructions.setGraphic(IconNode.of(DawIcon.INFO, 14));
+        instructions.setStyle("-fx-text-fill: #808080; -fx-font-size: 10px;");
+        instructions.setWrapText(true);
 
-        Label customizeNote = new Label("Key binding customization coming in a future release.");
-        customizeNote.setGraphic(IconNode.of(DawIcon.INFO, 14));
-        customizeNote.setStyle("-fx-text-fill: #808080; -fx-font-size: 10px;");
+        // Reset to Defaults button
+        Button resetButton = new Button("Reset to Defaults");
+        resetButton.setOnAction(event -> resetKeyBindingsToDefaults());
 
-        vbox.getChildren().addAll(header, new Separator(), grid, customizeNote);
+        HBox buttonBar = new HBox(resetButton);
+        buttonBar.setPadding(new Insets(4, 0, 4, 0));
+
+        VBox contentBox = new VBox(8);
+
+        KeyBindingManager keyBindingManager = model.getKeyBindingManager();
+
+        // Load current bindings into pending map
+        for (DawAction action : DawAction.values()) {
+            Optional<KeyCombination> current = keyBindingManager.getBinding(action);
+            current.ifPresent(kc -> pendingBindings.put(action, kc));
+        }
+
+        // Build rows grouped by category
+        DawAction.Category currentCategory = null;
+        GridPane grid = null;
+        int row = 0;
+
+        for (DawAction action : DawAction.values()) {
+            if (action.category() != currentCategory) {
+                currentCategory = action.category();
+                if (grid != null) {
+                    contentBox.getChildren().add(grid);
+                }
+                Label categoryLabel = new Label(currentCategory.displayName());
+                categoryLabel.setStyle("-fx-font-weight: bold; -fx-font-size: 11px;");
+                contentBox.getChildren().add(categoryLabel);
+                contentBox.getChildren().add(new Separator());
+                grid = createGrid();
+                row = 0;
+            }
+
+            Label nameLabel = new Label(action.displayName() + ":");
+            TextField field = new TextField();
+            field.setEditable(false);
+            field.setPrefWidth(180);
+
+            KeyCombination currentBinding = pendingBindings.get(action);
+            if (currentBinding != null) {
+                field.setText(currentBinding.getDisplayText());
+            }
+
+            field.setOnKeyPressed(event -> handleKeyBindingCapture(action, field, event));
+
+            keyBindingFields.put(action, field);
+
+            grid.add(nameLabel, 0, row);
+            grid.add(field, 1, row);
+            row++;
+        }
+        if (grid != null) {
+            contentBox.getChildren().add(grid);
+        }
+
+        ScrollPane scrollPane = new ScrollPane(contentBox);
+        scrollPane.setFitToWidth(true);
+        VBox.setVgrow(scrollPane, Priority.ALWAYS);
+
+        vbox.getChildren().addAll(header, instructions, buttonBar, new Separator(), scrollPane);
         return vbox;
+    }
+
+    /**
+     * Handles key press events in a key binding capture field.
+     * Modifier-only presses are ignored. Escape clears the binding.
+     */
+    private void handleKeyBindingCapture(DawAction action, TextField field, KeyEvent event) {
+        event.consume();
+
+        // Ignore modifier-only presses
+        switch (event.getCode()) {
+            case SHIFT, CONTROL, ALT, META, COMMAND, WINDOWS, UNDEFINED:
+                return;
+            default:
+                break;
+        }
+
+        // Escape in the field clears the binding
+        if (event.getCode() == javafx.scene.input.KeyCode.ESCAPE
+                && !event.isControlDown() && !event.isShiftDown()
+                && !event.isAltDown() && !event.isMetaDown()) {
+            pendingBindings.remove(action);
+            field.setText("");
+            field.setStyle("");
+            return;
+        }
+
+        // Build the key combination from the event
+        java.util.List<KeyCombination.Modifier> modifiers = new java.util.ArrayList<>();
+        if (event.isShortcutDown()) {
+            modifiers.add(KeyCombination.SHORTCUT_DOWN);
+        }
+        if (event.isShiftDown()) {
+            modifiers.add(KeyCombination.SHIFT_DOWN);
+        }
+        if (event.isAltDown()) {
+            modifiers.add(KeyCombination.ALT_DOWN);
+        }
+
+        KeyCombination newBinding = new javafx.scene.input.KeyCodeCombination(
+                event.getCode(),
+                modifiers.toArray(new KeyCombination.Modifier[0]));
+
+        // Check for conflicts within pending bindings
+        String conflictName = null;
+        for (Map.Entry<DawAction, KeyCombination> entry : pendingBindings.entrySet()) {
+            if (entry.getKey() != action
+                    && entry.getValue().getName().equals(newBinding.getName())) {
+                conflictName = entry.getKey().displayName();
+                break;
+            }
+        }
+
+        if (conflictName != null) {
+            field.setText(newBinding.getDisplayText() + " (conflict: " + conflictName + ")");
+            field.setStyle("-fx-text-fill: red;");
+        } else {
+            pendingBindings.put(action, newBinding);
+            field.setText(newBinding.getDisplayText());
+            field.setStyle("");
+        }
+    }
+
+    private void resetKeyBindingsToDefaults() {
+        pendingBindings.clear();
+        for (DawAction action : DawAction.values()) {
+            KeyCombination defaultBinding = action.defaultBinding();
+            TextField field = keyBindingFields.get(action);
+            if (defaultBinding != null) {
+                pendingBindings.put(action, defaultBinding);
+                if (field != null) {
+                    field.setText(defaultBinding.getDisplayText());
+                    field.setStyle("");
+                }
+            } else if (field != null) {
+                field.setText("");
+                field.setStyle("");
+            }
+        }
     }
 
     private Node buildPluginsPane() {
@@ -330,9 +470,32 @@ public final class SettingsDialog extends Dialog<Void> {
             model.setPluginScanPaths(paths);
         }
 
+        // Key Bindings — apply pending bindings that have no conflicts
+        applyKeyBindings();
+
         // Notify listener of applied changes
         if (settingsChangeListener != null) {
             settingsChangeListener.onSettingsChanged(model);
+        }
+    }
+
+    /**
+     * Persists the pending key binding changes to the {@link KeyBindingManager}.
+     * Only non-conflicting bindings are applied.
+     */
+    private void applyKeyBindings() {
+        KeyBindingManager keyBindingManager = model.getKeyBindingManager();
+
+        // First clear all bindings so we can re-assign without transient conflicts
+        for (DawAction action : DawAction.values()) {
+            keyBindingManager.setBinding(action, null);
+        }
+        // Then apply pending bindings
+        for (DawAction action : DawAction.values()) {
+            KeyCombination pending = pendingBindings.get(action);
+            if (pending != null) {
+                keyBindingManager.setBinding(action, pending);
+            }
         }
     }
 
