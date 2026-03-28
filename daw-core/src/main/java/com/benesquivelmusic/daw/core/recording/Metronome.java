@@ -10,34 +10,48 @@ import java.util.Objects;
  * bar boundaries. The click is generated entirely in-memory — no audio files
  * or external resources are required.</p>
  *
+ * <p>Features include:</p>
+ * <ul>
+ *   <li>Enable/disable toggle for muting the click</li>
+ *   <li>Configurable volume independent of the master bus</li>
+ *   <li>Selectable built-in click sounds ({@link ClickSound})</li>
+ *   <li>Subdivision clicks for eighth and sixteenth notes ({@link Subdivision})</li>
+ *   <li>Configurable count-in duration ({@link CountInMode})</li>
+ * </ul>
+ *
  * <p>Typical usage:</p>
  * <pre>
  *   Metronome metronome = new Metronome(44100.0, 2);
+ *   metronome.setClickSound(ClickSound.COWBELL);
+ *   metronome.setVolume(0.7f);
+ *   metronome.setSubdivision(Subdivision.EIGHTH);
  *   float[][] clicks = metronome.generateCountIn(CountInMode.TWO_BARS, 120.0, 4);
  * </pre>
  */
 public final class Metronome {
 
-    /** Frequency of the accented (downbeat) click in Hz. */
-    private static final double ACCENT_FREQUENCY_HZ = 1000.0;
-
-    /** Frequency of the normal (non-downbeat) click in Hz. */
-    private static final double NORMAL_FREQUENCY_HZ = 800.0;
-
     /** Duration of each click in seconds. */
     private static final double CLICK_DURATION_SECONDS = 0.02;
 
-    /** Amplitude of the accented click. */
+    /** Base amplitude of the accented click (before volume scaling). */
     private static final float ACCENT_AMPLITUDE = 0.8f;
 
-    /** Amplitude of the normal click. */
+    /** Base amplitude of the normal click (before volume scaling). */
     private static final float NORMAL_AMPLITUDE = 0.5f;
+
+    /** Amplitude scale factor for subdivision clicks relative to normal clicks. */
+    private static final float SUBDIVISION_AMPLITUDE_SCALE = 0.5f;
 
     private final double sampleRate;
     private final int channels;
+    private boolean enabled;
+    private float volume;
+    private ClickSound clickSound;
+    private Subdivision subdivision;
 
     /**
-     * Creates a new metronome.
+     * Creates a new metronome with default settings: enabled, full volume,
+     * woodblock click sound, and quarter-note subdivision.
      *
      * @param sampleRate the audio sample rate in Hz
      * @param channels   the number of audio channels
@@ -51,6 +65,10 @@ public final class Metronome {
         }
         this.sampleRate = sampleRate;
         this.channels = channels;
+        this.enabled = true;
+        this.volume = 1.0f;
+        this.clickSound = ClickSound.WOODBLOCK;
+        this.subdivision = Subdivision.QUARTER;
     }
 
     /**
@@ -58,13 +76,16 @@ public final class Metronome {
      *
      * <p>Returns a multi-channel audio buffer containing the full count-in
      * audio. Each beat position receives a short click; the first beat of
-     * each bar is accented.</p>
+     * each bar is accented. When a subdivision other than {@link Subdivision#QUARTER}
+     * is configured, additional softer clicks are placed between beats.</p>
+     *
+     * <p>If the metronome is disabled, an empty buffer is returned.</p>
      *
      * @param mode        the count-in mode (number of bars)
      * @param tempo       the tempo in BPM
      * @param beatsPerBar the number of beats per bar (time signature numerator)
      * @return audio data as {@code [channel][sample]} in [-1.0, 1.0],
-     *         or an empty array if count-in is {@link CountInMode#OFF}
+     *         or an empty array if count-in is {@link CountInMode#OFF} or disabled
      */
     public float[][] generateCountIn(CountInMode mode, double tempo, int beatsPerBar) {
         Objects.requireNonNull(mode, "mode must not be null");
@@ -76,7 +97,7 @@ public final class Metronome {
         }
 
         int totalBeats = mode.getTotalBeats(beatsPerBar);
-        if (totalBeats == 0) {
+        if (totalBeats == 0 || !enabled) {
             return new float[channels][0];
         }
 
@@ -86,23 +107,41 @@ public final class Metronome {
 
         float[][] buffer = new float[channels][totalSamples];
         int clickSamples = (int) (CLICK_DURATION_SECONDS * sampleRate);
+        int clicksPerBeat = subdivision.getClicksPerBeat();
+        double secondsPerSubdivision = secondsPerBeat / clicksPerBeat;
+        double accentFrequency = clickSound.getAccentFrequencyHz();
+        double normalFrequency = clickSound.getNormalFrequencyHz();
 
         for (int beat = 0; beat < totalBeats; beat++) {
-            boolean accent = (beat % beatsPerBar) == 0;
-            double frequency = accent ? ACCENT_FREQUENCY_HZ : NORMAL_FREQUENCY_HZ;
-            float amplitude = accent ? ACCENT_AMPLITUDE : NORMAL_AMPLITUDE;
+            for (int sub = 0; sub < clicksPerBeat; sub++) {
+                boolean isMainBeat = (sub == 0);
+                boolean isAccent = isMainBeat && (beat % beatsPerBar) == 0;
 
-            int beatStartSample = (int) (beat * secondsPerBeat * sampleRate);
-            int clickEnd = Math.min(beatStartSample + clickSamples, totalSamples);
+                double frequency;
+                float amplitude;
+                if (isAccent) {
+                    frequency = accentFrequency;
+                    amplitude = ACCENT_AMPLITUDE * volume;
+                } else if (isMainBeat) {
+                    frequency = normalFrequency;
+                    amplitude = NORMAL_AMPLITUDE * volume;
+                } else {
+                    frequency = normalFrequency;
+                    amplitude = NORMAL_AMPLITUDE * SUBDIVISION_AMPLITUDE_SCALE * volume;
+                }
 
-            for (int s = beatStartSample; s < clickEnd; s++) {
-                double t = (s - beatStartSample) / sampleRate;
-                // Apply an envelope that decays over the click duration
-                double envelope = 1.0 - ((double) (s - beatStartSample) / clickSamples);
-                float sample = (float) (amplitude * envelope
-                        * Math.sin(2.0 * Math.PI * frequency * t));
-                for (int ch = 0; ch < channels; ch++) {
-                    buffer[ch][s] = sample;
+                double subdivisionOffset = sub * secondsPerSubdivision;
+                int subdivisionStartSample = (int) ((beat * secondsPerBeat + subdivisionOffset) * sampleRate);
+                int clickEnd = Math.min(subdivisionStartSample + clickSamples, totalSamples);
+
+                for (int s = subdivisionStartSample; s < clickEnd; s++) {
+                    double t = (s - subdivisionStartSample) / sampleRate;
+                    double envelope = 1.0 - ((double) (s - subdivisionStartSample) / clickSamples);
+                    float sample = (float) (amplitude * envelope
+                            * Math.sin(2.0 * Math.PI * frequency * t));
+                    for (int ch = 0; ch < channels; ch++) {
+                        buffer[ch][s] = sample;
+                    }
                 }
             }
         }
@@ -113,12 +152,17 @@ public final class Metronome {
     /**
      * Generates a single click sample buffer for one beat.
      *
+     * <p>The click uses the currently configured {@link ClickSound} and
+     * is scaled by the current {@link #getVolume() volume}.</p>
+     *
      * @param accent {@code true} for an accented (downbeat) click
      * @return audio data as {@code [channel][sample]} in [-1.0, 1.0]
      */
     public float[][] generateClick(boolean accent) {
-        double frequency = accent ? ACCENT_FREQUENCY_HZ : NORMAL_FREQUENCY_HZ;
-        float amplitude = accent ? ACCENT_AMPLITUDE : NORMAL_AMPLITUDE;
+        double frequency = accent
+                ? clickSound.getAccentFrequencyHz()
+                : clickSound.getNormalFrequencyHz();
+        float amplitude = (accent ? ACCENT_AMPLITUDE : NORMAL_AMPLITUDE) * volume;
         int clickSamples = (int) (CLICK_DURATION_SECONDS * sampleRate);
 
         float[][] buffer = new float[channels][clickSamples];
@@ -134,6 +178,86 @@ public final class Metronome {
         }
 
         return buffer;
+    }
+
+    /**
+     * Returns whether the metronome is enabled.
+     *
+     * @return {@code true} if the metronome is enabled
+     */
+    public boolean isEnabled() {
+        return enabled;
+    }
+
+    /**
+     * Enables or disables the metronome.
+     *
+     * <p>When disabled, all generation methods return empty buffers.</p>
+     *
+     * @param enabled {@code true} to enable, {@code false} to disable
+     */
+    public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
+    }
+
+    /**
+     * Returns the metronome volume.
+     *
+     * @return the volume in the range [0.0, 1.0]
+     */
+    public float getVolume() {
+        return volume;
+    }
+
+    /**
+     * Sets the metronome volume, independent of the master bus volume.
+     *
+     * @param volume the volume in the range [0.0, 1.0]
+     * @throws IllegalArgumentException if the volume is outside [0.0, 1.0]
+     */
+    public void setVolume(float volume) {
+        if (volume < 0.0f || volume > 1.0f) {
+            throw new IllegalArgumentException("volume must be between 0.0 and 1.0: " + volume);
+        }
+        this.volume = volume;
+    }
+
+    /**
+     * Returns the current click sound preset.
+     *
+     * @return the click sound
+     */
+    public ClickSound getClickSound() {
+        return clickSound;
+    }
+
+    /**
+     * Sets the click sound preset.
+     *
+     * @param clickSound the click sound to use
+     * @throws NullPointerException if {@code clickSound} is null
+     */
+    public void setClickSound(ClickSound clickSound) {
+        this.clickSound = Objects.requireNonNull(clickSound, "clickSound must not be null");
+    }
+
+    /**
+     * Returns the current subdivision setting.
+     *
+     * @return the subdivision
+     */
+    public Subdivision getSubdivision() {
+        return subdivision;
+    }
+
+    /**
+     * Sets the subdivision level for metronome clicks.
+     *
+     * @param subdivision the subdivision to use
+     * @throws NullPointerException if {@code subdivision} is null
+     */
+    public void setSubdivision(Subdivision subdivision) {
+        this.subdivision = Objects.requireNonNull(subdivision, "subdivision must not be null");
     }
 
     /**

@@ -201,11 +201,314 @@ class MetronomeTest {
         }
     }
 
+    // ── Enabled/Disabled toggle tests ───────────────────────────────────
+
+    @Test
+    void shouldBeEnabledByDefault() {
+        Metronome metronome = new Metronome(44100.0, 2);
+
+        assertThat(metronome.isEnabled()).isTrue();
+    }
+
+    @Test
+    void shouldToggleEnabled() {
+        Metronome metronome = new Metronome(44100.0, 2);
+
+        metronome.setEnabled(false);
+        assertThat(metronome.isEnabled()).isFalse();
+
+        metronome.setEnabled(true);
+        assertThat(metronome.isEnabled()).isTrue();
+    }
+
+    @Test
+    void shouldReturnEmptyBufferWhenDisabled() {
+        Metronome metronome = new Metronome(44100.0, 2);
+        metronome.setEnabled(false);
+
+        float[][] audio = metronome.generateCountIn(CountInMode.ONE_BAR, 120.0, 4);
+
+        assertThat(audio).hasNumberOfRows(2);
+        assertThat(audio[0]).isEmpty();
+        assertThat(audio[1]).isEmpty();
+    }
+
+    // ── Volume tests ────────────────────────────────────────────────────
+
+    @Test
+    void shouldHaveFullVolumeByDefault() {
+        Metronome metronome = new Metronome(44100.0, 1);
+
+        assertThat(metronome.getVolume()).isEqualTo(1.0f);
+    }
+
+    @Test
+    void shouldSetVolume() {
+        Metronome metronome = new Metronome(44100.0, 1);
+
+        metronome.setVolume(0.5f);
+
+        assertThat(metronome.getVolume()).isEqualTo(0.5f);
+    }
+
+    @Test
+    void shouldRejectVolumeAboveOne() {
+        Metronome metronome = new Metronome(44100.0, 1);
+
+        assertThatThrownBy(() -> metronome.setVolume(1.1f))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("volume");
+    }
+
+    @Test
+    void shouldRejectNegativeVolume() {
+        Metronome metronome = new Metronome(44100.0, 1);
+
+        assertThatThrownBy(() -> metronome.setVolume(-0.1f))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("volume");
+    }
+
+    @Test
+    void shouldAcceptZeroVolume() {
+        Metronome metronome = new Metronome(44100.0, 1);
+
+        metronome.setVolume(0.0f);
+
+        assertThat(metronome.getVolume()).isEqualTo(0.0f);
+    }
+
+    @Test
+    void lowerVolumeShouldProduceQuieterClicks() {
+        Metronome fullVolume = new Metronome(44100.0, 1);
+
+        Metronome halfVolume = new Metronome(44100.0, 1);
+        halfVolume.setVolume(0.5f);
+
+        float[][] fullClick = fullVolume.generateClick(true);
+        float[][] halfClick = halfVolume.generateClick(true);
+
+        assertThat(rms(fullClick[0])).isGreaterThan(rms(halfClick[0]));
+    }
+
+    @Test
+    void zeroVolumeShouldProduceSilence() {
+        Metronome metronome = new Metronome(44100.0, 1);
+        metronome.setVolume(0.0f);
+
+        float[][] click = metronome.generateClick(true);
+
+        for (float sample : click[0]) {
+            assertThat(sample).isEqualTo(0.0f);
+        }
+    }
+
+    // ── Click sound tests ───────────────────────────────────────────────
+
+    @Test
+    void shouldDefaultToWoodblock() {
+        Metronome metronome = new Metronome(44100.0, 1);
+
+        assertThat(metronome.getClickSound()).isEqualTo(ClickSound.WOODBLOCK);
+    }
+
+    @Test
+    void shouldSetClickSound() {
+        Metronome metronome = new Metronome(44100.0, 1);
+
+        metronome.setClickSound(ClickSound.COWBELL);
+
+        assertThat(metronome.getClickSound()).isEqualTo(ClickSound.COWBELL);
+    }
+
+    @Test
+    void shouldRejectNullClickSound() {
+        Metronome metronome = new Metronome(44100.0, 1);
+
+        assertThatThrownBy(() -> metronome.setClickSound(null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void differentClickSoundsShouldProduceDifferentAudio() {
+        Metronome woodblock = new Metronome(44100.0, 1);
+        woodblock.setClickSound(ClickSound.WOODBLOCK);
+
+        Metronome electronic = new Metronome(44100.0, 1);
+        electronic.setClickSound(ClickSound.ELECTRONIC);
+
+        float[][] wbClick = woodblock.generateClick(true);
+        float[][] elClick = electronic.generateClick(true);
+
+        // The clicks have different frequencies, so at least one sample should differ
+        boolean differs = false;
+        int length = Math.min(wbClick[0].length, elClick[0].length);
+        for (int i = 0; i < length; i++) {
+            if (wbClick[0][i] != elClick[0][i]) {
+                differs = true;
+                break;
+            }
+        }
+        assertThat(differs).isTrue();
+    }
+
+    // ── Subdivision tests ───────────────────────────────────────────────
+
+    @Test
+    void shouldDefaultToQuarterSubdivision() {
+        Metronome metronome = new Metronome(44100.0, 1);
+
+        assertThat(metronome.getSubdivision()).isEqualTo(Subdivision.QUARTER);
+    }
+
+    @Test
+    void shouldSetSubdivision() {
+        Metronome metronome = new Metronome(44100.0, 1);
+
+        metronome.setSubdivision(Subdivision.EIGHTH);
+
+        assertThat(metronome.getSubdivision()).isEqualTo(Subdivision.EIGHTH);
+    }
+
+    @Test
+    void shouldRejectNullSubdivision() {
+        Metronome metronome = new Metronome(44100.0, 1);
+
+        assertThatThrownBy(() -> metronome.setSubdivision(null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void eighthSubdivisionShouldHaveMoreClicksThanQuarter() {
+        Metronome quarter = new Metronome(44100.0, 1);
+        quarter.setSubdivision(Subdivision.QUARTER);
+
+        Metronome eighth = new Metronome(44100.0, 1);
+        eighth.setSubdivision(Subdivision.EIGHTH);
+
+        float[][] quarterAudio = quarter.generateCountIn(CountInMode.ONE_BAR, 120.0, 4);
+        float[][] eighthAudio = eighth.generateCountIn(CountInMode.ONE_BAR, 120.0, 4);
+
+        // Same buffer length but more non-zero regions
+        assertThat(quarterAudio[0].length).isEqualTo(eighthAudio[0].length);
+        assertThat(countNonZeroRegions(eighthAudio[0]))
+                .isGreaterThan(countNonZeroRegions(quarterAudio[0]));
+    }
+
+    @Test
+    void sixteenthSubdivisionShouldHaveMoreClicksThanEighth() {
+        Metronome eighth = new Metronome(44100.0, 1);
+        eighth.setSubdivision(Subdivision.EIGHTH);
+
+        Metronome sixteenth = new Metronome(44100.0, 1);
+        sixteenth.setSubdivision(Subdivision.SIXTEENTH);
+
+        float[][] eighthAudio = eighth.generateCountIn(CountInMode.ONE_BAR, 120.0, 4);
+        float[][] sixteenthAudio = sixteenth.generateCountIn(CountInMode.ONE_BAR, 120.0, 4);
+
+        assertThat(countNonZeroRegions(sixteenthAudio[0]))
+                .isGreaterThan(countNonZeroRegions(eighthAudio[0]));
+    }
+
+    @Test
+    void subdivisionClicksShouldBeQuieterThanMainBeats() {
+        Metronome metronome = new Metronome(44100.0, 1);
+        metronome.setSubdivision(Subdivision.EIGHTH);
+
+        float[][] audio = metronome.generateCountIn(CountInMode.ONE_BAR, 120.0, 4);
+
+        // At 120 BPM, beat interval = 0.5 sec = 22050 samples
+        // First beat click starts at sample 0 (accent)
+        // Subdivision click between beat 0 and beat 1 starts at ~11025 samples
+        double mainBeatRms = rmsRegion(audio[0], 0, 882);
+        double subClickRms = rmsRegion(audio[0], 11025, 11025 + 882);
+
+        assertThat(mainBeatRms).isGreaterThan(subClickRms);
+    }
+
+    @Test
+    void allSamplesShouldBeWithinValidRangeWithSubdivisions() {
+        Metronome metronome = new Metronome(44100.0, 1);
+        metronome.setSubdivision(Subdivision.SIXTEENTH);
+
+        float[][] audio = metronome.generateCountIn(CountInMode.TWO_BARS, 120.0, 4);
+
+        for (float sample : audio[0]) {
+            assertThat(sample).isBetween(-1.0f, 1.0f);
+        }
+    }
+
+    // ── Combined configuration tests ────────────────────────────────────
+
+    @Test
+    void shouldCombineVolumeAndClickSound() {
+        Metronome metronome = new Metronome(44100.0, 1);
+        metronome.setVolume(0.3f);
+        metronome.setClickSound(ClickSound.ELECTRONIC);
+
+        float[][] click = metronome.generateClick(true);
+
+        // Should produce non-zero audio
+        assertThat(rms(click[0])).isGreaterThan(0.0);
+
+        // Should be quieter than full volume
+        Metronome fullVolume = new Metronome(44100.0, 1);
+        fullVolume.setClickSound(ClickSound.ELECTRONIC);
+        float[][] fullClick = fullVolume.generateClick(true);
+
+        assertThat(rms(fullClick[0])).isGreaterThan(rms(click[0]));
+    }
+
+    @Test
+    void shouldCombineSubdivisionAndClickSound() {
+        Metronome metronome = new Metronome(44100.0, 1);
+        metronome.setSubdivision(Subdivision.SIXTEENTH);
+        metronome.setClickSound(ClickSound.COWBELL);
+
+        float[][] audio = metronome.generateCountIn(CountInMode.ONE_BAR, 120.0, 4);
+
+        assertThat(audio[0].length).isEqualTo(88200);
+        // 4 beats * 4 subdivisions = 16 click regions
+        assertThat(countNonZeroRegions(audio[0])).isEqualTo(16);
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────────
+
     private static double rms(float[] samples) {
         double sum = 0.0;
         for (float sample : samples) {
             sum += (double) sample * sample;
         }
         return Math.sqrt(sum / samples.length);
+    }
+
+    private static double rmsRegion(float[] samples, int start, int end) {
+        end = Math.min(end, samples.length);
+        double sum = 0.0;
+        int count = end - start;
+        for (int i = start; i < end; i++) {
+            sum += (double) samples[i] * samples[i];
+        }
+        return Math.sqrt(sum / count);
+    }
+
+    /**
+     * Counts distinct non-zero regions in the sample buffer.
+     * A region is a contiguous run of non-zero samples.
+     */
+    private static int countNonZeroRegions(float[] samples) {
+        int regions = 0;
+        boolean inRegion = false;
+        for (float sample : samples) {
+            if (sample != 0.0f) {
+                if (!inRegion) {
+                    regions++;
+                    inRegion = true;
+                }
+            } else {
+                inRegion = false;
+            }
+        }
+        return regions;
     }
 }
