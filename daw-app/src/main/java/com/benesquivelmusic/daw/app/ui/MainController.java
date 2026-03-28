@@ -2118,6 +2118,7 @@ public final class MainController {
             case FOLDER       -> IconNode.of(DawIcon.FOLDER, TRACK_TYPE_ICON_SIZE);
             case BED_CHANNEL  -> IconNode.of(DawIcon.SURROUND, TRACK_TYPE_ICON_SIZE);
             case AUDIO_OBJECT -> IconNode.of(DawIcon.PAN, TRACK_TYPE_ICON_SIZE);
+            case REFERENCE    -> IconNode.of(DawIcon.HEADPHONES, TRACK_TYPE_ICON_SIZE);
         };
 
         Label nameLabel = new Label(track.getName());
@@ -2139,6 +2140,7 @@ public final class MainController {
             case FOLDER       -> DawIcon.FOLDER;
             case BED_CHANNEL  -> DawIcon.SPDIF;
             case AUDIO_OBJECT -> DawIcon.HDMI;
+            case REFERENCE    -> DawIcon.LINK;
         };
         Label ioLabel = new Label();
         ioLabel.setGraphic(IconNode.of(ioIcon, 10));
