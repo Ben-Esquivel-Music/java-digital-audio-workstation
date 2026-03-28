@@ -11,7 +11,7 @@ package com.benesquivelmusic.daw.core.export;
  * <p>For downsampling, a low-pass anti-aliasing filter at the target
  * Nyquist frequency is implicitly applied by the sinc kernel.</p>
  */
-final class SampleRateConverter {
+public final class SampleRateConverter {
 
     /**
      * Number of zero-crossings on each side of the sinc kernel center.
@@ -34,7 +34,7 @@ final class SampleRateConverter {
      * @param targetSampleRate the desired output sample rate in Hz
      * @return the resampled audio array
      */
-    static float[] convert(float[] input, int sourceSampleRate, int targetSampleRate) {
+    public static float[] convert(float[] input, int sourceSampleRate, int targetSampleRate) {
         if (sourceSampleRate == targetSampleRate) {
             return input.clone();
         }
