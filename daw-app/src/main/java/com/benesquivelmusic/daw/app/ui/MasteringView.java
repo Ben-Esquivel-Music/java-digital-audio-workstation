@@ -12,7 +12,6 @@ import com.benesquivelmusic.daw.sdk.mastering.MasteringStageType;
 
 import javafx.collections.FXCollections;
 import javafx.geometry.Insets;
-import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
