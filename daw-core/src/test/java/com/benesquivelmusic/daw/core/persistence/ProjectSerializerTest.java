@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.persistence;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.FadeCurveType;
+import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -10,6 +11,7 @@ import com.benesquivelmusic.daw.core.track.TrackType;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -164,5 +166,33 @@ class ProjectSerializerTest {
 
         assertThat(xml).contains("<?xml version=\"1.0\" encoding=\"UTF-8\"");
         assertThat(xml).contains("</daw-project>");
+    }
+
+    @Test
+    void shouldSerializeSoundFontAssignment() throws IOException {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track midi = project.createMidiTrack("Piano");
+        midi.setSoundFontAssignment(new SoundFontAssignment(
+                Path.of("/sounds/GeneralUser.sf2"), 0, 0, "Acoustic Grand Piano"));
+
+        ProjectSerializer serializer = new ProjectSerializer();
+        String xml = serializer.serialize(project);
+
+        assertThat(xml).contains("<soundfont-assignment");
+        assertThat(xml).contains("path=\"/sounds/GeneralUser.sf2\"");
+        assertThat(xml).contains("bank=\"0\"");
+        assertThat(xml).contains("program=\"0\"");
+        assertThat(xml).contains("preset-name=\"Acoustic Grand Piano\"");
+    }
+
+    @Test
+    void shouldNotSerializeSoundFontAssignmentWhenNull() throws IOException {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        project.createMidiTrack("Synth");
+
+        ProjectSerializer serializer = new ProjectSerializer();
+        String xml = serializer.serialize(project);
+
+        assertThat(xml).doesNotContain("soundfont-assignment");
     }
 }

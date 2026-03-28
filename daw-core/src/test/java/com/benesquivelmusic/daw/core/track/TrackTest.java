@@ -1,9 +1,12 @@
 package com.benesquivelmusic.daw.core.track;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
 
 import org.junit.jupiter.api.Test;
+
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -287,5 +290,56 @@ class TrackTest {
 
         assertThatThrownBy(() -> track.duplicate(null))
                 .isInstanceOf(NullPointerException.class);
+    }
+
+    // ── SoundFont assignment tests ──────────────────────────────────────────
+
+    @Test
+    void shouldDefaultToNoSoundFontAssignment() {
+        Track track = new Track("MIDI Track", TrackType.MIDI);
+        assertThat(track.getSoundFontAssignment()).isNull();
+    }
+
+    @Test
+    void shouldSetSoundFontAssignment() {
+        Track track = new Track("MIDI Track", TrackType.MIDI);
+        SoundFontAssignment assignment = new SoundFontAssignment(
+                Path.of("/sounds/GeneralUser.sf2"), 0, 0, "Acoustic Grand Piano");
+
+        track.setSoundFontAssignment(assignment);
+
+        assertThat(track.getSoundFontAssignment()).isEqualTo(assignment);
+    }
+
+    @Test
+    void shouldClearSoundFontAssignment() {
+        Track track = new Track("MIDI Track", TrackType.MIDI);
+        track.setSoundFontAssignment(new SoundFontAssignment(
+                Path.of("/sounds/GeneralUser.sf2"), 0, 0, "Piano"));
+
+        track.setSoundFontAssignment(null);
+
+        assertThat(track.getSoundFontAssignment()).isNull();
+    }
+
+    @Test
+    void shouldDuplicateTrackWithSoundFontAssignment() {
+        Track original = new Track("Synth", TrackType.MIDI);
+        SoundFontAssignment assignment = new SoundFontAssignment(
+                Path.of("/sounds/FluidR3.sf2"), 0, 48, "String Ensemble");
+        original.setSoundFontAssignment(assignment);
+
+        Track copy = original.duplicate("Synth (copy)");
+
+        assertThat(copy.getSoundFontAssignment()).isEqualTo(assignment);
+    }
+
+    @Test
+    void shouldDuplicateTrackWithoutSoundFontAssignment() {
+        Track original = new Track("Piano", TrackType.MIDI);
+
+        Track copy = original.duplicate("Piano (copy)");
+
+        assertThat(copy.getSoundFontAssignment()).isNull();
     }
 }

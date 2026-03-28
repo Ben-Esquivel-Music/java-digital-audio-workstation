@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.persistence;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.project.DawProject;
@@ -149,6 +150,16 @@ public final class ProjectSerializer {
             for (AudioClip clip : clips) {
                 clipsElem.appendChild(buildClipElement(document, clip));
             }
+        }
+
+        SoundFontAssignment sfAssignment = track.getSoundFontAssignment();
+        if (sfAssignment != null) {
+            Element sfElem = document.createElement("soundfont-assignment");
+            sfElem.setAttribute("path", sfAssignment.soundFontPath().toString());
+            sfElem.setAttribute("bank", String.valueOf(sfAssignment.bank()));
+            sfElem.setAttribute("program", String.valueOf(sfAssignment.program()));
+            sfElem.setAttribute("preset-name", sfAssignment.presetName());
+            elem.appendChild(sfElem);
         }
 
         return elem;
