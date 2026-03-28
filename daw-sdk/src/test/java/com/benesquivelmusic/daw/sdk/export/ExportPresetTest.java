@@ -45,4 +45,24 @@ class ExportPresetTest {
         assertThat(preset.config().bitDepth()).isEqualTo(24);
         assertThat(preset.config().ditherType()).isEqualTo(DitherType.NONE);
     }
+
+    @Test
+    void spotifyPresetShouldBeWav44100_16BitWithTpdf() {
+        ExportPreset preset = ExportPreset.SPOTIFY;
+        assertThat(preset.name()).isEqualTo("Spotify");
+        assertThat(preset.config().format()).isEqualTo(AudioExportFormat.WAV);
+        assertThat(preset.config().sampleRate()).isEqualTo(44_100);
+        assertThat(preset.config().bitDepth()).isEqualTo(16);
+        assertThat(preset.config().ditherType()).isEqualTo(DitherType.TPDF);
+    }
+
+    @Test
+    void appleMusicPresetShouldBeWav44100_16BitWithNoiseShaped() {
+        ExportPreset preset = ExportPreset.APPLE_MUSIC;
+        assertThat(preset.name()).isEqualTo("Apple Music");
+        assertThat(preset.config().format()).isEqualTo(AudioExportFormat.WAV);
+        assertThat(preset.config().sampleRate()).isEqualTo(44_100);
+        assertThat(preset.config().bitDepth()).isEqualTo(16);
+        assertThat(preset.config().ditherType()).isEqualTo(DitherType.NOISE_SHAPED);
+    }
 }

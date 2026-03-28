@@ -74,7 +74,7 @@ class DefaultAudioExporterTest {
     void shouldReturnFailureForUnsupportedFormat() throws IOException {
         DefaultAudioExporter exporter = new DefaultAudioExporter();
         float[][] audio = generateStereoSine(44100, 0.1, 440.0);
-        AudioExportConfig config = new AudioExportConfig(AudioExportFormat.FLAC, 44100, 16, DitherType.NONE);
+        AudioExportConfig config = new AudioExportConfig(AudioExportFormat.MP3, 44100, 16, DitherType.NONE);
 
         ExportResult result = exporter.export(audio, 44100, tempDir, "test", config);
 
@@ -162,6 +162,52 @@ class DefaultAudioExporterTest {
         assertThatThrownBy(() -> exporter.export(audio, 44100, tempDir, "../escape", config))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("baseName");
+    }
+
+    @Test
+    void shouldExportFlacSuccessfully() throws IOException {
+        DefaultAudioExporter exporter = new DefaultAudioExporter();
+        float[][] audio = generateStereoSine(44100, 0.5, 440.0);
+        AudioExportConfig config = new AudioExportConfig(AudioExportFormat.FLAC, 44100, 16, DitherType.TPDF);
+
+        ExportResult result = exporter.export(audio, 44100, tempDir, "test_flac", config);
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.outputPath()).exists();
+        assertThat(result.outputPath().getFileName().toString()).isEqualTo("test_flac.flac");
+    }
+
+    @Test
+    void shouldExportWithProgressListener() throws IOException {
+        DefaultAudioExporter exporter = new DefaultAudioExporter();
+        float[][] audio = generateStereoSine(44100, 0.5, 440.0);
+        AudioExportConfig config = new AudioExportConfig(AudioExportFormat.WAV, 44100, 16, DitherType.TPDF);
+
+        java.util.List<Double> progressValues = new java.util.ArrayList<>();
+        com.benesquivelmusic.daw.sdk.export.ExportProgressListener listener =
+                (progress, stage) -> progressValues.add(progress);
+
+        ExportResult result = exporter.export(audio, 44100, tempDir, "progress",
+                config, listener);
+
+        assertThat(result.success()).isTrue();
+        assertThat(progressValues).isNotEmpty();
+        assertThat(progressValues.getLast()).isEqualTo(1.0);
+    }
+
+    @Test
+    void shouldExportWithTimeRange() throws IOException {
+        DefaultAudioExporter exporter = new DefaultAudioExporter();
+        float[][] audio = generateStereoSine(44100, 5.0, 440.0);
+        AudioExportConfig config = new AudioExportConfig(AudioExportFormat.WAV, 44100, 16, DitherType.NONE);
+        com.benesquivelmusic.daw.sdk.export.ExportRange range =
+                new com.benesquivelmusic.daw.sdk.export.ExportRange(1.0, 3.0);
+
+        ExportResult result = exporter.export(audio, 44100, tempDir, "ranged",
+                config, range, com.benesquivelmusic.daw.sdk.export.ExportProgressListener.NONE);
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.outputPath()).exists();
     }
 
     private static float[][] generateStereoSine(int sampleRate, double duration, double freq) {
