@@ -451,6 +451,7 @@ public final class MixerView extends VBox {
             case MIDI         -> IconNode.of(DawIcon.PIANO, CONTROL_ICON_SIZE);
             case AUX          -> IconNode.of(DawIcon.MIXER, CONTROL_ICON_SIZE);
             case MASTER       -> IconNode.of(DawIcon.SPEAKER, CONTROL_ICON_SIZE);
+            case FOLDER       -> IconNode.of(DawIcon.FOLDER, CONTROL_ICON_SIZE);
             case BED_CHANNEL  -> IconNode.of(DawIcon.SURROUND, CONTROL_ICON_SIZE);
             case AUDIO_OBJECT -> IconNode.of(DawIcon.PAN, CONTROL_ICON_SIZE);
         };

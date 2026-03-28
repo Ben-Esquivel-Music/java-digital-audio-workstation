@@ -1872,6 +1872,7 @@ public final class MainController {
             case MIDI         -> IconNode.of(DawIcon.PIANO, TRACK_TYPE_ICON_SIZE);
             case AUX          -> IconNode.of(DawIcon.MIXER, TRACK_TYPE_ICON_SIZE);
             case MASTER       -> IconNode.of(DawIcon.SPEAKER, TRACK_TYPE_ICON_SIZE);
+            case FOLDER       -> IconNode.of(DawIcon.FOLDER, TRACK_TYPE_ICON_SIZE);
             case BED_CHANNEL  -> IconNode.of(DawIcon.SURROUND, TRACK_TYPE_ICON_SIZE);
             case AUDIO_OBJECT -> IconNode.of(DawIcon.PAN, TRACK_TYPE_ICON_SIZE);
         };
@@ -1892,6 +1893,7 @@ public final class MainController {
             case AUDIO        -> DawIcon.XLR;
             case MIDI         -> DawIcon.MIDI_CABLE;
             case AUX, MASTER  -> DawIcon.LINK;
+            case FOLDER       -> DawIcon.FOLDER;
             case BED_CHANNEL  -> DawIcon.SPDIF;
             case AUDIO_OBJECT -> DawIcon.HDMI;
         };
