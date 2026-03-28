@@ -3,8 +3,12 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.display.WaveformDisplay;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.core.midi.MidiClip;
+import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
+import com.benesquivelmusic.daw.core.undo.UndoManager;
+import com.benesquivelmusic.daw.core.undo.UndoableAction;
 
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -15,6 +19,8 @@ import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Tooltip;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
@@ -125,6 +131,16 @@ public final class EditorView extends VBox {
     private final List<MidiNote> notes = new ArrayList<>();
     private int selectedNoteIndex = -1;
 
+    // ── Undo ────────────────────────────────────────────────────────────────
+    private UndoManager undoManager;
+
+    // ── Drag state (pointer tool: move/resize) ─────────────────────────────
+    private boolean dragging;
+    private boolean resizing;
+    private int dragStartColumn;
+    private int dragStartNoteRow;
+    private MidiNote dragOriginalNote;
+
     /**
      * Creates a new editor view.
      */
@@ -160,6 +176,14 @@ public final class EditorView extends VBox {
 
         getChildren().addAll(header, toolBar, contentArea);
         setPadding(new Insets(8));
+
+        // Enable keyboard events for Delete key
+        setFocusTraversable(true);
+        setOnKeyPressed(event -> {
+            if (event.getCode() == KeyCode.DELETE || event.getCode() == KeyCode.BACK_SPACE) {
+                deleteSelectedNote();
+            }
+        });
     }
 
     /**
@@ -412,6 +436,168 @@ public final class EditorView extends VBox {
         return selectedNoteIndex;
     }
 
+    // ── Undo API ─────────────────────────────────────────────────────────────
+
+    /**
+     * Sets the {@link UndoManager} used for undoable note editing operations.
+     * When set, note add/remove/move/resize/velocity operations are executed
+     * through the undo manager, enabling undo/redo.
+     *
+     * @param undoManager the undo manager, or {@code null} to disable undo
+     */
+    public void setUndoManager(UndoManager undoManager) {
+        this.undoManager = undoManager;
+    }
+
+    /**
+     * Returns the current {@link UndoManager}, or {@code null} if none.
+     *
+     * @return the undo manager
+     */
+    public UndoManager getUndoManager() {
+        return undoManager;
+    }
+
+    // ── MIDI clip sync API ──────────────────────────────────────────────────
+
+    /**
+     * Loads notes from the given {@link MidiClip} into the editor for display.
+     * Existing notes are cleared. Notes are converted from MIDI note numbers
+     * to piano roll row indices.
+     *
+     * @param midiClip the clip to load notes from
+     */
+    public void loadFromMidiClip(MidiClip midiClip) {
+        notes.clear();
+        selectedNoteIndex = -1;
+        if (midiClip != null) {
+            for (MidiNoteData noteData : midiClip.getNotes()) {
+                int rowIndex = midiNoteNumberToRow(noteData.noteNumber());
+                if (rowIndex >= 0 && rowIndex < TOTAL_KEYS) {
+                    notes.add(new MidiNote(rowIndex, noteData.startColumn(),
+                            noteData.durationColumns(), noteData.velocity()));
+                }
+            }
+        }
+        if (currentMode == Mode.MIDI) {
+            renderPianoRoll();
+            renderVelocityLane();
+        }
+    }
+
+    /**
+     * Adds a single note to the editor display, typically called during
+     * real-time MIDI recording to show incoming notes on the piano roll.
+     *
+     * @param noteData the recorded note data
+     */
+    public void addRecordedNote(MidiNoteData noteData) {
+        int rowIndex = midiNoteNumberToRow(noteData.noteNumber());
+        if (rowIndex >= 0 && rowIndex < TOTAL_KEYS) {
+            notes.add(new MidiNote(rowIndex, noteData.startColumn(),
+                    noteData.durationColumns(), noteData.velocity()));
+            if (currentMode == Mode.MIDI) {
+                renderPianoRoll();
+                renderVelocityLane();
+            }
+        }
+    }
+
+    /**
+     * Deletes the currently selected note. Called by the Delete key handler.
+     */
+    void deleteSelectedNote() {
+        if (selectedNoteIndex >= 0 && selectedNoteIndex < notes.size()) {
+            MidiNote removed = notes.get(selectedNoteIndex);
+            int indexToRemove = selectedNoteIndex;
+            if (undoManager != null) {
+                undoManager.execute(new NoteListRemoveAction(notes, removed, indexToRemove));
+            } else {
+                notes.remove(indexToRemove);
+            }
+            selectedNoteIndex = -1;
+            renderPianoRoll();
+            renderVelocityLane();
+        }
+    }
+
+    /**
+     * Moves the currently selected note to the given row and column.
+     * Intended for external callers (e.g., tests) and programmatic use.
+     *
+     * @param newRow    the new row index
+     * @param newColumn the new start column
+     */
+    void moveSelectedNote(int newRow, int newColumn) {
+        if (selectedNoteIndex < 0 || selectedNoteIndex >= notes.size()) {
+            return;
+        }
+        MidiNote original = notes.get(selectedNoteIndex);
+        if (newRow < 0 || newRow >= TOTAL_KEYS || newColumn < 0) {
+            return;
+        }
+        MidiNote moved = new MidiNote(newRow, newColumn,
+                original.durationColumns(), original.velocity());
+        if (undoManager != null) {
+            undoManager.execute(new NoteListMoveAction(notes, selectedNoteIndex,
+                    original, moved));
+        } else {
+            notes.set(selectedNoteIndex, moved);
+        }
+        renderPianoRoll();
+        renderVelocityLane();
+    }
+
+    /**
+     * Resizes the currently selected note to the given duration.
+     *
+     * @param newDuration the new duration in grid columns (≥ 1)
+     */
+    void resizeSelectedNote(int newDuration) {
+        if (selectedNoteIndex < 0 || selectedNoteIndex >= notes.size()) {
+            return;
+        }
+        if (newDuration < 1) {
+            return;
+        }
+        MidiNote original = notes.get(selectedNoteIndex);
+        MidiNote resized = new MidiNote(original.note(), original.startColumn(),
+                newDuration, original.velocity());
+        if (undoManager != null) {
+            undoManager.execute(new NoteListResizeAction(notes, selectedNoteIndex,
+                    original, resized));
+        } else {
+            notes.set(selectedNoteIndex, resized);
+        }
+        renderPianoRoll();
+        renderVelocityLane();
+    }
+
+    /**
+     * Sets the velocity of the currently selected note.
+     *
+     * @param newVelocity the new velocity (0–127)
+     */
+    void setSelectedNoteVelocity(int newVelocity) {
+        if (selectedNoteIndex < 0 || selectedNoteIndex >= notes.size()) {
+            return;
+        }
+        if (newVelocity < 0 || newVelocity > MidiNote.MAX_VELOCITY) {
+            return;
+        }
+        MidiNote original = notes.get(selectedNoteIndex);
+        MidiNote updated = new MidiNote(original.note(), original.startColumn(),
+                original.durationColumns(), newVelocity);
+        if (undoManager != null) {
+            undoManager.execute(new NoteListVelocityAction(notes, selectedNoteIndex,
+                    original, updated));
+        } else {
+            notes.set(selectedNoteIndex, updated);
+        }
+        renderPianoRoll();
+        renderVelocityLane();
+    }
+
     private void switchMode(Mode mode) {
         this.currentMode = mode;
         contentArea.getChildren().clear();
@@ -544,6 +730,8 @@ public final class EditorView extends VBox {
 
         // Wire mouse handler for tool interactions on the piano roll
         pianoRollCanvas.setOnMousePressed(event -> onPianoRollClicked(event.getX(), event.getY()));
+        pianoRollCanvas.setOnMouseDragged(event -> onPianoRollDragged(event.getX(), event.getY()));
+        pianoRollCanvas.setOnMouseReleased(event -> onPianoRollReleased(event.getX(), event.getY()));
 
         ScrollPane scrollPane = new ScrollPane(pianoRollCanvas);
         scrollPane.setFitToWidth(true);
@@ -558,6 +746,7 @@ public final class EditorView extends VBox {
 
         velocityCanvas.setHeight(VELOCITY_BAR_HEIGHT);
         velocityCanvas.setWidth(PIANO_KEY_WIDTH + GRID_COLUMNS * BASE_COL_WIDTH);
+        velocityCanvas.setOnMousePressed(event -> onVelocityLaneClicked(event.getX(), event.getY()));
 
         VBox pane = new VBox(4, midiLabel, scrollPane, velocityLabel, velocityCanvas);
         VBox.setVgrow(pane, Priority.ALWAYS);
@@ -749,7 +938,7 @@ public final class EditorView extends VBox {
 
     /**
      * Pointer tool: selects the note at the given grid position, or deselects
-     * if no note is found.
+     * if no note is found. Also initializes drag state for move/resize.
      */
     private void selectNoteAt(int noteRow, int column) {
         selectedNoteIndex = -1;
@@ -759,6 +948,13 @@ public final class EditorView extends VBox {
                     && column >= n.startColumn()
                     && column < n.startColumn() + n.durationColumns()) {
                 selectedNoteIndex = i;
+                dragOriginalNote = n;
+                dragStartColumn = column;
+                dragStartNoteRow = noteRow;
+                // Detect if click is near the right edge (resize handle)
+                int rightEdgeCol = n.startColumn() + n.durationColumns() - 1;
+                resizing = (column == rightEdgeCol);
+                dragging = !resizing;
                 break;
             }
         }
@@ -769,7 +965,7 @@ public final class EditorView extends VBox {
     /**
      * Pencil tool: inserts a new MIDI note at the given grid position with
      * default duration and velocity. If a note already exists at that exact
-     * position, no duplicate is created.
+     * position, no duplicate is created. The operation is undoable.
      */
     private void insertNoteAt(int noteRow, int column) {
         // Prevent duplicate at same position
@@ -778,7 +974,12 @@ public final class EditorView extends VBox {
                 return;
             }
         }
-        notes.add(new MidiNote(noteRow, column, MidiNote.DEFAULT_DURATION, MidiNote.DEFAULT_VELOCITY));
+        MidiNote newNote = new MidiNote(noteRow, column, MidiNote.DEFAULT_DURATION, MidiNote.DEFAULT_VELOCITY);
+        if (undoManager != null) {
+            undoManager.execute(new NoteListAddAction(notes, newNote));
+        } else {
+            notes.add(newNote);
+        }
         selectedNoteIndex = -1;
         renderPianoRoll();
         renderVelocityLane();
@@ -786,6 +987,7 @@ public final class EditorView extends VBox {
 
     /**
      * Eraser tool: removes the first note found at the given grid position.
+     * The operation is undoable.
      */
     private void eraseNoteAt(int noteRow, int column) {
         for (int i = 0; i < notes.size(); i++) {
@@ -793,7 +995,12 @@ public final class EditorView extends VBox {
             if (n.note() == noteRow
                     && column >= n.startColumn()
                     && column < n.startColumn() + n.durationColumns()) {
-                notes.remove(i);
+                MidiNote removed = notes.get(i);
+                if (undoManager != null) {
+                    undoManager.execute(new NoteListRemoveAction(notes, removed, i));
+                } else {
+                    notes.remove(i);
+                }
                 if (selectedNoteIndex == i) {
                     selectedNoteIndex = -1;
                 } else if (selectedNoteIndex > i) {
@@ -804,6 +1011,189 @@ public final class EditorView extends VBox {
                 return;
             }
         }
+    }
+
+    // ── Piano roll drag/release handlers ─────────────────────────────────────
+
+    /**
+     * Handles mouse drag on the piano roll canvas. When the pointer tool is
+     * active and a note is selected, drags move or resize the note visually.
+     */
+    private void onPianoRollDragged(double x, double y) {
+        if (activeEditTool != EditTool.POINTER) {
+            return;
+        }
+        if (selectedNoteIndex < 0 || selectedNoteIndex >= notes.size()) {
+            return;
+        }
+        if (dragOriginalNote == null) {
+            return;
+        }
+        if (x < PIANO_KEY_WIDTH) {
+            return;
+        }
+
+        double gridStartX = PIANO_KEY_WIDTH;
+        double gridWidth = pianoRollCanvas.getWidth() - gridStartX;
+        double colWidth = gridWidth / GRID_COLUMNS;
+
+        int column = (int) ((x - gridStartX) / colWidth);
+        int noteRow = (int) (y / KEY_HEIGHT);
+
+        column = Math.max(0, Math.min(column, (int) GRID_COLUMNS - 1));
+        noteRow = Math.max(0, Math.min(noteRow, TOTAL_KEYS - 1));
+
+        if (snapEnabled) {
+            column = snapColumn(column);
+        }
+
+        if (resizing) {
+            // Resize: adjust duration based on how far right the mouse moved
+            int newEndColumn = column + 1;
+            int newDuration = Math.max(1, newEndColumn - dragOriginalNote.startColumn());
+            MidiNote resized = new MidiNote(dragOriginalNote.note(),
+                    dragOriginalNote.startColumn(), newDuration,
+                    dragOriginalNote.velocity());
+            notes.set(selectedNoteIndex, resized);
+        } else if (dragging) {
+            // Move: shift by delta from drag start
+            int deltaCol = column - dragStartColumn;
+            int deltaRow = noteRow - dragStartNoteRow;
+            int newCol = Math.max(0, dragOriginalNote.startColumn() + deltaCol);
+            int newRow = Math.max(0, Math.min(dragOriginalNote.note() + deltaRow,
+                    TOTAL_KEYS - 1));
+            newCol = Math.min(newCol, (int) GRID_COLUMNS - 1);
+            MidiNote moved = new MidiNote(newRow, newCol,
+                    dragOriginalNote.durationColumns(),
+                    dragOriginalNote.velocity());
+            notes.set(selectedNoteIndex, moved);
+        }
+
+        renderPianoRoll();
+        renderVelocityLane();
+    }
+
+    /**
+     * Handles mouse release on the piano roll canvas. Commits the
+     * move or resize operation as an undoable action.
+     */
+    private void onPianoRollReleased(double x, double y) {
+        if (activeEditTool != EditTool.POINTER) {
+            return;
+        }
+        if (selectedNoteIndex < 0 || selectedNoteIndex >= notes.size()) {
+            dragging = false;
+            resizing = false;
+            dragOriginalNote = null;
+            return;
+        }
+        if (dragOriginalNote == null) {
+            dragging = false;
+            resizing = false;
+            return;
+        }
+
+        MidiNote currentNote = notes.get(selectedNoteIndex);
+        if (!currentNote.equals(dragOriginalNote)) {
+            // The note was actually moved/resized — wrap in undo
+            // First, revert the visual change so the action can re-apply it
+            notes.set(selectedNoteIndex, dragOriginalNote);
+            if (resizing) {
+                MidiNote original = dragOriginalNote;
+                MidiNote resized = currentNote;
+                if (undoManager != null) {
+                    undoManager.execute(new NoteListResizeAction(notes,
+                            selectedNoteIndex, original, resized));
+                } else {
+                    notes.set(selectedNoteIndex, resized);
+                }
+            } else if (dragging) {
+                MidiNote original = dragOriginalNote;
+                MidiNote moved = currentNote;
+                if (undoManager != null) {
+                    undoManager.execute(new NoteListMoveAction(notes,
+                            selectedNoteIndex, original, moved));
+                } else {
+                    notes.set(selectedNoteIndex, moved);
+                }
+            }
+            renderPianoRoll();
+            renderVelocityLane();
+        }
+
+        dragging = false;
+        resizing = false;
+        dragOriginalNote = null;
+    }
+
+    // ── Velocity lane interaction ────────────────────────────────────────────
+
+    /**
+     * Handles a click on the velocity lane. Finds the note at the clicked
+     * column and sets its velocity based on the click Y position.
+     */
+    private void onVelocityLaneClicked(double x, double y) {
+        if (x < PIANO_KEY_WIDTH) {
+            return;
+        }
+        double gridStartX = PIANO_KEY_WIDTH;
+        double gridWidth = velocityCanvas.getWidth() - gridStartX;
+        double colWidth = gridWidth / GRID_COLUMNS;
+        double laneHeight = velocityCanvas.getHeight();
+
+        int column = (int) ((x - gridStartX) / colWidth);
+        if (column < 0 || column >= GRID_COLUMNS) {
+            return;
+        }
+
+        // Find the note at this column
+        int noteIndex = -1;
+        for (int i = 0; i < notes.size(); i++) {
+            MidiNote n = notes.get(i);
+            if (column >= n.startColumn()
+                    && column < n.startColumn() + n.durationColumns()) {
+                noteIndex = i;
+                break;
+            }
+        }
+        if (noteIndex < 0) {
+            return;
+        }
+
+        // Calculate new velocity from click position (bottom = 0, top = 127)
+        double ratio = 1.0 - (y / laneHeight);
+        ratio = Math.max(0.0, Math.min(1.0, ratio));
+        int newVelocity = (int) Math.round(ratio * MidiNote.MAX_VELOCITY);
+
+        selectedNoteIndex = noteIndex;
+        setSelectedNoteVelocity(newVelocity);
+    }
+
+    // ── Utility: MIDI note number ↔ piano roll row ──────────────────────────
+
+    /**
+     * Converts a MIDI note number (0–127) to a piano roll row index.
+     * Row 0 is the highest pitch, row {@code TOTAL_KEYS - 1} is the lowest.
+     *
+     * @param noteNumber the MIDI note number
+     * @return the row index, or {@code -1} if out of the piano roll range
+     */
+    static int midiNoteNumberToRow(int noteNumber) {
+        int row = TOTAL_KEYS - 1 - noteNumber;
+        if (row < 0 || row >= TOTAL_KEYS) {
+            return -1;
+        }
+        return row;
+    }
+
+    /**
+     * Converts a piano roll row index to a MIDI note number.
+     *
+     * @param row the row index (0 = highest pitch)
+     * @return the MIDI note number
+     */
+    static int rowToMidiNoteNumber(int row) {
+        return TOTAL_KEYS - 1 - row;
     }
 
     // ── Zoom ─────────────────────────────────────────────────────────────────
@@ -922,5 +1312,181 @@ public final class EditorView extends VBox {
     private static boolean isBlackKey(int noteInOctave) {
         return noteInOctave == 1 || noteInOctave == 3 || noteInOctave == 6
                 || noteInOctave == 8 || noteInOctave == 10;
+    }
+
+    // ── Undoable note-list actions ──────────────────────────────────────────
+
+    /**
+     * Undoable action that adds a note to the editor's note list.
+     */
+    private static final class NoteListAddAction implements UndoableAction {
+        private final List<MidiNote> notes;
+        private final MidiNote note;
+
+        NoteListAddAction(List<MidiNote> notes, MidiNote note) {
+            this.notes = notes;
+            this.note = note;
+        }
+
+        @Override
+        public String description() {
+            return "Add MIDI Note";
+        }
+
+        @Override
+        public void execute() {
+            notes.add(note);
+        }
+
+        @Override
+        public void undo() {
+            notes.remove(note);
+        }
+    }
+
+    /**
+     * Undoable action that removes a note from the editor's note list.
+     */
+    private static final class NoteListRemoveAction implements UndoableAction {
+        private final List<MidiNote> notes;
+        private final MidiNote note;
+        private final int index;
+
+        NoteListRemoveAction(List<MidiNote> notes, MidiNote note, int index) {
+            this.notes = notes;
+            this.note = note;
+            this.index = index;
+        }
+
+        @Override
+        public String description() {
+            return "Delete MIDI Note";
+        }
+
+        @Override
+        public void execute() {
+            notes.remove(note);
+        }
+
+        @Override
+        public void undo() {
+            if (index >= 0 && index <= notes.size()) {
+                notes.add(index, note);
+            } else {
+                notes.add(note);
+            }
+        }
+    }
+
+    /**
+     * Undoable action that moves a note in the editor's note list.
+     */
+    private static final class NoteListMoveAction implements UndoableAction {
+        private final List<MidiNote> notes;
+        private final int index;
+        private final MidiNote original;
+        private final MidiNote moved;
+
+        NoteListMoveAction(List<MidiNote> notes, int index,
+                           MidiNote original, MidiNote moved) {
+            this.notes = notes;
+            this.index = index;
+            this.original = original;
+            this.moved = moved;
+        }
+
+        @Override
+        public String description() {
+            return "Move MIDI Note";
+        }
+
+        @Override
+        public void execute() {
+            if (index >= 0 && index < notes.size()) {
+                notes.set(index, moved);
+            }
+        }
+
+        @Override
+        public void undo() {
+            if (index >= 0 && index < notes.size()) {
+                notes.set(index, original);
+            }
+        }
+    }
+
+    /**
+     * Undoable action that resizes a note in the editor's note list.
+     */
+    private static final class NoteListResizeAction implements UndoableAction {
+        private final List<MidiNote> notes;
+        private final int index;
+        private final MidiNote original;
+        private final MidiNote resized;
+
+        NoteListResizeAction(List<MidiNote> notes, int index,
+                             MidiNote original, MidiNote resized) {
+            this.notes = notes;
+            this.index = index;
+            this.original = original;
+            this.resized = resized;
+        }
+
+        @Override
+        public String description() {
+            return "Resize MIDI Note";
+        }
+
+        @Override
+        public void execute() {
+            if (index >= 0 && index < notes.size()) {
+                notes.set(index, resized);
+            }
+        }
+
+        @Override
+        public void undo() {
+            if (index >= 0 && index < notes.size()) {
+                notes.set(index, original);
+            }
+        }
+    }
+
+    /**
+     * Undoable action that changes the velocity of a note in the editor's
+     * note list.
+     */
+    private static final class NoteListVelocityAction implements UndoableAction {
+        private final List<MidiNote> notes;
+        private final int index;
+        private final MidiNote original;
+        private final MidiNote updated;
+
+        NoteListVelocityAction(List<MidiNote> notes, int index,
+                               MidiNote original, MidiNote updated) {
+            this.notes = notes;
+            this.index = index;
+            this.original = original;
+            this.updated = updated;
+        }
+
+        @Override
+        public String description() {
+            return "Set Note Velocity";
+        }
+
+        @Override
+        public void execute() {
+            if (index >= 0 && index < notes.size()) {
+                notes.set(index, updated);
+            }
+        }
+
+        @Override
+        public void undo() {
+            if (index >= 0 && index < notes.size()) {
+                notes.set(index, original);
+            }
+        }
     }
 }
