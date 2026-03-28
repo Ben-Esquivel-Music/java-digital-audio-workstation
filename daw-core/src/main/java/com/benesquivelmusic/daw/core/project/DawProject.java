@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
 import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 
@@ -38,6 +39,7 @@ public final class DawProject {
      * a duplicate.
      */
     private final Map<String, MixerChannel> trackChannelMap = new LinkedHashMap<>();
+    private final List<TrackGroup> trackGroups = new ArrayList<>();
 
     /**
      * Creates a new DAW project.
@@ -219,5 +221,116 @@ public final class DawProject {
     /** Sets the project metadata. */
     public void setMetadata(ProjectMetadata metadata) {
         this.metadata = Objects.requireNonNull(metadata, "metadata must not be null");
+    }
+
+    // ── Folder track support ────────────────────────────────────────────────
+
+    /**
+     * Creates and adds a new folder track with the given name.
+     *
+     * @param name the folder track name
+     * @return the newly created folder track
+     */
+    public Track createFolderTrack(String name) {
+        Track track = new Track(name, TrackType.FOLDER);
+        addTrack(track);
+        return track;
+    }
+
+    /**
+     * Moves a track into a folder track as a child.
+     *
+     * <p>If the track is already a child of another folder, it is removed
+     * from the previous parent first.</p>
+     *
+     * @param track  the track to move into the folder
+     * @param folder the destination folder track
+     * @throws NullPointerException     if either argument is {@code null}
+     * @throws IllegalArgumentException if folder is not a folder track,
+     *                                  or if the track is the folder itself
+     */
+    public void moveTrackToFolder(Track track, Track folder) {
+        Objects.requireNonNull(track, "track must not be null");
+        Objects.requireNonNull(folder, "folder must not be null");
+        if (folder.getType() != TrackType.FOLDER) {
+            throw new IllegalArgumentException("target must be a folder track");
+        }
+        if (track == folder) {
+            throw new IllegalArgumentException("a track cannot be moved into itself");
+        }
+        Track previousParent = track.getParentTrack();
+        if (previousParent != null) {
+            previousParent.removeChildTrack(track);
+        }
+        folder.addChildTrack(track);
+    }
+
+    /**
+     * Removes a track from its parent folder, making it a top-level track.
+     *
+     * @param track the track to remove from its folder
+     * @throws NullPointerException     if track is {@code null}
+     * @throws IllegalStateException    if the track has no parent folder
+     */
+    public void removeTrackFromFolder(Track track) {
+        Objects.requireNonNull(track, "track must not be null");
+        Track parent = track.getParentTrack();
+        if (parent == null) {
+            throw new IllegalStateException("track is not in a folder");
+        }
+        parent.removeChildTrack(track);
+    }
+
+    // ── Track group support ─────────────────────────────────────────────────
+
+    /**
+     * Creates a new track group with the given name and tracks.
+     *
+     * @param name   the group name
+     * @param tracks the tracks to include in the group
+     * @return the newly created track group
+     * @throws NullPointerException if name or tracks is {@code null}
+     */
+    public TrackGroup createTrackGroup(String name, List<Track> tracks) {
+        Objects.requireNonNull(name, "name must not be null");
+        Objects.requireNonNull(tracks, "tracks must not be null");
+        TrackGroup group = new TrackGroup(name);
+        for (Track track : tracks) {
+            group.addTrack(track);
+        }
+        trackGroups.add(group);
+        return group;
+    }
+
+    /**
+     * Adds an existing track group to the project. Used by undo operations
+     * to re-add a previously removed group.
+     *
+     * @param group the track group to add
+     */
+    public void addTrackGroup(TrackGroup group) {
+        Objects.requireNonNull(group, "group must not be null");
+        if (!trackGroups.contains(group)) {
+            trackGroups.add(group);
+        }
+    }
+
+    /**
+     * Removes a track group from the project.
+     *
+     * @param group the track group to remove
+     * @return {@code true} if the group was removed
+     */
+    public boolean removeTrackGroup(TrackGroup group) {
+        return trackGroups.remove(group);
+    }
+
+    /**
+     * Returns an unmodifiable view of the track groups in this project.
+     *
+     * @return the list of track groups
+     */
+    public List<TrackGroup> getTrackGroups() {
+        return Collections.unmodifiableList(trackGroups);
     }
 }
