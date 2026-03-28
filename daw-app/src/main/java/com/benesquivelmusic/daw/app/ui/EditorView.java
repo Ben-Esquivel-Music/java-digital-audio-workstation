@@ -20,7 +20,6 @@ import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Tooltip;
 import javafx.scene.input.KeyCode;
-import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
@@ -198,6 +197,7 @@ public final class EditorView extends VBox {
         if (track == null) {
             switchMode(Mode.EMPTY);
         } else if (track.getType() == TrackType.MIDI) {
+            loadFromMidiClip(track.getMidiClip());
             switchMode(Mode.MIDI);
         } else {
             switchMode(Mode.AUDIO);
