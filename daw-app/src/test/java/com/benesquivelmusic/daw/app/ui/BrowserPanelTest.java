@@ -244,4 +244,45 @@ class BrowserPanelTest {
         assertThat(BrowserPanel.AUDIO_EXTENSIONS)
                 .containsExactlyInAnyOrder(".wav", ".flac", ".mp3", ".aiff", ".ogg");
     }
+
+    @Test
+    void shouldHavePreviewPlayButton() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        BrowserPanel panel = createOnFxThread();
+        assertThat(panel.getPreviewPlayButton()).isNotNull();
+        assertThat(panel.getPreviewPlayButton().getTooltip()).isNotNull();
+    }
+
+    @Test
+    void shouldHavePreviewStopButton() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        BrowserPanel panel = createOnFxThread();
+        assertThat(panel.getPreviewStopButton()).isNotNull();
+        assertThat(panel.getPreviewStopButton().getTooltip()).isNotNull();
+    }
+
+    @Test
+    void shouldHavePreviewVolumeSlider() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        BrowserPanel panel = createOnFxThread();
+        assertThat(panel.getPreviewVolumeSlider()).isNotNull();
+        assertThat(panel.getPreviewVolumeSlider().getMin()).isEqualTo(0.0);
+        assertThat(panel.getPreviewVolumeSlider().getMax()).isEqualTo(1.0);
+        assertThat(panel.getPreviewVolumeSlider().getValue()).isEqualTo(1.0);
+    }
+
+    @Test
+    void shouldHavePreviewMetadataLabel() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        BrowserPanel panel = createOnFxThread();
+        assertThat(panel.getPreviewMetadataLabel()).isNotNull();
+    }
+
+    @Test
+    void shouldHavePreviewControlBar() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        BrowserPanel panel = createOnFxThread();
+        assertThat(panel.getPreviewControlBar()).isNotNull();
+        assertThat(panel.getPreviewControlBar().getChildren()).isNotEmpty();
+    }
 }

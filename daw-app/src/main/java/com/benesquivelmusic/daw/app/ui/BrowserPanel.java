@@ -8,11 +8,14 @@ import javafx.collections.ObservableList;
 import javafx.collections.transformation.FilteredList;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
+import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListView;
+import javafx.scene.control.Slider;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
 import javafx.scene.control.TextField;
+import javafx.scene.control.Tooltip;
 import javafx.scene.control.TreeItem;
 import javafx.scene.control.TreeView;
 import javafx.scene.layout.HBox;
@@ -53,6 +56,7 @@ public final class BrowserPanel extends VBox {
     private static final double DEFAULT_WIDTH = 250.0;
     private static final double MIN_WIDTH = 180.0;
     private static final double ICON_SIZE = 14.0;
+    private static final double PREVIEW_ICON_SIZE = 12.0;
 
     private final TextField searchField;
     private final TabPane tabPane;
@@ -67,6 +71,12 @@ public final class BrowserPanel extends VBox {
     private final FilteredList<String> filteredSampleItems;
     private final FilteredList<String> filteredPresetItems;
     private final FilteredList<String> filteredProjectFileItems;
+
+    private final Button previewPlayButton;
+    private final Button previewStopButton;
+    private final Slider previewVolumeSlider;
+    private final Label previewMetadataLabel;
+    private final HBox previewControlBar;
 
     /**
      * Creates a new browser panel with default width.
@@ -149,12 +159,41 @@ public final class BrowserPanel extends VBox {
         tabPane.getStyleClass().add("browser-tab-pane");
         VBox.setVgrow(tabPane, Priority.ALWAYS);
 
+        // ── Preview controls ────────────────────────────────────────────────
+        previewPlayButton = new Button();
+        previewPlayButton.setGraphic(IconNode.of(DawIcon.PLAY, PREVIEW_ICON_SIZE));
+        previewPlayButton.getStyleClass().add("browser-preview-button");
+        previewPlayButton.setTooltip(new Tooltip("Play selected sample"));
+
+        previewStopButton = new Button();
+        previewStopButton.setGraphic(IconNode.of(DawIcon.STOP, PREVIEW_ICON_SIZE));
+        previewStopButton.getStyleClass().add("browser-preview-button");
+        previewStopButton.setTooltip(new Tooltip("Stop preview"));
+
+        previewVolumeSlider = new Slider(0.0, 1.0, 1.0);
+        previewVolumeSlider.setPrefWidth(80);
+        previewVolumeSlider.setMaxWidth(100);
+        previewVolumeSlider.getStyleClass().add("browser-volume-slider");
+        previewVolumeSlider.setTooltip(new Tooltip("Preview volume"));
+
+        Label volumeIcon = new Label();
+        volumeIcon.setGraphic(IconNode.of(DawIcon.VOLUME_UP, 10));
+
+        previewControlBar = new HBox(4);
+        previewControlBar.setAlignment(Pos.CENTER_LEFT);
+        previewControlBar.setPadding(new Insets(4, 0, 0, 0));
+        previewControlBar.getChildren().addAll(previewPlayButton, previewStopButton, volumeIcon, previewVolumeSlider);
+
+        previewMetadataLabel = new Label("");
+        previewMetadataLabel.getStyleClass().add("browser-metadata-label");
+        previewMetadataLabel.setMaxWidth(Double.MAX_VALUE);
+
         // ── Wire search filter ──────────────────────────────────────────────
         searchField.textProperty().addListener((observable, oldValue, newValue) -> {
             applyFilter(newValue);
         });
 
-        getChildren().addAll(headerLabel, searchBar, tabPane);
+        getChildren().addAll(headerLabel, searchBar, tabPane, previewControlBar, previewMetadataLabel);
 
         LOG.fine("Browser panel created");
     }
@@ -199,6 +238,41 @@ public final class BrowserPanel extends VBox {
      */
     public ListView<String> getProjectFilesListView() {
         return projectFilesListView;
+    }
+
+    /**
+     * Returns the play button for sample preview.
+     */
+    public Button getPreviewPlayButton() {
+        return previewPlayButton;
+    }
+
+    /**
+     * Returns the stop button for sample preview.
+     */
+    public Button getPreviewStopButton() {
+        return previewStopButton;
+    }
+
+    /**
+     * Returns the volume slider for sample preview.
+     */
+    public Slider getPreviewVolumeSlider() {
+        return previewVolumeSlider;
+    }
+
+    /**
+     * Returns the label displaying metadata for the selected sample.
+     */
+    public Label getPreviewMetadataLabel() {
+        return previewMetadataLabel;
+    }
+
+    /**
+     * Returns the preview control bar container.
+     */
+    public HBox getPreviewControlBar() {
+        return previewControlBar;
     }
 
     /**
