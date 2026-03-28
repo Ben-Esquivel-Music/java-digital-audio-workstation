@@ -9,6 +9,7 @@ import com.benesquivelmusic.daw.core.mixer.SendMode;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
+import com.benesquivelmusic.daw.sdk.spatial.SpeakerLayout;
 
 import javafx.geometry.Insets;
 import javafx.geometry.Orientation;
@@ -251,6 +252,18 @@ public final class MixerView extends VBox {
         HBox buttonRow = new HBox(2, muteBtn, soloBtn, armBtn);
         buttonRow.setAlignment(Pos.CENTER);
 
+        // 3D Panner button
+        Button pannerBtn = new Button("3D");
+        pannerBtn.getStyleClass().add("track-arm-button");
+        pannerBtn.setTooltip(new Tooltip("Open 3D Spatial Panner"));
+        pannerBtn.setGraphic(IconNode.of(DawIcon.SURROUND, CONTROL_ICON_SIZE));
+        pannerBtn.setOnAction(actionEvent -> {
+            SpatialPannerController controller = new SpatialPannerController(
+                    SpatialPannerController.createDefaultPanner(SpeakerLayout.LAYOUT_7_1_4),
+                    track.getName());
+            controller.openWindow();
+        });
+
         // Send controls — one slider per return bus
         VBox sendBox = new VBox(2);
         for (MixerChannel returnBus : project.getMixer().getReturnBuses()) {
@@ -314,7 +327,7 @@ public final class MixerView extends VBox {
 
         strip.getChildren().addAll(
                 nameLabel, typeIcon, levelMeter, volumeFader,
-                panLabel, panSlider, buttonRow,
+                panLabel, panSlider, buttonRow, pannerBtn,
                 sendBox, sendLabel, sendSlider);
 
         return strip;
