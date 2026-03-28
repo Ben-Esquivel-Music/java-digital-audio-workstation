@@ -53,4 +53,34 @@ class SpectrumDataTest {
         assertThatThrownBy(() -> new SpectrumData(new float[0], 1024, 0))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void shouldCreateWithPeakHoldData() {
+        float[] magnitudes = new float[]{-60f, -40f, -20f, 0f};
+        float[] peakHold = new float[]{-50f, -30f, -10f, 0f};
+        SpectrumData data = new SpectrumData(magnitudes, peakHold, 8, 44100.0);
+
+        assertThat(data.magnitudesDb()).isEqualTo(magnitudes);
+        assertThat(data.peakHoldDb()).isEqualTo(peakHold);
+        assertThat(data.hasPeakHold()).isTrue();
+    }
+
+    @Test
+    void shouldCreateWithoutPeakHoldViaThreeArgConstructor() {
+        float[] magnitudes = new float[]{-60f, -40f, -20f, 0f};
+        SpectrumData data = new SpectrumData(magnitudes, 8, 44100.0);
+
+        assertThat(data.peakHoldDb()).isNull();
+        assertThat(data.hasPeakHold()).isFalse();
+    }
+
+    @Test
+    void shouldDefensivelyCopyPeakHoldArray() {
+        float[] magnitudes = new float[]{-60f, -40f};
+        float[] peakHold = new float[]{-50f, -30f};
+        SpectrumData data = new SpectrumData(magnitudes, peakHold, 4, 44100.0);
+
+        peakHold[0] = 99f;
+        assertThat(data.peakHoldDb()[0]).isEqualTo(-50f);
+    }
 }

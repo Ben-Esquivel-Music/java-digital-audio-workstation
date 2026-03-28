@@ -1,11 +1,13 @@
 package com.benesquivelmusic.daw.core.analysis;
 
+import com.benesquivelmusic.daw.sdk.analysis.WindowType;
+
 /**
  * Shared FFT utility methods used by audio analysis components.
  *
- * <p>Centralizes the pure-Java Cooley–Tukey radix-2 FFT and Hann window
- * computation to avoid duplication across {@link SpectrumAnalyzer} and
- * the quality analysis package.</p>
+ * <p>Centralizes the pure-Java Cooley–Tukey radix-2 FFT and window
+ * function computation to avoid duplication across {@link SpectrumAnalyzer}
+ * and the quality analysis package.</p>
  */
 public final class FftUtils {
 
@@ -83,6 +85,21 @@ public final class FftUtils {
     }
 
     /**
+     * Creates a window of the specified type and size.
+     *
+     * @param windowType the window function type
+     * @param size       the window size
+     * @return a {@code double[]} containing the window coefficients
+     */
+    public static double[] createWindow(WindowType windowType, int size) {
+        return switch (windowType) {
+            case HANN -> createHannWindow(size);
+            case HAMMING -> createHammingWindow(size);
+            case BLACKMAN_HARRIS -> createBlackmanHarrisWindow(size);
+        };
+    }
+
+    /**
      * Creates a Hann window of the given size.
      *
      * @param size the window size
@@ -92,6 +109,48 @@ public final class FftUtils {
         double[] window = new double[size];
         for (int i = 0; i < size; i++) {
             window[i] = 0.5 * (1.0 - Math.cos(2.0 * Math.PI * i / (size - 1)));
+        }
+        return window;
+    }
+
+    /**
+     * Creates a Hamming window of the given size.
+     *
+     * <p>The Hamming window has slightly less side-lobe leakage than Hann
+     * at the cost of a wider main lobe. It uses the coefficients
+     * {@code 0.54 - 0.46 * cos(2πn/(N-1))}.</p>
+     *
+     * @param size the window size
+     * @return a {@code double[]} containing the Hamming window coefficients
+     */
+    public static double[] createHammingWindow(int size) {
+        double[] window = new double[size];
+        for (int i = 0; i < size; i++) {
+            window[i] = 0.54 - 0.46 * Math.cos(2.0 * Math.PI * i / (size - 1));
+        }
+        return window;
+    }
+
+    /**
+     * Creates a Blackman-Harris window of the given size.
+     *
+     * <p>The 4-term Blackman-Harris window provides excellent side-lobe
+     * suppression (–92 dB), making it ideal for high-dynamic-range
+     * spectrum analysis where minimal spectral leakage is critical.</p>
+     *
+     * @param size the window size
+     * @return a {@code double[]} containing the Blackman-Harris window coefficients
+     */
+    public static double[] createBlackmanHarrisWindow(int size) {
+        double[] window = new double[size];
+        double a0 = 0.35875;
+        double a1 = 0.48829;
+        double a2 = 0.14128;
+        double a3 = 0.01168;
+        for (int i = 0; i < size; i++) {
+            double ratio = 2.0 * Math.PI * i / (size - 1);
+            window[i] = a0 - a1 * Math.cos(ratio) + a2 * Math.cos(2.0 * ratio)
+                    - a3 * Math.cos(3.0 * ratio);
         }
         return window;
     }
