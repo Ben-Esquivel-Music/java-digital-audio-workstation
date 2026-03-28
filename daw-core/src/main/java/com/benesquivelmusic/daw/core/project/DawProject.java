@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
 import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackColor;
 import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
@@ -41,6 +42,7 @@ public final class DawProject {
      */
     private final Map<String, MixerChannel> trackChannelMap = new LinkedHashMap<>();
     private final List<TrackGroup> trackGroups = new ArrayList<>();
+    private int nextColorIndex;
 
     /**
      * Creates a new DAW project.
@@ -86,6 +88,7 @@ public final class DawProject {
         tracks.add(track);
         MixerChannel channel = trackChannelMap.computeIfAbsent(
                 track.getId(), _ -> new MixerChannel(track.getName()));
+        channel.setColor(track.getColor());
         if (!mixer.getChannels().contains(channel)) {
             mixer.addChannel(channel);
         }
@@ -99,6 +102,7 @@ public final class DawProject {
      */
     public Track createAudioTrack(String name) {
         Track track = new Track(name, TrackType.AUDIO);
+        track.setColor(TrackColor.fromPaletteIndex(nextColorIndex++));
         addTrack(track);
         return track;
     }
@@ -111,6 +115,7 @@ public final class DawProject {
      */
     public Track createMidiTrack(String name) {
         Track track = new Track(name, TrackType.MIDI);
+        track.setColor(TrackColor.fromPaletteIndex(nextColorIndex++));
         addTrack(track);
         return track;
     }
@@ -199,6 +204,7 @@ public final class DawProject {
         Track copy = track.duplicate(track.getName() + " (copy)");
         tracks.add(index + 1, copy);
         MixerChannel channel = new MixerChannel(copy.getName());
+        channel.setColor(copy.getColor());
         trackChannelMap.put(copy.getId(), channel);
         mixer.addChannel(channel);
         return copy;
@@ -257,6 +263,7 @@ public final class DawProject {
      */
     public Track createFolderTrack(String name) {
         Track track = new Track(name, TrackType.FOLDER);
+        track.setColor(TrackColor.fromPaletteIndex(nextColorIndex++));
         addTrack(track);
         return track;
     }

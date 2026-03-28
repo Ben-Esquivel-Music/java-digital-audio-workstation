@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.audio.FadeCurveType;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackColor;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 
@@ -168,6 +169,15 @@ public final class ProjectDeserializer {
         track.setSolo(parseBooleanAttr(elem, "solo"));
         track.setArmed(parseBooleanAttr(elem, "armed"));
         track.setPhaseInverted(parseBooleanAttr(elem, "phase-inverted"));
+
+        String colorHex = elem.getAttribute("color");
+        if (!colorHex.isEmpty()) {
+            try {
+                track.setColor(TrackColor.fromHex(colorHex));
+            } catch (IllegalArgumentException ignored) {
+                // keep default color on invalid hex
+            }
+        }
 
         // Parse clips
         List<Element> clipsContainers = getDirectChildElements(elem, "clips");

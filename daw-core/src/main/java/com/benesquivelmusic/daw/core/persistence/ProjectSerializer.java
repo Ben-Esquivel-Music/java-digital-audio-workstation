@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackColor;
 import com.benesquivelmusic.daw.core.transport.Transport;
 
 import javax.xml.XMLConstants;
@@ -139,6 +140,7 @@ public final class ProjectSerializer {
         elem.setAttribute("solo", String.valueOf(track.isSolo()));
         elem.setAttribute("armed", String.valueOf(track.isArmed()));
         elem.setAttribute("phase-inverted", String.valueOf(track.isPhaseInverted()));
+        elem.setAttribute("color", track.getColor().getHexColor());
 
         List<AudioClip> clips = track.getClips();
         if (!clips.isEmpty()) {
