@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.analysis;
 
 import com.benesquivelmusic.daw.core.dsp.BiquadFilter;
+import com.benesquivelmusic.daw.sdk.visualization.AnalysisMode;
 import com.benesquivelmusic.daw.sdk.visualization.CorrelationData;
 import com.benesquivelmusic.daw.sdk.visualization.GoniometerData;
 import com.benesquivelmusic.daw.sdk.visualization.VisualizationProvider;
@@ -28,6 +29,18 @@ public final class CorrelationMeter implements VisualizationProvider<Correlation
     private volatile CorrelationData latestData;
     private volatile GoniometerData latestGoniometerData;
 
+    private AnalysisMode analysisMode = AnalysisMode.REAL_TIME;
+
+    // Post-playback accumulation state
+    private double accumSumLR;
+    private double accumSumLL;
+    private double accumSumRR;
+    private double accumSumMidSquared;
+    private double accumSumSideSquared;
+    private double accumSumLeft;
+    private double accumSumRight;
+    private long accumFrameCount;
+
     /**
      * Creates a correlation meter with the specified smoothing factor.
      *
@@ -53,6 +66,10 @@ public final class CorrelationMeter implements VisualizationProvider<Correlation
 
     /**
      * Processes stereo audio and updates correlation data.
+     *
+     * <p>In {@link AnalysisMode#REAL_TIME} mode, the latest data is updated
+     * immediately. In {@link AnalysisMode#POST_PLAYBACK} mode, statistics are
+     * accumulated and the latest data is updated with the running summary.</p>
      *
      * @param left      left channel samples
      * @param right     right channel samples
@@ -84,27 +101,44 @@ public final class CorrelationMeter implements VisualizationProvider<Correlation
             sumRight += r * r;
         }
 
-        // Correlation coefficient
-        double denominator = Math.sqrt(sumLL * sumRR);
-        double rawCorrelation = (denominator > 0) ? sumLR / denominator : 1.0;
-        rawCorrelation = Math.max(-1.0, Math.min(1.0, rawCorrelation));
+        if (analysisMode == AnalysisMode.POST_PLAYBACK) {
+            accumSumLR += sumLR;
+            accumSumLL += sumLL;
+            accumSumRR += sumRR;
+            accumSumMidSquared += sumMidSquared;
+            accumSumSideSquared += sumSideSquared;
+            accumSumLeft += sumLeft;
+            accumSumRight += sumRight;
+            accumFrameCount += numFrames;
 
-        smoothedCorrelation = smoothingFactor * smoothedCorrelation
-                + (1.0 - smoothingFactor) * rawCorrelation;
+            latestData = computeCorrelationData(
+                    accumSumLR, accumSumLL, accumSumRR,
+                    accumSumMidSquared, accumSumSideSquared,
+                    accumSumLeft, accumSumRight, accumFrameCount);
+            smoothedCorrelation = latestData.correlation();
+        } else {
+            // Correlation coefficient
+            double denominator = Math.sqrt(sumLL * sumRR);
+            double rawCorrelation = (denominator > 0) ? sumLR / denominator : 1.0;
+            rawCorrelation = Math.max(-1.0, Math.min(1.0, rawCorrelation));
 
-        // Mid/side RMS levels in dB
-        double midRms = Math.sqrt(sumMidSquared / numFrames);
-        double sideRms = Math.sqrt(sumSideSquared / numFrames);
-        double midDb = LevelMeter.linearToDb(midRms);
-        double sideDb = LevelMeter.linearToDb(sideRms);
+            smoothedCorrelation = smoothingFactor * smoothedCorrelation
+                    + (1.0 - smoothingFactor) * rawCorrelation;
 
-        // Stereo balance: -1.0 = left, 0.0 = center, 1.0 = right
-        double leftRms = Math.sqrt(sumLeft / numFrames);
-        double rightRms = Math.sqrt(sumRight / numFrames);
-        double totalRms = leftRms + rightRms;
-        double balance = (totalRms > 0) ? (rightRms - leftRms) / totalRms : 0.0;
+            // Mid/side RMS levels in dB
+            double midRms = Math.sqrt(sumMidSquared / numFrames);
+            double sideRms = Math.sqrt(sumSideSquared / numFrames);
+            double midDb = LevelMeter.linearToDb(midRms);
+            double sideDb = LevelMeter.linearToDb(sideRms);
 
-        latestData = new CorrelationData(smoothedCorrelation, midDb, sideDb, balance);
+            // Stereo balance: -1.0 = left, 0.0 = center, 1.0 = right
+            double leftRms = Math.sqrt(sumLeft / numFrames);
+            double rightRms = Math.sqrt(sumRight / numFrames);
+            double totalRms = leftRms + rightRms;
+            double balance = (totalRms > 0) ? (rightRms - leftRms) / totalRms : 0.0;
+
+            latestData = new CorrelationData(smoothedCorrelation, midDb, sideDb, balance);
+        }
     }
 
     /**
@@ -242,6 +276,30 @@ public final class CorrelationMeter implements VisualizationProvider<Correlation
     }
 
     /**
+     * Sets the analysis mode.
+     *
+     * <p>Switching modes resets accumulated post-playback statistics.</p>
+     *
+     * @param mode the analysis mode to use
+     */
+    public void setAnalysisMode(AnalysisMode mode) {
+        if (mode == null) {
+            throw new IllegalArgumentException("analysisMode must not be null");
+        }
+        this.analysisMode = mode;
+        resetAccumulator();
+    }
+
+    /**
+     * Returns the current analysis mode.
+     *
+     * @return the active analysis mode
+     */
+    public AnalysisMode getAnalysisMode() {
+        return analysisMode;
+    }
+
+    /**
      * Returns whether the latest measurement indicates a phase-inverted
      * signal (correlation below −0.5).
      *
@@ -272,6 +330,7 @@ public final class CorrelationMeter implements VisualizationProvider<Correlation
         smoothedCorrelation = 1.0;
         latestData = CorrelationData.SILENCE;
         latestGoniometerData = GoniometerData.EMPTY;
+        resetAccumulator();
     }
 
     @Override
@@ -302,5 +361,38 @@ public final class CorrelationMeter implements VisualizationProvider<Correlation
             return 1.0;
         }
         return Math.max(-1.0, Math.min(1.0, sumLR / denominator));
+    }
+
+    private static CorrelationData computeCorrelationData(
+            double sumLR, double sumLL, double sumRR,
+            double sumMidSquared, double sumSideSquared,
+            double sumLeft, double sumRight, long frameCount) {
+
+        double denominator = Math.sqrt(sumLL * sumRR);
+        double correlation = (denominator > 0) ? sumLR / denominator : 1.0;
+        correlation = Math.max(-1.0, Math.min(1.0, correlation));
+
+        double midRms = Math.sqrt(sumMidSquared / frameCount);
+        double sideRms = Math.sqrt(sumSideSquared / frameCount);
+        double midDb = LevelMeter.linearToDb(midRms);
+        double sideDb = LevelMeter.linearToDb(sideRms);
+
+        double leftRms = Math.sqrt(sumLeft / frameCount);
+        double rightRms = Math.sqrt(sumRight / frameCount);
+        double totalRms = leftRms + rightRms;
+        double balance = (totalRms > 0) ? (rightRms - leftRms) / totalRms : 0.0;
+
+        return new CorrelationData(correlation, midDb, sideDb, balance);
+    }
+
+    private void resetAccumulator() {
+        accumSumLR = 0.0;
+        accumSumLL = 0.0;
+        accumSumRR = 0.0;
+        accumSumMidSquared = 0.0;
+        accumSumSideSquared = 0.0;
+        accumSumLeft = 0.0;
+        accumSumRight = 0.0;
+        accumFrameCount = 0;
     }
 }

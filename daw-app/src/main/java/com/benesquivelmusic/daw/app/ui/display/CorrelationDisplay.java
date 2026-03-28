@@ -19,10 +19,19 @@ import javafx.scene.text.TextAlignment;
  * <p>Renders the stereo field as a circular display showing:
  * <ul>
  *   <li>Correlation coefficient indicator (-1 to +1)</li>
+ *   <li>Horizontal moving correlation bar (-1 to +1) with color coding</li>
+ *   <li>Phase indicator (in-phase / caution / inverted)</li>
  *   <li>Mid/side level balance</li>
  *   <li>Stereo balance indicator</li>
  *   <li>Phase correlation history</li>
  *   <li>Goniometer (Lissajous XY) visualization</li>
+ * </ul>
+ *
+ * <p>The correlation bar is color-coded:
+ * <ul>
+ *   <li>Green — correlation &gt; 0.5 (good mono compatibility)</li>
+ *   <li>Yellow — correlation 0.0 to 0.5 (caution)</li>
+ *   <li>Red — correlation &lt; 0.0 (phase issues)</li>
  * </ul>
  *
  * <p>Supports the stereo imaging monitoring described in the
@@ -40,6 +49,9 @@ public final class CorrelationDisplay extends Region {
     private static final Color BALANCE_COLOR = Color.web("#00e5ff");
     private static final Color GONIOMETER_DOT_COLOR = Color.web("#00e5ff", 0.6);
     private static final Color GONIOMETER_AXIS_COLOR = Color.web("#ffffff", 0.1);
+    private static final Color PHASE_OK_COLOR = Color.web("#00e676");
+    private static final Color PHASE_CAUTION_COLOR = Color.web("#ffea00");
+    private static final Color PHASE_INVERTED_COLOR = Color.web("#ff1744");
 
     private static final int HISTORY_SIZE = 120;
 
@@ -172,8 +184,8 @@ public final class CorrelationDisplay extends Region {
         }
 
         double centerX = w / 2;
-        double topSection = h * 0.6;
-        double meterY = topSection + 10;
+        double topSection = h * 0.45;
+        double meterY = topSection + 80;
         double historyY = meterY + 30;
 
         // --- Correlation arc meter ---
@@ -213,6 +225,62 @@ public final class CorrelationDisplay extends Region {
         gc.setFont(Font.font(14));
         gc.setTextAlign(TextAlignment.CENTER);
         gc.fillText(String.format("%.2f", correlation), centerX, arcCenterY + 5);
+
+        // --- Horizontal correlation bar (-1 to +1) ---
+        double corrBarWidth = w - 40;
+        double corrBarHeight = 6;
+        double corrBarX = 20;
+        double corrBarY = arcCenterY + 14;
+
+        // Bar background
+        gc.setFill(Color.web("#ffffff", 0.08));
+        gc.fillRect(corrBarX, corrBarY, corrBarWidth, corrBarHeight);
+
+        // Center line marker
+        gc.setFill(Color.web("#ffffff", 0.2));
+        gc.fillRect(corrBarX + corrBarWidth / 2 - 0.5, corrBarY - 1, 1, corrBarHeight + 2);
+
+        // Filled region from center to current correlation
+        Color corrBarColor = getCorrelationColor(correlation);
+        double corrCenter = corrBarX + corrBarWidth / 2;
+        double corrPos = corrBarX + (correlation + 1.0) / 2.0 * corrBarWidth;
+        double fillX = Math.min(corrCenter, corrPos);
+        double fillW = Math.abs(corrPos - corrCenter);
+        gc.setFill(corrBarColor.deriveColor(0, 1, 1, 0.8));
+        gc.fillRect(fillX, corrBarY, fillW, corrBarHeight);
+
+        // Moving indicator
+        gc.setFill(corrBarColor);
+        gc.fillRect(corrPos - 2, corrBarY - 2, 4, corrBarHeight + 4);
+
+        // Scale labels for correlation bar
+        gc.setFill(TEXT_COLOR);
+        gc.setFont(Font.font(8));
+        gc.setTextAlign(TextAlignment.LEFT);
+        gc.fillText("-1", corrBarX, corrBarY + corrBarHeight + 10);
+        gc.setTextAlign(TextAlignment.CENTER);
+        gc.fillText("0", corrBarX + corrBarWidth / 2, corrBarY + corrBarHeight + 10);
+        gc.setTextAlign(TextAlignment.RIGHT);
+        gc.fillText("+1", corrBarX + corrBarWidth, corrBarY + corrBarHeight + 10);
+
+        // --- Phase indicator ---
+        double phaseY = corrBarY + corrBarHeight + 16;
+        String phaseText;
+        Color phaseColor;
+        if (correlation > 0.5) {
+            phaseText = "\u25CF In Phase";
+            phaseColor = PHASE_OK_COLOR;
+        } else if (correlation >= 0.0) {
+            phaseText = "\u25CF Caution";
+            phaseColor = PHASE_CAUTION_COLOR;
+        } else {
+            phaseText = "\u25CF Phase Inverted";
+            phaseColor = PHASE_INVERTED_COLOR;
+        }
+        gc.setFill(phaseColor);
+        gc.setFont(Font.font(10));
+        gc.setTextAlign(TextAlignment.CENTER);
+        gc.fillText(phaseText, centerX, phaseY);
 
         // --- Stereo balance bar ---
         double barWidth = w - 40;
@@ -286,8 +354,8 @@ public final class CorrelationDisplay extends Region {
 
         // The canvas width/height are already bound to the region dimensions; no explicit resize needed.
         // Position icon overlay labels at the same coordinates used by the old fillText() calls.
-        double topSection = h * 0.6;
-        double meterY     = topSection + 10;
+        double topSection = h * 0.45;
+        double meterY     = topSection + 80;
 
         double barWidth  = w - 40;
         double barX      = 20;

@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.analysis;
 
+import com.benesquivelmusic.daw.sdk.visualization.AnalysisMode;
 import com.benesquivelmusic.daw.sdk.visualization.CorrelationData;
 import com.benesquivelmusic.daw.sdk.visualization.GoniometerData;
 
@@ -303,6 +304,100 @@ class CorrelationMeterTest {
 
         // Band [200-2000] contains the inverted 440 Hz signal
         assertThat(correlations[1]).isLessThan(0.0);
+    }
+
+    // --- Analysis mode tests ---
+
+    @Test
+    void shouldDefaultToRealTimeMode() {
+        CorrelationMeter meter = new CorrelationMeter();
+        assertThat(meter.getAnalysisMode()).isEqualTo(AnalysisMode.REAL_TIME);
+    }
+
+    @Test
+    void shouldSwitchToPostPlaybackMode() {
+        CorrelationMeter meter = new CorrelationMeter(0.0);
+        meter.setAnalysisMode(AnalysisMode.POST_PLAYBACK);
+        assertThat(meter.getAnalysisMode()).isEqualTo(AnalysisMode.POST_PLAYBACK);
+    }
+
+    @Test
+    void shouldRejectNullAnalysisMode() {
+        CorrelationMeter meter = new CorrelationMeter();
+        assertThatThrownBy(() -> meter.setAnalysisMode(null))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void shouldAccumulateInPostPlaybackMode() {
+        CorrelationMeter meter = new CorrelationMeter(0.0);
+        meter.setAnalysisMode(AnalysisMode.POST_PLAYBACK);
+
+        float[] signal = generateSineWave(440.0, 44100.0, 1024);
+        meter.process(signal, signal, 1024);
+        CorrelationData first = meter.getLatestData();
+
+        meter.process(signal, signal, 1024);
+        CorrelationData second = meter.getLatestData();
+
+        // Both should produce correlated results since L==R
+        assertThat(first.correlation()).isCloseTo(1.0,
+                org.assertj.core.data.Offset.offset(0.01));
+        assertThat(second.correlation()).isCloseTo(1.0,
+                org.assertj.core.data.Offset.offset(0.01));
+    }
+
+    @Test
+    void shouldResetAccumulatorOnModeSwitch() {
+        CorrelationMeter meter = new CorrelationMeter(0.0);
+        meter.setAnalysisMode(AnalysisMode.POST_PLAYBACK);
+
+        float[] left = generateSineWave(440.0, 44100.0, 1024);
+        float[] right = new float[1024];
+        for (int i = 0; i < 1024; i++) right[i] = -left[i];
+        meter.process(left, right, 1024);
+
+        // Switch mode — should reset accumulator
+        meter.setAnalysisMode(AnalysisMode.REAL_TIME);
+        meter.setAnalysisMode(AnalysisMode.POST_PLAYBACK);
+
+        float[] mono = generateSineWave(440.0, 44100.0, 1024);
+        meter.process(mono, mono, 1024);
+
+        // After reset + mono signal, correlation should be near 1.0
+        assertThat(meter.getLatestData().correlation()).isCloseTo(1.0,
+                org.assertj.core.data.Offset.offset(0.01));
+    }
+
+    @Test
+    void shouldResetAccumulatorOnReset() {
+        CorrelationMeter meter = new CorrelationMeter(0.0);
+        meter.setAnalysisMode(AnalysisMode.POST_PLAYBACK);
+
+        float[] left = generateSineWave(440.0, 44100.0, 1024);
+        float[] right = new float[1024];
+        for (int i = 0; i < 1024; i++) right[i] = -left[i];
+        meter.process(left, right, 1024);
+
+        meter.reset();
+
+        assertThat(meter.getLatestData()).isEqualTo(CorrelationData.SILENCE);
+    }
+
+    @Test
+    void postPlaybackShouldProduceStableResultAcrossBlocks() {
+        CorrelationMeter meter = new CorrelationMeter(0.0);
+        meter.setAnalysisMode(AnalysisMode.POST_PLAYBACK);
+
+        // Process several blocks of mono signal
+        float[] signal = generateSineWave(440.0, 44100.0, 512);
+        for (int block = 0; block < 10; block++) {
+            meter.process(signal, signal, 512);
+        }
+
+        // Result should be consistent — correlation near 1.0
+        assertThat(meter.getLatestData().correlation()).isCloseTo(1.0,
+                org.assertj.core.data.Offset.offset(0.01));
     }
 
     private static float[] generateSineWave(double frequency, double sampleRate, int length) {
