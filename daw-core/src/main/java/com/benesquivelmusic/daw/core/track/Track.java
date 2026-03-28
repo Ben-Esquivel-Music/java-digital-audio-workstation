@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.track;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.automation.AutomationData;
+import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
 
 import java.util.ArrayList;
@@ -37,6 +38,7 @@ public final class Track {
     private int inputDeviceIndex = NO_INPUT_DEVICE;
     private final List<AudioClip> clips = new ArrayList<>();
     private final AutomationData automationData = new AutomationData();
+    private final MidiClip midiClip = new MidiClip();
     private Track parentTrack;
     private final List<Track> childTracks = new ArrayList<>();
     private boolean collapsed;
@@ -262,6 +264,18 @@ public final class Track {
      */
     public AutomationData getAutomationData() {
         return automationData;
+    }
+
+    /**
+     * Returns the MIDI clip for this track.
+     *
+     * <p>The MIDI clip holds the MIDI notes placed on this track. For
+     * non-MIDI tracks, the clip will be empty but is still accessible.</p>
+     *
+     * @return the MIDI clip (never {@code null})
+     */
+    public MidiClip getMidiClip() {
+        return midiClip;
     }
 
     // ── Folder track support ────────────────────────────────────────────────
