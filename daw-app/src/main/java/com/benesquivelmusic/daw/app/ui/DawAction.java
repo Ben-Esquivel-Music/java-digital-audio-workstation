@@ -42,6 +42,12 @@ public enum DawAction {
     TOGGLE_SNAP("Toggle Snap", Category.EDITING,
             new KeyCodeCombination(KeyCode.S, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
 
+    // ── Session interchange ─────────────────────────────────────────────────
+    IMPORT_SESSION("Import Session", Category.EDITING,
+            new KeyCodeCombination(KeyCode.I, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
+    EXPORT_SESSION("Export Session", Category.EDITING,
+            new KeyCodeCombination(KeyCode.E, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
+
     // ── Track operations ─────────────────────────────────────────────────────
     ADD_AUDIO_TRACK("Add Audio Track", Category.TRACKS,
             new KeyCodeCombination(KeyCode.A, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),

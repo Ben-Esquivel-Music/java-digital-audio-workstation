@@ -30,6 +30,8 @@ import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
 import com.benesquivelmusic.daw.sdk.visualization.LevelData;
 import com.benesquivelmusic.daw.sdk.visualization.SpectrumData;
+import com.benesquivelmusic.daw.sdk.session.SessionExportResult;
+import com.benesquivelmusic.daw.sdk.session.SessionImportResult;
 
 import javafx.animation.AnimationTimer;
 import javafx.animation.FadeTransition;
@@ -151,6 +153,8 @@ public final class MainController {
     @FXML private Button openProjectButton;
     @FXML private Button saveProjectButton;
     @FXML private Button recentProjectsButton;
+    @FXML private Button importSessionButton;
+    @FXML private Button exportSessionButton;
     @FXML private Button browserButton;
     @FXML private Button searchButton;
     @FXML private Button pluginsSidebarButton;
@@ -181,6 +185,10 @@ public final class MainController {
     private RecordingPipeline recordingPipeline;
     private NotificationBar notificationBar;
 
+    // ── Session interchange ──────────────────────────────────────────────────
+    /** Handles DAWproject import/export logic without JavaFX dependencies. */
+    private final SessionInterchangeController sessionInterchangeController =
+            new SessionInterchangeController();
     // ── View navigation state ────────────────────────────────────────────────
     /** Caches each view's content node so switching back preserves state. */
     private final Map<DawView, Node> viewCache = new EnumMap<>(DawView.class);
@@ -881,6 +889,8 @@ public final class MainController {
         openProjectButton.setGraphic(IconNode.of(DawIcon.FOLDER, TOOLBAR_ICON_SIZE));
         saveProjectButton.setGraphic(IconNode.of(DawIcon.DOWNLOAD, TOOLBAR_ICON_SIZE));
         recentProjectsButton.setGraphic(IconNode.of(DawIcon.HISTORY, TOOLBAR_ICON_SIZE));
+        importSessionButton.setGraphic(IconNode.of(DawIcon.DOWNLOAD, TOOLBAR_ICON_SIZE));
+        exportSessionButton.setGraphic(IconNode.of(DawIcon.UPLOAD, TOOLBAR_ICON_SIZE));
         browserButton.setGraphic(IconNode.of(DawIcon.LIBRARY, TOOLBAR_ICON_SIZE));
         searchButton.setGraphic(IconNode.of(DawIcon.SEARCH, TOOLBAR_ICON_SIZE));
         pluginsSidebarButton.setGraphic(IconNode.of(DawIcon.EQUALIZER, TOOLBAR_ICON_SIZE));
@@ -947,6 +957,12 @@ public final class MainController {
         saveProjectButton.setTooltip(styledTooltip(tooltipFor("Save Project", DawAction.SAVE)));
         recentProjectsButton.setTooltip(styledTooltip(
                 "Recent Projects \u2014 Open a recently saved project"));
+        importSessionButton.setTooltip(styledTooltip(
+                tooltipFor("Import Session \u2014 Import a DAWproject (.dawproject) file",
+                        DawAction.IMPORT_SESSION)));
+        exportSessionButton.setTooltip(styledTooltip(
+                tooltipFor("Export Session \u2014 Export to DAWproject (.dawproject) format",
+                        DawAction.EXPORT_SESSION)));
         browserButton.setTooltip(styledTooltip(
                 "Browser \u2014 Browse samples, presets, and project files"
                         + shortcutSuffix(DawAction.TOGGLE_BROWSER)));
@@ -1042,6 +1058,8 @@ public final class MainController {
         actionHandlers.put(DawAction.SAVE, this::onSaveProject);
         actionHandlers.put(DawAction.NEW_PROJECT, this::onNewProject);
         actionHandlers.put(DawAction.OPEN_PROJECT, this::onOpenProject);
+        actionHandlers.put(DawAction.IMPORT_SESSION, this::onImportSession);
+        actionHandlers.put(DawAction.EXPORT_SESSION, this::onExportSession);
         actionHandlers.put(DawAction.TOGGLE_SNAP, this::onToggleSnap);
         actionHandlers.put(DawAction.ADD_AUDIO_TRACK, this::onAddAudioTrack);
         actionHandlers.put(DawAction.ADD_MIDI_TRACK, this::onAddMidiTrack);
@@ -1577,6 +1595,106 @@ public final class MainController {
         }
         menu.show(recentProjectsButton,
                 javafx.geometry.Side.RIGHT, 0, 0);
+    }
+
+    // ── Session Import/Export ────────────────────────────────────────────────
+
+    /**
+     * Handles the Import Session action: opens a file chooser for
+     * {@code .dawproject} files, imports the selected file, creates tracks
+     * and mixer settings, and shows a summary dialog.
+     */
+    @FXML
+    private void onImportSession() {
+        if (!confirmDiscardUnsavedChanges()) {
+            return;
+        }
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Import Session");
+        chooser.getExtensionFilters().add(
+                new FileChooser.ExtensionFilter("DAWproject Files", "*.dawproject", "*.xml"));
+        Stage stage = (Stage) rootPane.getScene().getWindow();
+        java.io.File selected = chooser.showOpenDialog(stage);
+        if (selected == null) {
+            return;
+        }
+        try {
+            SessionImportResult result = sessionInterchangeController.importSession(selected.toPath());
+            resetProjectState();
+            project = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
+            undoManager = new UndoManager();
+            audioTrackCounter = 0;
+            midiTrackCounter = 0;
+            sessionInterchangeController.applySessionData(result.sessionData(), project);
+            projectDirty = true;
+            rebuildUI();
+
+            String summary = sessionInterchangeController.buildImportSummary(result);
+            Alert summaryDialog = new Alert(Alert.AlertType.INFORMATION);
+            summaryDialog.setTitle("Import Summary");
+            summaryDialog.setHeaderText("Session imported successfully");
+            summaryDialog.setContentText(summary);
+            summaryDialog.showAndWait();
+
+            statusBarLabel.setText("Imported session: " + result.sessionData().projectName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.DOWNLOAD, 12));
+            notificationBar.show(NotificationLevel.SUCCESS,
+                    "Imported session: " + result.sessionData().projectName());
+            LOG.info("Imported DAWproject session from " + selected.toPath());
+        } catch (IOException e) {
+            statusBarLabel.setText("Import failed: " + e.getMessage());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+            notificationBar.show(NotificationLevel.ERROR,
+                    "Import failed: " + e.getMessage());
+            LOG.log(Level.WARNING, "Failed to import session", e);
+        }
+    }
+
+    /**
+     * Handles the Export Session action: opens a directory chooser for the
+     * output location and exports the current project to DAWproject format.
+     */
+    @FXML
+    private void onExportSession() {
+        DirectoryChooser chooser = new DirectoryChooser();
+        chooser.setTitle("Export Session");
+        Stage stage = (Stage) rootPane.getScene().getWindow();
+        java.io.File selected = chooser.showDialog(stage);
+        if (selected == null) {
+            return;
+        }
+        try {
+            SessionExportResult result = sessionInterchangeController.exportSession(
+                    project, selected.toPath(), project.getName());
+
+            String message = "Session exported to " + result.outputPath().getFileName();
+            if (!result.warnings().isEmpty()) {
+                message += " (" + result.warnings().size() + " warnings)";
+            }
+            statusBarLabel.setText(message);
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.UPLOAD, 12));
+            notificationBar.show(NotificationLevel.SUCCESS, message);
+
+            if (!result.warnings().isEmpty()) {
+                StringBuilder warningText = new StringBuilder("Export completed with warnings:\n\n");
+                for (String warning : result.warnings()) {
+                    warningText.append("  \u2022 ").append(warning).append("\n");
+                }
+                Alert warningDialog = new Alert(Alert.AlertType.WARNING);
+                warningDialog.setTitle("Export Warnings");
+                warningDialog.setHeaderText("Session exported with warnings");
+                warningDialog.setContentText(warningText.toString());
+                warningDialog.showAndWait();
+            }
+
+            LOG.info("Exported DAWproject session to " + result.outputPath());
+        } catch (IOException e) {
+            statusBarLabel.setText("Export failed: " + e.getMessage());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+            notificationBar.show(NotificationLevel.ERROR,
+                    "Export failed: " + e.getMessage());
+            LOG.log(Level.WARNING, "Failed to export session", e);
+        }
     }
 
     /**
