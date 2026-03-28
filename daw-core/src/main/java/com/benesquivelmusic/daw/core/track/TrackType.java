@@ -24,5 +24,8 @@ public enum TrackType {
     BED_CHANNEL,
 
     /** An audio object track with freely positionable 3D metadata (Dolby Atmos object). */
-    AUDIO_OBJECT
+    AUDIO_OBJECT,
+
+    /** A reference track for A/B comparison that bypasses the mixer effects chain. */
+    REFERENCE
 }

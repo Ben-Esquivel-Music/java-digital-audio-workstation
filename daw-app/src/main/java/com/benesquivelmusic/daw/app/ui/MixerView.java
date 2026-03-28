@@ -467,6 +467,7 @@ public final class MixerView extends VBox {
             case FOLDER       -> IconNode.of(DawIcon.FOLDER, CONTROL_ICON_SIZE);
             case BED_CHANNEL  -> IconNode.of(DawIcon.SURROUND, CONTROL_ICON_SIZE);
             case AUDIO_OBJECT -> IconNode.of(DawIcon.PAN, CONTROL_ICON_SIZE);
+            case REFERENCE    -> IconNode.of(DawIcon.HEADPHONES, CONTROL_ICON_SIZE);
         };
     }
 }
