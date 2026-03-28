@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.audio;
 
 import com.benesquivelmusic.daw.core.mixer.Mixer;
+import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
@@ -58,6 +59,9 @@ public final class AudioEngine {
 
     // Optional callback invoked from processBlock when recording is active
     private volatile RecordingCallback recordingCallback;
+
+    // Optional performance monitor for CPU load and underrun tracking
+    private volatile PerformanceMonitor performanceMonitor;
 
     /**
      * Creates a new audio engine with the specified format.
@@ -257,6 +261,28 @@ public final class AudioEngine {
     }
 
     /**
+     * Sets the performance monitor used to track CPU load and buffer underruns.
+     *
+     * <p>When set, the engine measures the time taken by each
+     * {@link #processBlock(float[][], float[][], int)} call and reports it
+     * to the monitor.</p>
+     *
+     * @param monitor the performance monitor, or {@code null} to disable monitoring
+     */
+    public void setPerformanceMonitor(PerformanceMonitor monitor) {
+        this.performanceMonitor = monitor;
+    }
+
+    /**
+     * Returns the currently configured performance monitor, or {@code null}.
+     *
+     * @return the performance monitor
+     */
+    public PerformanceMonitor getPerformanceMonitor() {
+        return performanceMonitor;
+    }
+
+    /**
      * Processes a single block of audio through the rendering pipeline.
      *
      * <p>When a transport, mixer, and track list are configured and the
@@ -289,6 +315,13 @@ public final class AudioEngine {
     public void processBlock(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         if (!running.get()) {
             throw new IllegalStateException("Engine is not running");
+        }
+
+        // Snapshot the performance monitor once for this block
+        PerformanceMonitor monitor = this.performanceMonitor;
+        long startNanos = 0;
+        if (monitor != null) {
+            startNanos = System.nanoTime();
         }
 
         // Clear the mix buffer
@@ -337,6 +370,12 @@ public final class AudioEngine {
             double samplesPerBeat = format.sampleRate() * 60.0 / currentTransport.getTempo();
             double deltaBeats = numFrames / samplesPerBeat;
             currentTransport.advancePosition(deltaBeats);
+        }
+
+        // Record processing time to the performance monitor
+        if (monitor != null) {
+            long elapsedNanos = System.nanoTime() - startNanos;
+            monitor.recordProcessingTime(elapsedNanos);
         }
     }
 
