@@ -23,6 +23,7 @@ class TrackTest {
         assertThat(track.isSolo()).isFalse();
         assertThat(track.isArmed()).isFalse();
         assertThat(track.isPhaseInverted()).isFalse();
+        assertThat(track.isFrozen()).isFalse();
     }
 
     @Test
@@ -224,6 +225,15 @@ class TrackTest {
                 .isInstanceOf(NullPointerException.class);
     }
 
+    // ── Track freeze state tests ────────────────────────────────────────────
+
+    @Test
+    void shouldDefaultToNotFrozen() {
+        Track track = new Track("Track", TrackType.AUDIO);
+        assertThat(track.isFrozen()).isFalse();
+        assertThat(track.getFrozenAudioData()).isNull();
+    }
+
     // ── Duplicate tests ─────────────────────────────────────────────────────
 
     @Test
@@ -252,6 +262,7 @@ class TrackTest {
         assertThat(copy.getInputDeviceIndex()).isEqualTo(3);
         assertThat(copy.getInputMonitoringMode()).isEqualTo(InputMonitoringMode.AUTO);
         assertThat(copy.isRecording()).isFalse(); // recording state is never copied
+        assertThat(copy.isFrozen()).isFalse(); // frozen state is never copied
     }
 
     @Test

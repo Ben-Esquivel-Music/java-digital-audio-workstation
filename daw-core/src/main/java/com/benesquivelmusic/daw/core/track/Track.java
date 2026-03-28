@@ -43,6 +43,8 @@ public final class Track {
     private final List<Track> childTracks = new ArrayList<>();
     private boolean collapsed;
     private TrackColor color = TrackColor.RED;
+    private boolean frozen;
+    private float[][] frozenAudioData;
 
     /**
      * Creates a new track with the given name and type.
@@ -375,6 +377,51 @@ public final class Track {
      */
     public void setCollapsed(boolean collapsed) {
         this.collapsed = collapsed;
+    }
+
+    // ── Track freeze support ────────────────────────────────────────────────
+
+    /**
+     * Returns whether this track is frozen.
+     *
+     * <p>A frozen track's audio has been rendered offline through its effects
+     * chain and is stored as pre-rendered data. During playback the frozen
+     * audio is used instead of real-time effects processing, freeing CPU
+     * resources. Editing of a frozen track (effects, volume, clip edits)
+     * should be disabled in the UI until the track is unfrozen.</p>
+     *
+     * @return {@code true} if this track is frozen
+     */
+    public boolean isFrozen() {
+        return frozen;
+    }
+
+    /**
+     * Sets the frozen state of this track.
+     *
+     * @param frozen {@code true} to mark this track as frozen
+     */
+    void setFrozen(boolean frozen) {
+        this.frozen = frozen;
+    }
+
+    /**
+     * Returns the pre-rendered audio data for this frozen track, or
+     * {@code null} if the track is not frozen or has no rendered audio.
+     *
+     * @return frozen audio data as {@code [channel][sample]}, or {@code null}
+     */
+    public float[][] getFrozenAudioData() {
+        return frozenAudioData;
+    }
+
+    /**
+     * Sets the pre-rendered frozen audio data for this track.
+     *
+     * @param frozenAudioData the rendered audio data, or {@code null} to clear
+     */
+    void setFrozenAudioData(float[][] frozenAudioData) {
+        this.frozenAudioData = frozenAudioData;
     }
 
     /**
