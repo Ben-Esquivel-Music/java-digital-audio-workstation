@@ -1,5 +1,10 @@
 package com.benesquivelmusic.daw.core.persistence;
 
+import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.project.DawProject;
+import com.benesquivelmusic.daw.core.track.Track;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -11,6 +16,7 @@ import java.util.prefs.Preferences;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 
 class ProjectManagerTest {
 
@@ -239,5 +245,122 @@ class ProjectManagerTest {
     void shouldReturnNullStoreWhenNotConfigured() {
         ProjectManager manager = createProjectManager();
         assertThat(manager.getRecentProjectsStore()).isNull();
+    }
+
+    // ── Full project save/load tests ────────────────────────────────────────
+
+    @Test
+    void shouldSaveDawProject() throws IOException {
+        ProjectManager manager = createProjectManager();
+        manager.createProject("Full Save", tempDir);
+
+        DawProject dawProject = new DawProject("Full Save", AudioFormat.CD_QUALITY);
+        dawProject.createAudioTrack("Vocals");
+        dawProject.createMidiTrack("Synth");
+        dawProject.getTransport().setTempo(140.0);
+        dawProject.setMetadata(manager.getCurrentProject());
+
+        manager.saveDawProject(dawProject);
+
+        Path projectFile = manager.getCurrentProject().projectPath().resolve("project.daw");
+        String content = Files.readString(projectFile);
+        assertThat(content).contains("<daw-project");
+        assertThat(content).contains("<name>Full Save</name>");
+        assertThat(content).contains("name=\"Vocals\"");
+        assertThat(content).contains("name=\"Synth\"");
+        assertThat(content).contains("tempo=\"140.0\"");
+    }
+
+    @Test
+    void shouldOpenSavedDawProject() throws IOException {
+        ProjectManager manager = createProjectManager();
+        manager.createProject("Round Trip", tempDir);
+
+        DawProject original = new DawProject("Round Trip", AudioFormat.STUDIO_QUALITY);
+        Track track = original.createAudioTrack("Drums");
+        track.setVolume(0.9);
+        track.setPan(-0.2);
+        track.addClip(new AudioClip("Kick", 0.0, 8.0, "/audio/kick.wav"));
+        original.getTransport().setTempo(95.0);
+        original.getTransport().setTimeSignature(3, 4);
+        original.getMixer().getMasterChannel().setVolume(0.85);
+        original.setMetadata(manager.getCurrentProject());
+
+        manager.saveDawProject(original);
+        Path projectDir = manager.getCurrentProject().projectPath();
+        manager.closeProject();
+
+        // Re-open and verify
+        manager.openProject(projectDir);
+        DawProject restored = manager.getCurrentDawProject();
+
+        assertThat(restored).isNotNull();
+        assertThat(restored.getName()).isEqualTo("Round Trip");
+        assertThat(restored.getTracks()).hasSize(1);
+        assertThat(restored.getTracks().get(0).getName()).isEqualTo("Drums");
+        assertThat(restored.getTracks().get(0).getVolume()).isCloseTo(0.9, within(0.001));
+        assertThat(restored.getTracks().get(0).getClips()).hasSize(1);
+        assertThat(restored.getTransport().getTempo()).isEqualTo(95.0);
+        assertThat(restored.getTransport().getTimeSignatureNumerator()).isEqualTo(3);
+        assertThat(restored.getMixer().getMasterChannel().getVolume()).isCloseTo(0.85, within(0.001));
+        assertThat(restored.isDirty()).isFalse();
+        manager.closeProject();
+    }
+
+    @Test
+    void shouldReturnNullDawProjectForLegacyFile() throws IOException {
+        ProjectManager manager = createProjectManager();
+        manager.createProject("Legacy", tempDir);
+        Path projectDir = manager.getCurrentProject().projectPath();
+        manager.closeProject();
+
+        // The default create writes a legacy text file
+        manager.openProject(projectDir);
+        assertThat(manager.getCurrentDawProject()).isNull();
+        manager.closeProject();
+    }
+
+    @Test
+    void shouldTrackUnsavedChanges() throws IOException {
+        ProjectManager manager = createProjectManager();
+        manager.createProject("Dirty Test", tempDir);
+
+        DawProject dawProject = new DawProject("Dirty Test", AudioFormat.CD_QUALITY);
+        dawProject.setMetadata(manager.getCurrentProject());
+        manager.saveDawProject(dawProject);
+
+        assertThat(manager.hasUnsavedChanges()).isFalse();
+
+        dawProject.markDirty();
+        assertThat(manager.hasUnsavedChanges()).isTrue();
+
+        manager.saveProject();
+        assertThat(manager.hasUnsavedChanges()).isFalse();
+        manager.closeProject();
+    }
+
+    @Test
+    void shouldClearDawProjectOnClose() throws IOException {
+        ProjectManager manager = createProjectManager();
+        manager.createProject("Close Test", tempDir);
+
+        DawProject dawProject = new DawProject("Close Test", AudioFormat.CD_QUALITY);
+        dawProject.setMetadata(manager.getCurrentProject());
+        manager.saveDawProject(dawProject);
+
+        manager.closeProject();
+
+        assertThat(manager.getCurrentDawProject()).isNull();
+        assertThat(manager.hasUnsavedChanges()).isFalse();
+    }
+
+    @Test
+    void shouldRejectSaveDawProjectWithoutOpenProject() {
+        ProjectManager manager = createProjectManager();
+        DawProject dawProject = new DawProject("Test", AudioFormat.CD_QUALITY);
+
+        assertThatThrownBy(() -> manager.saveDawProject(dawProject))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("No project is currently open");
     }
 }
