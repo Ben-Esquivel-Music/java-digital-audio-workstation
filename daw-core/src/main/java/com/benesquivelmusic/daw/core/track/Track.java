@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.automation.AutomationData;
 import com.benesquivelmusic.daw.core.comping.TakeComping;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
+import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
 
 import java.util.ArrayList;
@@ -47,6 +48,7 @@ public final class Track {
     private boolean frozen;
     private float[][] frozenAudioData;
     private final TakeComping takeComping = new TakeComping();
+    private SoundFontAssignment soundFontAssignment;
 
     /**
      * Creates a new track with the given name and type.
@@ -298,6 +300,28 @@ public final class Track {
         return midiClip;
     }
 
+    // ── SoundFont assignment support ────────────────────────────────────────
+
+    /**
+     * Returns the SoundFont preset assignment for this MIDI track, or
+     * {@code null} if no SoundFont has been assigned.
+     *
+     * @return the SoundFont assignment, or {@code null}
+     */
+    public SoundFontAssignment getSoundFontAssignment() {
+        return soundFontAssignment;
+    }
+
+    /**
+     * Assigns a SoundFont preset to this track. Pass {@code null} to clear
+     * the assignment.
+     *
+     * @param soundFontAssignment the SoundFont assignment, or {@code null}
+     */
+    public void setSoundFontAssignment(SoundFontAssignment soundFontAssignment) {
+        this.soundFontAssignment = soundFontAssignment;
+    }
+
     // ── Folder track support ────────────────────────────────────────────────
 
     /**
@@ -476,6 +500,7 @@ public final class Track {
         copy.setInputMonitoringMode(inputMonitoringMode);
         copy.setInputDeviceIndex(inputDeviceIndex);
         copy.setColor(color);
+        copy.setSoundFontAssignment(soundFontAssignment);
         for (AudioClip clip : clips) {
             copy.addClip(clip.duplicate());
         }

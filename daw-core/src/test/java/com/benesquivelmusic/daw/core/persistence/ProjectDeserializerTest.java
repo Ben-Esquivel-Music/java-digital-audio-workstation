@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.persistence;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.FadeCurveType;
+import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -10,6 +11,7 @@ import com.benesquivelmusic.daw.core.track.TrackType;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -271,5 +273,51 @@ class ProjectDeserializerTest {
         assertThat(restored.getName()).isEqualTo("Minimal");
         assertThat(restored.getTracks()).isEmpty();
         assertThat(restored.getTransport().getTempo()).isEqualTo(120.0);
+    }
+
+    @Test
+    void shouldDeserializeSoundFontAssignment() throws IOException {
+        DawProject original = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track midi = original.createMidiTrack("Piano");
+        midi.setSoundFontAssignment(new SoundFontAssignment(
+                Path.of("/sounds/GeneralUser.sf2"), 0, 0, "Acoustic Grand Piano"));
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        Track restoredMidi = restored.getTracks().get(0);
+        assertThat(restoredMidi.getSoundFontAssignment()).isNotNull();
+        assertThat(restoredMidi.getSoundFontAssignment().soundFontPath())
+                .isEqualTo(Path.of("/sounds/GeneralUser.sf2"));
+        assertThat(restoredMidi.getSoundFontAssignment().bank()).isZero();
+        assertThat(restoredMidi.getSoundFontAssignment().program()).isZero();
+        assertThat(restoredMidi.getSoundFontAssignment().presetName())
+                .isEqualTo("Acoustic Grand Piano");
+    }
+
+    @Test
+    void shouldDeserializeTrackWithoutSoundFontAssignment() throws IOException {
+        DawProject original = new DawProject("Test", AudioFormat.CD_QUALITY);
+        original.createMidiTrack("Synth");
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getTracks().get(0).getSoundFontAssignment()).isNull();
+    }
+
+    @Test
+    void shouldRoundTripSoundFontAssignment() throws IOException {
+        DawProject original = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track midi = original.createMidiTrack("Strings");
+        SoundFontAssignment assignment = new SoundFontAssignment(
+                Path.of("/sf2/FluidR3_GM.sf2"), 0, 48, "String Ensemble 1");
+        midi.setSoundFontAssignment(assignment);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getTracks().get(0).getSoundFontAssignment())
+                .isEqualTo(assignment);
     }
 }

@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.persistence;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.FadeCurveType;
+import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -16,6 +17,7 @@ import javax.xml.parsers.ParserConfigurationException;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
@@ -189,6 +191,15 @@ public final class ProjectDeserializer {
             }
         }
 
+        // Parse SoundFont assignment
+        List<Element> sfElements = getDirectChildElements(elem, "soundfont-assignment");
+        if (!sfElements.isEmpty()) {
+            SoundFontAssignment assignment = parseSoundFontAssignment(sfElements.getFirst());
+            if (assignment != null) {
+                track.setSoundFontAssignment(assignment);
+            }
+        }
+
         return track;
     }
 
@@ -215,6 +226,24 @@ public final class ProjectDeserializer {
         clip.setFadeOutCurveType(parseFadeCurveType(elem.getAttribute("fade-out-curve")));
 
         return clip;
+    }
+
+    private SoundFontAssignment parseSoundFontAssignment(Element elem) {
+        String pathStr = elem.getAttribute("path");
+        if (pathStr.isEmpty()) {
+            return null;
+        }
+        int bank = parseIntAttr(elem, "bank", 0);
+        int program = parseIntAttr(elem, "program", 0);
+        String presetName = elem.getAttribute("preset-name");
+        if (presetName.isEmpty()) {
+            presetName = "Preset " + bank + ":" + program;
+        }
+        try {
+            return new SoundFontAssignment(Path.of(pathStr), bank, program, presetName);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     private void parseMixer(Element mixerElem, DawProject project) {
