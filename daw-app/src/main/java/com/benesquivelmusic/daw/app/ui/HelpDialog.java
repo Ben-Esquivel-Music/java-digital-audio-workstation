@@ -64,6 +64,8 @@ public final class HelpDialog extends Dialog<Void> {
         getDialogPane().setContent(tabPane);
         getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
 
+        DarkThemeHelper.applyTo(this);
+
         setResultConverter(button -> null);
     }
 

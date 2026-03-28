@@ -164,6 +164,8 @@ public final class SettingsDialog extends Dialog<Void> {
         getDialogPane().setContent(tabPane);
         getDialogPane().getButtonTypes().addAll(ButtonType.APPLY, ButtonType.CANCEL);
 
+        DarkThemeHelper.applyTo(this);
+
         setResultConverter(button -> {
             if (button == ButtonType.APPLY) {
                 applySettings();
