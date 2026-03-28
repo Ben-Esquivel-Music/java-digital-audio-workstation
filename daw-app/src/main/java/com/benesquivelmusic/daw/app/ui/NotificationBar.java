@@ -41,6 +41,8 @@ public final class NotificationBar extends HBox {
 
     private PauseTransition autoDismissTimer;
     private NotificationLevel currentLevel;
+    private NotificationHistoryService historyService;
+    private long autoDismissOverrideMillis = -1;
 
     public NotificationBar() {
         getStyleClass().add("notification-bar");
@@ -119,7 +121,50 @@ public final class NotificationBar extends HBox {
         return messageLabel.getText();
     }
 
+    /**
+     * Sets the notification history service used to record warning and error
+     * notifications for the history panel.
+     *
+     * @param historyService the history service, or {@code null} to disable recording
+     */
+    public void setHistoryService(NotificationHistoryService historyService) {
+        this.historyService = historyService;
+    }
+
+    /**
+     * Returns the notification history service, or {@code null} if none is set.
+     */
+    public NotificationHistoryService getHistoryService() {
+        return historyService;
+    }
+
+    /**
+     * Sets a global auto-dismiss timeout override in milliseconds.
+     * When set to a positive value, this overrides the per-level default
+     * durations. Set to {@code -1} to revert to per-level defaults.
+     *
+     * @param millis the auto-dismiss timeout in milliseconds, or -1 for per-level defaults
+     */
+    public void setAutoDismissMillis(long millis) {
+        if (millis <= 0 && millis != -1) {
+            throw new IllegalArgumentException("millis must be positive or -1");
+        }
+        this.autoDismissOverrideMillis = millis;
+    }
+
+    /**
+     * Returns the auto-dismiss timeout override, or {@code -1} if per-level defaults are used.
+     */
+    public long getAutoDismissMillis() {
+        return autoDismissOverrideMillis;
+    }
+
     private void showInternal(NotificationLevel level, String message, Runnable undoAction) {
+        // Record to history service (warnings and errors only)
+        if (historyService != null) {
+            historyService.record(level, message);
+        }
+
         // Cancel any pending auto-dismiss
         if (autoDismissTimer != null) {
             autoDismissTimer.stop();
@@ -158,7 +203,10 @@ public final class NotificationBar extends HBox {
         fadeIn.play();
 
         // Schedule auto-dismiss
-        autoDismissTimer = new PauseTransition(Duration.millis(level.autoDismissMillis()));
+        long dismissMillis = autoDismissOverrideMillis > 0
+                ? autoDismissOverrideMillis
+                : level.autoDismissMillis();
+        autoDismissTimer = new PauseTransition(Duration.millis(dismissMillis));
         autoDismissTimer.setOnFinished(_ -> dismiss());
         autoDismissTimer.play();
     }
