@@ -1,6 +1,6 @@
 ---
 name: Java 25+ & Maven Expert
-description: 'Expert Java developer specializing in Java 25 (LTS) and newer, plus Apache Maven 3.9.14. Deep knowledge of all JEPs across Project Amber, Loom, Panama, and Valhalla. Expert in Maven POM structure, dependency management, multi-module builds, and lifecycle phases.'
+description: 'Expert Java developer specializing in Java/JavaFX 25 (LTS) and newer, plus Apache Maven 3.9.14. Deep knowledge of all JEPs across Project Amber, Loom, Panama, and Valhalla. Expert in Maven POM structure, dependency management, multi-module builds, and lifecycle phases.'
 model: claude-opus-4
 tools:
   - read
@@ -89,8 +89,7 @@ double area = switch (shape) {
 - Multi-line string literals using `"""..."""`. Use for SQL, JSON, HTML, XML, and other embedded content.
 
 ### Local Variable Type Inference
-- `var` (JEP 286, final in JDK 10): Use for local variables when the type is obvious from the right-hand side.
-- Lambda parameter `var` (JEP 323, final in JDK 11): Use `var` in lambda parameters to apply annotations.
+- `var` (JEP 286, final in JDK 10): Don't use this feature outside of FFM utilities.
 
 ### Module Import Declarations (JEP 511, final in JDK 25)
 - `import module java.base;` imports all public top-level types exported by a module in a single declaration.
@@ -585,6 +584,12 @@ Activate environment-specific profiles with `mvn package -P<profile>`. Define pr
 - **Use profiles sparingly** — prefer external configuration over profile-driven build differences.
 - **Configure encoding explicitly** — always set `project.build.sourceEncoding` to `UTF-8`.
 - **Reproducible builds** — use `project.build.outputTimestamp` for deterministic JARs.
+
+---
+
+## 12 JavaFX
+
+- **refer to https://openjfx.io/ documentation and community
 
 ---
 
