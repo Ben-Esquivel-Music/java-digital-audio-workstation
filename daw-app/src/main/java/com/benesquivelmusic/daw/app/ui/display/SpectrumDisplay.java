@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
+import com.benesquivelmusic.daw.sdk.visualization.FrequencyRange;
 import com.benesquivelmusic.daw.sdk.visualization.SpectrumData;
+import com.benesquivelmusic.daw.sdk.visualization.StereoMode;
 
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
@@ -9,6 +11,8 @@ import javafx.scene.paint.Color;
 import javafx.scene.paint.LinearGradient;
 import javafx.scene.paint.Stop;
 import javafx.scene.paint.CycleMethod;
+
+import java.util.Arrays;
 
 /**
  * Real-time animated spectrum analyzer display.
@@ -22,8 +26,11 @@ import javafx.scene.paint.CycleMethod;
  * <ul>
  *   <li>Logarithmic frequency scale (20 Hz – 20 kHz)</li>
  *   <li>Configurable dB range (default: -90 dB to 0 dB)</li>
- *   <li>Gradient color fill from low to high frequencies</li>
- *   <li>Grid lines at standard frequency markers</li>
+ *   <li>Color-coded frequency ranges (sub-bass, bass, mids, high-mids, highs)</li>
+ *   <li>Peak hold display showing maximum level at each frequency</li>
+ *   <li>dB and Hz axis labels</li>
+ *   <li>Pre/post EQ overlay to visualize EQ impact</li>
+ *   <li>Stereo mode: overlaid or split L/R channels</li>
  *   <li>Smooth animated transitions via {@link MeterAnimator}</li>
  * </ul>
  */
@@ -32,18 +39,36 @@ public final class SpectrumDisplay extends Region {
     private static final Color BACKGROUND = Color.web("#0d0d1a");
     private static final Color GRID_COLOR = Color.web("#ffffff", 0.08);
     private static final Color TEXT_COLOR = Color.web("#ffffff", 0.4);
+    private static final Color PEAK_HOLD_COLOR = Color.web("#ffffff", 0.7);
+    private static final Color PRE_EQ_COLOR = Color.web("#ff9800", 0.4);
     private static final double MIN_DB = -90.0;
     private static final double MAX_DB = 0.0;
+    private static final double AXIS_MARGIN_LEFT = 32.0;
+    private static final double AXIS_MARGIN_BOTTOM = 16.0;
+
+    private static final Color SUB_BASS_COLOR = Color.web("#e040fb", 0.85);
+    private static final Color BASS_COLOR = Color.web("#00e5ff", 0.85);
+    private static final Color MIDS_COLOR = Color.web("#00e676", 0.85);
+    private static final Color HIGH_MIDS_COLOR = Color.web("#ffea00", 0.85);
+    private static final Color HIGHS_COLOR = Color.web("#ff1744", 0.85);
 
     private static final double[] FREQ_MARKERS = {
             20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000
     };
 
+    private static final double[] DB_MARKERS = {
+            -90, -80, -70, -60, -50, -40, -30, -20, -10, 0
+    };
+
     private final Canvas canvas;
     private final float[] smoothedBins;
+    private final float[] peakHoldBins;
     private final LinearGradient barGradient;
 
     private SpectrumData data;
+    private SpectrumData preEqData;
+    private StereoMode stereoMode;
+    private SpectrumData rightChannelData;
 
     /**
      * Creates a new spectrum display with the specified number of display bars.
@@ -62,7 +87,9 @@ public final class SpectrumDisplay extends Region {
         heightProperty().addListener((_, _, _) -> render());
 
         smoothedBins = new float[displayBars];
-        java.util.Arrays.fill(smoothedBins, (float) MIN_DB);
+        Arrays.fill(smoothedBins, (float) MIN_DB);
+        peakHoldBins = new float[displayBars];
+        Arrays.fill(peakHoldBins, (float) MIN_DB);
 
         barGradient = new LinearGradient(0, 1, 0, 0, true, CycleMethod.NO_CYCLE,
                 new Stop(0.0, Color.web("#00e5ff", 0.9)),
@@ -70,6 +97,8 @@ public final class SpectrumDisplay extends Region {
                 new Stop(0.8, Color.web("#ffea00", 0.9)),
                 new Stop(1.0, Color.web("#ff1744", 0.9))
         );
+
+        stereoMode = StereoMode.LEFT_RIGHT_OVERLAY;
     }
 
     /**
@@ -88,14 +117,12 @@ public final class SpectrumDisplay extends Region {
         this.data = newData;
         if (newData == null) return;
 
-        // Map FFT bins to display bars using logarithmic frequency mapping
         float[] magnitudes = newData.magnitudesDb();
         int binCount = magnitudes.length;
         double sampleRate = newData.sampleRate();
         int fftSize = newData.fftSize();
 
         for (int bar = 0; bar < smoothedBins.length; bar++) {
-            // Logarithmic frequency mapping
             double fLow = 20.0 * Math.pow(1000.0, (double) bar / smoothedBins.length);
             double fHigh = 20.0 * Math.pow(1000.0, (double) (bar + 1) / smoothedBins.length);
             int binLow = (int) (fLow * fftSize / sampleRate);
@@ -108,12 +135,56 @@ public final class SpectrumDisplay extends Region {
                 if (magnitudes[b] > maxMag) maxMag = magnitudes[b];
             }
 
-            // Smooth animation: fast attack, slow release
             float smoothing = (maxMag > smoothedBins[bar]) ? 0.3f : 0.85f;
             smoothedBins[bar] = smoothing * smoothedBins[bar] + (1.0f - smoothing) * maxMag;
+
+            if (newData.hasPeakHold()) {
+                float[] peakData = newData.peakHoldDb();
+                float peakMax = (float) MIN_DB;
+                for (int b = binLow; b <= binHigh; b++) {
+                    if (peakData[b] > peakMax) peakMax = peakData[b];
+                }
+                peakHoldBins[bar] = peakMax;
+            }
         }
 
         render();
+    }
+
+    /**
+     * Sets the pre-EQ spectrum data for overlay display.
+     *
+     * @param preEq the pre-EQ spectrum snapshot, or {@code null} to clear
+     */
+    public void setPreEqData(SpectrumData preEq) {
+        this.preEqData = preEq;
+    }
+
+    /**
+     * Sets the stereo display mode.
+     *
+     * @param mode the stereo mode
+     */
+    public void setStereoMode(StereoMode mode) {
+        this.stereoMode = mode;
+    }
+
+    /**
+     * Returns the current stereo display mode.
+     *
+     * @return the stereo mode
+     */
+    public StereoMode getStereoMode() {
+        return stereoMode;
+    }
+
+    /**
+     * Sets the right channel spectrum data for stereo display.
+     *
+     * @param rightData the right channel spectrum snapshot
+     */
+    public void setRightChannelData(SpectrumData rightData) {
+        this.rightChannelData = rightData;
     }
 
     /**
@@ -126,50 +197,148 @@ public final class SpectrumDisplay extends Region {
 
         GraphicsContext gc = canvas.getGraphicsContext2D();
 
-        // Clear background
         gc.setFill(BACKGROUND);
         gc.fillRect(0, 0, w, h);
 
-        // Draw grid lines at frequency markers
+        double plotLeft = AXIS_MARGIN_LEFT;
+        double plotBottom = h - AXIS_MARGIN_BOTTOM;
+        double plotWidth = w - plotLeft;
+        double plotHeight = plotBottom;
+
+        drawGrid(gc, plotLeft, plotWidth, plotHeight, plotBottom);
+        drawDbLabels(gc, plotLeft, plotHeight, plotBottom);
+        drawFrequencyLabels(gc, plotLeft, plotWidth, plotBottom, h);
+
+        if (preEqData != null) {
+            drawPreEqOverlay(gc, plotLeft, plotWidth, plotHeight, plotBottom);
+        }
+
+        if (stereoMode == StereoMode.LEFT_RIGHT_SPLIT && rightChannelData != null) {
+            double halfHeight = plotHeight / 2.0;
+            drawSpectrumBars(gc, plotLeft, plotWidth, halfHeight, halfHeight, true);
+            drawSpectrumBars(gc, plotLeft, plotWidth, halfHeight, plotBottom, false);
+        } else {
+            drawSpectrumBars(gc, plotLeft, plotWidth, plotHeight, plotBottom, true);
+        }
+    }
+
+    private void drawGrid(GraphicsContext gc, double plotLeft, double plotWidth,
+                          double plotHeight, double plotBottom) {
         gc.setStroke(GRID_COLOR);
         gc.setLineWidth(1.0);
         for (double freq : FREQ_MARKERS) {
-            double x = frequencyToX(freq, w);
-            if (x >= 0 && x <= w) {
-                gc.strokeLine(x, 0, x, h);
+            double x = plotLeft + frequencyToX(freq, plotWidth);
+            if (x >= plotLeft && x <= plotLeft + plotWidth) {
+                gc.strokeLine(x, 0, x, plotBottom);
             }
         }
-
-        // Draw dB grid lines
-        for (double db = MIN_DB; db <= MAX_DB; db += 10) {
-            double y = dbToY(db, h);
-            gc.strokeLine(0, y, w, y);
+        for (double db : DB_MARKERS) {
+            double y = dbToY(db, plotHeight);
+            gc.strokeLine(plotLeft, y, plotLeft + plotWidth, y);
         }
+    }
 
-        // Draw spectrum bars
-        double barWidth = w / smoothedBins.length;
-        gc.setFill(barGradient);
+    private void drawDbLabels(GraphicsContext gc, double plotLeft, double plotHeight,
+                              double plotBottom) {
+        gc.setFill(TEXT_COLOR);
+        gc.setFont(javafx.scene.text.Font.font(8));
+        for (double db : DB_MARKERS) {
+            double y = dbToY(db, plotHeight);
+            if (y >= 0 && y <= plotBottom) {
+                String label = String.format("%.0f", db);
+                gc.fillText(label, 2, y + 3);
+            }
+        }
+    }
+
+    private void drawFrequencyLabels(GraphicsContext gc, double plotLeft, double plotWidth,
+                                     double plotBottom, double totalHeight) {
+        gc.setFill(TEXT_COLOR);
+        gc.setFont(javafx.scene.text.Font.font(9));
+        for (double freq : FREQ_MARKERS) {
+            double x = plotLeft + frequencyToX(freq, plotWidth);
+            if (x >= plotLeft && x <= plotLeft + plotWidth - 30) {
+                String label = (freq >= 1000)
+                        ? String.format("%.0fk", freq / 1000)
+                        : String.format("%.0f", freq);
+                gc.fillText(label, x + 2, totalHeight - 2);
+            }
+        }
+    }
+
+    private void drawPreEqOverlay(GraphicsContext gc, double plotLeft, double plotWidth,
+                                  double plotHeight, double plotBottom) {
+        if (preEqData == null) return;
+
+        float[] preMag = preEqData.magnitudesDb();
+        int binCount = preMag.length;
+        double sampleRate = preEqData.sampleRate();
+        int fftSize = preEqData.fftSize();
+
+        gc.setStroke(PRE_EQ_COLOR);
+        gc.setLineWidth(1.5);
+        gc.beginPath();
+        boolean started = false;
+
+        for (int bar = 0; bar < smoothedBins.length; bar++) {
+            double fCenter = 20.0 * Math.pow(1000.0, ((double) bar + 0.5) / smoothedBins.length);
+            int bin = (int) (fCenter * fftSize / sampleRate);
+            bin = Math.max(0, Math.min(bin, binCount - 1));
+            double db = Math.max(preMag[bin], MIN_DB);
+
+            double x = plotLeft + frequencyToX(fCenter, plotWidth);
+            double y = dbToY(db, plotHeight);
+            if (!started) {
+                gc.moveTo(x, y);
+                started = true;
+            } else {
+                gc.lineTo(x, y);
+            }
+        }
+        gc.stroke();
+    }
+
+    private void drawSpectrumBars(GraphicsContext gc, double plotLeft, double plotWidth,
+                                  double plotHeight, double plotBottom,
+                                  boolean useColorCoding) {
+        double barWidth = plotWidth / smoothedBins.length;
+
         for (int i = 0; i < smoothedBins.length; i++) {
             double db = smoothedBins[i];
             if (db <= MIN_DB) continue;
 
-            double barHeight = (db - MIN_DB) / (MAX_DB - MIN_DB) * h;
-            double x = i * barWidth;
-            double y = h - barHeight;
+            double barHeight = (db - MIN_DB) / (MAX_DB - MIN_DB) * plotHeight;
+            double x = plotLeft + i * barWidth;
+            double y = plotBottom - barHeight;
+
+            if (useColorCoding) {
+                double fCenter = 20.0 * Math.pow(1000.0, ((double) i + 0.5) / smoothedBins.length);
+                FrequencyRange range = FrequencyRange.forFrequency(fCenter);
+                gc.setFill(colorForRange(range));
+            } else {
+                gc.setFill(barGradient);
+            }
 
             gc.fillRect(x + 1, y, Math.max(barWidth - 2, 1), barHeight);
-        }
 
-        // Draw frequency labels
-        gc.setFill(TEXT_COLOR);
-        gc.setFont(javafx.scene.text.Font.font(9));
-        for (double freq : FREQ_MARKERS) {
-            double x = frequencyToX(freq, w);
-            if (x >= 0 && x <= w - 30) {
-                String label = (freq >= 1000) ? String.format("%.0fk", freq / 1000) : String.format("%.0f", freq);
-                gc.fillText(label, x + 2, h - 4);
+            if (data != null && data.hasPeakHold() && peakHoldBins[i] > MIN_DB) {
+                double peakY = plotBottom
+                        - (peakHoldBins[i] - MIN_DB) / (MAX_DB - MIN_DB) * plotHeight;
+                gc.setStroke(PEAK_HOLD_COLOR);
+                gc.setLineWidth(1.0);
+                gc.strokeLine(x + 1, peakY, x + Math.max(barWidth - 2, 1), peakY);
             }
         }
+    }
+
+    private Color colorForRange(FrequencyRange range) {
+        return switch (range) {
+            case SUB_BASS -> SUB_BASS_COLOR;
+            case BASS -> BASS_COLOR;
+            case MIDS -> MIDS_COLOR;
+            case HIGH_MIDS -> HIGH_MIDS_COLOR;
+            case HIGHS -> HIGHS_COLOR;
+        };
     }
 
     private double frequencyToX(double freq, double width) {
