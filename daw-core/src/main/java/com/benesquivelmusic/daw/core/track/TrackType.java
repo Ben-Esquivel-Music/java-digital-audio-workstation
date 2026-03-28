@@ -17,6 +17,9 @@ public enum TrackType {
     /** The master output track. */
     MASTER,
 
+    /** A folder track that groups child tracks for organizational purposes. */
+    FOLDER,
+
     /** A bed channel track assigned to a fixed speaker position (Dolby Atmos bed). */
     BED_CHANNEL,
 

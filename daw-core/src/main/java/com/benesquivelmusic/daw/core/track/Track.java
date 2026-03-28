@@ -37,6 +37,9 @@ public final class Track {
     private int inputDeviceIndex = NO_INPUT_DEVICE;
     private final List<AudioClip> clips = new ArrayList<>();
     private final AutomationData automationData = new AutomationData();
+    private Track parentTrack;
+    private final List<Track> childTracks = new ArrayList<>();
+    private boolean collapsed;
 
     /**
      * Creates a new track with the given name and type.
@@ -259,6 +262,105 @@ public final class Track {
      */
     public AutomationData getAutomationData() {
         return automationData;
+    }
+
+    // ── Folder track support ────────────────────────────────────────────────
+
+    /**
+     * Returns the parent folder track, or {@code null} if this track is at
+     * the top level.
+     *
+     * @return the parent track, or {@code null}
+     */
+    public Track getParentTrack() {
+        return parentTrack;
+    }
+
+    /**
+     * Sets the parent folder track. Pass {@code null} to make this track
+     * top-level.
+     *
+     * @param parentTrack the parent folder track, or {@code null}
+     */
+    public void setParentTrack(Track parentTrack) {
+        this.parentTrack = parentTrack;
+    }
+
+    /**
+     * Adds a child track to this folder track.
+     *
+     * @param child the track to add as a child
+     * @throws IllegalStateException    if this track is not a folder track
+     * @throws IllegalArgumentException if the child is this track
+     * @throws NullPointerException     if child is {@code null}
+     */
+    public void addChildTrack(Track child) {
+        Objects.requireNonNull(child, "child must not be null");
+        if (type != TrackType.FOLDER) {
+            throw new IllegalStateException("only folder tracks can have children");
+        }
+        if (child == this) {
+            throw new IllegalArgumentException("a track cannot be its own child");
+        }
+        childTracks.add(child);
+        child.setParentTrack(this);
+    }
+
+    /**
+     * Removes a child track from this folder track.
+     *
+     * @param child the track to remove
+     * @return {@code true} if the child was removed
+     */
+    public boolean removeChildTrack(Track child) {
+        boolean removed = childTracks.remove(child);
+        if (removed) {
+            child.setParentTrack(null);
+        }
+        return removed;
+    }
+
+    /**
+     * Returns an unmodifiable view of the child tracks of this folder track.
+     *
+     * @return the list of child tracks (empty for non-folder tracks)
+     */
+    public List<Track> getChildTracks() {
+        return Collections.unmodifiableList(childTracks);
+    }
+
+    /**
+     * Returns whether this folder track is collapsed in the arrangement view.
+     *
+     * @return {@code true} if collapsed
+     */
+    public boolean isCollapsed() {
+        return collapsed;
+    }
+
+    /**
+     * Sets the collapsed state for this folder track.
+     *
+     * @param collapsed {@code true} to collapse
+     */
+    public void setCollapsed(boolean collapsed) {
+        this.collapsed = collapsed;
+    }
+
+    /**
+     * Returns the nesting depth of this track in the folder hierarchy.
+     * A top-level track has depth 0, a child of a folder has depth 1, etc.
+     *
+     * @return the depth (0 for top-level)
+     */
+    public int getDepth() {
+        int depth = 0;
+        Track current = this.parentTrack;
+        while (current != null) {
+            depth++;
+            current = current.getParentTrack();
+        }
+        return depth;
     }
 
     /**
