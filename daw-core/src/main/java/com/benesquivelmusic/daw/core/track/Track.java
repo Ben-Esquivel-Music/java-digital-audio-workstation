@@ -42,6 +42,7 @@ public final class Track {
     private Track parentTrack;
     private final List<Track> childTracks = new ArrayList<>();
     private boolean collapsed;
+    private TrackColor color = TrackColor.RED;
 
     /**
      * Creates a new track with the given name and type.
@@ -79,6 +80,21 @@ public final class Track {
     /** Sets the display name. */
     public void setName(String name) {
         this.name = Objects.requireNonNull(name, "name must not be null");
+    }
+
+    /** Returns the color assigned to this track. */
+    public TrackColor getColor() {
+        return color;
+    }
+
+    /**
+     * Sets the color assigned to this track.
+     *
+     * @param color the track color
+     * @throws NullPointerException if color is {@code null}
+     */
+    public void setColor(TrackColor color) {
+        this.color = Objects.requireNonNull(color, "color must not be null");
     }
 
     /** Returns the volume level (0.0 = silence, 1.0 = unity gain). */
@@ -395,6 +411,7 @@ public final class Track {
         copy.setPhaseInverted(phaseInverted);
         copy.setInputMonitoringMode(inputMonitoringMode);
         copy.setInputDeviceIndex(inputDeviceIndex);
+        copy.setColor(color);
         for (AudioClip clip : clips) {
             copy.addClip(clip.duplicate());
         }

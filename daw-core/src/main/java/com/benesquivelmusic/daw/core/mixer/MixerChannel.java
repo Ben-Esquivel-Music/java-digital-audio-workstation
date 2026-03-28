@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.mixer;
 
 import com.benesquivelmusic.daw.core.audio.EffectsChain;
+import com.benesquivelmusic.daw.core.track.TrackColor;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -33,6 +34,7 @@ public final class MixerChannel {
     private boolean solo;
     private double sendLevel;
     private boolean phaseInverted;
+    private TrackColor color;
     private final List<Send> sends = new ArrayList<>();
     private final List<InsertSlot> insertSlots = new ArrayList<>();
     private final EffectsChain effectsChain = new EffectsChain();
@@ -124,6 +126,25 @@ public final class MixerChannel {
     /** Sets the phase-inverted state. */
     public void setPhaseInverted(boolean phaseInverted) {
         this.phaseInverted = phaseInverted;
+    }
+
+    /**
+     * Returns the color assigned to this mixer channel, or {@code null} if
+     * no color has been assigned.
+     *
+     * @return the channel color, or {@code null}
+     */
+    public TrackColor getColor() {
+        return color;
+    }
+
+    /**
+     * Sets the color for this mixer channel.
+     *
+     * @param color the channel color (may be {@code null} to clear)
+     */
+    public void setColor(TrackColor color) {
+        this.color = color;
     }
 
     /**
