@@ -5,11 +5,9 @@ import com.benesquivelmusic.daw.sdk.export.DitherType;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Objects;
-import java.util.zip.CRC32;
 
 /**
  * Exports audio data to the FLAC (Free Lossless Audio Codec) format.
