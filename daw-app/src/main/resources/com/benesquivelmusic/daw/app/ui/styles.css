@@ -900,3 +900,383 @@
     -fx-font-size: 12px;
     -fx-padding: 6 10 6 10;
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+ *  DIALOG PANE — dark theme for all dialogs
+ * ══════════════════════════════════════════════════════════════════════ */
+.dialog-pane {
+    -fx-background-color: #111111;
+}
+
+.dialog-pane > .content {
+    -fx-background-color: #111111;
+}
+
+.dialog-pane > .button-bar > .container {
+    -fx-background-color: #0d0d0d;
+    -fx-padding: 8 16;
+}
+
+.dialog-pane > .header-panel {
+    -fx-background-color: linear-gradient(to bottom, #151515, #0e0e0e);
+    -fx-padding: 12 16;
+}
+
+.dialog-pane > .header-panel > .label {
+    -fx-text-fill: #e0e0e0;
+    -fx-font-size: 14px;
+    -fx-font-weight: bold;
+}
+
+.dialog-pane .label {
+    -fx-text-fill: #e0e0e0;
+    -fx-font-size: 12px;
+}
+
+/* ── Generic Buttons (in dialogs and forms) ── */
+.button {
+    -fx-background-color: #242424;
+    -fx-text-fill: #e0e0e0;
+    -fx-font-size: 12px;
+    -fx-padding: 6 14;
+    -fx-background-radius: 4;
+    -fx-border-color: #3d3d3d;
+    -fx-border-width: 1;
+    -fx-border-radius: 4;
+    -fx-cursor: hand;
+}
+
+.button:hover {
+    -fx-background-color: #2e2e2e;
+    -fx-border-color: #7c4dff;
+    -fx-effect: dropshadow(gaussian, rgba(124, 77, 255, 0.2), 6, 0, 0, 0);
+}
+
+.button:pressed {
+    -fx-background-color: #1a1a1a;
+    -fx-border-color: #e040fb;
+}
+
+.button:focused {
+    -fx-border-color: #7c4dff;
+    -fx-effect: dropshadow(gaussian, rgba(124, 77, 255, 0.3), 6, 0, 0, 0);
+}
+
+.button:disabled {
+    -fx-opacity: 0.4;
+}
+
+/* Default / OK button accent */
+.button:default {
+    -fx-background-color: #1b3a1b;
+    -fx-border-color: #00c853;
+    -fx-text-fill: #00e676;
+}
+
+.button:default:hover {
+    -fx-background-color: #224422;
+    -fx-border-color: #00e676;
+    -fx-effect: dropshadow(gaussian, rgba(0, 230, 118, 0.3), 6, 0, 0, 0);
+}
+
+/* Cancel button accent */
+.button:cancel {
+    -fx-text-fill: #b0b0b0;
+}
+
+/* ── Text Fields ── */
+.text-field {
+    -fx-background-color: #1a1a1a;
+    -fx-text-fill: #e0e0e0;
+    -fx-prompt-text-fill: #606060;
+    -fx-border-color: #2a2a2a;
+    -fx-border-width: 1;
+    -fx-border-radius: 4;
+    -fx-background-radius: 4;
+    -fx-font-size: 12px;
+    -fx-padding: 6 8;
+}
+
+.text-field:focused {
+    -fx-border-color: #7c4dff;
+    -fx-effect: dropshadow(gaussian, rgba(124, 77, 255, 0.3), 6, 0, 0, 0);
+}
+
+.text-field:hover {
+    -fx-border-color: #3d3d3d;
+}
+
+/* ── Combo Boxes ── */
+.combo-box {
+    -fx-background-color: #1a1a1a;
+    -fx-border-color: #2a2a2a;
+    -fx-border-width: 1;
+    -fx-border-radius: 4;
+    -fx-background-radius: 4;
+}
+
+.combo-box:hover {
+    -fx-border-color: #3d3d3d;
+}
+
+.combo-box:focused {
+    -fx-border-color: #7c4dff;
+    -fx-effect: dropshadow(gaussian, rgba(124, 77, 255, 0.3), 6, 0, 0, 0);
+}
+
+.combo-box .list-cell {
+    -fx-text-fill: #e0e0e0;
+    -fx-background-color: transparent;
+    -fx-font-size: 12px;
+}
+
+.combo-box .arrow-button {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-padding: 0 6;
+}
+
+.combo-box .arrow {
+    -fx-background-color: #808080;
+}
+
+.combo-box-popup > .list-view {
+    -fx-background-color: #1a1a1a;
+    -fx-border-color: #2a2a2a;
+    -fx-border-width: 1;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.6), 10, 0, 0, 4);
+}
+
+.combo-box-popup > .list-view > .virtual-flow > .clipped-container > .sheet > .list-cell {
+    -fx-background-color: #1a1a1a;
+    -fx-text-fill: #e0e0e0;
+    -fx-padding: 6 8;
+    -fx-font-size: 12px;
+}
+
+.combo-box-popup > .list-view > .virtual-flow > .clipped-container > .sheet > .list-cell:hover {
+    -fx-background-color: #2e2e2e;
+}
+
+.combo-box-popup > .list-view > .virtual-flow > .clipped-container > .sheet > .list-cell:selected {
+    -fx-background-color: #242424;
+    -fx-text-fill: #e040fb;
+}
+
+/* ── List Views ── */
+.list-view {
+    -fx-background-color: #0d0d0d;
+    -fx-control-inner-background: #0d0d0d;
+    -fx-border-color: #2a2a2a;
+    -fx-border-width: 1;
+    -fx-border-radius: 4;
+    -fx-background-radius: 4;
+}
+
+.list-cell {
+    -fx-background-color: transparent;
+    -fx-text-fill: #b0b0b0;
+    -fx-font-size: 12px;
+    -fx-padding: 6 8;
+}
+
+.list-cell:hover {
+    -fx-background-color: #1a1a1a;
+}
+
+.list-cell:selected {
+    -fx-background-color: #242424;
+    -fx-text-fill: #e040fb;
+}
+
+.list-cell:selected:hover {
+    -fx-background-color: #2a2a2a;
+    -fx-text-fill: #e040fb;
+}
+
+.list-cell:empty {
+    -fx-background-color: transparent;
+}
+
+/* ── Tab Panes (generic — applies to dialogs) ── */
+.tab-pane > .tab-header-area > .tab-header-background {
+    -fx-background-color: #111111;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab {
+    -fx-background-color: #1a1a1a;
+    -fx-border-color: #2a2a2a;
+    -fx-border-width: 0 1 0 0;
+    -fx-padding: 6 12;
+    -fx-background-radius: 4 4 0 0;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab:hover {
+    -fx-background-color: #222222;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab:selected {
+    -fx-background-color: #242424;
+    -fx-border-color: transparent transparent #e040fb transparent;
+    -fx-border-width: 0 0 2 0;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab > .tab-container > .tab-label {
+    -fx-text-fill: #808080;
+    -fx-font-size: 11px;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab:selected > .tab-container > .tab-label {
+    -fx-text-fill: #e0e0e0;
+    -fx-font-weight: bold;
+}
+
+.tab-pane > .tab-content-area {
+    -fx-background-color: #111111;
+}
+
+/* ── Sliders (generic) ── */
+.slider .track {
+    -fx-background-color: #2e2e2e;
+    -fx-pref-height: 4;
+    -fx-background-radius: 2;
+}
+
+.slider .thumb {
+    -fx-background-color: #7c4dff;
+    -fx-background-radius: 8;
+    -fx-pref-width: 14;
+    -fx-pref-height: 14;
+}
+
+.slider .thumb:hover {
+    -fx-background-color: #e040fb;
+    -fx-effect: dropshadow(gaussian, rgba(224, 64, 251, 0.3), 6, 0, 0, 0);
+}
+
+.slider .thumb:pressed {
+    -fx-background-color: #e040fb;
+}
+
+.slider .axis > .axis-label {
+    -fx-text-fill: #808080;
+    -fx-font-size: 10px;
+}
+
+.slider .axis > .axis-tick-mark {
+    -fx-stroke: #3d3d3d;
+}
+
+.slider .axis > .axis-minor-tick-mark {
+    -fx-stroke: #2a2a2a;
+}
+
+/* ── Scroll Panes ── */
+.scroll-pane {
+    -fx-background-color: #111111;
+    -fx-background: #111111;
+}
+
+.scroll-pane > .viewport {
+    -fx-background-color: #111111;
+}
+
+/* ── Context Menus ── */
+.context-menu {
+    -fx-background-color: #1a1a1a;
+    -fx-border-color: #2a2a2a;
+    -fx-border-width: 1;
+    -fx-border-radius: 4;
+    -fx-background-radius: 4;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.6), 10, 0, 0, 4);
+    -fx-padding: 4;
+}
+
+.menu-item {
+    -fx-background-color: transparent;
+    -fx-padding: 6 16;
+}
+
+.menu-item > .label {
+    -fx-text-fill: #e0e0e0;
+    -fx-font-size: 12px;
+}
+
+.menu-item:hover,
+.menu-item:focused {
+    -fx-background-color: #242424;
+}
+
+.menu-item:hover > .label,
+.menu-item:focused > .label {
+    -fx-text-fill: #e040fb;
+}
+
+.menu-item:disabled > .label {
+    -fx-text-fill: #555555;
+}
+
+.separator-menu-item > .line {
+    -fx-border-color: #2a2a2a;
+    -fx-border-width: 1 0 0 0;
+}
+
+/* ── Check Boxes ── */
+.check-box {
+    -fx-text-fill: #e0e0e0;
+    -fx-font-size: 12px;
+}
+
+.check-box > .box {
+    -fx-background-color: #1a1a1a;
+    -fx-border-color: #3d3d3d;
+    -fx-border-width: 1;
+    -fx-border-radius: 3;
+    -fx-background-radius: 3;
+    -fx-padding: 2;
+}
+
+.check-box:hover > .box {
+    -fx-border-color: #7c4dff;
+}
+
+.check-box:selected > .box {
+    -fx-background-color: #7c4dff;
+    -fx-border-color: #7c4dff;
+}
+
+.check-box:selected > .box > .mark {
+    -fx-background-color: #ffffff;
+}
+
+/* ── Grid Pane labels in dialogs ── */
+.grid-pane .label {
+    -fx-text-fill: #b0b0b0;
+    -fx-font-size: 12px;
+}
+
+/* ── Dialog section headers ── */
+.dialog-section-header {
+    -fx-text-fill: #e040fb;
+    -fx-font-size: 13px;
+    -fx-font-weight: bold;
+}
+
+/* ── Dialog hint labels ── */
+.dialog-hint {
+    -fx-text-fill: #808080;
+    -fx-font-size: 11px;
+}
+
+/* ── Dialog warning labels ── */
+.dialog-warning {
+    -fx-text-fill: #ff9100;
+    -fx-font-size: 10px;
+}
+
+/* ── Shortcut category header in Help dialog ── */
+.shortcut-category-header {
+    -fx-text-fill: #b388ff;
+    -fx-font-weight: bold;
+    -fx-font-size: 12px;
+}

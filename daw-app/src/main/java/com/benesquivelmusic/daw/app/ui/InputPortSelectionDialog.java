@@ -69,6 +69,8 @@ public final class InputPortSelectionDialog extends Dialog<AudioDeviceInfo> {
         getDialogPane().setContent(content);
         getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
 
+        DarkThemeHelper.applyTo(this);
+
         setResultConverter(button -> {
             if (button == ButtonType.OK) {
                 return deviceListView.getSelectionModel().getSelectedItem();

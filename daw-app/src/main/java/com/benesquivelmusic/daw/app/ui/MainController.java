@@ -1443,6 +1443,7 @@ public final class MainController {
                     ButtonType.OK);
             alert.setTitle("Cannot Record");
             alert.setHeaderText("No Armed Tracks");
+            DarkThemeHelper.applyTo(alert);
             alert.showAndWait();
             return;
         }
@@ -1743,6 +1744,7 @@ public final class MainController {
             summaryDialog.setTitle("Import Summary");
             summaryDialog.setHeaderText("Session imported successfully");
             summaryDialog.setContentText(summary);
+            DarkThemeHelper.applyTo(summaryDialog);
             summaryDialog.showAndWait();
 
             statusBarLabel.setText("Imported session: " + result.sessionData().projectName());
@@ -1793,6 +1795,7 @@ public final class MainController {
                 warningDialog.setTitle("Export Warnings");
                 warningDialog.setHeaderText("Session exported with warnings");
                 warningDialog.setContentText(warningText.toString());
+                DarkThemeHelper.applyTo(warningDialog);
                 warningDialog.showAndWait();
             }
 
@@ -1824,6 +1827,7 @@ public final class MainController {
         ButtonType discardBtn = new ButtonType("Discard");
         ButtonType cancelBtn = ButtonType.CANCEL;
         alert.getButtonTypes().setAll(saveBtn, discardBtn, cancelBtn);
+        DarkThemeHelper.applyTo(alert);
 
         Optional<ButtonType> result = alert.showAndWait();
         if (result.isEmpty() || result.get() == cancelBtn) {

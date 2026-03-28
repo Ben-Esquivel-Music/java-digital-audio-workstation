@@ -154,6 +154,8 @@ public final class AtmosSessionConfigDialog extends Dialog<AtmosSessionConfig> {
         getDialogPane().setContent(tabPane);
         getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
 
+        DarkThemeHelper.applyTo(this);
+
         Button exportButton = (Button) getDialogPane().lookupButton(ButtonType.OK);
         exportButton.setText("Export ADM BWF");
         exportButton.setOnAction(event -> {

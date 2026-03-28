@@ -150,6 +150,8 @@ public final class PluginManagerDialog extends Dialog<Void> {
 
         getDialogPane().setContent(content);
         getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
+
+        DarkThemeHelper.applyTo(this);
     }
 
     private void browseForJar() {
@@ -205,6 +207,7 @@ public final class PluginManagerDialog extends Dialog<Void> {
         alert.setHeaderText(null);
         alert.setContentText(message);
         alert.setGraphic(IconNode.of(DawIcon.ERROR, 32));
+        DarkThemeHelper.applyTo(alert);
         alert.showAndWait();
     }
 
