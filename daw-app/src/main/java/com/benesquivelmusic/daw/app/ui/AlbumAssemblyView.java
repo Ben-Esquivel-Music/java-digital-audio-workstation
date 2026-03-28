@@ -4,7 +4,6 @@ import com.benesquivelmusic.daw.app.ui.display.WaveformDisplay;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.mastering.AlbumSequence;
-import com.benesquivelmusic.daw.core.mastering.CrossfadeGenerator;
 import com.benesquivelmusic.daw.sdk.mastering.AlbumExportType;
 import com.benesquivelmusic.daw.sdk.mastering.AlbumTrackEntry;
 import com.benesquivelmusic.daw.sdk.mastering.CrossfadeCurve;
