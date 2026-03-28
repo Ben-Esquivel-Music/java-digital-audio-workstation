@@ -87,6 +87,8 @@ public enum DawAction {
             new KeyCodeCombination(KeyCode.DIGIT5, KeyCombination.SHORTCUT_DOWN)),
     TOGGLE_BROWSER("Toggle Browser", Category.VIEWS,
             new KeyCodeCombination(KeyCode.B, KeyCombination.SHORTCUT_DOWN)),
+    TOGGLE_HISTORY("Toggle Undo History", Category.VIEWS,
+            new KeyCodeCombination(KeyCode.H, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
     TOGGLE_VISUALIZATIONS("Toggle Visualizations", Category.VIEWS,
             new KeyCodeCombination(KeyCode.V, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
 

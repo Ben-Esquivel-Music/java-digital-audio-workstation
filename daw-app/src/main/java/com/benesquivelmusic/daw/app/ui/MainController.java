@@ -157,6 +157,7 @@ public final class MainController {
     @FXML private Button exportSessionButton;
     @FXML private Button browserButton;
     @FXML private Button searchButton;
+    @FXML private Button historyButton;
     @FXML private Button pluginsSidebarButton;
     @FXML private Button visualizationsButton;
     @FXML private Button settingsButton;
@@ -225,6 +226,12 @@ public final class MainController {
     /** Controls the browser/library side panel toggle. */
     private BrowserPanelController browserPanelController;
 
+    // ── Undo history panel ───────────────────────────────────────────────────
+    /** The undo history panel displayed on the right side of the root pane. */
+    private UndoHistoryPanel undoHistoryPanel;
+    /** Whether the undo history panel is currently visible. */
+    private boolean historyPanelVisible;
+
     // ── Toolbar collapse controller ──────────────────────────────────────────
     /** Controls the sidebar toolbar collapse/expand toggle and persistence. */
     private ToolbarCollapseController toolbarCollapseController;
@@ -272,6 +279,13 @@ public final class MainController {
         project = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
         pluginRegistry = new PluginRegistry();
         undoManager = new UndoManager();
+        undoManager.addHistoryListener(manager -> {
+            if (javafx.application.Platform.isFxApplicationThread()) {
+                updateUndoRedoState();
+            } else {
+                javafx.application.Platform.runLater(this::updateUndoRedoState);
+            }
+        });
         audioEngine = new AudioEngine(project.getFormat());
 
         CheckpointManager checkpointManager = new CheckpointManager(AutoSaveConfig.DEFAULT);
@@ -296,6 +310,7 @@ public final class MainController {
         preventButtonTruncation();
         buildVisualizationTiles();
         buildBrowserPanel(toolbarStateStore.loadBrowserVisible());
+        buildHistoryPanel();
         setupTempoEditor();
         initializeNotificationBar();
         updateStatus();
@@ -893,6 +908,7 @@ public final class MainController {
         exportSessionButton.setGraphic(IconNode.of(DawIcon.UPLOAD, TOOLBAR_ICON_SIZE));
         browserButton.setGraphic(IconNode.of(DawIcon.LIBRARY, TOOLBAR_ICON_SIZE));
         searchButton.setGraphic(IconNode.of(DawIcon.SEARCH, TOOLBAR_ICON_SIZE));
+        historyButton.setGraphic(IconNode.of(DawIcon.HISTORY, TOOLBAR_ICON_SIZE));
         pluginsSidebarButton.setGraphic(IconNode.of(DawIcon.EQUALIZER, TOOLBAR_ICON_SIZE));
         visualizationsButton.setGraphic(IconNode.of(DawIcon.SPECTRUM, TOOLBAR_ICON_SIZE));
         settingsButton.setGraphic(IconNode.of(DawIcon.SETTINGS, TOOLBAR_ICON_SIZE));
@@ -968,6 +984,9 @@ public final class MainController {
                         + shortcutSuffix(DawAction.TOGGLE_BROWSER)));
         searchButton.setTooltip(styledTooltip(
                 "Search \u2014 Find tracks, clips, and project items"));
+        historyButton.setTooltip(styledTooltip(
+                "Undo History \u2014 Browse and navigate undo history"
+                        + shortcutSuffix(DawAction.TOGGLE_HISTORY)));
         pluginsSidebarButton.setTooltip(styledTooltip(
                 "Plugins \u2014 Browse and manage audio plugins"));
         visualizationsButton.setTooltip(styledTooltip(
@@ -1076,7 +1095,13 @@ public final class MainController {
         actionHandlers.put(DawAction.VIEW_EDITOR, () -> switchView(DawView.EDITOR));
         actionHandlers.put(DawAction.VIEW_TELEMETRY, () -> switchView(DawView.TELEMETRY));
         actionHandlers.put(DawAction.VIEW_MASTERING, () -> switchView(DawView.MASTERING));
-        actionHandlers.put(DawAction.TOGGLE_BROWSER, () -> browserPanelController.toggleBrowserPanel());
+        actionHandlers.put(DawAction.TOGGLE_BROWSER, () -> {
+            if (historyPanelVisible) {
+                toggleHistoryPanel();
+            }
+            browserPanelController.toggleBrowserPanel();
+        });
+        actionHandlers.put(DawAction.TOGGLE_HISTORY, this::toggleHistoryPanel);
         actionHandlers.put(DawAction.TOGGLE_VISUALIZATIONS, () -> vizPanelController.toggleRowVisibility());
         actionHandlers.put(DawAction.OPEN_SETTINGS, this::onOpenSettings);
         actionHandlers.put(DawAction.TOGGLE_TOOLBAR, this::onToggleToolbar);
@@ -1220,8 +1245,13 @@ public final class MainController {
         BrowserPanel browserPanel = new BrowserPanel();
         browserPanelController = new BrowserPanelController(
                 browserPanel, browserButton, rootPane);
-        browserPanelController.setOnVisibilityChanged(
-                () -> toolbarStateStore.saveBrowserVisible(browserPanelController.isPanelVisible()));
+        browserPanelController.setOnVisibilityChanged(() -> {
+            toolbarStateStore.saveBrowserVisible(browserPanelController.isPanelVisible());
+            if (browserPanelController.isPanelVisible() && historyPanelVisible) {
+                historyPanelVisible = false;
+                updateHistoryButtonActiveState();
+            }
+        });
         browserPanelController.initialize();
 
         if (initiallyVisible) {
@@ -1229,6 +1259,83 @@ public final class MainController {
         }
 
         LOG.fine("Built browser panel with toolbar toggle");
+    }
+
+    /**
+     * Builds the undo history panel and wires the sidebar history button.
+     */
+    private void buildHistoryPanel() {
+        undoHistoryPanel = new UndoHistoryPanel(undoManager);
+        historyButton.setOnAction(event -> toggleHistoryPanel());
+        LOG.fine("Built undo history panel");
+    }
+
+    /**
+     * Disposes the current history panel and creates a new one bound to the
+     * current {@link UndoManager}. Called after creating a new project or
+     * opening an existing one.
+     */
+    private void rebuildHistoryPanel() {
+        if (undoHistoryPanel != null) {
+            undoHistoryPanel.dispose();
+        }
+        undoManager.addHistoryListener(manager -> {
+            if (javafx.application.Platform.isFxApplicationThread()) {
+                updateUndoRedoState();
+            } else {
+                javafx.application.Platform.runLater(this::updateUndoRedoState);
+            }
+        });
+        undoHistoryPanel = new UndoHistoryPanel(undoManager);
+        if (historyPanelVisible) {
+            rootPane.setRight(undoHistoryPanel);
+        }
+    }
+
+    /**
+     * Toggles the undo history panel on the right side of the root pane.
+     * If the browser panel is visible when the history panel is shown,
+     * the browser panel is hidden first.
+     */
+    void toggleHistoryPanel() {
+        historyPanelVisible = !historyPanelVisible;
+        if (historyPanelVisible) {
+            if (browserPanelController.isPanelVisible()) {
+                browserPanelController.toggleBrowserPanel();
+            }
+            undoHistoryPanel.setOpacity(0.0);
+            rootPane.setRight(undoHistoryPanel);
+            javafx.animation.Timeline timeline = new javafx.animation.Timeline(
+                    new javafx.animation.KeyFrame(
+                            javafx.util.Duration.millis(250),
+                            new javafx.animation.KeyValue(undoHistoryPanel.opacityProperty(), 1.0))
+            );
+            timeline.play();
+            statusBarLabel.setText("Undo History panel opened");
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.HISTORY, 12));
+        } else {
+            javafx.animation.Timeline timeline = new javafx.animation.Timeline(
+                    new javafx.animation.KeyFrame(
+                            javafx.util.Duration.millis(250),
+                            new javafx.animation.KeyValue(undoHistoryPanel.opacityProperty(), 0.0))
+            );
+            timeline.setOnFinished(event -> rootPane.setRight(null));
+            timeline.play();
+            statusBarLabel.setText("Undo History panel closed");
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.HISTORY, 12));
+        }
+        updateHistoryButtonActiveState();
+    }
+
+    private void updateHistoryButtonActiveState() {
+        List<String> styles = historyButton.getStyleClass();
+        if (historyPanelVisible) {
+            if (!styles.contains("toolbar-button-active")) {
+                styles.add("toolbar-button-active");
+            }
+        } else {
+            styles.remove("toolbar-button-active");
+        }
     }
 
     /**
@@ -1538,6 +1645,7 @@ public final class MainController {
         resetProjectState();
         project = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
         undoManager = new UndoManager();
+        rebuildHistoryPanel();
         audioTrackCounter = 0;
         midiTrackCounter = 0;
         projectDirty = false;
@@ -1623,6 +1731,7 @@ public final class MainController {
             resetProjectState();
             project = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
             undoManager = new UndoManager();
+            rebuildHistoryPanel();
             audioTrackCounter = 0;
             midiTrackCounter = 0;
             sessionInterchangeController.applySessionData(result.sessionData(), project);
@@ -1734,6 +1843,7 @@ public final class MainController {
                     projectManager.getCurrentProject().name(),
                     AudioFormat.STUDIO_QUALITY);
             undoManager = new UndoManager();
+            rebuildHistoryPanel();
             audioTrackCounter = 0;
             midiTrackCounter = 0;
             projectDirty = false;

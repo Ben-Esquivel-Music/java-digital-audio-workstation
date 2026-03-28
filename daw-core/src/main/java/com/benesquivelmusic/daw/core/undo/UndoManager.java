@@ -1,8 +1,12 @@
 package com.benesquivelmusic.daw.core.undo;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
+import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Manages an undo/redo history of {@link UndoableAction} instances.
@@ -14,6 +18,10 @@ import java.util.Objects;
  *
  * <p>The history is capped at a configurable maximum depth. When the limit is
  * exceeded, the oldest actions are silently discarded.</p>
+ *
+ * <p>{@link UndoHistoryListener} instances may be registered to receive
+ * notifications whenever the undo/redo state changes (e.g. for updating an
+ * undo history panel in the UI).</p>
  */
 public final class UndoManager {
 
@@ -23,6 +31,7 @@ public final class UndoManager {
     private final int maxHistory;
     private final Deque<UndoableAction> undoStack = new ArrayDeque<>();
     private final Deque<UndoableAction> redoStack = new ArrayDeque<>();
+    private final List<UndoHistoryListener> listeners = new CopyOnWriteArrayList<>();
 
     /**
      * Creates an {@code UndoManager} with the default history limit.
@@ -55,6 +64,7 @@ public final class UndoManager {
         undoStack.push(action);
         redoStack.clear();
         trimHistory();
+        fireHistoryChanged();
     }
 
     /**
@@ -69,6 +79,7 @@ public final class UndoManager {
         UndoableAction action = undoStack.pop();
         action.undo();
         redoStack.push(action);
+        fireHistoryChanged();
         return true;
     }
 
@@ -85,7 +96,86 @@ public final class UndoManager {
         action.execute();
         undoStack.push(action);
         trimHistory();
+        fireHistoryChanged();
         return true;
+    }
+
+    /**
+     * Undoes or redoes actions to move the current position to the given
+     * index in the combined history list returned by {@link #getHistory()}.
+     *
+     * <p>The history list is ordered oldest-first. Index 0 is the oldest
+     * action on the undo stack; index {@code undoSize() - 1} is the most
+     * recent action executed (the current position). Indices beyond the undo
+     * stack correspond to actions on the redo stack.</p>
+     *
+     * <p>If the target index is less than the current position, actions are
+     * undone until the current position equals the target. If the target is
+     * greater, actions are redone. If the target equals the current position,
+     * this method is a no-op.</p>
+     *
+     * @param targetIndex the target index in the history list (0-based)
+     * @throws IndexOutOfBoundsException if the index is out of range
+     */
+    public void goToHistoryIndex(int targetIndex) {
+        int totalSize = undoStack.size() + redoStack.size();
+        if (targetIndex < -1 || targetIndex >= totalSize) {
+            throw new IndexOutOfBoundsException(
+                    "targetIndex out of range: " + targetIndex
+                            + " (history size: " + totalSize + ")");
+        }
+        int currentIndex = undoStack.size() - 1;
+        if (targetIndex < currentIndex) {
+            int steps = currentIndex - targetIndex;
+            for (int i = 0; i < steps; i++) {
+                UndoableAction action = undoStack.pop();
+                action.undo();
+                redoStack.push(action);
+            }
+            fireHistoryChanged();
+        } else if (targetIndex > currentIndex) {
+            int steps = targetIndex - currentIndex;
+            for (int i = 0; i < steps; i++) {
+                UndoableAction action = redoStack.pop();
+                action.execute();
+                undoStack.push(action);
+            }
+            trimHistory();
+            fireHistoryChanged();
+        }
+    }
+
+    /**
+     * Returns the current position in the history, which is the index of the
+     * most recently executed (or redone) action. Returns {@code -1} if the
+     * undo stack is empty (i.e. the user is at the very beginning).
+     *
+     * @return the current history index, or {@code -1}
+     */
+    public int getCurrentHistoryIndex() {
+        return undoStack.size() - 1;
+    }
+
+    /**
+     * Returns a combined, unmodifiable list of all actions in the history,
+     * ordered from oldest (index 0) to newest. Actions on the undo stack
+     * come first, followed by actions on the redo stack. The "current
+     * position" is at index {@link #getCurrentHistoryIndex()}: all actions
+     * at that index and below have been executed; those above have been
+     * undone and are available for redo.
+     *
+     * @return an unmodifiable list of all history actions
+     */
+    public List<UndoableAction> getHistory() {
+        List<UndoableAction> history = new ArrayList<>(undoStack.size() + redoStack.size());
+        // undoStack is a LIFO deque — iterate in reverse to get oldest-first
+        List<UndoableAction> undoList = new ArrayList<>(undoStack);
+        Collections.reverse(undoList);
+        history.addAll(undoList);
+        // redoStack is also LIFO — top of redo is the next to redo, which
+        // should appear right after the current position
+        history.addAll(redoStack);
+        return Collections.unmodifiableList(history);
     }
 
     /** Returns {@code true} if there is at least one action that can be undone. */
@@ -128,6 +218,7 @@ public final class UndoManager {
     public void clear() {
         undoStack.clear();
         redoStack.clear();
+        fireHistoryChanged();
     }
 
     /** Returns the maximum history depth. */
@@ -135,9 +226,34 @@ public final class UndoManager {
         return maxHistory;
     }
 
+    /**
+     * Adds a listener that will be notified whenever the undo/redo history changes.
+     *
+     * @param listener the listener to add
+     */
+    public void addHistoryListener(UndoHistoryListener listener) {
+        Objects.requireNonNull(listener, "listener must not be null");
+        listeners.add(listener);
+    }
+
+    /**
+     * Removes a previously registered history listener.
+     *
+     * @param listener the listener to remove
+     */
+    public void removeHistoryListener(UndoHistoryListener listener) {
+        listeners.remove(listener);
+    }
+
     private void trimHistory() {
         while (undoStack.size() > maxHistory) {
             undoStack.removeLast();
+        }
+    }
+
+    private void fireHistoryChanged() {
+        for (UndoHistoryListener listener : listeners) {
+            listener.historyChanged(this);
         }
     }
 }
