@@ -6,6 +6,7 @@ import java.util.Objects;
  * Metadata for a single track within an album sequence.
  *
  * @param title             the track title
+ * @param artist            the track artist (may be {@code null} to inherit album artist)
  * @param isrc              the International Standard Recording Code (may be {@code null})
  * @param durationSeconds   the track duration in seconds
  * @param preGapSeconds     the silent gap before this track (0–10 seconds)
@@ -14,6 +15,7 @@ import java.util.Objects;
  */
 public record AlbumTrackEntry(
         String title,
+        String artist,
         String isrc,
         double durationSeconds,
         double preGapSeconds,
@@ -51,8 +53,30 @@ public record AlbumTrackEntry(
      * @return a new album track entry
      */
     public static AlbumTrackEntry of(String title, double durationSeconds) {
-        return new AlbumTrackEntry(title, null, durationSeconds,
+        return new AlbumTrackEntry(title, null, null, durationSeconds,
                 DEFAULT_PRE_GAP_SECONDS, 0.0, CrossfadeCurve.LINEAR);
+    }
+
+    /**
+     * Returns a copy of this entry with an updated artist.
+     *
+     * @param newArtist the new artist name (may be {@code null})
+     * @return a new entry with the updated artist
+     */
+    public AlbumTrackEntry withArtist(String newArtist) {
+        return new AlbumTrackEntry(title, newArtist, isrc, durationSeconds,
+                preGapSeconds, crossfadeDuration, crossfadeCurve);
+    }
+
+    /**
+     * Returns a copy of this entry with an updated ISRC code.
+     *
+     * @param newIsrc the new ISRC code (may be {@code null})
+     * @return a new entry with the updated ISRC
+     */
+    public AlbumTrackEntry withIsrc(String newIsrc) {
+        return new AlbumTrackEntry(title, artist, newIsrc, durationSeconds,
+                preGapSeconds, crossfadeDuration, crossfadeCurve);
     }
 
     /**
@@ -62,7 +86,7 @@ public record AlbumTrackEntry(
      * @return a new entry with the updated gap
      */
     public AlbumTrackEntry withPreGapSeconds(double newPreGapSeconds) {
-        return new AlbumTrackEntry(title, isrc, durationSeconds,
+        return new AlbumTrackEntry(title, artist, isrc, durationSeconds,
                 newPreGapSeconds, crossfadeDuration, crossfadeCurve);
     }
 
@@ -74,7 +98,7 @@ public record AlbumTrackEntry(
      * @return a new entry with the updated crossfade
      */
     public AlbumTrackEntry withCrossfade(double newDuration, CrossfadeCurve newCurve) {
-        return new AlbumTrackEntry(title, isrc, durationSeconds,
+        return new AlbumTrackEntry(title, artist, isrc, durationSeconds,
                 preGapSeconds, newDuration, newCurve);
     }
 }

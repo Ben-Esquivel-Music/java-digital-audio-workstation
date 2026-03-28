@@ -122,7 +122,7 @@ class AlbumSequenceTest {
     void shouldComputeStartTimesWithCrossfades() {
         AlbumSequence seq = new AlbumSequence("Album", "Artist");
         seq.addTrack(AlbumTrackEntry.of("Track 1", 180.0));
-        seq.addTrack(new AlbumTrackEntry("Track 2", null, 240.0,
+        seq.addTrack(new AlbumTrackEntry("Track 2", null, null, 240.0,
                 0.0, 5.0, CrossfadeCurve.S_CURVE));
 
         List<Double> startTimes = seq.getTrackStartTimes();
@@ -135,9 +135,9 @@ class AlbumSequenceTest {
     @Test
     void shouldGeneratePqSheet() {
         AlbumSequence seq = new AlbumSequence("Test Album", "Test Artist");
-        seq.addTrack(new AlbumTrackEntry("Opening", "USRC11111111", 180.0,
+        seq.addTrack(new AlbumTrackEntry("Opening", null, "USRC11111111", 180.0,
                 0.0, 0.0, CrossfadeCurve.LINEAR));
-        seq.addTrack(new AlbumTrackEntry("Main Theme", "USRC22222222", 240.0,
+        seq.addTrack(new AlbumTrackEntry("Main Theme", null, "USRC22222222", 240.0,
                 2.0, 0.0, CrossfadeCurve.LINEAR));
 
         String pqSheet = seq.generatePqSheet();
@@ -228,5 +228,65 @@ class AlbumSequenceTest {
 
         // First track's pre-gap is excluded
         assertThat(seq.getTotalDurationSeconds()).isCloseTo(300.0, offset(0.001));
+    }
+
+    @Test
+    void shouldGenerateCueSheet() {
+        AlbumSequence seq = new AlbumSequence("Test Album", "Test Artist");
+        seq.addTrack(new AlbumTrackEntry("Opening", "Artist A", "USRC11111111", 180.0,
+                0.0, 0.0, CrossfadeCurve.LINEAR));
+        seq.addTrack(new AlbumTrackEntry("Main Theme", null, "USRC22222222", 240.0,
+                2.0, 0.0, CrossfadeCurve.LINEAR));
+
+        String cueSheet = seq.generateCueSheet();
+
+        assertThat(cueSheet).contains("TITLE \"Test Album\"");
+        assertThat(cueSheet).contains("PERFORMER \"Test Artist\"");
+        assertThat(cueSheet).contains("TRACK 01 AUDIO");
+        assertThat(cueSheet).contains("TRACK 02 AUDIO");
+        assertThat(cueSheet).contains("TITLE \"Opening\"");
+        assertThat(cueSheet).contains("TITLE \"Main Theme\"");
+        assertThat(cueSheet).contains("PERFORMER \"Artist A\"");
+        assertThat(cueSheet).contains("ISRC USRC11111111");
+        assertThat(cueSheet).contains("ISRC USRC22222222");
+        assertThat(cueSheet).contains("INDEX 01");
+    }
+
+    @Test
+    void cueSheetShouldIncludePreGap() {
+        AlbumSequence seq = new AlbumSequence("Album", "Artist");
+        seq.addTrack(AlbumTrackEntry.of("T1", 60.0).withPreGapSeconds(0.0));
+        seq.addTrack(AlbumTrackEntry.of("T2", 60.0).withPreGapSeconds(3.0));
+
+        String cueSheet = seq.generateCueSheet();
+
+        assertThat(cueSheet).contains("PREGAP");
+    }
+
+    @Test
+    void cueSheetShouldOmitArtistWhenNull() {
+        AlbumSequence seq = new AlbumSequence("Album", "Artist");
+        seq.addTrack(AlbumTrackEntry.of("T1", 60.0));
+
+        String cueSheet = seq.generateCueSheet();
+
+        // Should not contain a PERFORMER line for the track
+        long performerCount = cueSheet.lines()
+                .filter(line -> line.trim().startsWith("PERFORMER"))
+                .count();
+        // Only the album-level PERFORMER
+        assertThat(performerCount).isEqualTo(1);
+    }
+
+    @Test
+    void pqSheetShouldIncludeArtistColumn() {
+        AlbumSequence seq = new AlbumSequence("Album", "Artist");
+        seq.addTrack(new AlbumTrackEntry("Track 1", "Track Artist", null, 180.0,
+                0.0, 0.0, CrossfadeCurve.LINEAR));
+
+        String pqSheet = seq.generatePqSheet();
+
+        assertThat(pqSheet).contains("Artist");
+        assertThat(pqSheet).contains("Track Artist");
     }
 }

@@ -177,21 +177,64 @@ public final class AlbumSequence {
         sb.append("Artist: ").append(artist).append('\n');
         sb.append(String.format("Total Duration: %s%n", formatTime(getTotalDurationSeconds())));
         sb.append('\n');
-        sb.append(String.format("%-6s %-12s %-12s %-40s %-15s%n",
-                "Track", "Start", "Duration", "Title", "ISRC"));
-        sb.append("-".repeat(85)).append('\n');
+        sb.append(String.format("%-6s %-12s %-12s %-30s %-20s %-15s%n",
+                "Track", "Start", "Duration", "Title", "Artist", "ISRC"));
+        sb.append("-".repeat(95)).append('\n');
 
         List<Double> startTimes = getTrackStartTimes();
         for (int i = 0; i < tracks.size(); i++) {
             AlbumTrackEntry entry = tracks.get(i);
-            sb.append(String.format("%-6d %-12s %-12s %-40s %-15s%n",
+            sb.append(String.format("%-6d %-12s %-12s %-30s %-20s %-15s%n",
                     i + 1,
                     formatTime(startTimes.get(i)),
                     formatTime(entry.durationSeconds()),
                     entry.title(),
+                    entry.artist() != null ? entry.artist() : "",
                     entry.isrc() != null ? entry.isrc() : ""));
         }
         return sb.toString();
+    }
+
+    /**
+     * Generates a cue sheet as a formatted string.
+     *
+     * <p>A cue sheet lists the album metadata followed by each track's number,
+     * title, artist, start time, duration, and ISRC code — commonly used for
+     * disc replication and digital distribution workflows.</p>
+     *
+     * @return the cue sheet text
+     */
+    public String generateCueSheet() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("TITLE \"").append(albumTitle).append("\"\n");
+        sb.append("PERFORMER \"").append(artist).append("\"\n");
+        sb.append('\n');
+
+        List<Double> startTimes = getTrackStartTimes();
+        for (int i = 0; i < tracks.size(); i++) {
+            AlbumTrackEntry entry = tracks.get(i);
+            sb.append("  TRACK ").append(String.format("%02d", i + 1)).append(" AUDIO\n");
+            sb.append("    TITLE \"").append(entry.title()).append("\"\n");
+            if (entry.artist() != null) {
+                sb.append("    PERFORMER \"").append(entry.artist()).append("\"\n");
+            }
+            if (entry.isrc() != null) {
+                sb.append("    ISRC ").append(entry.isrc()).append('\n');
+            }
+            if (i > 0 && entry.preGapSeconds() > 0) {
+                sb.append("    PREGAP ").append(formatCueTime(entry.preGapSeconds())).append('\n');
+            }
+            sb.append("    INDEX 01 ").append(formatCueTime(startTimes.get(i))).append('\n');
+        }
+        return sb.toString();
+    }
+
+    private static String formatCueTime(double seconds) {
+        int mins = (int) (seconds / 60);
+        double secs = seconds - mins * 60;
+        int wholeSecs = (int) secs;
+        int frames = (int) ((secs - wholeSecs) * 75);
+        return String.format("%02d:%02d:%02d", mins, wholeSecs, frames);
     }
 
     private static String formatTime(double seconds) {
