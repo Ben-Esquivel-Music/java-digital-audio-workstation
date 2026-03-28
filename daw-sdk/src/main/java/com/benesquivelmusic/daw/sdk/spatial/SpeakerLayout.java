@@ -36,6 +36,10 @@ public record SpeakerLayout(String name, List<SpeakerLabel> speakers) {
     public static final SpeakerLayout LAYOUT_STEREO = new SpeakerLayout("Stereo", List.of(
             SpeakerLabel.L, SpeakerLabel.R));
 
+    /** Mono — Single-channel layout (1 channel, center). */
+    public static final SpeakerLayout LAYOUT_MONO = new SpeakerLayout("Mono", List.of(
+            SpeakerLabel.C));
+
     public SpeakerLayout {
         Objects.requireNonNull(name, "name must not be null");
         Objects.requireNonNull(speakers, "speakers must not be null");
