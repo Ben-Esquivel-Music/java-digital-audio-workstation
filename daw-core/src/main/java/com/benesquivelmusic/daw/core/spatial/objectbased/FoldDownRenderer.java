@@ -1,7 +1,10 @@
 package com.benesquivelmusic.daw.core.spatial.objectbased;
 
+import com.benesquivelmusic.daw.sdk.spatial.FoldDownCoefficients;
 import com.benesquivelmusic.daw.sdk.spatial.SpeakerLabel;
 import com.benesquivelmusic.daw.sdk.spatial.SpeakerLayout;
+
+import java.util.Objects;
 
 /**
  * Folds down a multi-channel audio mix to fewer channels for compatibility monitoring.
@@ -138,6 +141,123 @@ public final class FoldDownRenderer {
         }
         if (current.length > 2 && targetChannels <= 2) {
             current = foldToStereo(current, numSamples);
+        }
+        if (current.length > 1 && targetChannels <= 1) {
+            current = foldToMono(current, numSamples);
+        }
+
+        return current;
+    }
+
+    // ---- Custom coefficient overloads ----------------------------------------
+
+    /**
+     * Folds a 7.1.4 mix down to 7.1 using custom height fold-down coefficients.
+     *
+     * @param input        12-channel buffer (7.1.4 layout)
+     * @param numSamples   number of samples per channel
+     * @param coefficients custom fold-down coefficients
+     * @return 8-channel buffer (7.1 layout)
+     */
+    public static float[][] foldTo71(float[][] input, int numSamples,
+                                     FoldDownCoefficients coefficients) {
+        Objects.requireNonNull(coefficients, "coefficients must not be null");
+        validateChannels(input, SpeakerLayout.LAYOUT_7_1_4.channelCount(), "7.1.4");
+
+        double heightCoeff = coefficients.heightLevel();
+        float[][] output = new float[8][numSamples];
+        for (int i = 0; i < numSamples; i++) {
+            output[0][i] = (float) (input[0][i] + heightCoeff * input[8][i]);
+            output[1][i] = (float) (input[1][i] + heightCoeff * input[9][i]);
+            output[2][i] = input[2][i];
+            output[3][i] = input[3][i];
+            output[4][i] = input[4][i];
+            output[5][i] = input[5][i];
+            output[6][i] = (float) (input[6][i] + heightCoeff * input[10][i]);
+            output[7][i] = (float) (input[7][i] + heightCoeff * input[11][i]);
+        }
+        return output;
+    }
+
+    /**
+     * Folds a 7.1 mix down to 5.1 using custom surround fold-down coefficients.
+     *
+     * @param input        8-channel buffer (7.1 layout)
+     * @param numSamples   number of samples per channel
+     * @param coefficients custom fold-down coefficients
+     * @return 6-channel buffer (5.1 layout)
+     */
+    public static float[][] foldTo51(float[][] input, int numSamples,
+                                     FoldDownCoefficients coefficients) {
+        Objects.requireNonNull(coefficients, "coefficients must not be null");
+        validateChannels(input, 8, "7.1");
+
+        double surroundCoeff = coefficients.surroundLevel();
+        float[][] output = new float[6][numSamples];
+        for (int i = 0; i < numSamples; i++) {
+            output[0][i] = input[0][i];
+            output[1][i] = input[1][i];
+            output[2][i] = input[2][i];
+            output[3][i] = input[3][i];
+            output[4][i] = (float) (input[4][i] + surroundCoeff * input[6][i]);
+            output[5][i] = (float) (input[5][i] + surroundCoeff * input[7][i]);
+        }
+        return output;
+    }
+
+    /**
+     * Folds a 5.1 mix down to stereo using custom coefficients.
+     *
+     * <p>Stereo = L + center×C + surround×LS + lfe×LFE,
+     * R + center×C + surround×RS + lfe×LFE.</p>
+     *
+     * @param input        6-channel buffer (5.1 layout)
+     * @param numSamples   number of samples per channel
+     * @param coefficients custom fold-down coefficients
+     * @return 2-channel buffer (stereo)
+     */
+    public static float[][] foldToStereo(float[][] input, int numSamples,
+                                         FoldDownCoefficients coefficients) {
+        Objects.requireNonNull(coefficients, "coefficients must not be null");
+        validateChannels(input, SpeakerLayout.LAYOUT_5_1.channelCount(), "5.1");
+
+        double centerCoeff = coefficients.centerLevel();
+        double surroundCoeff = coefficients.surroundLevel();
+        double lfeCoeff = coefficients.lfeLevel();
+        float[][] output = new float[2][numSamples];
+        for (int i = 0; i < numSamples; i++) {
+            output[0][i] = (float) (input[0][i] + centerCoeff * input[2][i]
+                    + surroundCoeff * input[4][i] + lfeCoeff * input[3][i]);
+            output[1][i] = (float) (input[1][i] + centerCoeff * input[2][i]
+                    + surroundCoeff * input[5][i] + lfeCoeff * input[3][i]);
+        }
+        return output;
+    }
+
+    /**
+     * Performs a full fold-down chain from 7.1.4 to the target layout using
+     * custom coefficients.
+     *
+     * @param input        multi-channel input buffer
+     * @param target       the target speaker layout
+     * @param numSamples   number of samples per channel
+     * @param coefficients custom fold-down coefficients
+     * @return the folded-down buffer matching the target channel count
+     */
+    public static float[][] foldDown(float[][] input, SpeakerLayout target, int numSamples,
+                                     FoldDownCoefficients coefficients) {
+        Objects.requireNonNull(coefficients, "coefficients must not be null");
+        float[][] current = input;
+        int targetChannels = target.channelCount();
+
+        if (current.length > 8 && targetChannels <= 8) {
+            current = foldTo71(current, numSamples, coefficients);
+        }
+        if (current.length > 6 && targetChannels <= 6) {
+            current = foldTo51(current, numSamples, coefficients);
+        }
+        if (current.length > 2 && targetChannels <= 2) {
+            current = foldToStereo(current, numSamples, coefficients);
         }
         if (current.length > 1 && targetChannels <= 1) {
             current = foldToMono(current, numSamples);
