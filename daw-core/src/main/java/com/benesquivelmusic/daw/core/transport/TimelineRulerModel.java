@@ -48,23 +48,25 @@ public final class TimelineRulerModel {
     }
 
     /**
-     * Converts a beat position to wall-clock seconds using the current tempo.
+     * Converts a beat position to wall-clock seconds, integrating over all
+     * tempo changes in the transport's {@link TempoMap}.
      *
      * @param beats the position in beats (&ge; 0)
      * @return the position in seconds
      */
     public double beatsToSeconds(double beats) {
-        return beats * 60.0 / transport.getTempo();
+        return transport.getTempoMap().beatsToSeconds(beats);
     }
 
     /**
-     * Converts wall-clock seconds to a beat position using the current tempo.
+     * Converts wall-clock seconds to a beat position, accounting for all
+     * tempo changes in the transport's {@link TempoMap}.
      *
      * @param seconds the position in seconds (&ge; 0)
      * @return the position in beats
      */
     public double secondsToBeats(double seconds) {
-        return seconds * transport.getTempo() / 60.0;
+        return transport.getTempoMap().secondsToBeats(seconds);
     }
 
     /**
