@@ -59,7 +59,9 @@ class RoomTelemetryDisplayTest {
                 latch.countDown();
             }
         });
-        latch.await(5, TimeUnit.SECONDS);
+        assertThat(latch.await(5, TimeUnit.SECONDS))
+                .as("FX thread task should complete within timeout")
+                .isTrue();
         return ref.get();
     }
 
@@ -72,7 +74,9 @@ class RoomTelemetryDisplayTest {
                 latch.countDown();
             }
         });
-        latch.await(5, TimeUnit.SECONDS);
+        assertThat(latch.await(5, TimeUnit.SECONDS))
+                .as("FX thread task should complete within timeout")
+                .isTrue();
     }
 
     @Test
