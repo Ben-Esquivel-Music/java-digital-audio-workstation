@@ -101,6 +101,7 @@ public final class MainController {
     @FXML private Label statusBarLabel;
     @FXML private Label arrangementPlaceholder;
     @FXML private Label arrangementPanelHeader;
+    @FXML private StackPane arrangementContentPane;
     @FXML private Label tracksPanelHeader;
     @FXML private Label ioRoutingLabel;
     @FXML private Label recIndicator;
@@ -233,6 +234,10 @@ public final class MainController {
     /** Applies icons, tooltips, and overflow behavior to the toolbar. */
     private ToolbarAppearanceController toolbarAppearanceController;
 
+    // ── Arrangement canvas ──────────────────────────────────────────────────
+    /** Renders track lanes and clip rectangles in the arrangement view. */
+    private ArrangementCanvas arrangementCanvas;
+
     /** Reference kept for the idle demo animation. */
     private SpectrumDisplay spectrumDisplay;
     /** Reference kept for the idle demo animation. */
@@ -246,8 +251,12 @@ public final class MainController {
         undoManager.addHistoryListener(manager -> {
             if (javafx.application.Platform.isFxApplicationThread()) {
                 updateUndoRedoState();
+                refreshArrangementCanvas();
             } else {
-                javafx.application.Platform.runLater(this::updateUndoRedoState);
+                javafx.application.Platform.runLater(() -> {
+                    updateUndoRedoState();
+                    refreshArrangementCanvas();
+                });
             }
         });
         audioEngine = new AudioEngine(project.getFormat());
@@ -288,6 +297,7 @@ public final class MainController {
         createViewNavigationController();
         viewNavigationController.initializeViewNavigation();
         createTrackStripController();
+        createArrangementCanvas();
         viewNavigationController.initializeEditTools();
         viewNavigationController.initializeSnapControls();
         viewNavigationController.initializeZoomControls();
@@ -429,6 +439,18 @@ public final class MainController {
                     }
                     @Override public EditorView editorView() { return viewNavigationController.getEditorView(); }
                 });
+    }
+
+    /**
+     * Creates the {@link ArrangementCanvas} and adds it to the arrangement
+     * content pane behind the placeholder label.
+     */
+    private void createArrangementCanvas() {
+        arrangementCanvas = new ArrangementCanvas();
+        arrangementContentPane.getChildren().addFirst(arrangementCanvas);
+        arrangementCanvas.prefWidthProperty().bind(arrangementContentPane.widthProperty());
+        arrangementCanvas.prefHeightProperty().bind(arrangementContentPane.heightProperty());
+        refreshArrangementCanvas();
     }
 
     /**
@@ -932,8 +954,12 @@ public final class MainController {
         undoManager.addHistoryListener(manager -> {
             if (javafx.application.Platform.isFxApplicationThread()) {
                 updateUndoRedoState();
+                refreshArrangementCanvas();
             } else {
-                javafx.application.Platform.runLater(this::updateUndoRedoState);
+                javafx.application.Platform.runLater(() -> {
+                    updateUndoRedoState();
+                    refreshArrangementCanvas();
+                });
             }
         });
         undoHistoryPanel = new UndoHistoryPanel(undoManager);
@@ -1478,6 +1504,14 @@ public final class MainController {
 
     private void updateArrangementPlaceholder() {
         arrangementPlaceholder.setVisible(project.getTracks().isEmpty());
+        refreshArrangementCanvas();
+    }
+
+    private void refreshArrangementCanvas() {
+        if (arrangementCanvas == null) {
+            return;
+        }
+        arrangementCanvas.setTracks(project.getTracks());
     }
 
     private void updateUndoRedoState() {

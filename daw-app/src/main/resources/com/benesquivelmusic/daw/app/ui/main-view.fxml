@@ -228,7 +228,7 @@
                         <Label text="7" styleClass="timeline-label"/>
                         <Label text="8" styleClass="timeline-label"/>
                     </HBox>
-                    <StackPane VBox.vgrow="ALWAYS">
+                    <StackPane fx:id="arrangementContentPane" VBox.vgrow="ALWAYS">
                         <Label fx:id="arrangementPlaceholder"
                                text="Add tracks to begin your session"
                                styleClass="placeholder-label"/>
