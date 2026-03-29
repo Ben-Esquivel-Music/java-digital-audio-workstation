@@ -104,7 +104,7 @@ final class ProjectLifecycleController {
         try {
             if (projectManager.getCurrentProject() == null) {
                 Path tempDir = Files.createTempDirectory("daw-project-");
-                projectManager.createProject(host.project().getName(), tempDir.getParent());
+                projectManager.createProject(host.project().getName(), tempDir);
             }
             projectManager.saveProject();
             host.setProjectDirty(false);
