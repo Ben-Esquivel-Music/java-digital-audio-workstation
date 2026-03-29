@@ -118,6 +118,16 @@ final class TrackStripController {
     }
 
     HBox addTrackToUI(Track track) {
+        return addTrackToUI(track, -1);
+    }
+
+    /**
+     * Builds a track strip for the given track and inserts it into the
+     * track-list panel at the specified UI index.  If {@code uiIndex} is
+     * negative or greater than or equal to the panel's current child count,
+     * the strip is appended to the end.
+     */
+    HBox addTrackToUI(Track track, int uiIndex) {
         HBox trackItem = new HBox(8);
         trackItem.getStyleClass().add("track-item");
         trackItem.setPadding(new Insets(6, 8, 6, 8));
@@ -333,7 +343,7 @@ final class TrackStripController {
         removeBtn.getStyleClass().add("track-remove-button");
         removeBtn.setTooltip(new Tooltip("Remove Track"));
         removeBtn.setOnAction(_ -> {
-            int uiIndex = trackListPanel.getChildren().indexOf(trackItem);
+            int removeUiIndex = trackListPanel.getChildren().indexOf(trackItem);
             int projectIndex = project.getTracks().indexOf(track);
             undoManager.execute(new UndoableAction() {
                 @Override public String description() { return "Remove Track: " + track.getName(); }
@@ -351,8 +361,8 @@ final class TrackStripController {
                             && currentIndex != projectIndex) {
                         project.moveTrack(currentIndex, projectIndex);
                     }
-                    if (uiIndex >= 0 && uiIndex < trackListPanel.getChildren().size()) {
-                        trackListPanel.getChildren().add(uiIndex, trackItem);
+                    if (removeUiIndex >= 0 && removeUiIndex < trackListPanel.getChildren().size()) {
+                        trackListPanel.getChildren().add(removeUiIndex, trackItem);
                     } else {
                         trackListPanel.getChildren().add(trackItem);
                     }
@@ -381,7 +391,11 @@ final class TrackStripController {
         trackItem.getChildren().addAll(
                 typeIcon, ioLabel, nameLabel, insertChain, volRow, panRow, spacer,
                 outputLabel, phaseBtn, muteBtn, soloBtn, armBtn, removeBtn);
-        trackListPanel.getChildren().add(trackItem);
+        if (uiIndex >= 0 && uiIndex < trackListPanel.getChildren().size()) {
+            trackListPanel.getChildren().add(uiIndex, trackItem);
+        } else {
+            trackListPanel.getChildren().add(trackItem);
+        }
 
         // Slide-fade entry animation: item slides in from the left and fades in
         trackItem.setTranslateX(-24);
@@ -456,15 +470,10 @@ final class TrackStripController {
                 @Override public String description() { return "Copy Track: " + track.getName(); }
                 @Override public void execute() {
                     copy = project.duplicateTrack(track);
-                    copyItem = addTrackToUI(copy);
-                    // duplicateTrack inserts at index+1 in the model; sync UI order
+                    // duplicateTrack inserts at index+1 in the model; place UI strip to match
                     int modelIndex = project.getTracks().indexOf(copy);
                     // trackListPanel child 0 is the "TRACKS" header, so offset by 1
-                    int targetUiIndex = modelIndex + 1;
-                    if (targetUiIndex >= 0 && targetUiIndex < trackListPanel.getChildren().size()) {
-                        trackListPanel.getChildren().remove(copyItem);
-                        trackListPanel.getChildren().add(targetUiIndex, copyItem);
-                    }
+                    copyItem = addTrackToUI(copy, modelIndex + 1);
                     host.updateArrangementPlaceholder();
                     mixerView.refresh();
                 }
