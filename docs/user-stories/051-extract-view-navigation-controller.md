@@ -39,7 +39,7 @@ a `ViewNavigationController` would give this concern a dedicated home, reduce
 ## Non-Goals
 
 - Changing the set of available views or edit tools
-- Implementing new zoom behaviour (e.g. pinch-to-zoom, time-ruler zoom)
+- Implementing new zoom behavior (e.g. pinch-to-zoom, time-ruler zoom)
 - Moving view-implementation classes (`MixerView`, `EditorView`, etc.) — those are
   already separate
 - Addressing any other `MainController` responsibilities beyond view switching, edit tools,
