@@ -211,10 +211,6 @@ final class AnimationController {
      * the visualization displays stay visually alive when no audio is being processed.
      */
     private void tickIdleVisualization(double deltaSeconds) {
-        if (spectrumDisplay == null || levelMeterDisplay == null) {
-            return;
-        }
-
         // ── Spectrum: pink-noise shape with gentle wobble ──────────────────
         int binCount = idleSpectrumBins.length;
         for (int i = 1; i < binCount; i++) {
