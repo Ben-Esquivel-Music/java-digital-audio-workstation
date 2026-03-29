@@ -466,20 +466,20 @@ final class TrackStripController {
         copyItem.setOnAction(_ -> {
             undoManager.execute(new UndoableAction() {
                 private Track copy;
-                private HBox copyItem;
+                private HBox copyTrackItem;
                 @Override public String description() { return "Copy Track: " + track.getName(); }
                 @Override public void execute() {
                     copy = project.duplicateTrack(track);
                     // duplicateTrack inserts at index+1 in the model; place UI strip to match
                     int modelIndex = project.getTracks().indexOf(copy);
                     // trackListPanel child 0 is the "TRACKS" header, so offset by 1
-                    copyItem = addTrackToUI(copy, modelIndex + 1);
+                    copyTrackItem = addTrackToUI(copy, modelIndex + 1);
                     host.updateArrangementPlaceholder();
                     mixerView.refresh();
                 }
                 @Override public void undo() {
                     project.removeTrack(copy);
-                    trackListPanel.getChildren().remove(copyItem);
+                    trackListPanel.getChildren().remove(copyTrackItem);
                     host.updateArrangementPlaceholder();
                     mixerView.refresh();
                 }
