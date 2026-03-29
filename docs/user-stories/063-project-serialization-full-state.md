@@ -11,7 +11,7 @@ User story 019 describes full project save/load/auto-save. The `ProjectManager`,
 
 ## Goals
 
-- Serialize all project state to the native JSON project file format including:
+- Serialize all project state to the native XML-based `.daw` project file format used by `ProjectManager` including:
   - All track properties: name, type, color, volume, pan, mute, solo, armed, input device
   - All clips on each track: name, file path, startBeat, durationBeats, sourceOffsetBeats, gain, fades, time-stretch/pitch-shift settings
   - Mixer channel settings: volume, pan, insert effects with their parameter values, send levels
