@@ -7,7 +7,7 @@ labels: ["enhancement", "ui", "transport"]
 
 ## Motivation
 
-The `Metronome` class in `daw-core` is fully implemented with configurable click sounds (`ClickSound` enum with SINE, WOODBLOCK, COWBELL, HI_HAT, RIMSHOT), volume control, subdivision modes, accent patterns, and count-in generation. However, there is no UI element in the transport bar or anywhere in the application that allows users to enable, disable, or configure the metronome. The transport toolbar has play, stop, record, loop, skip-back, and skip-forward buttons, but no metronome toggle. The `DawIcon.METRONOME` icon exists in the icon pack and is used by the tempo label tooltip, but it is not assigned to a clickable metronome button. Without a UI toggle, users cannot activate the metronome for recording count-ins or tempo reference during playback.
+The `Metronome` class in `daw-core` is fully implemented with configurable click sounds (`ClickSound` enum with WOODBLOCK, COWBELL, ELECTRONIC), volume control, subdivision modes, accent patterns, and count-in generation. However, there is no UI element in the transport bar or anywhere in the application that allows users to enable, disable, or configure the metronome. The transport toolbar has play, stop, record, loop, skip-back, and skip-forward buttons, but no metronome toggle. The `DawIcon.METRONOME` icon exists in the icon pack but is not currently used in the UI (the tempo label tooltip is plain text) and is not assigned to a clickable metronome button. Without a UI toggle, users cannot activate the metronome for recording count-ins or tempo reference during playback.
 
 ## Goals
 
