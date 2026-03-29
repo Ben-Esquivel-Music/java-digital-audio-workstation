@@ -4,13 +4,18 @@ A professional SVG icon pack designed for Audio Visual applications — media pl
 
 ## 🎨 Color Palette
 
-| Color  | Hex       | Usage                          |
-|--------|-----------|--------------------------------|
-| White  | `#FFFFFF` | Details and neutral elements   |
-| Green  | `#00E676` | Play, active, positive states  |
-| Red    | `#FF1744` | Record, stop, alert states     |
-| Purple | `#B388FF` | Creative, loop, effects        |
-| Orange | `#FF9100` | Pause, shuffle, warm accents   |
+| Color  | Hex       | Usage                                 |
+|--------|-----------|---------------------------------------|
+| Black  | `#000000` | Backgrounds, outlines, dark elements  |
+| White  | `#FFFFFF` | Details, neutral elements, light UI   |
+| Green  | `#00E676` | Play, active, positive states         |
+| Red    | `#FF1744` | Record, stop, alert, destructive      |
+| Purple | `#B388FF` | Creative, loop, effects, accents      |
+| Orange | `#FF9100` | Pause, shuffle, warm accents          |
+| Cyan   | `#00E5FF` | Info, connectivity, cool accents      |
+
+> See [`COLOR_GUIDE.md`](COLOR_GUIDE.md) for the full complementary color guide
+> with exact RGB values, pairing rules, and usage guidelines.
 
 ## 📦 Icons (210 total)
 
