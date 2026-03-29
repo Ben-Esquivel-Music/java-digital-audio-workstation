@@ -41,6 +41,7 @@ import javafx.util.Duration;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Locale;
 import java.util.List;
 import java.util.Objects;
 import java.util.logging.Level;
@@ -418,7 +419,7 @@ final class TrackStripController {
      * Falls back to {@link DawIcon#PIANO} for unrecognized names.</p>
      */
     static DawIcon midiInstrumentIcon(String trackName) {
-        String lower = trackName.toLowerCase();
+        String lower = trackName.toLowerCase(Locale.ROOT);
         if (lower.contains("drum") || lower.contains("perc")) return DawIcon.DRUMS;
         if (lower.contains("bass guitar"))     return DawIcon.BASS_GUITAR;
         if (lower.contains("electric guitar")) return DawIcon.ELECTRIC_GUITAR;
