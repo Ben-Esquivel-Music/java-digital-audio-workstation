@@ -155,7 +155,7 @@ public final class ProjectSerializer {
         SoundFontAssignment sfAssignment = track.getSoundFontAssignment();
         if (sfAssignment != null) {
             Element sfElem = document.createElement("soundfont-assignment");
-            sfElem.setAttribute("path", sfAssignment.soundFontPath().toString());
+            sfElem.setAttribute("path", sfAssignment.soundFontPath().toString().replace('\\', '/'));
             sfElem.setAttribute("bank", String.valueOf(sfAssignment.bank()));
             sfElem.setAttribute("program", String.valueOf(sfAssignment.program()));
             sfElem.setAttribute("preset-name", sfAssignment.presetName());
