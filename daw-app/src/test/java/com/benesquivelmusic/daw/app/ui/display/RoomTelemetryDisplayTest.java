@@ -175,8 +175,6 @@ class RoomTelemetryDisplayTest {
         // This test verifies standalone construction
         assertThat(display.getOnSourceDragged()).isNull();
         assertThat(display.getOnMicDragged()).isNull();
-        assertThat(display.getOnSourceDragged()).isNull();
-        assertThat(display.getOnMicDragged()).isNull();
     }
 
     @Test
