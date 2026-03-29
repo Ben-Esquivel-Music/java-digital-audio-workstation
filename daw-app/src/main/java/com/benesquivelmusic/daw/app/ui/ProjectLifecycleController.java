@@ -315,9 +315,13 @@ final class ProjectLifecycleController {
         try {
             resetProjectState();
             projectManager.openProject(projectDir);
-            host.setProject(new DawProject(
-                    projectManager.getCurrentProject().name(),
-                    AudioFormat.STUDIO_QUALITY));
+            DawProject dawProject = projectManager.getCurrentDawProject();
+            if (dawProject == null) {
+                dawProject = new DawProject(
+                        projectManager.getCurrentProject().name(),
+                        AudioFormat.STUDIO_QUALITY);
+            }
+            host.setProject(dawProject);
             host.setUndoManager(new UndoManager());
             host.rebuildHistoryPanel();
             host.resetTrackCounters();
