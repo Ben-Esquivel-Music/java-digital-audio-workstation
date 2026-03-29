@@ -74,7 +74,7 @@ All icons are **48×48 SVG** with transparent backgrounds, flat color fills, and
 | 🔊 | `amplifier.svg` | Amplifier — orange amp with knobs |
 | 🥁 | `drum.svg` | Drum — red snare drum |
 | 🎸 | `guitar.svg` | Guitar — orange acoustic guitar |
-| 🎹 | `piano.svg` | Piano — white/green piano keys |
+| 🎹 | `piano.svg` | Piano — white/black piano keys |
 | 🔊 | `speaker-wireless.svg` | Wireless Speaker — purple cabinet with green signal |
 | 🖥 | `monitor.svg` | Monitor — white screen with green play |
 | 📷 | `camera.svg` | Camera — red camera body with lens |
@@ -111,7 +111,7 @@ All icons are **48×48 SVG** with transparent backgrounds, flat color fills, and
 | 🌀 | `flanger.svg` | Flanger — orange modulated wave |
 | 🔄 | `phaser.svg` | Phaser — purple/green phase-shifted waves |
 | 🚫 | `limiter.svg` | Limiter — orange wave hitting red ceiling |
-| 🚪 | `noise-gate.svg` | Noise Gate — green gate threshold display |
+| 🚪 | `noise-gate.svg` | Noise Gate — green gate on black display |
 | 🎵 | `pitch-shift.svg` | Pitch Shift — orange note with green/red arrows |
 
 ### 🎬 General AV (`icons/general/`) — 23 icons
@@ -140,7 +140,7 @@ All icons are **48×48 SVG** with transparent backgrounds, flat color fills, and
 | 🎵 | `queue-music.svg` | Music Queue — white lines with green note |
 | 📚 | `library.svg` | Library — white/purple book spines |
 | 🕐 | `history.svg` | History — white clock with green rewind arrow |
-| ℹ | `info.svg` | Info — white circle with info symbol |
+| ℹ | `info.svg` | Info — cyan circle with info symbol |
 
 ### 🎸 Instruments (`icons/instruments/`) — 24 icons
 
@@ -150,7 +150,7 @@ All icons are **48×48 SVG** with transparent backgrounds, flat color fills, and
 | 🎸 | `electric-guitar.svg` | Electric Guitar — red body with tuning pegs |
 | 🎸 | `bass-guitar.svg` | Bass Guitar — purple body with thick neck |
 | 🥁 | `drums.svg` | Drum Kit — red/orange kit with cymbals |
-| 🎹 | `keyboard.svg` | Keyboard — white/green synth keys |
+| 🎹 | `keyboard.svg` | Keyboard — white/black synth keys |
 | 🎻 | `violin.svg` | Violin — orange body with strings |
 | 🎻 | `cello.svg` | Cello — purple body with strings |
 | 🎺 | `trumpet.svg` | Trumpet — orange with valves |
@@ -203,18 +203,18 @@ All icons are **48×48 SVG** with transparent backgrounds, flat color fills, and
 | Icon | File | Description |
 |------|------|-------------|
 | 📶 | `bluetooth.svg` | Bluetooth — purple Bluetooth symbol |
-| 📡 | `wifi.svg` | WiFi — green signal arcs |
+| 📡 | `wifi.svg` | WiFi — cyan signal arcs |
 | 🔌 | `usb.svg` | USB — white USB connector |
 | 🎧 | `aux-cable.svg` | AUX Cable — orange 3.5mm jack |
 | 🖥 | `hdmi.svg` | HDMI — white HDMI port |
 | 📺 | `cast.svg` | Cast — purple cast screen |
 | 🔗 | `link.svg` | Link — green chain links |
 | 📡 | `antenna.svg` | Antenna — red broadcast antenna |
-| 🔊 | `airplay.svg` | Airplay — white screen with triangle |
-| 📱 | `nfc.svg` | NFC — green NFC waves |
-| ☁ | `cloud.svg` | Cloud — white cloud |
-| 🔄 | `sync.svg` | Sync — green circular arrows |
-| 🔌 | `ethernet.svg` | Ethernet — white RJ45 connector |
+| 🔊 | `airplay.svg` | Airplay — cyan screen with triangle |
+| 📱 | `nfc.svg` | NFC — cyan NFC waves |
+| ☁ | `cloud.svg` | Cloud — cyan cloud |
+| 🔄 | `sync.svg` | Sync — cyan circular arrows |
+| 🔌 | `ethernet.svg` | Ethernet — cyan RJ45 connector |
 | 🔴 | `optical.svg` | Optical — red TOSLINK connector |
 | 🎤 | `xlr.svg` | XLR — white 3-pin connector |
 | ⚡ | `thunderbolt.svg` | Thunderbolt — white lightning bolt |
@@ -244,7 +244,7 @@ All icons are **48×48 SVG** with transparent backgrounds, flat color fills, and
 | ⚠ | `warning.svg` | Warning — red warning triangle |
 | ⊘ | `error.svg` | Error — red circle with X |
 | ✓ | `success.svg` | Success — green circle with checkmark |
-| ℹ | `info-circle.svg` | Info Circle — purple circle with info |
+| ℹ | `info-circle.svg` | Info Circle — cyan circle with info |
 | 🔴 | `badge.svg` | Badge — red circle with exclamation |
 | 🔔 | `bell-ring.svg` | Bell Ring — orange ringing bell |
 | 🟢 | `status.svg` | Status — green active status dot |
@@ -285,8 +285,8 @@ All icons are **48×48 SVG** with transparent backgrounds, flat color fills, and
 | ⚡ | `phantom-power.svg` | Phantom Power — red 48V indicator |
 | 📉 | `pad.svg` | Pad — green attenuation badge |
 | ⟳ | `phase.svg` | Phase — purple phase symbol |
-| S | `solo.svg` | Solo — orange S badge |
-| M | `mute.svg` | Mute — red M badge |
+| S | `solo.svg` | Solo — orange S on black badge |
+| M | `mute.svg` | Mute — red M on black badge |
 
 ### 📊 Metering (`icons/metering/`) — 8 icons
 
@@ -296,7 +296,7 @@ All icons are **48×48 SVG** with transparent backgrounds, flat color fills, and
 | 📊 | `peak.svg` | Peak — multi-color peak meter with red clip |
 | 📊 | `rms.svg` | RMS — green bars with orange average line |
 | 📊 | `spectrum.svg` | Spectrum — multi-color frequency display |
-| 〰 | `oscilloscope.svg` | Oscilloscope — white frame with green wave |
+| 〰 | `oscilloscope.svg` | Oscilloscope — black screen with green wave |
 | 🔄 | `phase-meter.svg` | Phase Meter — white dial with green needle |
 | ↔ | `correlation.svg` | Correlation — green/red correlation meter |
 | 📊 | `loudness-meter.svg` | Loudness Meter — multi-color LUFS meter |
