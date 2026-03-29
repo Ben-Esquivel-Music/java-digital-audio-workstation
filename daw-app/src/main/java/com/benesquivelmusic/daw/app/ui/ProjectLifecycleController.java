@@ -106,6 +106,7 @@ final class ProjectLifecycleController {
                 Path tempDir = Files.createTempDirectory("daw-project-");
                 projectManager.createProject(host.project().getName(), tempDir);
             }
+            projectManager.saveDawProject(host.project());
             projectManager.saveProject();
             host.setProjectDirty(false);
             int count = projectManager.getCheckpointManager().getCheckpointCount();
