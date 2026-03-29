@@ -133,7 +133,13 @@ public final class TelemetryView extends VBox {
         // Debounce timer coalesces rapid drag events to avoid recomputing
         // telemetry on every mouse-drag pixel, which would stall the FX thread.
         dragDebounce = new PauseTransition(Duration.millis(50));
-        dragDebounce.setOnFinished(event -> recomputeTelemetry());
+        dragDebounce.setOnFinished(event -> {
+            // Only recompute if the display is currently visible (display state).
+            // This avoids unnecessary recomputes if the view has returned to setup state.
+            if (display.isVisible()) {
+                recomputeTelemetry();
+            }
+        });
 
         // Animation timer drives particle/ripple/pulse animations
         animationTimer = new AnimationTimer() {
