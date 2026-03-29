@@ -13,9 +13,8 @@ import javafx.application.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
-import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -32,6 +31,9 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 class ProjectLifecycleControllerTest {
 
     private static boolean toolkitAvailable;
+
+    @TempDir
+    Path tempDir;
 
     @BeforeAll
     static void initToolkit() throws Exception {
@@ -176,7 +178,6 @@ class ProjectLifecycleControllerTest {
     @Test
     void resetProjectStateClosesCurrentProject() throws Exception {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
-        Path tempDir = Files.createTempDirectory("plc-test-");
         ProjectManager pm = dummyProjectManager();
         pm.createProject("Test", tempDir);
 
