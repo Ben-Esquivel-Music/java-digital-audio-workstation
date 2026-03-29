@@ -11,7 +11,7 @@ labels: ["enhancement", "ui", "design", "usability"]
 visual appearance of the toolbar and its controls: applying SVG icons to every button and
 label (`applyIcons`), setting descriptive tooltips with keyboard-shortcut hints
 (`applyTooltips`, `tooltipFor`, `shortcutSuffix`, `styledTooltip`), and managing overflow
-behaviour when the window is too narrow to show all toolbar groups
+behavior when the window is too narrow to show all toolbar groups
 (`preventButtonTruncation`, `installToolbarOverflowListener`, `applyToolbarOverflow`,
 `setGroupVisible`).  None of these methods involve project state, transport state, or
 track data — they are cosmetic initialization routines that run once (icons, tooltips,
