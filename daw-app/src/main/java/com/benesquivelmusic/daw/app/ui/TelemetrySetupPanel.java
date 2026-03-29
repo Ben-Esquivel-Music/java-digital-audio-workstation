@@ -1014,10 +1014,10 @@ public final class TelemetrySetupPanel extends ScrollPane {
         WallMaterial material = wallMaterialCombo.getValue();
         if (dims != null && material != null) {
             double rt60 = RoomParameterController.computeRt60(dims, material);
-            if (rt60 < 100) {
-                rt60Label.setText(String.format("RT60: %.2f s", rt60));
-            } else {
+            if (Double.isInfinite(rt60) || rt60 == Double.MAX_VALUE) {
                 rt60Label.setText("RT60: ∞ (no absorption)");
+            } else {
+                rt60Label.setText(String.format("RT60: %.2f s", rt60));
             }
         } else {
             rt60Label.setText("RT60: —");
