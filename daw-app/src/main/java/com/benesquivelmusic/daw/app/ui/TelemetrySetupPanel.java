@@ -21,6 +21,7 @@ import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
 import javafx.scene.control.Slider;
 import javafx.scene.control.TextField;
+import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -844,9 +845,18 @@ public final class TelemetrySetupPanel extends ScrollPane {
         Label heightLabel = new Label("Height (m):");
         heightLabel.setStyle(LABEL_STYLE);
 
-        HBox.setHgrow(widthSlider, Priority.ALWAYS);
-        HBox.setHgrow(lengthSlider, Priority.ALWAYS);
-        HBox.setHgrow(heightSlider, Priority.ALWAYS);
+        widthSlider.setMaxWidth(Double.MAX_VALUE);
+        lengthSlider.setMaxWidth(Double.MAX_VALUE);
+        heightSlider.setMaxWidth(Double.MAX_VALUE);
+        GridPane.setHgrow(widthSlider, Priority.ALWAYS);
+        GridPane.setHgrow(lengthSlider, Priority.ALWAYS);
+        GridPane.setHgrow(heightSlider, Priority.ALWAYS);
+
+        ColumnConstraints labelCol = new ColumnConstraints();
+        ColumnConstraints fieldCol = new ColumnConstraints();
+        ColumnConstraints sliderCol = new ColumnConstraints();
+        sliderCol.setHgrow(Priority.ALWAYS);
+        grid.getColumnConstraints().addAll(labelCol, fieldCol, sliderCol);
 
         grid.add(widthLabel, 0, 0);
         grid.add(widthField, 1, 0);
