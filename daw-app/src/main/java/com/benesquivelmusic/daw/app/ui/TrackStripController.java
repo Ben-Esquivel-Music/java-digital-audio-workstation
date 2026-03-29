@@ -1041,6 +1041,45 @@ final class TrackStripController {
                 shareItem, broadcastItem, streamItem, rateItem, dislikeItem, commentItem, followItem, new SeparatorMenuItem(),
                 favoriteItem, playlistItem, filmScoreItem, notifyItem, repeatOneItem, renameItem);
 
+        // Recalculate dynamic enabled/disabled states each time the menu is shown
+        // so items reflect the current clipboard, selection, clip, and zoom state.
+        menu.setOnShowing(_ -> {
+            boolean cbEmpty = !clipboardManager.hasContent();
+            pasteItem.setDisable(cbEmpty);
+            pasteItem.setStyle(cbEmpty ? "-fx-opacity: 0.5;" : "");
+
+            boolean noClips = track.getClips().isEmpty();
+            boolean midi = track.getType() == TrackType.MIDI;
+            boolean noAudio = midi || noClips;
+
+            splitItem.setDisable(noClips);
+            splitItem.setStyle(noClips ? "-fx-opacity: 0.5;" : "");
+
+            boolean noSel = !selectionModel.hasSelection();
+            trimItem.setDisable(noSel);
+            trimItem.setStyle(noSel ? "-fx-opacity: 0.5;" : "");
+            cropItem.setDisable(noSel);
+            cropItem.setStyle(noSel ? "-fx-opacity: 0.5;" : "");
+
+            reverseItem.setDisable(noAudio);
+            reverseItem.setStyle(noAudio ? "-fx-opacity: 0.5;" : "");
+            fadeInItem.setDisable(noAudio);
+            fadeInItem.setStyle(noAudio ? "-fx-opacity: 0.5;" : "");
+            fadeOutItem.setDisable(noAudio);
+            fadeOutItem.setStyle(noAudio ? "-fx-opacity: 0.5;" : "");
+
+            ZoomLevel zoom = host.currentZoomLevel();
+            zoomInItem.setDisable(!zoom.canZoomIn());
+            zoomInItem.setStyle(!zoom.canZoomIn() ? "-fx-opacity: 0.5;" : "");
+            zoomOutItem.setDisable(!zoom.canZoomOut());
+            zoomOutItem.setStyle(!zoom.canZoomOut() ? "-fx-opacity: 0.5;" : "");
+
+            snapItem.setText(host.isSnapEnabled() ? "Snap: ON" : "Snap: OFF");
+
+            exportWav.setDisable(noClips);
+            exportWav.setStyle(noClips ? "-fx-opacity: 0.5;" : "");
+        });
+
         return menu;
     }
 
