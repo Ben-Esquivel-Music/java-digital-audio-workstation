@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.sdk.telemetry.TelemetrySuggestion;
 
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
 import javafx.scene.paint.CycleMethod;
@@ -20,6 +21,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BiConsumer;
 
 /**
  * Creative, animated room sound wave telemetry visualizer.
@@ -91,6 +93,18 @@ public final class RoomTelemetryDisplay extends Region {
     private final List<Ripple> ripples = new ArrayList<>();
     private double timeSinceLastRipple;
 
+    // Drag-and-drop state
+    private String draggedSourceName;
+    private String draggedMicName;
+    private double draggedZ;
+    private BiConsumer<String, Position3D> onSourceDragged;
+    private BiConsumer<String, Position3D> onMicDragged;
+
+    // Cached transform values (updated in render)
+    private double cachedOffsetX;
+    private double cachedOffsetY;
+    private double cachedScale;
+
     /**
      * Creates a new room telemetry display.
      */
@@ -101,6 +115,11 @@ public final class RoomTelemetryDisplay extends Region {
         canvas.heightProperty().bind(heightProperty());
         widthProperty().addListener((_, _, _) -> render());
         heightProperty().addListener((_, _, _) -> render());
+
+        // Drag-and-drop mouse handlers
+        canvas.setOnMousePressed(this::handleMousePressed);
+        canvas.setOnMouseDragged(this::handleMouseDragged);
+        canvas.setOnMouseReleased(this::handleMouseReleased);
     }
 
     /**
@@ -167,6 +186,107 @@ public final class RoomTelemetryDisplay extends Region {
         return telemetryData;
     }
 
+    /**
+     * Sets a callback invoked when a sound source is dragged to a new position.
+     *
+     * @param listener callback receiving (sourceName, newPosition)
+     */
+    public void setOnSourceDragged(BiConsumer<String, Position3D> listener) {
+        this.onSourceDragged = listener;
+    }
+
+    /**
+     * Sets a callback invoked when a microphone is dragged to a new position.
+     *
+     * @param listener callback receiving (micName, newPosition)
+     */
+    public void setOnMicDragged(BiConsumer<String, Position3D> listener) {
+        this.onMicDragged = listener;
+    }
+
+    /**
+     * Returns the source drag listener.
+     *
+     * @return the source drag callback, or {@code null}
+     */
+    public BiConsumer<String, Position3D> getOnSourceDragged() {
+        return onSourceDragged;
+    }
+
+    /**
+     * Returns the mic drag listener.
+     *
+     * @return the mic drag callback, or {@code null}
+     */
+    public BiConsumer<String, Position3D> getOnMicDragged() {
+        return onMicDragged;
+    }
+
+    // ── Drag-and-drop ──────────────────────────────────────────────
+
+    private void handleMousePressed(MouseEvent event) {
+        if (telemetryData == null || cachedScale <= 0) return;
+
+        double mx = event.getX();
+        double my = event.getY();
+
+        // Check sources
+        java.util.HashSet<String> checkedSources = new java.util.HashSet<>();
+        for (SoundWavePath path : telemetryData.wavePaths()) {
+            if (checkedSources.add(path.sourceName())) {
+                Position3D sp = path.waypoints().getFirst();
+                double sx = cachedOffsetX + sp.x() * cachedScale;
+                double sy = cachedOffsetY + sp.y() * cachedScale;
+                if (Math.hypot(mx - sx, my - sy) <= SOURCE_RADIUS + 6) {
+                    draggedSourceName = path.sourceName();
+                    draggedZ = sp.z();
+                    return;
+                }
+            }
+        }
+
+        // Check microphones
+        java.util.HashSet<String> checkedMics = new java.util.HashSet<>();
+        for (SoundWavePath path : telemetryData.wavePaths()) {
+            if (checkedMics.add(path.microphoneName())) {
+                Position3D mp = path.waypoints().getLast();
+                double mcx = cachedOffsetX + mp.x() * cachedScale;
+                double mcy = cachedOffsetY + mp.y() * cachedScale;
+                if (Math.hypot(mx - mcx, my - mcy) <= MIC_RADIUS + 6) {
+                    draggedMicName = path.microphoneName();
+                    draggedZ = mp.z();
+                    return;
+                }
+            }
+        }
+    }
+
+    private void handleMouseDragged(MouseEvent event) {
+        if (telemetryData == null || cachedScale <= 0) return;
+
+        double roomX = (event.getX() - cachedOffsetX) / cachedScale;
+        double roomY = (event.getY() - cachedOffsetY) / cachedScale;
+
+        // Clamp to room bounds
+        double w = telemetryData.roomDimensions().width();
+        double l = telemetryData.roomDimensions().length();
+        roomX = Math.max(0.01, Math.min(w - 0.01, roomX));
+        roomY = Math.max(0.01, Math.min(l - 0.01, roomY));
+
+        Position3D newPos = new Position3D(roomX, roomY, draggedZ);
+
+        if (draggedSourceName != null && onSourceDragged != null) {
+            onSourceDragged.accept(draggedSourceName, newPos);
+        } else if (draggedMicName != null && onMicDragged != null) {
+            onMicDragged.accept(draggedMicName, newPos);
+        }
+    }
+
+    private void handleMouseReleased(MouseEvent event) {
+        draggedSourceName = null;
+        draggedMicName = null;
+    }
+
     // ── Rendering ──────────────────────────────────────────────────
 
     private void render() {
@@ -196,6 +316,11 @@ public final class RoomTelemetryDisplay extends Region {
         double scale = Math.min(availW / roomW, availH / roomL);
         double offsetX = (w - roomW * scale) / 2;
         double offsetY = (h - roomL * scale) / 2;
+
+        // Cache transform for hit-testing (drag-and-drop)
+        cachedOffsetX = offsetX;
+        cachedOffsetY = offsetY;
+        cachedScale = scale;
 
         // ── Draw room ──
         drawRoom(gc, offsetX, offsetY, roomW * scale, roomL * scale);
@@ -326,7 +451,7 @@ public final class RoomTelemetryDisplay extends Region {
         gc.stroke();
         gc.setLineDashes();
 
-        // Draw reflection point marker (small diamond)
+        // Draw reflection point marker (small diamond) with level label
         if (reflected && waypoints.size() >= 3) {
             Position3D rp = waypoints.get(1);
             double rx = offsetX + rp.x() * scale;
@@ -338,6 +463,22 @@ public final class RoomTelemetryDisplay extends Region {
                     new double[]{ry - d, ry, ry + d, ry},
                     4
             );
+
+            // Show reflection level label
+            gc.setFill(REFLECTED_PATH_COLOR.deriveColor(0, 1, 1, 0.7));
+            gc.setFont(Font.font("System", 8));
+            gc.setTextAlign(TextAlignment.LEFT);
+            gc.fillText("%.1f dB".formatted(path.attenuationDb()), rx + d + 2, ry - 2);
+        }
+
+        // Show direct path distance and delay at midpoint
+        if (!reflected && waypoints.size() >= 2) {
+            double[] midPos = interpolateAlongPath(waypoints, 0.5, offsetX, offsetY, scale);
+            gc.setFill(DIRECT_PATH_COLOR.deriveColor(0, 1, 1, 0.6));
+            gc.setFont(Font.font("System", 8));
+            gc.setTextAlign(TextAlignment.CENTER);
+            gc.fillText("%.1fm  %.1fms".formatted(path.totalDistance(), path.delayMs()),
+                    midPos[0], midPos[1] - 6);
         }
 
         // Draw traveling particles 🎵
