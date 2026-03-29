@@ -96,6 +96,7 @@ public final class RoomTelemetryDisplay extends Region {
     // Drag-and-drop state
     private String draggedSourceName;
     private String draggedMicName;
+    private double draggedZ;
     private BiConsumer<String, Position3D> onSourceDragged;
     private BiConsumer<String, Position3D> onMicDragged;
 
@@ -238,6 +239,7 @@ public final class RoomTelemetryDisplay extends Region {
                 double sy = cachedOffsetY + sp.y() * cachedScale;
                 if (Math.hypot(mx - sx, my - sy) <= SOURCE_RADIUS + 6) {
                     draggedSourceName = path.sourceName();
+                    draggedZ = sp.z();
                     return;
                 }
             }
@@ -252,6 +254,7 @@ public final class RoomTelemetryDisplay extends Region {
                 double mcy = cachedOffsetY + mp.y() * cachedScale;
                 if (Math.hypot(mx - mcx, my - mcy) <= MIC_RADIUS + 6) {
                     draggedMicName = path.microphoneName();
+                    draggedZ = mp.z();
                     return;
                 }
             }
@@ -270,7 +273,7 @@ public final class RoomTelemetryDisplay extends Region {
         roomX = Math.max(0.01, Math.min(w - 0.01, roomX));
         roomY = Math.max(0.01, Math.min(l - 0.01, roomY));
 
-        Position3D newPos = new Position3D(roomX, roomY, 1.0);
+        Position3D newPos = new Position3D(roomX, roomY, draggedZ);
 
         if (draggedSourceName != null && onSourceDragged != null) {
             onSourceDragged.accept(draggedSourceName, newPos);

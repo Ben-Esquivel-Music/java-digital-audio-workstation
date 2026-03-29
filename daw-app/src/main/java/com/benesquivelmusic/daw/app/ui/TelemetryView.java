@@ -13,6 +13,7 @@ import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
 import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
 
 import javafx.animation.AnimationTimer;
+import javafx.animation.PauseTransition;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.Button;
@@ -21,6 +22,7 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
+import javafx.util.Duration;
 
 /**
  * Full-screen Sound Wave Telemetry view with two states.
@@ -71,6 +73,7 @@ public final class TelemetryView extends VBox {
     private long lastNanos;
     private boolean displayingTelemetry;
     private RoomConfiguration lastConfig;
+    private final PauseTransition dragDebounce;
 
     /**
      * Creates a new telemetry view panel.
@@ -126,6 +129,11 @@ public final class TelemetryView extends VBox {
         // Wire drag-and-drop callbacks for interactive repositioning
         display.setOnSourceDragged(this::handleSourceDragged);
         display.setOnMicDragged(this::handleMicDragged);
+
+        // Debounce timer coalesces rapid drag events to avoid recomputing
+        // telemetry on every mouse-drag pixel, which would stall the FX thread.
+        dragDebounce = new PauseTransition(Duration.millis(50));
+        dragDebounce.setOnFinished(event -> recomputeTelemetry());
 
         // Animation timer drives particle/ripple/pulse animations
         animationTimer = new AnimationTimer() {
@@ -227,7 +235,7 @@ public final class TelemetryView extends VBox {
     /**
      * Handles a sound source being dragged to a new position on the canvas.
      * Rebuilds the room configuration with the updated source position and
-     * recomputes telemetry data.
+     * schedules debounced telemetry recomputation.
      */
     private void handleSourceDragged(String sourceName, Position3D newPosition) {
         if (lastConfig == null) return;
@@ -246,14 +254,13 @@ public final class TelemetryView extends VBox {
         }
 
         lastConfig = updated;
-        RoomTelemetryData data = SoundWaveTelemetryEngine.compute(updated);
-        display.setTelemetryData(data);
+        dragDebounce.playFromStart();
     }
 
     /**
      * Handles a microphone being dragged to a new position on the canvas.
      * Rebuilds the room configuration with the updated mic position and
-     * recomputes telemetry data.
+     * schedules debounced telemetry recomputation.
      */
     private void handleMicDragged(String micName, Position3D newPosition) {
         if (lastConfig == null) return;
@@ -273,7 +280,17 @@ public final class TelemetryView extends VBox {
         }
 
         lastConfig = updated;
-        RoomTelemetryData data = SoundWaveTelemetryEngine.compute(updated);
+        dragDebounce.playFromStart();
+    }
+
+    /**
+     * Recomputes telemetry data from the current {@link #lastConfig} and
+     * updates the display. Called by the debounce timer after drag events
+     * settle.
+     */
+    private void recomputeTelemetry() {
+        if (lastConfig == null) return;
+        RoomTelemetryData data = SoundWaveTelemetryEngine.compute(lastConfig);
         display.setTelemetryData(data);
     }
 

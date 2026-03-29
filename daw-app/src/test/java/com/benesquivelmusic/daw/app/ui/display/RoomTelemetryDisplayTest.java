@@ -173,6 +173,8 @@ class RoomTelemetryDisplayTest {
         // (constructor doesn't set callbacks)
         // Note: When used inside TelemetryView, callbacks ARE set
         // This test verifies standalone construction
+        assertThat(display.getOnSourceDragged()).isNull();
+        assertThat(display.getOnMicDragged()).isNull();
     }
 
     @Test
