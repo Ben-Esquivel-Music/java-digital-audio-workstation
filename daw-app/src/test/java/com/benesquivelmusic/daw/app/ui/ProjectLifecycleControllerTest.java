@@ -222,7 +222,10 @@ class ProjectLifecycleControllerTest {
                 latch.countDown();
             }
         });
-        latch.await(5, TimeUnit.SECONDS);
+        boolean completed = latch.await(5, TimeUnit.SECONDS);
+        if (!completed) {
+            throw new RuntimeException("Timed out waiting for JavaFX action to complete");
+        }
         if (error.get() != null) {
             throw new RuntimeException(error.get());
         }
