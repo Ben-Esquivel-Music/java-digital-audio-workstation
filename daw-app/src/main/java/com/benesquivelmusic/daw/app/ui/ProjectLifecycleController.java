@@ -353,12 +353,8 @@ final class ProjectLifecycleController {
     }
 
     void resetProjectState() {
-        try {
-            if (projectManager.getCurrentProject() != null) {
-                projectManager.closeProject();
-            }
-        } catch (IOException e) {
-            LOG.log(Level.WARNING, "Failed to close current project", e);
+        if (projectManager.getCurrentProject() != null) {
+            projectManager.abandonProject();
         }
     }
 
