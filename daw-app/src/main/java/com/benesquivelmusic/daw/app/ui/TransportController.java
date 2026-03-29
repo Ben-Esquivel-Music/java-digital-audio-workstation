@@ -29,12 +29,13 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Manages transport playback actions, time-ticker display, and recording
- * pipeline lifecycle.
+ * Manages transport playback actions and recording pipeline lifecycle.
  *
  * <p>Extracted from {@link MainController} to isolate transport behavior
- * into a dedicated, independently testable class. All dependencies are
- * received via constructor injection.</p>
+ * into a dedicated, independently testable class. Time-ticker animation
+ * is delegated to {@link AnimationController} via the {@link Host}
+ * callback interface. All dependencies are received via constructor
+ * injection.</p>
  */
 final class TransportController {
 
@@ -47,6 +48,9 @@ final class TransportController {
     interface Host {
         boolean isSnapEnabled();
         GridResolution gridResolution();
+        void startTimeTicker();
+        void pauseTimeTicker();
+        void stopTimeTicker();
     }
 
     private final DawProject project;
@@ -66,9 +70,6 @@ final class TransportController {
 
     private RecordingPipeline recordingPipeline;
     private boolean loopEnabled;
-    private long timeTickerStartNanos;
-    private boolean timeTickerRunning;
-    private long timeTickerPausedElapsedNanos;
 
     TransportController(DawProject project,
                         AudioEngine audioEngine,
@@ -104,7 +105,7 @@ final class TransportController {
 
     void onPlay() {
         project.getTransport().play();
-        startTimeTicker();
+        host.startTimeTicker();
         updateStatus();
         statusBarLabel.setText("Playing...");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.PLAY_CIRCLE, 12));
@@ -150,7 +151,7 @@ final class TransportController {
         }
 
         project.getTransport().stop();
-        stopTimeTicker();
+        host.stopTimeTicker();
         updateStatus();
         timeDisplay.setText("00:00:00.0");
         if (statusBarLabel.getText() == null || !statusBarLabel.getText().startsWith("Recording stopped")) {
@@ -167,7 +168,7 @@ final class TransportController {
 
     void onPause() {
         project.getTransport().pause();
-        pauseTimeTicker();
+        host.pauseTimeTicker();
         updateStatus();
         statusBarLabel.setText("Paused");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.PAUSE_CIRCLE, 12));
@@ -207,7 +208,7 @@ final class TransportController {
                 audioEngine, project.getTransport(), project.getFormat(), outputDir, armedTracks);
         recordingPipeline.start();
 
-        startTimeTicker();
+        host.startTimeTicker();
         updateStatus();
         int trackCount = armedTracks.size();
         statusBarLabel.setText("Recording — " + trackCount + " track"
@@ -229,7 +230,7 @@ final class TransportController {
             // Keep the ticker running while playing/recording; it will update the
             // time display on the next tick to reflect the new position.
         } else {
-            stopTimeTicker();
+            host.stopTimeTicker();
             timeDisplay.setText("00:00:00.0");
         }
         statusBarLabel.setText("Skipped to beginning");
@@ -258,60 +259,6 @@ final class TransportController {
         statusBarLabel.setText(loopState);
         statusBarLabel.setGraphic(IconNode.of(DawIcon.LOOP, 12));
         LOG.fine(loopState);
-    }
-
-    // ── Time ticker ──────────────────────────────────────────────────────────
-
-    /**
-     * Called each frame by the main animation timer to update the time display
-     * while the transport is playing or recording.
-     */
-    void tickTimeDisplay(long nowNanos) {
-        if (timeTickerRunning) {
-            long elapsedNanos = timeTickerPausedElapsedNanos + (nowNanos - timeTickerStartNanos);
-            refreshTimeDisplay(elapsedNanos);
-        }
-    }
-
-    /** Starts the time ticker from zero (or resumes from a paused position). */
-    private void startTimeTicker() {
-        timeTickerStartNanos = System.nanoTime();
-        timeTickerRunning = true;
-    }
-
-    /** Pauses the time ticker, preserving elapsed time for clean resume. */
-    private void pauseTimeTicker() {
-        if (timeTickerRunning) {
-            timeTickerPausedElapsedNanos += System.nanoTime() - timeTickerStartNanos;
-            timeTickerRunning = false;
-        }
-    }
-
-    /** Stops and resets the time ticker. */
-    private void stopTimeTicker() {
-        timeTickerRunning = false;
-        timeTickerPausedElapsedNanos = 0;
-    }
-
-    /** Updates the time display label from the given elapsed nanosecond count. */
-    private void refreshTimeDisplay(long elapsedNanos) {
-        timeDisplay.setText(formatTime(elapsedNanos));
-    }
-
-    /**
-     * Formats elapsed nanoseconds into a {@code HH:MM:SS.t} display string.
-     *
-     * @param elapsedNanos elapsed time in nanoseconds
-     * @return formatted time string
-     */
-    static String formatTime(long elapsedNanos) {
-        long elapsedMs = elapsedNanos / 1_000_000L;
-        long tenths = (elapsedMs % 1000) / 100;
-        long totalSeconds = elapsedMs / 1000;
-        long minutes = totalSeconds / 60;
-        long hours = minutes / 60;
-        return String.format("%02d:%02d:%02d.%d",
-                hours, minutes % 60, totalSeconds % 60, tenths);
     }
 
     // ── Status update ────────────────────────────────────────────────────────

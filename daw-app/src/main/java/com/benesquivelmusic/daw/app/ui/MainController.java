@@ -24,12 +24,7 @@ import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
-import com.benesquivelmusic.daw.sdk.visualization.LevelData;
-import com.benesquivelmusic.daw.sdk.visualization.SpectrumData;
 
-import javafx.animation.AnimationTimer;
-import javafx.animation.Interpolator;
-import javafx.animation.ScaleTransition;
 import javafx.animation.Timeline;
 import javafx.fxml.FXML;
 import javafx.geometry.Insets;
@@ -254,21 +249,14 @@ public final class MainController {
     /** Builds and manages individual track strips in the arrangement track list. */
     private TrackStripController trackStripController;
 
-    // ── Animation state ──────────────────────────────────────────────────────
-    /** Drives all continuous frame-by-frame animations at ~60 fps. */
-    private AnimationTimer mainAnimTimer;
-    /** Accumulated phase (seconds) for the idle visualization waveform simulation. */
-    private double idleAnimPhase;
-    /** Accumulated phase (seconds) for the transport-state glow animations. */
-    private double glowAnimPhase;
+    // ── Animation controller ────────────────────────────────────────────────
+    /** Encapsulates all frame-by-frame and transition-based animations. */
+    private AnimationController animationController;
 
     /** Reference kept for the idle demo animation. */
     private SpectrumDisplay spectrumDisplay;
     /** Reference kept for the idle demo animation. */
     private LevelMeterDisplay levelMeterDisplay;
-    /** Reusable bin buffer for the idle spectrum animation — avoids per-frame heap allocation. */
-    private static final int IDLE_FFT_SIZE = 1024;
-    private final float[] idleSpectrumBins = new float[IDLE_FFT_SIZE / 2];
 
     @FXML
     private void initialize() {
@@ -302,7 +290,6 @@ public final class MainController {
 
         applyIcons();
         applyTooltips();
-        applyButtonPressAnimations();
         preventButtonTruncation();
         buildVisualizationTiles();
         buildBrowserPanel(toolbarStateStore.loadBrowserVisible());
@@ -311,12 +298,14 @@ public final class MainController {
         initializeNotificationBar();
         createTransportController();
         createProjectLifecycleController();
+        createAnimationController();
+        animationController.applyButtonPressAnimations();
         transportController.updateStatus();
         updateTempoDisplay();
         updateProjectInfo();
         updateCheckpointStatus();
         updateUndoRedoState();
-        startMainAnimTimer();
+        animationController.start();
         initializeViewNavigation();
         createTrackStripController();
         initializeEditTools();
@@ -363,7 +352,27 @@ public final class MainController {
                 new TransportController.Host() {
                     @Override public boolean isSnapEnabled() { return snapEnabled; }
                     @Override public GridResolution gridResolution() { return gridResolution; }
+                    @Override public void startTimeTicker() { animationController.startTimeTicker(); }
+                    @Override public void pauseTimeTicker() { animationController.pauseTimeTicker(); }
+                    @Override public void stopTimeTicker() { animationController.stopTimeTicker(); }
                 });
+    }
+
+    /**
+     * Creates the {@link AnimationController} with the visualization displays,
+     * time display label, transport buttons, and all animated buttons.  Must be
+     * called after {@code buildVisualizationTiles()} and {@code createTransportController()}.
+     */
+    private void createAnimationController() {
+        animationController = new AnimationController(
+                spectrumDisplay, levelMeterDisplay, timeDisplay,
+                playButton, recordButton,
+                new Button[]{
+                        skipBackButton, playButton, pauseButton, stopButton, recordButton,
+                        skipForwardButton, loopButton,
+                        addAudioTrackButton, addMidiTrackButton,
+                        undoButton, redoButton, snapButton, saveButton, pluginsButton},
+                () -> project.getTransport().getState());
     }
 
     /**
@@ -1872,151 +1881,6 @@ public final class MainController {
         notificationBar.showWithUndo(NotificationLevel.SUCCESS,
                 "Fade out applied: " + track.getName(), this::onUndo);
         projectDirty = true;
-    }
-
-    // ── Animation helpers ────────────────────────────────────────────────────
-
-    /**
-     * Starts the single {@link AnimationTimer} that drives all continuous
-     * frame-by-frame animations: idle visualization demo, transport glow, and
-     * the time-display ticker.
-     */
-    private void startMainAnimTimer() {
-        mainAnimTimer = new AnimationTimer() {
-            private long lastNanos = 0;
-
-            @Override
-            public void handle(long now) {
-                if (lastNanos == 0) {
-                    lastNanos = now;
-                    return;
-                }
-                double delta = (now - lastNanos) / 1_000_000_000.0;
-                lastNanos = now;
-
-                // Advance animation phases
-                idleAnimPhase += delta;
-                glowAnimPhase += delta;
-
-                TransportState state = project.getTransport().getState();
-
-                // Time ticker: update time display while playing or recording
-                transportController.tickTimeDisplay(now);
-
-                // Transport glow on play and record buttons
-                applyTransportGlow(state);
-
-                // Idle visualization (always runs to keep displays alive)
-                tickIdleVisualization(delta);
-            }
-        };
-        mainAnimTimer.start();
-    }
-
-    /**
-     * Applies a pulsing glow to the play button while playing and a blink
-     * to the record button while recording.
-     */
-    private void applyTransportGlow(TransportState state) {
-        if (state == TransportState.PLAYING) {
-            double pulse = 0.5 + 0.5 * Math.sin(glowAnimPhase * Math.PI * 1.4);
-            double radius = 8 + pulse * 14;
-            double spread = 0.05 + pulse * 0.25;
-            playButton.setStyle(String.format(
-                    "-fx-effect: dropshadow(gaussian, #00e676, %.1f, %.2f, 0, 0);",
-                    radius, spread));
-            recordButton.setStyle("");
-        } else if (state == TransportState.RECORDING) {
-            // Blink record button: full opacity <-> dim, at ~2 Hz
-            double blink = 0.5 + 0.5 * Math.sin(glowAnimPhase * Math.PI * 4.0);
-            double opacity = 0.4 + blink * 0.6;
-            recordButton.setOpacity(opacity);
-            double glowRadius = 8 + blink * 16;
-            double glowSpread = 0.1 + blink * 0.3;
-            recordButton.setStyle(String.format(
-                    "-fx-effect: dropshadow(gaussian, #ff1744, %.1f, %.2f, 0, 0);",
-                    glowRadius, glowSpread));
-            playButton.setStyle("");
-        } else {
-            playButton.setStyle("");
-            recordButton.setOpacity(1.0);
-            recordButton.setStyle("");
-        }
-    }
-
-    /**
-     * Generates synthetic spectrum and level data for the idle demo animation so
-     * the visualization displays stay visually alive when no audio is being processed.
-     */
-    private void tickIdleVisualization(double deltaSeconds) {
-        if (spectrumDisplay == null || levelMeterDisplay == null) {
-            return;
-        }
-
-        // ── Spectrum: pink-noise shape with gentle wobble ──────────────────
-        int binCount = idleSpectrumBins.length;
-        for (int i = 1; i < binCount; i++) {
-            // Logarithmic position: 0.0 (low) → 1.0 (high)
-            double t = Math.log((double) i / binCount + 1.0) / Math.log(2.0);
-            // Pink-noise baseline: gentle downward slope
-            double base = -28.0 - t * 30.0;
-            // Slow wobble across the frequency range
-            double wobble = 7.0 * Math.sin(idleAnimPhase * 0.9 + t * 5.5);
-            // Low-mid bump that breathes
-            double bump = 5.0 * Math.exp(-Math.pow((t - 0.25), 2) / 0.01)
-                    * (0.5 + 0.5 * Math.sin(idleAnimPhase * 0.6));
-            idleSpectrumBins[i] = (float) Math.max(-90.0, base + wobble + bump);
-        }
-        idleSpectrumBins[0] = idleSpectrumBins[1];
-        spectrumDisplay.updateSpectrum(new SpectrumData(idleSpectrumBins, IDLE_FFT_SIZE, 44100.0));
-
-        // ── Level meter: gentle breathing RMS with occasional peaks ──────
-        double rmsLinear = 0.18 + 0.12 * Math.abs(Math.sin(idleAnimPhase * 0.75));
-        double peakBoost = 1.0 + 0.25 * Math.abs(Math.sin(idleAnimPhase * 1.8));
-        double peakLinear = Math.min(rmsLinear * peakBoost * 1.3, 0.85);
-        double dbRms = 20.0 * Math.log10(Math.max(rmsLinear, 1e-9));
-        double dbPeak = 20.0 * Math.log10(Math.max(peakLinear, 1e-9));
-        levelMeterDisplay.update(
-                new LevelData(peakLinear, rmsLinear, dbPeak, dbRms, false),
-                (long) (deltaSeconds * 1_000_000_000L));
-    }
-
-    /**
-     * Adds a scale-bounce press/release animation to every transport button so
-     * clicks feel tactile and immediate.
-     */
-    private void applyButtonPressAnimations() {
-        for (Button btn : new Button[]{
-                skipBackButton, playButton, pauseButton, stopButton, recordButton,
-                skipForwardButton, loopButton,
-                addAudioTrackButton, addMidiTrackButton,
-                undoButton, redoButton, snapButton, saveButton, pluginsButton}) {
-            applyPressAnimation(btn);
-        }
-    }
-
-    /**
-     * Attaches a subtle scale-down-then-spring-back animation to a single button.
-     */
-    private void applyPressAnimation(Button btn) {
-        ScaleTransition pressDown = new ScaleTransition(Duration.millis(70), btn);
-        pressDown.setToX(0.90);
-        pressDown.setToY(0.90);
-        pressDown.setInterpolator(Interpolator.EASE_IN);
-
-        ScaleTransition springBack = new ScaleTransition(Duration.millis(130), btn);
-        springBack.setToX(1.0);
-        springBack.setToY(1.0);
-        springBack.setInterpolator(Interpolator.EASE_OUT);
-
-        btn.setOnMousePressed(_ -> {
-            springBack.stop();
-            pressDown.playFromStart();
-        });
-        btn.setOnMouseReleased(_ -> {
-            pressDown.stop();
-            springBack.playFromStart();
-        });
     }
 
     /**
