@@ -27,8 +27,9 @@ import java.util.List;
  * buffer. MIDI clips are rendered with a simplified piano-roll note
  * preview. Clip names appear as overlay labels.</p>
  *
- * <p>Horizontal and vertical scrolling is synchronized with the
- * {@link ArrangementNavigator} infrastructure.</p>
+ * <p>Horizontal and vertical scrolling are controlled via the canvas's
+ * scroll and zoom parameters and can be coordinated with higher-level
+ * navigation components by the caller as needed.</p>
  */
 public final class ArrangementCanvas extends Pane {
 
