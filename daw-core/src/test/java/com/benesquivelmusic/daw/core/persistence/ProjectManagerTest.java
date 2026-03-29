@@ -110,6 +110,34 @@ class ProjectManagerTest {
     }
 
     @Test
+    void shouldAbandonProjectWithoutSaving() throws IOException {
+        ProjectManager manager = createProjectManager();
+        manager.createProject("Abandon Test", tempDir);
+
+        DawProject dawProject = new DawProject("Abandon Test", AudioFormat.CD_QUALITY);
+        dawProject.setMetadata(manager.getCurrentProject());
+        manager.saveDawProject(dawProject);
+
+        // Mark dirty, then abandon — should NOT persist the dirty state
+        dawProject.markDirty();
+        assertThat(manager.hasUnsavedChanges()).isTrue();
+
+        manager.abandonProject();
+
+        assertThat(manager.getCurrentProject()).isNull();
+        assertThat(manager.getCurrentDawProject()).isNull();
+        assertThat(manager.getCheckpointManager().isRunning()).isFalse();
+    }
+
+    @Test
+    void shouldAbandonProjectIdempotently() {
+        ProjectManager manager = createProjectManager();
+
+        manager.abandonProject();
+        assertThat(manager.getCurrentProject()).isNull();
+    }
+
+    @Test
     void shouldOpenExistingProject() throws IOException {
         ProjectManager manager = createProjectManager();
         ProjectMetadata created = manager.createProject("Original", tempDir);

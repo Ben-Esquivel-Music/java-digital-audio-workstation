@@ -181,7 +181,7 @@ public final class ProjectManager {
     }
 
     /**
-     * Closes the current project.
+     * Closes the current project after saving.
      *
      * @throws IOException if the final save fails
      */
@@ -190,6 +190,19 @@ public final class ProjectManager {
             return;
         }
         saveProject();
+        checkpointManager.stop();
+        currentProject = null;
+        currentDawProject = null;
+    }
+
+    /**
+     * Abandons the current project without saving. Use this when the user
+     * has explicitly chosen to discard unsaved changes.
+     */
+    public void abandonProject() {
+        if (currentProject == null) {
+            return;
+        }
         checkpointManager.stop();
         currentProject = null;
         currentDawProject = null;

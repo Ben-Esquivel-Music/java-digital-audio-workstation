@@ -26,8 +26,6 @@ import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
 import com.benesquivelmusic.daw.sdk.visualization.LevelData;
 import com.benesquivelmusic.daw.sdk.visualization.SpectrumData;
-import com.benesquivelmusic.daw.sdk.session.SessionExportResult;
-import com.benesquivelmusic.daw.sdk.session.SessionImportResult;
 
 import javafx.animation.AnimationTimer;
 import javafx.animation.Interpolator;
@@ -42,7 +40,6 @@ import javafx.scene.control.ContextMenu;
 import javafx.scene.control.Label;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.Separator;
-import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.TextField;
 import javafx.scene.control.Tooltip;
 import javafx.scene.input.KeyCombination;
@@ -70,8 +67,6 @@ import javafx.scene.control.ButtonType;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.StackPane;
 import javafx.scene.transform.Scale;
-import javafx.stage.DirectoryChooser;
-import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 import javafx.collections.ObservableMap;
 
@@ -175,6 +170,10 @@ public final class MainController {
     // ── Transport controller ─────────────────────────────────────────────────
     /** Manages transport actions, time ticker, and recording pipeline. */
     private TransportController transportController;
+
+    // ── Project lifecycle controller ─────────────────────────────────────────
+    /** Manages project open/save/import/export and associated state resets. */
+    private ProjectLifecycleController projectLifecycleController;
 
     // ── Session interchange ──────────────────────────────────────────────────
     /** Handles DAWproject import/export logic without JavaFX dependencies. */
@@ -311,6 +310,7 @@ public final class MainController {
         setupTempoEditor();
         initializeNotificationBar();
         createTransportController();
+        createProjectLifecycleController();
         transportController.updateStatus();
         updateTempoDisplay();
         updateProjectInfo();
@@ -398,6 +398,47 @@ public final class MainController {
                         return viewZoomLevels.get(activeView);
                     }
                     @Override public EditorView editorView() { return editorView; }
+                });
+    }
+
+    /**
+     * Creates the {@link ProjectLifecycleController} with the current project
+     * manager, session interchange controller, and UI elements. Must be called
+     * after {@code initializeNotificationBar()}.
+     */
+    private void createProjectLifecycleController() {
+        projectLifecycleController = new ProjectLifecycleController(
+                projectManager, sessionInterchangeController, notificationBar,
+                statusBarLabel, checkpointLabel, rootPane, recentProjectsButton,
+                trackListPanel,
+                new ProjectLifecycleController.Host() {
+                    @Override public DawProject project() { return project; }
+                    @Override public void setProject(DawProject p) { project = p; }
+                    @Override public UndoManager undoManager() { return undoManager; }
+                    @Override public void setUndoManager(UndoManager um) { undoManager = um; }
+                    @Override public boolean isProjectDirty() { return projectDirty; }
+                    @Override public void setProjectDirty(boolean dirty) { projectDirty = dirty; }
+                    @Override public void resetTrackCounters() {
+                        audioTrackCounter = 0;
+                        midiTrackCounter = 0;
+                    }
+                    @Override public void rebuildHistoryPanel() {
+                        MainController.this.rebuildHistoryPanel();
+                    }
+                    @Override public void onProjectUIRebuild(MixerView newMixerView) {
+                        mixerView = newMixerView;
+                        viewCache.put(DawView.MIXER, mixerView);
+                        createTransportController();
+                        transportController.updateStatus();
+                        createTrackStripController();
+                        updateProjectInfo();
+                        updateTempoDisplay();
+                        updateUndoRedoState();
+                        updateArrangementPlaceholder();
+                        if (activeView == DawView.MIXER) {
+                            rootPane.setCenter(mixerView);
+                        }
+                    }
                 });
     }
 
@@ -652,7 +693,7 @@ public final class MainController {
                     statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
                 },
                 this::resetViewLayout,
-                this::loadProjectFromPath
+                projectLifecycleController::loadProjectFromPath
         );
         toolbarContextMenuController.initialize();
         LOG.fine("Toolbar context menus initialized");
@@ -1128,11 +1169,11 @@ public final class MainController {
         actionHandlers.put(DawAction.TOGGLE_LOOP, this::onToggleLoop);
         actionHandlers.put(DawAction.UNDO, this::onUndo);
         actionHandlers.put(DawAction.REDO, this::onRedo);
-        actionHandlers.put(DawAction.SAVE, this::onSaveProject);
-        actionHandlers.put(DawAction.NEW_PROJECT, this::onNewProject);
-        actionHandlers.put(DawAction.OPEN_PROJECT, this::onOpenProject);
-        actionHandlers.put(DawAction.IMPORT_SESSION, this::onImportSession);
-        actionHandlers.put(DawAction.EXPORT_SESSION, this::onExportSession);
+        actionHandlers.put(DawAction.SAVE, projectLifecycleController::onSaveProject);
+        actionHandlers.put(DawAction.NEW_PROJECT, projectLifecycleController::onNewProject);
+        actionHandlers.put(DawAction.OPEN_PROJECT, projectLifecycleController::onOpenProject);
+        actionHandlers.put(DawAction.IMPORT_SESSION, projectLifecycleController::onImportSession);
+        actionHandlers.put(DawAction.EXPORT_SESSION, projectLifecycleController::onExportSession);
         actionHandlers.put(DawAction.TOGGLE_SNAP, this::onToggleSnap);
         actionHandlers.put(DawAction.ADD_AUDIO_TRACK, this::onAddAudioTrack);
         actionHandlers.put(DawAction.ADD_MIDI_TRACK, this::onAddMidiTrack);
@@ -1595,284 +1636,32 @@ public final class MainController {
 
     @FXML
     private void onSaveProject() {
-        try {
-            if (projectManager.getCurrentProject() == null) {
-                Path tempDir = Files.createTempDirectory("daw-project-");
-                projectManager.createProject(project.getName(), tempDir.getParent());
-            }
-            projectManager.saveProject();
-            projectDirty = false;
-            int count = projectManager.getCheckpointManager().getCheckpointCount();
-            checkpointLabel.setText("Saved (checkpoint #" + count + ")");
-            checkpointLabel.setGraphic(IconNode.of(DawIcon.SUCCESS, 12));
-            statusBarLabel.setText("Project saved");
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.UPLOAD, 12));
-            notificationBar.show(NotificationLevel.SUCCESS, "Project saved");
-            LOG.info("Project saved successfully");
-        } catch (IOException e) {
-            statusBarLabel.setText("Save failed: " + e.getMessage());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
-            notificationBar.show(NotificationLevel.ERROR, "Save failed: " + e.getMessage());
-            LOG.log(Level.WARNING, "Failed to save project", e);
-        }
+        projectLifecycleController.onSaveProject();
     }
 
     @FXML
     private void onNewProject() {
-        if (!confirmDiscardUnsavedChanges()) {
-            return;
-        }
-        resetProjectState();
-        project = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
-        undoManager = new UndoManager();
-        rebuildHistoryPanel();
-        audioTrackCounter = 0;
-        midiTrackCounter = 0;
-        projectDirty = false;
-        rebuildUI();
-        statusBarLabel.setText("New project created");
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.FOLDER, 12));
-        notificationBar.show(NotificationLevel.SUCCESS, "New project created");
-        LOG.info("Created new project");
+        projectLifecycleController.onNewProject();
     }
 
     @FXML
     private void onOpenProject() {
-        if (!confirmDiscardUnsavedChanges()) {
-            return;
-        }
-        DirectoryChooser chooser = new DirectoryChooser();
-        chooser.setTitle("Open Project");
-        Stage stage = (Stage) rootPane.getScene().getWindow();
-        java.io.File selected = chooser.showDialog(stage);
-        if (selected == null) {
-            return;
-        }
-        loadProjectFromPath(selected.toPath());
+        projectLifecycleController.onOpenProject();
     }
 
     @FXML
     private void onRecentProjects() {
-        List<Path> recentPaths = projectManager.getRecentProjectPaths();
-        ContextMenu menu = new ContextMenu();
-        if (recentPaths.isEmpty()) {
-            MenuItem emptyItem = new MenuItem("No recent projects");
-            emptyItem.setDisable(true);
-            menu.getItems().add(emptyItem);
-        } else {
-            for (Path path : recentPaths) {
-                MenuItem item = new MenuItem(path.getFileName().toString());
-                item.setOnAction(_ -> {
-                    if (confirmDiscardUnsavedChanges()) {
-                        loadProjectFromPath(path);
-                    }
-                });
-                menu.getItems().add(item);
-            }
-            menu.getItems().add(new SeparatorMenuItem());
-            MenuItem clearItem = new MenuItem("Clear Recent Projects");
-            clearItem.setOnAction(_ -> {
-                RecentProjectsStore store = projectManager.getRecentProjectsStore();
-                if (store != null) {
-                    store.clear();
-                }
-                statusBarLabel.setText("Recent projects cleared");
-                statusBarLabel.setGraphic(IconNode.of(DawIcon.DELETE, 12));
-            });
-            menu.getItems().add(clearItem);
-        }
-        menu.show(recentProjectsButton,
-                javafx.geometry.Side.RIGHT, 0, 0);
+        projectLifecycleController.onRecentProjects();
     }
 
-    // ── Session Import/Export ────────────────────────────────────────────────
-
-    /**
-     * Handles the Import Session action: opens a file chooser for
-     * {@code .dawproject} files, imports the selected file, creates tracks
-     * and mixer settings, and shows a summary dialog.
-     */
     @FXML
     private void onImportSession() {
-        if (!confirmDiscardUnsavedChanges()) {
-            return;
-        }
-        FileChooser chooser = new FileChooser();
-        chooser.setTitle("Import Session");
-        chooser.getExtensionFilters().add(
-                new FileChooser.ExtensionFilter("DAWproject Files", "*.dawproject", "*.xml"));
-        Stage stage = (Stage) rootPane.getScene().getWindow();
-        java.io.File selected = chooser.showOpenDialog(stage);
-        if (selected == null) {
-            return;
-        }
-        try {
-            SessionImportResult result = sessionInterchangeController.importSession(selected.toPath());
-            resetProjectState();
-            project = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
-            undoManager = new UndoManager();
-            rebuildHistoryPanel();
-            audioTrackCounter = 0;
-            midiTrackCounter = 0;
-            sessionInterchangeController.applySessionData(result.sessionData(), project);
-            projectDirty = true;
-            rebuildUI();
-
-            String summary = sessionInterchangeController.buildImportSummary(result);
-            Alert summaryDialog = new Alert(Alert.AlertType.INFORMATION);
-            summaryDialog.setTitle("Import Summary");
-            summaryDialog.setHeaderText("Session imported successfully");
-            summaryDialog.setContentText(summary);
-            DarkThemeHelper.applyTo(summaryDialog);
-            summaryDialog.showAndWait();
-
-            statusBarLabel.setText("Imported session: " + result.sessionData().projectName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.DOWNLOAD, 12));
-            notificationBar.show(NotificationLevel.SUCCESS,
-                    "Imported session: " + result.sessionData().projectName());
-            LOG.info("Imported DAWproject session from " + selected.toPath());
-        } catch (IOException e) {
-            statusBarLabel.setText("Import failed: " + e.getMessage());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
-            notificationBar.show(NotificationLevel.ERROR,
-                    "Import failed: " + e.getMessage());
-            LOG.log(Level.WARNING, "Failed to import session", e);
-        }
+        projectLifecycleController.onImportSession();
     }
 
-    /**
-     * Handles the Export Session action: opens a directory chooser for the
-     * output location and exports the current project to DAWproject format.
-     */
     @FXML
     private void onExportSession() {
-        DirectoryChooser chooser = new DirectoryChooser();
-        chooser.setTitle("Export Session");
-        Stage stage = (Stage) rootPane.getScene().getWindow();
-        java.io.File selected = chooser.showDialog(stage);
-        if (selected == null) {
-            return;
-        }
-        try {
-            SessionExportResult result = sessionInterchangeController.exportSession(
-                    project, selected.toPath(), project.getName());
-
-            String message = "Session exported to " + result.outputPath().getFileName();
-            if (!result.warnings().isEmpty()) {
-                message += " (" + result.warnings().size() + " warnings)";
-            }
-            statusBarLabel.setText(message);
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.UPLOAD, 12));
-            notificationBar.show(NotificationLevel.SUCCESS, message);
-
-            if (!result.warnings().isEmpty()) {
-                StringBuilder warningText = new StringBuilder("Export completed with warnings:\n\n");
-                for (String warning : result.warnings()) {
-                    warningText.append("  \u2022 ").append(warning).append("\n");
-                }
-                Alert warningDialog = new Alert(Alert.AlertType.WARNING);
-                warningDialog.setTitle("Export Warnings");
-                warningDialog.setHeaderText("Session exported with warnings");
-                warningDialog.setContentText(warningText.toString());
-                DarkThemeHelper.applyTo(warningDialog);
-                warningDialog.showAndWait();
-            }
-
-            LOG.info("Exported DAWproject session to " + result.outputPath());
-        } catch (IOException e) {
-            statusBarLabel.setText("Export failed: " + e.getMessage());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
-            notificationBar.show(NotificationLevel.ERROR,
-                    "Export failed: " + e.getMessage());
-            LOG.log(Level.WARNING, "Failed to export session", e);
-        }
-    }
-
-    /**
-     * Prompts the user to save unsaved changes before a destructive operation.
-     *
-     * @return {@code true} if the operation should proceed (saved, discarded, or no changes),
-     *         {@code false} if the user cancelled
-     */
-    private boolean confirmDiscardUnsavedChanges() {
-        if (!projectDirty) {
-            return true;
-        }
-        Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
-        alert.setTitle("Unsaved Changes");
-        alert.setHeaderText("You have unsaved changes.");
-        alert.setContentText("Do you want to save before continuing?");
-        ButtonType saveBtn = new ButtonType("Save");
-        ButtonType discardBtn = new ButtonType("Discard");
-        ButtonType cancelBtn = ButtonType.CANCEL;
-        alert.getButtonTypes().setAll(saveBtn, discardBtn, cancelBtn);
-        DarkThemeHelper.applyTo(alert);
-
-        Optional<ButtonType> result = alert.showAndWait();
-        if (result.isEmpty() || result.get() == cancelBtn) {
-            return false;
-        }
-        if (result.get() == saveBtn) {
-            onSaveProject();
-        }
-        return true;
-    }
-
-    private void loadProjectFromPath(Path projectDir) {
-        try {
-            resetProjectState();
-            projectManager.openProject(projectDir);
-            project = new DawProject(
-                    projectManager.getCurrentProject().name(),
-                    AudioFormat.STUDIO_QUALITY);
-            undoManager = new UndoManager();
-            rebuildHistoryPanel();
-            audioTrackCounter = 0;
-            midiTrackCounter = 0;
-            projectDirty = false;
-            rebuildUI();
-            statusBarLabel.setText("Opened: " + projectDir.getFileName());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.FOLDER, 12));
-            notificationBar.show(NotificationLevel.SUCCESS,
-                    "Opened project: " + projectDir.getFileName());
-            LOG.info("Opened project from " + projectDir);
-        } catch (IOException e) {
-            statusBarLabel.setText("Open failed: " + e.getMessage());
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
-            notificationBar.show(NotificationLevel.ERROR,
-                    "Open failed: " + e.getMessage());
-            LOG.log(Level.WARNING, "Failed to open project", e);
-        }
-    }
-
-    private void resetProjectState() {
-        try {
-            if (projectManager.getCurrentProject() != null) {
-                projectManager.closeProject();
-            }
-        } catch (IOException e) {
-            LOG.log(Level.WARNING, "Failed to close current project", e);
-        }
-    }
-
-    private void rebuildUI() {
-        trackListPanel.getChildren().clear();
-        Label header = new Label("TRACKS");
-        header.getStyleClass().add("panel-header");
-        header.setGraphic(IconNode.of(DawIcon.MIXER, PANEL_ICON_SIZE));
-        trackListPanel.getChildren().add(header);
-        mixerView = new MixerView(project);
-        viewCache.put(DawView.MIXER, mixerView);
-        createTransportController();
-        transportController.updateStatus();
-        createTrackStripController();
-        updateProjectInfo();
-        updateTempoDisplay();
-        updateUndoRedoState();
-        updateArrangementPlaceholder();
-        if (activeView == DawView.MIXER) {
-            rootPane.setCenter(mixerView);
-        }
+        projectLifecycleController.onExportSession();
     }
 
     @FXML
