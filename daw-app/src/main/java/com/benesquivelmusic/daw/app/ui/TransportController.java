@@ -276,7 +276,6 @@ final class TransportController {
     /** Starts the time ticker from zero (or resumes from a paused position). */
     private void startTimeTicker() {
         timeTickerStartNanos = System.nanoTime();
-        timeTickerPausedElapsedNanos = 0;
         timeTickerRunning = true;
     }
 
