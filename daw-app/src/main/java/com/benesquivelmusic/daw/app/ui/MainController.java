@@ -31,9 +31,7 @@ import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
-import javafx.scene.control.ContextMenu;
 import javafx.scene.control.Label;
-import javafx.scene.control.MenuItem;
 import javafx.scene.control.TextField;
 import javafx.scene.control.Tooltip;
 import javafx.scene.input.KeyCombination;
@@ -149,8 +147,6 @@ public final class MainController {
     private UndoManager undoManager;
     private int audioTrackCounter;
     private int midiTrackCounter;
-    private boolean snapEnabled = true;
-    private GridResolution gridResolution = GridResolution.QUARTER;
     private boolean projectDirty;
     private AudioEngine audioEngine;
     private NotificationBar notificationBar;
@@ -167,19 +163,9 @@ public final class MainController {
     /** Handles DAWproject import/export logic without JavaFX dependencies. */
     private final SessionInterchangeController sessionInterchangeController =
             new SessionInterchangeController();
-    // ── View navigation state ────────────────────────────────────────────────
-    /** Caches each view's content node so switching back preserves state. */
-    private final Map<DawView, Node> viewCache = new EnumMap<>(DawView.class);
-    /** The currently active view. */
-    private DawView activeView = DawView.ARRANGEMENT;
-    /** The mixer view panel — refreshed when tracks are added or removed. */
-    private MixerView mixerView;
-    /** The editor view panel — shows MIDI piano roll or audio waveform. */
-    private EditorView editorView;
-    /** The telemetry view panel — sound wave telemetry room visualizer. */
-    private TelemetryView telemetryView;
-    /** The mastering view panel — mastering chain with presets and A/B comparison. */
-    private MasteringView masteringView;
+    // ── View navigation controller ──────────────────────────────────────────
+    /** Coordinates view switching, edit tools, snap/grid, and zoom. */
+    private ViewNavigationController viewNavigationController;
 
     // ── Clipboard & selection state ─────────────────────────────────────────
     /** Tracks whether the in-app clipboard has content for paste operations. */
@@ -187,13 +173,10 @@ public final class MainController {
     /** Tracks the current time selection range for trim/crop operations. */
     private final SelectionModel selectionModel = new SelectionModel();
 
-    // ── Edit tool state ──────────────────────────────────────────────────────
-    /** The currently active edit tool. Defaults to {@link EditTool#POINTER}. */
+    private DawView activeView = DawView.ARRANGEMENT;
     private EditTool activeEditTool = EditTool.POINTER;
-
-    // ── Zoom state ───────────────────────────────────────────────────────────
-    /** Per-view zoom levels — preserved when switching between views. */
-    private final Map<DawView, ZoomLevel> viewZoomLevels = new EnumMap<>(DawView.class);
+    private boolean snapEnabled = true;
+    private GridResolution gridResolution = GridResolution.QUARTER;
 
     // ── Visualization panel controller ───────────────────────────────────────
     /** Controls the visualization row toggle, context menu, and persistence. */
@@ -302,11 +285,12 @@ public final class MainController {
         updateCheckpointStatus();
         updateUndoRedoState();
         animationController.start();
-        initializeViewNavigation();
+        createViewNavigationController();
+        viewNavigationController.initializeViewNavigation();
         createTrackStripController();
-        initializeEditTools();
-        initializeSnapControls();
-        initializeZoomControls();
+        viewNavigationController.initializeEditTools();
+        viewNavigationController.initializeSnapControls();
+        viewNavigationController.initializeZoomControls();
         initializeToolbarCollapse(prefs);
         initializeToolbarContextMenus();
         initializeSidebarActions();
@@ -383,8 +367,14 @@ public final class MainController {
                 statusLabel, timeDisplay, statusBarLabel, recIndicator,
                 playButton, pauseButton, stopButton, recordButton, loopButton,
                 new TransportController.Host() {
-                    @Override public boolean isSnapEnabled() { return snapEnabled; }
-                    @Override public GridResolution gridResolution() { return gridResolution; }
+                    @Override public boolean isSnapEnabled() {
+                        return viewNavigationController != null
+                                ? viewNavigationController.isSnapEnabled() : snapEnabled;
+                    }
+                    @Override public GridResolution gridResolution() {
+                        return viewNavigationController != null
+                                ? viewNavigationController.getGridResolution() : gridResolution;
+                    }
                     @Override public void startTimeTicker() { animationController.startTimeTicker(); }
                     @Override public void pauseTimeTicker() { animationController.pauseTimeTicker(); }
                     @Override public void stopTimeTicker() { animationController.stopTimeTicker(); }
@@ -415,7 +405,7 @@ public final class MainController {
      */
     private void createTrackStripController() {
         trackStripController = new TrackStripController(
-                project, undoManager, audioEngine, mixerView,
+                project, undoManager, audioEngine, viewNavigationController.getMixerView(),
                 notificationBar, statusBarLabel, trackListPanel, rootPane,
                 clipboardManager, selectionModel,
                 new TrackStripController.Host() {
@@ -426,20 +416,18 @@ public final class MainController {
                         MainController.this.updateUndoRedoState();
                     }
                     @Override public void undoLastAction() { onUndo(); }
-                    @Override public void zoomIn() { onZoomIn(); }
-                    @Override public void zoomOut() { onZoomOut(); }
+                    @Override public void zoomIn() { viewNavigationController.onZoomIn(); }
+                    @Override public void zoomOut() { viewNavigationController.onZoomOut(); }
                     @Override public void toggleSnap() {
-                        snapEnabled = !snapEnabled;
-                        updateSnapButtonStyle();
-                        syncSnapStateToEditorView();
+                        viewNavigationController.onToggleSnap();
                     }
                     @Override public void skipToStart() { transportController.onSkipBack(); }
                     @Override public void markProjectDirty() { projectDirty = true; }
-                    @Override public boolean isSnapEnabled() { return snapEnabled; }
+                    @Override public boolean isSnapEnabled() { return viewNavigationController.isSnapEnabled(); }
                     @Override public ZoomLevel currentZoomLevel() {
-                        return viewZoomLevels.get(activeView);
+                        return viewNavigationController.getZoomLevel(viewNavigationController.getActiveView());
                     }
-                    @Override public EditorView editorView() { return editorView; }
+                    @Override public EditorView editorView() { return viewNavigationController.getEditorView(); }
                 });
     }
 
@@ -468,8 +456,7 @@ public final class MainController {
                         MainController.this.rebuildHistoryPanel();
                     }
                     @Override public void onProjectUIRebuild(MixerView newMixerView) {
-                        mixerView = newMixerView;
-                        viewCache.put(DawView.MIXER, mixerView);
+                        viewNavigationController.setMixerView(newMixerView);
                         createTransportController();
                         transportController.updateStatus();
                         createTrackStripController();
@@ -477,204 +464,36 @@ public final class MainController {
                         updateTempoDisplay();
                         updateUndoRedoState();
                         updateArrangementPlaceholder();
-                        if (activeView == DawView.MIXER) {
-                            rootPane.setCenter(mixerView);
+                        if (viewNavigationController.getActiveView() == DawView.MIXER) {
+                            rootPane.setCenter(newMixerView);
                         }
                     }
                 });
     }
 
-    // ── View navigation ──────────────────────────────────────────────────────
+    // ── View navigation controller factory ──────────────────────────────────
 
     /**
-     * Sets up the view cache with the initial arrangement content and placeholder
-     * nodes for the mixer and editor views, then wires the sidebar view buttons.
+     * Creates the {@link ViewNavigationController} with all button references,
+     * persisted state, and the host callback.  Must be called after
+     * {@code initializeNotificationBar()} and before {@code createTrackStripController()}.
      */
-    private void initializeViewNavigation() {
-        // Cache the current center content as the arrangement view
-        viewCache.put(DawView.ARRANGEMENT, rootPane.getCenter());
-
-        // Mixer view — real channel-strip mixer panel
-        mixerView = new MixerView(project);
-        viewCache.put(DawView.MIXER, mixerView);
-
-        // Editor view — MIDI piano-roll / audio waveform editor panel
-        editorView = new EditorView();
-        editorView.setActiveEditTool(activeEditTool);
-        editorView.setOnToolChanged(this::selectEditTool);
-        editorView.setOnTrimAction(this::onEditorTrim);
-        editorView.setOnFadeInAction(this::onEditorFadeIn);
-        editorView.setOnFadeOutAction(this::onEditorFadeOut);
-        editorView.setSnapState(snapEnabled, gridResolution,
-                project.getTransport().getTimeSignatureNumerator());
-        viewCache.put(DawView.EDITOR, editorView);
-
-        // Telemetry view — sound wave telemetry room visualizer
-        telemetryView = new TelemetryView();
-        viewCache.put(DawView.TELEMETRY, telemetryView);
-
-        // Mastering view — mastering chain with presets and A/B comparison
-        masteringView = new MasteringView();
-        viewCache.put(DawView.MASTERING, masteringView);
-
-        // Wire sidebar view buttons
-        arrangementViewButton.setOnAction(event -> switchView(DawView.ARRANGEMENT));
-        mixerViewButton.setOnAction(event -> switchView(DawView.MIXER));
-        editorViewButton.setOnAction(event -> switchView(DawView.EDITOR));
-        telemetryViewButton.setOnAction(event -> switchView(DawView.TELEMETRY));
-        masteringViewButton.setOnAction(event -> switchView(DawView.MASTERING));
-
-        // Restore persisted active view (activeView was loaded in initialize())
-        if (activeView != DawView.ARRANGEMENT) {
-            rootPane.setCenter(viewCache.get(activeView));
-        }
-        // Start telemetry animation if telemetry view is active on startup
-        if (activeView == DawView.TELEMETRY) {
-            telemetryView.startAnimation();
-        }
-
-        // Set the active view styling
-        updateToolbarActiveState();
-    }
-
-    /**
-     * Switches the center content of the main {@link BorderPane} to the given view.
-     *
-     * <p>Each view's content node is created once and cached so switching back
-     * preserves state (scroll position, selection, etc.).</p>
-     *
-     * @param view the view to activate
-     */
-    private void switchView(DawView view) {
-        if (view == activeView) {
-            return;
-        }
-        // Stop telemetry animation when leaving telemetry view
-        if (activeView == DawView.TELEMETRY && telemetryView != null) {
-            telemetryView.stopAnimation();
-        }
-        activeView = view;
-        toolbarStateStore.saveActiveView(view);
-        rootPane.setCenter(viewCache.get(view));
-        updateToolbarActiveState();
-        // Start telemetry animation when entering telemetry view
-        if (view == DawView.TELEMETRY && telemetryView != null) {
-            telemetryView.startAnimation();
-        }
-        statusBarLabel.setText("Switched to " + view.name().charAt(0)
-                + view.name().substring(1).toLowerCase() + " view");
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
-        LOG.fine(() -> "Switched to view: " + view);
-    }
-
-    /**
-     * Applies the {@code .toolbar-button-active} CSS class to the sidebar button
-     * corresponding to the active view and removes it from all others.
-     */
-    private void updateToolbarActiveState() {
-        Button[] viewButtons = { arrangementViewButton, mixerViewButton, editorViewButton, telemetryViewButton, masteringViewButton };
-        DawView[] views = DawView.values();
-        for (int i = 0; i < viewButtons.length; i++) {
-            if (views[i] == activeView) {
-                if (!viewButtons[i].getStyleClass().contains("toolbar-button-active")) {
-                    viewButtons[i].getStyleClass().add("toolbar-button-active");
-                }
-            } else {
-                viewButtons[i].getStyleClass().remove("toolbar-button-active");
-            }
-        }
-    }
-
-    // ── Edit tool selection ──────────────────────────────────────────────────
-
-    /**
-     * Wires the edit tool buttons and sets the default active tool styling.
-     */
-    private void initializeEditTools() {
-        pointerToolButton.setOnAction(event -> selectEditTool(EditTool.POINTER));
-        pencilToolButton.setOnAction(event -> selectEditTool(EditTool.PENCIL));
-        eraserToolButton.setOnAction(event -> selectEditTool(EditTool.ERASER));
-        scissorsToolButton.setOnAction(event -> selectEditTool(EditTool.SCISSORS));
-        glueToolButton.setOnAction(event -> selectEditTool(EditTool.GLUE));
-
-        updateEditToolActiveState();
-    }
-
-    /**
-     * Selects the given edit tool and updates the toolbar styling.
-     *
-     * @param tool the tool to activate
-     */
-    private void selectEditTool(EditTool tool) {
-        if (tool == activeEditTool) {
-            return;
-        }
-        activeEditTool = tool;
-        toolbarStateStore.saveEditTool(tool);
-        updateEditToolActiveState();
-        if (editorView != null) {
-            editorView.setActiveEditTool(tool);
-        }
-        statusBarLabel.setText("Selected " + tool.name().charAt(0)
-                + tool.name().substring(1).toLowerCase() + " tool");
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
-        LOG.fine(() -> "Selected edit tool: " + tool);
-    }
-
-    /**
-     * Returns the currently active edit tool.
-     *
-     * @return the active {@link EditTool}
-     */
-    public EditTool getActiveEditTool() {
-        return activeEditTool;
-    }
-
-    /**
-     * Applies the {@code .toolbar-button-active} CSS class to the edit tool button
-     * corresponding to the active tool and removes it from all others.
-     */
-    private void updateEditToolActiveState() {
-        Button[] toolButtons = {
+    private void createViewNavigationController() {
+        viewNavigationController = new ViewNavigationController(
+                rootPane, statusBarLabel, toolbarStateStore,
+                arrangementViewButton, mixerViewButton, editorViewButton,
+                telemetryViewButton, masteringViewButton,
                 pointerToolButton, pencilToolButton, eraserToolButton,
-                scissorsToolButton, glueToolButton
-        };
-        EditTool[] tools = EditTool.values();
-        for (int i = 0; i < toolButtons.length; i++) {
-            if (tools[i] == activeEditTool) {
-                if (!toolButtons[i].getStyleClass().contains("toolbar-button-active")) {
-                    toolButtons[i].getStyleClass().add("toolbar-button-active");
-                }
-            } else {
-                toolButtons[i].getStyleClass().remove("toolbar-button-active");
-            }
-        }
-    }
-
-    // ── Snap / grid controls ─────────────────────────────────────────────────
-
-    /**
-     * Wires the snap toggle button and builds the grid-resolution context menu
-     * shown on right-click.
-     */
-    private void initializeSnapControls() {
-        snapButton.setOnAction(event -> onToggleSnap());
-        updateSnapButtonStyle();
-        buildGridResolutionContextMenu();
-    }
-
-    /**
-     * Toggles snap-to-grid on or off and updates the visual state.
-     */
-    private void onToggleSnap() {
-        snapEnabled = !snapEnabled;
-        toolbarStateStore.saveSnapEnabled(snapEnabled);
-        updateSnapButtonStyle();
-        syncSnapStateToEditorView();
-        String snapState = snapEnabled ? "Snap to grid enabled" : "Snap to grid disabled";
-        statusBarLabel.setText(snapState);
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.SNAP, 12));
-        LOG.fine(snapState);
+                scissorsToolButton, glueToolButton,
+                snapButton,
+                zoomInButton, zoomOutButton, zoomToFitButton,
+                activeView, activeEditTool, snapEnabled, gridResolution,
+                new ViewNavigationController.Host() {
+                    @Override public DawProject project() { return project; }
+                    @Override public void onEditorTrim() { MainController.this.onEditorTrim(); }
+                    @Override public void onEditorFadeIn() { MainController.this.onEditorFadeIn(); }
+                    @Override public void onEditorFadeOut() { MainController.this.onEditorFadeOut(); }
+                });
     }
 
     /**
@@ -756,8 +575,8 @@ public final class MainController {
      * resets zoom to fit, clears the selection, and updates the status bar.
      */
     void onHome() {
-        switchView(DawView.ARRANGEMENT);
-        ZoomLevel zoom = viewZoomLevels.get(DawView.ARRANGEMENT);
+        viewNavigationController.switchView(DawView.ARRANGEMENT);
+        ZoomLevel zoom = viewNavigationController.getZoomLevel(DawView.ARRANGEMENT);
         zoom.zoomToFit();
         selectionModel.clearSelection();
         statusBarLabel.setText("Home \u2014 returned to default arrangement view");
@@ -808,39 +627,21 @@ public final class MainController {
     }
 
     /**
-     * Applies a highlight style to the snap button when snap is enabled.
-     */
-    private void updateSnapButtonStyle() {
-        snapButton.setStyle(snapEnabled
-                ? "-fx-background-color: #b388ff; -fx-text-fill: #0d0d0d;" : "");
-    }
-
-    /**
-     * Builds a right-click context menu on the snap button that allows the user
-     * to select a grid resolution.
-     */
-    private void buildGridResolutionContextMenu() {
-        ContextMenu gridMenu = new ContextMenu();
-        for (GridResolution resolution : GridResolution.values()) {
-            MenuItem item = new MenuItem(resolution.displayName());
-            item.setOnAction(event -> selectGridResolution(resolution));
-            gridMenu.getItems().add(item);
-        }
-        snapButton.setContextMenu(gridMenu);
-    }
-
-    /**
-     * Selects the given grid resolution and updates the status bar.
+     * Returns the currently active view.
      *
-     * @param resolution the grid resolution to activate
+     * @return the active {@link DawView}
      */
-    private void selectGridResolution(GridResolution resolution) {
-        gridResolution = resolution;
-        toolbarStateStore.saveGridResolution(resolution);
-        syncSnapStateToEditorView();
-        statusBarLabel.setText("Grid: " + resolution.displayName());
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.SNAP, 12));
-        LOG.fine(() -> "Grid resolution changed to: " + resolution.displayName());
+    public DawView getActiveView() {
+        return viewNavigationController.getActiveView();
+    }
+
+    /**
+     * Returns the currently active edit tool.
+     *
+     * @return the active {@link EditTool}
+     */
+    public EditTool getActiveEditTool() {
+        return viewNavigationController.getActiveEditTool();
     }
 
     /**
@@ -849,7 +650,7 @@ public final class MainController {
      * @return {@code true} if snap is enabled
      */
     public boolean isSnapEnabled() {
-        return snapEnabled;
+        return viewNavigationController.isSnapEnabled();
     }
 
     /**
@@ -858,103 +659,7 @@ public final class MainController {
      * @return the active {@link GridResolution}
      */
     public GridResolution getGridResolution() {
-        return gridResolution;
-    }
-
-    /**
-     * Pushes the current snap-to-grid state from this controller to the
-     * {@link EditorView} so that note placement and other editor operations
-     * respect the active snap settings.
-     */
-    private void syncSnapStateToEditorView() {
-        if (editorView != null) {
-            editorView.setSnapState(snapEnabled, gridResolution,
-                    project.getTransport().getTimeSignatureNumerator());
-        }
-    }
-
-    // ── Zoom controls ────────────────────────────────────────────────────────
-
-    /**
-     * Initializes zoom state for all views and wires the sidebar zoom buttons.
-     * Each view maintains its own independent zoom level.
-     */
-    private void initializeZoomControls() {
-        for (DawView view : DawView.values()) {
-            viewZoomLevels.put(view, new ZoomLevel());
-        }
-
-        zoomInButton.setOnAction(event -> onZoomIn());
-        zoomOutButton.setOnAction(event -> onZoomOut());
-        zoomToFitButton.setOnAction(event -> onZoomToFit());
-
-        // Wire Ctrl+Scroll zoom on the center content area
-        rootPane.centerProperty().addListener((_, _, newCenter) -> {
-            if (newCenter != null) {
-                wireScrollZoom(newCenter);
-            }
-        });
-        // Wire initial center content
-        if (rootPane.getCenter() != null) {
-            wireScrollZoom(rootPane.getCenter());
-        }
-    }
-
-    /**
-     * Attaches a Ctrl+Scroll wheel handler to the given node for zooming.
-     *
-     * @param node the content node to attach scroll-zoom to
-     */
-    private void wireScrollZoom(Node node) {
-        node.setOnScroll(event -> {
-            if (event.isControlDown()) {
-                if (event.getDeltaY() > 0) {
-                    onZoomIn();
-                } else if (event.getDeltaY() < 0) {
-                    onZoomOut();
-                }
-                event.consume();
-            }
-        });
-    }
-
-    /**
-     * Zooms in on the active view.
-     */
-    private void onZoomIn() {
-        ZoomLevel zoom = viewZoomLevels.get(activeView);
-        zoom.zoomIn();
-        updateZoomStatus("Zoom in: " + zoom.toPercentageString(), DawIcon.ZOOM_IN);
-    }
-
-    /**
-     * Zooms out on the active view.
-     */
-    private void onZoomOut() {
-        ZoomLevel zoom = viewZoomLevels.get(activeView);
-        zoom.zoomOut();
-        updateZoomStatus("Zoom out: " + zoom.toPercentageString(), DawIcon.ZOOM_OUT);
-    }
-
-    /**
-     * Resets the active view's zoom to fit all content.
-     */
-    private void onZoomToFit() {
-        ZoomLevel zoom = viewZoomLevels.get(activeView);
-        zoom.zoomToFit();
-        updateZoomStatus("Zoom to fit: " + zoom.toPercentageString(), DawIcon.FULLSCREEN);
-    }
-
-    /**
-     * Updates the status bar with the given zoom message and icon.
-     *
-     * @param message the message to display
-     * @param icon    the icon to display
-     */
-    private void updateZoomStatus(String message, DawIcon icon) {
-        statusBarLabel.setText(message);
-        statusBarLabel.setGraphic(IconNode.of(icon, 12));
-        LOG.fine(() -> message + " (" + activeView + ")");
+        return viewNavigationController.getGridResolution();
     }
 
     /**
@@ -964,7 +669,7 @@ public final class MainController {
      * @return the zoom level for the view
      */
     public ZoomLevel getZoomLevel(DawView view) {
-        return viewZoomLevels.get(view);
+        return viewNavigationController.getZoomLevel(view);
     }
 
     /**
@@ -1020,22 +725,22 @@ public final class MainController {
         actionHandlers.put(DawAction.OPEN_PROJECT, projectLifecycleController::onOpenProject);
         actionHandlers.put(DawAction.IMPORT_SESSION, projectLifecycleController::onImportSession);
         actionHandlers.put(DawAction.EXPORT_SESSION, projectLifecycleController::onExportSession);
-        actionHandlers.put(DawAction.TOGGLE_SNAP, this::onToggleSnap);
+        actionHandlers.put(DawAction.TOGGLE_SNAP, viewNavigationController::onToggleSnap);
         actionHandlers.put(DawAction.ADD_AUDIO_TRACK, this::onAddAudioTrack);
         actionHandlers.put(DawAction.ADD_MIDI_TRACK, this::onAddMidiTrack);
-        actionHandlers.put(DawAction.TOOL_POINTER, () -> selectEditTool(EditTool.POINTER));
-        actionHandlers.put(DawAction.TOOL_PENCIL, () -> selectEditTool(EditTool.PENCIL));
-        actionHandlers.put(DawAction.TOOL_ERASER, () -> selectEditTool(EditTool.ERASER));
-        actionHandlers.put(DawAction.TOOL_SCISSORS, () -> selectEditTool(EditTool.SCISSORS));
-        actionHandlers.put(DawAction.TOOL_GLUE, () -> selectEditTool(EditTool.GLUE));
-        actionHandlers.put(DawAction.ZOOM_IN, this::onZoomIn);
-        actionHandlers.put(DawAction.ZOOM_OUT, this::onZoomOut);
-        actionHandlers.put(DawAction.ZOOM_TO_FIT, this::onZoomToFit);
-        actionHandlers.put(DawAction.VIEW_ARRANGEMENT, () -> switchView(DawView.ARRANGEMENT));
-        actionHandlers.put(DawAction.VIEW_MIXER, () -> switchView(DawView.MIXER));
-        actionHandlers.put(DawAction.VIEW_EDITOR, () -> switchView(DawView.EDITOR));
-        actionHandlers.put(DawAction.VIEW_TELEMETRY, () -> switchView(DawView.TELEMETRY));
-        actionHandlers.put(DawAction.VIEW_MASTERING, () -> switchView(DawView.MASTERING));
+        actionHandlers.put(DawAction.TOOL_POINTER, () -> viewNavigationController.selectEditTool(EditTool.POINTER));
+        actionHandlers.put(DawAction.TOOL_PENCIL, () -> viewNavigationController.selectEditTool(EditTool.PENCIL));
+        actionHandlers.put(DawAction.TOOL_ERASER, () -> viewNavigationController.selectEditTool(EditTool.ERASER));
+        actionHandlers.put(DawAction.TOOL_SCISSORS, () -> viewNavigationController.selectEditTool(EditTool.SCISSORS));
+        actionHandlers.put(DawAction.TOOL_GLUE, () -> viewNavigationController.selectEditTool(EditTool.GLUE));
+        actionHandlers.put(DawAction.ZOOM_IN, viewNavigationController::onZoomIn);
+        actionHandlers.put(DawAction.ZOOM_OUT, viewNavigationController::onZoomOut);
+        actionHandlers.put(DawAction.ZOOM_TO_FIT, viewNavigationController::onZoomToFit);
+        actionHandlers.put(DawAction.VIEW_ARRANGEMENT, () -> viewNavigationController.switchView(DawView.ARRANGEMENT));
+        actionHandlers.put(DawAction.VIEW_MIXER, () -> viewNavigationController.switchView(DawView.MIXER));
+        actionHandlers.put(DawAction.VIEW_EDITOR, () -> viewNavigationController.switchView(DawView.EDITOR));
+        actionHandlers.put(DawAction.VIEW_TELEMETRY, () -> viewNavigationController.switchView(DawView.TELEMETRY));
+        actionHandlers.put(DawAction.VIEW_MASTERING, () -> viewNavigationController.switchView(DawView.MASTERING));
         actionHandlers.put(DawAction.TOGGLE_BROWSER, () -> {
             if (historyPanelVisible) {
                 toggleHistoryPanel();
@@ -1418,14 +1123,14 @@ public final class MainController {
                     trackListPanel.getChildren().add(trackItem);
                 }
                 updateArrangementPlaceholder();
-                mixerView.refresh();
+                viewNavigationController.getMixerView().refresh();
             }
             @Override public void undo() {
                 project.removeTrack(track);
                 trackListPanel.getChildren().remove(trackItem);
                 audioTrackCounter--;
                 updateArrangementPlaceholder();
-                mixerView.refresh();
+                viewNavigationController.getMixerView().refresh();
             }
         });
         updateUndoRedoState();
@@ -1462,14 +1167,14 @@ public final class MainController {
                     trackListPanel.getChildren().add(trackItem);
                 }
                 updateArrangementPlaceholder();
-                mixerView.refresh();
+                viewNavigationController.getMixerView().refresh();
             }
             @Override public void undo() {
                 project.removeTrack(track);
                 trackListPanel.getChildren().remove(trackItem);
                 midiTrackCounter--;
                 updateArrangementPlaceholder();
-                mixerView.refresh();
+                viewNavigationController.getMixerView().refresh();
             }
         });
         updateUndoRedoState();
@@ -1613,6 +1318,7 @@ public final class MainController {
     // ── Editor audio handle actions ──────────────────────────────────────────
 
     private void onEditorTrim() {
+        EditorView editorView = viewNavigationController.getEditorView();
         Track track = editorView.getSelectedTrack();
         if (track == null || track.getClips().isEmpty()) {
             return;
@@ -1655,6 +1361,7 @@ public final class MainController {
     }
 
     private void onEditorFadeIn() {
+        EditorView editorView = viewNavigationController.getEditorView();
         Track track = editorView.getSelectedTrack();
         if (track == null || track.getClips().isEmpty()) {
             return;
@@ -1688,6 +1395,7 @@ public final class MainController {
     }
 
     private void onEditorFadeOut() {
+        EditorView editorView = viewNavigationController.getEditorView();
         Track track = editorView.getSelectedTrack();
         if (track == null || track.getClips().isEmpty()) {
             return;
