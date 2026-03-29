@@ -108,7 +108,8 @@ public final class MasteringView extends VBox {
         presetSelector = new ComboBox<>(FXCollections.observableArrayList(presetNames));
         presetSelector.getSelectionModel().selectFirst();
         presetSelector.setTooltip(new Tooltip("Load a mastering chain preset"));
-        presetSelector.setOnAction(event -> onPresetSelected());
+        presetSelector.getSelectionModel().selectedIndexProperty().addListener(
+                (obs, oldIdx, newIdx) -> onPresetSelected());
 
         // A/B toggle button
         abToggle = new ToggleButton("A/B");
