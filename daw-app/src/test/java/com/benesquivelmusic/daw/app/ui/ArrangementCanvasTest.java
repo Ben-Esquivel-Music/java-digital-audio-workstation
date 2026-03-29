@@ -30,18 +30,27 @@ class ArrangementCanvasTest {
         CountDownLatch startupLatch = new CountDownLatch(1);
         try {
             Platform.startup(startupLatch::countDown);
-        } catch (IllegalStateException | UnsupportedOperationException e) {
-            // Toolkit already initialized or not available (headless)
-            if (e instanceof UnsupportedOperationException) {
+            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
                 return;
             }
-            startupLatch.countDown();
-        }
-        if (!startupLatch.await(5, TimeUnit.SECONDS)) {
+        } catch (IllegalStateException ignored) {
+            // Toolkit already initialized — will verify below
+        } catch (UnsupportedOperationException ignored) {
+            // No display available (headless CI environment)
             return;
         }
+        // Verify the FX Application Thread is actually processing events.
         CountDownLatch verifyLatch = new CountDownLatch(1);
-        Platform.runLater(verifyLatch::countDown);
+        Thread verifier = new Thread(() -> {
+            try {
+                Platform.runLater(verifyLatch::countDown);
+            } catch (Exception ignored) {
+                // Platform.runLater failed — toolkit is not functional
+            }
+        });
+        verifier.setDaemon(true);
+        verifier.start();
+        verifier.join(3000);
         toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
     }
 
