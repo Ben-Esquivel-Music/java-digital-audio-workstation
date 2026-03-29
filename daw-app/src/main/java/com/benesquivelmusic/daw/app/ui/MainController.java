@@ -15,7 +15,6 @@ import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
-import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -31,7 +30,6 @@ import com.benesquivelmusic.daw.sdk.session.SessionExportResult;
 import com.benesquivelmusic.daw.sdk.session.SessionImportResult;
 
 import javafx.animation.AnimationTimer;
-import javafx.animation.FadeTransition;
 import javafx.animation.Interpolator;
 import javafx.animation.ScaleTransition;
 import javafx.animation.Timeline;
@@ -168,13 +166,15 @@ public final class MainController {
     private UndoManager undoManager;
     private int audioTrackCounter;
     private int midiTrackCounter;
-    private boolean loopEnabled;
     private boolean snapEnabled = true;
     private GridResolution gridResolution = GridResolution.QUARTER;
     private boolean projectDirty;
     private AudioEngine audioEngine;
-    private RecordingPipeline recordingPipeline;
     private NotificationBar notificationBar;
+
+    // ── Transport controller ─────────────────────────────────────────────────
+    /** Manages transport actions, time ticker, and recording pipeline. */
+    private TransportController transportController;
 
     // ── Session interchange ──────────────────────────────────────────────────
     /** Handles DAWproject import/export logic without JavaFX dependencies. */
@@ -262,12 +262,6 @@ public final class MainController {
     private double idleAnimPhase;
     /** Accumulated phase (seconds) for the transport-state glow animations. */
     private double glowAnimPhase;
-    /** Nanosecond timestamp when playback/recording started; used for time display. */
-    private long timeTickerStartNanos;
-    /** Whether the time ticker is actively counting up. */
-    private boolean timeTickerRunning;
-    /** Cached elapsed nanoseconds before the last pause (for correct resume). */
-    private long timeTickerPausedElapsedNanos;
 
     /** Reference kept for the idle demo animation. */
     private SpectrumDisplay spectrumDisplay;
@@ -316,7 +310,8 @@ public final class MainController {
         buildHistoryPanel();
         setupTempoEditor();
         initializeNotificationBar();
-        updateStatus();
+        createTransportController();
+        transportController.updateStatus();
         updateTempoDisplay();
         updateProjectInfo();
         updateCheckpointStatus();
@@ -356,6 +351,22 @@ public final class MainController {
     }
 
     /**
+     * Creates the {@link TransportController} with the current project,
+     * audio engine, undo manager, and UI elements.  Must be called after
+     * {@code initializeNotificationBar()}.
+     */
+    private void createTransportController() {
+        transportController = new TransportController(
+                project, audioEngine, undoManager, notificationBar,
+                statusLabel, timeDisplay, statusBarLabel, recIndicator,
+                playButton, pauseButton, stopButton, recordButton, loopButton,
+                new TransportController.Host() {
+                    @Override public boolean isSnapEnabled() { return snapEnabled; }
+                    @Override public GridResolution gridResolution() { return gridResolution; }
+                });
+    }
+
+    /**
      * Creates (or recreates) the {@link TrackStripController} with the current
      * project, undo manager, mixer view, and other dependencies. Must be called
      * after {@code initializeViewNavigation()} and again after {@code rebuildUI()}.
@@ -380,7 +391,7 @@ public final class MainController {
                         updateSnapButtonStyle();
                         syncSnapStateToEditorView();
                     }
-                    @Override public void skipToStart() { onSkipBack(); }
+                    @Override public void skipToStart() { transportController.onSkipBack(); }
                     @Override public void markProjectDirty() { projectDirty = true; }
                     @Override public boolean isSnapEnabled() { return snapEnabled; }
                     @Override public ZoomLevel currentZoomLevel() {
@@ -1449,159 +1460,37 @@ public final class MainController {
 
     @FXML
     private void onPlay() {
-        project.getTransport().play();
-        startTimeTicker();
-        updateStatus();
-        statusBarLabel.setText("Playing...");
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.PLAY_CIRCLE, 12));
+        transportController.onPlay();
     }
 
     @FXML
     private void onStop() {
-        // Finalize recording if a recording pipeline is active
-        if (recordingPipeline != null && recordingPipeline.isActive()) {
-            List<AudioClip> recordedClips = recordingPipeline.stop();
-            if (!recordedClips.isEmpty()) {
-                // Register undo action for the recorded clips
-                Map<Track, AudioClip> clipMap = Map.copyOf(recordingPipeline.getRecordedClips());
-                undoManager.execute(new UndoableAction() {
-                    @Override
-                    public String description() { return "Record Audio"; }
-
-                    @Override
-                    public void execute() {
-                        // Clips are already added by the pipeline on first execution;
-                        // on redo, re-add them.
-                        for (Map.Entry<Track, AudioClip> entry : clipMap.entrySet()) {
-                            if (!entry.getKey().getClips().contains(entry.getValue())) {
-                                entry.getKey().addClip(entry.getValue());
-                            }
-                        }
-                    }
-
-                    @Override
-                    public void undo() {
-                        for (Map.Entry<Track, AudioClip> entry : clipMap.entrySet()) {
-                            entry.getKey().removeClip(entry.getValue());
-                        }
-                    }
-                });
-                int segmentCount = clipMap.values().size();
-                statusBarLabel.setText("Recording stopped — " + segmentCount + " clip"
-                        + (segmentCount > 1 ? "s" : "") + " created");
-                notificationBar.show(NotificationLevel.SUCCESS,
-                        "Recording stopped — " + segmentCount + " clip"
-                                + (segmentCount > 1 ? "s" : "") + " created");
-            }
-            recordingPipeline = null;
-        }
-
-        project.getTransport().stop();
-        stopTimeTicker();
-        updateStatus();
-        timeDisplay.setText("00:00:00.0");
-        if (statusBarLabel.getText() == null || !statusBarLabel.getText().startsWith("Recording stopped")) {
-            statusBarLabel.setText("Stopped");
-        }
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.POWER, 12));
-        // Restore button appearance in case the record blink was active
-        recordButton.setOpacity(1.0);
-        recordButton.setStyle("");
-        // Hide the REC indicator
-        recIndicator.setVisible(false);
-        recIndicator.setManaged(false);
+        transportController.onStop();
     }
 
     @FXML
     private void onPause() {
-        project.getTransport().pause();
-        pauseTimeTicker();
-        updateStatus();
-        statusBarLabel.setText("Paused");
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.PAUSE_CIRCLE, 12));
+        transportController.onPause();
     }
 
     @FXML
     private void onRecord() {
-        // Validate that at least one track is armed for recording
-        List<Track> armedTracks = RecordingPipeline.findArmedTracks(project.getTracks());
-        if (armedTracks.isEmpty()) {
-            notificationBar.show(NotificationLevel.WARNING,
-                    "No tracks armed for recording — arm at least one track first");
-            Alert alert = new Alert(Alert.AlertType.WARNING,
-                    "No tracks are armed for recording. Please arm at least one track before recording.",
-                    ButtonType.OK);
-            alert.setTitle("Cannot Record");
-            alert.setHeaderText("No Armed Tracks");
-            DarkThemeHelper.applyTo(alert);
-            alert.showAndWait();
-            return;
-        }
-
-        // Create output directory for recording segments
-        Path outputDir;
-        try {
-            outputDir = Files.createTempDirectory("daw-recording-");
-        } catch (IOException e) {
-            LOG.log(Level.SEVERE, "Failed to create recording output directory", e);
-            statusBarLabel.setText("Recording failed — could not create output directory");
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
-            notificationBar.show(NotificationLevel.ERROR,
-                    "Recording failed — could not create output directory");
-            return;
-        }
-
-        // Create and start the recording pipeline
-        recordingPipeline = new RecordingPipeline(
-                audioEngine, project.getTransport(), project.getFormat(), outputDir, armedTracks);
-        recordingPipeline.start();
-
-        startTimeTicker();
-        updateStatus();
-        int trackCount = armedTracks.size();
-        statusBarLabel.setText("Recording — " + trackCount + " track"
-                + (trackCount > 1 ? "s" : "") + " armed — auto-save active");
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
-        notificationBar.show(NotificationLevel.INFO,
-                "Recording started — " + trackCount + " track"
-                        + (trackCount > 1 ? "s" : "") + " armed");
-        recIndicator.setVisible(true);
-        recIndicator.setManaged(true);
+        transportController.onRecord();
     }
 
     @FXML
     private void onSkipBack() {
-        project.getTransport().setPositionInBeats(0.0);
-        stopTimeTicker();
-        timeDisplay.setText("00:00:00.0");
-        statusBarLabel.setText("Skipped to beginning");
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.SKIP_BACK, 12));
+        transportController.onSkipBack();
     }
 
     @FXML
     private void onSkipForward() {
-        Transport transport = project.getTransport();
-        double jump = 4.0 * transport.getTimeSignatureNumerator();
-        double newPosition = transport.getPositionInBeats() + jump;
-        if (snapEnabled) {
-            newPosition = SnapQuantizer.quantize(newPosition, gridResolution,
-                    transport.getTimeSignatureNumerator());
-        }
-        transport.setPositionInBeats(newPosition);
-        statusBarLabel.setText("Skipped forward");
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.SKIP_FORWARD, 12));
+        transportController.onSkipForward();
     }
 
     @FXML
     private void onToggleLoop() {
-        loopEnabled = !loopEnabled;
-        project.getTransport().setLoopEnabled(loopEnabled);
-        loopButton.setStyle(loopEnabled
-                ? "-fx-background-color: #b388ff; -fx-text-fill: #0d0d0d;" : "");
-        String loopState = loopEnabled ? "Loop: ON" : "Loop: OFF";
-        statusBarLabel.setText(loopState);
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.LOOP, 12));
-        LOG.fine(loopState);
+        transportController.onToggleLoop();
     }
 
     @FXML
@@ -2221,10 +2110,7 @@ public final class MainController {
                 TransportState state = project.getTransport().getState();
 
                 // Time ticker: update time display while playing or recording
-                if (timeTickerRunning) {
-                    long elapsedNanos = timeTickerPausedElapsedNanos + (now - timeTickerStartNanos);
-                    refreshTimeDisplay(elapsedNanos);
-                }
+                transportController.tickTimeDisplay(now);
 
                 // Transport glow on play and record buttons
                 applyTransportGlow(state);
@@ -2302,38 +2188,6 @@ public final class MainController {
         levelMeterDisplay.update(
                 new LevelData(peakLinear, rmsLinear, dbPeak, dbRms, false),
                 (long) (deltaSeconds * 1_000_000_000L));
-    }
-
-    /** Updates the time display label from the given elapsed nanosecond count. */
-    private void refreshTimeDisplay(long elapsedNanos) {
-        long elapsedMs = elapsedNanos / 1_000_000L;
-        long tenths = (elapsedMs % 1000) / 100;
-        long totalSeconds = elapsedMs / 1000;
-        long minutes = totalSeconds / 60;
-        long hours = minutes / 60;
-        timeDisplay.setText(String.format("%02d:%02d:%02d.%d",
-                hours, minutes % 60, totalSeconds % 60, tenths));
-    }
-
-    /** Starts the time ticker from zero (or resumes from a paused position). */
-    private void startTimeTicker() {
-        timeTickerStartNanos = System.nanoTime();
-        timeTickerPausedElapsedNanos = 0;
-        timeTickerRunning = true;
-    }
-
-    /** Pauses the time ticker, preserving elapsed time for clean resume. */
-    private void pauseTimeTicker() {
-        if (timeTickerRunning) {
-            timeTickerPausedElapsedNanos += System.nanoTime() - timeTickerStartNanos;
-            timeTickerRunning = false;
-        }
-    }
-
-    /** Stops and resets the time ticker. */
-    private void stopTimeTicker() {
-        timeTickerRunning = false;
-        timeTickerPausedElapsedNanos = 0;
     }
 
     /**
@@ -2437,47 +2291,6 @@ public final class MainController {
                 }
             }
         }
-    }
-
-    // ── Status update ────────────────────────────────────────────────────────
-
-    private void updateStatus() {
-        Transport transport = project.getTransport();
-        TransportState state = transport.getState();
-
-        statusLabel.setText(state.name());
-        statusLabel.getStyleClass().removeAll(
-                "status-recording", "status-playing", "status-stopped", "status-paused");
-        switch (state) {
-            case RECORDING -> {
-                statusLabel.getStyleClass().add("status-recording");
-                statusLabel.setGraphic(IconNode.of(DawIcon.LIVE, 12));
-            }
-            case PLAYING -> {
-                statusLabel.getStyleClass().add("status-playing");
-                statusLabel.setGraphic(IconNode.of(DawIcon.PLAY, 12));
-            }
-            case PAUSED -> {
-                statusLabel.getStyleClass().add("status-paused");
-                statusLabel.setGraphic(IconNode.of(DawIcon.PAUSE, 12));
-            }
-            default -> {
-                statusLabel.getStyleClass().add("status-stopped");
-                statusLabel.setGraphic(IconNode.of(DawIcon.POWER, 12));
-            }
-        }
-
-        // Smooth fade-in so the status label change feels polished
-        statusLabel.setOpacity(0.0);
-        FadeTransition fadeIn = new FadeTransition(Duration.millis(200), statusLabel);
-        fadeIn.setFromValue(0.0);
-        fadeIn.setToValue(1.0);
-        fadeIn.play();
-
-        playButton.setDisable(state == TransportState.PLAYING);
-        pauseButton.setDisable(state == TransportState.STOPPED || state == TransportState.PAUSED);
-        recordButton.setDisable(state == TransportState.RECORDING);
-        stopButton.setDisable(state == TransportState.STOPPED);
     }
 
     private void updateTempoDisplay() {
