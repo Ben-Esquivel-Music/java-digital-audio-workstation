@@ -7,17 +7,17 @@ labels: ["enhancement", "ui", "mixer"]
 
 ## Motivation
 
-User story 005 describes mixer send/return bus routing. The `Mixer` class manages a collection of `MixerChannel` instances with a master bus, and the `MixerView` renders channel strips with faders and pan knobs. However, there is no UI for creating return buses (aux channels), configuring send levels from individual channels to return buses, or visualizing the signal routing between channels and buses. In professional DAWs, each channel strip has one or more send knobs that control how much signal is routed to a shared return bus (e.g., a reverb bus or delay bus). The return bus has its own fader and insert effects. Without send/return routing, users cannot set up shared effects like a single reverb for multiple tracks, which is a fundamental mixing technique.
+User story 005 describes mixer send/return bus routing. The `Mixer` class manages a collection of `MixerChannel` instances with a master bus, and the `MixerView` already renders channel strips (including return bus strips) with faders, pan knobs, an “Add Return Bus” button, and per-return-bus send controls (with pre/post-fader options) on each channel. However, these UI elements are not yet fully wired through to the mixer model and audio engine: `AudioEngine.processBlock()` currently calls `Mixer.mixDown(trackBuffers, mixBuffer, numFrames)` without performing send/return routing, so send levels do not affect what the user hears and return buses do not function as shared effect buses. In professional DAWs, each channel strip has one or more send knobs that control how much signal is routed to a shared return bus (e.g., a reverb bus or delay bus), and the return bus has its own fader and insert effects. Until send/return routing is correctly implemented and connected to the existing UI, users cannot reliably set up shared effects like a single reverb for multiple tracks, which is a fundamental mixing technique.
 
 ## Goals
 
-- Add a "Create Return Bus" action in the mixer view that creates a new return `MixerChannel` with its own fader, pan, and insert slots
-- Add send level knobs to each regular channel strip, one per return bus, with level control (−∞ to 0 dB) and a pre/post fader toggle
-- Wire send levels into the audio engine so that signal is routed from the channel to the return bus during `processBlock()`
-- Display return bus channel strips in a visually distinct section of the mixer (e.g., separated by a divider, different color)
-- Allow removing return buses (with confirmation dialog if channels have active sends)
-- Make send level changes and bus creation/removal undoable
-- Show send routing visually — e.g., a colored indicator on the send knob when the level is above −∞
+- Ensure the existing "Add Return Bus" control in the mixer view creates a new return `MixerChannel` in the mixer model with its own fader, pan, and insert slots, and that these are persisted and restored with the session
+- Ensure the existing per-return-bus send controls on each regular channel strip correctly represent and manipulate send levels (−∞ to 0 dB) and pre/post-fader state in the underlying mixer model
+- Implement send/return routing in the mixer/audio engine so that, during `AudioEngine.processBlock()`, signal is routed from each channel to the appropriate return bus(es) according to the configured send levels and pre/post-fader settings, rather than only calling `Mixer.mixDown(trackBuffers, mixBuffer, numFrames)` with no send processing
+- Display return bus channel strips in a visually distinct section of the mixer (e.g., separated by a divider, different color), using or refining the existing return-bus UI where appropriate
+- Allow removing return buses (with a confirmation dialog if any channels have active sends targeting that bus) and update the underlying routing accordingly
+- Make send level changes and bus creation/removal undoable via the existing undo/redo infrastructure
+- Show send routing state visually — e.g., a colored indicator on the send control when the level is above −∞ — and keep these indicators in sync with the actual mixer state
 
 ## Non-Goals
 
