@@ -331,7 +331,7 @@ final class ToolbarAppearanceController {
      * Prevents transport-bar buttons and the status label from truncating their
      * text by setting each control's minimum width to its preferred width.
      * Also installs a responsive overflow listener that hides lower-priority
-     * button groups (utility, undo/redo, track) at narrow window widths.
+     * button groups (utility and undo/redo) at narrow window widths.
      */
     private void preventButtonTruncation() {
         for (Button btn : new Button[]{
@@ -364,8 +364,8 @@ final class ToolbarAppearanceController {
 
     /**
      * Shows or hides lower-priority toolbar groups based on the current
-     * scene width.  Groups are hidden in priority order: utility first,
-     * then undo/redo, then track management.
+     * scene width.  Both the utility and undo/redo groups are hidden
+     * simultaneously when the width is at or below the threshold.
      */
     private void applyToolbarOverflow(double width) {
         boolean narrow = width <= TOOLBAR_OVERFLOW_THRESHOLD;
