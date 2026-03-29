@@ -306,19 +306,43 @@ public final class ArrangementCanvas extends Pane {
         if (audioData == null || audioData.length == 0 || audioData[0].length == 0) {
             return;
         }
-        int totalPixelWidth = (int) clipWidth;
-        if (totalPixelWidth < WAVEFORM_MIN_WIDTH) {
+        // Compute total pixel width using long/double math to avoid overflow,
+        // then clamp to the int range for iteration.
+        long totalPixelWidthLong = (long) Math.floor(clipWidth);
+        if (totalPixelWidthLong < WAVEFORM_MIN_WIDTH) {
             return;
         }
+        if (totalPixelWidthLong > Integer.MAX_VALUE) {
+            totalPixelWidthLong = Integer.MAX_VALUE;
+        }
+        int totalPixelWidth = (int) totalPixelWidthLong;
 
         // Clamp rendering to the visible portion of the clip
         double canvasWidth = canvas.getWidth();
-        int visibleStart = Math.max(0, (int) -clipX);
-        int visibleEnd = Math.min(totalPixelWidth, (int) (canvasWidth - clipX));
-        if (visibleStart >= visibleEnd) {
+        double rawVisibleStart = -clipX;
+        double rawVisibleEnd = canvasWidth - clipX;
+
+        long visibleStartLong = (long) Math.floor(rawVisibleStart);
+        long visibleEndLong = (long) Math.floor(rawVisibleEnd);
+
+        if (visibleEndLong <= 0) {
             return;
         }
 
+        // Clamp visible range to [0, totalPixelWidthLong]
+        if (visibleStartLong < 0) {
+            visibleStartLong = 0;
+        }
+        if (visibleEndLong > totalPixelWidthLong) {
+            visibleEndLong = totalPixelWidthLong;
+        }
+        if (visibleStartLong >= visibleEndLong) {
+            return;
+        }
+
+        // Finally, clamp to int range
+        int visibleStart = (int) Math.min(visibleStartLong, (long) Integer.MAX_VALUE);
+        int visibleEnd = (int) Math.min(visibleEndLong, (long) Integer.MAX_VALUE);
         float[] channel = audioData[0];
         int totalSamples = channel.length;
         double centerY = clipY + clipHeight / 2.0;
