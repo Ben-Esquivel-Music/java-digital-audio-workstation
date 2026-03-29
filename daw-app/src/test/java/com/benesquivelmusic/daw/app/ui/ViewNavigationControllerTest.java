@@ -33,4 +33,10 @@ class ViewNavigationControllerTest {
         assertThat(java.lang.reflect.Modifier.isFinal(clazz.getModifiers())).isTrue();
         assertThat(java.lang.reflect.Modifier.isPublic(clazz.getModifiers())).isFalse();
     }
+
+    @Test
+   void shouldInstantiateController() {
+        ViewNavigationController controller = new ViewNavigationController();
+        assertThat(controller).isNotNull();
+    }
 }
