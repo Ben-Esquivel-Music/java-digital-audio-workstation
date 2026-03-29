@@ -490,16 +490,6 @@ public final class MainController {
                 activeView, activeEditTool, snapEnabled, gridResolution,
                 new ViewNavigationController.Host() {
                     @Override public DawProject project() { return project; }
-                    @Override public void onEditorToolChanged(EditTool tool) {
-                        // Reflect the active editor tool change at the host level.
-                        if (tool != null) {
-                            statusBarLabel.setText("Editor tool: " + tool.name());
-                            LOG.fine("Editor tool changed to " + tool.name());
-                        } else {
-                            statusBarLabel.setText("Editor tool: (none)");
-                            LOG.fine("Editor tool cleared");
-                        }
-                    }
                     @Override public void onEditorTrim() { MainController.this.onEditorTrim(); }
                     @Override public void onEditorFadeIn() { MainController.this.onEditorFadeIn(); }
                     @Override public void onEditorFadeOut() { MainController.this.onEditorFadeOut(); }

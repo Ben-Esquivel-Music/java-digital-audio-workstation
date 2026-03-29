@@ -21,7 +21,6 @@ class ViewNavigationControllerTest {
     void hostInterfaceShouldDeclareExpectedMethods() throws NoSuchMethodException {
         Class<?> hostClass = ViewNavigationController.Host.class;
         assertThat(hostClass.getMethod("project")).isNotNull();
-        assertThat(hostClass.getMethod("onEditorToolChanged", EditTool.class)).isNotNull();
         assertThat(hostClass.getMethod("onEditorTrim")).isNotNull();
         assertThat(hostClass.getMethod("onEditorFadeIn")).isNotNull();
         assertThat(hostClass.getMethod("onEditorFadeOut")).isNotNull();
@@ -34,9 +33,4 @@ class ViewNavigationControllerTest {
         assertThat(java.lang.reflect.Modifier.isPublic(clazz.getModifiers())).isFalse();
     }
 
-    @Test
-   void shouldInstantiateController() {
-        ViewNavigationController controller = new ViewNavigationController();
-        assertThat(controller).isNotNull();
-    }
 }

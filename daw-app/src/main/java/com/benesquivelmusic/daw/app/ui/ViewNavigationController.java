@@ -34,7 +34,6 @@ final class ViewNavigationController {
      */
     interface Host {
         DawProject project();
-        void onEditorToolChanged(EditTool tool);
         void onEditorTrim();
         void onEditorFadeIn();
         void onEditorFadeOut();
