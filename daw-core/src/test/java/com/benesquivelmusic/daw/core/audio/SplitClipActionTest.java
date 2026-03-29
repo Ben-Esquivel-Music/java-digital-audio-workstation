@@ -98,7 +98,7 @@ class SplitClipActionTest {
     }
 
     @Test
-    void shouldPreserveAudioDataOnSecondClip() {
+    void shouldPreserveAudioDataOnBothClips() {
         float[][] audioData = {{0.1f, 0.2f, 0.3f, 0.4f}};
         AudioClip clip = new AudioClip("Take 1", 0.0, 16.0, null);
         clip.setAudioData(audioData);
@@ -107,6 +107,7 @@ class SplitClipActionTest {
         SplitClipAction action = new SplitClipAction(track, clip, 8.0);
         undoManager.execute(action);
 
+        assertThat(clip.getAudioData()).isSameAs(audioData);
         AudioClip second = track.getClips().get(1);
         assertThat(second.getAudioData()).isSameAs(audioData);
     }
