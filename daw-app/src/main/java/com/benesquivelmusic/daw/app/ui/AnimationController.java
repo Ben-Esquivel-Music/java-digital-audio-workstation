@@ -185,6 +185,7 @@ final class AnimationController {
             playButton.setStyle(String.format(
                     "-fx-effect: dropshadow(gaussian, #00e676, %.1f, %.2f, 0, 0);",
                     radius, spread));
+            recordButton.setOpacity(1.0);
             recordButton.setStyle("");
         } else if (state == TransportState.RECORDING) {
             // Blink record button: full opacity <-> dim, at ~2 Hz
