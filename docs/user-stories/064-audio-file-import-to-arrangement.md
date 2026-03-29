@@ -17,7 +17,7 @@ User story 008 describes audio file import via drag-and-drop and file menu. The 
 - Show an import progress indicator for large files using `ImportProgressListener`
 - After import, render the new clip in the arrangement view with a waveform preview
 - Make the import operation undoable (undo removes the imported clip from the track)
-- Support the audio formats listed in `SupportedAudioFormat` (WAV, AIFF, FLAC, OGG, MP3)
+- Support importing WAV files (the formats currently handled by `AudioFileImporter`); design the UI and clip-placement flow so that additional `SupportedAudioFormat` types (AIFF, FLAC, OGG, MP3) can be enabled in a follow-up story
 - Show a notification on successful import with the file name and duration
 
 ## Non-Goals
