@@ -251,8 +251,12 @@ public final class MainController {
         undoManager.addHistoryListener(manager -> {
             if (javafx.application.Platform.isFxApplicationThread()) {
                 updateUndoRedoState();
+                refreshArrangementCanvas();
             } else {
-                javafx.application.Platform.runLater(this::updateUndoRedoState);
+                javafx.application.Platform.runLater(() -> {
+                    updateUndoRedoState();
+                    refreshArrangementCanvas();
+                });
             }
         });
         audioEngine = new AudioEngine(project.getFormat());
@@ -950,8 +954,12 @@ public final class MainController {
         undoManager.addHistoryListener(manager -> {
             if (javafx.application.Platform.isFxApplicationThread()) {
                 updateUndoRedoState();
+                refreshArrangementCanvas();
             } else {
-                javafx.application.Platform.runLater(this::updateUndoRedoState);
+                javafx.application.Platform.runLater(() -> {
+                    updateUndoRedoState();
+                    refreshArrangementCanvas();
+                });
             }
         });
         undoHistoryPanel = new UndoHistoryPanel(undoManager);
