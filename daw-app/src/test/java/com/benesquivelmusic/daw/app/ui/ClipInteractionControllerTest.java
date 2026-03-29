@@ -6,6 +6,8 @@ import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 
 import javafx.application.Platform;
+import javafx.scene.input.MouseButton;
+import javafx.scene.input.MouseEvent;
 
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
@@ -85,6 +87,28 @@ class ClipInteractionControllerTest {
         };
     }
 
+    /**
+     * Creates a synthetic primary-button mouse-pressed event at the given
+     * local (x, y) coordinates.
+     */
+    private static MouseEvent mousePressed(double x, double y) {
+        return new MouseEvent(MouseEvent.MOUSE_PRESSED,
+                x, y, x, y, MouseButton.PRIMARY, 1,
+                false, false, false, false,
+                true, false, false, false, false, false, null);
+    }
+
+    /**
+     * Creates a synthetic primary-button mouse-released event at the given
+     * local (x, y) coordinates.
+     */
+    private static MouseEvent mouseReleased(double x, double y) {
+        return new MouseEvent(MouseEvent.MOUSE_RELEASED,
+                x, y, x, y, MouseButton.PRIMARY, 1,
+                false, false, false, false,
+                false, false, false, false, false, false, null);
+    }
+
     // ── Hit testing ──────────────────────────────────────────────────────────
 
     @Test
@@ -158,57 +182,70 @@ class ClipInteractionControllerTest {
         assertThat(controller.clipAt(track, 6.0)).isNull();
     }
 
-    // ── Pencil tool ──────────────────────────────────────────────────────────
+    // ── Pencil tool (via mouse event dispatch) ───────────────────────────────
 
     @Test
-    void pencilShouldCreateClipAtEmptyPosition() throws Exception {
+    void pencilShouldCreateClipViaMousePress() throws Exception {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         Track track = new Track("Track 1", TrackType.AUDIO);
         tracks.add(track);
         activeTool = EditTool.PENCIL;
 
-        AtomicReference<ClipInteractionController> ref = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
             try {
                 ArrangementCanvas canvas = new ArrangementCanvas();
                 ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
-                ref.set(controller);
+                controller.install();
+
+                // Click at x=160 (beat 4.0 at 40px/beat), y=40 (track 0)
+                canvas.fireEvent(mousePressed(160.0, 40.0));
             } finally {
                 latch.countDown();
             }
         });
         assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
 
-        // Simulate pencil creating a clip — test the handler directly
-        // The beat position 4.0 = 160px at 40px/beat
-        // Track index 0 = y between 0 and 80
-        ClipInteractionController controller = ref.get();
-
-        // Use internal methods to test the logic (pencil creates a clip)
-        assertThat(track.getClips()).isEmpty();
-
-        // Directly call the beat/track logic
-        double beat = 4.0;
-        AudioClip existingClip = controller.clipAt(track, beat);
-        assertThat(existingClip).isNull();
-
-        // Simulate pencil action by executing what the handler does
-        AudioClip newClip = new AudioClip("New Clip", beat,
-                ClipInteractionController.DEFAULT_NEW_CLIP_DURATION, null);
-        undoManager.execute(new com.benesquivelmusic.daw.core.audio.AddClipAction(track, newClip));
-
         assertThat(track.getClips()).hasSize(1);
         assertThat(track.getClips().getFirst().getStartBeat()).isEqualTo(4.0);
         assertThat(track.getClips().getFirst().getDurationBeats())
                 .isEqualTo(ClipInteractionController.DEFAULT_NEW_CLIP_DURATION);
+        assertThat(refreshCount).isEqualTo(1);
     }
 
-    // ── Eraser tool ──────────────────────────────────────────────────────────
+    @Test
+    void pencilShouldNotCreateClipOnExistingClip() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        track.addClip(new AudioClip("Existing", 4.0, 4.0, null));
+        tracks.add(track);
+        activeTool = EditTool.PENCIL;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Click on the existing clip at beat 5.0 (x=200, y=40)
+                canvas.fireEvent(mousePressed(200.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(track.getClips()).hasSize(1);
+        assertThat(refreshCount).isEqualTo(0);
+    }
+
+    // ── Eraser tool (via mouse event dispatch) ───────────────────────────────
 
     @Test
-    void eraserShouldRemoveClip() throws Exception {
+    void eraserShouldRemoveClipViaMousePress() throws Exception {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         Track track = new Track("Track 1", TrackType.AUDIO);
@@ -217,35 +254,33 @@ class ClipInteractionControllerTest {
         tracks.add(track);
         activeTool = EditTool.ERASER;
 
-        AtomicReference<ClipInteractionController> ref = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
             try {
                 ArrangementCanvas canvas = new ArrangementCanvas();
-                ref.set(new ClipInteractionController(canvas, createHost()));
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Click on clip at beat 3.0 (x=120, y=40)
+                canvas.fireEvent(mousePressed(120.0, 40.0));
             } finally {
                 latch.countDown();
             }
         });
         assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
 
-        ClipInteractionController controller = ref.get();
-        AudioClip found = controller.clipAt(track, 3.0);
-        assertThat(found).isSameAs(clip);
-
-        // Simulate eraser action
-        undoManager.execute(new com.benesquivelmusic.daw.core.audio.RemoveClipAction(track, clip));
         assertThat(track.getClips()).isEmpty();
+        assertThat(refreshCount).isEqualTo(1);
 
         // Undo should restore
         undoManager.undo();
         assertThat(track.getClips()).hasSize(1);
     }
 
-    // ── Scissors tool ────────────────────────────────────────────────────────
+    // ── Scissors tool (via mouse event dispatch) ─────────────────────────────
 
     @Test
-    void scissorsShouldSplitClip() throws Exception {
+    void scissorsShouldSplitClipViaMousePress() throws Exception {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         Track track = new Track("Track 1", TrackType.AUDIO);
@@ -254,26 +289,24 @@ class ClipInteractionControllerTest {
         tracks.add(track);
         activeTool = EditTool.SCISSORS;
 
-        AtomicReference<ClipInteractionController> ref = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
             try {
                 ArrangementCanvas canvas = new ArrangementCanvas();
-                ref.set(new ClipInteractionController(canvas, createHost()));
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Click at beat 4.0 (x=160, y=40) inside the clip
+                canvas.fireEvent(mousePressed(160.0, 40.0));
             } finally {
                 latch.countDown();
             }
         });
         assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
 
-        ClipInteractionController controller = ref.get();
-        AudioClip found = controller.clipAt(track, 4.0);
-        assertThat(found).isSameAs(clip);
-
-        // Simulate scissors at beat 4.0
-        undoManager.execute(new com.benesquivelmusic.daw.core.audio.SplitClipAction(track, clip, 4.0));
         assertThat(track.getClips()).hasSize(2);
         assertThat(clip.getDurationBeats()).isEqualTo(4.0);
+        assertThat(refreshCount).isEqualTo(1);
 
         // Undo restores
         undoManager.undo();
@@ -281,10 +314,10 @@ class ClipInteractionControllerTest {
         assertThat(clip.getDurationBeats()).isEqualTo(8.0);
     }
 
-    // ── Glue tool ────────────────────────────────────────────────────────────
+    // ── Glue tool (via mouse event dispatch) ─────────────────────────────────
 
     @Test
-    void glueShouldMergeAdjacentClips() throws Exception {
+    void glueShouldMergeAdjacentClipsViaMousePress() throws Exception {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         Track track = new Track("Track 1", TrackType.AUDIO);
@@ -295,26 +328,63 @@ class ClipInteractionControllerTest {
         tracks.add(track);
         activeTool = EditTool.GLUE;
 
-        AtomicReference<ClipInteractionController> ref = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
             try {
                 ArrangementCanvas canvas = new ArrangementCanvas();
-                ref.set(new ClipInteractionController(canvas, createHost()));
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Click at the boundary (beat 4.0 = x=160, y=40)
+                canvas.fireEvent(mousePressed(160.0, 40.0));
             } finally {
                 latch.countDown();
             }
         });
         assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
 
-        // Simulate glue action
-        undoManager.execute(new com.benesquivelmusic.daw.core.audio.GlueClipsAction(track, first, second));
         assertThat(track.getClips()).hasSize(1);
         assertThat(track.getClips().getFirst().getDurationBeats()).isEqualTo(8.0);
+        assertThat(refreshCount).isEqualTo(1);
 
         // Undo restores both clips
         undoManager.undo();
         assertThat(track.getClips()).hasSize(2);
+    }
+
+    // ── Pointer tool (drag via mouse events) ─────────────────────────────────
+
+    @Test
+    void pointerShouldMoveClipViaDrag() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("Vocal", 2.0, 4.0, null);
+        track.addClip(clip);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Press on clip at beat 3.0 (x=120, y=40)
+                canvas.fireEvent(mousePressed(120.0, 40.0));
+                // Release at beat 7.0 (x=280, y=40), same track
+                canvas.fireEvent(mouseReleased(280.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        // Clip should have moved from beat 2.0 to beat 6.0
+        // (released at beat 7.0, drag offset was 1.0 beat into the clip)
+        assertThat(clip.getStartBeat()).isEqualTo(6.0);
+        assertThat(refreshCount).isEqualTo(1);
     }
 
     // ── Cross-track move ─────────────────────────────────────────────────────

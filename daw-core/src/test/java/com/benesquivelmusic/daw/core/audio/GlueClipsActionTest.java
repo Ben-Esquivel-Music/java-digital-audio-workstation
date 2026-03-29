@@ -115,6 +115,35 @@ class GlueClipsActionTest {
     }
 
     @Test
+    void shouldRejectSameClipInstance() {
+        AudioClip clip = new AudioClip("A", 0.0, 4.0, null);
+
+        assertThatThrownBy(() -> new GlueClipsAction(track, clip, clip))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("distinct");
+    }
+
+    @Test
+    void shouldRejectNonAdjacentClipsWithGap() {
+        AudioClip first = new AudioClip("A", 0.0, 4.0, null);
+        AudioClip second = new AudioClip("B", 6.0, 4.0, null);
+
+        assertThatThrownBy(() -> new GlueClipsAction(track, first, second))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("adjacent");
+    }
+
+    @Test
+    void shouldRejectOverlappingClips() {
+        AudioClip first = new AudioClip("A", 0.0, 6.0, null);
+        AudioClip second = new AudioClip("B", 4.0, 4.0, null);
+
+        assertThatThrownBy(() -> new GlueClipsAction(track, first, second))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("adjacent");
+    }
+
+    @Test
     void shouldPreserveSourceOffsetAndGain() {
         AudioClip first = new AudioClip("A", 0.0, 4.0, "/audio/a.wav");
         first.setSourceOffsetBeats(2.0);
@@ -130,5 +159,26 @@ class GlueClipsActionTest {
         assertThat(merged.getSourceOffsetBeats()).isEqualTo(2.0);
         assertThat(merged.getGainDb()).isEqualTo(-3.0);
         assertThat(merged.getSourceFilePath()).isEqualTo("/audio/a.wav");
+    }
+
+    @Test
+    void shouldPreserveProcessingProperties() {
+        AudioClip first = new AudioClip("A", 0.0, 4.0, null);
+        first.setReversed(true);
+        first.setTimeStretchRatio(2.0);
+        first.setPitchShiftSemitones(3.5);
+        first.setStretchQuality(StretchQuality.HIGH);
+        AudioClip second = new AudioClip("B", 4.0, 4.0, null);
+        track.addClip(first);
+        track.addClip(second);
+
+        GlueClipsAction action = new GlueClipsAction(track, first, second);
+        undoManager.execute(action);
+
+        AudioClip merged = track.getClips().getFirst();
+        assertThat(merged.isReversed()).isTrue();
+        assertThat(merged.getTimeStretchRatio()).isEqualTo(2.0);
+        assertThat(merged.getPitchShiftSemitones()).isEqualTo(3.5);
+        assertThat(merged.getStretchQuality()).isEqualTo(StretchQuality.HIGH);
     }
 }
