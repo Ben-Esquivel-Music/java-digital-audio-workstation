@@ -13,7 +13,7 @@ methods that drive the `HH:MM:SS.s` display, the `updateStatus` helper that refr
 status label and button enabled/disabled states, and the `RecordingPipeline` lifecycle
 management that creates, starts, and stops recording sessions.  These ~185 lines of
 transport-specific logic are entirely self-contained yet buried inside the 3,400+ line
-controller file, making transport behaviour hard to follow and impossible to unit-test in
+controller file, making transport behavior hard to follow and impossible to unit-test in
 isolation.  Extracting them into a dedicated `TransportController` would clarify the
 separation of concerns, simplify future transport features (e.g. loop regions, punch-in /
 punch-out), and allow each concern to be reviewed or changed independently.
