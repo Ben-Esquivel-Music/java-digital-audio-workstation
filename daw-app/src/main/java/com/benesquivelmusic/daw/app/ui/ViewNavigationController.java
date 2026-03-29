@@ -230,15 +230,43 @@ final class ViewNavigationController {
      * corresponding to the active view and removes it from all others.
      */
     private void updateToolbarActiveState() {
-        Button[] viewButtons = { arrangementViewButton, mixerViewButton, editorViewButton, telemetryViewButton, masteringViewButton };
-        DawView[] views = DawView.values();
-        for (int i = 0; i < viewButtons.length; i++) {
-            if (views[i] == activeView) {
-                if (!viewButtons[i].getStyleClass().contains("toolbar-button-active")) {
-                    viewButtons[i].getStyleClass().add("toolbar-button-active");
+        Button[] viewButtons = {
+                arrangementViewButton,
+                mixerViewButton,
+                editorViewButton,
+                telemetryViewButton,
+                masteringViewButton
+        };
+
+        Button activeButton;
+        switch (activeView) {
+            case ARRANGEMENT:
+                activeButton = arrangementViewButton;
+                break;
+            case MIXER:
+                activeButton = mixerViewButton;
+                break;
+            case EDITOR:
+                activeButton = editorViewButton;
+                break;
+            case TELEMETRY:
+                activeButton = telemetryViewButton;
+                break;
+            case MASTERING:
+                activeButton = masteringViewButton;
+                break;
+            default:
+                activeButton = null;
+                break;
+        }
+
+        for (Button button : viewButtons) {
+            if (button == activeButton) {
+                if (!button.getStyleClass().contains("toolbar-button-active")) {
+                    button.getStyleClass().add("toolbar-button-active");
                 }
             } else {
-                viewButtons[i].getStyleClass().remove("toolbar-button-active");
+                button.getStyleClass().remove("toolbar-button-active");
             }
         }
     }
