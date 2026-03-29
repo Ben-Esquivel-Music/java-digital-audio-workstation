@@ -259,22 +259,30 @@ public final class ArrangementCanvas extends Pane {
         // Fade-in overlay (triangle)
         if (clip.getFadeInBeats() > 0) {
             double fadeWidth = clip.getFadeInBeats() * pixelsPerBeat;
-            gc.setFill(Color.web("#000000", FADE_OVERLAY_OPACITY));
-            gc.fillPolygon(
-                    new double[]{clipX, clipX + fadeWidth, clipX},
-                    new double[]{clipY, clipY, clipY + clipHeight},
-                    3);
+            // Clamp fade width so the overlay stays within the clip bounds
+            fadeWidth = Math.max(0.0, Math.min(fadeWidth, clipWidth));
+            if (fadeWidth > 0.0) {
+                gc.setFill(Color.web("#000000", FADE_OVERLAY_OPACITY));
+                gc.fillPolygon(
+                        new double[]{clipX, clipX + fadeWidth, clipX},
+                        new double[]{clipY, clipY, clipY + clipHeight},
+                        3);
+            }
         }
 
         // Fade-out overlay (triangle)
         if (clip.getFadeOutBeats() > 0) {
             double fadeWidth = clip.getFadeOutBeats() * pixelsPerBeat;
-            double fadeX = clipX + clipWidth - fadeWidth;
-            gc.setFill(Color.web("#000000", FADE_OVERLAY_OPACITY));
-            gc.fillPolygon(
-                    new double[]{fadeX, clipX + clipWidth, clipX + clipWidth},
-                    new double[]{clipY, clipY, clipY + clipHeight},
-                    3);
+            // Clamp fade width so the overlay stays within the clip bounds
+            fadeWidth = Math.max(0.0, Math.min(fadeWidth, clipWidth));
+            if (fadeWidth > 0.0) {
+                double fadeX = clipX + clipWidth - fadeWidth;
+                gc.setFill(Color.web("#000000", FADE_OVERLAY_OPACITY));
+                gc.fillPolygon(
+                        new double[]{fadeX, clipX + clipWidth, clipX + clipWidth},
+                        new double[]{clipY, clipY, clipY + clipHeight},
+                        3);
+            }
         }
 
         // Waveform overview
