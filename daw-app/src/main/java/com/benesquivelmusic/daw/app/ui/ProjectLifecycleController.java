@@ -101,6 +101,15 @@ final class ProjectLifecycleController {
     // ── Project action handlers ──────────────────────────────────────────────
 
     void onSaveProject() {
+        trySaveProject();
+    }
+
+    /**
+     * Attempts to save the current project.
+     *
+     * @return {@code true} if the save succeeded, {@code false} if it failed
+     */
+    private boolean trySaveProject() {
         try {
             if (projectManager.getCurrentProject() == null) {
                 Path tempDir = Files.createTempDirectory("daw-project-");
@@ -116,11 +125,13 @@ final class ProjectLifecycleController {
             statusBarLabel.setGraphic(IconNode.of(DawIcon.UPLOAD, 12));
             notificationBar.show(NotificationLevel.SUCCESS, "Project saved");
             LOG.info("Project saved successfully");
+            return true;
         } catch (IOException e) {
             statusBarLabel.setText("Save failed: " + e.getMessage());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
             notificationBar.show(NotificationLevel.ERROR, "Save failed: " + e.getMessage());
             LOG.log(Level.WARNING, "Failed to save project", e);
+            return false;
         }
     }
 
@@ -285,7 +296,7 @@ final class ProjectLifecycleController {
      * Prompts the user to save unsaved changes before a destructive operation.
      *
      * @return {@code true} if the operation should proceed (saved, discarded, or no changes),
-     *         {@code false} if the user cancelled
+     *         {@code false} if the user cancelled or saving failed
      */
     boolean confirmDiscardUnsavedChanges() {
         if (!host.isProjectDirty()) {
@@ -306,7 +317,7 @@ final class ProjectLifecycleController {
             return false;
         }
         if (result.get() == saveBtn) {
-            onSaveProject();
+            return trySaveProject();
         }
         return true;
     }
