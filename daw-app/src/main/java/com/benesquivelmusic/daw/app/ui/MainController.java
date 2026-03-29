@@ -1863,6 +1863,7 @@ public final class MainController {
         trackListPanel.getChildren().add(header);
         mixerView = new MixerView(project);
         viewCache.put(DawView.MIXER, mixerView);
+        createTransportController();
         createTrackStripController();
         updateProjectInfo();
         updateTempoDisplay();
