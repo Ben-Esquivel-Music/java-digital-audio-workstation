@@ -54,7 +54,7 @@ public final class ArrangementCanvas extends Pane {
      * Beats per grid column — MIDI note columns are 1/16 notes (0.25 beats)
      * at 4/4. Shared with {@link EditorView#BEATS_PER_COLUMN}.
      */
-    static final double BEATS_PER_COLUMN = 0.25;
+    static final double BEATS_PER_COLUMN = EditorView.BEATS_PER_COLUMN;
     private static final double PLAYHEAD_WIDTH = 2.0;
 
     private final Canvas canvas;
