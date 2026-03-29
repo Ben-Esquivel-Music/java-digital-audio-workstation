@@ -439,8 +439,7 @@ public final class MainController {
 
     /**
      * Creates the {@link ArrangementCanvas} and adds it to the arrangement
-     * content pane behind the placeholder label. Wires up zoom and scroll
-     * synchronization with the {@link ArrangementNavigator}.
+     * content pane behind the placeholder label.
      */
     private void createArrangementCanvas() {
         arrangementCanvas = new ArrangementCanvas();

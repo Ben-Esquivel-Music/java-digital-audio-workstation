@@ -49,6 +49,12 @@ public final class ArrangementCanvas extends Pane {
     private static final double FADE_OVERLAY_OPACITY = 0.3;
     private static final int WAVEFORM_MIN_WIDTH = 4;
     private static final double MIDI_NOTE_HEIGHT_FRACTION = 0.08;
+
+    /**
+     * Beats per grid column — MIDI note columns are 1/16 notes (0.25 beats)
+     * at 4/4. Shared with {@link EditorView#BEATS_PER_COLUMN}.
+     */
+    static final double BEATS_PER_COLUMN = 0.25;
     private static final double PLAYHEAD_WIDTH = 2.0;
 
     private final Canvas canvas;
@@ -299,8 +305,16 @@ public final class ArrangementCanvas extends Pane {
         if (audioData == null || audioData.length == 0 || audioData[0].length == 0) {
             return;
         }
-        int pixelWidth = (int) clipWidth;
-        if (pixelWidth < WAVEFORM_MIN_WIDTH) {
+        int totalPixelWidth = (int) clipWidth;
+        if (totalPixelWidth < WAVEFORM_MIN_WIDTH) {
+            return;
+        }
+
+        // Clamp rendering to the visible portion of the clip
+        double canvasWidth = canvas.getWidth();
+        int visibleStart = Math.max(0, (int) -clipX);
+        int visibleEnd = Math.min(totalPixelWidth, (int) (canvasWidth - clipX));
+        if (visibleStart >= visibleEnd) {
             return;
         }
 
@@ -312,14 +326,17 @@ public final class ArrangementCanvas extends Pane {
         gc.setStroke(WAVEFORM_COLOR);
         gc.setLineWidth(1.0);
 
-        for (int px = 0; px < pixelWidth; px++) {
-            int sampleStart = (int) ((long) px * totalSamples / pixelWidth);
-            int sampleEnd = (int) ((long) (px + 1) * totalSamples / pixelWidth);
+        for (int px = visibleStart; px < visibleEnd; px++) {
+            int sampleStart = (int) ((long) px * totalSamples / totalPixelWidth);
+            int sampleEnd = (int) ((long) (px + 1) * totalSamples / totalPixelWidth);
             sampleEnd = Math.min(sampleEnd, totalSamples);
 
-            float min = 0;
-            float max = 0;
-            for (int s = sampleStart; s < sampleEnd; s++) {
+            if (sampleStart >= sampleEnd) {
+                continue;
+            }
+            float min = channel[sampleStart];
+            float max = channel[sampleStart];
+            for (int s = sampleStart + 1; s < sampleEnd; s++) {
                 float val = channel[s];
                 if (val < min) {
                     min = val;
@@ -364,10 +381,10 @@ public final class ArrangementCanvas extends Pane {
             }
         }
 
-        double clipStartBeat = minColumn;
-        double clipDurationBeats = maxEndColumn - minColumn;
+        double clipStartBeat = minColumn * BEATS_PER_COLUMN;
+        double clipDurationBeats = (maxEndColumn - minColumn) * BEATS_PER_COLUMN;
         if (clipDurationBeats <= 0) {
-            clipDurationBeats = 1;
+            clipDurationBeats = BEATS_PER_COLUMN;
         }
 
         double clipX = (clipStartBeat - scrollXBeats) * pixelsPerBeat;
@@ -407,8 +424,8 @@ public final class ArrangementCanvas extends Pane {
 
         gc.setFill(MIDI_NOTE_COLOR);
         for (MidiNoteData note : notes) {
-            double nx = clipX + (note.startColumn() - minColumn) * pixelsPerBeat;
-            double nw = note.durationColumns() * pixelsPerBeat;
+            double nx = clipX + (note.startColumn() - minColumn) * BEATS_PER_COLUMN * pixelsPerBeat;
+            double nw = note.durationColumns() * BEATS_PER_COLUMN * pixelsPerBeat;
             double pitchFraction = noteRange > 1
                     ? (double) (maxNote - note.noteNumber()) / (noteRange - 1)
                     : 0.5;
