@@ -201,7 +201,6 @@ class MasteringViewTest {
         assertThat(view.getMasteringChain().isChainBypassed()).isFalse();
 
         runOnFxThread(() -> {
-            view.getAbToggle().setSelected(true);
             view.getAbToggle().fire();
         });
 
