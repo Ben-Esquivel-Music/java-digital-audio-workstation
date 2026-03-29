@@ -34,7 +34,6 @@ import javafx.scene.control.Button;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.Label;
 import javafx.scene.control.MenuItem;
-import javafx.scene.control.Separator;
 import javafx.scene.control.TextField;
 import javafx.scene.control.Tooltip;
 import javafx.scene.input.KeyCombination;
@@ -77,14 +76,8 @@ public final class MainController {
 
     private static final Logger LOG = Logger.getLogger(MainController.class.getName());
 
-    /** Icon size for transport-bar buttons (play, stop, record). */
-    private static final double TRANSPORT_ICON_SIZE = 14;
-    /** Icon size for toolbar buttons (add track, save, plugins). */
-    private static final double TOOLBAR_ICON_SIZE = 14;
-    /** Icon size for panel-header labels. */
-    private static final double PANEL_ICON_SIZE = 16;
-    /** Show delay for all tooltips (300ms for quick discoverability). */
-    private static final Duration TOOLTIP_SHOW_DELAY = Duration.millis(300);
+    /** Icon size for panel-header labels — shared with {@link ToolbarAppearanceController}. */
+    private static final double PANEL_ICON_SIZE = ToolbarAppearanceController.PANEL_ICON_SIZE;
 
     @FXML private BorderPane rootPane;
     @FXML private Button skipBackButton;
@@ -253,6 +246,10 @@ public final class MainController {
     /** Encapsulates all frame-by-frame and transition-based animations. */
     private AnimationController animationController;
 
+    // ── Toolbar appearance controller ────────────────────────────────────────
+    /** Applies icons, tooltips, and overflow behavior to the toolbar. */
+    private ToolbarAppearanceController toolbarAppearanceController;
+
     /** Reference kept for the idle demo animation. */
     private SpectrumDisplay spectrumDisplay;
     /** Reference kept for the idle demo animation. */
@@ -288,9 +285,8 @@ public final class MainController {
         audioTrackCounter = 0;
         midiTrackCounter = 0;
 
-        applyIcons();
-        applyTooltips();
-        preventButtonTruncation();
+        createToolbarAppearanceController();
+        toolbarAppearanceController.apply();
         buildVisualizationTiles();
         buildBrowserPanel(toolbarStateStore.loadBrowserVisible());
         buildHistoryPanel();
@@ -337,6 +333,43 @@ public final class MainController {
         notificationBarContainer.getChildren().add(notificationBar);
         HBox.setHgrow(notificationBar, Priority.ALWAYS);
         notificationHistoryPanel = new NotificationHistoryPanel(notificationHistoryService);
+    }
+
+    /**
+     * Creates the {@link ToolbarAppearanceController} with all button, label,
+     * and overflow-group references needed for icon, tooltip, and overflow
+     * initialization.  Must be called after the {@link KeyBindingManager} is
+     * available.
+     */
+    private void createToolbarAppearanceController() {
+        toolbarAppearanceController = new ToolbarAppearanceController(
+                new ToolbarAppearanceController.TransportButtons(
+                        skipBackButton, playButton, pauseButton, stopButton,
+                        recordButton, skipForwardButton, loopButton),
+                new ToolbarAppearanceController.ToolbarButtons(
+                        addAudioTrackButton, addMidiTrackButton, undoButton,
+                        redoButton, snapButton, saveButton, pluginsButton),
+                new ToolbarAppearanceController.SidebarButtons(
+                        homeButton, arrangementViewButton, mixerViewButton,
+                        editorViewButton, telemetryViewButton, masteringViewButton,
+                        newProjectButton, openProjectButton, saveProjectButton,
+                        recentProjectsButton, importSessionButton, exportSessionButton,
+                        browserButton, searchButton, historyButton,
+                        pluginsSidebarButton, visualizationsButton, settingsButton,
+                        expandCollapseButton, helpButton),
+                new ToolbarAppearanceController.EditToolButtons(
+                        pointerToolButton, pencilToolButton, eraserToolButton,
+                        scissorsToolButton, glueToolButton),
+                new ToolbarAppearanceController.ZoomButtons(
+                        zoomInButton, zoomOutButton, zoomToFitButton),
+                new ToolbarAppearanceController.AppearanceLabels(
+                        statusLabel, timeDisplay, tracksPanelHeader,
+                        arrangementPanelHeader, arrangementPlaceholder,
+                        monitoringLabel, checkpointLabel, statusBarLabel,
+                        ioRoutingLabel, recIndicator),
+                new ToolbarAppearanceController.OverflowGroups(
+                        utilityGroup, undoRedoGroup),
+                rootPane, keyBindingManager);
     }
 
     /**
@@ -950,202 +983,6 @@ public final class MainController {
      */
     public SelectionModel getSelectionModel() {
         return selectionModel;
-    }
-
-    /**
-     * Applies SVG icons from the DAW icon pack to all UI controls.
-     *
-     * <p>Icons are drawn from every category in the pack to provide rich visual
-     * feedback: playback controls use the <em>Playback</em> category; track-type
-     * indicators pull from <em>Media</em> and <em>Instruments</em>; status labels
-     * reference <em>Notifications</em>; I/O routing uses <em>Connectivity</em>;
-     * and so on across all 14 categories.</p>
-     */
-    private void applyIcons() {
-        // ── Transport controls (Playback category) ──────────────────────────
-        skipBackButton.setGraphic(IconNode.of(DawIcon.SKIP_BACK, TRANSPORT_ICON_SIZE));
-        playButton.setGraphic(IconNode.of(DawIcon.PLAY, TRANSPORT_ICON_SIZE));
-        pauseButton.setGraphic(IconNode.of(DawIcon.PAUSE, TRANSPORT_ICON_SIZE));
-        stopButton.setGraphic(IconNode.of(DawIcon.STOP, TRANSPORT_ICON_SIZE));
-        recordButton.setGraphic(IconNode.of(DawIcon.RECORD, TRANSPORT_ICON_SIZE));
-        skipForwardButton.setGraphic(IconNode.of(DawIcon.SKIP_FORWARD, TRANSPORT_ICON_SIZE));
-        loopButton.setGraphic(IconNode.of(DawIcon.LOOP, TRANSPORT_ICON_SIZE));
-
-        // ── Toolbar buttons (mixed categories) ─────────────────────────────
-        addAudioTrackButton.setGraphic(IconNode.of(DawIcon.MICROPHONE, TOOLBAR_ICON_SIZE));
-        addMidiTrackButton.setGraphic(IconNode.of(DawIcon.KEYBOARD, TOOLBAR_ICON_SIZE));
-        undoButton.setGraphic(IconNode.of(DawIcon.UNDO, TOOLBAR_ICON_SIZE));
-        redoButton.setGraphic(IconNode.of(DawIcon.REDO, TOOLBAR_ICON_SIZE));
-        snapButton.setGraphic(IconNode.of(DawIcon.SNAP, TOOLBAR_ICON_SIZE));
-        saveButton.setGraphic(IconNode.of(DawIcon.DOWNLOAD, TOOLBAR_ICON_SIZE));
-        pluginsButton.setGraphic(IconNode.of(DawIcon.EQ, TOOLBAR_ICON_SIZE));
-
-        // ── Time display — timer icon prefix (General category) ────────────
-        timeDisplay.setGraphic(IconNode.of(DawIcon.TIMER, PANEL_ICON_SIZE));
-
-        // ── Panel headers ───────────────────────────────────────────────────
-        tracksPanelHeader.setGraphic(IconNode.of(DawIcon.MIXER, PANEL_ICON_SIZE));
-        arrangementPanelHeader.setGraphic(IconNode.of(DawIcon.TIMELINE, PANEL_ICON_SIZE));
-
-        // ── Arrangement placeholder (Media category) ────────────────────────
-        arrangementPlaceholder.setGraphic(IconNode.of(DawIcon.MUSIC_NOTE, 24));
-
-        // ── Status bar icons ────────────────────────────────────────────────
-        monitoringLabel.setGraphic(IconNode.of(DawIcon.HEADPHONES, 12));
-        checkpointLabel.setGraphic(IconNode.of(DawIcon.SYNC, 12));
-        statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
-        ioRoutingLabel.setGraphic(IconNode.of(DawIcon.USB, 12));
-        recIndicator.setGraphic(IconNode.of(DawIcon.RECORD, 14));
-
-        // ── Sidebar toolbar buttons ─────────────────────────────────────────
-        homeButton.setGraphic(IconNode.of(DawIcon.HOME, TOOLBAR_ICON_SIZE));
-        arrangementViewButton.setGraphic(IconNode.of(DawIcon.TIMELINE, TOOLBAR_ICON_SIZE));
-        mixerViewButton.setGraphic(IconNode.of(DawIcon.MIXER, TOOLBAR_ICON_SIZE));
-        editorViewButton.setGraphic(IconNode.of(DawIcon.WAVEFORM, TOOLBAR_ICON_SIZE));
-        telemetryViewButton.setGraphic(IconNode.of(DawIcon.SURROUND, TOOLBAR_ICON_SIZE));
-        masteringViewButton.setGraphic(IconNode.of(DawIcon.LIMITER, TOOLBAR_ICON_SIZE));
-        newProjectButton.setGraphic(IconNode.of(DawIcon.FOLDER, TOOLBAR_ICON_SIZE));
-        openProjectButton.setGraphic(IconNode.of(DawIcon.FOLDER, TOOLBAR_ICON_SIZE));
-        saveProjectButton.setGraphic(IconNode.of(DawIcon.DOWNLOAD, TOOLBAR_ICON_SIZE));
-        recentProjectsButton.setGraphic(IconNode.of(DawIcon.HISTORY, TOOLBAR_ICON_SIZE));
-        importSessionButton.setGraphic(IconNode.of(DawIcon.DOWNLOAD, TOOLBAR_ICON_SIZE));
-        exportSessionButton.setGraphic(IconNode.of(DawIcon.UPLOAD, TOOLBAR_ICON_SIZE));
-        browserButton.setGraphic(IconNode.of(DawIcon.LIBRARY, TOOLBAR_ICON_SIZE));
-        searchButton.setGraphic(IconNode.of(DawIcon.SEARCH, TOOLBAR_ICON_SIZE));
-        historyButton.setGraphic(IconNode.of(DawIcon.HISTORY, TOOLBAR_ICON_SIZE));
-        pluginsSidebarButton.setGraphic(IconNode.of(DawIcon.EQUALIZER, TOOLBAR_ICON_SIZE));
-        visualizationsButton.setGraphic(IconNode.of(DawIcon.SPECTRUM, TOOLBAR_ICON_SIZE));
-        settingsButton.setGraphic(IconNode.of(DawIcon.SETTINGS, TOOLBAR_ICON_SIZE));
-        expandCollapseButton.setGraphic(IconNode.of(DawIcon.EXPAND, TOOLBAR_ICON_SIZE));
-        helpButton.setGraphic(IconNode.of(DawIcon.INFO, TOOLBAR_ICON_SIZE));
-
-        // ── Edit tool buttons (Editing category) ───────────────────────────
-        pointerToolButton.setGraphic(IconNode.of(DawIcon.MOVE, TOOLBAR_ICON_SIZE));
-        pencilToolButton.setGraphic(IconNode.of(DawIcon.MARKER, TOOLBAR_ICON_SIZE));
-        eraserToolButton.setGraphic(IconNode.of(DawIcon.DELETE, TOOLBAR_ICON_SIZE));
-        scissorsToolButton.setGraphic(IconNode.of(DawIcon.SPLIT, TOOLBAR_ICON_SIZE));
-        glueToolButton.setGraphic(IconNode.of(DawIcon.CROSSFADE, TOOLBAR_ICON_SIZE));
-
-        // ── Zoom buttons (Editing + Navigation categories) ─────────────────
-        zoomInButton.setGraphic(IconNode.of(DawIcon.ZOOM_IN, TOOLBAR_ICON_SIZE));
-        zoomOutButton.setGraphic(IconNode.of(DawIcon.ZOOM_OUT, TOOLBAR_ICON_SIZE));
-        zoomToFitButton.setGraphic(IconNode.of(DawIcon.FULLSCREEN, TOOLBAR_ICON_SIZE));
-
-        LOG.fine("Applied SVG icons from DAW icon pack");
-    }
-
-    /**
-     * Applies descriptive tooltips with keyboard shortcut hints to all UI controls.
-     *
-     * <p>Tooltips follow the format {@code "Action Name (Shortcut)"} and use a
-     * 300&nbsp;ms show delay for quick discoverability. Shortcut hints are
-     * resolved from the {@link KeyBindingManager} so they reflect any custom
-     * bindings. Ambiguous buttons include a brief description separated by an
-     * em-dash.</p>
-     */
-    private void applyTooltips() {
-        // ── Transport controls ──────────────────────────────────────────────
-        skipBackButton.setTooltip(styledTooltip(tooltipFor("Skip to Beginning", DawAction.SKIP_TO_START)));
-        playButton.setTooltip(styledTooltip(tooltipFor("Play", DawAction.PLAY_STOP)));
-        pauseButton.setTooltip(styledTooltip("Pause"));
-        stopButton.setTooltip(styledTooltip(tooltipFor("Stop", DawAction.STOP)));
-        recordButton.setTooltip(styledTooltip(tooltipFor("Record", DawAction.RECORD)));
-        skipForwardButton.setTooltip(styledTooltip(tooltipFor("Skip Forward", DawAction.SKIP_TO_END)));
-        loopButton.setTooltip(styledTooltip(tooltipFor("Toggle Loop", DawAction.TOGGLE_LOOP)));
-
-        // ── Toolbar buttons ─────────────────────────────────────────────────
-        addAudioTrackButton.setTooltip(styledTooltip(tooltipFor("Add Audio Track", DawAction.ADD_AUDIO_TRACK)));
-        addMidiTrackButton.setTooltip(styledTooltip(tooltipFor("Add MIDI Track", DawAction.ADD_MIDI_TRACK)));
-        undoButton.setTooltip(styledTooltip(tooltipFor("Undo", DawAction.UNDO)));
-        redoButton.setTooltip(styledTooltip(tooltipFor("Redo", DawAction.REDO)));
-        snapButton.setTooltip(styledTooltip(
-                tooltipFor("Toggle Snap", DawAction.TOGGLE_SNAP) + " \u00b7 Right-click for grid resolution"));
-        saveButton.setTooltip(styledTooltip(tooltipFor("Save Project", DawAction.SAVE)));
-        pluginsButton.setTooltip(styledTooltip(
-                "Manage Plugins \u2014 Add, remove, and configure audio plugins"));
-
-        // ── Sidebar view buttons ────────────────────────────────────────────
-        homeButton.setTooltip(styledTooltip(
-                "Home \u2014 Return to the default view"));
-        arrangementViewButton.setTooltip(styledTooltip(tooltipFor("Arrangement View", DawAction.VIEW_ARRANGEMENT)));
-        mixerViewButton.setTooltip(styledTooltip(tooltipFor("Mixer View", DawAction.VIEW_MIXER)));
-        editorViewButton.setTooltip(styledTooltip(tooltipFor("Editor View", DawAction.VIEW_EDITOR)));
-        telemetryViewButton.setTooltip(styledTooltip(tooltipFor("Sound Wave Telemetry View", DawAction.VIEW_TELEMETRY)));
-        masteringViewButton.setTooltip(styledTooltip(tooltipFor("Mastering View", DawAction.VIEW_MASTERING)));
-        newProjectButton.setTooltip(styledTooltip(tooltipFor("New Project", DawAction.NEW_PROJECT)));
-        openProjectButton.setTooltip(styledTooltip(tooltipFor("Open Project", DawAction.OPEN_PROJECT)));
-        saveProjectButton.setTooltip(styledTooltip(tooltipFor("Save Project", DawAction.SAVE)));
-        recentProjectsButton.setTooltip(styledTooltip(
-                "Recent Projects \u2014 Open a recently saved project"));
-        importSessionButton.setTooltip(styledTooltip(
-                tooltipFor("Import Session \u2014 Import a DAWproject (.dawproject) file",
-                        DawAction.IMPORT_SESSION)));
-        exportSessionButton.setTooltip(styledTooltip(
-                tooltipFor("Export Session \u2014 Export to DAWproject (.dawproject) format",
-                        DawAction.EXPORT_SESSION)));
-        browserButton.setTooltip(styledTooltip(
-                "Browser \u2014 Browse samples, presets, and project files"
-                        + shortcutSuffix(DawAction.TOGGLE_BROWSER)));
-        searchButton.setTooltip(styledTooltip(
-                "Search \u2014 Find tracks, clips, and project items"));
-        historyButton.setTooltip(styledTooltip(
-                "Undo History \u2014 Browse and navigate undo history"
-                        + shortcutSuffix(DawAction.TOGGLE_HISTORY)));
-        pluginsSidebarButton.setTooltip(styledTooltip(
-                "Plugins \u2014 Browse and manage audio plugins"));
-        visualizationsButton.setTooltip(styledTooltip(
-                "Visualizations \u2014 Toggle audio visualization panels"
-                        + shortcutSuffix(DawAction.TOGGLE_VISUALIZATIONS)));
-        settingsButton.setTooltip(styledTooltip(tooltipFor("Settings", DawAction.OPEN_SETTINGS)));
-        expandCollapseButton.setTooltip(styledTooltip(tooltipFor("Collapse/Expand Toolbar", DawAction.TOGGLE_TOOLBAR)));
-        helpButton.setTooltip(styledTooltip(
-                "Help \u2014 View documentation and keyboard shortcuts"));
-
-        // ── Edit tool buttons ───────────────────────────────────────────────
-        pointerToolButton.setTooltip(styledTooltip(tooltipFor("Pointer Tool", DawAction.TOOL_POINTER)));
-        pencilToolButton.setTooltip(styledTooltip(tooltipFor("Pencil Tool", DawAction.TOOL_PENCIL)));
-        eraserToolButton.setTooltip(styledTooltip(tooltipFor("Eraser Tool", DawAction.TOOL_ERASER)));
-        scissorsToolButton.setTooltip(styledTooltip(tooltipFor("Scissors Tool", DawAction.TOOL_SCISSORS)));
-        glueToolButton.setTooltip(styledTooltip(tooltipFor("Glue Tool", DawAction.TOOL_GLUE)));
-
-        // ── Zoom buttons ────────────────────────────────────────────────────
-        zoomInButton.setTooltip(styledTooltip(tooltipFor("Zoom In", DawAction.ZOOM_IN)));
-        zoomOutButton.setTooltip(styledTooltip(tooltipFor("Zoom Out", DawAction.ZOOM_OUT)));
-        zoomToFitButton.setTooltip(styledTooltip(tooltipFor("Zoom to Fit", DawAction.ZOOM_TO_FIT)));
-    }
-
-    /**
-     * Returns a tooltip string in the form {@code "label (shortcut)"}.
-     * If the action has no binding, returns just the label.
-     */
-    private String tooltipFor(String label, DawAction action) {
-        String shortcut = keyBindingManager.getDisplayText(action);
-        if (shortcut.isEmpty()) {
-            return label;
-        }
-        return label + " (" + shortcut + ")";
-    }
-
-    /**
-     * Returns a suffix string like {@code " (shortcut)"} or an empty string
-     * if the action has no binding. Useful for appending to longer tooltip text.
-     */
-    private String shortcutSuffix(DawAction action) {
-        String shortcut = keyBindingManager.getDisplayText(action);
-        if (shortcut.isEmpty()) {
-            return "";
-        }
-        return " (" + shortcut + ")";
-    }
-
-    /**
-     * Creates a {@link Tooltip} with the given text and a fast show delay
-     * matching the application's dark theme.
-     */
-    private static Tooltip styledTooltip(String text) {
-        Tooltip tooltip = new Tooltip(text);
-        tooltip.setShowDelay(TOOLTIP_SHOW_DELAY);
-        return tooltip;
     }
 
     /**
@@ -1881,71 +1718,6 @@ public final class MainController {
         notificationBar.showWithUndo(NotificationLevel.SUCCESS,
                 "Fade out applied: " + track.getName(), this::onUndo);
         projectDirty = true;
-    }
-
-    /**
-     * Prevents transport-bar buttons and the status label from truncating their
-     * text by setting each control's minimum width to its preferred width.
-     * Also installs a responsive overflow listener that hides lower-priority
-     * button groups (utility, undo/redo, track) at narrow window widths.
-     */
-    private void preventButtonTruncation() {
-        for (Button btn : new Button[]{
-                skipBackButton, playButton, pauseButton, stopButton, recordButton,
-                skipForwardButton, loopButton,
-                addAudioTrackButton, addMidiTrackButton,
-                undoButton, redoButton, snapButton, saveButton, pluginsButton}) {
-            btn.setMinWidth(Region.USE_PREF_SIZE);
-        }
-        statusLabel.setMinWidth(Region.USE_PREF_SIZE);
-        installToolbarOverflowListener();
-    }
-
-    /** Width threshold below which lower-priority toolbar groups are hidden. */
-    private static final double TOOLBAR_OVERFLOW_THRESHOLD = 1280.0;
-
-    /**
-     * Installs a listener that hides non-essential toolbar button groups when
-     * the window width drops at or below {@link #TOOLBAR_OVERFLOW_THRESHOLD}.
-     * The transport controls and time display always remain visible.
-     */
-    private void installToolbarOverflowListener() {
-        rootPane.sceneProperty().addListener((_, _, scene) -> {
-            if (scene != null) {
-                scene.widthProperty().addListener((_, _, newWidth) ->
-                        applyToolbarOverflow(newWidth.doubleValue()));
-                applyToolbarOverflow(scene.getWidth());
-            }
-        });
-    }
-
-    /**
-     * Shows or hides lower-priority toolbar groups based on the current
-     * scene width.  Groups are hidden in priority order: utility first,
-     * then undo/redo, then track management.
-     */
-    private void applyToolbarOverflow(double width) {
-        boolean narrow = width <= TOOLBAR_OVERFLOW_THRESHOLD;
-        setGroupVisible(utilityGroup, !narrow);
-        setGroupVisible(undoRedoGroup, !narrow);
-    }
-
-    private void setGroupVisible(HBox group, boolean visible) {
-        if (group != null) {
-            group.setVisible(visible);
-            group.setManaged(visible);
-            // Also hide the separator immediately before the group
-            int idx = group.getParent() instanceof HBox parent
-                    ? parent.getChildren().indexOf(group)
-                    : -1;
-            if (idx > 0) {
-                Node prev = ((HBox) group.getParent()).getChildren().get(idx - 1);
-                if (prev instanceof Separator) {
-                    prev.setVisible(visible);
-                    prev.setManaged(visible);
-                }
-            }
-        }
     }
 
     private void updateTempoDisplay() {
