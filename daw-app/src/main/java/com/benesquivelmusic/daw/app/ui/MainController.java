@@ -1864,6 +1864,7 @@ public final class MainController {
         mixerView = new MixerView(project);
         viewCache.put(DawView.MIXER, mixerView);
         createTransportController();
+        transportController.updateStatus();
         createTrackStripController();
         updateProjectInfo();
         updateTempoDisplay();
