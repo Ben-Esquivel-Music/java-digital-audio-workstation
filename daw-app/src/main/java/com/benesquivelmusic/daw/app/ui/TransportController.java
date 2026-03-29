@@ -221,9 +221,17 @@ final class TransportController {
     }
 
     void onSkipBack() {
-        project.getTransport().setPositionInBeats(0.0);
-        stopTimeTicker();
-        timeDisplay.setText("00:00:00.0");
+        Transport transport = project.getTransport();
+        TransportState state = transport.getState();
+        transport.setPositionInBeats(0.0);
+
+        if (state == TransportState.PLAYING || state == TransportState.RECORDING) {
+            // Keep the ticker running while playing/recording; it will update the
+            // time display on the next tick to reflect the new position.
+        } else {
+            stopTimeTicker();
+            timeDisplay.setText("00:00:00.0");
+        }
         statusBarLabel.setText("Skipped to beginning");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.SKIP_BACK, 12));
     }
