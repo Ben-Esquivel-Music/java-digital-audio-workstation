@@ -142,15 +142,22 @@ public final class RoomParameterController {
         double centroidY = sumY / sources.size();
 
         // Nudge toward room center
-        double roomCenterX = dimensions.width() / 2.0;
-        double roomCenterY = dimensions.length() / 2.0;
+        double width = dimensions.width();
+        double length = dimensions.length();
+        double roomCenterX = width / 2.0;
+        double roomCenterY = length / 2.0;
         double x = centroidX + (roomCenterX - centroidX) * 0.3;
         double y = centroidY + (roomCenterY - centroidY) * 0.3;
 
-        // Clamp to keep away from walls
-        x = Math.max(MIN_WALL_DISTANCE, Math.min(dimensions.width() - MIN_WALL_DISTANCE, x));
-        y = Math.max(MIN_WALL_DISTANCE, Math.min(dimensions.length() - MIN_WALL_DISTANCE, y));
+        // Clamp to keep away from walls, adapting to very small rooms
+        double effectiveMinX = Math.min(MIN_WALL_DISTANCE, width / 2.0);
+        double effectiveMinY = Math.min(MIN_WALL_DISTANCE, length / 2.0);
+        x = Math.max(effectiveMinX, Math.min(width - effectiveMinX, x));
+        y = Math.max(effectiveMinY, Math.min(length - effectiveMinY, y));
 
+        // Ensure final coordinates are strictly inside the room bounds
+        x = Math.max(0.0, Math.min(width, x));
+        y = Math.max(0.0, Math.min(length, y));
         return new Position3D(x, y, 1.2);
     }
 
