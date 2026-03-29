@@ -321,18 +321,28 @@ final class ViewNavigationController {
      * corresponding to the active tool and removes it from all others.
      */
     private void updateEditToolActiveState() {
-        Button[] toolButtons = {
-                pointerToolButton, pencilToolButton, eraserToolButton,
-                scissorsToolButton, glueToolButton
-        };
-        EditTool[] tools = EditTool.values();
-        for (int i = 0; i < toolButtons.length; i++) {
-            if (tools[i] == activeEditTool) {
-                if (!toolButtons[i].getStyleClass().contains("toolbar-button-active")) {
-                    toolButtons[i].getStyleClass().add("toolbar-button-active");
+        // Explicit mapping from each EditTool to its corresponding button to avoid
+        // relying on the ordering of EditTool.values().
+        Map<EditTool, Button> toolButtonMap = new EnumMap<>(EditTool.class);
+        toolButtonMap.put(EditTool.POINTER, pointerToolButton);
+        toolButtonMap.put(EditTool.PENCIL, pencilToolButton);
+        toolButtonMap.put(EditTool.ERASER, eraserToolButton);
+        toolButtonMap.put(EditTool.SCISSORS, scissorsToolButton);
+        toolButtonMap.put(EditTool.GLUE, glueToolButton);
+
+        for (EditTool tool : EditTool.values()) {
+            Button button = toolButtonMap.get(tool);
+            if (button == null) {
+                // No associated UI button for this tool (e.g., a newly added enum constant).
+                continue;
+            }
+
+            if (tool == activeEditTool) {
+                if (!button.getStyleClass().contains("toolbar-button-active")) {
+                    button.getStyleClass().add("toolbar-button-active");
                 }
             } else {
-                toolButtons[i].getStyleClass().remove("toolbar-button-active");
+                button.getStyleClass().remove("toolbar-button-active");
             }
         }
     }
