@@ -21,6 +21,9 @@ class TrackStripControllerTest {
             "Drums,           DRUMS",
             "Percussion,      DRUMS",
             "My Guitar Track, GUITAR",
+            "Bass Guitar,     BASS_GUITAR",
+            "Electric Guitar, ELECTRIC_GUITAR",
+            "Acoustic Guitar, ACOUSTIC_GUITAR",
             "Bass Line,       BASS_GUITAR",
             "Violin I,        VIOLIN",
             "Strings,         VIOLIN",
@@ -86,5 +89,18 @@ class TrackStripControllerTest {
     void shouldMatchFirstKeywordWhenMultiplePresent() {
         // "drum" comes before "guitar" in the check order
         assertThat(TrackStripController.midiInstrumentIcon("Drum Guitar")).isEqualTo(DawIcon.DRUMS);
+    }
+
+    @Test
+    void shouldPreferCompoundGuitarNamesOverGenericGuitar() {
+        assertThat(TrackStripController.midiInstrumentIcon("Bass Guitar"))
+                .isEqualTo(DawIcon.BASS_GUITAR);
+        assertThat(TrackStripController.midiInstrumentIcon("Electric Guitar"))
+                .isEqualTo(DawIcon.ELECTRIC_GUITAR);
+        assertThat(TrackStripController.midiInstrumentIcon("Acoustic Guitar"))
+                .isEqualTo(DawIcon.ACOUSTIC_GUITAR);
+        // Generic "guitar" without qualifier still returns GUITAR
+        assertThat(TrackStripController.midiInstrumentIcon("Guitar Solo"))
+                .isEqualTo(DawIcon.GUITAR);
     }
 }

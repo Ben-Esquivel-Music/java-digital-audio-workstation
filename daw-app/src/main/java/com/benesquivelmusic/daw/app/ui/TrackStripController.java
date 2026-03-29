@@ -334,6 +334,7 @@ final class TrackStripController {
         removeBtn.setTooltip(new Tooltip("Remove Track"));
         removeBtn.setOnAction(_ -> {
             int uiIndex = trackListPanel.getChildren().indexOf(trackItem);
+            int projectIndex = project.getTracks().indexOf(track);
             undoManager.execute(new UndoableAction() {
                 @Override public String description() { return "Remove Track: " + track.getName(); }
                 @Override public void execute() {
@@ -344,6 +345,12 @@ final class TrackStripController {
                 }
                 @Override public void undo() {
                     project.addTrack(track);
+                    // Restore original position in the project track list
+                    int currentIndex = project.getTracks().size() - 1;
+                    if (projectIndex >= 0 && projectIndex < project.getTracks().size()
+                            && currentIndex != projectIndex) {
+                        project.moveTrack(currentIndex, projectIndex);
+                    }
                     if (uiIndex >= 0 && uiIndex < trackListPanel.getChildren().size()) {
                         trackListPanel.getChildren().add(uiIndex, trackItem);
                     } else {
@@ -354,6 +361,7 @@ final class TrackStripController {
                 }
             });
             host.updateUndoRedoState();
+            host.markProjectDirty();
             statusBarLabel.setText("Removed track: " + track.getName());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.CUT, 12));
             notificationBar.showWithUndo(NotificationLevel.SUCCESS,
@@ -398,6 +406,9 @@ final class TrackStripController {
     static DawIcon midiInstrumentIcon(String trackName) {
         String lower = trackName.toLowerCase();
         if (lower.contains("drum") || lower.contains("perc")) return DawIcon.DRUMS;
+        if (lower.contains("bass guitar"))     return DawIcon.BASS_GUITAR;
+        if (lower.contains("electric guitar")) return DawIcon.ELECTRIC_GUITAR;
+        if (lower.contains("acoustic guitar")) return DawIcon.ACOUSTIC_GUITAR;
         if (lower.contains("guitar"))    return DawIcon.GUITAR;
         if (lower.contains("bass"))      return DawIcon.BASS_GUITAR;
         if (lower.contains("violin") || lower.contains("string")) return DawIcon.VIOLIN;
@@ -446,6 +457,14 @@ final class TrackStripController {
                 @Override public void execute() {
                     copy = project.duplicateTrack(track);
                     copyItem = addTrackToUI(copy);
+                    // duplicateTrack inserts at index+1 in the model; sync UI order
+                    int modelIndex = project.getTracks().indexOf(copy);
+                    // trackListPanel child 0 is the "TRACKS" header, so offset by 1
+                    int targetUiIndex = modelIndex + 1;
+                    if (targetUiIndex >= 0 && targetUiIndex < trackListPanel.getChildren().size()) {
+                        trackListPanel.getChildren().remove(copyItem);
+                        trackListPanel.getChildren().add(targetUiIndex, copyItem);
+                    }
                     host.updateArrangementPlaceholder();
                     mixerView.refresh();
                 }
@@ -1046,6 +1065,7 @@ final class TrackStripController {
                     }
                 });
                 host.updateUndoRedoState();
+                host.markProjectDirty();
                 statusBarLabel.setText("Renamed track: " + oldName + " → " + newName);
                 statusBarLabel.setGraphic(IconNode.of(DawIcon.BOOKMARK, 12));
             }
