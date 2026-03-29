@@ -29,12 +29,13 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Manages transport playback actions, time-ticker display, and recording
- * pipeline lifecycle.
+ * Manages transport playback actions and recording pipeline lifecycle.
  *
  * <p>Extracted from {@link MainController} to isolate transport behavior
- * into a dedicated, independently testable class. All dependencies are
- * received via constructor injection.</p>
+ * into a dedicated, independently testable class. Time-ticker animation
+ * is delegated to {@link AnimationController} via the {@link Host}
+ * callback interface. All dependencies are received via constructor
+ * injection.</p>
  */
 final class TransportController {
 
