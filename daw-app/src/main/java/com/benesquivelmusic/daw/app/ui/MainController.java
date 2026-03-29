@@ -237,6 +237,8 @@ public final class MainController {
     // ── Arrangement canvas ──────────────────────────────────────────────────
     /** Renders track lanes and clip rectangles in the arrangement view. */
     private ArrangementCanvas arrangementCanvas;
+    /** Translates mouse events on the arrangement canvas into clip operations. */
+    private ClipInteractionController clipInteractionController;
 
     /** Reference kept for the idle demo animation. */
     private SpectrumDisplay spectrumDisplay;
@@ -298,6 +300,11 @@ public final class MainController {
         viewNavigationController.initializeViewNavigation();
         createTrackStripController();
         createArrangementCanvas();
+        viewNavigationController.setOnEditToolChanged(() -> {
+            if (clipInteractionController != null) {
+                clipInteractionController.updateCursor();
+            }
+        });
         viewNavigationController.initializeEditTools();
         viewNavigationController.initializeSnapControls();
         viewNavigationController.initializeZoomControls();
@@ -451,6 +458,31 @@ public final class MainController {
         arrangementCanvas.prefWidthProperty().bind(arrangementContentPane.widthProperty());
         arrangementCanvas.prefHeightProperty().bind(arrangementContentPane.heightProperty());
         refreshArrangementCanvas();
+
+        clipInteractionController = new ClipInteractionController(arrangementCanvas,
+                new ClipInteractionController.Host() {
+                    @Override public java.util.List<com.benesquivelmusic.daw.core.track.Track> tracks() {
+                        return project.getTracks();
+                    }
+                    @Override public EditTool activeTool() {
+                        return viewNavigationController.getActiveEditTool();
+                    }
+                    @Override public UndoManager undoManager() { return undoManager; }
+                    @Override public double pixelsPerBeat() {
+                        return arrangementCanvas.getPixelsPerBeat();
+                    }
+                    @Override public double scrollXBeats() {
+                        return arrangementCanvas.getScrollXBeats();
+                    }
+                    @Override public double scrollYPixels() {
+                        return arrangementCanvas.getScrollYPixels();
+                    }
+                    @Override public double trackHeight() {
+                        return arrangementCanvas.getTrackHeight();
+                    }
+                    @Override public void refreshCanvas() { refreshArrangementCanvas(); }
+                });
+        clipInteractionController.install();
     }
 
     /**
