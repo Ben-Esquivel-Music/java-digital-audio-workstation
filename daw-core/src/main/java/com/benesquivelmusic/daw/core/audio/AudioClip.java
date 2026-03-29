@@ -379,6 +379,7 @@ public final class AudioClip implements TimelineRegion {
         second.setTimeStretchRatio(timeStretchRatio);
         second.setPitchShiftSemitones(pitchShiftSemitones);
         second.setStretchQuality(stretchQuality);
+        second.setAudioData(audioData);
 
         // Truncate this clip
         this.durationBeats = splitBeat - startBeat;

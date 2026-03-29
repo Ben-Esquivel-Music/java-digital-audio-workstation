@@ -51,6 +51,14 @@ public final class GlueClipsAction implements UndoableAction {
                     "clips must be adjacent: first ends at " + first.getEndBeat()
                             + " but second starts at " + second.getStartBeat());
         }
+        if (!Objects.equals(first.getSourceFilePath(), second.getSourceFilePath())) {
+            throw new IllegalArgumentException(
+                    "clips must share the same source file path to be glued");
+        }
+        if (first.getAudioData() != second.getAudioData()) {
+            throw new IllegalArgumentException(
+                    "clips must share the same audio data buffer to be glued");
+        }
     }
 
     @Override

@@ -24,7 +24,7 @@ class GlueClipsActionTest {
     @Test
     void shouldGlueAdjacentClipsIntoOne() {
         AudioClip first = new AudioClip("Part A", 0.0, 4.0, "/audio/a.wav");
-        AudioClip second = new AudioClip("Part B", 4.0, 4.0, "/audio/b.wav");
+        AudioClip second = new AudioClip("Part B", 4.0, 4.0, "/audio/a.wav");
         track.addClip(first);
         track.addClip(second);
 
@@ -144,11 +144,35 @@ class GlueClipsActionTest {
     }
 
     @Test
+    void shouldRejectDifferingSourceFilePaths() {
+        AudioClip first = new AudioClip("A", 0.0, 4.0, "/audio/a.wav");
+        AudioClip second = new AudioClip("B", 4.0, 4.0, "/audio/b.wav");
+
+        assertThatThrownBy(() -> new GlueClipsAction(track, first, second))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("source file path");
+    }
+
+    @Test
+    void shouldRejectDifferingAudioDataBuffers() {
+        float[][] bufferA = {{0.1f, 0.2f}};
+        float[][] bufferB = {{0.3f, 0.4f}};
+        AudioClip first = new AudioClip("A", 0.0, 4.0, null);
+        first.setAudioData(bufferA);
+        AudioClip second = new AudioClip("B", 4.0, 4.0, null);
+        second.setAudioData(bufferB);
+
+        assertThatThrownBy(() -> new GlueClipsAction(track, first, second))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("audio data");
+    }
+
+    @Test
     void shouldPreserveSourceOffsetAndGain() {
         AudioClip first = new AudioClip("A", 0.0, 4.0, "/audio/a.wav");
         first.setSourceOffsetBeats(2.0);
         first.setGainDb(-3.0);
-        AudioClip second = new AudioClip("B", 4.0, 4.0, null);
+        AudioClip second = new AudioClip("B", 4.0, 4.0, "/audio/a.wav");
         track.addClip(first);
         track.addClip(second);
 

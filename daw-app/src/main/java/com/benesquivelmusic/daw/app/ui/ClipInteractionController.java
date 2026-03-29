@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.AddClipAction;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.audio.CrossTrackMoveAction;
 import com.benesquivelmusic.daw.core.audio.GlueClipsAction;
 import com.benesquivelmusic.daw.core.audio.MoveClipAction;
 import com.benesquivelmusic.daw.core.audio.RemoveClipAction;
@@ -96,7 +97,7 @@ final class ClipInteractionController {
      */
     int trackIndexAt(double y) {
         double adjustedY = y + host.scrollYPixels();
-        int index = (int) (adjustedY / host.trackHeight());
+        int index = (int) Math.floor(adjustedY / host.trackHeight());
         if (index < 0 || index >= host.tracks().size()) {
             return -1;
         }
@@ -254,48 +255,6 @@ final class ClipInteractionController {
                         + "' and '" + right.getName() + "'");
                 return;
             }
-        }
-    }
-
-    // ── Cross-track move action ──────────────────────────────────────────────
-
-    /**
-     * An undoable action that moves a clip from one track to another.
-     */
-    static final class CrossTrackMoveAction implements com.benesquivelmusic.daw.core.undo.UndoableAction {
-
-        private final Track sourceTrack;
-        private final Track targetTrack;
-        private final AudioClip clip;
-        private final double newStartBeat;
-        private double previousStartBeat;
-
-        CrossTrackMoveAction(Track sourceTrack, Track targetTrack,
-                             AudioClip clip, double newStartBeat) {
-            this.sourceTrack = sourceTrack;
-            this.targetTrack = targetTrack;
-            this.clip = clip;
-            this.newStartBeat = newStartBeat;
-        }
-
-        @Override
-        public String description() {
-            return "Move Clip to Track";
-        }
-
-        @Override
-        public void execute() {
-            previousStartBeat = clip.getStartBeat();
-            sourceTrack.removeClip(clip);
-            clip.setStartBeat(newStartBeat);
-            targetTrack.addClip(clip);
-        }
-
-        @Override
-        public void undo() {
-            targetTrack.removeClip(clip);
-            clip.setStartBeat(previousStartBeat);
-            sourceTrack.addClip(clip);
         }
     }
 }

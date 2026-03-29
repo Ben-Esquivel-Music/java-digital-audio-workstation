@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.audio.CrossTrackMoveAction;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
@@ -396,8 +397,8 @@ class ClipInteractionControllerTest {
         AudioClip clip = new AudioClip("Vocal", 2.0, 4.0, null);
         source.addClip(clip);
 
-        ClipInteractionController.CrossTrackMoveAction action =
-                new ClipInteractionController.CrossTrackMoveAction(source, target, clip, 8.0);
+        CrossTrackMoveAction action =
+                new CrossTrackMoveAction(source, target, clip, 8.0);
         undoManager.execute(action);
 
         assertThat(source.getClips()).isEmpty();
@@ -417,8 +418,8 @@ class ClipInteractionControllerTest {
         Track target = new Track("Track 2", TrackType.AUDIO);
         AudioClip clip = new AudioClip("Vocal", 2.0, 4.0, null);
 
-        ClipInteractionController.CrossTrackMoveAction action =
-                new ClipInteractionController.CrossTrackMoveAction(source, target, clip, 8.0);
+        CrossTrackMoveAction action =
+                new CrossTrackMoveAction(source, target, clip, 8.0);
 
         assertThat(action.description()).isEqualTo("Move Clip to Track");
     }
