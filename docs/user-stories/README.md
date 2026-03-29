@@ -14,17 +14,28 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 007 | [Complete Recording Workflow with Monitoring and Count-In](007-recording-workflow.md) | 🔴 Critical | Recording |
 | 016 | [Metronome with Configurable Sound and Count-In](016-metronome.md) | 🔴 Critical | Transport |
 | 019 | [Project Save, Load, and Auto-Save Reliability](019-project-save-load-autosave.md) | 🔴 Critical | Persistence |
+| 057 | [Connect Audio Engine Playback Pipeline to Hardware Output](057-audio-engine-hardware-playback-loop.md) | 🔴 Critical | Audio Engine |
+| 060 | [Complete Recording Pipeline with Audio Capture and Clip Creation](060-recording-audio-capture-integration.md) | 🔴 Critical | Recording |
+| 063 | [Complete Project Serialization Including Clips, Mixer, and Automation](063-project-serialization-full-state.md) | 🔴 Critical | Persistence |
 
 ## Arrangement View & Editing
 
 | # | Story | Priority | Area |
 |---|-------|----------|------|
 | 004 | [Timeline Ruler with Bar/Beat Grid and Click-to-Seek Playhead](004-timeline-ruler-and-playhead.md) | 🔴 Critical | Arrangement |
+| 052 | [Arrangement View Track Lanes with Clip Rendering](052-arrangement-track-lanes-clip-rendering.md) | 🔴 Critical | Arrangement |
+| 055 | [Playhead Visual Rendering and Click-to-Seek in Arrangement View](055-playhead-rendering-and-click-to-seek.md) | 🔴 Critical | Arrangement |
 | 002 | [Audio Clip Splitting, Trimming, and Fade Handles](002-clip-splitting-and-trimming.md) | 🟠 High | Editing |
 | 038 | [Clip Clipboard Operations (Copy, Cut, Paste, Duplicate)](038-clip-clipboard-operations.md) | 🟠 High | Editing |
 | 001 | [Track Drag-and-Drop Reordering](001-track-drag-and-drop-reordering.md) | 🟠 High | Arrangement |
 | 008 | [Audio File Import via Drag-and-Drop and File Menu](008-audio-file-import.md) | 🟠 High | File I/O |
 | 003 | [Per-Track Automation Lanes with Envelope Editing](003-automation-lanes.md) | 🟠 High | Automation |
+| 053 | [Wire Edit Tools to Clip Interactions in Arrangement View](053-edit-tool-clip-interaction.md) | 🟠 High | Editing |
+| 054 | [Wire Track Drag-and-Drop Reordering in Track List Panel](054-track-drag-and-drop-ui-wiring.md) | 🟠 High | Arrangement |
+| 058 | [Interactive Clip Edge Trim Handles in Arrangement View](058-clip-edge-trim-handles.md) | 🟠 High | Editing |
+| 059 | [Automation Lane UI Rendering and Breakpoint Editing](059-automation-lane-ui-rendering.md) | 🟠 High | Automation |
+| 061 | [Interactive Clip Fade-In and Fade-Out Handles in Arrangement View](061-clip-fade-handles.md) | 🟠 High | Editing |
+| 064 | [Audio File Import with Clip Placement in Arrangement View](064-audio-file-import-to-arrangement.md) | 🟠 High | File I/O |
 | 031 | [Clip Crossfade Editing Between Overlapping Clips](031-clip-crossfades.md) | 🟡 Medium | Editing |
 | 032 | [Markers and Locators for Session Navigation](032-markers-and-locators.md) | 🟡 Medium | Navigation |
 | 021 | [Waveform Zoom and Scroll with Minimap Navigation](021-waveform-zoom-and-minimap.md) | 🟡 Medium | Navigation |
@@ -37,6 +48,8 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 009 | [Per-Channel Insert Effects and EQ in Mixer View](009-mixer-channel-eq-and-inserts.md) | 🟠 High | Mixer |
 | 005 | [Mixer Send/Return Bus Routing](005-mixer-send-return-routing.md) | 🟠 High | Mixer |
 | 030 | [Plugin Parameter UI with Knobs, Sliders, and Preset Management](030-plugin-parameter-ui.md) | 🟠 High | Plugins |
+| 062 | [Wire Mixer Channel Insert Effects Slots to DSP Processors](062-mixer-insert-effects-ui-wiring.md) | 🟠 High | Mixer |
+| 065 | [Wire Mixer Send/Return Bus Routing in Mixer View](065-mixer-send-return-ui-wiring.md) | 🟠 High | Mixer |
 | 034 | [CLAP Plugin Hosting Integration in Mixer](034-clap-plugin-hosting.md) | 🟡 Medium | Plugins |
 
 ## MIDI
@@ -88,6 +101,7 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 010 | [Comprehensive Keyboard Shortcuts and Customizable Key Bindings](010-keyboard-shortcuts.md) | 🟠 High | Usability |
 | 022 | [Track Color Coding and Custom Naming](022-track-color-and-naming.md) | 🟠 High | Usability |
 | 024 | [Undo/Redo UI Integration with History Panel](024-undo-redo-history-panel.md) | 🟠 High | Usability |
+| 056 | [Metronome UI Toggle and Configuration in Transport Bar](056-metronome-ui-transport-integration.md) | 🟠 High | Transport |
 | 033 | [Dark Theme Polish and UI Consistency Pass](033-dark-theme-polish.md) | 🟡 Medium | Design |
 | 027 | [Browser Panel Sample Preview and Waveform Thumbnails](027-browser-sample-preview.md) | 🟡 Medium | Browser |
 | 044 | [Notification System with Contextual Feedback](044-notification-system.md) | 🟡 Medium | Usability |
