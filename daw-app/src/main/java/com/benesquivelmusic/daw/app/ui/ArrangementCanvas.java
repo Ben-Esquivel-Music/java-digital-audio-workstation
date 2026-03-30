@@ -66,6 +66,7 @@ public final class ArrangementCanvas extends Pane {
     private double scrollYPixels;
     private double trackHeight = TrackHeightZoom.DEFAULT_TRACK_HEIGHT;
     private double playheadBeat = -1.0;
+    private boolean autoScroll = true;
 
     /**
      * Creates an empty arrangement canvas.
@@ -143,8 +144,24 @@ public final class ArrangementCanvas extends Pane {
      * @param beat the playhead position, or a negative value to hide it
      */
     public void setPlayheadBeat(double beat) {
+        if (Double.compare(this.playheadBeat, beat) == 0) {
+            return;
+        }
         this.playheadBeat = beat;
+        if (autoScroll && beat >= 0) {
+            ensurePlayheadVisible();
+        }
         redraw();
+    }
+
+    /**
+     * Enables or disables automatic horizontal scrolling to keep the
+     * playhead visible during playback.
+     *
+     * @param autoScroll {@code true} to enable auto-scroll
+     */
+    public void setAutoScroll(boolean autoScroll) {
+        this.autoScroll = autoScroll;
     }
 
     /**
@@ -170,6 +187,10 @@ public final class ArrangementCanvas extends Pane {
 
     double getTrackHeight() {
         return trackHeight;
+    }
+
+    double getPlayheadBeat() {
+        return playheadBeat;
     }
 
     // ── Rendering ──────────────────────────────────────────────────────────
@@ -499,6 +520,22 @@ public final class ArrangementCanvas extends Pane {
             return Color.web(hex);
         } catch (IllegalArgumentException e) {
             return Color.web("#3498DB");
+        }
+    }
+
+    /**
+     * Auto-scrolls the horizontal offset to keep the playhead in view.
+     * Uses the same approach as {@link TimelineRuler#ensurePlayheadVisible()}.
+     */
+    private void ensurePlayheadVisible() {
+        double viewWidthBeats = canvas.getWidth() / pixelsPerBeat;
+        if (viewWidthBeats <= 0) {
+            return;
+        }
+        if (playheadBeat < scrollXBeats) {
+            scrollXBeats = playheadBeat;
+        } else if (playheadBeat > scrollXBeats + viewWidthBeats * 0.9) {
+            scrollXBeats = playheadBeat - viewWidthBeats * 0.1;
         }
     }
 }

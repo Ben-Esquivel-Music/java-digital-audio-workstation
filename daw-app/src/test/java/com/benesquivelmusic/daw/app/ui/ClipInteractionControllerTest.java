@@ -63,6 +63,8 @@ class ClipInteractionControllerTest {
     private double trackHeight;
     private int refreshCount;
 
+    private double seekedPosition;
+
     @BeforeEach
     void setUp() {
         undoManager = new UndoManager();
@@ -73,6 +75,7 @@ class ClipInteractionControllerTest {
         scrollYPixels = 0.0;
         trackHeight = 80.0;
         refreshCount = 0;
+        seekedPosition = -1.0;
     }
 
     private ClipInteractionController.Host createHost() {
@@ -85,6 +88,7 @@ class ClipInteractionControllerTest {
             @Override public double scrollYPixels() { return scrollYPixels; }
             @Override public double trackHeight() { return trackHeight; }
             @Override public void refreshCanvas() { refreshCount++; }
+            @Override public void seekToPosition(double beat) { seekedPosition = beat; }
         };
     }
 
@@ -429,5 +433,59 @@ class ClipInteractionControllerTest {
     @Test
     void defaultNewClipDurationShouldBeFourBeats() {
         assertThat(ClipInteractionController.DEFAULT_NEW_CLIP_DURATION).isEqualTo(4.0);
+    }
+
+    // ── Pointer click-to-seek on empty space ─────────────────────────────────
+
+    @Test
+    void pointerShouldSeekWhenClickingEmptySpace() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Click at x=160 (beat 4.0 at 40px/beat), y=40 (track 0, no clips)
+                canvas.fireEvent(mousePressed(160.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(seekedPosition).isEqualTo(4.0);
+    }
+
+    @Test
+    void pointerShouldSeekWhenClickingBelowAllTracks() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Click below all tracks (y=200, track height 80 with 1 track)
+                canvas.fireEvent(mousePressed(200.0, 200.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(seekedPosition).isEqualTo(5.0);
     }
 }

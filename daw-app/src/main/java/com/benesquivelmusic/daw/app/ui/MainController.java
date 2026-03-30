@@ -240,6 +240,8 @@ public final class MainController {
     private ArrangementCanvas arrangementCanvas;
     /** Translates mouse events on the arrangement canvas into clip operations. */
     private ClipInteractionController clipInteractionController;
+    /** Timeline ruler with bar numbers and click-to-seek playhead. */
+    private TimelineRuler timelineRuler;
 
     /** Reference kept for the idle demo animation. */
     private SpectrumDisplay spectrumDisplay;
@@ -455,8 +457,9 @@ public final class MainController {
     }
 
     /**
-     * Creates the {@link ArrangementCanvas} and adds it to the arrangement
-     * content pane behind the placeholder label.
+     * Creates the {@link ArrangementCanvas} and {@link TimelineRuler}, adds
+     * them to the arrangement content pane, and wires click-to-seek and
+     * playhead-update callbacks.
      */
     private void createArrangementCanvas() {
         arrangementCanvas = new ArrangementCanvas();
@@ -464,6 +467,22 @@ public final class MainController {
         arrangementCanvas.prefWidthProperty().bind(arrangementContentPane.widthProperty());
         arrangementCanvas.prefHeightProperty().bind(arrangementContentPane.heightProperty());
         refreshArrangementCanvas();
+
+        // Create timeline ruler and insert it into the arrangement VBox above the canvas
+        timelineRuler = new TimelineRuler(project.getTransport());
+        javafx.scene.Parent contentParent = arrangementContentPane.getParent();
+        if (contentParent instanceof javafx.scene.layout.VBox vbox) {
+            int idx = vbox.getChildren().indexOf(arrangementContentPane);
+            if (idx >= 0) {
+                vbox.getChildren().add(idx, timelineRuler);
+            }
+        }
+
+        // Wire ruler seek: clicking on the ruler repositions the transport playhead
+        timelineRuler.addSeekListener(this::seekToPosition);
+
+        // Register per-frame playhead update callback on the animation controller
+        animationController.setPlayheadUpdateCallback(this::updatePlayheadFromTransport);
 
         clipInteractionController = new ClipInteractionController(arrangementCanvas,
                 new ClipInteractionController.Host() {
@@ -487,6 +506,9 @@ public final class MainController {
                         return arrangementCanvas.getTrackHeight();
                     }
                     @Override public void refreshCanvas() { refreshArrangementCanvas(); }
+                    @Override public void seekToPosition(double beat) {
+                        MainController.this.seekToPosition(beat);
+                    }
                 });
         clipInteractionController.install();
     }
@@ -1550,6 +1572,45 @@ public final class MainController {
             return;
         }
         arrangementCanvas.setTracks(project.getTracks());
+    }
+
+    /**
+     * Seeks the transport to the given beat position, applying snap-to-grid
+     * if snap is enabled, and updates the playhead in the ruler and canvas.
+     *
+     * @param beat the raw beat position to seek to
+     */
+    private void seekToPosition(double beat) {
+        double position = Math.max(0.0, beat);
+        boolean snap = viewNavigationController != null
+                ? viewNavigationController.isSnapEnabled() : snapEnabled;
+        if (snap) {
+            GridResolution res = viewNavigationController != null
+                    ? viewNavigationController.getGridResolution() : gridResolution;
+            position = SnapQuantizer.quantize(position, res,
+                    project.getTransport().getTimeSignatureNumerator());
+        }
+        project.getTransport().setPositionInBeats(position);
+        if (timelineRuler != null) {
+            timelineRuler.setPlayheadPositionBeats(position);
+        }
+        if (arrangementCanvas != null) {
+            arrangementCanvas.setPlayheadBeat(position);
+        }
+    }
+
+    /**
+     * Called each animation frame by the {@link AnimationController} to sync
+     * the playhead in the ruler and canvas with the transport's current beat.
+     */
+    private void updatePlayheadFromTransport() {
+        double beat = project.getTransport().getPositionInBeats();
+        if (timelineRuler != null) {
+            timelineRuler.setPlayheadPositionBeats(beat);
+        }
+        if (arrangementCanvas != null) {
+            arrangementCanvas.setPlayheadBeat(beat);
+        }
     }
 
     private void updateUndoRedoState() {
