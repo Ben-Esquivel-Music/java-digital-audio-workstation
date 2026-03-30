@@ -86,6 +86,9 @@ final class ViewNavigationController {
     /** The currently active edit tool. */
     private EditTool activeEditTool;
 
+    /** Optional callback invoked after the active tool changes. */
+    private Runnable onEditToolChanged;
+
     /** Whether snap-to-grid is enabled. */
     private boolean snapEnabled;
     /** The currently active grid resolution. */
@@ -300,10 +303,22 @@ final class ViewNavigationController {
         if (editorView != null) {
             editorView.setActiveEditTool(tool);
         }
+        if (onEditToolChanged != null) {
+            onEditToolChanged.run();
+        }
         statusBarLabel.setText("Selected " + tool.name().charAt(0)
                 + tool.name().substring(1).toLowerCase() + " tool");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
         LOG.fine(() -> "Selected edit tool: " + tool);
+    }
+
+    /**
+     * Registers a callback invoked whenever the active edit tool changes.
+     *
+     * @param callback the callback, or {@code null} to clear
+     */
+    void setOnEditToolChanged(Runnable callback) {
+        this.onEditToolChanged = callback;
     }
 
     /**
