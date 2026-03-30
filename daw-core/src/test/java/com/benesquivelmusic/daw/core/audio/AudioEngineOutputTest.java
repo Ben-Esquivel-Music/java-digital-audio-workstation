@@ -145,21 +145,76 @@ class AudioEngineOutputTest {
                 .isInstanceOf(AudioBackendException.class);
     }
 
+    @Test
+    void startAudioOutputShouldCleanUpOnStartStreamFailure() {
+        backend.failOnStartStream = true;
+
+        assertThatThrownBy(() -> engine.startAudioOutput())
+                .isInstanceOf(AudioBackendException.class);
+
+        // Stream should have been closed after startStream failure
+        assertThat(backend.streamClosed).isTrue();
+        assertThat(engine.isStreamOpen()).isFalse();
+
+        // A subsequent start should work (no stale streamOpen flag)
+        backend.failOnStartStream = false;
+        backend.streamClosed = false;
+        engine.startAudioOutput();
+
+        assertThat(engine.isStreamOpen()).isTrue();
+        assertThat(backend.streamStarted).isTrue();
+    }
+
+    @Test
+    void startAudioOutputWhenAlreadyRunningShouldBeNoOp() {
+        engine.startAudioOutput();
+
+        // Reset tracking to detect redundant calls
+        backend.initialized = false;
+        backend.streamOpened = false;
+        backend.streamStarted = false;
+
+        engine.startAudioOutput();
+
+        // No backend methods should have been called again
+        assertThat(backend.initialized).isFalse();
+        assertThat(backend.streamOpened).isFalse();
+        assertThat(backend.streamStarted).isFalse();
+        assertThat(engine.isStreamOpen()).isTrue();
+    }
+
+    @Test
+    void initializeShouldBeCalledOnlyOnceAcrossMultipleStartStopCycles() {
+        engine.startAudioOutput();
+        assertThat(backend.initializeCount).isEqualTo(1);
+
+        engine.stopAudioOutput();
+        engine.startAudioOutput();
+
+        // initialize() should not be called again for the same backend
+        assertThat(backend.initializeCount).isEqualTo(1);
+    }
+
     // ── Stub backend ─────────────────────────────────────────────────────────
 
     private static final class StubAudioBackend implements NativeAudioBackend {
 
         boolean initialized;
+        int initializeCount;
         boolean streamOpened;
         boolean streamStarted;
         boolean streamStopped;
         boolean streamClosed;
         boolean failOnOpenStream;
+        boolean failOnStartStream;
         AudioStreamCallback registeredCallback;
         AudioStreamConfig lastConfig;
 
         @Override
-        public void initialize() { initialized = true; }
+        public void initialize() {
+            initialized = true;
+            initializeCount++;
+        }
 
         @Override
         public List<AudioDeviceInfo> getAvailableDevices() { return List.of(); }
@@ -181,7 +236,12 @@ class AudioEngineOutputTest {
         }
 
         @Override
-        public void startStream() { streamStarted = true; }
+        public void startStream() {
+            if (failOnStartStream) {
+                throw new AudioBackendException("Simulated start failure");
+            }
+            streamStarted = true;
+        }
 
         @Override
         public void stopStream() { streamStopped = true; }

@@ -57,6 +57,7 @@ public final class AudioEngine {
     // Audio output stream state
     private volatile boolean streamOpen;
     private volatile boolean streamPaused;
+    private volatile boolean backendInitialized;
 
     // Pre-allocated mix buffer used by processBlock
     private float[][] mixBuffer;
@@ -175,6 +176,7 @@ public final class AudioEngine {
             throw new IllegalStateException("Cannot change audio backend while engine is running");
         }
         this.audioBackend = backend;
+        this.backendInitialized = false;
     }
 
     /**
@@ -207,6 +209,10 @@ public final class AudioEngine {
             return;
         }
 
+        if (streamOpen && !streamPaused) {
+            return; // already running
+        }
+
         // Ensure the engine is running (pre-allocates buffers)
         start();
 
@@ -216,7 +222,10 @@ public final class AudioEngine {
             return;
         }
 
-        backend.initialize();
+        if (!backendInitialized) {
+            backend.initialize();
+            backendInitialized = true;
+        }
 
         AudioStreamConfig config = new AudioStreamConfig(
                 -1,                  // no input device
@@ -228,9 +237,13 @@ public final class AudioEngine {
         );
 
         backend.openStream(config, this::processBlock);
+        try {
+            backend.startStream();
+        } catch (AudioBackendException e) {
+            backend.closeStream();
+            throw e;
+        }
         streamOpen = true;
-
-        backend.startStream();
         streamPaused = false;
 
         LOG.info("Audio output started via " + backend.getBackendName());
