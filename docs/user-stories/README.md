@@ -93,6 +93,7 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 018 | [Binaural Monitoring with HRTF Profile Selection](018-binaural-monitoring.md) | 🟡 Medium | Monitoring |
 | 039 | [Fold-Down Monitoring Preview (Immersive to Stereo to Mono)](039-folddown-monitoring.md) | 🟡 Medium | Monitoring |
 | 045 | [Room Acoustic Simulation Parameter Controls in Telemetry View](045-room-simulation-controls.md) | 🟡 Medium | Spatial |
+| 066 | [Sound Wave Telemetry Visualization Enhancements](066-telemetry-visualization-enhancements.md) | 🟡 Medium | Telemetry |
 
 ## UI / UX & Usability
 
