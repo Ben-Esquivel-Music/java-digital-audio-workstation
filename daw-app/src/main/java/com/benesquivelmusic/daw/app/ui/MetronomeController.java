@@ -18,6 +18,7 @@ import javafx.scene.control.ToggleGroup;
 import javafx.scene.input.MouseButton;
 import javafx.scene.layout.HBox;
 
+import java.util.Locale;
 import java.util.Objects;
 import java.util.logging.Logger;
 import java.util.prefs.Preferences;
@@ -213,7 +214,7 @@ final class MetronomeController {
     }
 
     private static String formatEnumName(String name) {
-        String lower = name.toLowerCase().replace('_', ' ');
+        String lower = name.toLowerCase(Locale.ROOT).replace('_', ' ');
         return Character.toUpperCase(lower.charAt(0)) + lower.substring(1);
     }
 

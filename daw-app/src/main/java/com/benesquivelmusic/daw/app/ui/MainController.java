@@ -11,6 +11,7 @@ import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioBackendFactory;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
@@ -409,6 +410,11 @@ public final class MainController {
                         return viewNavigationController != null
                                 ? viewNavigationController.getGridResolution() : gridResolution;
                     }
+                    @Override public Metronome metronome() { return metronome; }
+                    @Override public CountInMode countInMode() {
+                        return metronomeController != null
+                                ? metronomeController.getCountInMode() : CountInMode.OFF;
+                    }
                     @Override public void startTimeTicker() { animationController.startTimeTicker(); }
                     @Override public void pauseTimeTicker() { animationController.pauseTimeTicker(); }
                     @Override public void stopTimeTicker() { animationController.stopTimeTicker(); }
@@ -418,7 +424,7 @@ public final class MainController {
     /**
      * Creates the {@link MetronomeController} with the metronome, button, notification
      * bar, and preferences for settings persistence.  Must be called after
-     * {@code initializeNotificationBar()} and {@code createTransportController()}.
+     * {@code initializeNotificationBar()}.
      */
     private void createMetronomeController(Preferences prefs) {
         metronomeController = new MetronomeController(

@@ -235,6 +235,71 @@ class MetronomeControllerTest {
         assertThat(controller.getMetronome()).isSameAs(metronome);
     }
 
+    // ── Toggle behavior ─────────────────────────────────────────────────────
+
+    @Test
+    void toggleShouldDisableEnabledMetronome() {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
+        MetronomeController controller = createController();
+        assertThat(metronome.isEnabled()).isTrue();
+
+        controller.onToggleMetronome();
+
+        assertThat(metronome.isEnabled()).isFalse();
+    }
+
+    @Test
+    void toggleShouldEnableDisabledMetronome() {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
+        metronome.setEnabled(false);
+        MetronomeController controller = createController();
+
+        controller.onToggleMetronome();
+
+        assertThat(metronome.isEnabled()).isTrue();
+    }
+
+    @Test
+    void toggleShouldPersistEnabledState() {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
+        MetronomeController controller = createController();
+        assertThat(metronome.isEnabled()).isTrue();
+
+        controller.onToggleMetronome();
+
+        assertThat(prefs.getBoolean("metronome.enabled", true)).isFalse();
+    }
+
+    @Test
+    void toggleShouldUpdateButtonStyle() {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
+        javafx.scene.control.Button button = new javafx.scene.control.Button();
+        MetronomeController controller = new MetronomeController(
+                metronome, button, new NotificationBar(),
+                new javafx.scene.control.Label(), prefs);
+
+        // Initially enabled — button should have active style
+        assertThat(button.getStyle()).contains("#b388ff");
+
+        controller.onToggleMetronome();
+
+        // Now disabled — style should be cleared
+        assertThat(button.getStyle()).isEmpty();
+    }
+
+    @Test
+    void toggleShouldUpdateStatusBarLabel() {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
+        javafx.scene.control.Label statusBar = new javafx.scene.control.Label();
+        MetronomeController controller = new MetronomeController(
+                metronome, new javafx.scene.control.Button(), new NotificationBar(),
+                statusBar, prefs);
+
+        controller.onToggleMetronome();
+
+        assertThat(statusBar.getText()).isEqualTo("Metronome: OFF");
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     private MetronomeController createController() {
