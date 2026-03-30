@@ -476,4 +476,84 @@ class RecordingPipelineTest {
                 CountInMode.OFF, null, null))
                 .isInstanceOf(NullPointerException.class);
     }
+
+    @Test
+    void shouldAttachAudioDataToRecordedClips() {
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track));
+        pipeline.start();
+
+        // Simulate audio capture with non-zero data
+        float[][] input = new float[2][512];
+        float[][] output = new float[2][512];
+        for (int i = 0; i < 512; i++) {
+            input[0][i] = 0.25f;
+            input[1][i] = -0.25f;
+        }
+        audioEngine.processBlock(input, output, 512);
+
+        List<AudioClip> clips = pipeline.stop();
+
+        assertThat(clips).hasSize(1);
+        AudioClip clip = clips.getFirst();
+        assertThat(clip.getAudioData()).isNotNull();
+        assertThat(clip.getAudioData()).hasNumberOfRows(2);
+        assertThat(clip.getAudioData()[0]).hasSize(512);
+        assertThat(clip.getAudioData()[0][0]).isEqualTo(0.25f);
+        assertThat(clip.getAudioData()[1][0]).isEqualTo(-0.25f);
+    }
+
+    @Test
+    void shouldAccumulateAudioAcrossMultipleProcessBlocks() {
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track));
+        pipeline.start();
+
+        float[][] input = new float[2][512];
+        float[][] output = new float[2][512];
+        for (int i = 0; i < 512; i++) {
+            input[0][i] = 0.5f;
+        }
+        for (int block = 0; block < 5; block++) {
+            audioEngine.processBlock(input, output, 512);
+        }
+
+        List<AudioClip> clips = pipeline.stop();
+
+        assertThat(clips).hasSize(1);
+        AudioClip clip = clips.getFirst();
+        assertThat(clip.getAudioData()).isNotNull();
+        assertThat(clip.getAudioData()[0]).hasSize(512 * 5);
+        // Verify data from first and last blocks
+        assertThat(clip.getAudioData()[0][0]).isEqualTo(0.5f);
+        assertThat(clip.getAudioData()[0][512 * 4]).isEqualTo(0.5f);
+    }
+
+    @Test
+    void shouldAttachAudioDataToMultipleArmedTracks() {
+        Track track1 = new Track("Audio 1", TrackType.AUDIO);
+        track1.setArmed(true);
+        Track track2 = new Track("Audio 2", TrackType.AUDIO);
+        track2.setArmed(true);
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track1, track2));
+        pipeline.start();
+
+        float[][] input = new float[2][512];
+        float[][] output = new float[2][512];
+        input[0][0] = 0.75f;
+        audioEngine.processBlock(input, output, 512);
+
+        List<AudioClip> clips = pipeline.stop();
+
+        assertThat(clips).hasSize(2);
+        for (AudioClip clip : clips) {
+            assertThat(clip.getAudioData()).isNotNull();
+            assertThat(clip.getAudioData()[0][0]).isEqualTo(0.75f);
+        }
+    }
 }

@@ -189,6 +189,13 @@ public final class RecordingPipeline {
                         recordingStartBeat,
                         durationBeats,
                         segmentPath);
+
+                // Attach the captured audio data to the clip for playback
+                float[][] capturedAudio = session.getCapturedAudio();
+                if (capturedAudio != null) {
+                    clip.setAudioData(capturedAudio);
+                }
+
                 track.addClip(clip);
                 recordedClips.put(track, clip);
                 clips.add(clip);
@@ -335,12 +342,8 @@ public final class RecordingPipeline {
             }
         }
 
-        int bytesPerSample = format.bitDepth() / 8;
-        int channels = format.channels();
-        long byteSize = (long) numFrames * channels * bytesPerSample;
-
         for (RecordingSession session : sessions.values()) {
-            session.recordSamples(numFrames, byteSize);
+            session.recordAudioData(inputBuffer, numFrames);
         }
     }
 }

@@ -140,6 +140,29 @@ class AudioEngineTest {
         assertThat(engine.getRecordingCallback()).isNull();
     }
 
+    @Test
+    void shouldStartAudioInputOutputWithoutBackend() {
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+
+        // With no backend, startAudioInputOutput should still start the engine
+        engine.startAudioInputOutput(0);
+
+        assertThat(engine.isRunning()).isTrue();
+    }
+
+    @Test
+    void shouldStartAudioInputOutputAfterOutputIsOpen() {
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+
+        // Start output-only first (no backend, so just starts engine)
+        engine.startAudioOutput();
+        assertThat(engine.isRunning()).isTrue();
+
+        // Starting input/output should not error
+        engine.startAudioInputOutput(0);
+        assertThat(engine.isRunning()).isTrue();
+    }
+
     private static class HalfGainProcessor implements AudioProcessor {
         @Override
         public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {

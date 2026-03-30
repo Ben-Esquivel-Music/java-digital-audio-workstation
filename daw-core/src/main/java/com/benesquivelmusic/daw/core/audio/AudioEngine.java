@@ -270,6 +270,63 @@ public final class AudioEngine {
     }
 
     /**
+     * Starts audio I/O for recording by opening a stream that includes both
+     * input and output channels on the configured {@link NativeAudioBackend}.
+     *
+     * <p>If a stream is already open, it is closed first so that a new
+     * full-duplex stream can be opened with the specified input device.</p>
+     *
+     * <p>If no audio backend is configured, the engine is started without
+     * hardware I/O (recording will still capture data via the recording
+     * callback from {@link #processBlock}).</p>
+     *
+     * @param inputDeviceIndex the index of the input device to open
+     * @throws AudioBackendException if the stream cannot be opened or started
+     */
+    public void startAudioInputOutput(int inputDeviceIndex) {
+        // Close existing stream if open
+        if (streamOpen) {
+            stopAudioOutput();
+        }
+
+        // Ensure the engine is running (pre-allocates buffers)
+        start();
+
+        NativeAudioBackend backend = this.audioBackend;
+        if (backend == null) {
+            LOG.info("No audio backend configured; recording without hardware I/O");
+            return;
+        }
+
+        if (!backendInitialized) {
+            backend.initialize();
+            backendInitialized = true;
+        }
+
+        AudioStreamConfig config = new AudioStreamConfig(
+                inputDeviceIndex,
+                0,                   // default output device
+                format.channels(),   // input channels matching format
+                format.channels(),
+                SampleRate.fromHz((int) format.sampleRate()),
+                BufferSize.fromFrames(format.bufferSize())
+        );
+
+        backend.openStream(config, this::processBlock);
+        try {
+            backend.startStream();
+        } catch (AudioBackendException e) {
+            backend.closeStream();
+            throw e;
+        }
+        streamOpen = true;
+        streamPaused = false;
+
+        LOG.info("Audio input/output started via " + backend.getBackendName()
+                + " (input device: " + inputDeviceIndex + ")");
+    }
+
+    /**
      * Pauses audio output by stopping the stream without closing it,
      * allowing a fast resume via {@link #startAudioOutput()}.
      */
