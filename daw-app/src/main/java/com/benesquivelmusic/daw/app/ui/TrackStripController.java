@@ -31,6 +31,7 @@ import javafx.scene.control.TextField;
 import javafx.scene.control.Tooltip;
 import javafx.scene.control.Button;
 import javafx.scene.input.ClipboardContent;
+import javafx.scene.input.DataFormat;
 import javafx.scene.input.Dragboard;
 import javafx.scene.input.TransferMode;
 import javafx.scene.layout.BorderPane;
@@ -65,6 +66,9 @@ final class TrackStripController {
     static final double TRACK_CONTROL_ICON_SIZE = 14;
     /** Icon size for track-type indicators. */
     static final double TRACK_TYPE_ICON_SIZE = 18;
+    /** Custom data format for track-ID drag-and-drop payloads. */
+    private static final DataFormat TRACK_ID_FORMAT =
+            new DataFormat("application/x-daw-track-id");
 
     /**
      * Callback interface implemented by the host controller to provide
@@ -1128,7 +1132,7 @@ final class TrackStripController {
         Runnable initiateDrag = () -> {
             Dragboard db = trackItem.startDragAndDrop(TransferMode.MOVE);
             ClipboardContent content = new ClipboardContent();
-            content.putString(track.getId());
+            content.put(TRACK_ID_FORMAT, track.getId());
             db.setContent(content);
             db.setDragView(trackItem.snapshot(null, null));
             trackItem.setOpacity(0.4);
@@ -1143,7 +1147,8 @@ final class TrackStripController {
         });
 
         trackItem.setOnDragOver(event -> {
-            if (event.getGestureSource() != trackItem && event.getDragboard().hasString()) {
+            if (event.getGestureSource() != trackItem
+                    && event.getDragboard().hasContent(TRACK_ID_FORMAT)) {
                 event.acceptTransferModes(TransferMode.MOVE);
                 boolean topHalf = event.getY() < trackItem.getHeight() / 2;
                 trackItem.getStyleClass().removeAll("track-drop-above", "track-drop-below");
@@ -1160,8 +1165,8 @@ final class TrackStripController {
         trackItem.setOnDragDropped(event -> {
             Dragboard db = event.getDragboard();
             boolean success = false;
-            if (db.hasString()) {
-                String sourceTrackId = db.getString();
+            if (db.hasContent(TRACK_ID_FORMAT)) {
+                String sourceTrackId = (String) db.getContent(TRACK_ID_FORMAT);
                 Track sourceTrack = findTrackById(sourceTrackId);
                 if (sourceTrack != null && sourceTrack != track) {
                     int fromIndex = project.getTracks().indexOf(sourceTrack);
@@ -1201,7 +1206,11 @@ final class TrackStripController {
         });
 
         trackItem.setOnDragDone(event -> {
-            trackItem.setOpacity(1.0);
+            // Only reset opacity when the gesture was cancelled/unsuccessful;
+            // successful drops let animateDrop() control the fade-in.
+            if (event.getTransferMode() == null) {
+                trackItem.setOpacity(1.0);
+            }
             for (Node child : trackListPanel.getChildren()) {
                 child.getStyleClass().removeAll("track-drop-above", "track-drop-below");
             }
