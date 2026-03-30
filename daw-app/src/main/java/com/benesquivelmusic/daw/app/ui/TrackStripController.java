@@ -30,6 +30,9 @@ import javafx.scene.control.Slider;
 import javafx.scene.control.TextField;
 import javafx.scene.control.Tooltip;
 import javafx.scene.control.Button;
+import javafx.scene.input.ClipboardContent;
+import javafx.scene.input.Dragboard;
+import javafx.scene.input.TransferMode;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -383,6 +386,9 @@ final class TrackStripController {
         // Spacer pushes controls to the right
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
+
+        // ── Drag-and-drop reordering ────────────────────────────────────────
+        attachDragHandlers(track, trackItem);
 
         // ── Right-click context menu with editing actions (Editing category) ─
         ContextMenu contextMenu = buildTrackContextMenu(track, nameLabel, trackItem);
@@ -1081,6 +1087,128 @@ final class TrackStripController {
         });
 
         return menu;
+    }
+
+    // ── Drag-and-drop reordering ────────────────────────────────────────────
+
+    /**
+     * Attaches JavaFX drag-and-drop event handlers to the given track strip
+     * so that users can reorder tracks by dragging within the track list panel.
+     */
+    private void attachDragHandlers(Track track, HBox trackItem) {
+        trackItem.setOnDragDetected(event -> {
+            Dragboard db = trackItem.startDragAndDrop(TransferMode.MOVE);
+            ClipboardContent content = new ClipboardContent();
+            content.putString(track.getId());
+            db.setContent(content);
+            db.setDragView(trackItem.snapshot(null, null));
+            trackItem.setOpacity(0.4);
+            event.consume();
+        });
+
+        trackItem.setOnDragOver(event -> {
+            if (event.getGestureSource() != trackItem && event.getDragboard().hasString()) {
+                event.acceptTransferModes(TransferMode.MOVE);
+                boolean topHalf = event.getY() < trackItem.getHeight() / 2;
+                trackItem.getStyleClass().removeAll("track-drop-above", "track-drop-below");
+                trackItem.getStyleClass().add(topHalf ? "track-drop-above" : "track-drop-below");
+            }
+            event.consume();
+        });
+
+        trackItem.setOnDragExited(event -> {
+            trackItem.getStyleClass().removeAll("track-drop-above", "track-drop-below");
+            event.consume();
+        });
+
+        trackItem.setOnDragDropped(event -> {
+            Dragboard db = event.getDragboard();
+            boolean success = false;
+            if (db.hasString()) {
+                String sourceTrackId = db.getString();
+                Track sourceTrack = findTrackById(sourceTrackId);
+                if (sourceTrack != null && sourceTrack != track) {
+                    int fromIndex = project.getTracks().indexOf(sourceTrack);
+                    int targetModelIndex = project.getTracks().indexOf(track);
+                    boolean topHalf = event.getY() < trackItem.getHeight() / 2;
+
+                    int insertPos = topHalf ? targetModelIndex : targetModelIndex + 1;
+                    int toIndex = fromIndex < insertPos ? insertPos - 1 : insertPos;
+
+                    if (fromIndex != toIndex && fromIndex >= 0 && toIndex >= 0
+                            && toIndex < project.getTracks().size()) {
+                        int finalFrom = fromIndex;
+                        int finalTo = toIndex;
+                        undoManager.execute(new UndoableAction() {
+                            @Override public String description() { return "Move Track"; }
+                            @Override public void execute() {
+                                project.moveTrack(finalFrom, finalTo);
+                                reorderTrackStrip(finalFrom, finalTo);
+                                mixerView.refresh();
+                            }
+                            @Override public void undo() {
+                                project.moveTrack(finalTo, finalFrom);
+                                reorderTrackStrip(finalTo, finalFrom);
+                                mixerView.refresh();
+                            }
+                        });
+                        animateDrop(trackListPanel.getChildren().get(finalTo + 1));
+                        host.updateUndoRedoState();
+                        host.markProjectDirty();
+                        statusBarLabel.setText("Moved track: " + sourceTrack.getName());
+                        statusBarLabel.setGraphic(IconNode.of(DawIcon.MOVE, 12));
+                        success = true;
+                    }
+                }
+            }
+            trackItem.getStyleClass().removeAll("track-drop-above", "track-drop-below");
+            event.setDropCompleted(success);
+            event.consume();
+        });
+
+        trackItem.setOnDragDone(event -> {
+            trackItem.setOpacity(1.0);
+            for (Node child : trackListPanel.getChildren()) {
+                child.getStyleClass().removeAll("track-drop-above", "track-drop-below");
+            }
+            event.consume();
+        });
+    }
+
+    /**
+     * Reorders the track strip nodes in the {@code trackListPanel} to match a
+     * model-level move. Child index 0 is the "TRACKS" header label, so the
+     * model-to-UI offset is 1.
+     */
+    private void reorderTrackStrip(int fromModelIndex, int toModelIndex) {
+        int fromUI = fromModelIndex + 1;
+        int toUI = toModelIndex + 1;
+        Node node = trackListPanel.getChildren().remove(fromUI);
+        trackListPanel.getChildren().add(toUI, node);
+    }
+
+    private Track findTrackById(String trackId) {
+        for (Track t : project.getTracks()) {
+            if (t.getId().equals(trackId)) {
+                return t;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Plays a brief translate/fade animation on a dropped track strip,
+     * consistent with the existing track-strip entry animation style.
+     */
+    private void animateDrop(Node trackItem) {
+        trackItem.setTranslateY(-8);
+        trackItem.setOpacity(0.6);
+        TranslateTransition slide = new TranslateTransition(Duration.millis(200), trackItem);
+        slide.setToY(0.0);
+        slide.setInterpolator(Interpolator.EASE_OUT);
+        FadeTransition fade = new FadeTransition(Duration.millis(200), trackItem);
+        fade.setToValue(1.0);
+        new ParallelTransition(slide, fade).play();
     }
 
     /**
