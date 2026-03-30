@@ -54,6 +54,10 @@
                 <!-- Tempo (icon applied programmatically) -->
                 <Label fx:id="tempoLabel" text="120.0 BPM" styleClass="tempo-label"/>
 
+                <!-- Metronome toggle (icon applied programmatically) -->
+                <Button fx:id="metronomeButton" text="Metronome" onAction="#onToggleMetronome"
+                        styleClass="transport-button, metronome-button"/>
+
                 <Separator orientation="VERTICAL"/>
 
                 <!-- Group 2: Track controls (icons applied programmatically) -->

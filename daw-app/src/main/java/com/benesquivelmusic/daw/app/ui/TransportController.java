@@ -4,6 +4,9 @@ import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
+import com.benesquivelmusic.daw.core.recording.CountInMode;
+import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
+import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -48,6 +51,8 @@ final class TransportController {
     interface Host {
         boolean isSnapEnabled();
         GridResolution gridResolution();
+        Metronome metronome();
+        CountInMode countInMode();
         void startTimeTicker();
         void pauseTimeTicker();
         void stopTimeTicker();
@@ -212,9 +217,11 @@ final class TransportController {
             return;
         }
 
-        // Create and start the recording pipeline
+        // Create and start the recording pipeline with the user-configured count-in
+        CountInMode countIn = host.countInMode();
         recordingPipeline = new RecordingPipeline(
-                audioEngine, project.getTransport(), project.getFormat(), outputDir, armedTracks);
+                audioEngine, project.getTransport(), project.getFormat(), outputDir, armedTracks,
+                countIn, InputMonitoringMode.OFF, null);
         recordingPipeline.start();
 
         // Open audio input stream with the first armed track's input device

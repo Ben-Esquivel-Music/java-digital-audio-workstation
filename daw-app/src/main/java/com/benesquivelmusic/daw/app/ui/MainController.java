@@ -11,6 +11,8 @@ import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioBackendFactory;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.recording.CountInMode;
+import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
@@ -93,6 +95,7 @@ public final class MainController {
     @FXML private Button snapButton;
     @FXML private Button saveButton;
     @FXML private Button pluginsButton;
+    @FXML private Button metronomeButton;
     @FXML private Label statusLabel;
     @FXML private Label tempoLabel;
     @FXML private Label timeDisplay;
@@ -156,6 +159,11 @@ public final class MainController {
     // ── Transport controller ─────────────────────────────────────────────────
     /** Manages transport actions, time ticker, and recording pipeline. */
     private TransportController transportController;
+
+    // ── Metronome controller ─────────────────────────────────────────────────
+    /** Manages metronome toggle, configuration context menu, and persistence. */
+    private MetronomeController metronomeController;
+    private Metronome metronome;
 
     // ── Project lifecycle controller ─────────────────────────────────────────
     /** Manages project open/save/import/export and associated state resets. */
@@ -265,6 +273,7 @@ public final class MainController {
             }
         });
         audioEngine = new AudioEngine(project.getFormat());
+        metronome = new Metronome(project.getFormat().sampleRate(), project.getFormat().channels());
         try {
             audioEngine.setAudioBackend(AudioBackendFactory.createDefault());
         } catch (RuntimeException e) {
@@ -295,6 +304,7 @@ public final class MainController {
         setupTempoEditor();
         initializeNotificationBar();
         createTransportController();
+        createMetronomeController(prefs);
         createProjectLifecycleController();
         createAnimationController();
         animationController.applyButtonPressAnimations();
@@ -354,7 +364,7 @@ public final class MainController {
         toolbarAppearanceController = new ToolbarAppearanceController(
                 new ToolbarAppearanceController.TransportButtons(
                         skipBackButton, playButton, pauseButton, stopButton,
-                        recordButton, skipForwardButton, loopButton),
+                        recordButton, skipForwardButton, loopButton, metronomeButton),
                 new ToolbarAppearanceController.ToolbarButtons(
                         addAudioTrackButton, addMidiTrackButton, undoButton,
                         redoButton, snapButton, saveButton, pluginsButton),
@@ -400,10 +410,26 @@ public final class MainController {
                         return viewNavigationController != null
                                 ? viewNavigationController.getGridResolution() : gridResolution;
                     }
+                    @Override public Metronome metronome() { return metronome; }
+                    @Override public CountInMode countInMode() {
+                        return metronomeController != null
+                                ? metronomeController.getCountInMode() : CountInMode.OFF;
+                    }
                     @Override public void startTimeTicker() { animationController.startTimeTicker(); }
                     @Override public void pauseTimeTicker() { animationController.pauseTimeTicker(); }
                     @Override public void stopTimeTicker() { animationController.stopTimeTicker(); }
                 });
+    }
+
+    /**
+     * Creates the {@link MetronomeController} with the metronome, button, notification
+     * bar, and preferences for settings persistence.  Must be called after
+     * {@code initializeNotificationBar()}.
+     */
+    private void createMetronomeController(Preferences prefs) {
+        metronomeController = new MetronomeController(
+                metronome, metronomeButton, notificationBar,
+                statusBarLabel, prefs.node("metronome"));
     }
 
     /**
@@ -417,7 +443,7 @@ public final class MainController {
                 playButton, recordButton,
                 new Button[]{
                         skipBackButton, playButton, pauseButton, stopButton, recordButton,
-                        skipForwardButton, loopButton,
+                        skipForwardButton, loopButton, metronomeButton,
                         addAudioTrackButton, addMidiTrackButton,
                         undoButton, redoButton, snapButton, saveButton, pluginsButton},
                 () -> project.getTransport().getState());
@@ -539,7 +565,15 @@ public final class MainController {
                     }
                     @Override public void onProjectUIRebuild(MixerView newMixerView) {
                         viewNavigationController.setMixerView(newMixerView);
+                        metronome = new Metronome(
+                                project.getFormat().sampleRate(),
+                                project.getFormat().channels());
                         createTransportController();
+                        Preferences metroPrefs = Preferences.userNodeForPackage(
+                                MainController.class).node("metronome");
+                        metronomeController = new MetronomeController(
+                                metronome, metronomeButton, notificationBar,
+                                statusBarLabel, metroPrefs);
                         transportController.updateStatus();
                         createTrackStripController();
                         updateProjectInfo();
@@ -800,6 +834,7 @@ public final class MainController {
         actionHandlers.put(DawAction.SKIP_TO_START, this::onSkipBack);
         actionHandlers.put(DawAction.SKIP_TO_END, this::onSkipForward);
         actionHandlers.put(DawAction.TOGGLE_LOOP, this::onToggleLoop);
+        actionHandlers.put(DawAction.TOGGLE_METRONOME, this::onToggleMetronome);
         actionHandlers.put(DawAction.UNDO, this::onUndo);
         actionHandlers.put(DawAction.REDO, this::onRedo);
         actionHandlers.put(DawAction.SAVE, projectLifecycleController::onSaveProject);
@@ -1169,6 +1204,11 @@ public final class MainController {
     @FXML
     private void onToggleLoop() {
         transportController.onToggleLoop();
+    }
+
+    @FXML
+    private void onToggleMetronome() {
+        metronomeController.onToggleMetronome();
     }
 
     @FXML
