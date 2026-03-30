@@ -184,6 +184,10 @@ final class ClipInteractionController {
         if (trimHandler.isTrimming()) {
             int trackIndex = trackIndexAt(event.getY());
             trimHandler.updateTrim(event.getX(), trackIndex);
+            // Update trim preview state — the canvas will be redrawn by the
+            // trim handler's refreshCanvas() call above, but we set the preview
+            // here so the next redraw includes the ghost line.
+            canvas.setTrimPreview(trimHandler.getPreviewBeat(), trimHandler.getPreviewTrackIndex());
             return;
         }
         if (host.activeTool() != EditTool.POINTER || dragClip == null) {
@@ -195,6 +199,7 @@ final class ClipInteractionController {
     private void onMouseReleased(MouseEvent event) {
         if (trimHandler.isTrimming()) {
             trimHandler.completeTrim(event.getX());
+            canvas.setTrimPreview(-1.0, -1);
             updateCursor();
             return;
         }
