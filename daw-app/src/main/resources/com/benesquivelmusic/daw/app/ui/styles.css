@@ -1282,13 +1282,11 @@
 }
 
 /* ── Track drag-and-drop indicators ── */
-/* Keep border insets constant to avoid layout jumps during drag-over */
+/* Use effects instead of changing border widths to avoid layout jumps */
 .track-drop-above {
-    -fx-border-color: #7c4dff transparent transparent transparent;
-    -fx-border-width: 3 0 3 0;
+    -fx-effect: dropshadow(gaussian, #7c4dff, 10, 0.0, 0, -2);
 }
 
 .track-drop-below {
-    -fx-border-color: transparent transparent #7c4dff transparent;
-    -fx-border-width: 3 0 3 0;
+    -fx-effect: dropshadow(gaussian, #7c4dff, 10, 0.0, 0, 2);
 }
