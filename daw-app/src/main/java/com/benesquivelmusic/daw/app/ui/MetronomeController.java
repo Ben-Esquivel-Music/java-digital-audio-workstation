@@ -34,11 +34,11 @@ final class MetronomeController {
 
     private static final Logger LOG = Logger.getLogger(MetronomeController.class.getName());
 
-    private static final String PREF_ENABLED = "metronome.enabled";
-    private static final String PREF_VOLUME = "metronome.volume";
-    private static final String PREF_CLICK_SOUND = "metronome.clickSound";
-    private static final String PREF_SUBDIVISION = "metronome.subdivision";
-    private static final String PREF_COUNT_IN = "metronome.countIn";
+    private static final String PREF_ENABLED = "enabled";
+    private static final String PREF_VOLUME = "volume";
+    private static final String PREF_CLICK_SOUND = "clickSound";
+    private static final String PREF_SUBDIVISION = "subdivision";
+    private static final String PREF_COUNT_IN = "countIn";
 
     private static final String ACTIVE_STYLE =
             "-fx-background-color: #b388ff; -fx-text-fill: #0d0d0d;";

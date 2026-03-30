@@ -17,6 +17,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.prefs.Preferences;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for the {@link MetronomeController} that exercises preference loading,
@@ -81,9 +82,9 @@ class MetronomeControllerTest {
     @Test
     void shouldRejectNullMetronome() {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
-        assertThat(catchException(() -> new MetronomeController(
+        assertThatThrownBy(() -> new MetronomeController(
                 null, new javafx.scene.control.Button(),
-                new NotificationBar(), new javafx.scene.control.Label(), prefs)))
+                new NotificationBar(), new javafx.scene.control.Label(), prefs))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("metronome");
     }
@@ -91,9 +92,9 @@ class MetronomeControllerTest {
     @Test
     void shouldRejectNullButton() {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
-        assertThat(catchException(() -> new MetronomeController(
+        assertThatThrownBy(() -> new MetronomeController(
                 metronome, null,
-                new NotificationBar(), new javafx.scene.control.Label(), prefs)))
+                new NotificationBar(), new javafx.scene.control.Label(), prefs))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("metronomeButton");
     }
@@ -101,9 +102,9 @@ class MetronomeControllerTest {
     @Test
     void shouldRejectNullNotificationBar() {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
-        assertThat(catchException(() -> new MetronomeController(
+        assertThatThrownBy(() -> new MetronomeController(
                 metronome, new javafx.scene.control.Button(),
-                null, new javafx.scene.control.Label(), prefs)))
+                null, new javafx.scene.control.Label(), prefs))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("notificationBar");
     }
@@ -111,9 +112,9 @@ class MetronomeControllerTest {
     @Test
     void shouldRejectNullStatusBarLabel() {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
-        assertThat(catchException(() -> new MetronomeController(
+        assertThatThrownBy(() -> new MetronomeController(
                 metronome, new javafx.scene.control.Button(),
-                new NotificationBar(), null, prefs)))
+                new NotificationBar(), null, prefs))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("statusBarLabel");
     }
@@ -121,9 +122,9 @@ class MetronomeControllerTest {
     @Test
     void shouldRejectNullPreferences() {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
-        assertThat(catchException(() -> new MetronomeController(
+        assertThatThrownBy(() -> new MetronomeController(
                 metronome, new javafx.scene.control.Button(),
-                new NotificationBar(), new javafx.scene.control.Label(), null)))
+                new NotificationBar(), new javafx.scene.control.Label(), null))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("prefs");
     }
@@ -147,7 +148,7 @@ class MetronomeControllerTest {
     @Test
     void shouldLoadPersistedEnabledState() {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
-        prefs.putBoolean("metronome.enabled", false);
+        prefs.putBoolean("enabled", false);
         MetronomeController controller = createController();
         assertThat(controller.getMetronome().isEnabled()).isFalse();
     }
@@ -155,7 +156,7 @@ class MetronomeControllerTest {
     @Test
     void shouldLoadPersistedVolume() {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
-        prefs.putFloat("metronome.volume", 0.5f);
+        prefs.putFloat("volume", 0.5f);
         MetronomeController controller = createController();
         assertThat(controller.getMetronome().getVolume()).isEqualTo(0.5f);
     }
@@ -163,7 +164,7 @@ class MetronomeControllerTest {
     @Test
     void shouldLoadPersistedClickSound() {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
-        prefs.put("metronome.clickSound", ClickSound.COWBELL.name());
+        prefs.put("clickSound", ClickSound.COWBELL.name());
         MetronomeController controller = createController();
         assertThat(controller.getMetronome().getClickSound()).isEqualTo(ClickSound.COWBELL);
     }
@@ -171,7 +172,7 @@ class MetronomeControllerTest {
     @Test
     void shouldLoadPersistedSubdivision() {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
-        prefs.put("metronome.subdivision", Subdivision.EIGHTH.name());
+        prefs.put("subdivision", Subdivision.EIGHTH.name());
         MetronomeController controller = createController();
         assertThat(controller.getMetronome().getSubdivision()).isEqualTo(Subdivision.EIGHTH);
     }
@@ -179,7 +180,7 @@ class MetronomeControllerTest {
     @Test
     void shouldLoadPersistedCountInMode() {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
-        prefs.put("metronome.countIn", CountInMode.TWO_BARS.name());
+        prefs.put("countIn", CountInMode.TWO_BARS.name());
         MetronomeController controller = createController();
         assertThat(controller.getCountInMode()).isEqualTo(CountInMode.TWO_BARS);
     }
@@ -189,7 +190,7 @@ class MetronomeControllerTest {
     @Test
     void shouldFallBackToDefaultsForInvalidClickSound() {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
-        prefs.put("metronome.clickSound", "INVALID");
+        prefs.put("clickSound", "INVALID");
         MetronomeController controller = createController();
         assertThat(controller.getMetronome().getClickSound()).isEqualTo(ClickSound.WOODBLOCK);
     }
@@ -197,7 +198,7 @@ class MetronomeControllerTest {
     @Test
     void shouldFallBackToDefaultsForInvalidSubdivision() {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
-        prefs.put("metronome.subdivision", "INVALID");
+        prefs.put("subdivision", "INVALID");
         MetronomeController controller = createController();
         assertThat(controller.getMetronome().getSubdivision()).isEqualTo(Subdivision.QUARTER);
     }
@@ -205,7 +206,7 @@ class MetronomeControllerTest {
     @Test
     void shouldFallBackToDefaultsForInvalidCountIn() {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
-        prefs.put("metronome.countIn", "INVALID");
+        prefs.put("countIn", "INVALID");
         MetronomeController controller = createController();
         assertThat(controller.getCountInMode()).isEqualTo(CountInMode.OFF);
     }
@@ -213,7 +214,7 @@ class MetronomeControllerTest {
     @Test
     void shouldClampOutOfRangeVolume() {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
-        prefs.putFloat("metronome.volume", 2.0f);
+        prefs.putFloat("volume", 2.0f);
         MetronomeController controller = createController();
         assertThat(controller.getMetronome().getVolume()).isEqualTo(1.0f);
     }
@@ -221,7 +222,7 @@ class MetronomeControllerTest {
     @Test
     void shouldClampNegativeVolume() {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
-        prefs.putFloat("metronome.volume", -0.5f);
+        prefs.putFloat("volume", -0.5f);
         MetronomeController controller = createController();
         assertThat(controller.getMetronome().getVolume()).isEqualTo(0.0f);
     }
@@ -244,14 +245,5 @@ class MetronomeControllerTest {
                 new NotificationBar(),
                 new javafx.scene.control.Label(),
                 prefs);
-    }
-
-    private static Throwable catchException(Runnable action) {
-        try {
-            action.run();
-            return null;
-        } catch (Throwable t) {
-            return t;
-        }
     }
 }
