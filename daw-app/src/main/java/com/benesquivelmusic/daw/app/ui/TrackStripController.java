@@ -388,7 +388,7 @@ final class TrackStripController {
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
         // ── Drag-and-drop reordering ────────────────────────────────────────
-        attachDragHandlers(track, trackItem);
+        attachDragHandlers(track, trackItem, typeIcon, nameLabel);
 
         // ── Right-click context menu with editing actions (Editing category) ─
         ContextMenu contextMenu = buildTrackContextMenu(track, nameLabel, trackItem);
@@ -1092,17 +1092,53 @@ final class TrackStripController {
     // ── Drag-and-drop reordering ────────────────────────────────────────────
 
     /**
-     * Attaches JavaFX drag-and-drop event handlers to the given track strip
-     * so that users can reorder tracks by dragging within the track list panel.
+     * Computes the model-level target index for a track move operation given
+     * the source index, the drop-target track's model index, and whether the
+     * cursor landed in the top half of the target strip (insert above) or the
+     * bottom half (insert below).
+     *
+     * <p>The result accounts for the remove-then-insert semantics of
+     * {@link DawProject#moveTrack(int, int)}: when the source precedes the
+     * target, removing it shifts the target index down by one.</p>
+     *
+     * @param fromIndex        the current model index of the dragged track
+     * @param targetModelIndex the model index of the track the cursor is over
+     * @param dropAbove        {@code true} if the cursor is in the top half
+     * @return the target index to pass to {@code moveTrack}, or {@code -1}
+     *         if no move is needed (same position)
      */
-    private void attachDragHandlers(Track track, HBox trackItem) {
-        trackItem.setOnDragDetected(event -> {
+    static int computeDropTargetIndex(int fromIndex, int targetModelIndex, boolean dropAbove) {
+        int insertPos = dropAbove ? targetModelIndex : targetModelIndex + 1;
+        int toIndex = fromIndex < insertPos ? insertPos - 1 : insertPos;
+        return fromIndex == toIndex ? -1 : toIndex;
+    }
+
+    /**
+     * Attaches JavaFX drag-and-drop event handlers to the given track strip.
+     *
+     * <p>The drag gesture is initiated only from the header region (type icon
+     * and name label) so that interactive controls (Sliders, Buttons) are not
+     * affected. Drop-over, drop, and drag-done handlers are attached to the
+     * entire strip so it acts as a valid drop target.</p>
+     */
+    private void attachDragHandlers(Track track, HBox trackItem,
+                                    Node typeIcon, Label nameLabel) {
+        // Initiate drag only from header elements to avoid conflicts with
+        // interactive controls (volume/pan Sliders, buttons, etc.)
+        Runnable initiateDrag = () -> {
             Dragboard db = trackItem.startDragAndDrop(TransferMode.MOVE);
             ClipboardContent content = new ClipboardContent();
             content.putString(track.getId());
             db.setContent(content);
             db.setDragView(trackItem.snapshot(null, null));
             trackItem.setOpacity(0.4);
+        };
+        typeIcon.setOnDragDetected(event -> {
+            initiateDrag.run();
+            event.consume();
+        });
+        nameLabel.setOnDragDetected(event -> {
+            initiateDrag.run();
             event.consume();
         });
 
@@ -1131,11 +1167,9 @@ final class TrackStripController {
                     int fromIndex = project.getTracks().indexOf(sourceTrack);
                     int targetModelIndex = project.getTracks().indexOf(track);
                     boolean topHalf = event.getY() < trackItem.getHeight() / 2;
+                    int toIndex = computeDropTargetIndex(fromIndex, targetModelIndex, topHalf);
 
-                    int insertPos = topHalf ? targetModelIndex : targetModelIndex + 1;
-                    int toIndex = fromIndex < insertPos ? insertPos - 1 : insertPos;
-
-                    if (fromIndex != toIndex && fromIndex >= 0 && toIndex >= 0
+                    if (toIndex >= 0 && fromIndex >= 0
                             && toIndex < project.getTracks().size()) {
                         int finalFrom = fromIndex;
                         int finalTo = toIndex;

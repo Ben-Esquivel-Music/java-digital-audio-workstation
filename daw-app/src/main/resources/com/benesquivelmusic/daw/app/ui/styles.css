@@ -1282,12 +1282,13 @@
 }
 
 /* ── Track drag-and-drop indicators ── */
+/* Keep border insets constant to avoid layout jumps during drag-over */
 .track-drop-above {
-    -fx-border-color: #7c4dff #2a2a2a #2a2a2a #2a2a2a;
-    -fx-border-width: 3 0 1 0;
+    -fx-border-color: #7c4dff transparent transparent transparent;
+    -fx-border-width: 3 0 3 0;
 }
 
 .track-drop-below {
-    -fx-border-color: #2a2a2a #2a2a2a #7c4dff #2a2a2a;
-    -fx-border-width: 0 0 3 0;
+    -fx-border-color: transparent transparent #7c4dff transparent;
+    -fx-border-width: 3 0 3 0;
 }
