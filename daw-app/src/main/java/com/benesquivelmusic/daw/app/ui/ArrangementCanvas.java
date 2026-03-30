@@ -185,7 +185,6 @@ public final class ArrangementCanvas extends Pane {
     void setTrimPreview(double beat, int trackIndex) {
         this.trimPreviewBeat = beat;
         this.trimPreviewTrackIndex = trackIndex;
-        redraw();
     }
 
     // ── Getters (for testing) ──────────────────────────────────────────────

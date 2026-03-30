@@ -5,52 +5,16 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 
-import javafx.application.Platform;
-
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.offset;
 
 class ClipTrimHandlerTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-        } catch (UnsupportedOperationException ignored) {
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
-
     private UndoManager undoManager;
     private List<Track> tracks;
     private double pixelsPerBeat;
@@ -104,8 +68,10 @@ class ClipTrimHandlerTest {
 
         // Left edge at beat 4.0 = pixel 160 at 40px/beat
         // y=40 is in track 0
-        ClipTrimHandler.TrimEdge edge = handler.detectEdge(160.0, 40.0);
-        assertThat(edge).isEqualTo(ClipTrimHandler.TrimEdge.LEFT);
+        ClipTrimHandler.EdgeHit hit = handler.hitTestEdge(160.0, 40.0);
+        assertThat(hit).isNotNull();
+        assertThat(hit.edge()).isEqualTo(ClipTrimHandler.TrimEdge.LEFT);
+        assertThat(hit.clip()).isSameAs(clip);
     }
 
     @Test
@@ -118,8 +84,10 @@ class ClipTrimHandlerTest {
         ClipTrimHandler handler = createHandler();
 
         // Right edge at beat 12.0 = pixel 480 at 40px/beat
-        ClipTrimHandler.TrimEdge edge = handler.detectEdge(480.0, 40.0);
-        assertThat(edge).isEqualTo(ClipTrimHandler.TrimEdge.RIGHT);
+        ClipTrimHandler.EdgeHit hit = handler.hitTestEdge(480.0, 40.0);
+        assertThat(hit).isNotNull();
+        assertThat(hit.edge()).isEqualTo(ClipTrimHandler.TrimEdge.RIGHT);
+        assertThat(hit.clip()).isSameAs(clip);
     }
 
     @Test
@@ -132,8 +100,7 @@ class ClipTrimHandlerTest {
         ClipTrimHandler handler = createHandler();
 
         // Middle of clip at beat 8.0 = pixel 320
-        ClipTrimHandler.TrimEdge edge = handler.detectEdge(320.0, 40.0);
-        assertThat(edge).isNull();
+        assertThat(handler.hitTestEdge(320.0, 40.0)).isNull();
     }
 
     @Test
@@ -145,33 +112,7 @@ class ClipTrimHandlerTest {
         ClipTrimHandler handler = createHandler();
 
         // y=200 is outside track bounds (1 track × 80px)
-        assertThat(handler.detectEdge(160.0, 200.0)).isNull();
-    }
-
-    @Test
-    void shouldFindClipAtLeftEdge() {
-        Track track = new Track("Track 1", TrackType.AUDIO);
-        AudioClip clip = new AudioClip("Vocal", 4.0, 8.0, null);
-        track.addClip(clip);
-        tracks.add(track);
-
-        ClipTrimHandler handler = createHandler();
-
-        AudioClip found = handler.clipAtEdge(160.0, 40.0);
-        assertThat(found).isSameAs(clip);
-    }
-
-    @Test
-    void shouldFindClipAtRightEdge() {
-        Track track = new Track("Track 1", TrackType.AUDIO);
-        AudioClip clip = new AudioClip("Vocal", 4.0, 8.0, null);
-        track.addClip(clip);
-        tracks.add(track);
-
-        ClipTrimHandler handler = createHandler();
-
-        AudioClip found = handler.clipAtEdge(480.0, 40.0);
-        assertThat(found).isSameAs(clip);
+        assertThat(handler.hitTestEdge(160.0, 200.0)).isNull();
     }
 
     // ── Left edge trim ───────────────────────────────────────────────────────
@@ -389,7 +330,23 @@ class ClipTrimHandlerTest {
 
         assertThat(handler.getPreviewBeat()).isCloseTo(10.0, offset(0.01));
         assertThat(handler.getPreviewTrackIndex()).isEqualTo(0);
-        assertThat(refreshCount).isGreaterThan(0);
+    }
+
+    @Test
+    void shouldClampPreviewBeatToEffectiveEdge() {
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("Vocal", 4.0, 8.0, null);
+        track.addClip(clip);
+        tracks.add(track);
+
+        ClipTrimHandler handler = createHandler();
+
+        handler.beginTrim(clip, ClipTrimHandler.TrimEdge.RIGHT);
+        // Drag right edge to beat 15.0 (beyond original end 12.0)
+        handler.updateTrim(600.0, 0);
+
+        // Preview should be clamped to 12.0 (the clip's effective right edge)
+        assertThat(handler.getPreviewBeat()).isCloseTo(12.0, offset(0.01));
     }
 
     @Test

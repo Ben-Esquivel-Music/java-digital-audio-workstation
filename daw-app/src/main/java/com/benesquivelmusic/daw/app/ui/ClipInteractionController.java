@@ -152,14 +152,11 @@ final class ClipInteractionController {
 
         // Check for trim edge activation before normal tool handling
         if (host.activeTool() == EditTool.POINTER && trackIndex >= 0) {
-            ClipTrimHandler.TrimEdge edge = trimHandler.detectEdge(event.getX(), event.getY());
-            if (edge != null) {
-                AudioClip clip = trimHandler.clipAtEdge(event.getX(), event.getY());
-                if (clip != null) {
-                    trimHandler.beginTrim(clip, edge);
-                    canvas.setCursor(Cursor.H_RESIZE);
-                    return;
-                }
+            ClipTrimHandler.EdgeHit hit = trimHandler.hitTestEdge(event.getX(), event.getY());
+            if (hit != null) {
+                trimHandler.beginTrim(hit.clip(), hit.edge());
+                canvas.setCursor(Cursor.H_RESIZE);
+                return;
             }
         }
 
@@ -183,11 +180,11 @@ final class ClipInteractionController {
     private void onMouseDragged(MouseEvent event) {
         if (trimHandler.isTrimming()) {
             int trackIndex = trackIndexAt(event.getY());
+            // updateTrim applies the trim and computes the clamped preview beat
+            // but does not trigger a redraw — we do a single refresh below.
             trimHandler.updateTrim(event.getX(), trackIndex);
-            // Update trim preview state — the canvas will be redrawn by the
-            // trim handler's refreshCanvas() call above, but we set the preview
-            // here so the next redraw includes the ghost line.
             canvas.setTrimPreview(trimHandler.getPreviewBeat(), trimHandler.getPreviewTrackIndex());
+            host.refreshCanvas();
             return;
         }
         if (host.activeTool() != EditTool.POINTER || dragClip == null) {
@@ -232,8 +229,8 @@ final class ClipInteractionController {
 
     private void onMouseMoved(MouseEvent event) {
         if (host.activeTool() == EditTool.POINTER) {
-            ClipTrimHandler.TrimEdge edge = trimHandler.detectEdge(event.getX(), event.getY());
-            if (edge != null) {
+            ClipTrimHandler.EdgeHit hit = trimHandler.hitTestEdge(event.getX(), event.getY());
+            if (hit != null) {
                 canvas.setCursor(Cursor.H_RESIZE);
                 return;
             }

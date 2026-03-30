@@ -75,18 +75,24 @@ final class ClipTrimHandler {
         this.host = Objects.requireNonNull(host, "host must not be null");
     }
 
+    /**
+     * Result of an edge hit test, pairing the detected clip with the edge.
+     */
+    record EdgeHit(AudioClip clip, TrimEdge edge) {}
+
     // ── Edge detection ───────────────────────────────────────────────────────
 
     /**
-     * Detects whether the given pixel position is over a clip edge that can
-     * be trimmed. Returns the detected edge, or {@code null} if the position
-     * is not within trim threshold of any clip edge.
+     * Hit-tests the given pixel position against all clip edges on the
+     * resolved track. Returns an {@link EdgeHit} containing both the clip
+     * and the detected edge, or {@code null} if the position is not within
+     * trim threshold of any clip edge.
      *
      * @param x the mouse X coordinate in canvas pixels
      * @param y the mouse Y coordinate in canvas pixels
-     * @return the detected {@link TrimEdge}, or {@code null}
+     * @return an {@link EdgeHit}, or {@code null}
      */
-    TrimEdge detectEdge(double x, double y) {
+    EdgeHit hitTestEdge(double x, double y) {
         int trackIndex = trackIndexAt(y);
         if (trackIndex < 0) {
             return null;
@@ -101,45 +107,12 @@ final class ClipTrimHandler {
             if (Math.abs(x - leftEdgeX) <= EDGE_THRESHOLD_PIXELS
                     && beat >= clip.getStartBeat() - beatThreshold()
                     && beat <= clip.getEndBeat()) {
-                return TrimEdge.LEFT;
+                return new EdgeHit(clip, TrimEdge.LEFT);
             }
             if (Math.abs(x - rightEdgeX) <= EDGE_THRESHOLD_PIXELS
                     && beat >= clip.getStartBeat()
                     && beat <= clip.getEndBeat() + beatThreshold()) {
-                return TrimEdge.RIGHT;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Finds the clip whose edge is near the given pixel position.
-     *
-     * @param x the mouse X coordinate in canvas pixels
-     * @param y the mouse Y coordinate in canvas pixels
-     * @return the clip at the detected edge, or {@code null}
-     */
-    AudioClip clipAtEdge(double x, double y) {
-        int trackIndex = trackIndexAt(y);
-        if (trackIndex < 0) {
-            return null;
-        }
-        Track track = host.tracks().get(trackIndex);
-        double beat = beatAt(x);
-
-        for (AudioClip clip : track.getClips()) {
-            double leftEdgeX = (clip.getStartBeat() - host.scrollXBeats()) * host.pixelsPerBeat();
-            double rightEdgeX = (clip.getEndBeat() - host.scrollXBeats()) * host.pixelsPerBeat();
-
-            if (Math.abs(x - leftEdgeX) <= EDGE_THRESHOLD_PIXELS
-                    && beat >= clip.getStartBeat() - beatThreshold()
-                    && beat <= clip.getEndBeat()) {
-                return clip;
-            }
-            if (Math.abs(x - rightEdgeX) <= EDGE_THRESHOLD_PIXELS
-                    && beat >= clip.getStartBeat()
-                    && beat <= clip.getEndBeat() + beatThreshold()) {
-                return clip;
+                return new EdgeHit(clip, TrimEdge.RIGHT);
             }
         }
         return null;
@@ -180,12 +153,19 @@ final class ClipTrimHandler {
             beat = SnapQuantizer.quantize(beat, host.gridResolution(), host.beatsPerBar());
         }
 
+        // Apply the trim, which may clamp the requested beat to valid bounds.
         applyTrim(beat);
 
-        // Update preview state
-        this.previewBeat = beat;
+        // Update preview state based on the effective edge position after clamping
+        double effectiveBeat;
+        if (trimEdge == TrimEdge.LEFT) {
+            effectiveBeat = trimClip.getStartBeat();
+        } else {
+            effectiveBeat = trimClip.getStartBeat() + trimClip.getDurationBeats();
+        }
+
+        this.previewBeat = effectiveBeat;
         this.previewTrackIndex = trackIndex;
-        host.refreshCanvas();
     }
 
     /**
@@ -320,7 +300,15 @@ final class ClipTrimHandler {
     /**
      * Clamps a right-edge position so the clip cannot be trimmed shorter
      * than {@link #MIN_CLIP_DURATION_BEATS} and cannot extend beyond the
-     * source audio boundary (original end + remaining source length).
+     * clip's duration at the start of this drag.
+     *
+     * <p><b>Limitation:</b> The maximum right-edge position is capped at the
+     * clip's end beat when {@link #beginTrim} was called. If the clip was
+     * previously trimmed shorter, this method does not allow re-extending
+     * the right edge back to the original source length because
+     * {@link AudioClip} does not expose the total source length. A future
+     * enhancement could persist source length on the clip model to enable
+     * right-edge re-extension.</p>
      */
     private double clampRightEdge(double beat) {
         // Cannot be shorter than minimum duration
