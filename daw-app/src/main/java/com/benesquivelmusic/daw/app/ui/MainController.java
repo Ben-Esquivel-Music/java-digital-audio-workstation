@@ -481,9 +481,6 @@ public final class MainController {
         // Wire ruler seek: clicking on the ruler repositions the transport playhead
         timelineRuler.addSeekListener(this::seekToPosition);
 
-        // Wire canvas seek listener
-        arrangementCanvas.addSeekListener(this::seekToPosition);
-
         // Register per-frame playhead update callback on the animation controller
         animationController.setPlayheadUpdateCallback(this::updatePlayheadFromTransport);
 

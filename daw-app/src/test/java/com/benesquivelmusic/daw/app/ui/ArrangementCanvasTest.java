@@ -381,28 +381,6 @@ class ArrangementCanvasTest {
         assertThat(ref.get().getPlayheadBeat()).isEqualTo(8.5);
     }
 
-    // ── Seek listener ───────────────────────────────────────────────────────
-
-    @Test
-    void shouldRejectNullSeekListener() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
-
-        AtomicReference<ArrangementCanvas> ref = new AtomicReference<>();
-        CountDownLatch latch = new CountDownLatch(1);
-        Platform.runLater(() -> {
-            try {
-                ref.set(new ArrangementCanvas());
-            } finally {
-                latch.countDown();
-            }
-        });
-        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
-
-        assertThat(ref.get()).isNotNull();
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> ref.get().addSeekListener(null))
-                .isInstanceOf(NullPointerException.class);
-    }
-
     // ── Auto-scroll toggle ──────────────────────────────────────────────────
 
     @Test

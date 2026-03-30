@@ -13,10 +13,7 @@ import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.TextAlignment;
 
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
-import java.util.function.Consumer;
 
 /**
  * Renders horizontal track lanes with audio and MIDI clip rectangles
@@ -62,7 +59,6 @@ public final class ArrangementCanvas extends Pane {
     private static final double PLAYHEAD_WIDTH = 2.0;
 
     private final Canvas canvas;
-    private final List<Consumer<Double>> seekListeners = new ArrayList<>();
 
     private List<Track> tracks = List.of();
     private double pixelsPerBeat = ArrangementNavigator.BASE_PIXELS_PER_BEAT;
@@ -148,20 +144,14 @@ public final class ArrangementCanvas extends Pane {
      * @param beat the playhead position, or a negative value to hide it
      */
     public void setPlayheadBeat(double beat) {
+        if (Double.compare(this.playheadBeat, beat) == 0) {
+            return;
+        }
         this.playheadBeat = beat;
         if (autoScroll && beat >= 0) {
             ensurePlayheadVisible();
         }
         redraw();
-    }
-
-    /**
-     * Adds a listener that is called when the user clicks on the canvas to seek.
-     *
-     * @param listener a consumer receiving the beat position of the click
-     */
-    public void addSeekListener(Consumer<Double> listener) {
-        seekListeners.add(Objects.requireNonNull(listener, "listener must not be null"));
     }
 
     /**
@@ -546,17 +536,6 @@ public final class ArrangementCanvas extends Pane {
             scrollXBeats = playheadBeat;
         } else if (playheadBeat > scrollXBeats + viewWidthBeats * 0.9) {
             scrollXBeats = playheadBeat - viewWidthBeats * 0.1;
-        }
-    }
-
-    /**
-     * Notifies all registered seek listeners of a beat position.
-     *
-     * @param beat the beat position to seek to
-     */
-    void fireSeekListeners(double beat) {
-        for (Consumer<Double> listener : seekListeners) {
-            listener.accept(beat);
         }
     }
 }
