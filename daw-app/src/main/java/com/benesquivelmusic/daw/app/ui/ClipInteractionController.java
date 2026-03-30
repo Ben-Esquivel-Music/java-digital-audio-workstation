@@ -195,8 +195,11 @@ final class ClipInteractionController {
 
     private void onMouseReleased(MouseEvent event) {
         if (trimHandler.isTrimming()) {
-            trimHandler.completeTrim(event.getX());
+            // Clear the visual trim preview before completing the trim so that
+            // any refresh triggered inside completeTrim() does not render a
+            // stale cyan preview line.
             canvas.setTrimPreview(-1.0, -1);
+            trimHandler.completeTrim(event.getX());
             updateCursor();
             return;
         }
@@ -312,11 +315,4 @@ final class ClipInteractionController {
         }
     }
 
-    /**
-     * Returns the trim handler for use by the arrangement canvas when
-     * rendering trim previews.
-     */
-    ClipTrimHandler getTrimHandler() {
-        return trimHandler;
-    }
 }
