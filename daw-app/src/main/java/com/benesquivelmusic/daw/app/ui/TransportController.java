@@ -217,10 +217,16 @@ final class TransportController {
                 audioEngine, project.getTransport(), project.getFormat(), outputDir, armedTracks);
         recordingPipeline.start();
 
+        // Open audio input stream with the first armed track's input device
         try {
-            audioEngine.startAudioOutput();
+            int inputDevice = armedTracks.stream()
+                    .mapToInt(Track::getInputDeviceIndex)
+                    .filter(idx -> idx >= 0)
+                    .findFirst()
+                    .orElse(0); // default input device
+            audioEngine.startAudioInputOutput(inputDevice);
         } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "Failed to start audio output for recording", e);
+            LOG.log(Level.WARNING, "Failed to start audio input for recording", e);
             notificationBar.show(NotificationLevel.ERROR,
                     "Audio device error: " + e.getMessage());
         }

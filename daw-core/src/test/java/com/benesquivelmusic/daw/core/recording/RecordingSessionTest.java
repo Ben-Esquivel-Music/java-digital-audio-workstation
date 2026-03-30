@@ -97,6 +97,108 @@ class RecordingSessionTest {
     }
 
     @Test
+    void shouldRecordAudioDataIntoBuffer() {
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        session.start();
+
+        float[][] input = new float[2][512];
+        for (int i = 0; i < 512; i++) {
+            input[0][i] = 0.5f;
+            input[1][i] = -0.5f;
+        }
+        session.recordAudioData(input, 512);
+
+        assertThat(session.getCapturedSampleCount()).isEqualTo(512);
+        assertThat(session.getTotalSamplesRecorded()).isEqualTo(512);
+
+        float[][] captured = session.getCapturedAudio();
+        assertThat(captured).isNotNull();
+        assertThat(captured).hasNumberOfRows(2);
+        assertThat(captured[0]).hasSize(512);
+        assertThat(captured[0][0]).isEqualTo(0.5f);
+        assertThat(captured[1][0]).isEqualTo(-0.5f);
+    }
+
+    @Test
+    void shouldAccumulateMultipleAudioDataBlocks() {
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        session.start();
+
+        float[][] block1 = new float[2][256];
+        for (int i = 0; i < 256; i++) {
+            block1[0][i] = 0.1f;
+            block1[1][i] = 0.2f;
+        }
+        session.recordAudioData(block1, 256);
+
+        float[][] block2 = new float[2][256];
+        for (int i = 0; i < 256; i++) {
+            block2[0][i] = 0.3f;
+            block2[1][i] = 0.4f;
+        }
+        session.recordAudioData(block2, 256);
+
+        assertThat(session.getCapturedSampleCount()).isEqualTo(512);
+        float[][] captured = session.getCapturedAudio();
+        assertThat(captured).isNotNull();
+        assertThat(captured[0]).hasSize(512);
+        assertThat(captured[0][0]).isEqualTo(0.1f);
+        assertThat(captured[0][256]).isEqualTo(0.3f);
+        assertThat(captured[1][0]).isEqualTo(0.2f);
+        assertThat(captured[1][256]).isEqualTo(0.4f);
+    }
+
+    @Test
+    void shouldNotRecordAudioDataWhenInactive() {
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+
+        float[][] input = new float[2][512];
+        session.recordAudioData(input, 512);
+
+        assertThat(session.getCapturedSampleCount()).isZero();
+        assertThat(session.getCapturedAudio()).isNull();
+    }
+
+    @Test
+    void shouldNotRecordAudioDataWhenPaused() {
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        session.start();
+        session.pause();
+
+        float[][] input = new float[2][512];
+        input[0][0] = 0.5f;
+        session.recordAudioData(input, 512);
+
+        assertThat(session.getCapturedSampleCount()).isZero();
+    }
+
+    @Test
+    void shouldReturnNullCapturedAudioWhenNothingRecorded() {
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        session.start();
+
+        assertThat(session.getCapturedAudio()).isNull();
+        assertThat(session.getCapturedSampleCount()).isZero();
+    }
+
+    @Test
+    void shouldGrowBufferBeyondInitialCapacity() {
+        RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
+        session.start();
+
+        // Record enough data to exceed the initial ~10 second buffer
+        float[][] block = new float[2][44100];
+        for (int i = 0; i < 12; i++) {
+            session.recordAudioData(block, 44100);
+        }
+
+        assertThat(session.getCapturedSampleCount()).isEqualTo(44100 * 12);
+        float[][] captured = session.getCapturedAudio();
+        assertThat(captured).isNotNull();
+        assertThat(captured[0]).hasSize(44100 * 12);
+    }
+
+    @Test
     void shouldNotifyListenersOnStart() {
         RecordingSession session = new RecordingSession(AudioFormat.CD_QUALITY, tempDir);
         List<String> events = new ArrayList<>();

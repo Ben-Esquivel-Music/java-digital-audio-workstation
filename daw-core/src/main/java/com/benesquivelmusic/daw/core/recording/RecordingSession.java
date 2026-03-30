@@ -50,6 +50,10 @@ public final class RecordingSession {
     private RecordingSegment currentSegment;
     private long currentSegmentBytes;
 
+    // Growing audio capture buffer: [channel][sample]
+    private float[][] capturedAudio;
+    private int capturedSampleCount;
+
     /**
      * Creates a new recording session.
      *
@@ -95,6 +99,12 @@ public final class RecordingSession {
         active = true;
         paused = false;
         sessionStartTime = Instant.now();
+
+        // Initialize the audio capture buffer with a reasonable initial capacity
+        int initialCapacity = (int) format.sampleRate() * 10; // ~10 seconds
+        capturedAudio = new float[format.channels()][initialCapacity];
+        capturedSampleCount = 0;
+
         startNewSegment();
         for (RecordingListener listener : listeners) {
             listener.onRecordingStarted();
@@ -160,6 +170,85 @@ public final class RecordingSession {
             finalizeCurrentSegment();
             startNewSegment();
         }
+    }
+
+    /**
+     * Captures actual audio sample data into the growing buffer and
+     * updates segment tracking.
+     *
+     * <p>The audio data is accumulated in memory so that it can be
+     * attached to an {@link com.benesquivelmusic.daw.core.audio.AudioClip}
+     * when recording stops.</p>
+     *
+     * @param inputBuffer the input audio data {@code [channel][frame]}
+     * @param numFrames   the number of sample frames to capture
+     */
+    public void recordAudioData(float[][] inputBuffer, int numFrames) {
+        if (!active || paused) {
+            return;
+        }
+        if (inputBuffer == null || numFrames <= 0) {
+            return;
+        }
+
+        // Ensure the capture buffer has enough capacity
+        int requiredCapacity = capturedSampleCount + numFrames;
+        if (capturedAudio != null && requiredCapacity > capturedAudio[0].length) {
+            int newCapacity = Math.max(requiredCapacity, capturedAudio[0].length * 2);
+            float[][] expanded = new float[capturedAudio.length][newCapacity];
+            for (int ch = 0; ch < capturedAudio.length; ch++) {
+                System.arraycopy(capturedAudio[ch], 0, expanded[ch], 0, capturedSampleCount);
+            }
+            capturedAudio = expanded;
+        }
+
+        // Copy input audio into the capture buffer
+        if (capturedAudio != null) {
+            int channels = Math.min(inputBuffer.length, capturedAudio.length);
+            for (int ch = 0; ch < channels; ch++) {
+                int framesToCopy = Math.min(numFrames, inputBuffer[ch].length);
+                System.arraycopy(inputBuffer[ch], 0, capturedAudio[ch], capturedSampleCount, framesToCopy);
+            }
+            capturedSampleCount += numFrames;
+        }
+
+        // Update segment tracking
+        int bytesPerSample = format.bitDepth() / 8;
+        long byteSize = (long) numFrames * format.channels() * bytesPerSample;
+        totalSamplesRecorded.addAndGet(numFrames);
+        currentSegmentBytes += byteSize;
+
+        if (shouldRotateSegment()) {
+            finalizeCurrentSegment();
+            startNewSegment();
+        }
+    }
+
+    /**
+     * Returns the captured audio data, trimmed to the actual recorded length.
+     *
+     * <p>Returns {@code null} if no audio has been captured.</p>
+     *
+     * @return audio data as {@code [channel][sample]} in [-1.0, 1.0], or {@code null}
+     */
+    public float[][] getCapturedAudio() {
+        if (capturedAudio == null || capturedSampleCount == 0) {
+            return null;
+        }
+        float[][] trimmed = new float[capturedAudio.length][capturedSampleCount];
+        for (int ch = 0; ch < capturedAudio.length; ch++) {
+            System.arraycopy(capturedAudio[ch], 0, trimmed[ch], 0, capturedSampleCount);
+        }
+        return trimmed;
+    }
+
+    /**
+     * Returns the number of audio sample frames captured so far.
+     *
+     * @return the captured sample count
+     */
+    public int getCapturedSampleCount() {
+        return capturedSampleCount;
     }
 
     /**
