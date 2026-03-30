@@ -18,7 +18,7 @@ import java.util.logging.Logger;
  * {@code durationBeats}.</p>
  *
  * <p>The handler respects snap-to-grid settings, prevents trimming beyond the
- * source audio boundary, and registers an {@link TrimClipAction} when the drag
+ * source audio boundary, and registers a {@link ClipEdgeTrimAction} when the drag
  * completes.</p>
  */
 final class ClipTrimHandler {
