@@ -1280,3 +1280,13 @@
     -fx-font-weight: bold;
     -fx-font-size: 12px;
 }
+
+/* ── Track drag-and-drop indicators ── */
+/* Use effects instead of changing border widths to avoid layout jumps */
+.track-drop-above {
+    -fx-effect: dropshadow(gaussian, #7c4dff, 10, 0.0, 0, -2);
+}
+
+.track-drop-below {
+    -fx-effect: dropshadow(gaussian, #7c4dff, 10, 0.0, 0, 2);
+}

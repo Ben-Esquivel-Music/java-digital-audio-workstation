@@ -30,6 +30,10 @@ import javafx.scene.control.Slider;
 import javafx.scene.control.TextField;
 import javafx.scene.control.Tooltip;
 import javafx.scene.control.Button;
+import javafx.scene.input.ClipboardContent;
+import javafx.scene.input.DataFormat;
+import javafx.scene.input.Dragboard;
+import javafx.scene.input.TransferMode;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -62,6 +66,9 @@ final class TrackStripController {
     static final double TRACK_CONTROL_ICON_SIZE = 14;
     /** Icon size for track-type indicators. */
     static final double TRACK_TYPE_ICON_SIZE = 18;
+    /** Custom data format for track-ID drag-and-drop payloads. */
+    private static final DataFormat TRACK_ID_FORMAT =
+            new DataFormat("application/x-daw-track-id");
 
     /**
      * Callback interface implemented by the host controller to provide
@@ -383,6 +390,9 @@ final class TrackStripController {
         // Spacer pushes controls to the right
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
+
+        // ── Drag-and-drop reordering ────────────────────────────────────────
+        attachDragHandlers(track, trackItem, typeIcon, nameLabel);
 
         // ── Right-click context menu with editing actions (Editing category) ─
         ContextMenu contextMenu = buildTrackContextMenu(track, nameLabel, trackItem);
@@ -1081,6 +1091,167 @@ final class TrackStripController {
         });
 
         return menu;
+    }
+
+    // ── Drag-and-drop reordering ────────────────────────────────────────────
+
+    /**
+     * Computes the model-level target index for a track move operation given
+     * the source index, the drop-target track's model index, and whether the
+     * cursor landed in the top half of the target strip (insert above) or the
+     * bottom half (insert below).
+     *
+     * <p>The result accounts for the remove-then-insert semantics of
+     * {@link DawProject#moveTrack(int, int)}: when the source precedes the
+     * target, removing it shifts the target index down by one.</p>
+     *
+     * @param fromIndex        the current model index of the dragged track
+     * @param targetModelIndex the model index of the track the cursor is over
+     * @param dropAbove        {@code true} if the cursor is in the top half
+     * @return the target index to pass to {@code moveTrack}, or {@code -1}
+     *         if no move is needed (same position)
+     */
+    static int computeDropTargetIndex(int fromIndex, int targetModelIndex, boolean dropAbove) {
+        int insertPos = dropAbove ? targetModelIndex : targetModelIndex + 1;
+        int toIndex = fromIndex < insertPos ? insertPos - 1 : insertPos;
+        return fromIndex == toIndex ? -1 : toIndex;
+    }
+
+    /**
+     * Attaches JavaFX drag-and-drop event handlers to the given track strip.
+     *
+     * <p>The drag gesture is initiated only from the header region (type icon
+     * and name label) so that interactive controls (Sliders, Buttons) are not
+     * affected. Drop-over, drop, and drag-done handlers are attached to the
+     * entire strip so it acts as a valid drop target.</p>
+     */
+    private void attachDragHandlers(Track track, HBox trackItem,
+                                    Node typeIcon, Label nameLabel) {
+        // Initiate drag only from header elements to avoid conflicts with
+        // interactive controls (volume/pan Sliders, buttons, etc.)
+        Runnable initiateDrag = () -> {
+            Dragboard db = trackItem.startDragAndDrop(TransferMode.MOVE);
+            ClipboardContent content = new ClipboardContent();
+            content.put(TRACK_ID_FORMAT, track.getId());
+            db.setContent(content);
+            db.setDragView(trackItem.snapshot(null, null));
+            trackItem.setOpacity(0.4);
+        };
+        typeIcon.setOnDragDetected(event -> {
+            initiateDrag.run();
+            event.consume();
+        });
+        nameLabel.setOnDragDetected(event -> {
+            initiateDrag.run();
+            event.consume();
+        });
+
+        trackItem.setOnDragOver(event -> {
+            if (event.getGestureSource() != trackItem
+                    && event.getDragboard().hasContent(TRACK_ID_FORMAT)) {
+                event.acceptTransferModes(TransferMode.MOVE);
+                boolean topHalf = event.getY() < trackItem.getHeight() / 2;
+                trackItem.getStyleClass().removeAll("track-drop-above", "track-drop-below");
+                trackItem.getStyleClass().add(topHalf ? "track-drop-above" : "track-drop-below");
+            }
+            event.consume();
+        });
+
+        trackItem.setOnDragExited(event -> {
+            trackItem.getStyleClass().removeAll("track-drop-above", "track-drop-below");
+            event.consume();
+        });
+
+        trackItem.setOnDragDropped(event -> {
+            Dragboard db = event.getDragboard();
+            boolean success = false;
+            if (db.hasContent(TRACK_ID_FORMAT)) {
+                String sourceTrackId = (String) db.getContent(TRACK_ID_FORMAT);
+                Track sourceTrack = findTrackById(sourceTrackId);
+                if (sourceTrack != null && sourceTrack != track) {
+                    int fromIndex = project.getTracks().indexOf(sourceTrack);
+                    int targetModelIndex = project.getTracks().indexOf(track);
+                    boolean topHalf = event.getY() < trackItem.getHeight() / 2;
+                    int toIndex = computeDropTargetIndex(fromIndex, targetModelIndex, topHalf);
+
+                    if (toIndex >= 0 && fromIndex >= 0
+                            && toIndex < project.getTracks().size()) {
+                        int finalFrom = fromIndex;
+                        int finalTo = toIndex;
+                        undoManager.execute(new UndoableAction() {
+                            @Override public String description() { return "Move Track"; }
+                            @Override public void execute() {
+                                project.moveTrack(finalFrom, finalTo);
+                                reorderTrackStrip(finalFrom, finalTo);
+                                mixerView.refresh();
+                            }
+                            @Override public void undo() {
+                                project.moveTrack(finalTo, finalFrom);
+                                reorderTrackStrip(finalTo, finalFrom);
+                                mixerView.refresh();
+                            }
+                        });
+                        animateDrop(trackListPanel.getChildren().get(finalTo + 1));
+                        host.updateUndoRedoState();
+                        host.markProjectDirty();
+                        statusBarLabel.setText("Moved track: " + sourceTrack.getName());
+                        statusBarLabel.setGraphic(IconNode.of(DawIcon.MOVE, 12));
+                        success = true;
+                    }
+                }
+            }
+            trackItem.getStyleClass().removeAll("track-drop-above", "track-drop-below");
+            event.setDropCompleted(success);
+            event.consume();
+        });
+
+        trackItem.setOnDragDone(event -> {
+            // Only reset opacity when the gesture was cancelled/unsuccessful;
+            // successful drops let animateDrop() control the fade-in.
+            if (event.getTransferMode() == null) {
+                trackItem.setOpacity(1.0);
+            }
+            for (Node child : trackListPanel.getChildren()) {
+                child.getStyleClass().removeAll("track-drop-above", "track-drop-below");
+            }
+            event.consume();
+        });
+    }
+
+    /**
+     * Reorders the track strip nodes in the {@code trackListPanel} to match a
+     * model-level move. Child index 0 is the "TRACKS" header label, so the
+     * model-to-UI offset is 1.
+     */
+    private void reorderTrackStrip(int fromModelIndex, int toModelIndex) {
+        int fromUI = fromModelIndex + 1;
+        int toUI = toModelIndex + 1;
+        Node node = trackListPanel.getChildren().remove(fromUI);
+        trackListPanel.getChildren().add(toUI, node);
+    }
+
+    private Track findTrackById(String trackId) {
+        for (Track t : project.getTracks()) {
+            if (t.getId().equals(trackId)) {
+                return t;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Plays a brief translate/fade animation on a dropped track strip,
+     * consistent with the existing track-strip entry animation style.
+     */
+    private void animateDrop(Node trackItem) {
+        trackItem.setTranslateY(-8);
+        trackItem.setOpacity(0.6);
+        TranslateTransition slide = new TranslateTransition(Duration.millis(200), trackItem);
+        slide.setToY(0.0);
+        slide.setInterpolator(Interpolator.EASE_OUT);
+        FadeTransition fade = new FadeTransition(Duration.millis(200), trackItem);
+        fade.setToValue(1.0);
+        new ParallelTransition(slide, fade).play();
     }
 
     /**
