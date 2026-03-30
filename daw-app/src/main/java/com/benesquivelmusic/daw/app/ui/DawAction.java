@@ -27,6 +27,8 @@ public enum DawAction {
             new KeyCodeCombination(KeyCode.END)),
     TOGGLE_LOOP("Toggle Loop", Category.TRANSPORT,
             new KeyCodeCombination(KeyCode.L)),
+    TOGGLE_METRONOME("Toggle Metronome", Category.TRANSPORT,
+            new KeyCodeCombination(KeyCode.M)),
 
     // ── Editing ──────────────────────────────────────────────────────────────
     UNDO("Undo", Category.EDITING,

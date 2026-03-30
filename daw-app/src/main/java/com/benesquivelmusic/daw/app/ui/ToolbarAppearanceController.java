@@ -45,7 +45,7 @@ final class ToolbarAppearanceController {
     /** Transport-bar buttons. */
     record TransportButtons(Button skipBack, Button play, Button pause,
                             Button stop, Button record, Button skipForward,
-                            Button loop) {}
+                            Button loop, Button metronome) {}
 
     /** Main toolbar buttons. */
     record ToolbarButtons(Button addAudioTrack, Button addMidiTrack,
@@ -145,6 +145,7 @@ final class ToolbarAppearanceController {
         transportButtons.record.setGraphic(IconNode.of(DawIcon.RECORD, TRANSPORT_ICON_SIZE));
         transportButtons.skipForward.setGraphic(IconNode.of(DawIcon.SKIP_FORWARD, TRANSPORT_ICON_SIZE));
         transportButtons.loop.setGraphic(IconNode.of(DawIcon.LOOP, TRANSPORT_ICON_SIZE));
+        transportButtons.metronome.setGraphic(IconNode.of(DawIcon.METRONOME, TRANSPORT_ICON_SIZE));
 
         // ── Toolbar buttons (mixed categories) ─────────────────────────────
         toolbarButtons.addAudioTrack.setGraphic(IconNode.of(DawIcon.MICROPHONE, TOOLBAR_ICON_SIZE));
@@ -229,6 +230,8 @@ final class ToolbarAppearanceController {
         transportButtons.record.setTooltip(styledTooltip(tooltipFor("Record", DawAction.RECORD)));
         transportButtons.skipForward.setTooltip(styledTooltip(tooltipFor("Skip Forward", DawAction.SKIP_TO_END)));
         transportButtons.loop.setTooltip(styledTooltip(tooltipFor("Toggle Loop", DawAction.TOGGLE_LOOP)));
+        transportButtons.metronome.setTooltip(styledTooltip(
+                tooltipFor("Toggle Metronome", DawAction.TOGGLE_METRONOME) + " \u00b7 Right-click for options"));
 
         // ── Toolbar buttons ─────────────────────────────────────────────────
         toolbarButtons.addAudioTrack.setTooltip(styledTooltip(tooltipFor("Add Audio Track", DawAction.ADD_AUDIO_TRACK)));
