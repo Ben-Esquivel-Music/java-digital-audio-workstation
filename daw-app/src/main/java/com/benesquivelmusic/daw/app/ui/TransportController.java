@@ -104,6 +104,13 @@ final class TransportController {
     // ── Transport action handlers ────────────────────────────────────────────
 
     void onPlay() {
+        try {
+            audioEngine.startAudioOutput();
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Failed to start audio output", e);
+            notificationBar.show(NotificationLevel.ERROR,
+                    "Audio device error: " + e.getMessage());
+        }
         project.getTransport().play();
         host.startTimeTicker();
         updateStatus();
@@ -151,6 +158,7 @@ final class TransportController {
         }
 
         project.getTransport().stop();
+        audioEngine.stopAudioOutput();
         host.stopTimeTicker();
         updateStatus();
         timeDisplay.setText("00:00:00.0");
@@ -168,6 +176,7 @@ final class TransportController {
 
     void onPause() {
         project.getTransport().pause();
+        audioEngine.pauseAudioOutput();
         host.pauseTimeTicker();
         updateStatus();
         statusBarLabel.setText("Paused");
@@ -207,6 +216,14 @@ final class TransportController {
         recordingPipeline = new RecordingPipeline(
                 audioEngine, project.getTransport(), project.getFormat(), outputDir, armedTracks);
         recordingPipeline.start();
+
+        try {
+            audioEngine.startAudioOutput();
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Failed to start audio output for recording", e);
+            notificationBar.show(NotificationLevel.ERROR,
+                    "Audio device error: " + e.getMessage());
+        }
 
         host.startTimeTicker();
         updateStatus();
