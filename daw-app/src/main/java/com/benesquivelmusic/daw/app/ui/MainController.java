@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.app.ui.display.WaveformDisplay;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.audio.AudioBackendFactory;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
@@ -262,6 +263,11 @@ public final class MainController {
             }
         });
         audioEngine = new AudioEngine(project.getFormat());
+        try {
+            audioEngine.setAudioBackend(AudioBackendFactory.createDefault());
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Failed to create audio backend; playback will use UI timer only", e);
+        }
 
         CheckpointManager checkpointManager = new CheckpointManager(AutoSaveConfig.DEFAULT);
         Preferences prefs = Preferences.userNodeForPackage(MainController.class);

@@ -6,12 +6,18 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
+import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
+import com.benesquivelmusic.daw.sdk.audio.AudioStreamConfig;
+import com.benesquivelmusic.daw.sdk.audio.BufferSize;
 import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
+import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Central audio engine responsible for managing the audio processing pipeline.
@@ -36,6 +42,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class AudioEngine {
 
+    private static final Logger LOG = Logger.getLogger(AudioEngine.class.getName());
+
     /** Maximum number of tracks supported for pre-allocated buffers. */
     static final int MAX_TRACKS = 64;
 
@@ -45,6 +53,10 @@ public final class AudioEngine {
     private final EffectsChain masterChain;
     private AudioBufferPool bufferPool;
     private NativeAudioBackend audioBackend;
+
+    // Audio output stream state
+    private volatile boolean streamOpen;
+    private volatile boolean streamPaused;
 
     // Pre-allocated mix buffer used by processBlock
     private float[][] mixBuffer;
@@ -172,6 +184,114 @@ public final class AudioEngine {
      */
     public NativeAudioBackend getAudioBackend() {
         return audioBackend;
+    }
+
+    // ── Audio output stream lifecycle ────────────────────────────────────────
+
+    /**
+     * Starts audio output by opening and starting a stream on the configured
+     * {@link NativeAudioBackend}, registering {@link #processBlock} as the
+     * audio callback driven at the hardware buffer rate.
+     *
+     * <p>If the stream was previously paused via {@link #pauseAudioOutput()},
+     * this resumes it without re-opening the stream.</p>
+     *
+     * <p>If no audio backend is configured, the engine is started without
+     * hardware output (the transport will still advance via the UI timer).</p>
+     *
+     * @throws AudioBackendException if the stream cannot be opened or started
+     */
+    public void startAudioOutput() {
+        if (streamOpen && streamPaused) {
+            resumeAudioOutput();
+            return;
+        }
+
+        // Ensure the engine is running (pre-allocates buffers)
+        start();
+
+        NativeAudioBackend backend = this.audioBackend;
+        if (backend == null) {
+            LOG.info("No audio backend configured; playback without hardware output");
+            return;
+        }
+
+        backend.initialize();
+
+        AudioStreamConfig config = new AudioStreamConfig(
+                -1,                  // no input device
+                0,                   // default output device
+                0,                   // no input channels
+                format.channels(),
+                SampleRate.fromHz((int) format.sampleRate()),
+                BufferSize.fromFrames(format.bufferSize())
+        );
+
+        backend.openStream(config, this::processBlock);
+        streamOpen = true;
+
+        backend.startStream();
+        streamPaused = false;
+
+        LOG.info("Audio output started via " + backend.getBackendName());
+    }
+
+    /**
+     * Stops the audio output stream and closes it.
+     *
+     * <p>A subsequent call to {@link #startAudioOutput()} will open a fresh
+     * stream.</p>
+     */
+    public void stopAudioOutput() {
+        NativeAudioBackend backend = this.audioBackend;
+        if (backend != null && streamOpen) {
+            try {
+                backend.stopStream();
+                backend.closeStream();
+            } catch (AudioBackendException e) {
+                LOG.log(Level.WARNING, "Error stopping audio output stream", e);
+            }
+            streamOpen = false;
+            streamPaused = false;
+        }
+    }
+
+    /**
+     * Pauses audio output by stopping the stream without closing it,
+     * allowing a fast resume via {@link #startAudioOutput()}.
+     */
+    public void pauseAudioOutput() {
+        NativeAudioBackend backend = this.audioBackend;
+        if (backend != null && streamOpen && !streamPaused) {
+            backend.stopStream();
+            streamPaused = true;
+        }
+    }
+
+    /**
+     * Returns whether the audio output stream is currently open.
+     *
+     * @return {@code true} if a stream is open (active or paused)
+     */
+    public boolean isStreamOpen() {
+        return streamOpen;
+    }
+
+    /**
+     * Returns whether the audio output stream is paused.
+     *
+     * @return {@code true} if the stream is open but paused
+     */
+    public boolean isStreamPaused() {
+        return streamPaused;
+    }
+
+    private void resumeAudioOutput() {
+        NativeAudioBackend backend = this.audioBackend;
+        if (backend != null && streamOpen && streamPaused) {
+            backend.startStream();
+            streamPaused = false;
+        }
     }
 
     /**
