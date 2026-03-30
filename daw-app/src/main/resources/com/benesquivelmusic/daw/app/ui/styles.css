@@ -1280,3 +1280,14 @@
     -fx-font-weight: bold;
     -fx-font-size: 12px;
 }
+
+/* ── Track drag-and-drop indicators ── */
+.track-drop-above {
+    -fx-border-color: #7c4dff #2a2a2a #2a2a2a #2a2a2a;
+    -fx-border-width: 3 0 1 0;
+}
+
+.track-drop-below {
+    -fx-border-color: #2a2a2a #2a2a2a #7c4dff #2a2a2a;
+    -fx-border-width: 0 0 3 0;
+}
