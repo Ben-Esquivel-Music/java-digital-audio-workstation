@@ -16,7 +16,7 @@ An open-source, state-of-the-art Digital Audio Workstation (DAW) built with **Ja
 
 **Sound Wave Telemetry View** — top-down room visualizer showing sound sources, microphone placements, color-coded wave paths (cyan for direct, orange for reflected), animated energy particles, RT60 ambient glow, and actionable placement suggestions:
 
-![DAW Sound Wave Telemetry View](https://github.com/user-attachments/assets/b0bc18a7-1d45-4f60-9df2-1f84eefe2dee)
+![DAW Sound Wave Telemetry View](docs/screenshots/sound-wave-telemetry-hd.png)
 
 ## Project Structure
 
