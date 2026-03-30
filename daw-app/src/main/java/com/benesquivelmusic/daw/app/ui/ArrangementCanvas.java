@@ -41,6 +41,7 @@ public final class ArrangementCanvas extends Pane {
     static final Color WAVEFORM_COLOR = Color.web("#ffffff", 0.5);
     static final Color MIDI_NOTE_COLOR = Color.web("#ffffff", 0.7);
     static final Color PLAYHEAD_COLOR = Color.web("#ff5555");
+    static final Color TRIM_PREVIEW_COLOR = Color.web("#00E5FF", 0.8);
 
     private static final Font CLIP_LABEL_FONT = Font.font("SansSerif", 10);
     private static final double CLIP_CORNER_RADIUS = 4.0;
@@ -57,6 +58,7 @@ public final class ArrangementCanvas extends Pane {
      */
     static final double BEATS_PER_COLUMN = EditorView.BEATS_PER_COLUMN;
     private static final double PLAYHEAD_WIDTH = 2.0;
+    private static final double TRIM_PREVIEW_LINE_WIDTH = 2.0;
 
     private final Canvas canvas;
 
@@ -67,6 +69,8 @@ public final class ArrangementCanvas extends Pane {
     private double trackHeight = TrackHeightZoom.DEFAULT_TRACK_HEIGHT;
     private double playheadBeat = -1.0;
     private boolean autoScroll = true;
+    private double trimPreviewBeat = -1.0;
+    private int trimPreviewTrackIndex = -1;
 
     /**
      * Creates an empty arrangement canvas.
@@ -171,6 +175,19 @@ public final class ArrangementCanvas extends Pane {
         redraw();
     }
 
+    /**
+     * Sets the trim preview position for rendering a ghost line during
+     * clip edge trimming. Pass a negative beat to hide the preview.
+     *
+     * @param beat       the preview beat position, or negative to hide
+     * @param trackIndex the track lane index to render the preview in
+     */
+    void setTrimPreview(double beat, int trackIndex) {
+        this.trimPreviewBeat = beat;
+        this.trimPreviewTrackIndex = trackIndex;
+        redraw();
+    }
+
     // ── Getters (for testing) ──────────────────────────────────────────────
 
     double getPixelsPerBeat() {
@@ -193,6 +210,14 @@ public final class ArrangementCanvas extends Pane {
         return playheadBeat;
     }
 
+    double getTrimPreviewBeat() {
+        return trimPreviewBeat;
+    }
+
+    int getTrimPreviewTrackIndex() {
+        return trimPreviewTrackIndex;
+    }
+
     // ── Rendering ──────────────────────────────────────────────────────────
 
     private void redraw() {
@@ -207,6 +232,7 @@ public final class ArrangementCanvas extends Pane {
 
         drawTrackLanes(gc, w, h);
         drawClips(gc, w, h);
+        drawTrimPreview(gc, w, h);
         drawPlayhead(gc, w, h);
     }
 
@@ -512,6 +538,29 @@ public final class ArrangementCanvas extends Pane {
         }
         gc.setFill(PLAYHEAD_COLOR);
         gc.fillRect(x - PLAYHEAD_WIDTH / 2.0, 0, PLAYHEAD_WIDTH, canvasHeight);
+    }
+
+    private void drawTrimPreview(GraphicsContext gc, double canvasWidth, double canvasHeight) {
+        if (trimPreviewBeat < 0 || trimPreviewTrackIndex < 0) {
+            return;
+        }
+        double x = (trimPreviewBeat - scrollXBeats) * pixelsPerBeat;
+        if (x < 0 || x > canvasWidth) {
+            return;
+        }
+        double laneY = trimPreviewTrackIndex * trackHeight - scrollYPixels;
+        double laneBottom = laneY + trackHeight;
+        if (laneBottom < 0 || laneY > canvasHeight) {
+            return;
+        }
+        double drawY = Math.max(0, laneY + CLIP_INSET);
+        double drawBottom = Math.min(canvasHeight, laneBottom - CLIP_INSET);
+        if (drawBottom <= drawY) {
+            return;
+        }
+        gc.setStroke(TRIM_PREVIEW_COLOR);
+        gc.setLineWidth(TRIM_PREVIEW_LINE_WIDTH);
+        gc.strokeLine(x, drawY, x, drawBottom);
     }
 
     private Color parseTrackColor(Track track) {

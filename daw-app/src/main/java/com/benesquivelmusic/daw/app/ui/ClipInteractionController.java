@@ -47,12 +47,16 @@ final class ClipInteractionController {
         double scrollXBeats();
         double scrollYPixels();
         double trackHeight();
+        boolean snapEnabled();
+        GridResolution gridResolution();
+        int beatsPerBar();
         void refreshCanvas();
         void seekToPosition(double beat);
     }
 
     private final ArrangementCanvas canvas;
     private final Host host;
+    private final ClipTrimHandler trimHandler;
 
     // Drag state for pointer tool
     private AudioClip dragClip;
@@ -62,6 +66,18 @@ final class ClipInteractionController {
     ClipInteractionController(ArrangementCanvas canvas, Host host) {
         this.canvas = Objects.requireNonNull(canvas, "canvas must not be null");
         this.host = Objects.requireNonNull(host, "host must not be null");
+        this.trimHandler = new ClipTrimHandler(new ClipTrimHandler.Host() {
+            @Override public double pixelsPerBeat() { return host.pixelsPerBeat(); }
+            @Override public double scrollXBeats() { return host.scrollXBeats(); }
+            @Override public double scrollYPixels() { return host.scrollYPixels(); }
+            @Override public double trackHeight() { return host.trackHeight(); }
+            @Override public List<Track> tracks() { return host.tracks(); }
+            @Override public UndoManager undoManager() { return host.undoManager(); }
+            @Override public boolean snapEnabled() { return host.snapEnabled(); }
+            @Override public GridResolution gridResolution() { return host.gridResolution(); }
+            @Override public int beatsPerBar() { return host.beatsPerBar(); }
+            @Override public void refreshCanvas() { host.refreshCanvas(); }
+        });
     }
 
     /**
@@ -134,6 +150,19 @@ final class ClipInteractionController {
         int trackIndex = trackIndexAt(event.getY());
         double beat = beatAt(event.getX());
 
+        // Check for trim edge activation before normal tool handling
+        if (host.activeTool() == EditTool.POINTER && trackIndex >= 0) {
+            ClipTrimHandler.TrimEdge edge = trimHandler.detectEdge(event.getX(), event.getY());
+            if (edge != null) {
+                AudioClip clip = trimHandler.clipAtEdge(event.getX(), event.getY());
+                if (clip != null) {
+                    trimHandler.beginTrim(clip, edge);
+                    canvas.setCursor(Cursor.H_RESIZE);
+                    return;
+                }
+            }
+        }
+
         if (trackIndex < 0) {
             if (host.activeTool() == EditTool.POINTER) {
                 host.seekToPosition(beat);
@@ -152,6 +181,11 @@ final class ClipInteractionController {
     }
 
     private void onMouseDragged(MouseEvent event) {
+        if (trimHandler.isTrimming()) {
+            int trackIndex = trackIndexAt(event.getY());
+            trimHandler.updateTrim(event.getX(), trackIndex);
+            return;
+        }
         if (host.activeTool() != EditTool.POINTER || dragClip == null) {
             return;
         }
@@ -159,6 +193,11 @@ final class ClipInteractionController {
     }
 
     private void onMouseReleased(MouseEvent event) {
+        if (trimHandler.isTrimming()) {
+            trimHandler.completeTrim(event.getX());
+            updateCursor();
+            return;
+        }
         if (host.activeTool() != EditTool.POINTER || dragClip == null) {
             return;
         }
@@ -187,7 +226,14 @@ final class ClipInteractionController {
     }
 
     private void onMouseMoved(MouseEvent event) {
-        // Cursor is already set per tool; nothing additional needed
+        if (host.activeTool() == EditTool.POINTER) {
+            ClipTrimHandler.TrimEdge edge = trimHandler.detectEdge(event.getX(), event.getY());
+            if (edge != null) {
+                canvas.setCursor(Cursor.H_RESIZE);
+                return;
+            }
+        }
+        updateCursor();
     }
 
     // ── Tool-specific handlers ───────────────────────────────────────────────
@@ -262,5 +308,13 @@ final class ClipInteractionController {
                 return;
             }
         }
+    }
+
+    /**
+     * Returns the trim handler for use by the arrangement canvas when
+     * rendering trim previews.
+     */
+    ClipTrimHandler getTrimHandler() {
+        return trimHandler;
     }
 }
