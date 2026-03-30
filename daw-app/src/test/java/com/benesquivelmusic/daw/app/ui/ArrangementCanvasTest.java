@@ -359,4 +359,66 @@ class ArrangementCanvasTest {
         });
         assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
     }
+
+    // ── Playhead getter ─────────────────────────────────────────────────────
+
+    @Test
+    void shouldReturnPlayheadBeat() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        AtomicReference<ArrangementCanvas> ref = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setPlayheadBeat(8.5);
+                ref.set(canvas);
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(ref.get().getPlayheadBeat()).isEqualTo(8.5);
+    }
+
+    // ── Seek listener ───────────────────────────────────────────────────────
+
+    @Test
+    void shouldRejectNullSeekListener() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        AtomicReference<ArrangementCanvas> ref = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ref.set(new ArrangementCanvas());
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(ref.get()).isNotNull();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> ref.get().addSeekListener(null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    // ── Auto-scroll toggle ──────────────────────────────────────────────────
+
+    @Test
+    void shouldToggleAutoScroll() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setAutoScroll(false);
+                canvas.setPlayheadBeat(100.0);
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+    }
 }

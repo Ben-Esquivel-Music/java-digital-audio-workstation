@@ -13,7 +13,10 @@ import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.TextAlignment;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.function.Consumer;
 
 /**
  * Renders horizontal track lanes with audio and MIDI clip rectangles
@@ -59,6 +62,7 @@ public final class ArrangementCanvas extends Pane {
     private static final double PLAYHEAD_WIDTH = 2.0;
 
     private final Canvas canvas;
+    private final List<Consumer<Double>> seekListeners = new ArrayList<>();
 
     private List<Track> tracks = List.of();
     private double pixelsPerBeat = ArrangementNavigator.BASE_PIXELS_PER_BEAT;
@@ -66,6 +70,7 @@ public final class ArrangementCanvas extends Pane {
     private double scrollYPixels;
     private double trackHeight = TrackHeightZoom.DEFAULT_TRACK_HEIGHT;
     private double playheadBeat = -1.0;
+    private boolean autoScroll = true;
 
     /**
      * Creates an empty arrangement canvas.
@@ -144,7 +149,29 @@ public final class ArrangementCanvas extends Pane {
      */
     public void setPlayheadBeat(double beat) {
         this.playheadBeat = beat;
+        if (autoScroll && beat >= 0) {
+            ensurePlayheadVisible();
+        }
         redraw();
+    }
+
+    /**
+     * Adds a listener that is called when the user clicks on the canvas to seek.
+     *
+     * @param listener a consumer receiving the beat position of the click
+     */
+    public void addSeekListener(Consumer<Double> listener) {
+        seekListeners.add(Objects.requireNonNull(listener, "listener must not be null"));
+    }
+
+    /**
+     * Enables or disables automatic horizontal scrolling to keep the
+     * playhead visible during playback.
+     *
+     * @param autoScroll {@code true} to enable auto-scroll
+     */
+    public void setAutoScroll(boolean autoScroll) {
+        this.autoScroll = autoScroll;
     }
 
     /**
@@ -170,6 +197,10 @@ public final class ArrangementCanvas extends Pane {
 
     double getTrackHeight() {
         return trackHeight;
+    }
+
+    double getPlayheadBeat() {
+        return playheadBeat;
     }
 
     // ── Rendering ──────────────────────────────────────────────────────────
@@ -499,6 +530,33 @@ public final class ArrangementCanvas extends Pane {
             return Color.web(hex);
         } catch (IllegalArgumentException e) {
             return Color.web("#3498DB");
+        }
+    }
+
+    /**
+     * Auto-scrolls the horizontal offset to keep the playhead in view.
+     * Uses the same approach as {@link TimelineRuler#ensurePlayheadVisible()}.
+     */
+    private void ensurePlayheadVisible() {
+        double viewWidthBeats = canvas.getWidth() / pixelsPerBeat;
+        if (viewWidthBeats <= 0) {
+            return;
+        }
+        if (playheadBeat < scrollXBeats) {
+            scrollXBeats = playheadBeat;
+        } else if (playheadBeat > scrollXBeats + viewWidthBeats * 0.9) {
+            scrollXBeats = playheadBeat - viewWidthBeats * 0.1;
+        }
+    }
+
+    /**
+     * Notifies all registered seek listeners of a beat position.
+     *
+     * @param beat the beat position to seek to
+     */
+    void fireSeekListeners(double beat) {
+        for (Consumer<Double> listener : seekListeners) {
+            listener.accept(beat);
         }
     }
 }

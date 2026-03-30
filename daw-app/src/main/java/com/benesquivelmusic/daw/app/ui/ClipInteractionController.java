@@ -48,6 +48,7 @@ final class ClipInteractionController {
         double scrollYPixels();
         double trackHeight();
         void refreshCanvas();
+        void seekToPosition(double beat);
     }
 
     private final ArrangementCanvas canvas;
@@ -131,11 +132,15 @@ final class ClipInteractionController {
             return;
         }
         int trackIndex = trackIndexAt(event.getY());
+        double beat = beatAt(event.getX());
+
         if (trackIndex < 0) {
+            if (host.activeTool() == EditTool.POINTER) {
+                host.seekToPosition(beat);
+            }
             return;
         }
         Track track = host.tracks().get(trackIndex);
-        double beat = beatAt(event.getX());
 
         switch (host.activeTool()) {
             case POINTER -> handlePointerPress(track, beat, event);
@@ -190,6 +195,7 @@ final class ClipInteractionController {
     private void handlePointerPress(Track track, double beat, MouseEvent event) {
         AudioClip clip = clipAt(track, beat);
         if (clip == null) {
+            host.seekToPosition(beat);
             return;
         }
         dragClip = clip;

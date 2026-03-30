@@ -54,6 +54,7 @@ final class AnimationController {
     private long timeTickerStartNanos;
     private boolean timeTickerRunning;
     private long timeTickerPausedElapsedNanos;
+    private Runnable playheadUpdateCallback;
 
     AnimationController(SpectrumDisplay spectrumDisplay,
                         LevelMeterDisplay levelMeterDisplay,
@@ -103,6 +104,11 @@ final class AnimationController {
                 // Transport glow on play and record buttons
                 applyTransportGlow(state);
 
+                // Playhead position update (reads from transport each frame)
+                if (playheadUpdateCallback != null) {
+                    playheadUpdateCallback.run();
+                }
+
                 // Idle visualization (always runs to keep displays alive)
                 tickIdleVisualization(delta);
             }
@@ -115,6 +121,16 @@ final class AnimationController {
         if (mainAnimTimer != null) {
             mainAnimTimer.stop();
         }
+    }
+
+    /**
+     * Sets a callback invoked each animation frame to update the playhead
+     * position in the arrangement view from the transport's current beat.
+     *
+     * @param callback the callback to invoke, or {@code null} to clear
+     */
+    void setPlayheadUpdateCallback(Runnable callback) {
+        this.playheadUpdateCallback = callback;
     }
 
     // ── Time ticker ──────────────────────────────────────────────────────────
