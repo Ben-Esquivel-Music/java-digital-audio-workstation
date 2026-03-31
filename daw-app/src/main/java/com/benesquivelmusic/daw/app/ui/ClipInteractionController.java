@@ -7,6 +7,12 @@ import com.benesquivelmusic.daw.core.audio.GlueClipsAction;
 import com.benesquivelmusic.daw.core.audio.MoveClipAction;
 import com.benesquivelmusic.daw.core.audio.RemoveClipAction;
 import com.benesquivelmusic.daw.core.audio.SplitClipAction;
+import com.benesquivelmusic.daw.core.automation.AddAutomationPointAction;
+import com.benesquivelmusic.daw.core.automation.AutomationLane;
+import com.benesquivelmusic.daw.core.automation.AutomationParameter;
+import com.benesquivelmusic.daw.core.automation.AutomationPoint;
+import com.benesquivelmusic.daw.core.automation.MoveAutomationPointAction;
+import com.benesquivelmusic.daw.core.automation.RemoveAutomationPointAction;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 
@@ -63,6 +69,13 @@ final class ClipInteractionController {
     private Track dragSourceTrack;
     private double dragStartBeat;
 
+    // Drag state for automation breakpoint moves
+    private AutomationPoint dragAutomationPoint;
+    private AutomationLane dragAutomationLane;
+    private int dragAutomationTrackIndex = -1;
+    private double dragAutomationOriginalBeat;
+    private double dragAutomationOriginalValue;
+
     ClipInteractionController(ArrangementCanvas canvas, Host host) {
         this.canvas = Objects.requireNonNull(canvas, "canvas must not be null");
         this.host = Objects.requireNonNull(host, "host must not be null");
@@ -77,6 +90,7 @@ final class ClipInteractionController {
             @Override public GridResolution gridResolution() { return host.gridResolution(); }
             @Override public int beatsPerBar() { return host.beatsPerBar(); }
             @Override public void refreshCanvas() { host.refreshCanvas(); }
+            @Override public int trackIndexAtY(double y) { return canvas.trackIndexAtY(y); }
         });
     }
 
@@ -113,12 +127,7 @@ final class ClipInteractionController {
      * @return the track index, or -1 if outside all lanes
      */
     int trackIndexAt(double y) {
-        double adjustedY = y + host.scrollYPixels();
-        int index = (int) Math.floor(adjustedY / host.trackHeight());
-        if (index < 0 || index >= host.tracks().size()) {
-            return -1;
-        }
-        return index;
+        return canvas.trackIndexAtY(y);
     }
 
     /**
@@ -144,11 +153,69 @@ final class ClipInteractionController {
     // ── Mouse event handlers ─────────────────────────────────────────────────
 
     private void onMousePressed(MouseEvent event) {
+        int trackIndex = trackIndexAt(event.getY());
+        double beat = beatAt(event.getX());
+
+        // ── Automation lane interaction ─────────────────────────────────────
+        if (trackIndex >= 0 && canvas.isYInAutomationLane(event.getY())) {
+            Track track = host.tracks().get(trackIndex);
+            AutomationParameter param = canvas.getAutomationParameter(track);
+            if (param != null) {
+                AutomationLane lane = track.getAutomationData().getLane(param);
+                double autoLaneY = canvas.automationLaneY(trackIndex);
+                double autoLaneH = AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
+
+                AutomationPoint hitPoint = lane == null ? null
+                        : AutomationLaneRenderer.hitTestBreakpoint(
+                                lane, event.getX(), event.getY(), param,
+                                autoLaneY, autoLaneH,
+                                host.pixelsPerBeat(), host.scrollXBeats());
+
+                if (event.getButton() == MouseButton.SECONDARY
+                        || host.activeTool() == EditTool.ERASER) {
+                    // Right-click or Eraser tool → remove breakpoint
+                    if (hitPoint != null) {
+                        host.undoManager().execute(
+                                new RemoveAutomationPointAction(lane, hitPoint));
+                        host.refreshCanvas();
+                    }
+                    return;
+                }
+
+                if (event.getButton() != MouseButton.PRIMARY) {
+                    return;
+                }
+
+                if (hitPoint != null) {
+                    // Start dragging an existing breakpoint
+                    dragAutomationPoint = hitPoint;
+                    dragAutomationLane = lane;
+                    dragAutomationTrackIndex = trackIndex;
+                    dragAutomationOriginalBeat = hitPoint.getTimeInBeats();
+                    dragAutomationOriginalValue = hitPoint.getValue();
+                    canvas.setCursor(Cursor.MOVE);
+                } else {
+                    // Click on empty area → add a new breakpoint
+                    double value = AutomationLaneRenderer.yToValue(
+                            event.getY(), param, autoLaneY, autoLaneH);
+                    value = Math.max(param.getMinValue(),
+                            Math.min(param.getMaxValue(), value));
+                    AutomationPoint newPoint = new AutomationPoint(
+                            Math.max(0, beat), value);
+                    AutomationLane addLane = track.getAutomationData()
+                            .getOrCreateLane(param);
+                    host.undoManager().execute(
+                            new AddAutomationPointAction(addLane, newPoint));
+                    host.refreshCanvas();
+                }
+                return;
+            }
+        }
+
+        // ── Normal clip interaction (primary button only) ───────────────────
         if (event.getButton() != MouseButton.PRIMARY) {
             return;
         }
-        int trackIndex = trackIndexAt(event.getY());
-        double beat = beatAt(event.getX());
 
         // Check for trim edge activation before normal tool handling
         if (host.activeTool() == EditTool.POINTER && trackIndex >= 0) {
@@ -178,6 +245,26 @@ final class ClipInteractionController {
     }
 
     private void onMouseDragged(MouseEvent event) {
+        // Automation breakpoint dragging
+        if (dragAutomationPoint != null && dragAutomationLane != null) {
+            Track track = host.tracks().get(dragAutomationTrackIndex);
+            AutomationParameter param = canvas.getAutomationParameter(track);
+            if (param != null) {
+                double autoLaneY = canvas.automationLaneY(dragAutomationTrackIndex);
+                double autoLaneH = AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
+                double newBeat = Math.max(0, beatAt(event.getX()));
+                double newValue = AutomationLaneRenderer.yToValue(
+                        event.getY(), param, autoLaneY, autoLaneH);
+                newValue = Math.max(param.getMinValue(),
+                        Math.min(param.getMaxValue(), newValue));
+                dragAutomationPoint.setTimeInBeats(newBeat);
+                dragAutomationPoint.setValue(newValue);
+                dragAutomationLane.sortPoints();
+                host.refreshCanvas();
+            }
+            return;
+        }
+
         if (trimHandler.isTrimming()) {
             int trackIndex = trackIndexAt(event.getY());
             // updateTrim applies the trim and computes the clamped preview beat
@@ -194,6 +281,43 @@ final class ClipInteractionController {
     }
 
     private void onMouseReleased(MouseEvent event) {
+        // Complete automation breakpoint drag — register undo action
+        if (dragAutomationPoint != null && dragAutomationLane != null) {
+            Track track = host.tracks().get(dragAutomationTrackIndex);
+            AutomationParameter param = canvas.getAutomationParameter(track);
+            if (param != null) {
+                double autoLaneY = canvas.automationLaneY(dragAutomationTrackIndex);
+                double autoLaneH = AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
+                double newBeat = Math.max(0, beatAt(event.getX()));
+                double newValue = AutomationLaneRenderer.yToValue(
+                        event.getY(), param, autoLaneY, autoLaneH);
+                newValue = Math.max(param.getMinValue(),
+                        Math.min(param.getMaxValue(), newValue));
+                // Restore original position so MoveAutomationPointAction can
+                // capture the correct before/after state
+                dragAutomationPoint.setTimeInBeats(dragAutomationOriginalBeat);
+                dragAutomationPoint.setValue(dragAutomationOriginalValue);
+                dragAutomationLane.sortPoints();
+                host.undoManager().execute(new MoveAutomationPointAction(
+                        dragAutomationLane, dragAutomationPoint,
+                        newBeat, newValue));
+                host.refreshCanvas();
+            } else {
+                // Lane collapsed or parameter cleared mid-drag — restore
+                // the point to its original position to avoid leaving it
+                // stranded at the preview position with no undo action.
+                dragAutomationPoint.setTimeInBeats(dragAutomationOriginalBeat);
+                dragAutomationPoint.setValue(dragAutomationOriginalValue);
+                dragAutomationLane.sortPoints();
+                host.refreshCanvas();
+            }
+            dragAutomationPoint = null;
+            dragAutomationLane = null;
+            dragAutomationTrackIndex = -1;
+            updateCursor();
+            return;
+        }
+
         if (trimHandler.isTrimming()) {
             // Clear the visual trim preview before completing the trim so that
             // any refresh triggered inside completeTrim() does not render a

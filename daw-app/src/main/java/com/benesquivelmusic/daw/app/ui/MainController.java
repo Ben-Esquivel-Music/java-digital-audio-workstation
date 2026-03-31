@@ -494,6 +494,9 @@ public final class MainController {
         arrangementCanvas.prefHeightProperty().bind(arrangementContentPane.heightProperty());
         refreshArrangementCanvas();
 
+        // Connect the track strip controller so it can toggle automation lanes
+        trackStripController.setArrangementCanvas(arrangementCanvas);
+
         // Create timeline ruler and insert it into the arrangement VBox above the canvas
         timelineRuler = new TimelineRuler(project.getTransport());
         javafx.scene.Parent contentParent = arrangementContentPane.getParent();
