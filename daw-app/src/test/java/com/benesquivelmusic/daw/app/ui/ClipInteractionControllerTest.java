@@ -87,6 +87,9 @@ class ClipInteractionControllerTest {
             @Override public double scrollXBeats() { return scrollXBeats; }
             @Override public double scrollYPixels() { return scrollYPixels; }
             @Override public double trackHeight() { return trackHeight; }
+            @Override public boolean snapEnabled() { return false; }
+            @Override public GridResolution gridResolution() { return GridResolution.QUARTER; }
+            @Override public int beatsPerBar() { return 4; }
             @Override public void refreshCanvas() { refreshCount++; }
             @Override public void seekToPosition(double beat) { seekedPosition = beat; }
         };

@@ -531,6 +531,15 @@ public final class MainController {
                     @Override public double trackHeight() {
                         return arrangementCanvas.getTrackHeight();
                     }
+                    @Override public boolean snapEnabled() {
+                        return viewNavigationController.isSnapEnabled();
+                    }
+                    @Override public GridResolution gridResolution() {
+                        return viewNavigationController.getGridResolution();
+                    }
+                    @Override public int beatsPerBar() {
+                        return project.getTransport().getTimeSignatureNumerator();
+                    }
                     @Override public void refreshCanvas() { refreshArrangementCanvas(); }
                     @Override public void seekToPosition(double beat) {
                         MainController.this.seekToPosition(beat);
