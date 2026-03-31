@@ -3,8 +3,21 @@ package com.benesquivelmusic.daw.core.persistence;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.FadeCurveType;
+import com.benesquivelmusic.daw.core.audio.StretchQuality;
+import com.benesquivelmusic.daw.core.automation.AutomationLane;
+import com.benesquivelmusic.daw.core.automation.AutomationParameter;
+import com.benesquivelmusic.daw.core.automation.AutomationPoint;
+import com.benesquivelmusic.daw.core.automation.InterpolationMode;
+import com.benesquivelmusic.daw.core.marker.Marker;
+import com.benesquivelmusic.daw.core.marker.MarkerRange;
+import com.benesquivelmusic.daw.core.marker.MarkerType;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
+import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
+import com.benesquivelmusic.daw.core.mixer.InsertEffectType;
+import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.mixer.Send;
+import com.benesquivelmusic.daw.core.mixer.SendMode;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackColor;
@@ -125,6 +138,18 @@ public final class ProjectDeserializer {
             parseMixer(mixerElements.getFirst(), project);
         }
 
+        // Parse markers
+        List<Element> markersContainers = getDirectChildElements(root, "markers");
+        if (!markersContainers.isEmpty()) {
+            parseMarkers(markersContainers.getFirst(), project);
+        }
+
+        // Parse track groups
+        List<Element> trackGroupsContainers = getDirectChildElements(root, "track-groups");
+        if (!trackGroupsContainers.isEmpty()) {
+            parseTrackGroups(trackGroupsContainers.getFirst(), project);
+        }
+
         return project;
     }
 
@@ -171,6 +196,12 @@ public final class ProjectDeserializer {
         track.setSolo(parseBooleanAttr(elem, "solo"));
         track.setArmed(parseBooleanAttr(elem, "armed"));
         track.setPhaseInverted(parseBooleanAttr(elem, "phase-inverted"));
+        track.setCollapsed(parseBooleanAttr(elem, "collapsed"));
+
+        int inputDevice = parseIntAttr(elem, "input-device", Track.NO_INPUT_DEVICE);
+        if (inputDevice >= Track.NO_INPUT_DEVICE) {
+            track.setInputDeviceIndex(inputDevice);
+        }
 
         String colorHex = elem.getAttribute("color");
         if (!colorHex.isEmpty()) {
@@ -200,6 +231,12 @@ public final class ProjectDeserializer {
             }
         }
 
+        // Parse automation data
+        List<Element> automationContainers = getDirectChildElements(elem, "automation");
+        if (!automationContainers.isEmpty()) {
+            parseAutomationData(automationContainers.getFirst(), track);
+        }
+
         return track;
     }
 
@@ -224,6 +261,18 @@ public final class ProjectDeserializer {
         clip.setFadeOutBeats(Math.max(0.0, parseDoubleAttr(elem, "fade-out-beats", 0.0)));
         clip.setFadeInCurveType(parseFadeCurveType(elem.getAttribute("fade-in-curve")));
         clip.setFadeOutCurveType(parseFadeCurveType(elem.getAttribute("fade-out-curve")));
+
+        double stretchRatio = parseDoubleAttr(elem, "time-stretch-ratio", 1.0);
+        if (stretchRatio >= 0.25 && stretchRatio <= 4.0) {
+            clip.setTimeStretchRatio(stretchRatio);
+        }
+
+        double pitchShift = parseDoubleAttr(elem, "pitch-shift-semitones", 0.0);
+        if (pitchShift >= -24.0 && pitchShift <= 24.0) {
+            clip.setPitchShiftSemitones(pitchShift);
+        }
+
+        clip.setStretchQuality(parseStretchQuality(elem.getAttribute("stretch-quality")));
 
         return clip;
     }
@@ -250,7 +299,7 @@ public final class ProjectDeserializer {
         // Parse master channel
         List<Element> masterElements = getDirectChildElements(mixerElem, "master");
         if (!masterElements.isEmpty()) {
-            applyMixerChannelAttrs(masterElements.getFirst(), project.getMixer().getMasterChannel());
+            applyMixerChannelAttrs(masterElements.getFirst(), project.getMixer().getMasterChannel(), project);
         }
 
         // Parse return buses — apply settings to existing return buses
@@ -271,7 +320,7 @@ public final class ProjectDeserializer {
                     }
                     bus = project.getMixer().addReturnBus(busName);
                 }
-                applyMixerChannelAttrs(rbElem, bus);
+                applyMixerChannelAttrs(rbElem, bus, project);
             }
         }
 
@@ -283,12 +332,12 @@ public final class ProjectDeserializer {
             List<MixerChannel> existingChannels = project.getMixer().getChannels();
             int count = Math.min(channelElements.size(), existingChannels.size());
             for (int i = 0; i < count; i++) {
-                applyMixerChannelAttrs(channelElements.get(i), existingChannels.get(i));
+                applyMixerChannelAttrs(channelElements.get(i), existingChannels.get(i), project);
             }
         }
     }
 
-    private void applyMixerChannelAttrs(Element elem, MixerChannel channel) {
+    private void applyMixerChannelAttrs(Element elem, MixerChannel channel, DawProject project) {
         double volume = clampDouble(parseDoubleAttr(elem, "volume", 1.0), 0.0, 1.0);
         channel.setVolume(volume);
 
@@ -302,6 +351,144 @@ public final class ProjectDeserializer {
         channel.setSendLevel(sendLevel);
 
         channel.setPhaseInverted(parseBooleanAttr(elem, "phase-inverted"));
+
+        // Parse insert effect slots
+        List<Element> insertsContainers = getDirectChildElements(elem, "inserts");
+        if (!insertsContainers.isEmpty()) {
+            List<Element> insertElements = getDirectChildElements(insertsContainers.getFirst(), "insert");
+            for (Element insertElem : insertElements) {
+                parseInsertSlot(insertElem, channel, project);
+            }
+        }
+
+        // Parse sends
+        List<Element> sendsContainers = getDirectChildElements(elem, "sends");
+        if (!sendsContainers.isEmpty()) {
+            List<Element> sendElements = getDirectChildElements(sendsContainers.getFirst(), "send");
+            List<MixerChannel> returnBuses = project.getMixer().getReturnBuses();
+            for (Element sendElem : sendElements) {
+                parseSend(sendElem, channel, returnBuses);
+            }
+        }
+    }
+
+    private void parseInsertSlot(Element elem, MixerChannel channel, DawProject project) {
+        String effectTypeStr = elem.getAttribute("effect-type");
+        if (effectTypeStr.isEmpty()) {
+            return;
+        }
+        try {
+            InsertEffectType effectType = InsertEffectType.valueOf(effectTypeStr);
+            if (effectType == InsertEffectType.CLAP_PLUGIN) {
+                return;
+            }
+            int channels = project.getFormat().channels();
+            double sampleRate = project.getFormat().sampleRate();
+            InsertSlot slot = InsertEffectFactory.createSlot(effectType, channels, sampleRate);
+            if (parseBooleanAttr(elem, "bypassed")) {
+                slot.setBypassed(true);
+            }
+            channel.addInsert(slot);
+        } catch (IllegalArgumentException ignored) {
+            // skip unknown effect types
+        }
+    }
+
+    private void parseSend(Element sendElem, MixerChannel channel, List<MixerChannel> returnBuses) {
+        int targetIndex = parseIntAttr(sendElem, "target-index", -1);
+        if (targetIndex < 0 || targetIndex >= returnBuses.size()) {
+            return;
+        }
+        MixerChannel target = returnBuses.get(targetIndex);
+        double level = clampDouble(parseDoubleAttr(sendElem, "level", 0.0), 0.0, 1.0);
+        SendMode mode = parseSendMode(sendElem.getAttribute("mode"));
+        channel.addSend(new Send(target, level, mode));
+    }
+
+    private void parseAutomationData(Element automationElem, Track track) {
+        List<Element> laneElements = getDirectChildElements(automationElem, "lane");
+        for (Element laneElem : laneElements) {
+            String paramStr = laneElem.getAttribute("parameter");
+            AutomationParameter parameter = parseAutomationParameter(paramStr);
+            if (parameter == null) {
+                continue;
+            }
+            AutomationLane lane = track.getAutomationData().getOrCreateLane(parameter);
+            lane.setVisible(parseBooleanAttr(laneElem, "visible"));
+
+            List<Element> pointElements = getDirectChildElements(laneElem, "point");
+            for (Element pointElem : pointElements) {
+                double time = parseDoubleAttr(pointElem, "time", 0.0);
+                double value = parseDoubleAttr(pointElem, "value", parameter.getDefaultValue());
+                InterpolationMode interpolation = parseInterpolationMode(
+                        pointElem.getAttribute("interpolation"));
+
+                if (time >= 0.0 && parameter.isValidValue(value)) {
+                    lane.addPoint(new AutomationPoint(time, value, interpolation));
+                }
+            }
+        }
+    }
+
+    private void parseMarkers(Element markersElem, DawProject project) {
+        List<Element> markerElements = getDirectChildElements(markersElem, "marker");
+        for (Element markerElem : markerElements) {
+            String name = markerElem.getAttribute("name");
+            if (name.isEmpty()) {
+                name = "Marker";
+            }
+            double position = parseDoubleAttr(markerElem, "position", 0.0);
+            MarkerType type = parseMarkerType(markerElem.getAttribute("type"));
+            if (position >= 0.0) {
+                Marker marker = new Marker(name, position, type);
+                String color = markerElem.getAttribute("color");
+                if (!color.isEmpty()) {
+                    marker.setColor(color);
+                }
+                project.getMarkerManager().addMarker(marker);
+            }
+        }
+
+        List<Element> rangeElements = getDirectChildElements(markersElem, "marker-range");
+        for (Element rangeElem : rangeElements) {
+            String name = rangeElem.getAttribute("name");
+            if (name.isEmpty()) {
+                name = "Range";
+            }
+            double start = parseDoubleAttr(rangeElem, "start", 0.0);
+            double end = parseDoubleAttr(rangeElem, "end", 1.0);
+            MarkerType type = parseMarkerType(rangeElem.getAttribute("type"));
+            if (start >= 0.0 && end > start) {
+                MarkerRange range = new MarkerRange(name, start, end, type);
+                String color = rangeElem.getAttribute("color");
+                if (!color.isEmpty()) {
+                    range.setColor(color);
+                }
+                project.getMarkerManager().addMarkerRange(range);
+            }
+        }
+    }
+
+    private void parseTrackGroups(Element groupsElem, DawProject project) {
+        List<Element> groupElements = getDirectChildElements(groupsElem, "group");
+        List<Track> allTracks = project.getTracks();
+        for (Element groupElem : groupElements) {
+            String name = groupElem.getAttribute("name");
+            if (name.isEmpty()) {
+                name = "Group";
+            }
+            List<Element> memberElements = getDirectChildElements(groupElem, "member");
+            List<Track> memberTracks = new ArrayList<>();
+            for (Element memberElem : memberElements) {
+                int trackIndex = parseIntAttr(memberElem, "track-index", -1);
+                if (trackIndex >= 0 && trackIndex < allTracks.size()) {
+                    memberTracks.add(allTracks.get(trackIndex));
+                }
+            }
+            if (!memberTracks.isEmpty()) {
+                project.createTrackGroup(name, memberTracks);
+            }
+        }
     }
 
     private TrackType parseTrackType(String typeStr) {
@@ -323,6 +510,61 @@ public final class ProjectDeserializer {
             return FadeCurveType.valueOf(value);
         } catch (IllegalArgumentException e) {
             return FadeCurveType.LINEAR;
+        }
+    }
+
+    private StretchQuality parseStretchQuality(String value) {
+        if (value == null || value.isEmpty()) {
+            return StretchQuality.MEDIUM;
+        }
+        try {
+            return StretchQuality.valueOf(value);
+        } catch (IllegalArgumentException e) {
+            return StretchQuality.MEDIUM;
+        }
+    }
+
+    private InterpolationMode parseInterpolationMode(String value) {
+        if (value == null || value.isEmpty()) {
+            return InterpolationMode.LINEAR;
+        }
+        try {
+            return InterpolationMode.valueOf(value);
+        } catch (IllegalArgumentException e) {
+            return InterpolationMode.LINEAR;
+        }
+    }
+
+    private AutomationParameter parseAutomationParameter(String value) {
+        if (value == null || value.isEmpty()) {
+            return null;
+        }
+        try {
+            return AutomationParameter.valueOf(value);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    private MarkerType parseMarkerType(String value) {
+        if (value == null || value.isEmpty()) {
+            return MarkerType.SECTION;
+        }
+        try {
+            return MarkerType.valueOf(value);
+        } catch (IllegalArgumentException e) {
+            return MarkerType.SECTION;
+        }
+    }
+
+    private SendMode parseSendMode(String value) {
+        if (value == null || value.isEmpty()) {
+            return SendMode.POST_FADER;
+        }
+        try {
+            return SendMode.valueOf(value);
+        } catch (IllegalArgumentException e) {
+            return SendMode.POST_FADER;
         }
     }
 
