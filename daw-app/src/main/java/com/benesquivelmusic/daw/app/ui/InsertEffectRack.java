@@ -229,10 +229,11 @@ public final class InsertEffectRack extends VBox {
     // ── Undo-aware operations ───────────────────────────────────────────────
 
     private void addEffect(int index, InsertSlot slot) {
+        int safeIndex = Math.min(index, channel.getInsertCount());
         if (undoManager != null) {
-            undoManager.execute(new InsertEffectAction(channel, index, slot));
+            undoManager.execute(new InsertEffectAction(channel, safeIndex, slot));
         } else {
-            channel.insertInsert(index, slot);
+            channel.insertInsert(safeIndex, slot);
         }
         rebuildSlots();
     }
@@ -258,7 +259,7 @@ public final class InsertEffectRack extends VBox {
     // ── Parameter editor ────────────────────────────────────────────────────
 
     private void openParameterEditor(InsertSlot slot) {
-        InsertEffectType type = resolveType(slot.getName());
+        InsertEffectType type = slot.getEffectType();
         if (type == null) {
             return;
         }
@@ -277,15 +278,6 @@ public final class InsertEffectRack extends VBox {
         stage.setTitle(slot.getName() + " — Parameters");
         stage.setScene(new Scene(editor, 420, 320));
         stage.show();
-    }
-
-    private static InsertEffectType resolveType(String slotName) {
-        for (InsertEffectType type : InsertEffectType.values()) {
-            if (type.getDisplayName().equals(slotName)) {
-                return type;
-            }
-        }
-        return null;
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────

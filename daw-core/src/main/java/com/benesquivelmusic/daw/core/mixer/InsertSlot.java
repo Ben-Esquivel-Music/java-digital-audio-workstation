@@ -15,6 +15,7 @@ public final class InsertSlot {
 
     private final String name;
     private final AudioProcessor processor;
+    private final InsertEffectType effectType;
     private boolean bypassed;
 
     /**
@@ -24,8 +25,20 @@ public final class InsertSlot {
      * @param processor the audio processor for this slot
      */
     public InsertSlot(String name, AudioProcessor processor) {
+        this(name, processor, null);
+    }
+
+    /**
+     * Creates a new insert slot with the specified name, processor, and effect type.
+     *
+     * @param name       the display name of the effect (e.g., "Compressor")
+     * @param processor  the audio processor for this slot
+     * @param effectType the built-in effect type, or {@code null} for CLAP/external plugins
+     */
+    public InsertSlot(String name, AudioProcessor processor, InsertEffectType effectType) {
         this.name = Objects.requireNonNull(name, "name must not be null");
         this.processor = Objects.requireNonNull(processor, "processor must not be null");
+        this.effectType = effectType;
         this.bypassed = false;
     }
 
@@ -45,6 +58,17 @@ public final class InsertSlot {
      */
     public AudioProcessor getProcessor() {
         return processor;
+    }
+
+    /**
+     * Returns the built-in effect type for this slot, or {@code null} if the
+     * slot was created without a type (e.g., for CLAP/external plugins or
+     * legacy code that uses the two-argument constructor).
+     *
+     * @return the effect type, or {@code null}
+     */
+    public InsertEffectType getEffectType() {
+        return effectType;
     }
 
     /**

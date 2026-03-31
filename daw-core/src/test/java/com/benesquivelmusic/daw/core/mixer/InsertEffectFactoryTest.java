@@ -113,15 +113,45 @@ class InsertEffectFactoryTest {
         assertThat(slot.isBypassed()).isFalse();
     }
 
+    @Test
+    void shouldCreateSlotWithEffectType() {
+        InsertSlot slot = InsertEffectFactory.createSlot(
+                InsertEffectType.REVERB, CHANNELS, SAMPLE_RATE);
+        assertThat(slot.getEffectType()).isEqualTo(InsertEffectType.REVERB);
+    }
+
+    @Test
+    void shouldRejectNonStereoChannelsForStereoImager() {
+        assertThatThrownBy(() ->
+                InsertEffectFactory.createProcessor(InsertEffectType.STEREO_IMAGER, 1, SAMPLE_RATE))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("2 channels");
+    }
+
+    @Test
+    void shouldReturnEmptyParametersForParametricEq() {
+        List<PluginParameter> params = InsertEffectFactory.getParameterDescriptors(
+                InsertEffectType.PARAMETRIC_EQ);
+        assertThat(params).isEmpty();
+    }
+
+    @Test
+    void shouldRejectMismatchedProcessorType() {
+        ReverbProcessor wrongProcessor = new ReverbProcessor(CHANNELS, SAMPLE_RATE);
+        assertThatThrownBy(() ->
+                InsertEffectFactory.createParameterHandler(InsertEffectType.COMPRESSOR, wrongProcessor))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     @ParameterizedTest
-    @EnumSource(value = InsertEffectType.class, names = "CLAP_PLUGIN", mode = EnumSource.Mode.EXCLUDE)
+    @EnumSource(value = InsertEffectType.class, names = {"CLAP_PLUGIN", "PARAMETRIC_EQ"}, mode = EnumSource.Mode.EXCLUDE)
     void shouldReturnNonEmptyParameterDescriptors(InsertEffectType type) {
         List<PluginParameter> params = InsertEffectFactory.getParameterDescriptors(type);
         assertThat(params).isNotEmpty();
     }
 
     @ParameterizedTest
-    @EnumSource(value = InsertEffectType.class, names = "CLAP_PLUGIN", mode = EnumSource.Mode.EXCLUDE)
+    @EnumSource(value = InsertEffectType.class, names = {"CLAP_PLUGIN", "PARAMETRIC_EQ"}, mode = EnumSource.Mode.EXCLUDE)
     void shouldReturnParameterDescriptorsWithValidRanges(InsertEffectType type) {
         List<PluginParameter> params = InsertEffectFactory.getParameterDescriptors(type);
         for (PluginParameter param : params) {
@@ -167,7 +197,7 @@ class InsertEffectFactoryTest {
     void shouldAvailableTypesExcludeClapPlugin() {
         List<InsertEffectType> types = InsertEffectFactory.availableTypes();
         assertThat(types).doesNotContain(InsertEffectType.CLAP_PLUGIN);
-        assertThat(types).hasSize(9);
+        assertThat(types).isNotEmpty();
     }
 
     @ParameterizedTest

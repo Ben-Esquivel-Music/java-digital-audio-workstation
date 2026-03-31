@@ -48,7 +48,13 @@ public final class InsertEffectFactory {
             case DELAY         -> new DelayProcessor(channels, sampleRate);
             case CHORUS        -> new ChorusProcessor(channels, sampleRate);
             case NOISE_GATE    -> new NoiseGateProcessor(channels, sampleRate);
-            case STEREO_IMAGER -> new StereoImagerProcessor(sampleRate);
+            case STEREO_IMAGER -> {
+                if (channels != 2) {
+                    throw new IllegalArgumentException(
+                            "StereoImagerProcessor supports exactly 2 channels, but got " + channels);
+                }
+                yield new StereoImagerProcessor(sampleRate);
+            }
             case PARAMETRIC_EQ -> new ParametricEqProcessor(channels, sampleRate);
             case GRAPHIC_EQ    -> new GraphicEqProcessor(channels, sampleRate);
             case CLAP_PLUGIN   -> throw new IllegalArgumentException(
@@ -67,7 +73,7 @@ public final class InsertEffectFactory {
     public static InsertSlot createSlot(InsertEffectType type, int channels, double sampleRate) {
         Objects.requireNonNull(type, "type must not be null");
         AudioProcessor processor = createProcessor(type, channels, sampleRate);
-        return new InsertSlot(type.getDisplayName(), processor);
+        return new InsertSlot(type.getDisplayName(), processor, type);
     }
 
     /**
@@ -75,7 +81,7 @@ public final class InsertEffectFactory {
      *
      * <p>Each parameter has a unique id (starting from 0), a human-readable name,
      * min/max range, and default value. These descriptors can be passed directly
-     * to {@link com.benesquivelmusic.daw.app.ui.PluginParameterEditorPanel}.</p>
+     * to a UI parameter editor panel or other application-layer component responsible for editing parameters.</p>
      *
      * @param type the built-in effect type
      * @return the list of parameter descriptors
@@ -116,13 +122,7 @@ public final class InsertEffectFactory {
                     new PluginParameter(4, "Range (dB)", -80.0, 0.0, -80.0));
             case STEREO_IMAGER -> List.of(
                     new PluginParameter(0, "Width", 0.0, 2.0, 1.0));
-            case PARAMETRIC_EQ -> List.of(
-                    new PluginParameter(0, "Band 1 Freq (Hz)", 20.0, 20000.0, 100.0),
-                    new PluginParameter(1, "Band 1 Gain (dB)", -24.0, 24.0, 0.0),
-                    new PluginParameter(2, "Band 2 Freq (Hz)", 20.0, 20000.0, 1000.0),
-                    new PluginParameter(3, "Band 2 Gain (dB)", -24.0, 24.0, 0.0),
-                    new PluginParameter(4, "Band 3 Freq (Hz)", 20.0, 20000.0, 5000.0),
-                    new PluginParameter(5, "Band 3 Gain (dB)", -24.0, 24.0, 0.0));
+            case PARAMETRIC_EQ -> List.of();
             case GRAPHIC_EQ -> List.of(
                     new PluginParameter(0, "Q", 0.1, 10.0, 1.0));
             case CLAP_PLUGIN -> List.of();
@@ -145,16 +145,56 @@ public final class InsertEffectFactory {
         Objects.requireNonNull(type, "type must not be null");
         Objects.requireNonNull(processor, "processor must not be null");
         return switch (type) {
-            case COMPRESSOR -> compressorHandler((CompressorProcessor) processor);
-            case LIMITER    -> limiterHandler((LimiterProcessor) processor);
-            case REVERB     -> reverbHandler((ReverbProcessor) processor);
-            case DELAY      -> delayHandler((DelayProcessor) processor);
-            case CHORUS     -> chorusHandler((ChorusProcessor) processor);
-            case NOISE_GATE -> noiseGateHandler((NoiseGateProcessor) processor);
-            case STEREO_IMAGER -> stereoImagerHandler((StereoImagerProcessor) processor);
-            case PARAMETRIC_EQ -> (_, _) -> { /* complex band config — not mapped here */ };
-            case GRAPHIC_EQ    -> graphicEqHandler((GraphicEqProcessor) processor);
-            case CLAP_PLUGIN   -> (_, _) -> { };
+            case COMPRESSOR -> {
+                if (!(processor instanceof CompressorProcessor p)) {
+                    throw new IllegalArgumentException("Expected CompressorProcessor, got " + processor.getClass().getSimpleName());
+                }
+                yield compressorHandler(p);
+            }
+            case LIMITER -> {
+                if (!(processor instanceof LimiterProcessor p)) {
+                    throw new IllegalArgumentException("Expected LimiterProcessor, got " + processor.getClass().getSimpleName());
+                }
+                yield limiterHandler(p);
+            }
+            case REVERB -> {
+                if (!(processor instanceof ReverbProcessor p)) {
+                    throw new IllegalArgumentException("Expected ReverbProcessor, got " + processor.getClass().getSimpleName());
+                }
+                yield reverbHandler(p);
+            }
+            case DELAY -> {
+                if (!(processor instanceof DelayProcessor p)) {
+                    throw new IllegalArgumentException("Expected DelayProcessor, got " + processor.getClass().getSimpleName());
+                }
+                yield delayHandler(p);
+            }
+            case CHORUS -> {
+                if (!(processor instanceof ChorusProcessor p)) {
+                    throw new IllegalArgumentException("Expected ChorusProcessor, got " + processor.getClass().getSimpleName());
+                }
+                yield chorusHandler(p);
+            }
+            case NOISE_GATE -> {
+                if (!(processor instanceof NoiseGateProcessor p)) {
+                    throw new IllegalArgumentException("Expected NoiseGateProcessor, got " + processor.getClass().getSimpleName());
+                }
+                yield noiseGateHandler(p);
+            }
+            case STEREO_IMAGER -> {
+                if (!(processor instanceof StereoImagerProcessor p)) {
+                    throw new IllegalArgumentException("Expected StereoImagerProcessor, got " + processor.getClass().getSimpleName());
+                }
+                yield stereoImagerHandler(p);
+            }
+            case PARAMETRIC_EQ -> (_, _) -> { };
+            case GRAPHIC_EQ -> {
+                if (!(processor instanceof GraphicEqProcessor p)) {
+                    throw new IllegalArgumentException("Expected GraphicEqProcessor, got " + processor.getClass().getSimpleName());
+                }
+                yield graphicEqHandler(p);
+            }
+            case CLAP_PLUGIN -> (_, _) -> { };
         };
     }
 
