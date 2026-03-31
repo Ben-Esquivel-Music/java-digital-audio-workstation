@@ -20,30 +20,60 @@ import java.util.Objects;
  * @param estimatedRt60Seconds  estimated RT60 reverberation time in seconds
  * @param suggestions           actionable adjustment suggestions
  * @param audienceMembers       audience members present in the room (may be empty)
+ * @param soundSources          sound sources in the room (may be empty)
+ * @param microphones           microphone placements in the room (may be empty)
+ * @param wallMaterial          the predominant wall material (may be {@code null} for legacy data)
  */
 public record RoomTelemetryData(
         RoomDimensions roomDimensions,
         List<SoundWavePath> wavePaths,
         double estimatedRt60Seconds,
         List<TelemetrySuggestion> suggestions,
-        List<AudienceMember> audienceMembers
+        List<AudienceMember> audienceMembers,
+        List<SoundSource> soundSources,
+        List<MicrophonePlacement> microphones,
+        WallMaterial wallMaterial
 ) {
 
     /**
-     * Creates telemetry data with audience members.
+     * Creates telemetry data with all fields.
      */
     public RoomTelemetryData {
         Objects.requireNonNull(roomDimensions, "roomDimensions must not be null");
         Objects.requireNonNull(wavePaths, "wavePaths must not be null");
         Objects.requireNonNull(suggestions, "suggestions must not be null");
         Objects.requireNonNull(audienceMembers, "audienceMembers must not be null");
+        Objects.requireNonNull(soundSources, "soundSources must not be null");
+        Objects.requireNonNull(microphones, "microphones must not be null");
         wavePaths = List.copyOf(wavePaths);
         suggestions = List.copyOf(suggestions);
         audienceMembers = List.copyOf(audienceMembers);
+        soundSources = List.copyOf(soundSources);
+        microphones = List.copyOf(microphones);
         if (estimatedRt60Seconds < 0) {
             throw new IllegalArgumentException(
                     "estimatedRt60Seconds must not be negative: " + estimatedRt60Seconds);
         }
+    }
+
+    /**
+     * Backward-compatible constructor that creates telemetry data without
+     * explicit sources, microphones, or wall material.
+     *
+     * @param roomDimensions        the room geometry
+     * @param wavePaths             all computed sound wave paths
+     * @param estimatedRt60Seconds  estimated RT60 reverberation time in seconds
+     * @param suggestions           actionable adjustment suggestions
+     * @param audienceMembers       audience members present in the room (may be empty)
+     */
+    public RoomTelemetryData(
+            RoomDimensions roomDimensions,
+            List<SoundWavePath> wavePaths,
+            double estimatedRt60Seconds,
+            List<TelemetrySuggestion> suggestions,
+            List<AudienceMember> audienceMembers) {
+        this(roomDimensions, wavePaths, estimatedRt60Seconds, suggestions,
+                audienceMembers, List.of(), List.of(), null);
     }
 
     /**

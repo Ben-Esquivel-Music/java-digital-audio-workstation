@@ -247,4 +247,43 @@ class SoundWaveTelemetryEngineTest {
 
         assertThat(elevation).isCloseTo(90.0, offset(0.01));
     }
+
+    @Test
+    void shouldPassSoundSourcesThroughToTelemetryData() {
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        config.addSoundSource(new SoundSource("Guitar", new Position3D(3, 2, 1), 85));
+        config.addSoundSource(new SoundSource("Vocals", new Position3D(5, 2, 1.5), 75));
+        config.addMicrophone(new MicrophonePlacement("Mic1", new Position3D(5, 4, 1.5), 0, 0));
+
+        RoomTelemetryData data = SoundWaveTelemetryEngine.compute(config);
+
+        assertThat(data.soundSources()).hasSize(2);
+        assertThat(data.soundSources().get(0).name()).isEqualTo("Guitar");
+        assertThat(data.soundSources().get(1).name()).isEqualTo("Vocals");
+    }
+
+    @Test
+    void shouldPassMicrophonesThroughToTelemetryData() {
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        config.addSoundSource(new SoundSource("Guitar", new Position3D(3, 2, 1), 85));
+        config.addMicrophone(new MicrophonePlacement("Mic1", new Position3D(5, 4, 1.5), 45, 10));
+        config.addMicrophone(new MicrophonePlacement("Mic2", new Position3D(6, 4, 1.5), 90, 0));
+
+        RoomTelemetryData data = SoundWaveTelemetryEngine.compute(config);
+
+        assertThat(data.microphones()).hasSize(2);
+        assertThat(data.microphones().get(0).name()).isEqualTo("Mic1");
+        assertThat(data.microphones().get(1).name()).isEqualTo("Mic2");
+    }
+
+    @Test
+    void shouldPassWallMaterialThroughToTelemetryData() {
+        RoomConfiguration config = new RoomConfiguration(new RoomDimensions(10, 8, 3), WallMaterial.CONCRETE);
+        config.addSoundSource(new SoundSource("Src", new Position3D(5, 4, 1), 80));
+        config.addMicrophone(new MicrophonePlacement("Mic", new Position3D(6, 4, 1.5), 0, 0));
+
+        RoomTelemetryData data = SoundWaveTelemetryEngine.compute(config);
+
+        assertThat(data.wallMaterial()).isEqualTo(WallMaterial.CONCRETE);
+    }
 }

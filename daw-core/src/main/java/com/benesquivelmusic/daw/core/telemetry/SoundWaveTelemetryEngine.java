@@ -70,7 +70,8 @@ public final class SoundWaveTelemetryEngine {
         List<TelemetrySuggestion> suggestions = generateSuggestions(config, allPaths, rt60);
 
         return new RoomTelemetryData(dims, allPaths, rt60, suggestions,
-                config.getAudienceMembers());
+                config.getAudienceMembers(), config.getSoundSources(),
+                config.getMicrophones(), material);
     }
 
     // ----------------------------------------------------------------
