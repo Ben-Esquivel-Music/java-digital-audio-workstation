@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.project.DawProject;
+import com.benesquivelmusic.daw.core.undo.UndoManager;
 
 import javafx.scene.Node;
 import javafx.scene.control.Button;
@@ -34,6 +35,7 @@ final class ViewNavigationController {
      */
     interface Host {
         DawProject project();
+        UndoManager undoManager();
         void onEditorTrim();
         void onEditorFadeIn();
         void onEditorFadeOut();
@@ -155,7 +157,7 @@ final class ViewNavigationController {
         viewCache.put(DawView.ARRANGEMENT, rootPane.getCenter());
 
         // Mixer view — real channel-strip mixer panel
-        mixerView = new MixerView(host.project());
+        mixerView = new MixerView(host.project(), host.undoManager());
         viewCache.put(DawView.MIXER, mixerView);
 
         // Editor view — MIDI piano-roll / audio waveform editor panel
