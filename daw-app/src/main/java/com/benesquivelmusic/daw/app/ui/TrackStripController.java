@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
+import com.benesquivelmusic.daw.core.automation.AutomationParameter;
 import com.benesquivelmusic.daw.core.export.MidiFileExporter;
 import com.benesquivelmusic.daw.core.export.TrackBouncer;
 import com.benesquivelmusic.daw.core.export.WavExporter;
@@ -22,6 +23,7 @@ import javafx.animation.TranslateTransition;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
+import javafx.scene.control.ComboBox;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.Label;
 import javafx.scene.control.MenuItem;
@@ -100,6 +102,7 @@ final class TrackStripController {
     private final ClipboardManager clipboardManager;
     private final SelectionModel selectionModel;
     private final Host host;
+    private ArrangementCanvas arrangementCanvas;
 
     TrackStripController(DawProject project,
                          UndoManager undoManager,
@@ -123,6 +126,14 @@ final class TrackStripController {
         this.clipboardManager = Objects.requireNonNull(clipboardManager, "clipboardManager must not be null");
         this.selectionModel = Objects.requireNonNull(selectionModel, "selectionModel must not be null");
         this.host = Objects.requireNonNull(host, "host must not be null");
+    }
+
+    /**
+     * Sets the arrangement canvas reference for automation lane toggles.
+     * Called after the canvas is created.
+     */
+    void setArrangementCanvas(ArrangementCanvas canvas) {
+        this.arrangementCanvas = canvas;
     }
 
     HBox addTrackToUI(Track track) {
@@ -387,6 +398,36 @@ final class TrackStripController {
             LOG.fine(() -> "Removed track: " + track.getName());
         });
 
+        // ── Automation lane toggle (DAW category) ───────────────────────────
+        Button autoBtn = new Button();
+        autoBtn.setGraphic(IconNode.of(DawIcon.AUTOMATION, TRACK_CONTROL_ICON_SIZE));
+        autoBtn.getStyleClass().add("track-mute-button");
+        autoBtn.setTooltip(new Tooltip("Toggle Automation Lane"));
+        autoBtn.setOnAction(_ -> {
+            if (arrangementCanvas != null) {
+                arrangementCanvas.toggleAutomationLane(track);
+                autoBtn.setStyle(arrangementCanvas.isAutomationLaneVisible(track)
+                        ? "-fx-background-color: #00E5FF; -fx-text-fill: #0d0d0d;" : "");
+                statusBarLabel.setText(arrangementCanvas.isAutomationLaneVisible(track)
+                        ? "Automation: " + track.getName()
+                        : "Hide automation: " + track.getName());
+                statusBarLabel.setGraphic(IconNode.of(DawIcon.AUTOMATION, 12));
+            }
+        });
+
+        // ── Automation parameter selector ───────────────────────────────────
+        ComboBox<AutomationParameter> paramSelector = new ComboBox<>();
+        paramSelector.getItems().addAll(AutomationParameter.values());
+        paramSelector.setValue(AutomationParameter.VOLUME);
+        paramSelector.setTooltip(new Tooltip("Automation Parameter"));
+        paramSelector.setPrefWidth(90);
+        paramSelector.getStyleClass().add("status-bar-label");
+        paramSelector.setOnAction(_ -> {
+            if (arrangementCanvas != null && arrangementCanvas.isAutomationLaneVisible(track)) {
+                arrangementCanvas.setAutomationParameter(track, paramSelector.getValue());
+            }
+        });
+
         // Spacer pushes controls to the right
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
@@ -400,7 +441,8 @@ final class TrackStripController {
                 contextMenu.show(trackItem, e.getScreenX(), e.getScreenY()));
 
         trackItem.getChildren().addAll(
-                typeIcon, ioLabel, nameLabel, insertChain, volRow, panRow, spacer,
+                typeIcon, ioLabel, nameLabel, insertChain, volRow, panRow,
+                autoBtn, paramSelector, spacer,
                 outputLabel, phaseBtn, muteBtn, soloBtn, armBtn, removeBtn);
         if (uiIndex >= 0 && uiIndex < trackListPanel.getChildren().size()) {
             trackListPanel.getChildren().add(uiIndex, trackItem);

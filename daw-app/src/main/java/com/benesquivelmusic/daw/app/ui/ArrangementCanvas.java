@@ -1,6 +1,9 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.automation.AutomationData;
+import com.benesquivelmusic.daw.core.automation.AutomationLane;
+import com.benesquivelmusic.daw.core.automation.AutomationParameter;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -13,7 +16,9 @@ import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.TextAlignment;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Renders horizontal track lanes with audio and MIDI clip rectangles
@@ -71,6 +76,12 @@ public final class ArrangementCanvas extends Pane {
     private boolean autoScroll = true;
     private double trimPreviewBeat = -1.0;
     private int trimPreviewTrackIndex = -1;
+
+    /**
+     * Tracks which track IDs have their automation lane expanded.
+     * Key: track ID, Value: the selected {@link AutomationParameter}.
+     */
+    private final Map<String, AutomationParameter> automationLaneVisibility = new HashMap<>();
 
     /**
      * Creates an empty arrangement canvas.
@@ -187,6 +198,58 @@ public final class ArrangementCanvas extends Pane {
         this.trimPreviewTrackIndex = trackIndex;
     }
 
+    // ── Automation lane visibility ─────────────────────────────────────────
+
+    /**
+     * Toggles the visibility of the automation lane for the given track.
+     * When shown, the lane defaults to {@link AutomationParameter#VOLUME}.
+     *
+     * @param track the track whose automation lane to toggle
+     */
+    void toggleAutomationLane(Track track) {
+        String id = track.getId();
+        if (automationLaneVisibility.containsKey(id)) {
+            automationLaneVisibility.remove(id);
+        } else {
+            automationLaneVisibility.put(id, AutomationParameter.VOLUME);
+        }
+        redraw();
+    }
+
+    /**
+     * Returns whether the automation lane is visible for the given track.
+     *
+     * @param track the track to check
+     * @return {@code true} if the automation lane is expanded
+     */
+    boolean isAutomationLaneVisible(Track track) {
+        return automationLaneVisibility.containsKey(track.getId());
+    }
+
+    /**
+     * Sets the automation parameter displayed in the given track's lane.
+     *
+     * @param track     the track
+     * @param parameter the parameter to display
+     */
+    void setAutomationParameter(Track track, AutomationParameter parameter) {
+        if (automationLaneVisibility.containsKey(track.getId())) {
+            automationLaneVisibility.put(track.getId(), parameter);
+            redraw();
+        }
+    }
+
+    /**
+     * Returns the currently selected automation parameter for the given
+     * track's lane, or {@code null} if the lane is not visible.
+     *
+     * @param track the track to query
+     * @return the selected parameter, or {@code null}
+     */
+    AutomationParameter getAutomationParameter(Track track) {
+        return automationLaneVisibility.get(track.getId());
+    }
+
     // ── Getters (for testing) ──────────────────────────────────────────────
 
     double getPixelsPerBeat() {
@@ -217,7 +280,100 @@ public final class ArrangementCanvas extends Pane {
         return trimPreviewTrackIndex;
     }
 
+    /**
+     * Resolves the track index at the given Y pixel coordinate, accounting
+     * for expanded automation lanes.
+     *
+     * @param y the Y pixel coordinate (in canvas space)
+     * @return the track index, or {@code -1} if outside all track lanes
+     */
+    int trackIndexAtY(double y) {
+        double adjustedY = y + scrollYPixels;
+        double cumulative = 0;
+        for (int i = 0; i < tracks.size(); i++) {
+            double slotHeight = trackHeight;
+            if (automationLaneVisibility.containsKey(tracks.get(i).getId())) {
+                slotHeight += AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
+            }
+            if (adjustedY < cumulative + slotHeight) {
+                return i;
+            }
+            cumulative += slotHeight;
+        }
+        return -1;
+    }
+
+    /**
+     * Returns {@code true} if the given Y coordinate falls within an
+     * automation sub-lane (below the track lane proper) rather than in
+     * the clip area of a track.
+     *
+     * @param y the Y pixel coordinate (in canvas space)
+     * @return {@code true} if the coordinate is inside an automation lane
+     */
+    boolean isYInAutomationLane(double y) {
+        double adjustedY = y + scrollYPixels;
+        double cumulative = 0;
+        for (int i = 0; i < tracks.size(); i++) {
+            double autoHeight = automationLaneVisibility.containsKey(tracks.get(i).getId())
+                    ? AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT : 0;
+            double slotHeight = trackHeight + autoHeight;
+            if (adjustedY < cumulative + slotHeight) {
+                // Within this track's slot — check if in the automation sub-lane
+                return autoHeight > 0 && adjustedY >= cumulative + trackHeight;
+            }
+            cumulative += slotHeight;
+        }
+        return false;
+    }
+
+    /**
+     * Returns the Y pixel coordinate of the automation sub-lane top for
+     * the given track index (in canvas space, accounting for scroll).
+     *
+     * @param trackIndex the track index
+     * @return the Y coordinate, or {@code -1} if no automation lane is visible
+     */
+    double automationLaneY(int trackIndex) {
+        if (trackIndex < 0 || trackIndex >= tracks.size()) {
+            return -1;
+        }
+        if (!automationLaneVisibility.containsKey(tracks.get(trackIndex).getId())) {
+            return -1;
+        }
+        return computeLaneY(trackIndex) + trackHeight;
+    }
+
     // ── Rendering ──────────────────────────────────────────────────────────
+
+    /**
+     * Computes the Y pixel offset for the given track index, accounting for
+     * any expanded automation lanes above it.
+     */
+    private double computeLaneY(int trackIndex) {
+        double y = 0;
+        for (int i = 0; i < trackIndex; i++) {
+            y += trackHeight;
+            if (i < tracks.size() && automationLaneVisibility.containsKey(tracks.get(i).getId())) {
+                y += AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
+            }
+        }
+        return y - scrollYPixels;
+    }
+
+    /**
+     * Computes the total content height including automation lanes.
+     */
+    private double computeTotalContentHeight() {
+        double total = 0;
+        for (int i = 0; i < tracks.size(); i++) {
+            total += trackHeight;
+            if (automationLaneVisibility.containsKey(tracks.get(i).getId())) {
+                total += AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
+            }
+        }
+        return total;
+    }
 
     private void redraw() {
         double w = canvas.getWidth();
@@ -231,14 +387,19 @@ public final class ArrangementCanvas extends Pane {
 
         drawTrackLanes(gc, w, h);
         drawClips(gc, w, h);
+        drawAutomationLanes(gc, w, h);
         drawTrimPreview(gc, w, h);
         drawPlayhead(gc, w, h);
     }
 
     private void drawTrackLanes(GraphicsContext gc, double canvasWidth, double canvasHeight) {
         for (int i = 0; i < tracks.size(); i++) {
-            double y = i * trackHeight - scrollYPixels;
-            if (y + trackHeight < 0) {
+            double y = computeLaneY(i);
+            double effectiveHeight = trackHeight;
+            if (automationLaneVisibility.containsKey(tracks.get(i).getId())) {
+                effectiveHeight += AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
+            }
+            if (y + effectiveHeight < 0) {
                 continue;
             }
             if (y > canvasHeight) {
@@ -254,17 +415,17 @@ public final class ArrangementCanvas extends Pane {
         }
 
         // Fill remaining area below tracks
-        double totalTrackHeight = tracks.size() * trackHeight - scrollYPixels;
-        if (totalTrackHeight < canvasHeight) {
+        double totalContentHeight = computeTotalContentHeight() - scrollYPixels;
+        if (totalContentHeight < canvasHeight) {
             gc.setFill(LANE_COLOR_EVEN);
-            gc.fillRect(0, totalTrackHeight, canvasWidth, canvasHeight - totalTrackHeight);
+            gc.fillRect(0, totalContentHeight, canvasWidth, canvasHeight - totalContentHeight);
         }
     }
 
     private void drawClips(GraphicsContext gc, double canvasWidth, double canvasHeight) {
         for (int i = 0; i < tracks.size(); i++) {
             Track track = tracks.get(i);
-            double laneY = i * trackHeight - scrollYPixels;
+            double laneY = computeLaneY(i);
             if (laneY + trackHeight < 0 || laneY > canvasHeight) {
                 continue;
             }
@@ -281,6 +442,27 @@ public final class ArrangementCanvas extends Pane {
             if (!midiClip.isEmpty() && (track.getType() == TrackType.MIDI)) {
                 drawMidiClip(gc, track, midiClip, trackColor, laneY, canvasWidth, canvasHeight);
             }
+        }
+    }
+
+    private void drawAutomationLanes(GraphicsContext gc, double canvasWidth, double canvasHeight) {
+        for (int i = 0; i < tracks.size(); i++) {
+            Track track = tracks.get(i);
+            AutomationParameter param = automationLaneVisibility.get(track.getId());
+            if (param == null) {
+                continue;
+            }
+
+            double autoLaneY = computeLaneY(i) + trackHeight;
+            double autoLaneHeight = AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
+            if (autoLaneY + autoLaneHeight < 0 || autoLaneY > canvasHeight) {
+                continue;
+            }
+
+            AutomationData automationData = track.getAutomationData();
+            AutomationLane lane = automationData.getOrCreateLane(param);
+            AutomationLaneRenderer.draw(gc, lane, 0, autoLaneY, canvasWidth,
+                    autoLaneHeight, pixelsPerBeat, scrollXBeats);
         }
     }
 
@@ -547,7 +729,7 @@ public final class ArrangementCanvas extends Pane {
         if (x < 0 || x > canvasWidth) {
             return;
         }
-        double laneY = trimPreviewTrackIndex * trackHeight - scrollYPixels;
+        double laneY = computeLaneY(trimPreviewTrackIndex);
         double laneBottom = laneY + trackHeight;
         if (laneBottom < 0 || laneY > canvasHeight) {
             return;

@@ -54,6 +54,15 @@ final class ClipTrimHandler {
         GridResolution gridResolution();
         int beatsPerBar();
         void refreshCanvas();
+        /** Resolves the track index at the given Y pixel, accounting for automation lanes. */
+        default int trackIndexAtY(double y) {
+            double adjustedY = y + scrollYPixels();
+            int index = (int) Math.floor(adjustedY / trackHeight());
+            if (index < 0 || index >= tracks().size()) {
+                return -1;
+            }
+            return index;
+        }
     }
 
     private final Host host;
@@ -328,12 +337,7 @@ final class ClipTrimHandler {
     }
 
     private int trackIndexAt(double y) {
-        double adjustedY = y + host.scrollYPixels();
-        int index = (int) Math.floor(adjustedY / host.trackHeight());
-        if (index < 0 || index >= host.tracks().size()) {
-            return -1;
-        }
-        return index;
+        return host.trackIndexAtY(y);
     }
 
     private double beatAt(double x) {
