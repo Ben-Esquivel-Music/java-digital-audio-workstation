@@ -16,7 +16,6 @@ import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.mixer.Send;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
-import com.benesquivelmusic.daw.core.track.TrackColor;
 import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.transport.Transport;
 
