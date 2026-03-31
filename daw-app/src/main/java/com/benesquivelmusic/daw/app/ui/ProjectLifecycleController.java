@@ -364,7 +364,7 @@ final class ProjectLifecycleController {
         header.getStyleClass().add("panel-header");
         header.setGraphic(IconNode.of(DawIcon.MIXER, PANEL_ICON_SIZE));
         trackListPanel.getChildren().add(header);
-        MixerView newMixerView = new MixerView(host.project());
+        MixerView newMixerView = new MixerView(host.project(), host.undoManager());
         host.onProjectUIRebuild(newMixerView);
     }
 }

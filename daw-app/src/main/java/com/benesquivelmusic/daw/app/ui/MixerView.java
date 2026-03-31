@@ -9,6 +9,7 @@ import com.benesquivelmusic.daw.core.mixer.SendMode;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
+import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.spatial.SpeakerLayout;
 
 import javafx.geometry.Insets;
@@ -36,6 +37,7 @@ import java.util.Objects;
  * <p>Each channel strip contains (from top to bottom):
  * <ul>
  *   <li>Channel name label</li>
+ *   <li>Insert effects rack ({@link InsertEffectRack})</li>
  *   <li>Level meter (vertical bar via {@link LevelMeterDisplay})</li>
  *   <li>Volume fader (vertical {@link Slider})</li>
  *   <li>Pan control (horizontal {@link Slider})</li>
@@ -62,6 +64,7 @@ public final class MixerView extends VBox {
     private static final double SEND_SLIDER_WIDTH = 60;
 
     private final DawProject project;
+    private final UndoManager undoManager;
     private final HBox channelStrips;
     private final HBox returnBusStrips;
     private final VBox masterStrip;
@@ -72,7 +75,18 @@ public final class MixerView extends VBox {
      * @param project the DAW project to visualize
      */
     public MixerView(DawProject project) {
+        this(project, null);
+    }
+
+    /**
+     * Creates a new mixer view bound to the given project with undo support.
+     *
+     * @param project     the DAW project to visualize
+     * @param undoManager the undo manager for insert effect operations (may be {@code null})
+     */
+    public MixerView(DawProject project, UndoManager undoManager) {
         this.project = Objects.requireNonNull(project, "project must not be null");
+        this.undoManager = undoManager;
         getStyleClass().add("mixer-panel");
 
         Label header = new Label("MIXER");
@@ -325,8 +339,13 @@ public final class MixerView extends VBox {
         // Track type icon
         Node typeIcon = trackTypeIcon(track.getType());
 
+        // Insert effects rack
+        int channels = project.getFormat().channels();
+        double sr = project.getFormat().sampleRate();
+        InsertEffectRack insertRack = new InsertEffectRack(mixerChannel, channels, sr, undoManager);
+
         strip.getChildren().addAll(
-                nameLabel, typeIcon, levelMeter, volumeFader,
+                nameLabel, typeIcon, insertRack, levelMeter, volumeFader,
                 panLabel, panSlider, buttonRow, pannerBtn,
                 sendBox, sendLabel, sendSlider);
 
