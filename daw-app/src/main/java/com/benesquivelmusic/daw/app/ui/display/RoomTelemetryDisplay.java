@@ -781,11 +781,11 @@ public final class RoomTelemetryDisplay extends Region {
         gc.setFont(Font.font("System", 11));
         gc.setTextAlign(TextAlignment.CENTER);
 
-        // Front wall (bottom edge, y = length)
-        gc.fillText("Front", offsetX + roomPixelW / 2, offsetY + roomPixelL - 6);
+        // Front wall (top edge, y = 0 in room coordinates)
+        gc.fillText("Front", offsetX + roomPixelW / 2, offsetY + 14);
 
-        // Back wall (top edge, y = 0)
-        gc.fillText("Back", offsetX + roomPixelW / 2, offsetY + 14);
+        // Back wall (bottom edge, y = length in room coordinates)
+        gc.fillText("Back", offsetX + roomPixelW / 2, offsetY + roomPixelL - 6);
 
         // Left wall (left edge, x = 0)
         gc.save();
