@@ -84,6 +84,13 @@ public final class ArrangementCanvas extends Pane {
     private final Map<String, AutomationParameter> automationLaneVisibility = new HashMap<>();
 
     /**
+     * Cached per-track cumulative Y offsets (in canvas space, accounting for
+     * scroll). Recomputed once per {@link #redraw()} call to avoid O(n²)
+     * lookups. Index {@code i} holds the Y offset of track {@code i}.
+     */
+    private double[] laneYCache = new double[0];
+
+    /**
      * Creates an empty arrangement canvas.
      */
     public ArrangementCanvas() {
@@ -347,8 +354,35 @@ public final class ArrangementCanvas extends Pane {
     // ── Rendering ──────────────────────────────────────────────────────────
 
     /**
-     * Computes the Y pixel offset for the given track index, accounting for
-     * any expanded automation lanes above it.
+     * Builds the cumulative lane-Y cache for all tracks. Must be called at
+     * the start of each {@link #redraw()} invocation.
+     */
+    private void rebuildLaneYCache() {
+        int n = tracks.size();
+        if (laneYCache.length != n) {
+            laneYCache = new double[n];
+        }
+        double cumulative = 0;
+        for (int i = 0; i < n; i++) {
+            laneYCache[i] = cumulative - scrollYPixels;
+            cumulative += trackHeight;
+            if (automationLaneVisibility.containsKey(tracks.get(i).getId())) {
+                cumulative += AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
+            }
+        }
+    }
+
+    /**
+     * Returns the cached Y pixel offset for the given track index.
+     * The cache must have been populated by {@link #rebuildLaneYCache()}.
+     */
+    private double cachedLaneY(int trackIndex) {
+        return laneYCache[trackIndex];
+    }
+
+    /**
+     * Computes the Y pixel offset for the given track index on demand.
+     * Used by hit-testing methods outside the render loop.
      */
     private double computeLaneY(int trackIndex) {
         double y = 0;
@@ -382,6 +416,8 @@ public final class ArrangementCanvas extends Pane {
             return;
         }
 
+        rebuildLaneYCache();
+
         GraphicsContext gc = canvas.getGraphicsContext2D();
         gc.clearRect(0, 0, w, h);
 
@@ -394,7 +430,7 @@ public final class ArrangementCanvas extends Pane {
 
     private void drawTrackLanes(GraphicsContext gc, double canvasWidth, double canvasHeight) {
         for (int i = 0; i < tracks.size(); i++) {
-            double y = computeLaneY(i);
+            double y = cachedLaneY(i);
             double effectiveHeight = trackHeight;
             if (automationLaneVisibility.containsKey(tracks.get(i).getId())) {
                 effectiveHeight += AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
@@ -425,7 +461,7 @@ public final class ArrangementCanvas extends Pane {
     private void drawClips(GraphicsContext gc, double canvasWidth, double canvasHeight) {
         for (int i = 0; i < tracks.size(); i++) {
             Track track = tracks.get(i);
-            double laneY = computeLaneY(i);
+            double laneY = cachedLaneY(i);
             if (laneY + trackHeight < 0 || laneY > canvasHeight) {
                 continue;
             }
@@ -453,7 +489,7 @@ public final class ArrangementCanvas extends Pane {
                 continue;
             }
 
-            double autoLaneY = computeLaneY(i) + trackHeight;
+            double autoLaneY = cachedLaneY(i) + trackHeight;
             double autoLaneHeight = AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
             if (autoLaneY + autoLaneHeight < 0 || autoLaneY > canvasHeight) {
                 continue;
@@ -461,7 +497,7 @@ public final class ArrangementCanvas extends Pane {
 
             AutomationData automationData = track.getAutomationData();
             AutomationLane lane = automationData.getOrCreateLane(param);
-            AutomationLaneRenderer.draw(gc, lane, 0, autoLaneY, canvasWidth,
+            AutomationLaneRenderer.draw(gc, lane, autoLaneY, canvasWidth,
                     autoLaneHeight, pixelsPerBeat, scrollXBeats);
         }
     }
@@ -722,14 +758,15 @@ public final class ArrangementCanvas extends Pane {
     }
 
     private void drawTrimPreview(GraphicsContext gc, double canvasWidth, double canvasHeight) {
-        if (trimPreviewBeat < 0 || trimPreviewTrackIndex < 0) {
+        if (trimPreviewBeat < 0 || trimPreviewTrackIndex < 0
+                || trimPreviewTrackIndex >= laneYCache.length) {
             return;
         }
         double x = (trimPreviewBeat - scrollXBeats) * pixelsPerBeat;
         if (x < 0 || x > canvasWidth) {
             return;
         }
-        double laneY = computeLaneY(trimPreviewTrackIndex);
+        double laneY = cachedLaneY(trimPreviewTrackIndex);
         double laneBottom = laneY + trackHeight;
         if (laneBottom < 0 || laneY > canvasHeight) {
             return;

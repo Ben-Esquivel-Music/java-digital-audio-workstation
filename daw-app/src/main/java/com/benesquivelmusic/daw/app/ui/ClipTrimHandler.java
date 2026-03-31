@@ -54,7 +54,12 @@ final class ClipTrimHandler {
         GridResolution gridResolution();
         int beatsPerBar();
         void refreshCanvas();
-        /** Resolves the track index at the given Y pixel, accounting for automation lanes. */
+        /**
+         * Resolves the track index at the given Y pixel. The default
+         * implementation assumes uniform {@code trackHeight()} spacing;
+         * hosts that support expanded automation lanes should override
+         * this to delegate to an automation-aware lookup.
+         */
         default int trackIndexAtY(double y) {
             double adjustedY = y + scrollYPixels();
             int index = (int) Math.floor(adjustedY / trackHeight());

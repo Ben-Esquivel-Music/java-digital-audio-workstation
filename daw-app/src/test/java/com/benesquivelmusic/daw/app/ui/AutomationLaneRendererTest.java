@@ -3,7 +3,6 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.core.automation.AutomationLane;
 import com.benesquivelmusic.daw.core.automation.AutomationParameter;
 import com.benesquivelmusic.daw.core.automation.AutomationPoint;
-import com.benesquivelmusic.daw.core.automation.InterpolationMode;
 
 import org.junit.jupiter.api.Test;
 

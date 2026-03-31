@@ -55,11 +55,11 @@ final class AutomationLaneRenderer {
 
     /**
      * Draws the automation lane background, envelope polyline, and breakpoint
-     * nodes for the given lane.
+     * nodes for the given lane. The lane is drawn starting at X = 0 and
+     * extending to {@code laneWidth}.
      *
      * @param gc            the graphics context to draw on
      * @param lane          the automation lane to render
-     * @param laneX         the left edge of the visible area (pixels)
      * @param laneY         the top edge of the automation lane area (pixels)
      * @param laneWidth     the visible width (pixels)
      * @param laneHeight    the height of the automation lane (pixels)
@@ -67,25 +67,24 @@ final class AutomationLaneRenderer {
      * @param scrollXBeats  horizontal scroll offset in beats
      */
     static void draw(GraphicsContext gc, AutomationLane lane,
-                     double laneX, double laneY,
-                     double laneWidth, double laneHeight,
+                     double laneY, double laneWidth, double laneHeight,
                      double pixelsPerBeat, double scrollXBeats) {
 
         // Background
         gc.setFill(LANE_BACKGROUND);
-        gc.fillRect(laneX, laneY, laneWidth, laneHeight);
+        gc.fillRect(0, laneY, laneWidth, laneHeight);
 
         // Bottom border
         gc.setStroke(LANE_BORDER);
         gc.setLineWidth(1.0);
-        gc.strokeLine(laneX, laneY + laneHeight, laneX + laneWidth, laneY + laneHeight);
+        gc.strokeLine(0, laneY + laneHeight, laneWidth, laneY + laneHeight);
 
         // Parameter label
         AutomationParameter param = lane.getParameter();
         gc.setFont(LABEL_FONT);
         gc.setFill(LABEL_COLOR);
         gc.setTextAlign(TextAlignment.LEFT);
-        gc.fillText(param.name(), laneX + 4, laneY + 12);
+        gc.fillText(param.name(), 4, laneY + 12);
 
         List<AutomationPoint> points = lane.getPoints();
         if (points.isEmpty()) {
@@ -93,7 +92,7 @@ final class AutomationLaneRenderer {
             double defaultY = valueToY(param.getDefaultValue(), param, laneY, laneHeight);
             gc.setStroke(ENVELOPE_COLOR);
             gc.setLineWidth(1.5);
-            gc.strokeLine(laneX, defaultY, laneX + laneWidth, defaultY);
+            gc.strokeLine(0, defaultY, laneWidth, defaultY);
             return;
         }
 
@@ -105,8 +104,8 @@ final class AutomationLaneRenderer {
         AutomationPoint first = points.getFirst();
         double firstX = beatToX(first.getTimeInBeats(), pixelsPerBeat, scrollXBeats);
         double firstY = valueToY(first.getValue(), param, laneY, laneHeight);
-        if (firstX > laneX) {
-            gc.strokeLine(laneX, firstY, firstX, firstY);
+        if (firstX > 0) {
+            gc.strokeLine(0, firstY, firstX, firstY);
         }
 
         // Draw segments between points
@@ -130,8 +129,8 @@ final class AutomationLaneRenderer {
         AutomationPoint last = points.getLast();
         double lastX = beatToX(last.getTimeInBeats(), pixelsPerBeat, scrollXBeats);
         double lastY = valueToY(last.getValue(), param, laneY, laneHeight);
-        if (lastX < laneX + laneWidth) {
-            gc.strokeLine(lastX, lastY, laneX + laneWidth, lastY);
+        if (lastX < laneWidth) {
+            gc.strokeLine(lastX, lastY, laneWidth, lastY);
         }
 
         // Draw breakpoint handles
@@ -140,7 +139,7 @@ final class AutomationLaneRenderer {
             double py = valueToY(point.getValue(), param, laneY, laneHeight);
 
             // Only draw if within visible area
-            if (px >= laneX - BREAKPOINT_RADIUS && px <= laneX + laneWidth + BREAKPOINT_RADIUS) {
+            if (px >= -BREAKPOINT_RADIUS && px <= laneWidth + BREAKPOINT_RADIUS) {
                 gc.setFill(BREAKPOINT_FILL);
                 gc.fillOval(px - BREAKPOINT_RADIUS, py - BREAKPOINT_RADIUS,
                         BREAKPOINT_RADIUS * 2, BREAKPOINT_RADIUS * 2);
