@@ -1,12 +1,26 @@
 package com.benesquivelmusic.daw.core.persistence;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.automation.AutomationData;
+import com.benesquivelmusic.daw.core.automation.AutomationLane;
+import com.benesquivelmusic.daw.core.automation.AutomationParameter;
+import com.benesquivelmusic.daw.core.automation.AutomationPoint;
+import com.benesquivelmusic.daw.core.marker.Marker;
+import com.benesquivelmusic.daw.core.marker.MarkerManager;
+import com.benesquivelmusic.daw.core.marker.MarkerRange;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
+import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
+import com.benesquivelmusic.daw.core.mixer.InsertEffectType;
+import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.mixer.Send;
 import com.benesquivelmusic.daw.core.project.DawProject;
+import com.benesquivelmusic.daw.core.recording.Metronome;
+import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
+import com.benesquivelmusic.daw.core.reference.ReferenceTrackManager;
 import com.benesquivelmusic.daw.core.track.Track;
-import com.benesquivelmusic.daw.core.track.TrackColor;
+import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.transport.Transport;
 
 import javax.xml.XMLConstants;
@@ -22,6 +36,7 @@ import javax.xml.transform.stream.StreamResult;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.util.List;
+import java.util.Map;
 
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -79,7 +94,11 @@ public final class ProjectSerializer {
         buildAudioFormat(document, root, project);
         buildTransport(document, root, project.getTransport());
         buildTracks(document, root, project);
-        buildMixer(document, root, project.getMixer());
+        buildMixer(document, root, project);
+        buildMarkers(document, root, project.getMarkerManager());
+        buildTrackGroups(document, root, project);
+        buildMetronome(document, root, project.getMetronome());
+        buildReferenceTrackManager(document, root, project.getReferenceTrackManager());
     }
 
     private void buildMetadata(Document document, Element root, DawProject project) {
@@ -142,6 +161,8 @@ public final class ProjectSerializer {
         elem.setAttribute("armed", String.valueOf(track.isArmed()));
         elem.setAttribute("phase-inverted", String.valueOf(track.isPhaseInverted()));
         elem.setAttribute("color", track.getColor().getHexColor());
+        elem.setAttribute("input-device", String.valueOf(track.getInputDeviceIndex()));
+        elem.setAttribute("collapsed", String.valueOf(track.isCollapsed()));
 
         List<AudioClip> clips = track.getClips();
         if (!clips.isEmpty()) {
@@ -162,6 +183,8 @@ public final class ProjectSerializer {
             elem.appendChild(sfElem);
         }
 
+        buildAutomationData(document, elem, track.getAutomationData());
+
         return elem;
     }
 
@@ -177,32 +200,37 @@ public final class ProjectSerializer {
         elem.setAttribute("fade-out-beats", String.valueOf(clip.getFadeOutBeats()));
         elem.setAttribute("fade-in-curve", clip.getFadeInCurveType().name());
         elem.setAttribute("fade-out-curve", clip.getFadeOutCurveType().name());
+        elem.setAttribute("time-stretch-ratio", String.valueOf(clip.getTimeStretchRatio()));
+        elem.setAttribute("pitch-shift-semitones", String.valueOf(clip.getPitchShiftSemitones()));
+        elem.setAttribute("stretch-quality", clip.getStretchQuality().name());
         if (clip.getSourceFilePath() != null) {
             elem.setAttribute("source-file", clip.getSourceFilePath());
         }
         return elem;
     }
 
-    private void buildMixer(Document document, Element root, Mixer mixer) {
+    private void buildMixer(Document document, Element root, DawProject project) {
+        Mixer mixer = project.getMixer();
         Element mixerElem = document.createElement("mixer");
         root.appendChild(mixerElem);
 
-        mixerElem.appendChild(buildMixerChannelElement(document, "master", mixer.getMasterChannel()));
+        mixerElem.appendChild(buildMixerChannelElement(document, "master", mixer.getMasterChannel(), mixer));
 
         Element channelsElem = document.createElement("channels");
         mixerElem.appendChild(channelsElem);
         for (MixerChannel channel : mixer.getChannels()) {
-            channelsElem.appendChild(buildMixerChannelElement(document, "channel", channel));
+            channelsElem.appendChild(buildMixerChannelElement(document, "channel", channel, mixer));
         }
 
         Element returnBusesElem = document.createElement("return-buses");
         mixerElem.appendChild(returnBusesElem);
         for (MixerChannel returnBus : mixer.getReturnBuses()) {
-            returnBusesElem.appendChild(buildMixerChannelElement(document, "return-bus", returnBus));
+            returnBusesElem.appendChild(buildMixerChannelElement(document, "return-bus", returnBus, mixer));
         }
     }
 
-    private Element buildMixerChannelElement(Document document, String tagName, MixerChannel channel) {
+    private Element buildMixerChannelElement(Document document, String tagName,
+                                             MixerChannel channel, Mixer mixer) {
         Element elem = document.createElement(tagName);
         elem.setAttribute("name", channel.getName());
         elem.setAttribute("volume", String.valueOf(channel.getVolume()));
@@ -211,6 +239,164 @@ public final class ProjectSerializer {
         elem.setAttribute("solo", String.valueOf(channel.isSolo()));
         elem.setAttribute("send-level", String.valueOf(channel.getSendLevel()));
         elem.setAttribute("phase-inverted", String.valueOf(channel.isPhaseInverted()));
+
+        // Serialize insert effect slots
+        List<InsertSlot> insertSlots = channel.getInsertSlots();
+        if (!insertSlots.isEmpty()) {
+            Element insertsElem = document.createElement("inserts");
+            elem.appendChild(insertsElem);
+            for (InsertSlot slot : insertSlots) {
+                Element slotElem = document.createElement("insert");
+                slotElem.setAttribute("name", slot.getName());
+                slotElem.setAttribute("bypassed", String.valueOf(slot.isBypassed()));
+                InsertEffectType effectType = slot.getEffectType();
+                if (effectType != null) {
+                    slotElem.setAttribute("effect-type", effectType.name());
+                    Map<Integer, Double> paramValues =
+                            InsertEffectFactory.getParameterValues(effectType, slot.getProcessor());
+                    for (Map.Entry<Integer, Double> entry : paramValues.entrySet()) {
+                        Element paramElem = document.createElement("parameter");
+                        paramElem.setAttribute("id", String.valueOf(entry.getKey()));
+                        paramElem.setAttribute("value", String.valueOf(entry.getValue()));
+                        slotElem.appendChild(paramElem);
+                    }
+                }
+                insertsElem.appendChild(slotElem);
+            }
+        }
+
+        // Serialize sends
+        List<Send> sends = channel.getSends();
+        if (!sends.isEmpty()) {
+            Element sendsElem = document.createElement("sends");
+            elem.appendChild(sendsElem);
+            List<MixerChannel> returnBuses = mixer.getReturnBuses();
+            for (Send send : sends) {
+                Element sendElem = document.createElement("send");
+                sendElem.setAttribute("level", String.valueOf(send.getLevel()));
+                sendElem.setAttribute("mode", send.getMode().name());
+                int targetIndex = returnBuses.indexOf(send.getTarget());
+                sendElem.setAttribute("target-index", String.valueOf(targetIndex));
+                sendsElem.appendChild(sendElem);
+            }
+        }
+
         return elem;
+    }
+
+    private void buildAutomationData(Document document, Element trackElem, AutomationData automationData) {
+        Map<AutomationParameter, AutomationLane> lanes = automationData.getLanes();
+        if (lanes.isEmpty()) {
+            return;
+        }
+
+        Element automationElem = document.createElement("automation");
+        trackElem.appendChild(automationElem);
+
+        for (Map.Entry<AutomationParameter, AutomationLane> entry : lanes.entrySet()) {
+            AutomationLane lane = entry.getValue();
+            Element laneElem = document.createElement("lane");
+            laneElem.setAttribute("parameter", entry.getKey().name());
+            laneElem.setAttribute("visible", String.valueOf(lane.isVisible()));
+            automationElem.appendChild(laneElem);
+
+            for (AutomationPoint point : lane.getPoints()) {
+                Element pointElem = document.createElement("point");
+                pointElem.setAttribute("time", String.valueOf(point.getTimeInBeats()));
+                pointElem.setAttribute("value", String.valueOf(point.getValue()));
+                pointElem.setAttribute("interpolation", point.getInterpolationMode().name());
+                laneElem.appendChild(pointElem);
+            }
+        }
+    }
+
+    private void buildMarkers(Document document, Element root, MarkerManager markerManager) {
+        List<Marker> markers = markerManager.getMarkers();
+        List<MarkerRange> ranges = markerManager.getMarkerRanges();
+        if (markers.isEmpty() && ranges.isEmpty()) {
+            return;
+        }
+
+        Element markersElem = document.createElement("markers");
+        root.appendChild(markersElem);
+
+        for (Marker marker : markers) {
+            Element markerElem = document.createElement("marker");
+            markerElem.setAttribute("name", marker.getName());
+            markerElem.setAttribute("position", String.valueOf(marker.getPositionInBeats()));
+            markerElem.setAttribute("type", marker.getType().name());
+            markerElem.setAttribute("color", marker.getColor());
+            markersElem.appendChild(markerElem);
+        }
+
+        for (MarkerRange range : ranges) {
+            Element rangeElem = document.createElement("marker-range");
+            rangeElem.setAttribute("name", range.getName());
+            rangeElem.setAttribute("start", String.valueOf(range.getStartPositionInBeats()));
+            rangeElem.setAttribute("end", String.valueOf(range.getEndPositionInBeats()));
+            rangeElem.setAttribute("type", range.getType().name());
+            rangeElem.setAttribute("color", range.getColor());
+            markersElem.appendChild(rangeElem);
+        }
+    }
+
+    private void buildTrackGroups(Document document, Element root, DawProject project) {
+        List<TrackGroup> groups = project.getTrackGroups();
+        if (groups.isEmpty()) {
+            return;
+        }
+
+        Element groupsElem = document.createElement("track-groups");
+        root.appendChild(groupsElem);
+
+        List<Track> allTracks = project.getTracks();
+        for (TrackGroup group : groups) {
+            Element groupElem = document.createElement("group");
+            groupElem.setAttribute("name", group.getName());
+            groupsElem.appendChild(groupElem);
+
+            for (Track track : group.getTracks()) {
+                int trackIndex = allTracks.indexOf(track);
+                if (trackIndex >= 0) {
+                    Element memberElem = document.createElement("member");
+                    memberElem.setAttribute("track-index", String.valueOf(trackIndex));
+                    groupElem.appendChild(memberElem);
+                }
+            }
+        }
+    }
+
+    private void buildMetronome(Document document, Element root, Metronome metronome) {
+        Element metronomeElem = document.createElement("metronome");
+        metronomeElem.setAttribute("enabled", String.valueOf(metronome.isEnabled()));
+        metronomeElem.setAttribute("volume", String.valueOf(metronome.getVolume()));
+        metronomeElem.setAttribute("click-sound", metronome.getClickSound().name());
+        metronomeElem.setAttribute("subdivision", metronome.getSubdivision().name());
+        root.appendChild(metronomeElem);
+    }
+
+    private void buildReferenceTrackManager(Document document, Element root,
+                                             ReferenceTrackManager manager) {
+        List<ReferenceTrack> refTracks = manager.getReferenceTracks();
+        if (refTracks.isEmpty()) {
+            return;
+        }
+
+        Element refElem = document.createElement("reference-tracks");
+        refElem.setAttribute("active-index", String.valueOf(manager.getActiveIndex()));
+        refElem.setAttribute("reference-active", String.valueOf(manager.isReferenceActive()));
+        root.appendChild(refElem);
+
+        for (ReferenceTrack ref : refTracks) {
+            Element trackElem = document.createElement("reference-track");
+            trackElem.setAttribute("name", ref.getName());
+            trackElem.setAttribute("source-file", ref.getSourceFilePath());
+            trackElem.setAttribute("gain-offset-db", String.valueOf(ref.getGainOffsetDb()));
+            trackElem.setAttribute("loop-enabled", String.valueOf(ref.isLoopEnabled()));
+            trackElem.setAttribute("loop-start", String.valueOf(ref.getLoopStartInBeats()));
+            trackElem.setAttribute("loop-end", String.valueOf(ref.getLoopEndInBeats()));
+            trackElem.setAttribute("integrated-lufs", String.valueOf(ref.getIntegratedLufs()));
+            refElem.appendChild(trackElem);
+        }
     }
 }

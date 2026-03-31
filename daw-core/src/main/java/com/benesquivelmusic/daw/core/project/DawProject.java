@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.marker.MarkerManager;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
+import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrackManager;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -36,6 +37,7 @@ public final class DawProject {
     private final Transport transport;
     private final MarkerManager markerManager;
     private final ReferenceTrackManager referenceTrackManager;
+    private final Metronome metronome;
     private ProjectMetadata metadata;
     private boolean dirty;
 
@@ -62,6 +64,7 @@ public final class DawProject {
         this.transport = new Transport();
         this.markerManager = new MarkerManager();
         this.referenceTrackManager = new ReferenceTrackManager();
+        this.metronome = new Metronome(format.sampleRate(), format.channels());
         this.metadata = ProjectMetadata.createNew(name);
     }
 
@@ -235,6 +238,11 @@ public final class DawProject {
     /** Returns the reference track manager for A/B comparison. */
     public ReferenceTrackManager getReferenceTrackManager() {
         return referenceTrackManager;
+    }
+
+    /** Returns the metronome. */
+    public Metronome getMetronome() {
+        return metronome;
     }
 
     /**
