@@ -13,7 +13,6 @@ import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audioimport.AudioFileImporter;
 import com.benesquivelmusic.daw.core.audioimport.AudioImportResult;
-import com.benesquivelmusic.daw.core.audioimport.ImportAudioClipAction;
 import com.benesquivelmusic.daw.core.audioimport.SupportedAudioFormat;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.Metronome;
@@ -1474,24 +1473,44 @@ public final class MainController {
             AudioImportResult result = importer.importFile(file, playheadBeat, targetTrack);
 
             // If a new track was created, add it to the UI
-            HBox trackItem = null;
+            HBox trackItem = createdNewTrack
+                    ? trackStripController.addTrackToUI(result.track()) : null;
             if (createdNewTrack) {
                 audioTrackCounter++;
-                trackItem = trackStripController.addTrackToUI(result.track());
             }
 
-            // Wrap in undoable action
-            HBox finalTrackItem = trackItem;
-            ImportAudioClipAction importAction = new ImportAudioClipAction(
-                    project, result.track(), result.clip(), createdNewTrack);
-            undoManager.execute(importAction);
-
-            // For undo/redo, also manage the track strip UI
-            if (createdNewTrack && finalTrackItem != null) {
-                undoManager.addHistoryListener(_ -> {
-                    // The undo listener already refreshes the arrangement canvas
-                });
-            }
+            // Wrap in undoable action that manages both the model and the UI strip
+            undoManager.execute(new UndoableAction() {
+                private boolean initialExecute = true;
+                @Override public String description() { return "Import Audio File"; }
+                @Override public void execute() {
+                    if (initialExecute) {
+                        initialExecute = false;
+                        return;
+                    }
+                    if (createdNewTrack) {
+                        project.addTrack(result.track());
+                        if (trackItem != null) {
+                            trackListPanel.getChildren().add(trackItem);
+                        }
+                    }
+                    result.track().addClip(result.clip());
+                    updateArrangementPlaceholder();
+                    viewNavigationController.getMixerView().refresh();
+                }
+                @Override public void undo() {
+                    result.track().removeClip(result.clip());
+                    if (createdNewTrack) {
+                        project.removeTrack(result.track());
+                        if (trackItem != null) {
+                            trackListPanel.getChildren().remove(trackItem);
+                        }
+                        audioTrackCounter--;
+                    }
+                    updateArrangementPlaceholder();
+                    viewNavigationController.getMixerView().refresh();
+                }
+            });
 
             updateArrangementPlaceholder();
             refreshArrangementCanvas();
