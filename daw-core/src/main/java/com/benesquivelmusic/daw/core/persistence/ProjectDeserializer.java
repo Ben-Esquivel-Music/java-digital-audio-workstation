@@ -291,8 +291,14 @@ public final class ProjectDeserializer {
             sourceFile = null;
         }
 
-        if (sourceFile != null && !Files.exists(Path.of(sourceFile))) {
-            missingFiles.add(sourceFile);
+        if (sourceFile != null) {
+            try {
+                if (!Files.exists(Path.of(sourceFile))) {
+                    missingFiles.add(sourceFile);
+                }
+            } catch (java.nio.file.InvalidPathException ignored) {
+                missingFiles.add(sourceFile);
+            }
         }
 
         AudioClip clip = new AudioClip(name, startBeat, durationBeats, sourceFile);
@@ -570,7 +576,11 @@ public final class ProjectDeserializer {
                 continue;
             }
 
-            if (!Files.exists(Path.of(sourceFile))) {
+            try {
+                if (!Files.exists(Path.of(sourceFile))) {
+                    missingFiles.add(sourceFile);
+                }
+            } catch (java.nio.file.InvalidPathException ignored) {
                 missingFiles.add(sourceFile);
             }
 
