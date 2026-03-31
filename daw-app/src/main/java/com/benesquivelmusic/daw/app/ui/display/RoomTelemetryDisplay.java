@@ -1,10 +1,14 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
 import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
+import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
+import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomTelemetryData;
+import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
 import com.benesquivelmusic.daw.sdk.telemetry.SoundWavePath;
 import com.benesquivelmusic.daw.sdk.telemetry.TelemetrySuggestion;
+import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
 
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
@@ -66,6 +70,12 @@ public final class RoomTelemetryDisplay extends Region {
     private static final Color RT60_HIGH = Color.web("#ff1744", 0.4);
     private static final Color AUDIENCE_COLOR = Color.web("#b388ff");
     private static final Color AUDIENCE_GLOW = Color.web("#b388ff", 0.20);
+    private static final Color WALL_LABEL_COLOR = Color.web("#ffffff", 0.25);
+    private static final Color CRITICAL_DISTANCE_COLOR = Color.web("#ffffff", 0.12);
+    private static final Color LEGEND_BG = Color.web("#0a0a1e", 0.85);
+    private static final Color LEGEND_BORDER = Color.web("#2a2a5a", 0.8);
+    private static final Color STATS_BG = Color.web("#0a0a1e", 0.85);
+    private static final Color STATS_BORDER = Color.web("#2a2a5a", 0.8);
 
     // ── Animation constants ────────────────────────────────────────
     private static final double RIPPLE_INTERVAL = 0.8;
@@ -81,6 +91,7 @@ public final class RoomTelemetryDisplay extends Region {
     private static final double AUDIENCE_RADIUS = 7.0;
     private static final double AUDIENCE_PULSE_SPEED = 1.8;
     private static final double AUDIENCE_LABEL_STAGGER = 12.0;
+    private static final double MIC_AIM_LENGTH = 20.0;
 
     private final Canvas canvas;
     private RoomTelemetryData telemetryData;
@@ -328,31 +339,43 @@ public final class RoomTelemetryDisplay extends Region {
         // ── Draw grid ──
         drawGrid(gc, offsetX, offsetY, roomW, roomL, scale);
 
+        // ── Draw wall labels ──
+        drawWallLabels(gc, offsetX, offsetY, roomW * scale, roomL * scale);
+
+        // ── Draw dimension labels ──
+        drawDimensionLabels(gc, offsetX, offsetY, roomW, roomL, scale);
+
         // ── Draw sonar ripples ──
         for (Ripple ripple : ripples) {
             drawRipple(gc, ripple, offsetX, offsetY, scale);
         }
+
+        // ── Draw critical distance circles ──
+        drawCriticalDistance(gc, offsetX, offsetY, scale);
 
         // ── Draw wave paths with particles ──
         for (SoundWavePath path : telemetryData.wavePaths()) {
             drawWavePath(gc, path, offsetX, offsetY, scale);
         }
 
-        // ── Draw sound sources (with glow + pulse) ──
+        // ── Draw sound sources (with glow + pulse + power) ──
         java.util.HashSet<String> drawnSources = new java.util.HashSet<String>();
         for (SoundWavePath path : telemetryData.wavePaths()) {
             if (drawnSources.add(path.sourceName())) {
                 Position3D sp = path.waypoints().getFirst();
-                drawSource(gc, sp, path.sourceName(), offsetX, offsetY, scale);
+                SoundSource source = findSourceByName(path.sourceName());
+                double powerDb = (source != null) ? source.powerDb() : 80.0;
+                drawSource(gc, sp, path.sourceName(), offsetX, offsetY, scale, powerDb);
             }
         }
 
-        // ── Draw microphones (with glow + pulse) ──
+        // ── Draw microphones (with glow + pulse + aim) ──
         java.util.HashSet<String> drawnMics = new java.util.HashSet<String>();
         for (SoundWavePath path : telemetryData.wavePaths()) {
             if (drawnMics.add(path.microphoneName())) {
                 Position3D mp = path.waypoints().getLast();
-                drawMicrophone(gc, mp, path.microphoneName(), offsetX, offsetY, scale);
+                MicrophonePlacement mic = findMicByName(path.microphoneName());
+                drawMicrophone(gc, mp, path.microphoneName(), offsetX, offsetY, scale, mic);
             }
         }
 
@@ -368,6 +391,15 @@ public final class RoomTelemetryDisplay extends Region {
 
         // ── Draw suggestions panel ──
         drawSuggestions(gc, w, h);
+
+        // ── Draw room statistics panel ──
+        drawRoomStats(gc, offsetX, offsetY);
+
+        // ── Draw color legend ──
+        drawLegend(gc, w);
+
+        // ── Draw scale bar ──
+        drawScaleBar(gc, w, h, scale);
 
         gc.restore();
     }
@@ -503,13 +535,17 @@ public final class RoomTelemetryDisplay extends Region {
     }
 
     private void drawSource(GraphicsContext gc, Position3D pos, String name,
-                             double offsetX, double offsetY, double scale) {
+                             double offsetX, double offsetY, double scale,
+                             double powerDb) {
         double cx = offsetX + pos.x() * scale;
         double cy = offsetY + pos.y() * scale;
 
         // Animated pulse
         double pulse = 0.5 + 0.5 * Math.sin(animationTime * SOURCE_PULSE_SPEED);
-        double glowRadius = SOURCE_RADIUS + 8 * pulse;
+
+        // Scale glow radius by powerDb (75 dB → baseline, 100 dB → larger)
+        double powerScale = 0.6 + 0.4 * Math.max(0, Math.min(1, (powerDb - 60) / 50.0));
+        double glowRadius = (SOURCE_RADIUS + 8 * pulse) * powerScale;
 
         // Outer glow
         gc.setFill(new RadialGradient(0, 0, cx, cy, glowRadius * 2, false, CycleMethod.NO_CYCLE,
@@ -540,15 +576,20 @@ public final class RoomTelemetryDisplay extends Region {
                     javafx.scene.shape.ArcType.OPEN);
         }
 
-        // Label
+        // Label with name
         gc.setFill(TEXT_COLOR);
         gc.setFont(Font.font("System", 10));
         gc.setTextAlign(TextAlignment.CENTER);
         gc.fillText("🔊 " + name, cx, cy - SOURCE_RADIUS - LABEL_OFFSET);
+
+        // Power dB label below the source name
+        gc.setFont(Font.font("System", 8));
+        gc.fillText("%.0f dB".formatted(powerDb), cx, cy - SOURCE_RADIUS - LABEL_OFFSET + 12);
     }
 
     private void drawMicrophone(GraphicsContext gc, Position3D pos, String name,
-                                 double offsetX, double offsetY, double scale) {
+                                 double offsetX, double offsetY, double scale,
+                                 MicrophonePlacement mic) {
         double cx = offsetX + pos.x() * scale;
         double cy = offsetY + pos.y() * scale;
 
@@ -575,6 +616,36 @@ public final class RoomTelemetryDisplay extends Region {
         // Inner shine
         gc.setFill(Color.web("#ffffff", 0.2 + 0.15 * pulse));
         gc.fillOval(cx - 2.5, cy - 2.5, 5, 5);
+
+        // Aim direction indicator (azimuth line)
+        if (mic != null) {
+            double azRad = Math.toRadians(mic.azimuth());
+            // Azimuth: 0 = +Y direction, 90 = +X direction (top-down view)
+            double aimDx = Math.sin(azRad) * MIC_AIM_LENGTH;
+            double aimDy = Math.cos(azRad) * MIC_AIM_LENGTH;
+            gc.setStroke(MIC_COLOR.deriveColor(0, 1, 1, 0.5));
+            gc.setLineWidth(2.0);
+            gc.setLineDashes();
+            gc.strokeLine(cx, cy, cx + aimDx, cy + aimDy);
+
+            // Draw suggested aim direction if an AdjustMicAngle suggestion exists
+            if (telemetryData != null) {
+                for (TelemetrySuggestion suggestion : telemetryData.suggestions()) {
+                    if (suggestion instanceof TelemetrySuggestion.AdjustMicAngle adjust
+                            && adjust.microphoneName().equals(name)) {
+                        double sugAzRad = Math.toRadians(adjust.suggestedAzimuth());
+                        double sugDx = Math.sin(sugAzRad) * MIC_AIM_LENGTH;
+                        double sugDy = Math.cos(sugAzRad) * MIC_AIM_LENGTH;
+                        gc.setStroke(MIC_COLOR.deriveColor(0, 1, 1, 0.3));
+                        gc.setLineWidth(1.5);
+                        gc.setLineDashes(4, 3);
+                        gc.strokeLine(cx, cy, cx + sugDx, cy + sugDy);
+                        gc.setLineDashes();
+                        break;
+                    }
+                }
+            }
+        }
 
         // Label
         gc.setFill(TEXT_COLOR);
@@ -679,7 +750,292 @@ public final class RoomTelemetryDisplay extends Region {
         }
     }
 
+    // ── Dimension labels (User Story 1) ────────────────────────────
+
+    private void drawDimensionLabels(GraphicsContext gc, double offsetX, double offsetY,
+                                      double roomW, double roomL, double scale) {
+        gc.setFill(TEXT_COLOR);
+        gc.setFont(Font.font("System", 10));
+
+        // Width label along the bottom edge
+        gc.setTextAlign(TextAlignment.CENTER);
+        double bottomY = offsetY + roomL * scale + 16;
+        gc.fillText("%.1f m".formatted(roomW), offsetX + roomW * scale / 2, bottomY);
+
+        // Length label along the right edge (rotated text simulated as vertical placement)
+        gc.setTextAlign(TextAlignment.CENTER);
+        gc.save();
+        double rightX = offsetX + roomW * scale + 16;
+        double midY = offsetY + roomL * scale / 2;
+        gc.translate(rightX, midY);
+        gc.rotate(90);
+        gc.fillText("%.1f m".formatted(roomL), 0, 0);
+        gc.restore();
+    }
+
+    // ── Wall labels (User Story 2) ─────────────────────────────────
+
+    private void drawWallLabels(GraphicsContext gc, double offsetX, double offsetY,
+                                 double roomPixelW, double roomPixelL) {
+        gc.setFill(WALL_LABEL_COLOR);
+        gc.setFont(Font.font("System", 11));
+        gc.setTextAlign(TextAlignment.CENTER);
+
+        // Front wall (bottom edge, y = length)
+        gc.fillText("Front", offsetX + roomPixelW / 2, offsetY + roomPixelL - 6);
+
+        // Back wall (top edge, y = 0)
+        gc.fillText("Back", offsetX + roomPixelW / 2, offsetY + 14);
+
+        // Left wall (left edge, x = 0)
+        gc.save();
+        gc.translate(offsetX + 12, offsetY + roomPixelL / 2);
+        gc.rotate(-90);
+        gc.fillText("Left", 0, 0);
+        gc.restore();
+
+        // Right wall (right edge, x = width)
+        gc.save();
+        gc.translate(offsetX + roomPixelW - 8, offsetY + roomPixelL / 2);
+        gc.rotate(90);
+        gc.fillText("Right", 0, 0);
+        gc.restore();
+    }
+
+    // ── Color legend (User Story 3) ────────────────────────────────
+
+    private void drawLegend(GraphicsContext gc, double canvasW) {
+        if (telemetryData == null) return;
+
+        boolean hasAudience = !telemetryData.audienceMembers().isEmpty();
+        int entryCount = hasAudience ? 5 : 4;
+        double lineHeight = 18;
+        double panelW = 140;
+        double panelH = entryCount * lineHeight + 20;
+        double panelX = canvasW - panelW - 10;
+        double panelY = 10;
+
+        // Background
+        gc.setFill(LEGEND_BG);
+        gc.fillRect(panelX, panelY, panelW, panelH);
+        gc.setStroke(LEGEND_BORDER);
+        gc.setLineWidth(1);
+        gc.strokeRect(panelX, panelY, panelW, panelH);
+
+        double entryX = panelX + 8;
+        double entryY = panelY + 16;
+
+        gc.setFont(Font.font("System", 9));
+        gc.setTextAlign(TextAlignment.LEFT);
+
+        // Direct path — cyan solid line
+        gc.setStroke(DIRECT_PATH_COLOR);
+        gc.setLineWidth(1.8);
+        gc.setLineDashes();
+        gc.strokeLine(entryX, entryY - 3, entryX + 16, entryY - 3);
+        gc.setFill(TEXT_COLOR);
+        gc.fillText("Direct path", entryX + 22, entryY);
+        entryY += lineHeight;
+
+        // Reflected path — orange dashed line
+        gc.setStroke(REFLECTED_PATH_COLOR);
+        gc.setLineWidth(1.0);
+        gc.setLineDashes(6, 4);
+        gc.strokeLine(entryX, entryY - 3, entryX + 16, entryY - 3);
+        gc.setLineDashes();
+        gc.setFill(TEXT_COLOR);
+        gc.fillText("Reflected path", entryX + 22, entryY);
+        entryY += lineHeight;
+
+        // Sound source — pink circle
+        gc.setFill(SOURCE_COLOR);
+        gc.fillOval(entryX + 4, entryY - 8, 8, 8);
+        gc.setFill(TEXT_COLOR);
+        gc.fillText("Sound source", entryX + 22, entryY);
+        entryY += lineHeight;
+
+        // Microphone — green diamond
+        gc.setFill(MIC_COLOR);
+        double dx = entryX + 8;
+        double dy = entryY - 4;
+        gc.fillPolygon(
+                new double[]{dx, dx + 4, dx, dx - 4},
+                new double[]{dy - 5, dy, dy + 5, dy},
+                4
+        );
+        gc.setFill(TEXT_COLOR);
+        gc.fillText("Microphone", entryX + 22, entryY);
+        entryY += lineHeight;
+
+        // Audience — purple silhouette (only when present)
+        if (hasAudience) {
+            gc.setFill(AUDIENCE_COLOR);
+            double ax = entryX + 8;
+            double ay = entryY - 4;
+            gc.fillOval(ax - 3, ay - 6, 6, 6);
+            gc.fillArc(ax - 5, ay - 1, 10, 7, 0, 180, javafx.scene.shape.ArcType.ROUND);
+            gc.setFill(TEXT_COLOR);
+            gc.fillText("Audience", entryX + 22, entryY);
+        }
+    }
+
+    // ── Room statistics panel (User Story 4) ───────────────────────
+
+    private void drawRoomStats(GraphicsContext gc, double offsetX, double offsetY) {
+        if (telemetryData == null) return;
+
+        RoomDimensions dims = telemetryData.roomDimensions();
+        double volume = dims.volume();
+        double surfaceArea = dims.surfaceArea();
+        double rt60 = telemetryData.estimatedRt60Seconds();
+
+        // Critical distance: Dc = 0.057 * sqrt(V / RT60)
+        double criticalDistance = (rt60 > 0) ? 0.057 * Math.sqrt(volume / rt60) : 0;
+
+        WallMaterial material = telemetryData.wallMaterial();
+        int sourceCount = telemetryData.soundSources().size();
+        int micCount = telemetryData.microphones().size();
+
+        List<String> lines = new ArrayList<>();
+        lines.add("Volume: %.1f m³".formatted(volume));
+        lines.add("Surface: %.1f m²".formatted(surfaceArea));
+        if (material != null) {
+            lines.add("Material: %s".formatted(formatMaterialName(material)));
+        }
+        lines.add("Critical dist: %.2f m".formatted(criticalDistance));
+        lines.add("Sources: %d  Mics: %d".formatted(sourceCount, micCount));
+
+        double lineHeight = 16;
+        double panelW = 170;
+        double panelH = lines.size() * lineHeight + 14;
+        double panelX = offsetX + 6;
+        double panelY = offsetY + 22;
+
+        // Background
+        gc.setFill(STATS_BG);
+        gc.fillRect(panelX, panelY, panelW, panelH);
+        gc.setStroke(STATS_BORDER);
+        gc.setLineWidth(1);
+        gc.strokeRect(panelX, panelY, panelW, panelH);
+
+        // Text
+        gc.setFill(TEXT_COLOR);
+        gc.setFont(Font.font("System", 9));
+        gc.setTextAlign(TextAlignment.LEFT);
+        for (int i = 0; i < lines.size(); i++) {
+            gc.fillText(lines.get(i), panelX + 8, panelY + 14 + i * lineHeight);
+        }
+    }
+
+    // ── Scale bar (User Story 5) ───────────────────────────────────
+
+    private void drawScaleBar(GraphicsContext gc, double canvasW, double canvasH, double scale) {
+        // Choose a round number of meters that fits within ~120 pixels
+        double targetPixels = 100;
+        double targetMeters = targetPixels / scale;
+
+        // Round to a nice value: 0.5, 1, 2, 5, 10, 20, ...
+        double scaleMeters;
+        if (targetMeters < 0.75) scaleMeters = 0.5;
+        else if (targetMeters < 1.5) scaleMeters = 1;
+        else if (targetMeters < 3) scaleMeters = 2;
+        else if (targetMeters < 7) scaleMeters = 5;
+        else if (targetMeters < 15) scaleMeters = 10;
+        else scaleMeters = 20;
+
+        double barPixels = scaleMeters * scale;
+        double barX = canvasW - barPixels - 20;
+        double barY = canvasH - 20;
+        double tickH = 6;
+
+        gc.setStroke(TEXT_COLOR);
+        gc.setLineWidth(1.5);
+        gc.setLineDashes();
+
+        // Horizontal bar
+        gc.strokeLine(barX, barY, barX + barPixels, barY);
+
+        // Left tick
+        gc.strokeLine(barX, barY - tickH, barX, barY + tickH);
+
+        // Right tick
+        gc.strokeLine(barX + barPixels, barY - tickH, barX + barPixels, barY + tickH);
+
+        // Label
+        gc.setFill(TEXT_COLOR);
+        gc.setFont(Font.font("System", 9));
+        gc.setTextAlign(TextAlignment.CENTER);
+        String label = (scaleMeters == (int) scaleMeters)
+                ? "%d m".formatted((int) scaleMeters)
+                : "%.1f m".formatted(scaleMeters);
+        gc.fillText(label, barX + barPixels / 2, barY - 8);
+    }
+
+    // ── Critical distance circles (User Story 8) ───────────────────
+
+    private void drawCriticalDistance(GraphicsContext gc, double offsetX, double offsetY, double scale) {
+        if (telemetryData == null) return;
+
+        double volume = telemetryData.roomDimensions().volume();
+        double rt60 = telemetryData.estimatedRt60Seconds();
+        if (rt60 <= 0) return;
+
+        double criticalDistMeters = 0.057 * Math.sqrt(volume / rt60);
+        double criticalDistPixels = criticalDistMeters * scale;
+
+        gc.setStroke(CRITICAL_DISTANCE_COLOR);
+        gc.setLineWidth(1.0);
+        gc.setLineDashes(6, 4);
+
+        java.util.HashSet<String> drawnSources = new java.util.HashSet<>();
+        for (SoundWavePath path : telemetryData.wavePaths()) {
+            if (drawnSources.add(path.sourceName())) {
+                Position3D sp = path.waypoints().getFirst();
+                double cx = offsetX + sp.x() * scale;
+                double cy = offsetY + sp.y() * scale;
+
+                gc.strokeOval(cx - criticalDistPixels, cy - criticalDistPixels,
+                        criticalDistPixels * 2, criticalDistPixels * 2);
+
+                // "Dc" label at the edge
+                gc.setFill(TEXT_COLOR.deriveColor(0, 1, 1, 0.5));
+                gc.setFont(Font.font("System", 8));
+                gc.setTextAlign(TextAlignment.LEFT);
+                gc.fillText("Dc", cx + criticalDistPixels + 2, cy - 2);
+            }
+        }
+        gc.setLineDashes();
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────
+
+    private SoundSource findSourceByName(String name) {
+        if (telemetryData == null) return null;
+        for (SoundSource source : telemetryData.soundSources()) {
+            if (source.name().equals(name)) return source;
+        }
+        return null;
+    }
+
+    private MicrophonePlacement findMicByName(String name) {
+        if (telemetryData == null) return null;
+        for (MicrophonePlacement mic : telemetryData.microphones()) {
+            if (mic.name().equals(name)) return mic;
+        }
+        return null;
+    }
+
+    private static String formatMaterialName(WallMaterial material) {
+        String raw = material.name();
+        String[] parts = raw.split("_");
+        StringBuilder sb = new StringBuilder();
+        for (String part : parts) {
+            if (!sb.isEmpty()) sb.append(' ');
+            sb.append(Character.toUpperCase(part.charAt(0)));
+            sb.append(part.substring(1).toLowerCase());
+        }
+        return sb.toString();
+    }
 
     private static String pathKey(SoundWavePath path) {
         return path.sourceName() + "→" + path.microphoneName() + ":" + path.reflected();

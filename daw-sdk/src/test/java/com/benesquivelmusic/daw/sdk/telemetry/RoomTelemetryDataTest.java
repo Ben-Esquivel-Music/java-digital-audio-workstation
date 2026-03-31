@@ -104,4 +104,77 @@ class RoomTelemetryDataTest {
 
         assertThat(data.audienceMembers()).hasSize(3);
     }
+
+    @Test
+    void shouldStoreSoundSourcesAndMicrophones() {
+        RoomDimensions dims = new RoomDimensions(10, 8, 3);
+        SoundSource source = new SoundSource("Guitar", new Position3D(3, 2, 1), 85);
+        MicrophonePlacement mic = new MicrophonePlacement("Mic1", new Position3D(5, 4, 1.5), 0, 0);
+
+        RoomTelemetryData data = new RoomTelemetryData(dims, List.of(), 0.5, List.of(),
+                List.of(), List.of(source), List.of(mic), WallMaterial.DRYWALL);
+
+        assertThat(data.soundSources()).hasSize(1);
+        assertThat(data.soundSources().getFirst().name()).isEqualTo("Guitar");
+        assertThat(data.microphones()).hasSize(1);
+        assertThat(data.microphones().getFirst().name()).isEqualTo("Mic1");
+        assertThat(data.wallMaterial()).isEqualTo(WallMaterial.DRYWALL);
+    }
+
+    @Test
+    void shouldDefaultToEmptySourcesAndMicsWithLegacyConstructor() {
+        RoomDimensions dims = new RoomDimensions(10, 8, 3);
+        RoomTelemetryData data = new RoomTelemetryData(dims, List.of(), 0.5, List.of(), List.of());
+
+        assertThat(data.soundSources()).isEmpty();
+        assertThat(data.microphones()).isEmpty();
+        assertThat(data.wallMaterial()).isNull();
+    }
+
+    @Test
+    void shouldRejectNullSoundSources() {
+        RoomDimensions dims = new RoomDimensions(10, 8, 3);
+        assertThatThrownBy(() -> new RoomTelemetryData(dims, List.of(), 0.5, List.of(),
+                List.of(), null, List.of(), WallMaterial.DRYWALL))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void shouldRejectNullMicrophones() {
+        RoomDimensions dims = new RoomDimensions(10, 8, 3);
+        assertThatThrownBy(() -> new RoomTelemetryData(dims, List.of(), 0.5, List.of(),
+                List.of(), List.of(), null, WallMaterial.DRYWALL))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void shouldReturnDefensiveCopyOfSoundSources() {
+        RoomDimensions dims = new RoomDimensions(10, 8, 3);
+        SoundSource source = new SoundSource("Guitar", new Position3D(3, 2, 1), 85);
+        RoomTelemetryData data = new RoomTelemetryData(dims, List.of(), 0.5, List.of(),
+                List.of(), List.of(source), List.of(), null);
+
+        assertThatThrownBy(() -> data.soundSources().add(null))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void shouldReturnDefensiveCopyOfMicrophones() {
+        RoomDimensions dims = new RoomDimensions(10, 8, 3);
+        MicrophonePlacement mic = new MicrophonePlacement("Mic1", new Position3D(5, 4, 1.5), 0, 0);
+        RoomTelemetryData data = new RoomTelemetryData(dims, List.of(), 0.5, List.of(),
+                List.of(), List.of(), List.of(mic), null);
+
+        assertThatThrownBy(() -> data.microphones().add(null))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void shouldAllowNullWallMaterial() {
+        RoomDimensions dims = new RoomDimensions(10, 8, 3);
+        RoomTelemetryData data = new RoomTelemetryData(dims, List.of(), 0.5, List.of(),
+                List.of(), List.of(), List.of(), null);
+
+        assertThat(data.wallMaterial()).isNull();
+    }
 }
