@@ -3,6 +3,8 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.core.audio.AddClipAction;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.CrossTrackMoveAction;
+import com.benesquivelmusic.daw.core.audio.FadeClipAction;
+import com.benesquivelmusic.daw.core.audio.FadeCurveType;
 import com.benesquivelmusic.daw.core.audio.GlueClipsAction;
 import com.benesquivelmusic.daw.core.audio.MoveClipAction;
 import com.benesquivelmusic.daw.core.audio.RemoveClipAction;
@@ -17,6 +19,9 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 
 import javafx.scene.Cursor;
+import javafx.scene.control.ContextMenu;
+import javafx.scene.control.MenuItem;
+import javafx.scene.control.Tooltip;
 import javafx.scene.input.MouseButton;
 import javafx.scene.input.MouseEvent;
 
@@ -63,6 +68,8 @@ final class ClipInteractionController {
     private final ArrangementCanvas canvas;
     private final Host host;
     private final ClipTrimHandler trimHandler;
+    private final ClipFadeHandler fadeHandler;
+    private final Tooltip fadeTooltip = new Tooltip();
 
     // Drag state for pointer tool
     private AudioClip dragClip;
@@ -80,6 +87,19 @@ final class ClipInteractionController {
         this.canvas = Objects.requireNonNull(canvas, "canvas must not be null");
         this.host = Objects.requireNonNull(host, "host must not be null");
         this.trimHandler = new ClipTrimHandler(new ClipTrimHandler.Host() {
+            @Override public double pixelsPerBeat() { return host.pixelsPerBeat(); }
+            @Override public double scrollXBeats() { return host.scrollXBeats(); }
+            @Override public double scrollYPixels() { return host.scrollYPixels(); }
+            @Override public double trackHeight() { return host.trackHeight(); }
+            @Override public List<Track> tracks() { return host.tracks(); }
+            @Override public UndoManager undoManager() { return host.undoManager(); }
+            @Override public boolean snapEnabled() { return host.snapEnabled(); }
+            @Override public GridResolution gridResolution() { return host.gridResolution(); }
+            @Override public int beatsPerBar() { return host.beatsPerBar(); }
+            @Override public void refreshCanvas() { host.refreshCanvas(); }
+            @Override public int trackIndexAtY(double y) { return canvas.trackIndexAtY(y); }
+        });
+        this.fadeHandler = new ClipFadeHandler(new ClipFadeHandler.Host() {
             @Override public double pixelsPerBeat() { return host.pixelsPerBeat(); }
             @Override public double scrollXBeats() { return host.scrollXBeats(); }
             @Override public double scrollYPixels() { return host.scrollYPixels(); }
@@ -212,9 +232,30 @@ final class ClipInteractionController {
             }
         }
 
-        // ── Normal clip interaction (primary button only) ───────────────────
+        // ── Normal clip interaction ──────────────────────────────────────────
+
+        // Right-click on a fade handle → show curve type context menu
+        if (event.getButton() == MouseButton.SECONDARY
+                && host.activeTool() == EditTool.POINTER && trackIndex >= 0) {
+            ClipFadeHandler.HandleHit fadeHit = fadeHandler.hitTestHandle(event.getX(), event.getY());
+            if (fadeHit != null) {
+                showFadeCurveContextMenu(fadeHit, event);
+                return;
+            }
+        }
+
         if (event.getButton() != MouseButton.PRIMARY) {
             return;
+        }
+
+        // Check for fade handle activation before trim edges
+        if (host.activeTool() == EditTool.POINTER && trackIndex >= 0) {
+            ClipFadeHandler.HandleHit fadeHit = fadeHandler.hitTestHandle(event.getX(), event.getY());
+            if (fadeHit != null) {
+                fadeHandler.beginFade(fadeHit.clip(), fadeHit.handle());
+                canvas.setCursor(Cursor.H_RESIZE);
+                return;
+            }
         }
 
         // Check for trim edge activation before normal tool handling
@@ -262,6 +303,12 @@ final class ClipInteractionController {
                 dragAutomationLane.sortPoints();
                 host.refreshCanvas();
             }
+            return;
+        }
+
+        if (fadeHandler.isFading()) {
+            fadeHandler.updateFade(event.getX());
+            host.refreshCanvas();
             return;
         }
 
@@ -318,6 +365,12 @@ final class ClipInteractionController {
             return;
         }
 
+        if (fadeHandler.isFading()) {
+            fadeHandler.completeFade(event.getX());
+            updateCursor();
+            return;
+        }
+
         if (trimHandler.isTrimming()) {
             // Clear the visual trim preview before completing the trim so that
             // any refresh triggered inside completeTrim() does not render a
@@ -356,11 +409,23 @@ final class ClipInteractionController {
 
     private void onMouseMoved(MouseEvent event) {
         if (host.activeTool() == EditTool.POINTER) {
+            // Check fade handles first
+            ClipFadeHandler.HandleHit fadeHit = fadeHandler.hitTestHandle(event.getX(), event.getY());
+            if (fadeHit != null) {
+                canvas.setCursor(Cursor.H_RESIZE);
+                fadeTooltip.setText(ClipFadeHandler.tooltipFor(fadeHit));
+                Tooltip.install(canvas, fadeTooltip);
+                return;
+            }
+            Tooltip.uninstall(canvas, fadeTooltip);
+
             ClipTrimHandler.EdgeHit hit = trimHandler.hitTestEdge(event.getX(), event.getY());
             if (hit != null) {
                 canvas.setCursor(Cursor.H_RESIZE);
                 return;
             }
+        } else {
+            Tooltip.uninstall(canvas, fadeTooltip);
         }
         updateCursor();
     }
@@ -437,6 +502,40 @@ final class ClipInteractionController {
                 return;
             }
         }
+    }
+
+    // ── Fade curve context menu ──────────────────────────────────────────────
+
+    private void showFadeCurveContextMenu(ClipFadeHandler.HandleHit hit, MouseEvent event) {
+        AudioClip clip = hit.clip();
+        boolean isFadeIn = hit.handle() == ClipFadeHandler.FadeHandle.FADE_IN;
+
+        ContextMenu menu = new ContextMenu();
+        for (FadeCurveType curveType : FadeCurveType.values()) {
+            MenuItem item = new MenuItem(curveLabel(curveType));
+            item.setOnAction(e -> {
+                FadeCurveType currentIn = clip.getFadeInCurveType();
+                FadeCurveType currentOut = clip.getFadeOutCurveType();
+                FadeCurveType newIn = isFadeIn ? curveType : currentIn;
+                FadeCurveType newOut = isFadeIn ? currentOut : curveType;
+                if (newIn != currentIn || newOut != currentOut) {
+                    host.undoManager().execute(new FadeClipAction(
+                            clip, clip.getFadeInBeats(), clip.getFadeOutBeats(),
+                            newIn, newOut));
+                    host.refreshCanvas();
+                }
+            });
+            menu.getItems().add(item);
+        }
+        menu.show(canvas, event.getScreenX(), event.getScreenY());
+    }
+
+    private static String curveLabel(FadeCurveType curveType) {
+        return switch (curveType) {
+            case LINEAR -> "Linear";
+            case EQUAL_POWER -> "Equal Power";
+            case S_CURVE -> "S-Curve";
+        };
     }
 
 }

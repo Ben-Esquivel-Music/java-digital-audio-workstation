@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.audio.FadeCurveType;
 import com.benesquivelmusic.daw.core.automation.AutomationData;
 import com.benesquivelmusic.daw.core.automation.AutomationLane;
 import com.benesquivelmusic.daw.core.automation.AutomationParameter;
@@ -47,6 +48,8 @@ public final class ArrangementCanvas extends Pane {
     static final Color MIDI_NOTE_COLOR = Color.web("#ffffff", 0.7);
     static final Color PLAYHEAD_COLOR = Color.web("#ff5555");
     static final Color TRIM_PREVIEW_COLOR = Color.web("#00E5FF", 0.8);
+    static final Color FADE_HANDLE_COLOR = Color.web("#ffffff", 0.85);
+    static final Color FADE_HANDLE_FILL_COLOR = Color.web("#ffffff", 0.3);
 
     private static final Font CLIP_LABEL_FONT = Font.font("SansSerif", 10);
     private static final double CLIP_CORNER_RADIUS = 4.0;
@@ -54,6 +57,8 @@ public final class ArrangementCanvas extends Pane {
     private static final double CLIP_LABEL_PADDING = 4.0;
     private static final double CLIP_OPACITY = 0.75;
     private static final double FADE_OVERLAY_OPACITY = 0.3;
+    private static final double FADE_HANDLE_SIZE = ClipFadeHandler.HANDLE_SIZE_PIXELS;
+    private static final int FADE_CURVE_SEGMENTS = 20;
     private static final int WAVEFORM_MIN_WIDTH = 4;
     private static final double MIDI_NOTE_HEIGHT_FRACTION = 0.08;
 
@@ -555,40 +560,170 @@ public final class ArrangementCanvas extends Pane {
         gc.strokeRoundRect(clipX, clipY, clipWidth, clipHeight,
                 CLIP_CORNER_RADIUS, CLIP_CORNER_RADIUS);
 
-        // Fade-in overlay (triangle)
+        // Fade-in overlay (curve shape)
         if (clip.getFadeInBeats() > 0) {
             double fadeWidth = clip.getFadeInBeats() * pixelsPerBeat;
-            // Clamp fade width so the overlay stays within the clip bounds
             fadeWidth = Math.max(0.0, Math.min(fadeWidth, clipWidth));
             if (fadeWidth > 0.0) {
-                gc.setFill(Color.web("#000000", FADE_OVERLAY_OPACITY));
-                gc.fillPolygon(
-                        new double[]{clipX, clipX + fadeWidth, clipX},
-                        new double[]{clipY, clipY, clipY + clipHeight},
-                        3);
+                drawFadeInOverlay(gc, clip.getFadeInCurveType(),
+                        clipX, clipY, fadeWidth, clipHeight);
             }
         }
 
-        // Fade-out overlay (triangle)
+        // Fade-out overlay (curve shape)
         if (clip.getFadeOutBeats() > 0) {
             double fadeWidth = clip.getFadeOutBeats() * pixelsPerBeat;
-            // Clamp fade width so the overlay stays within the clip bounds
             fadeWidth = Math.max(0.0, Math.min(fadeWidth, clipWidth));
             if (fadeWidth > 0.0) {
                 double fadeX = clipX + clipWidth - fadeWidth;
-                gc.setFill(Color.web("#000000", FADE_OVERLAY_OPACITY));
-                gc.fillPolygon(
-                        new double[]{fadeX, clipX + clipWidth, clipX + clipWidth},
-                        new double[]{clipY, clipY, clipY + clipHeight},
-                        3);
+                drawFadeOutOverlay(gc, clip.getFadeOutCurveType(),
+                        fadeX, clipY, fadeWidth, clipHeight);
             }
         }
 
         // Waveform overview
         drawWaveform(gc, clip, clipX, clipY, clipWidth, clipHeight);
 
+        // Fade handle indicators
+        drawFadeHandles(gc, clip, clipX, clipY, clipWidth, clipHeight);
+
         // Clip name label
         drawClipLabel(gc, clip.getName(), clipX, clipY, clipWidth, clipHeight);
+    }
+
+    /**
+     * Draws a fade-in overlay with the given curve type. The overlay is a
+     * semi-transparent filled shape from the bottom-left corner through the
+     * curve to the top-right of the fade region.
+     */
+    private void drawFadeInOverlay(GraphicsContext gc, FadeCurveType curveType,
+                                    double fadeX, double clipY,
+                                    double fadeWidth, double clipHeight) {
+        gc.setFill(Color.web("#000000", FADE_OVERLAY_OPACITY));
+        int n = FADE_CURVE_SEGMENTS;
+        // Build polygon: curve from top-left to top-right, then down to bottom-left
+        double[] xs = new double[n + 3];
+        double[] ys = new double[n + 3];
+        for (int i = 0; i <= n; i++) {
+            double t = (double) i / n;
+            double gain = fadeCurveGain(curveType, t);
+            xs[i] = fadeX + t * fadeWidth;
+            // gain=0 at t=0 → full height (bottom), gain=1 at t=1 → top
+            ys[i] = clipY + clipHeight * (1.0 - gain);
+        }
+        // Close the polygon along the bottom
+        xs[n + 1] = fadeX;
+        ys[n + 1] = clipY + clipHeight;
+        xs[n + 2] = fadeX;
+        ys[n + 2] = clipY + clipHeight;
+        gc.fillPolygon(xs, ys, n + 3);
+
+        // Draw the curve line
+        gc.setStroke(FADE_HANDLE_COLOR);
+        gc.setLineWidth(1.5);
+        gc.beginPath();
+        gc.moveTo(fadeX, clipY + clipHeight);
+        for (int i = 1; i <= n; i++) {
+            double t = (double) i / n;
+            double gain = fadeCurveGain(curveType, t);
+            gc.lineTo(fadeX + t * fadeWidth, clipY + clipHeight * (1.0 - gain));
+        }
+        gc.stroke();
+    }
+
+    /**
+     * Draws a fade-out overlay with the given curve type. The overlay is a
+     * semi-transparent filled shape from the top-left of the fade region
+     * through the curve to the bottom-right corner.
+     */
+    private void drawFadeOutOverlay(GraphicsContext gc, FadeCurveType curveType,
+                                     double fadeX, double clipY,
+                                     double fadeWidth, double clipHeight) {
+        gc.setFill(Color.web("#000000", FADE_OVERLAY_OPACITY));
+        int n = FADE_CURVE_SEGMENTS;
+        // Build polygon: curve from top-left to bottom-right, then up to top-right
+        double[] xs = new double[n + 3];
+        double[] ys = new double[n + 3];
+        for (int i = 0; i <= n; i++) {
+            double t = (double) i / n;
+            // fade-out: gain goes from 1 at t=0 to 0 at t=1
+            double gain = fadeCurveGain(curveType, 1.0 - t);
+            xs[i] = fadeX + t * fadeWidth;
+            ys[i] = clipY + clipHeight * (1.0 - gain);
+        }
+        // Close the polygon along the top-right corner
+        xs[n + 1] = fadeX + fadeWidth;
+        ys[n + 1] = clipY;
+        xs[n + 2] = fadeX + fadeWidth;
+        ys[n + 2] = clipY;
+        gc.fillPolygon(xs, ys, n + 3);
+
+        // Draw the curve line
+        gc.setStroke(FADE_HANDLE_COLOR);
+        gc.setLineWidth(1.5);
+        gc.beginPath();
+        gc.moveTo(fadeX, clipY);
+        for (int i = 1; i <= n; i++) {
+            double t = (double) i / n;
+            double gain = fadeCurveGain(curveType, 1.0 - t);
+            gc.lineTo(fadeX + t * fadeWidth, clipY + clipHeight * (1.0 - gain));
+        }
+        gc.stroke();
+    }
+
+    /**
+     * Computes the gain value at position {@code t} (0..1) for the given
+     * curve type, where 0 = silence and 1 = full volume.
+     */
+    private static double fadeCurveGain(FadeCurveType curveType, double t) {
+        return switch (curveType) {
+            case LINEAR -> t;
+            case EQUAL_POWER -> Math.sin(t * Math.PI / 2.0);
+            case S_CURVE -> t * t * (3.0 - 2.0 * t);
+        };
+    }
+
+    /**
+     * Draws small triangular fade handle indicators at the fade-in and
+     * fade-out positions of the clip.
+     */
+    private void drawFadeHandles(GraphicsContext gc, AudioClip clip,
+                                  double clipX, double clipY,
+                                  double clipWidth, double clipHeight) {
+        double handleH = FADE_HANDLE_SIZE;
+        double handleW = FADE_HANDLE_SIZE;
+
+        // Fade-in handle at top of clip, positioned at the fade-in boundary
+        double fadeInWidth = clip.getFadeInBeats() * pixelsPerBeat;
+        fadeInWidth = Math.min(fadeInWidth, clipWidth);
+        double fadeInHandleX = clipX + fadeInWidth;
+        gc.setFill(FADE_HANDLE_FILL_COLOR);
+        gc.fillPolygon(
+                new double[]{fadeInHandleX, fadeInHandleX - handleW / 2.0, fadeInHandleX + handleW / 2.0},
+                new double[]{clipY + handleH, clipY, clipY},
+                3);
+        gc.setStroke(FADE_HANDLE_COLOR);
+        gc.setLineWidth(1.0);
+        gc.strokePolygon(
+                new double[]{fadeInHandleX, fadeInHandleX - handleW / 2.0, fadeInHandleX + handleW / 2.0},
+                new double[]{clipY + handleH, clipY, clipY},
+                3);
+
+        // Fade-out handle at top of clip, positioned at the fade-out boundary
+        double fadeOutWidth = clip.getFadeOutBeats() * pixelsPerBeat;
+        fadeOutWidth = Math.min(fadeOutWidth, clipWidth);
+        double fadeOutHandleX = clipX + clipWidth - fadeOutWidth;
+        gc.setFill(FADE_HANDLE_FILL_COLOR);
+        gc.fillPolygon(
+                new double[]{fadeOutHandleX, fadeOutHandleX - handleW / 2.0, fadeOutHandleX + handleW / 2.0},
+                new double[]{clipY + handleH, clipY, clipY},
+                3);
+        gc.setStroke(FADE_HANDLE_COLOR);
+        gc.setLineWidth(1.0);
+        gc.strokePolygon(
+                new double[]{fadeOutHandleX, fadeOutHandleX - handleW / 2.0, fadeOutHandleX + handleW / 2.0},
+                new double[]{clipY + handleH, clipY, clipY},
+                3);
     }
 
     private void drawWaveform(GraphicsContext gc, AudioClip clip,
