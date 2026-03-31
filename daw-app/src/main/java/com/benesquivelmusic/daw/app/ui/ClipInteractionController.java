@@ -111,6 +111,7 @@ final class ClipInteractionController {
             @Override public int beatsPerBar() { return host.beatsPerBar(); }
             @Override public void refreshCanvas() { host.refreshCanvas(); }
             @Override public int trackIndexAtY(double y) { return canvas.trackIndexAtY(y); }
+            @Override public double laneYForTrack(int trackIndex) { return canvas.computeLaneY(trackIndex); }
         });
     }
 

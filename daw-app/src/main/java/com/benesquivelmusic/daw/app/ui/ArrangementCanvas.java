@@ -414,7 +414,7 @@ public final class ArrangementCanvas extends Pane {
      * Computes the Y pixel offset for the given track index on demand.
      * Used by hit-testing methods outside the render loop.
      */
-    private double computeLaneY(int trackIndex) {
+    double computeLaneY(int trackIndex) {
         double y = 0;
         for (int i = 0; i < trackIndex; i++) {
             y += trackHeight;

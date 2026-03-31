@@ -64,6 +64,20 @@ final class ClipFadeHandler {
             }
             return index;
         }
+
+        /**
+         * Returns the Y pixel offset for the given track index, accounting
+         * for expanded automation lanes. The default implementation assumes
+         * uniform {@code trackHeight()} spacing; hosts that support
+         * automation lanes should override this.
+         */
+        default double laneYForTrack(int trackIndex) {
+            double y = 0;
+            for (int i = 0; i < trackIndex; i++) {
+                y += trackHeight();
+            }
+            return y - scrollYPixels();
+        }
     }
 
     private final Host host;
@@ -108,7 +122,7 @@ final class ClipFadeHandler {
         }
         Track track = host.tracks().get(trackIndex);
 
-        double laneY = computeLaneY(trackIndex);
+        double laneY = host.laneYForTrack(trackIndex);
         double clipTopY = laneY + CLIP_INSET;
 
         for (AudioClip clip : track.getClips()) {
@@ -324,17 +338,6 @@ final class ClipFadeHandler {
 
     private double beatAt(double x) {
         return x / host.pixelsPerBeat() + host.scrollXBeats();
-    }
-
-    /**
-     * Computes the Y pixel offset for the given track index.
-     */
-    private double computeLaneY(int trackIndex) {
-        double y = 0;
-        for (int i = 0; i < trackIndex; i++) {
-            y += host.trackHeight();
-        }
-        return y - host.scrollYPixels();
     }
 
     private static String curveLabel(FadeCurveType curveType) {
