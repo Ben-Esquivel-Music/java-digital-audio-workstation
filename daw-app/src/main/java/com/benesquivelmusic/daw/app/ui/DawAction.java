@@ -50,6 +50,10 @@ public enum DawAction {
     EXPORT_SESSION("Export Session", Category.EDITING,
             new KeyCodeCombination(KeyCode.E, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
 
+    // ── Audio file import ───────────────────────────────────────────────────
+    IMPORT_AUDIO_FILE("Import Audio File", Category.EDITING,
+            new KeyCodeCombination(KeyCode.I, KeyCombination.SHORTCUT_DOWN)),
+
     // ── Track operations ─────────────────────────────────────────────────────
     ADD_AUDIO_TRACK("Add Audio Track", Category.TRACKS,
             new KeyCodeCombination(KeyCode.A, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),

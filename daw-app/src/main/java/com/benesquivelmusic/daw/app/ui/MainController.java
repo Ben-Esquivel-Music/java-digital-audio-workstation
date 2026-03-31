@@ -11,6 +11,10 @@ import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioBackendFactory;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.audioimport.AudioFileImporter;
+import com.benesquivelmusic.daw.core.audioimport.AudioImportResult;
+import com.benesquivelmusic.daw.core.audioimport.ImportAudioClipAction;
+import com.benesquivelmusic.daw.core.audioimport.SupportedAudioFormat;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
@@ -62,6 +66,7 @@ import javafx.scene.control.ButtonType;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.StackPane;
 import javafx.scene.transform.Scale;
+import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 import javafx.collections.ObservableMap;
 
@@ -549,6 +554,82 @@ public final class MainController {
                     }
                 });
         clipInteractionController.install();
+
+        // Wire drag-and-drop from OS file manager and BrowserPanel onto arrangement canvas
+        installArrangementCanvasDragDrop();
+    }
+
+    /**
+     * Installs drag-and-drop handlers on the arrangement canvas so that audio
+     * files can be dropped from the OS file manager or the {@link BrowserPanel}.
+     * The dropped file is imported via {@link AudioFileImporter} and placed at
+     * the drop position (track lane + beat).
+     */
+    private void installArrangementCanvasDragDrop() {
+        arrangementCanvas.setOnDragOver(event -> {
+            if (event.getDragboard().hasFiles()) {
+                boolean hasAudio = event.getDragboard().getFiles().stream()
+                        .anyMatch(f -> SupportedAudioFormat.isSupported(f.toPath()));
+                if (hasAudio) {
+                    event.acceptTransferModes(javafx.scene.input.TransferMode.COPY);
+                }
+            } else if (event.getDragboard().hasString()) {
+                String path = event.getDragboard().getString();
+                if (BrowserPanel.isAudioFile(path)) {
+                    event.acceptTransferModes(javafx.scene.input.TransferMode.COPY);
+                }
+            }
+            event.consume();
+        });
+
+        arrangementCanvas.setOnDragDropped(event -> {
+            boolean success = false;
+            List<Path> filesToImport = new ArrayList<>();
+
+            if (event.getDragboard().hasFiles()) {
+                for (java.io.File file : event.getDragboard().getFiles()) {
+                    if (SupportedAudioFormat.isSupported(file.toPath())) {
+                        filesToImport.add(file.toPath());
+                    }
+                }
+            } else if (event.getDragboard().hasString()) {
+                String pathStr = event.getDragboard().getString();
+                if (BrowserPanel.isAudioFile(pathStr)) {
+                    Path path = Path.of(pathStr);
+                    if (java.nio.file.Files.isRegularFile(path)) {
+                        filesToImport.add(path);
+                    }
+                }
+            }
+
+            if (!filesToImport.isEmpty()) {
+                // Determine which track the user dropped onto (if any)
+                int trackIndex = arrangementCanvas.trackIndexAtY(event.getY());
+                Track targetTrack = null;
+                if (trackIndex >= 0 && trackIndex < project.getTracks().size()) {
+                    Track candidate = project.getTracks().get(trackIndex);
+                    if (candidate.getType() == TrackType.AUDIO) {
+                        targetTrack = candidate;
+                    }
+                }
+
+                // Import the first audio file at the drop beat position
+                double dropBeat = event.getX() / arrangementCanvas.getPixelsPerBeat()
+                        + arrangementCanvas.getScrollXBeats();
+                dropBeat = Math.max(0.0, dropBeat);
+
+                // Save and restore playhead so import uses the drop position
+                double savedPlayhead = project.getTransport().getPositionInBeats();
+                project.getTransport().setPositionInBeats(dropBeat);
+                importAudioFile(filesToImport.get(0), targetTrack);
+                project.getTransport().setPositionInBeats(savedPlayhead);
+
+                success = true;
+            }
+
+            event.setDropCompleted(success);
+            event.consume();
+        });
     }
 
     /**
@@ -855,6 +936,7 @@ public final class MainController {
         actionHandlers.put(DawAction.OPEN_PROJECT, projectLifecycleController::onOpenProject);
         actionHandlers.put(DawAction.IMPORT_SESSION, projectLifecycleController::onImportSession);
         actionHandlers.put(DawAction.EXPORT_SESSION, projectLifecycleController::onExportSession);
+        actionHandlers.put(DawAction.IMPORT_AUDIO_FILE, this::onImportAudioFile);
         actionHandlers.put(DawAction.TOGGLE_SNAP, viewNavigationController::onToggleSnap);
         actionHandlers.put(DawAction.ADD_AUDIO_TRACK, this::onAddAudioTrack);
         actionHandlers.put(DawAction.ADD_MIDI_TRACK, this::onAddMidiTrack);
@@ -1352,6 +1434,94 @@ public final class MainController {
     @FXML
     private void onExportSession() {
         projectLifecycleController.onExportSession();
+    }
+
+    /**
+     * Opens a file chooser for importing an audio file, places the imported
+     * clip at the current playhead position on the first available audio track
+     * (or creates a new one), and wraps the operation in an undoable action.
+     */
+    private void onImportAudioFile() {
+        Stage stage = (Stage) rootPane.getScene().getWindow();
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Import Audio File");
+        chooser.getExtensionFilters().addAll(
+                new FileChooser.ExtensionFilter("WAV Files", "*.wav"),
+                new FileChooser.ExtensionFilter("All Supported Audio", "*.wav", "*.aiff", "*.aif", "*.flac", "*.mp3", "*.ogg"),
+                new FileChooser.ExtensionFilter("All Files", "*.*")
+        );
+        java.io.File selectedFile = chooser.showOpenDialog(stage);
+        if (selectedFile == null) {
+            return;
+        }
+        importAudioFile(selectedFile.toPath(), null);
+    }
+
+    /**
+     * Imports an audio file onto the given target track (or a new track if
+     * {@code null}), places the clip at the current playhead position, wraps
+     * in an undoable action, and shows a success notification.
+     *
+     * @param file        the audio file to import
+     * @param targetTrack the track to place the clip on, or {@code null} to create a new track
+     */
+    void importAudioFile(Path file, Track targetTrack) {
+        AudioFileImporter importer = new AudioFileImporter(project);
+        double playheadBeat = project.getTransport().getPositionInBeats();
+        boolean createdNewTrack = (targetTrack == null);
+
+        try {
+            AudioImportResult result = importer.importFile(file, playheadBeat, targetTrack);
+
+            // If a new track was created, add it to the UI
+            HBox trackItem = null;
+            if (createdNewTrack) {
+                audioTrackCounter++;
+                trackItem = trackStripController.addTrackToUI(result.track());
+            }
+
+            // Wrap in undoable action
+            HBox finalTrackItem = trackItem;
+            ImportAudioClipAction importAction = new ImportAudioClipAction(
+                    project, result.track(), result.clip(), createdNewTrack);
+            undoManager.execute(importAction);
+
+            // For undo/redo, also manage the track strip UI
+            if (createdNewTrack && finalTrackItem != null) {
+                undoManager.addHistoryListener(_ -> {
+                    // The undo listener already refreshes the arrangement canvas
+                });
+            }
+
+            updateArrangementPlaceholder();
+            refreshArrangementCanvas();
+            updateUndoRedoState();
+            viewNavigationController.getMixerView().refresh();
+            projectDirty = true;
+
+            // Show success notification with file name and duration
+            double durationSeconds = 0.0;
+            float[][] audioData = result.clip().getAudioData();
+            if (audioData != null && audioData.length > 0) {
+                int sampleRate = (int) project.getFormat().sampleRate();
+                durationSeconds = (double) audioData[0].length / sampleRate;
+            }
+            String fileName = file.getFileName().toString();
+            String durationStr = String.format("%.1fs", durationSeconds);
+            notificationBar.show(NotificationLevel.SUCCESS,
+                    "Imported: " + fileName + " (" + durationStr + ")");
+            statusBarLabel.setText("Imported audio file: " + fileName);
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.WAVEFORM, 12));
+            LOG.fine(() -> "Imported audio file: " + file);
+        } catch (IOException e) {
+            LOG.log(Level.WARNING, "Failed to import audio file: " + file, e);
+            notificationBar.show(NotificationLevel.ERROR,
+                    "Import failed: " + e.getMessage());
+        } catch (IllegalArgumentException e) {
+            LOG.log(Level.WARNING, "Unsupported audio file: " + file, e);
+            notificationBar.show(NotificationLevel.ERROR,
+                    "Import failed: " + e.getMessage());
+        }
     }
 
     @FXML

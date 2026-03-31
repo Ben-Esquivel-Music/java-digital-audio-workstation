@@ -18,6 +18,9 @@ import javafx.scene.control.TextField;
 import javafx.scene.control.Tooltip;
 import javafx.scene.control.TreeItem;
 import javafx.scene.control.TreeView;
+import javafx.scene.input.ClipboardContent;
+import javafx.scene.input.Dragboard;
+import javafx.scene.input.TransferMode;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
@@ -113,6 +116,21 @@ public final class BrowserPanel extends VBox {
         fileSystemTree.getStyleClass().add("browser-tree");
         VBox.setVgrow(fileSystemTree, Priority.ALWAYS);
 
+        // Enable drag-and-drop from the file tree onto the arrangement view
+        fileSystemTree.setOnDragDetected(event -> {
+            TreeItem<String> selected = fileSystemTree.getSelectionModel().getSelectedItem();
+            if (selected != null && isAudioFile(selected.getValue())) {
+                String filePath = resolveTreeItemPath(selected);
+                if (filePath != null) {
+                    Dragboard db = fileSystemTree.startDragAndDrop(TransferMode.COPY);
+                    ClipboardContent content = new ClipboardContent();
+                    content.putString(filePath);
+                    db.setContent(content);
+                }
+            }
+            event.consume();
+        });
+
         Tab fileSystemTab = new Tab("Files");
         fileSystemTab.setClosable(false);
         fileSystemTab.setGraphic(IconNode.of(DawIcon.FOLDER, 12));
@@ -124,6 +142,18 @@ public final class BrowserPanel extends VBox {
         samplesListView = new ListView<>(filteredSampleItems);
         samplesListView.setPlaceholder(new Label("No samples found"));
         samplesListView.getStyleClass().add("browser-list");
+
+        // Enable drag-and-drop from the samples list onto the arrangement view
+        samplesListView.setOnDragDetected(event -> {
+            String selected = samplesListView.getSelectionModel().getSelectedItem();
+            if (selected != null && isAudioFile(selected)) {
+                Dragboard db = samplesListView.startDragAndDrop(TransferMode.COPY);
+                ClipboardContent content = new ClipboardContent();
+                content.putString(selected);
+                db.setContent(content);
+            }
+            event.consume();
+        });
 
         Tab samplesTab = new Tab("Samples");
         samplesTab.setClosable(false);
@@ -371,5 +401,30 @@ public final class BrowserPanel extends VBox {
             }
             root.getChildren().add(homeItem);
         }
+    }
+
+    /**
+     * Resolves the full file system path for a selected tree item by walking
+     * up the tree hierarchy. Returns {@code null} if the path cannot be resolved.
+     */
+    private static String resolveTreeItemPath(TreeItem<String> item) {
+        if (item == null) {
+            return null;
+        }
+        java.util.ArrayDeque<String> segments = new java.util.ArrayDeque<>();
+        TreeItem<String> current = item;
+        while (current != null && current.getParent() != null) {
+            segments.push(current.getValue());
+            current = current.getParent();
+        }
+        if (segments.isEmpty()) {
+            return null;
+        }
+        Path userHome = Path.of(System.getProperty("user.home"));
+        Path resolved = userHome;
+        for (String segment : segments) {
+            resolved = resolved.resolve(segment);
+        }
+        return resolved.toString();
     }
 }
