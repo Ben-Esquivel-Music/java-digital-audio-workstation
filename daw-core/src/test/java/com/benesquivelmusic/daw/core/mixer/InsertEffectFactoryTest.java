@@ -17,6 +17,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 import java.util.List;
+import java.util.Map;
 import java.util.function.BiConsumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -213,5 +214,53 @@ class InsertEffectFactoryTest {
         AudioProcessor processor = InsertEffectFactory.createProcessor(type, CHANNELS, SAMPLE_RATE);
         BiConsumer<Integer, Double> handler = InsertEffectFactory.createParameterHandler(type, processor);
         assertThat(handler).isNotNull();
+    }
+
+    // ── getParameterValues tests ────────────────────────────────────────────
+
+    @Test
+    void shouldReturnCurrentCompressorValues() {
+        CompressorProcessor processor = new CompressorProcessor(CHANNELS, SAMPLE_RATE);
+        processor.setThresholdDb(-30.0);
+        processor.setRatio(8.0);
+
+        Map<Integer, Double> values = InsertEffectFactory.getParameterValues(
+                InsertEffectType.COMPRESSOR, processor);
+
+        assertThat(values).containsEntry(0, -30.0);
+        assertThat(values).containsEntry(1, 8.0);
+        assertThat(values).hasSize(6);
+    }
+
+    @Test
+    void shouldReturnCurrentReverbValues() {
+        ReverbProcessor processor = new ReverbProcessor(CHANNELS, SAMPLE_RATE);
+        processor.setRoomSize(0.8);
+        processor.setMix(0.6);
+
+        Map<Integer, Double> values = InsertEffectFactory.getParameterValues(
+                InsertEffectType.REVERB, processor);
+
+        assertThat(values).containsEntry(0, 0.8);
+        assertThat(values).containsEntry(3, 0.6);
+        assertThat(values).hasSize(4);
+    }
+
+    @Test
+    void shouldReturnEmptyValuesForParametricEq() {
+        AudioProcessor processor = InsertEffectFactory.createProcessor(
+                InsertEffectType.PARAMETRIC_EQ, CHANNELS, SAMPLE_RATE);
+        Map<Integer, Double> values = InsertEffectFactory.getParameterValues(
+                InsertEffectType.PARAMETRIC_EQ, processor);
+        assertThat(values).isEmpty();
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = InsertEffectType.class, names = {"CLAP_PLUGIN", "PARAMETRIC_EQ"}, mode = EnumSource.Mode.EXCLUDE)
+    void shouldReturnParameterValuesMatchingDescriptorCount(InsertEffectType type) {
+        AudioProcessor processor = InsertEffectFactory.createProcessor(type, CHANNELS, SAMPLE_RATE);
+        Map<Integer, Double> values = InsertEffectFactory.getParameterValues(type, processor);
+        List<PluginParameter> descriptors = InsertEffectFactory.getParameterDescriptors(type);
+        assertThat(values).hasSize(descriptors.size());
     }
 }

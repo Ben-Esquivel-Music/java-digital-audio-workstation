@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffectAction;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.mixer.RemoveEffectAction;
 import com.benesquivelmusic.daw.core.mixer.ReorderEffectAction;
+import com.benesquivelmusic.daw.core.mixer.ToggleBypassAction;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 
@@ -29,6 +30,7 @@ import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.BiConsumer;
@@ -104,8 +106,13 @@ public final class InsertEffectRack extends VBox {
         }
 
         // Add empty slots up to MAX_INSERT_SLOTS
+        // Only the next available slot is enabled; further empty slots are disabled
         for (int i = slots.size(); i < MixerChannel.MAX_INSERT_SLOTS; i++) {
-            getChildren().add(buildEmptySlot(i));
+            Button emptyBtn = buildEmptySlot(i);
+            if (i > slots.size()) {
+                emptyBtn.setDisable(true);
+            }
+            getChildren().add(emptyBtn);
         }
     }
 
@@ -146,7 +153,12 @@ public final class InsertEffectRack extends VBox {
         bypassBtn.setTooltip(new Tooltip("Bypass"));
         bypassBtn.setOnAction(_ -> {
             boolean active = bypassBtn.isSelected();
-            channel.setInsertBypassed(slotIndex, !active);
+            boolean newBypassed = !active;
+            if (undoManager != null) {
+                undoManager.execute(new ToggleBypassAction(channel, slotIndex, newBypassed));
+            } else {
+                channel.setInsertBypassed(slotIndex, newBypassed);
+            }
             bypassBtn.setStyle(bypassButtonStyle(active));
         });
 
@@ -181,7 +193,9 @@ public final class InsertEffectRack extends VBox {
         });
         row.setOnDragOver(event -> {
             if (event.getGestureSource() != row
-                    && event.getDragboard().hasContent(SLOT_INDEX_FORMAT)) {
+                    && event.getDragboard().hasContent(SLOT_INDEX_FORMAT)
+                    && event.getGestureSource() instanceof javafx.scene.Node sourceNode
+                    && sourceNode.getParent() == InsertEffectRack.this) {
                 event.acceptTransferModes(TransferMode.MOVE);
             }
             event.consume();
@@ -208,7 +222,9 @@ public final class InsertEffectRack extends VBox {
     // ── Effect picker ───────────────────────────────────────────────────────
 
     private void showEffectPicker(int slotIndex) {
-        List<InsertEffectType> types = InsertEffectFactory.availableTypes();
+        List<InsertEffectType> types = InsertEffectFactory.availableTypes().stream()
+                .filter(t -> t != InsertEffectType.STEREO_IMAGER || audioChannels == 2)
+                .toList();
         List<String> names = types.stream()
                 .map(InsertEffectType::getDisplayName)
                 .toList();
@@ -273,6 +289,14 @@ public final class InsertEffectRack extends VBox {
         BiConsumer<Integer, Double> handler =
                 InsertEffectFactory.createParameterHandler(type, slot.getProcessor());
         editor.setOnParameterChanged(handler);
+
+        // Initialize editor controls with the processor's current parameter values
+        Map<Integer, Double> currentValues =
+                InsertEffectFactory.getParameterValues(type, slot.getProcessor());
+        if (!currentValues.isEmpty()) {
+            editor.getState().loadValues(currentValues);
+            editor.refreshControls();
+        }
 
         Stage stage = new Stage();
         stage.setTitle(slot.getName() + " — Parameters");

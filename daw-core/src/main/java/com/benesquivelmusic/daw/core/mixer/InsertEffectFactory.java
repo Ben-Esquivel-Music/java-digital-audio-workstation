@@ -12,7 +12,9 @@ import com.benesquivelmusic.daw.core.dsp.StereoImagerProcessor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.function.BiConsumer;
 
@@ -215,6 +217,87 @@ public final class InsertEffectFactory {
                 InsertEffectType.NOISE_GATE,
                 InsertEffectType.STEREO_IMAGER,
                 InsertEffectType.GRAPHIC_EQ);
+    }
+
+    /**
+     * Returns the current parameter values from the given processor, keyed by
+     * the parameter ids defined in {@link #getParameterDescriptors}.
+     *
+     * <p>This enables a parameter editor to initialize its controls with the
+     * processor's actual state rather than the descriptor defaults.</p>
+     *
+     * @param type      the effect type
+     * @param processor the processor instance to read values from
+     * @return a map of parameter id to current value
+     */
+    public static Map<Integer, Double> getParameterValues(InsertEffectType type,
+                                                           AudioProcessor processor) {
+        Objects.requireNonNull(type, "type must not be null");
+        Objects.requireNonNull(processor, "processor must not be null");
+        Map<Integer, Double> values = new LinkedHashMap<>();
+        switch (type) {
+            case COMPRESSOR -> {
+                if (processor instanceof CompressorProcessor p) {
+                    values.put(0, p.getThresholdDb());
+                    values.put(1, p.getRatio());
+                    values.put(2, p.getAttackMs());
+                    values.put(3, p.getReleaseMs());
+                    values.put(4, p.getKneeDb());
+                    values.put(5, p.getMakeupGainDb());
+                }
+            }
+            case LIMITER -> {
+                if (processor instanceof LimiterProcessor p) {
+                    values.put(0, p.getCeilingDb());
+                    values.put(1, p.getAttackMs());
+                    values.put(2, p.getReleaseMs());
+                }
+            }
+            case REVERB -> {
+                if (processor instanceof ReverbProcessor p) {
+                    values.put(0, p.getRoomSize());
+                    values.put(1, p.getDecay());
+                    values.put(2, p.getDamping());
+                    values.put(3, p.getMix());
+                }
+            }
+            case DELAY -> {
+                if (processor instanceof DelayProcessor p) {
+                    values.put(0, p.getDelayMs());
+                    values.put(1, p.getFeedback());
+                    values.put(2, p.getMix());
+                }
+            }
+            case CHORUS -> {
+                if (processor instanceof ChorusProcessor p) {
+                    values.put(0, p.getRateHz());
+                    values.put(1, p.getDepthMs());
+                    values.put(2, p.getBaseDelayMs());
+                    values.put(3, p.getMix());
+                }
+            }
+            case NOISE_GATE -> {
+                if (processor instanceof NoiseGateProcessor p) {
+                    values.put(0, p.getThresholdDb());
+                    values.put(1, p.getAttackMs());
+                    values.put(2, p.getHoldMs());
+                    values.put(3, p.getReleaseMs());
+                    values.put(4, p.getRangeDb());
+                }
+            }
+            case STEREO_IMAGER -> {
+                if (processor instanceof StereoImagerProcessor p) {
+                    values.put(0, p.getWidth());
+                }
+            }
+            case GRAPHIC_EQ -> {
+                if (processor instanceof GraphicEqProcessor p) {
+                    values.put(0, p.getQ());
+                }
+            }
+            case PARAMETRIC_EQ, CLAP_PLUGIN -> { }
+        }
+        return values;
     }
 
     // ── Parameter handlers for each processor type ──────────────────────────

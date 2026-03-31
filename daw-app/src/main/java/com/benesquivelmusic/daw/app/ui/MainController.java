@@ -615,6 +615,7 @@ public final class MainController {
                 activeView, activeEditTool, snapEnabled, gridResolution,
                 new ViewNavigationController.Host() {
                     @Override public DawProject project() { return project; }
+                    @Override public UndoManager undoManager() { return undoManager; }
                     @Override public void onEditorTrim() { MainController.this.onEditorTrim(); }
                     @Override public void onEditorFadeIn() { MainController.this.onEditorFadeIn(); }
                     @Override public void onEditorFadeOut() { MainController.this.onEditorFadeOut(); }
