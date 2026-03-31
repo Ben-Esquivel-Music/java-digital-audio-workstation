@@ -7,6 +7,8 @@ import com.benesquivelmusic.daw.core.automation.AutomationLane;
 import com.benesquivelmusic.daw.core.automation.AutomationParameter;
 import com.benesquivelmusic.daw.core.automation.AutomationPoint;
 import com.benesquivelmusic.daw.core.automation.InterpolationMode;
+import com.benesquivelmusic.daw.core.dsp.CompressorProcessor;
+import com.benesquivelmusic.daw.core.dsp.ReverbProcessor;
 import com.benesquivelmusic.daw.core.marker.Marker;
 import com.benesquivelmusic.daw.core.marker.MarkerRange;
 import com.benesquivelmusic.daw.core.marker.MarkerType;
@@ -17,6 +19,11 @@ import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.mixer.Send;
 import com.benesquivelmusic.daw.core.mixer.SendMode;
 import com.benesquivelmusic.daw.core.project.DawProject;
+import com.benesquivelmusic.daw.core.recording.ClickSound;
+import com.benesquivelmusic.daw.core.recording.Metronome;
+import com.benesquivelmusic.daw.core.recording.Subdivision;
+import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
+import com.benesquivelmusic.daw.core.reference.ReferenceTrackManager;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -466,5 +473,178 @@ class ProjectSerializationRoundTripTest {
         DawProject restored = deserializer.deserialize(xml);
 
         assertThat(restored.getTracks().get(0).getInputDeviceIndex()).isEqualTo(Track.NO_INPUT_DEVICE);
+    }
+
+    @Test
+    void shouldRoundTripInsertEffectParameterValues() throws IOException {
+        DawProject original = new DawProject("Param Test", AudioFormat.CD_QUALITY);
+        Track track = original.createAudioTrack("Vocals");
+        MixerChannel channel = original.getMixerChannelForTrack(track);
+
+        InsertSlot compressor = InsertEffectFactory.createSlot(
+                InsertEffectType.COMPRESSOR, 2, 44100.0);
+        CompressorProcessor compProc = (CompressorProcessor) compressor.getProcessor();
+        compProc.setThresholdDb(-30.0);
+        compProc.setRatio(8.0);
+        compProc.setAttackMs(5.0);
+        compProc.setReleaseMs(200.0);
+        compProc.setKneeDb(12.0);
+        compProc.setMakeupGainDb(6.0);
+        channel.addInsert(compressor);
+
+        InsertSlot reverb = InsertEffectFactory.createSlot(
+                InsertEffectType.REVERB, 2, 44100.0);
+        ReverbProcessor revProc = (ReverbProcessor) reverb.getProcessor();
+        revProc.setRoomSize(0.8);
+        revProc.setDecay(0.7);
+        revProc.setDamping(0.5);
+        revProc.setMix(0.4);
+        channel.addInsert(reverb);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        MixerChannel restoredChannel = restored.getMixer().getChannels().get(0);
+        assertThat(restoredChannel.getInsertSlots()).hasSize(2);
+
+        // Verify compressor parameters were restored
+        CompressorProcessor restoredComp =
+                (CompressorProcessor) restoredChannel.getInsertSlots().get(0).getProcessor();
+        assertThat(restoredComp.getThresholdDb()).isCloseTo(-30.0, within(0.001));
+        assertThat(restoredComp.getRatio()).isCloseTo(8.0, within(0.001));
+        assertThat(restoredComp.getAttackMs()).isCloseTo(5.0, within(0.001));
+        assertThat(restoredComp.getReleaseMs()).isCloseTo(200.0, within(0.001));
+        assertThat(restoredComp.getKneeDb()).isCloseTo(12.0, within(0.001));
+        assertThat(restoredComp.getMakeupGainDb()).isCloseTo(6.0, within(0.001));
+
+        // Verify reverb parameters were restored
+        ReverbProcessor restoredRev =
+                (ReverbProcessor) restoredChannel.getInsertSlots().get(1).getProcessor();
+        assertThat(restoredRev.getRoomSize()).isCloseTo(0.8, within(0.001));
+        assertThat(restoredRev.getDecay()).isCloseTo(0.7, within(0.001));
+        assertThat(restoredRev.getDamping()).isCloseTo(0.5, within(0.001));
+        assertThat(restoredRev.getMix()).isCloseTo(0.4, within(0.001));
+    }
+
+    @Test
+    void shouldRoundTripMetronomeSettings() throws IOException {
+        DawProject original = new DawProject("Metronome Test", AudioFormat.CD_QUALITY);
+        Metronome metronome = original.getMetronome();
+        metronome.setEnabled(false);
+        metronome.setVolume(0.6f);
+        metronome.setClickSound(ClickSound.COWBELL);
+        metronome.setSubdivision(Subdivision.EIGHTH);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        Metronome restoredMetronome = restored.getMetronome();
+        assertThat(restoredMetronome.isEnabled()).isFalse();
+        assertThat(restoredMetronome.getVolume()).isCloseTo(0.6f, within(0.001f));
+        assertThat(restoredMetronome.getClickSound()).isEqualTo(ClickSound.COWBELL);
+        assertThat(restoredMetronome.getSubdivision()).isEqualTo(Subdivision.EIGHTH);
+    }
+
+    @Test
+    void shouldRoundTripDefaultMetronomeSettings() throws IOException {
+        DawProject original = new DawProject("Default Metronome", AudioFormat.CD_QUALITY);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        Metronome restoredMetronome = restored.getMetronome();
+        assertThat(restoredMetronome.isEnabled()).isTrue();
+        assertThat(restoredMetronome.getVolume()).isCloseTo(1.0f, within(0.001f));
+        assertThat(restoredMetronome.getClickSound()).isEqualTo(ClickSound.WOODBLOCK);
+        assertThat(restoredMetronome.getSubdivision()).isEqualTo(Subdivision.QUARTER);
+    }
+
+    @Test
+    void shouldRoundTripReferenceTrackManager() throws IOException {
+        DawProject original = new DawProject("Reference Test", AudioFormat.CD_QUALITY);
+        ReferenceTrack ref1 = new ReferenceTrack("Commercial Mix", "/audio/reference1.wav");
+        ref1.setGainOffsetDb(-3.5);
+        ref1.setLoopEnabled(true);
+        ref1.setLoopRegion(16.0, 48.0);
+        ref1.setIntegratedLufs(-14.0);
+
+        ReferenceTrack ref2 = new ReferenceTrack("Indie Mix", "/audio/reference2.wav");
+        ref2.setGainOffsetDb(1.2);
+
+        original.addReferenceTrack(ref1);
+        original.addReferenceTrack(ref2);
+        original.getReferenceTrackManager().setActiveIndex(1);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        ReferenceTrackManager restoredManager = restored.getReferenceTrackManager();
+        assertThat(restoredManager.getReferenceTrackCount()).isEqualTo(2);
+        assertThat(restoredManager.getActiveIndex()).isEqualTo(1);
+
+        ReferenceTrack restoredRef1 = restoredManager.getReferenceTracks().get(0);
+        assertThat(restoredRef1.getName()).isEqualTo("Commercial Mix");
+        assertThat(restoredRef1.getSourceFilePath()).isEqualTo("/audio/reference1.wav");
+        assertThat(restoredRef1.getGainOffsetDb()).isCloseTo(-3.5, within(0.001));
+        assertThat(restoredRef1.isLoopEnabled()).isTrue();
+        assertThat(restoredRef1.getLoopStartInBeats()).isCloseTo(16.0, within(0.001));
+        assertThat(restoredRef1.getLoopEndInBeats()).isCloseTo(48.0, within(0.001));
+        assertThat(restoredRef1.getIntegratedLufs()).isCloseTo(-14.0, within(0.001));
+
+        ReferenceTrack restoredRef2 = restoredManager.getReferenceTracks().get(1);
+        assertThat(restoredRef2.getName()).isEqualTo("Indie Mix");
+        assertThat(restoredRef2.getGainOffsetDb()).isCloseTo(1.2, within(0.001));
+    }
+
+    @Test
+    void shouldDetectMissingAudioFiles() throws IOException {
+        DawProject original = new DawProject("Missing Files", AudioFormat.CD_QUALITY);
+        Track track = original.createAudioTrack("Audio");
+        AudioClip clip = new AudioClip("Clip", 0.0, 4.0, "/nonexistent/path/to/audio.wav");
+        track.addClip(clip);
+
+        // Also add a reference track with missing file
+        ReferenceTrack ref = new ReferenceTrack("Missing Ref", "/nonexistent/reference.wav");
+        original.addReferenceTrack(ref);
+
+        String xml = serializer.serialize(original);
+        ProjectDeserializer freshDeserializer = new ProjectDeserializer();
+        DawProject restored = freshDeserializer.deserialize(xml);
+
+        // Project should still load
+        assertThat(restored.getTracks().get(0).getClips()).hasSize(1);
+        assertThat(restored.getReferenceTrackManager().getReferenceTrackCount()).isEqualTo(1);
+
+        // Missing files should be tracked
+        assertThat(freshDeserializer.getMissingFiles()).contains(
+                "/nonexistent/path/to/audio.wav",
+                "/nonexistent/reference.wav"
+        );
+    }
+
+    @Test
+    void shouldNotReportExistingFilesAsMissing() throws IOException {
+        DawProject original = new DawProject("No Missing", AudioFormat.CD_QUALITY);
+        Track track = original.createAudioTrack("Audio");
+        // Clip with no source file
+        AudioClip clip = new AudioClip("Clip", 0.0, 4.0, null);
+        track.addClip(clip);
+
+        String xml = serializer.serialize(original);
+        ProjectDeserializer freshDeserializer = new ProjectDeserializer();
+        freshDeserializer.deserialize(xml);
+
+        assertThat(freshDeserializer.getMissingFiles()).isEmpty();
+    }
+
+    @Test
+    void shouldRoundTripNoReferenceTracksGracefully() throws IOException {
+        DawProject original = new DawProject("No Refs", AudioFormat.CD_QUALITY);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getReferenceTrackManager().getReferenceTrackCount()).isZero();
+        assertThat(restored.getReferenceTrackManager().isReferenceActive()).isFalse();
     }
 }

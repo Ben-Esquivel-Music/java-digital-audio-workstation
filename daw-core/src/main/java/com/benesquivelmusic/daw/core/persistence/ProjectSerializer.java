@@ -9,12 +9,16 @@ import com.benesquivelmusic.daw.core.marker.Marker;
 import com.benesquivelmusic.daw.core.marker.MarkerManager;
 import com.benesquivelmusic.daw.core.marker.MarkerRange;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
+import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectType;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.mixer.Send;
 import com.benesquivelmusic.daw.core.project.DawProject;
+import com.benesquivelmusic.daw.core.recording.Metronome;
+import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
+import com.benesquivelmusic.daw.core.reference.ReferenceTrackManager;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.transport.Transport;
@@ -93,6 +97,8 @@ public final class ProjectSerializer {
         buildMixer(document, root, project);
         buildMarkers(document, root, project.getMarkerManager());
         buildTrackGroups(document, root, project);
+        buildMetronome(document, root, project.getMetronome());
+        buildReferenceTrackManager(document, root, project.getReferenceTrackManager());
     }
 
     private void buildMetadata(Document document, Element root, DawProject project) {
@@ -246,6 +252,14 @@ public final class ProjectSerializer {
                 InsertEffectType effectType = slot.getEffectType();
                 if (effectType != null) {
                     slotElem.setAttribute("effect-type", effectType.name());
+                    Map<Integer, Double> paramValues =
+                            InsertEffectFactory.getParameterValues(effectType, slot.getProcessor());
+                    for (Map.Entry<Integer, Double> entry : paramValues.entrySet()) {
+                        Element paramElem = document.createElement("parameter");
+                        paramElem.setAttribute("id", String.valueOf(entry.getKey()));
+                        paramElem.setAttribute("value", String.valueOf(entry.getValue()));
+                        slotElem.appendChild(paramElem);
+                    }
                 }
                 insertsElem.appendChild(slotElem);
             }
@@ -349,6 +363,40 @@ public final class ProjectSerializer {
                     groupElem.appendChild(memberElem);
                 }
             }
+        }
+    }
+
+    private void buildMetronome(Document document, Element root, Metronome metronome) {
+        Element metronomeElem = document.createElement("metronome");
+        metronomeElem.setAttribute("enabled", String.valueOf(metronome.isEnabled()));
+        metronomeElem.setAttribute("volume", String.valueOf(metronome.getVolume()));
+        metronomeElem.setAttribute("click-sound", metronome.getClickSound().name());
+        metronomeElem.setAttribute("subdivision", metronome.getSubdivision().name());
+        root.appendChild(metronomeElem);
+    }
+
+    private void buildReferenceTrackManager(Document document, Element root,
+                                             ReferenceTrackManager manager) {
+        List<ReferenceTrack> refTracks = manager.getReferenceTracks();
+        if (refTracks.isEmpty()) {
+            return;
+        }
+
+        Element refElem = document.createElement("reference-tracks");
+        refElem.setAttribute("active-index", String.valueOf(manager.getActiveIndex()));
+        refElem.setAttribute("reference-active", String.valueOf(manager.isReferenceActive()));
+        root.appendChild(refElem);
+
+        for (ReferenceTrack ref : refTracks) {
+            Element trackElem = document.createElement("reference-track");
+            trackElem.setAttribute("name", ref.getName());
+            trackElem.setAttribute("source-file", ref.getSourceFilePath());
+            trackElem.setAttribute("gain-offset-db", String.valueOf(ref.getGainOffsetDb()));
+            trackElem.setAttribute("loop-enabled", String.valueOf(ref.isLoopEnabled()));
+            trackElem.setAttribute("loop-start", String.valueOf(ref.getLoopStartInBeats()));
+            trackElem.setAttribute("loop-end", String.valueOf(ref.getLoopEndInBeats()));
+            trackElem.setAttribute("integrated-lufs", String.valueOf(ref.getIntegratedLufs()));
+            refElem.appendChild(trackElem);
         }
     }
 }

@@ -19,6 +19,11 @@ import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.mixer.Send;
 import com.benesquivelmusic.daw.core.mixer.SendMode;
 import com.benesquivelmusic.daw.core.project.DawProject;
+import com.benesquivelmusic.daw.core.recording.ClickSound;
+import com.benesquivelmusic.daw.core.recording.Metronome;
+import com.benesquivelmusic.daw.core.recording.Subdivision;
+import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
+import com.benesquivelmusic.daw.core.reference.ReferenceTrackManager;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackColor;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -30,11 +35,14 @@ import javax.xml.parsers.ParserConfigurationException;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.function.BiConsumer;
 
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -50,6 +58,23 @@ import org.xml.sax.SAXException;
  */
 public final class ProjectDeserializer {
 
+    private final List<String> missingFiles = new ArrayList<>();
+
+    /**
+     * Returns a list of audio file paths referenced by the project that were
+     * not found on the file system at the time of deserialization.
+     *
+     * <p>This list is populated during {@link #deserialize(String)} and can
+     * be used by the UI layer to present a "missing files" notification with
+     * relinking options. The list is cleared at the start of each
+     * deserialization call.</p>
+     *
+     * @return an unmodifiable view of missing file paths
+     */
+    public List<String> getMissingFiles() {
+        return Collections.unmodifiableList(missingFiles);
+    }
+
     /**
      * Deserializes a project from an XML string.
      *
@@ -58,6 +83,7 @@ public final class ProjectDeserializer {
      * @throws IOException if the XML cannot be parsed
      */
     public DawProject deserialize(String xml) throws IOException {
+        missingFiles.clear();
         try {
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
@@ -148,6 +174,18 @@ public final class ProjectDeserializer {
         List<Element> trackGroupsContainers = getDirectChildElements(root, "track-groups");
         if (!trackGroupsContainers.isEmpty()) {
             parseTrackGroups(trackGroupsContainers.getFirst(), project);
+        }
+
+        // Parse metronome settings
+        List<Element> metronomeElements = getDirectChildElements(root, "metronome");
+        if (!metronomeElements.isEmpty()) {
+            parseMetronome(metronomeElements.getFirst(), project.getMetronome());
+        }
+
+        // Parse reference tracks
+        List<Element> refTrackContainers = getDirectChildElements(root, "reference-tracks");
+        if (!refTrackContainers.isEmpty()) {
+            parseReferenceTrackManager(refTrackContainers.getFirst(), project);
         }
 
         return project;
@@ -251,6 +289,10 @@ public final class ProjectDeserializer {
         String sourceFile = elem.getAttribute("source-file");
         if (sourceFile.isEmpty()) {
             sourceFile = null;
+        }
+
+        if (sourceFile != null && !Files.exists(Path.of(sourceFile))) {
+            missingFiles.add(sourceFile);
         }
 
         AudioClip clip = new AudioClip(name, startBeat, durationBeats, sourceFile);
@@ -388,6 +430,21 @@ public final class ProjectDeserializer {
             if (parseBooleanAttr(elem, "bypassed")) {
                 slot.setBypassed(true);
             }
+
+            // Restore parameter values
+            List<Element> paramElements = getDirectChildElements(elem, "parameter");
+            if (!paramElements.isEmpty()) {
+                BiConsumer<Integer, Double> handler =
+                        InsertEffectFactory.createParameterHandler(effectType, slot.getProcessor());
+                for (Element paramElem : paramElements) {
+                    int paramId = parseIntAttr(paramElem, "id", -1);
+                    double paramValue = parseDoubleAttr(paramElem, "value", Double.NaN);
+                    if (paramId >= 0 && !Double.isNaN(paramValue)) {
+                        handler.accept(paramId, paramValue);
+                    }
+                }
+            }
+
             channel.addInsert(slot);
         } catch (IllegalArgumentException ignored) {
             // skip unknown effect types
@@ -491,6 +548,51 @@ public final class ProjectDeserializer {
         }
     }
 
+    private void parseMetronome(Element elem, Metronome metronome) {
+        metronome.setEnabled(parseBooleanAttr(elem, "enabled"));
+        float volume = (float) clampDouble(parseDoubleAttr(elem, "volume", 1.0), 0.0, 1.0);
+        metronome.setVolume(volume);
+        metronome.setClickSound(parseClickSound(elem.getAttribute("click-sound")));
+        metronome.setSubdivision(parseSubdivision(elem.getAttribute("subdivision")));
+    }
+
+    private void parseReferenceTrackManager(Element elem, DawProject project) {
+        ReferenceTrackManager manager = project.getReferenceTrackManager();
+
+        List<Element> refTrackElements = getDirectChildElements(elem, "reference-track");
+        for (Element refTrackElem : refTrackElements) {
+            String name = refTrackElem.getAttribute("name");
+            if (name.isEmpty()) {
+                name = "Reference";
+            }
+            String sourceFile = refTrackElem.getAttribute("source-file");
+            if (sourceFile.isEmpty()) {
+                continue;
+            }
+
+            if (!Files.exists(Path.of(sourceFile))) {
+                missingFiles.add(sourceFile);
+            }
+
+            ReferenceTrack refTrack = new ReferenceTrack(name, sourceFile);
+            refTrack.setGainOffsetDb(parseDoubleAttr(refTrackElem, "gain-offset-db", 0.0));
+            refTrack.setLoopEnabled(parseBooleanAttr(refTrackElem, "loop-enabled"));
+            double loopStart = parseDoubleAttr(refTrackElem, "loop-start", 0.0);
+            double loopEnd = parseDoubleAttr(refTrackElem, "loop-end", 0.0);
+            if (loopEnd > loopStart && loopStart >= 0.0) {
+                refTrack.setLoopRegion(loopStart, loopEnd);
+            }
+            refTrack.setIntegratedLufs(parseDoubleAttr(refTrackElem, "integrated-lufs", -120.0));
+            manager.addReferenceTrack(refTrack);
+        }
+
+        int activeIndex = parseIntAttr(elem, "active-index", 0);
+        if (activeIndex >= 0 && activeIndex < manager.getReferenceTrackCount()) {
+            manager.setActiveIndex(activeIndex);
+        }
+        manager.setReferenceActive(parseBooleanAttr(elem, "reference-active"));
+    }
+
     private TrackType parseTrackType(String typeStr) {
         if (typeStr == null || typeStr.isEmpty()) {
             return TrackType.AUDIO;
@@ -565,6 +667,28 @@ public final class ProjectDeserializer {
             return SendMode.valueOf(value);
         } catch (IllegalArgumentException e) {
             return SendMode.POST_FADER;
+        }
+    }
+
+    private ClickSound parseClickSound(String value) {
+        if (value == null || value.isEmpty()) {
+            return ClickSound.WOODBLOCK;
+        }
+        try {
+            return ClickSound.valueOf(value);
+        } catch (IllegalArgumentException e) {
+            return ClickSound.WOODBLOCK;
+        }
+    }
+
+    private Subdivision parseSubdivision(String value) {
+        if (value == null || value.isEmpty()) {
+            return Subdivision.QUARTER;
+        }
+        try {
+            return Subdivision.valueOf(value);
+        } catch (IllegalArgumentException e) {
+            return Subdivision.QUARTER;
         }
     }
 
