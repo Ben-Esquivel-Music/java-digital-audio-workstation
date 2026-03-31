@@ -161,14 +161,15 @@ final class ClipInteractionController {
             Track track = host.tracks().get(trackIndex);
             AutomationParameter param = canvas.getAutomationParameter(track);
             if (param != null) {
-                AutomationLane lane = track.getAutomationData().getOrCreateLane(param);
+                AutomationLane lane = track.getAutomationData().getLane(param);
                 double autoLaneY = canvas.automationLaneY(trackIndex);
                 double autoLaneH = AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
 
-                AutomationPoint hitPoint = AutomationLaneRenderer.hitTestBreakpoint(
-                        lane, event.getX(), event.getY(), param,
-                        autoLaneY, autoLaneH,
-                        host.pixelsPerBeat(), host.scrollXBeats());
+                AutomationPoint hitPoint = lane == null ? null
+                        : AutomationLaneRenderer.hitTestBreakpoint(
+                                lane, event.getX(), event.getY(), param,
+                                autoLaneY, autoLaneH,
+                                host.pixelsPerBeat(), host.scrollXBeats());
 
                 if (event.getButton() == MouseButton.SECONDARY
                         || host.activeTool() == EditTool.ERASER) {
@@ -201,8 +202,10 @@ final class ClipInteractionController {
                             Math.min(param.getMaxValue(), value));
                     AutomationPoint newPoint = new AutomationPoint(
                             Math.max(0, beat), value);
+                    AutomationLane addLane = track.getAutomationData()
+                            .getOrCreateLane(param);
                     host.undoManager().execute(
-                            new AddAutomationPointAction(lane, newPoint));
+                            new AddAutomationPointAction(addLane, newPoint));
                     host.refreshCanvas();
                 }
                 return;
@@ -298,6 +301,14 @@ final class ClipInteractionController {
                 host.undoManager().execute(new MoveAutomationPointAction(
                         dragAutomationLane, dragAutomationPoint,
                         newBeat, newValue));
+                host.refreshCanvas();
+            } else {
+                // Lane collapsed or parameter cleared mid-drag — restore
+                // the point to its original position to avoid leaving it
+                // stranded at the preview position with no undo action.
+                dragAutomationPoint.setTimeInBeats(dragAutomationOriginalBeat);
+                dragAutomationPoint.setValue(dragAutomationOriginalValue);
+                dragAutomationLane.sortPoints();
                 host.refreshCanvas();
             }
             dragAutomationPoint = null;

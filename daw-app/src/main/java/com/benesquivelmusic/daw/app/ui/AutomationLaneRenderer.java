@@ -190,6 +190,9 @@ final class AutomationLaneRenderer {
                            double laneY, double laneHeight) {
         double inset = 6.0;
         double usableHeight = laneHeight - 2 * inset;
+        if (usableHeight <= 0) {
+            return laneY + laneHeight / 2.0;
+        }
         double range = param.getMaxValue() - param.getMinValue();
         if (range <= 0) {
             return laneY + laneHeight / 2.0;
@@ -238,16 +241,21 @@ final class AutomationLaneRenderer {
                                              AutomationParameter param,
                                              double laneY, double laneHeight,
                                              double pixelsPerBeat, double scrollXBeats) {
+        AutomationPoint closestPoint = null;
+        double maxDistSq = HIT_TOLERANCE * HIT_TOLERANCE;
+
         for (AutomationPoint point : lane.getPoints()) {
             double px = beatToX(point.getTimeInBeats(), pixelsPerBeat, scrollXBeats);
             double py = valueToY(point.getValue(), param, laneY, laneHeight);
             double dx = x - px;
             double dy = y - py;
-            if (dx * dx + dy * dy <= HIT_TOLERANCE * HIT_TOLERANCE) {
-                return point;
+            double distSq = dx * dx + dy * dy;
+            if (distSq <= maxDistSq) {
+                maxDistSq = distSq;
+                closestPoint = point;
             }
         }
-        return null;
+        return closestPoint;
     }
 
     /**

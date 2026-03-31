@@ -91,6 +91,14 @@ public final class ArrangementCanvas extends Pane {
     private double[] laneYCache = new double[0];
 
     /**
+     * Cached per-track cumulative slot-bottom boundaries (absolute Y, no
+     * scroll). Index {@code i} holds the bottom edge of track slot {@code i}
+     * (including its automation lane if expanded). Used by
+     * {@link #trackIndexAtY(double)} for O(log n) binary-search hit-testing.
+     */
+    private double[] slotBottomCache = new double[0];
+
+    /**
      * Creates an empty arrangement canvas.
      */
     public ArrangementCanvas() {
@@ -114,6 +122,13 @@ public final class ArrangementCanvas extends Pane {
      */
     public void setTracks(List<Track> tracks) {
         this.tracks = tracks == null ? List.of() : tracks;
+        // Prune stale automation lane visibility entries for removed tracks
+        if (!automationLaneVisibility.isEmpty()) {
+            var validIds = this.tracks.stream()
+                    .map(Track::getId)
+                    .collect(java.util.stream.Collectors.toSet());
+            automationLaneVisibility.keySet().retainAll(validIds);
+        }
         redraw();
     }
 
@@ -296,18 +311,27 @@ public final class ArrangementCanvas extends Pane {
      */
     int trackIndexAtY(double y) {
         double adjustedY = y + scrollYPixels;
-        double cumulative = 0;
-        for (int i = 0; i < tracks.size(); i++) {
-            double slotHeight = trackHeight;
-            if (automationLaneVisibility.containsKey(tracks.get(i).getId())) {
-                slotHeight += AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
-            }
-            if (adjustedY < cumulative + slotHeight) {
-                return i;
-            }
-            cumulative += slotHeight;
+        if (adjustedY < 0) {
+            return -1;
         }
-        return -1;
+        int n = slotBottomCache.length;
+        if (n == 0 || n != tracks.size()) {
+            return -1;
+        }
+        // Binary search: find the first slot whose bottom > adjustedY
+        int lo = 0;
+        int hi = n - 1;
+        int result = -1;
+        while (lo <= hi) {
+            int mid = (lo + hi) >>> 1;
+            if (slotBottomCache[mid] > adjustedY) {
+                result = mid;
+                hi = mid - 1;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        return result;
     }
 
     /**
@@ -319,19 +343,16 @@ public final class ArrangementCanvas extends Pane {
      * @return {@code true} if the coordinate is inside an automation lane
      */
     boolean isYInAutomationLane(double y) {
-        double adjustedY = y + scrollYPixels;
-        double cumulative = 0;
-        for (int i = 0; i < tracks.size(); i++) {
-            double autoHeight = automationLaneVisibility.containsKey(tracks.get(i).getId())
-                    ? AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT : 0;
-            double slotHeight = trackHeight + autoHeight;
-            if (adjustedY < cumulative + slotHeight) {
-                // Within this track's slot — check if in the automation sub-lane
-                return autoHeight > 0 && adjustedY >= cumulative + trackHeight;
-            }
-            cumulative += slotHeight;
+        int trackIndex = trackIndexAtY(y);
+        if (trackIndex < 0) {
+            return false;
         }
-        return false;
+        if (!automationLaneVisibility.containsKey(tracks.get(trackIndex).getId())) {
+            return false;
+        }
+        double adjustedY = y + scrollYPixels;
+        double slotTop = trackIndex == 0 ? 0 : slotBottomCache[trackIndex - 1];
+        return adjustedY >= slotTop + trackHeight;
     }
 
     /**
@@ -354,13 +375,16 @@ public final class ArrangementCanvas extends Pane {
     // ── Rendering ──────────────────────────────────────────────────────────
 
     /**
-     * Builds the cumulative lane-Y cache for all tracks. Must be called at
-     * the start of each {@link #redraw()} invocation.
+     * Builds the cumulative lane-Y cache and slot-bottom cache for all
+     * tracks. Must be called at the start of each {@link #redraw()}
+     * invocation to keep both the rendering cache and the hit-testing
+     * binary-search array in sync.
      */
     private void rebuildLaneYCache() {
         int n = tracks.size();
         if (laneYCache.length != n) {
             laneYCache = new double[n];
+            slotBottomCache = new double[n];
         }
         double cumulative = 0;
         for (int i = 0; i < n; i++) {
@@ -369,6 +393,7 @@ public final class ArrangementCanvas extends Pane {
             if (automationLaneVisibility.containsKey(tracks.get(i).getId())) {
                 cumulative += AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
             }
+            slotBottomCache[i] = cumulative;
         }
     }
 
@@ -496,7 +521,10 @@ public final class ArrangementCanvas extends Pane {
             }
 
             AutomationData automationData = track.getAutomationData();
-            AutomationLane lane = automationData.getOrCreateLane(param);
+            AutomationLane lane = automationData.getLane(param);
+            if (lane == null) {
+                lane = new AutomationLane(param);
+            }
             AutomationLaneRenderer.draw(gc, lane, autoLaneY, canvasWidth,
                     autoLaneHeight, pixelsPerBeat, scrollXBeats);
         }
