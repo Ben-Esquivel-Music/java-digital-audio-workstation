@@ -8,10 +8,11 @@ import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.mixer.RemoveEffectAction;
 import com.benesquivelmusic.daw.core.mixer.ReorderEffectAction;
 import com.benesquivelmusic.daw.core.mixer.ToggleBypassAction;
+import com.benesquivelmusic.daw.core.undo.UndoHistoryListener;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 
-import javafx.geometry.Insets;
+import javafx.application.Platform;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.control.Button;
@@ -61,6 +62,7 @@ public final class InsertEffectRack extends VBox {
     private final int audioChannels;
     private final double sampleRate;
     private final UndoManager undoManager;
+    private final UndoHistoryListener historyListener;
 
     /**
      * Creates a new insert-effects rack for the given mixer channel.
@@ -88,6 +90,20 @@ public final class InsertEffectRack extends VBox {
         getChildren().add(header);
 
         rebuildSlots();
+
+        // Register listener to rebuild slots after undo/redo operations
+        if (undoManager != null) {
+            historyListener = _ -> {
+                if (Platform.isFxApplicationThread()) {
+                    rebuildSlots();
+                } else {
+                    Platform.runLater(this::rebuildSlots);
+                }
+            };
+            undoManager.addHistoryListener(historyListener);
+        } else {
+            historyListener = null;
+        }
     }
 
     /**
@@ -121,6 +137,17 @@ public final class InsertEffectRack extends VBox {
      */
     MixerChannel getChannel() {
         return channel;
+    }
+
+    /**
+     * Removes the undo history listener registered during construction.
+     * Call this when the rack is no longer needed (e.g., when the mixer view
+     * is rebuilt) to prevent stale listeners from accumulating.
+     */
+    public void dispose() {
+        if (undoManager != null && historyListener != null) {
+            undoManager.removeHistoryListener(historyListener);
+        }
     }
 
     // ── Empty slot ──────────────────────────────────────────────────────────
@@ -203,8 +230,8 @@ public final class InsertEffectRack extends VBox {
         int targetIndex = slotIndex;
         row.setOnDragDropped(event -> {
             Dragboard db = event.getDragboard();
-            if (db.hasContent(SLOT_INDEX_FORMAT)) {
-                int fromIndex = (int) db.getContent(SLOT_INDEX_FORMAT);
+            Object content = db.getContent(SLOT_INDEX_FORMAT);
+            if (content instanceof Integer fromIndex) {
                 if (fromIndex != targetIndex) {
                     reorderEffect(fromIndex, targetIndex);
                 }

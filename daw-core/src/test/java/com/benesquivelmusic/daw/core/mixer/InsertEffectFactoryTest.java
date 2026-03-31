@@ -263,4 +263,12 @@ class InsertEffectFactoryTest {
         List<PluginParameter> descriptors = InsertEffectFactory.getParameterDescriptors(type);
         assertThat(values).hasSize(descriptors.size());
     }
+
+    @Test
+    void shouldRejectMismatchedProcessorTypeForGetParameterValues() {
+        ReverbProcessor wrongProcessor = new ReverbProcessor(CHANNELS, SAMPLE_RATE);
+        assertThatThrownBy(() ->
+                InsertEffectFactory.getParameterValues(InsertEffectType.COMPRESSOR, wrongProcessor))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 }
