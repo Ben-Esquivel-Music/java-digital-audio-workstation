@@ -311,6 +311,15 @@ public final class MixerView extends VBox {
             sendSlider.setTooltip(new Tooltip("Send to " + returnBus.getName()));
 
             MixerChannel targetBus = returnBus;
+            // Capture the send level before a drag starts so that undo restores
+            // to the pre-drag value (the slider listener modifies the model live)
+            double[] dragStartLevel = {initialLevel};
+
+            sendSlider.setOnMousePressed(_ -> {
+                Send send = mixerChannel.getSendForTarget(targetBus);
+                dragStartLevel[0] = send != null ? send.getLevel() : 0.0;
+            });
+
             sendSlider.valueProperty().addListener((_, _, newVal) -> {
                 double value = newVal.doubleValue();
                 Send send = mixerChannel.getSendForTarget(targetBus);
@@ -322,14 +331,26 @@ public final class MixerView extends VBox {
                 sendIndicator.setFill(value > 0.0 ? Color.web("#00e676") : Color.web("#555555"));
             });
 
-            // Commit undoable action when the user finishes dragging the slider
+            // Commit undoable action when the user finishes dragging the slider.
+            // Temporarily restore the pre-drag level so that execute() captures
+            // the correct previousLevel for undo, then re-applies the final value.
             sendSlider.setOnMouseReleased(_ -> {
                 if (undoManager != null) {
-                    double value = sendSlider.getValue();
+                    double finalValue = sendSlider.getValue();
                     Send send = mixerChannel.getSendForTarget(targetBus);
                     SendMode mode = send != null ? send.getMode() : SendMode.POST_FADER;
+                    // Restore pre-drag state so execute() records the right previous
+                    if (send != null) {
+                        send.setLevel(dragStartLevel[0]);
+                    } else if (dragStartLevel[0] <= 0.0) {
+                        // No send existed before drag — remove the one created by the listener
+                        Send added = mixerChannel.getSendForTarget(targetBus);
+                        if (added != null) {
+                            mixerChannel.removeSend(added);
+                        }
+                    }
                     SetSendRoutingAction action = new SetSendRoutingAction(
-                            mixerChannel, targetBus, value, mode);
+                            mixerChannel, targetBus, finalValue, mode);
                     undoManager.execute(action);
                 }
             });
