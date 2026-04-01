@@ -196,6 +196,7 @@ final class TrackStripController {
             ioLabel.setOnMouseClicked(event -> {
                 if (event.getClickCount() == 2) {
                     List<AudioDeviceInfo> devices = List.of();
+                    audioEngine.ensureBackendInitialized();
                     NativeAudioBackend backend = audioEngine.getAudioBackend();
                     if (backend != null) {
                         try {

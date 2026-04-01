@@ -197,6 +197,22 @@ public final class AudioEngine {
         return audioBackend;
     }
 
+    /**
+     * Ensures the audio backend is initialized, calling {@link NativeAudioBackend#initialize()}
+     * if it has not been called yet.
+     *
+     * <p>This is safe to call multiple times — the underlying backends are idempotent.
+     * Use this before querying devices (e.g. {@link NativeAudioBackend#getAvailableDevices()})
+     * when audio output has not yet been started.</p>
+     */
+    public void ensureBackendInitialized() {
+        NativeAudioBackend backend = this.audioBackend;
+        if (backend != null && !backendInitialized) {
+            backend.initialize();
+            backendInitialized = true;
+        }
+    }
+
     // ── Audio output stream lifecycle ────────────────────────────────────────
 
     /**

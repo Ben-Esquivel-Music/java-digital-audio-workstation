@@ -163,6 +163,30 @@ class AudioEngineTest {
         assertThat(engine.isRunning()).isTrue();
     }
 
+    @Test
+    void ensureBackendInitializedShouldInitializeJavaSoundBackend() {
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        var backend = new com.benesquivelmusic.daw.core.audio.javasound.JavaSoundBackend();
+        engine.setAudioBackend(backend);
+
+        // Before ensureBackendInitialized, getAvailableDevices should throw
+        assertThatThrownBy(backend::getAvailableDevices)
+                .isInstanceOf(IllegalStateException.class);
+
+        // After ensureBackendInitialized, getAvailableDevices should succeed
+        engine.ensureBackendInitialized();
+        assertThat(backend.getAvailableDevices()).isNotNull();
+    }
+
+    @Test
+    void ensureBackendInitializedShouldBeNoOpWithNoBackend() {
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+
+        // Should not throw when no backend is set
+        engine.ensureBackendInitialized();
+        assertThat(engine.getAudioBackend()).isNull();
+    }
+
     private static class HalfGainProcessor implements AudioProcessor {
         @Override
         public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {

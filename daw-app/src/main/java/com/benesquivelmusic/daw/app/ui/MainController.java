@@ -1318,6 +1318,7 @@ public final class MainController {
     private void onAddAudioTrack() {
         // Enumerate available audio input devices from the backend (empty list if no backend)
         List<AudioDeviceInfo> devices = List.of();
+        audioEngine.ensureBackendInitialized();
         NativeAudioBackend backend = audioEngine.getAudioBackend();
         if (backend != null) {
             try {
