@@ -24,6 +24,7 @@
     <modules>
         <module>daw-sdk</module>
         <module>daw-core</module>
+        <module>daw-acoustics</module>
         <module>daw-app</module>
     </modules>
 
