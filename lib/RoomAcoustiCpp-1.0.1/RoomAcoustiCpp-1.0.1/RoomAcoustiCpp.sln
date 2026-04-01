@@ -1,0 +1,141 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.8.34511.84
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Windows", "Windows\Windows.vcxproj", "{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Android", "Android\Android.vcxproj", "{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "3DTI_NoSofa", "3dti_AudioToolkit\3DTI_NoSofa.vcxitems", "{D2696B6B-7DE2-4A2B-B2A6-434C41F4117B}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "RoomAcoustiCpp", "RoomAcoustiCpp\RoomAcoustiCpp.vcxitems", "{BC8AA037-56AB-4F29-BF45-D410AFF883C6}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|ARM64 = Debug|ARM64
+		Debug|Win32 = Debug|Win32
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
+		Release_Debug|ARM64 = Release_Debug|ARM64
+		Release_Debug|Win32 = Release_Debug|Win32
+		Release_Debug|x64 = Release_Debug|x64
+		Release_Debug|x86 = Release_Debug|x86
+		Release_Profile|ARM64 = Release_Profile|ARM64
+		Release_Profile|Win32 = Release_Profile|Win32
+		Release_Profile|x64 = Release_Profile|x64
+		Release_Profile|x86 = Release_Profile|x86
+		Release_ProfileDetailed|ARM64 = Release_ProfileDetailed|ARM64
+		Release_ProfileDetailed|Win32 = Release_ProfileDetailed|Win32
+		Release_ProfileDetailed|x64 = Release_ProfileDetailed|x64
+		Release_ProfileDetailed|x86 = Release_ProfileDetailed|x86
+		Release|ARM64 = Release|ARM64
+		Release|Win32 = Release|Win32
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
+		ReleaseTest|ARM64 = ReleaseTest|ARM64
+		ReleaseTest|Win32 = ReleaseTest|Win32
+		ReleaseTest|x64 = ReleaseTest|x64
+		ReleaseTest|x86 = ReleaseTest|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Debug|ARM64.ActiveCfg = Debug|ARM64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Debug|ARM64.Build.0 = Debug|ARM64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Debug|Win32.ActiveCfg = Debug|Win32
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Debug|Win32.Build.0 = Debug|Win32
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Debug|x64.ActiveCfg = Debug|x64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Debug|x64.Build.0 = Debug|x64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Debug|x86.ActiveCfg = Debug|Win32
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release_Debug|ARM64.ActiveCfg = Release_Debug|ARM64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release_Debug|ARM64.Build.0 = Release_Debug|ARM64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release_Debug|Win32.ActiveCfg = Release_Debug|Win32
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release_Debug|Win32.Build.0 = Release_Debug|Win32
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release_Debug|x64.ActiveCfg = Release_Debug|x64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release_Debug|x64.Build.0 = Release_Debug|x64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release_Debug|x86.ActiveCfg = Release_Debug|Win32
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release_Profile|ARM64.ActiveCfg = Release_Profile|ARM64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release_Profile|ARM64.Build.0 = Release_Profile|ARM64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release_Profile|Win32.ActiveCfg = Release_Profile|Win32
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release_Profile|Win32.Build.0 = Release_Profile|Win32
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release_Profile|x64.ActiveCfg = Release_Profile|x64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release_Profile|x64.Build.0 = Release_Profile|x64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release_Profile|x86.ActiveCfg = Release_Profile|Win32
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release_ProfileDetailed|ARM64.ActiveCfg = Release_ProfileDetailed|ARM64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release_ProfileDetailed|ARM64.Build.0 = Release_ProfileDetailed|ARM64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release_ProfileDetailed|Win32.ActiveCfg = Release_ProfileDetailed|Win32
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release_ProfileDetailed|Win32.Build.0 = Release_ProfileDetailed|Win32
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release_ProfileDetailed|x64.ActiveCfg = Release_ProfileDetailed|x64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release_ProfileDetailed|x64.Build.0 = Release_ProfileDetailed|x64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release_ProfileDetailed|x86.ActiveCfg = Release_ProfileDetailed|Win32
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release|ARM64.ActiveCfg = Release|ARM64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release|ARM64.Build.0 = Release|ARM64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release|Win32.ActiveCfg = Release|Win32
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release|Win32.Build.0 = Release|Win32
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release|x64.ActiveCfg = Release|x64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release|x64.Build.0 = Release|x64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.Release|x86.ActiveCfg = Release|Win32
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.ReleaseTest|ARM64.ActiveCfg = ReleaseTest|x64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.ReleaseTest|Win32.ActiveCfg = ReleaseTest|Win32
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.ReleaseTest|Win32.Build.0 = ReleaseTest|Win32
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.ReleaseTest|x64.ActiveCfg = ReleaseTest|x64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.ReleaseTest|x64.Build.0 = ReleaseTest|x64
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.ReleaseTest|x86.ActiveCfg = ReleaseTest|Win32
+		{2F98D92A-D2E5-460B-A1D1-12E9052DEB64}.ReleaseTest|x86.Build.0 = ReleaseTest|Win32
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Debug|ARM64.ActiveCfg = Debug|ARM64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Debug|ARM64.Build.0 = Debug|ARM64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Debug|Win32.ActiveCfg = Debug|x86
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Debug|x64.ActiveCfg = Debug|x64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Debug|x64.Build.0 = Debug|x64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Debug|x86.ActiveCfg = Debug|x86
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Debug|x86.Build.0 = Debug|x86
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release_Debug|ARM64.ActiveCfg = Release_Debug|ARM64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release_Debug|ARM64.Build.0 = Release_Debug|ARM64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release_Debug|Win32.ActiveCfg = Release_Debug|x86
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release_Debug|x64.ActiveCfg = Release_Debug|x64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release_Debug|x64.Build.0 = Release_Debug|x64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release_Debug|x86.ActiveCfg = Release_Debug|x86
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release_Debug|x86.Build.0 = Release_Debug|x86
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release_Profile|ARM64.ActiveCfg = Release_Profile|ARM64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release_Profile|ARM64.Build.0 = Release_Profile|ARM64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release_Profile|Win32.ActiveCfg = Release_Profile|x86
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release_Profile|x64.ActiveCfg = Release_Profile|x64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release_Profile|x64.Build.0 = Release_Profile|x64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release_Profile|x86.ActiveCfg = Release_Profile|x86
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release_Profile|x86.Build.0 = Release_Profile|x86
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release_ProfileDetailed|ARM64.ActiveCfg = Release_ProfileDetailed|ARM64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release_ProfileDetailed|ARM64.Build.0 = Release_ProfileDetailed|ARM64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release_ProfileDetailed|Win32.ActiveCfg = Release_ProfileDetailed|x86
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release_ProfileDetailed|x64.ActiveCfg = Release_ProfileDetailed|x64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release_ProfileDetailed|x64.Build.0 = Release_ProfileDetailed|x64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release_ProfileDetailed|x86.ActiveCfg = Release_ProfileDetailed|x86
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release_ProfileDetailed|x86.Build.0 = Release_ProfileDetailed|x86
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release|ARM64.ActiveCfg = Release|ARM64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release|ARM64.Build.0 = Release|ARM64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release|Win32.ActiveCfg = Release|x86
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release|x64.ActiveCfg = Release|x64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release|x64.Build.0 = Release|x64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release|x86.ActiveCfg = Release|x86
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.Release|x86.Build.0 = Release|x86
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.ReleaseTest|ARM64.ActiveCfg = Release|ARM64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.ReleaseTest|ARM64.Build.0 = Release|ARM64
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.ReleaseTest|Win32.ActiveCfg = Release|x86
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.ReleaseTest|Win32.Build.0 = Release|x86
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.ReleaseTest|x64.ActiveCfg = Release|ARM
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.ReleaseTest|x86.ActiveCfg = Release|x86
+		{C4FBD30D-63BA-4B40-BAA1-6C5F91065427}.ReleaseTest|x86.Build.0 = Release|x86
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {3767F943-9E3A-48A7-A55D-07DBE2E3C85D}
+	EndGlobalSection
+	GlobalSection(SharedMSBuildProjectFiles) = preSolution
+		3dti_AudioToolkit\3DTI_NoSofa.vcxitems*{2f98d92a-d2e5-460b-a1d1-12e9052deb64}*SharedItemsImports = 4
+		RoomAcoustiCpp\RoomAcoustiCpp.vcxitems*{2f98d92a-d2e5-460b-a1d1-12e9052deb64}*SharedItemsImports = 4
+		RoomAcoustiCpp\RoomAcoustiCpp.vcxitems*{bc8aa037-56ab-4f29-bf45-d410aff883c6}*SharedItemsImports = 9
+		3dti_AudioToolkit\3DTI_NoSofa.vcxitems*{c4fbd30d-63ba-4b40-baa1-6c5f91065427}*SharedItemsImports = 4
+		RoomAcoustiCpp\RoomAcoustiCpp.vcxitems*{c4fbd30d-63ba-4b40-baa1-6c5f91065427}*SharedItemsImports = 4
+		3dti_AudioToolkit\3DTI_NoSofa.vcxitems*{d2696b6b-7de2-4a2b-b2a6-434c41f4117b}*SharedItemsImports = 9
+	EndGlobalSection
+EndGlobal
