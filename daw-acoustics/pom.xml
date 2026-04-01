@@ -17,11 +17,5 @@
     <name>DAW Acoustics</name>
     <description>Room acoustics simulation engine — Java port of RoomAcoustiCpp</description>
 
-    <dependencies>
-        <dependency>
-            <groupId>org.locationtech.jts</groupId>
-            <artifactId>jts-core</artifactId>
-            <version>1.20.0</version>
-        </dependency>
-    </dependencies>
+
 </project>

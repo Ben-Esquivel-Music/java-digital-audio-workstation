@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.acoustics.spatialiser;
 
 import com.benesquivelmusic.daw.acoustics.common.Absorption;
+import com.benesquivelmusic.daw.acoustics.common.Definitions;
 import com.benesquivelmusic.daw.acoustics.common.Vec3;
 
 import java.util.ArrayList;
@@ -62,14 +63,15 @@ public final class Wall {
     }
 
     public void update(Vec3[] vData) {
-        vertices[0] = new Vec3(vData[0]);
-        vertices[1] = new Vec3(vData[1]);
-        vertices[2] = new Vec3(vData[2]);
-        Vec3 edge1 = Vec3.sub(vertices[1], vertices[0]);
-        Vec3 edge2 = Vec3.sub(vertices[2], vertices[0]);
+        vertices[0] = new Vec3(vData[0]); vertices[0].roundVec();
+        vertices[1] = new Vec3(vData[1]); vertices[1].roundVec();
+        vertices[2] = new Vec3(vData[2]); vertices[2].roundVec();
+        Vec3 edge1 = Vec3.sub(vData[1], vData[0]);
+        Vec3 edge2 = Vec3.sub(vData[2], vData[0]);
         normal = Vec3.cross(edge1, edge2);
         normal.normalise();
-        d = Vec3.dot(vertices[0], normal);
+        d = Definitions.round(Vec3.dot(normal, vData[0]));
+        normal.roundVec();
         calculateArea();
     }
 
@@ -86,22 +88,28 @@ public final class Wall {
 
     /** Ray-triangle intersection (Möller–Trumbore). */
     public static IntersectionResult intersectTriangle(Vec3 v1, Vec3 v2, Vec3 v3, Vec3 origin, Vec3 dir, boolean returnIntersection) {
-        Vec3 edge1 = Vec3.sub(v2, v1);
-        Vec3 edge2 = Vec3.sub(v3, v1);
-        Vec3 h = Vec3.cross(dir, edge2);
-        double a = Vec3.dot(edge1, h);
-        if (a > -1e-10 && a < 1e-10) return new IntersectionResult(false, new Vec3());
-        double f = 1.0 / a;
-        Vec3 s = Vec3.sub(origin, v1);
-        double u = f * Vec3.dot(s, h);
-        if (u < 0.0 || u > 1.0) return new IntersectionResult(false, new Vec3());
-        Vec3 q = Vec3.cross(s, edge1);
-        double v = f * Vec3.dot(dir, q);
-        if (v < 0.0 || u + v > 1.0) return new IntersectionResult(false, new Vec3());
-        double t = f * Vec3.dot(edge2, q);
-        if (t < 0.0 || t > 1.0) return new IntersectionResult(false, new Vec3());
+        Vec3 e1 = Vec3.sub(v2, v1);
+        Vec3 e2 = Vec3.sub(v3, v1);
+        Vec3 pVec = Vec3.cross(dir, e2);
+        double det = Vec3.dot(e1, pVec);
+
+        if (det > -Definitions.MIN_VALUE && det < Definitions.MIN_VALUE)
+            return new IntersectionResult(false, new Vec3());
+
+        double invDet = 1.0 / det;
+
+        Vec3 tVec = Vec3.sub(origin, v1);
+        double u = Vec3.dot(tVec, pVec) * invDet;
+        if (u < 0.0 || u > 1.0)
+            return new IntersectionResult(false, new Vec3());
+
+        Vec3 qVec = Vec3.cross(tVec, e1);
+        double v = Vec3.dot(dir, qVec) * invDet;
+        if (v < 0.0 || u + v > 1.0)
+            return new IntersectionResult(false, new Vec3());
+
         if (returnIntersection) {
-            Vec3 point = Vec3.add(origin, Vec3.mul(t, Vec3.negate(dir)));
+            Vec3 point = Vec3.add(v1, Vec3.add(Vec3.mul(u, e1), Vec3.mul(v, e2)));
             return new IntersectionResult(true, point);
         }
         return new IntersectionResult(true, new Vec3());
