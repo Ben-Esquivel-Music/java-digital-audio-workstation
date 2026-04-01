@@ -195,31 +195,10 @@ class RoomTelemetryDisplayTest {
 
     // ── 3D Isometric Projection Tests ──────────────────────────────
 
-    /**
-     * Creates a display with pre-set cached projection values for unit testing
-     * the projection methods without requiring the JavaFX toolkit.
-     * Uses reflection-free approach: call projectToScreen after setting
-     * cached values via a test-only setup.
-     */
-    private RoomTelemetryDisplay createWithCachedProjection() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
-        AtomicReference<RoomTelemetryDisplay> ref = new AtomicReference<>();
-        CountDownLatch latch = new CountDownLatch(1);
-        Platform.runLater(() -> {
-            try {
-                ref.set(new RoomTelemetryDisplay());
-            } finally {
-                latch.countDown();
-            }
-        });
-        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
-        return ref.get();
-    }
-
     @Test
-    void projectToScreenOriginShouldMapToCenter() throws Exception {
+    void projectAndUnprojectShouldRoundTripRoomCenter() throws Exception {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
-        RoomTelemetryDisplay display = createWithCachedProjection();
+        RoomTelemetryDisplay display = createOnFxThread();
 
         // Simulate a render with known telemetry data to populate cached transform
         RoomDimensions dims = new RoomDimensions(10.0, 10.0, 3.0);
@@ -236,8 +215,7 @@ class RoomTelemetryDisplayTest {
             display.setTelemetryData(data);
         });
 
-        // For a square room (W=L=10), the origin (0,0,0) should project to a
-        // specific location. The key property: projectToScreen followed by
+        // Round-trip the room center (5,5,0): projectToScreen followed by
         // unprojectFromScreen should give back the original point.
         double[] screen = display.projectToScreen(5.0, 5.0, 0.0);
         Position3D roundTrip = display.unprojectFromScreen(screen[0], screen[1], 0.0);
@@ -250,7 +228,7 @@ class RoomTelemetryDisplayTest {
     @Test
     void unprojectShouldInverseProject() throws Exception {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
-        RoomTelemetryDisplay display = createWithCachedProjection();
+        RoomTelemetryDisplay display = createOnFxThread();
 
         RoomDimensions dims = new RoomDimensions(12.0, 8.0, 4.0);
         SoundWavePath path = new SoundWavePath(
@@ -288,7 +266,7 @@ class RoomTelemetryDisplayTest {
     @Test
     void projectShouldPreserveIsometricProperties() throws Exception {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
-        RoomTelemetryDisplay display = createWithCachedProjection();
+        RoomTelemetryDisplay display = createOnFxThread();
 
         RoomDimensions dims = new RoomDimensions(10.0, 10.0, 3.0);
         SoundWavePath path = new SoundWavePath(

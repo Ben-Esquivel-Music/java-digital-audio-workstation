@@ -38,7 +38,7 @@ import java.util.function.BiConsumer;
  *   <li><b>Animated microphone icons</b> with directional aim indicators in 3D</li>
  *   <li><b>Color-coded wave paths</b> — cool cyan for direct, warm orange for reflected</li>
  *   <li><b>Traveling energy particles</b> flowing along each path in 3D</li>
- *   <li><b>Expanding sonar ripples</b> projected as ellipses on the floor plane</li>
+ *   <li><b>Expanding sonar ripples</b> projected as ellipses on the floor (z=0) plane</li>
  *   <li><b>RT60 ambient glow</b> — the room edges pulse with reverb intensity</li>
  *   <li><b>Suggestion badges</b> rendered in an overlay panel</li>
  * </ul>
@@ -194,7 +194,7 @@ public final class RoomTelemetryDisplay extends Region {
             for (SoundWavePath path : telemetryData.wavePaths()) {
                 if (seen.add(path.sourceName())) {
                     Position3D sp = path.waypoints().getFirst();
-                    ripples.add(new Ripple(sp.x(), sp.y(), sp.z(), 0));
+                    ripples.add(new Ripple(sp.x(), sp.y(), 0, 0));
                 }
             }
         }
@@ -264,6 +264,22 @@ public final class RoomTelemetryDisplay extends Region {
                 cachedCenterX + rawX * cachedScale,
                 cachedCenterY + rawY * cachedScale
         };
+    }
+
+    /**
+     * Projects a 3D room coordinate into a caller-provided output array.
+     * This avoids allocation in tight loops (e.g., projected circle polygons).
+     *
+     * @param x   the X coordinate in meters (room width axis)
+     * @param y   the Y coordinate in meters (room length axis)
+     * @param z   the Z coordinate in meters (room height axis)
+     * @param out a two-element array to receive {screenX, screenY}
+     */
+    private void projectInto(double x, double y, double z, double[] out) {
+        double rawX = (x - y) * COS_ISO;
+        double rawY = (x + y) * SIN_ISO - z;
+        out[0] = cachedCenterX + rawX * cachedScale;
+        out[1] = cachedCenterY + rawY * cachedScale;
     }
 
     /**
@@ -451,7 +467,7 @@ public final class RoomTelemetryDisplay extends Region {
         drawLegend(gc, w);
 
         // ── Draw scale bar ──
-        drawScaleBar(gc, roomW, roomL);
+        drawScaleBar(gc, roomW);
 
         gc.restore();
     }
@@ -525,17 +541,20 @@ public final class RoomTelemetryDisplay extends Region {
         gc.setLineWidth(0.5);
         gc.setLineDashes();
 
+        double[] s = new double[2];
+        double[] e = new double[2];
+
         // 1-meter grid lines along the X axis (constant x, varying y at z=0)
         for (double m = 1; m < roomW; m += 1) {
-            double[] start = projectToScreen(m, 0, 0);
-            double[] end = projectToScreen(m, roomL, 0);
-            gc.strokeLine(start[0], start[1], end[0], end[1]);
+            projectInto(m, 0, 0, s);
+            projectInto(m, roomL, 0, e);
+            gc.strokeLine(s[0], s[1], e[0], e[1]);
         }
         // 1-meter grid lines along the Y axis (constant y, varying x at z=0)
         for (double m = 1; m < roomL; m += 1) {
-            double[] start = projectToScreen(0, m, 0);
-            double[] end = projectToScreen(roomW, m, 0);
-            gc.strokeLine(start[0], start[1], end[0], end[1]);
+            projectInto(0, m, 0, s);
+            projectInto(roomW, m, 0, e);
+            gc.strokeLine(s[0], s[1], e[0], e[1]);
         }
     }
 
@@ -1076,7 +1095,7 @@ public final class RoomTelemetryDisplay extends Region {
 
     // ── Scale Bar (projected on floor) ─────────────────────────────
 
-    private void drawScaleBar(GraphicsContext gc, double roomW, double roomL) {
+    private void drawScaleBar(GraphicsContext gc, double roomW) {
         // Draw scale bar along the right floor edge (y=0 edge, near x=W)
         double targetPixels = 100;
         double targetMeters = targetPixels / cachedScale;
@@ -1179,13 +1198,14 @@ public final class RoomTelemetryDisplay extends Region {
                                         double radiusM) {
         double[] xs = new double[PROJECTED_CIRCLE_SEGMENTS];
         double[] ys = new double[PROJECTED_CIRCLE_SEGMENTS];
+        double[] tmp = new double[2];
         for (int i = 0; i < PROJECTED_CIRCLE_SEGMENTS; i++) {
             double angle = 2 * Math.PI * i / PROJECTED_CIRCLE_SEGMENTS;
             double px = cx + radiusM * Math.cos(angle);
             double py = cy + radiusM * Math.sin(angle);
-            double[] screen = projectToScreen(px, py, cz);
-            xs[i] = screen[0];
-            ys[i] = screen[1];
+            projectInto(px, py, cz, tmp);
+            xs[i] = tmp[0];
+            ys[i] = tmp[1];
         }
         gc.strokePolygon(xs, ys, PROJECTED_CIRCLE_SEGMENTS);
     }
