@@ -894,11 +894,15 @@ class AudioEnginePlaybackTest {
         float[][] outputWithSend = new float[CHANNELS][BUFFER_SIZE];
         engine.processBlock(input, outputWithSend, BUFFER_SIZE);
 
-        // Post-fader send at volume 0.5: return bus gets 0.5 * 1.0 * signal
-        // The output should be greater than direct-only (vol=0.5, pan center)
+        // Post-fader send at volume 0.5: return bus gets 0.5 * 1.0 * signal = 0.5 per channel.
+        // Direct contribution (stereo, center pan): 1.0 * 0.5 * cos(π/4) per left channel.
+        // Return bus contribution (mono sum into output): 0.5 * 1.0 (return bus vol) per channel.
+        // Total left output = direct + return = 0.5 * cos(π/4) + 0.5 ≈ 0.8536
         double directGainPerChannel = 0.5 * Math.cos(Math.PI / 4.0);
+        double returnContribution = 0.5; // post-fader: volume * sendLevel * signal * returnBusVol
+        double expectedTotal = directGainPerChannel + returnContribution;
         for (int i = 0; i < BUFFER_SIZE; i++) {
-            assertThat((double) outputWithSend[0][i]).isGreaterThan(directGainPerChannel - 0.001);
+            assertThat((double) outputWithSend[0][i]).isCloseTo(expectedTotal, offset(0.01));
         }
     }
 }

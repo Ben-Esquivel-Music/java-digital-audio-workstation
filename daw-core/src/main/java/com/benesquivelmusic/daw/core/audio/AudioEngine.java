@@ -47,9 +47,6 @@ public final class AudioEngine {
     /** Maximum number of tracks supported for pre-allocated buffers. */
     static final int MAX_TRACKS = 64;
 
-    /** Maximum number of return buses supported for pre-allocated buffers. */
-    static final int MAX_RETURN_BUSES = 16;
-
     private final AudioFormat format;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
@@ -81,6 +78,9 @@ public final class AudioEngine {
 
     // Optional performance monitor for CPU load and underrun tracking
     private volatile PerformanceMonitor performanceMonitor;
+
+    // Flag to log return-bus cap warning only once
+    private volatile boolean returnBusCapWarningLogged;
 
     /**
      * Creates a new audio engine with the specified format.
@@ -114,7 +114,7 @@ public final class AudioEngine {
         trackBuffers = new float[MAX_TRACKS][channels][frames];
 
         // Pre-allocate per-return-bus buffers for send routing
-        returnBuffers = new float[MAX_RETURN_BUSES][channels][frames];
+        returnBuffers = new float[Mixer.MAX_RETURN_BUSES][channels][frames];
 
         // Pre-allocate the buffer pool (8 buffers for intermediate processing)
         bufferPool = new AudioBufferPool(8, channels, frames);
@@ -544,6 +544,15 @@ public final class AudioEngine {
 
             // Render clip audio for each track into pre-allocated per-track buffers
             renderTracks(currentTracks, trackCount, currentTransport, numFrames);
+
+            // Warn once if the mixer has more return buses than pre-allocated buffers
+            if (!returnBusCapWarningLogged
+                    && currentMixer.getReturnBusCount() > Mixer.MAX_RETURN_BUSES) {
+                returnBusCapWarningLogged = true;
+                LOG.warning(() -> "Mixer has " + currentMixer.getReturnBusCount()
+                        + " return buses but only " + Mixer.MAX_RETURN_BUSES
+                        + " are supported; extra buses will not receive send audio");
+            }
 
             // Mix all track buffers through the mixer into the mix buffer,
             // routing sends to return buses which are summed into the main output

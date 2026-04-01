@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.mixer.AddReturnBusAction;
+import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.mixer.RemoveReturnBusAction;
 import com.benesquivelmusic.daw.core.mixer.Send;
@@ -36,6 +37,8 @@ import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.Circle;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -76,6 +79,7 @@ public final class MixerView extends VBox {
     private final HBox channelStrips;
     private final HBox returnBusStrips;
     private final VBox masterStrip;
+    private final List<InsertEffectRack> activeInsertRacks = new ArrayList<>();
 
     /**
      * Creates a new mixer view bound to the given project.
@@ -141,6 +145,12 @@ public final class MixerView extends VBox {
      * keep the mixer view synchronized with the project model.</p>
      */
     public void refresh() {
+        // Dispose existing InsertEffectRack instances to prevent listener leaks
+        for (InsertEffectRack rack : activeInsertRacks) {
+            rack.dispose();
+        }
+        activeInsertRacks.clear();
+
         channelStrips.getChildren().clear();
         for (Track track : project.getTracks()) {
             MixerChannel mixerChannel = project.getMixerChannelForTrack(track);
@@ -157,6 +167,12 @@ public final class MixerView extends VBox {
         Button addReturnBusBtn = new Button("+");
         addReturnBusBtn.getStyleClass().add("track-arm-button");
         addReturnBusBtn.setTooltip(new Tooltip("Add Return Bus"));
+        boolean atLimit = project.getMixer().getReturnBusCount() >= Mixer.MAX_RETURN_BUSES;
+        addReturnBusBtn.setDisable(atLimit);
+        if (atLimit) {
+            addReturnBusBtn.setTooltip(new Tooltip(
+                    "Maximum of " + Mixer.MAX_RETURN_BUSES + " return buses reached"));
+        }
         addReturnBusBtn.setOnAction(_ -> {
             int busCount = project.getMixer().getReturnBusCount();
             String busName = "Return " + (busCount + 1);
@@ -311,12 +327,14 @@ public final class MixerView extends VBox {
             sendSlider.setTooltip(new Tooltip("Send to " + returnBus.getName()));
 
             MixerChannel targetBus = returnBus;
-            // Capture the send level before a drag starts so that undo restores
-            // to the pre-drag value (the slider listener modifies the model live)
+            // Capture the send state before a drag starts so that undo restores
+            // to the pre-drag state (the slider listener modifies the model live)
             double[] dragStartLevel = {initialLevel};
+            boolean[] hadSendAtDragStart = {existingSend != null};
 
             sendSlider.setOnMousePressed(_ -> {
                 Send send = mixerChannel.getSendForTarget(targetBus);
+                hadSendAtDragStart[0] = send != null;
                 dragStartLevel[0] = send != null ? send.getLevel() : 0.0;
             });
 
@@ -332,23 +350,26 @@ public final class MixerView extends VBox {
             });
 
             // Commit undoable action when the user finishes dragging the slider.
-            // Temporarily restore the pre-drag level so that execute() captures
-            // the correct previousLevel for undo, then re-applies the final value.
+            // Restore the pre-drag model state so that execute() captures the
+            // correct previousLevel/hadSendBefore for undo, then re-applies
+            // the final value.
             sendSlider.setOnMouseReleased(_ -> {
                 if (undoManager != null) {
                     double finalValue = sendSlider.getValue();
                     Send send = mixerChannel.getSendForTarget(targetBus);
                     SendMode mode = send != null ? send.getMode() : SendMode.POST_FADER;
+
                     // Restore pre-drag state so execute() records the right previous
-                    if (send != null) {
-                        send.setLevel(dragStartLevel[0]);
-                    } else if (dragStartLevel[0] <= 0.0) {
-                        // No send existed before drag — remove the one created by the listener
-                        Send added = mixerChannel.getSendForTarget(targetBus);
-                        if (added != null) {
-                            mixerChannel.removeSend(added);
+                    if (!hadSendAtDragStart[0]) {
+                        // No send existed before drag — remove the one created
+                        // by the value listener so execute() records hadSendBefore=false
+                        if (send != null) {
+                            mixerChannel.removeSend(send);
                         }
+                    } else if (send != null) {
+                        send.setLevel(dragStartLevel[0]);
                     }
+
                     SetSendRoutingAction action = new SetSendRoutingAction(
                             mixerChannel, targetBus, finalValue, mode);
                     undoManager.execute(action);
@@ -406,6 +427,7 @@ public final class MixerView extends VBox {
         int channels = project.getFormat().channels();
         double sr = project.getFormat().sampleRate();
         InsertEffectRack insertRack = new InsertEffectRack(mixerChannel, channels, sr, undoManager);
+        activeInsertRacks.add(insertRack);
 
         strip.getChildren().addAll(
                 nameLabel, typeIcon, insertRack, levelMeter, volumeFader,
@@ -504,6 +526,7 @@ public final class MixerView extends VBox {
         int channels = project.getFormat().channels();
         double sr = project.getFormat().sampleRate();
         InsertEffectRack insertRack = new InsertEffectRack(returnBus, channels, sr, undoManager);
+        activeInsertRacks.add(insertRack);
 
         Node busIcon = IconNode.of(DawIcon.MIXER, CONTROL_ICON_SIZE);
 
