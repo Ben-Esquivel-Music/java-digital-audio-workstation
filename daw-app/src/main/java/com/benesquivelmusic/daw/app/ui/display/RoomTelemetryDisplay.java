@@ -23,23 +23,29 @@ import javafx.scene.text.TextAlignment;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiConsumer;
 
 /**
- * Creative, animated room sound wave telemetry visualizer.
+ * Creative, animated 3D room sound wave telemetry visualizer.
  *
- * <p>Renders a top-down (bird's-eye) view of the recording room with:
+ * <p>Renders an isometric 3D view of the recording room with:
  * <ul>
- *   <li><b>Pulsing, glowing sound sources</b> with animated expanding ripple rings</li>
- *   <li><b>Animated microphone icons</b> that flash when "hit" by a wave</li>
+ *   <li><b>3D room box</b> showing floor, back wall, and left wall with wireframe edges</li>
+ *   <li><b>Pulsing, glowing sound sources</b> positioned in 3D space with animated ripple rings</li>
+ *   <li><b>Animated microphone icons</b> with directional aim indicators in 3D</li>
  *   <li><b>Color-coded wave paths</b> — cool cyan for direct, warm orange for reflected</li>
- *   <li><b>Traveling energy particles</b> flowing along each path for a fun, lively feel</li>
- *   <li><b>Expanding sonar ripples</b> emanating from each source at regular intervals</li>
- *   <li><b>RT60 ambient glow</b> — the room border pulses with reverb intensity</li>
- *   <li><b>Suggestion badges</b> rendered next to the relevant element</li>
+ *   <li><b>Traveling energy particles</b> flowing along each path in 3D</li>
+ *   <li><b>Expanding sonar ripples</b> projected as ellipses on the floor (z=0) plane</li>
+ *   <li><b>RT60 ambient glow</b> — the room edges pulse with reverb intensity</li>
+ *   <li><b>Suggestion badges</b> rendered in an overlay panel</li>
  * </ul>
+ *
+ * <p>The isometric projection maps 3D room coordinates (X = width, Y = length,
+ * Z = height) to 2D screen space using a 30° dimetric projection, creating a
+ * natural 3D perspective that shows the full recording space geometry.</p>
  *
  * <p>All animations are driven by a time-accumulator so the display can be
  * updated at any frame rate. Call {@link #updateAnimation(double)} each
@@ -51,6 +57,8 @@ public final class RoomTelemetryDisplay extends Region {
     private static final Color BACKGROUND = Color.web("#0a0a1e");
     private static final Color ROOM_FILL = Color.web("#11112a");
     private static final Color ROOM_BORDER = Color.web("#2a2a5a");
+    private static final Color WALL_BACK_FILL = Color.web("#0f0f26");
+    private static final Color WALL_LEFT_FILL = Color.web("#131332");
     private static final Color GRID_COLOR = Color.web("#ffffff", 0.04);
     private static final Color DIRECT_PATH_COLOR = Color.web("#00e5ff");
     private static final Color REFLECTED_PATH_COLOR = Color.web("#ff9100");
@@ -77,10 +85,16 @@ public final class RoomTelemetryDisplay extends Region {
     private static final Color STATS_BG = Color.web("#0a0a1e", 0.85);
     private static final Color STATS_BORDER = Color.web("#2a2a5a", 0.8);
 
+    // ── Isometric projection constants ─────────────────────────────
+    private static final double ISO_ANGLE = Math.toRadians(30.0);
+    private static final double COS_ISO = Math.cos(ISO_ANGLE);
+    private static final double SIN_ISO = Math.sin(ISO_ANGLE);
+    private static final int PROJECTED_CIRCLE_SEGMENTS = 36;
+
     // ── Animation constants ────────────────────────────────────────
     private static final double RIPPLE_INTERVAL = 0.8;
     private static final double RIPPLE_MAX_AGE = 2.0;
-    private static final double RIPPLE_SPEED = 80.0;
+    private static final double RIPPLE_SPEED_MPS = 2.0;
     private static final double SOURCE_PULSE_SPEED = 3.0;
     private static final double MIC_PULSE_SPEED = 2.5;
 
@@ -111,9 +125,9 @@ public final class RoomTelemetryDisplay extends Region {
     private BiConsumer<String, Position3D> onSourceDragged;
     private BiConsumer<String, Position3D> onMicDragged;
 
-    // Cached transform values (updated in render)
-    private double cachedOffsetX;
-    private double cachedOffsetY;
+    // Cached isometric projection transform (updated in render)
+    private double cachedCenterX;
+    private double cachedCenterY;
     private double cachedScale;
 
     /**
@@ -176,17 +190,17 @@ public final class RoomTelemetryDisplay extends Region {
         if (timeSinceLastRipple >= RIPPLE_INTERVAL && telemetryData != null) {
             timeSinceLastRipple -= RIPPLE_INTERVAL;
             // One ripple from each source position
-            java.util.HashSet<String> seen = new java.util.HashSet<String>();
+            HashSet<String> seen = new HashSet<>();
             for (SoundWavePath path : telemetryData.wavePaths()) {
                 if (seen.add(path.sourceName())) {
                     Position3D sp = path.waypoints().getFirst();
-                    ripples.add(new Ripple(sp.x(), sp.y(), 0));
+                    ripples.add(new Ripple(sp.x(), sp.y(), 0, 0));
                 }
             }
         }
 
         // Age ripples
-        ripples.replaceAll(r -> new Ripple(r.roomX, r.roomY, r.age + deltaSeconds));
+        ripples.replaceAll(r -> new Ripple(r.roomX, r.roomY, r.roomZ, r.age + deltaSeconds));
         ripples.removeIf(r -> r.age >= RIPPLE_MAX_AGE);
 
         render();
@@ -233,6 +247,60 @@ public final class RoomTelemetryDisplay extends Region {
         return onMicDragged;
     }
 
+    // ── Isometric 3D Projection ────────────────────────────────────
+
+    /**
+     * Projects a 3D room coordinate to 2D screen space using isometric projection.
+     *
+     * @param x the X coordinate in meters (room width axis)
+     * @param y the Y coordinate in meters (room length axis)
+     * @param z the Z coordinate in meters (room height axis)
+     * @return a two-element array {screenX, screenY}
+     */
+    double[] projectToScreen(double x, double y, double z) {
+        double rawX = (x - y) * COS_ISO;
+        double rawY = (x + y) * SIN_ISO - z;
+        return new double[]{
+                cachedCenterX + rawX * cachedScale,
+                cachedCenterY + rawY * cachedScale
+        };
+    }
+
+    /**
+     * Projects a 3D room coordinate into a caller-provided output array.
+     * This avoids allocation in tight loops (e.g., projected circle polygons).
+     *
+     * @param x   the X coordinate in meters (room width axis)
+     * @param y   the Y coordinate in meters (room length axis)
+     * @param z   the Z coordinate in meters (room height axis)
+     * @param out a two-element array to receive {screenX, screenY}
+     */
+    private void projectInto(double x, double y, double z, double[] out) {
+        double rawX = (x - y) * COS_ISO;
+        double rawY = (x + y) * SIN_ISO - z;
+        out[0] = cachedCenterX + rawX * cachedScale;
+        out[1] = cachedCenterY + rawY * cachedScale;
+    }
+
+    /**
+     * Reverse-projects a 2D screen coordinate back to 3D room space on a
+     * horizontal plane at the given Z height.
+     *
+     * @param screenX the screen X coordinate
+     * @param screenY the screen Y coordinate
+     * @param z       the known Z height (room height axis)
+     * @return the corresponding 3D room position
+     */
+    Position3D unprojectFromScreen(double screenX, double screenY, double z) {
+        double rawX = (screenX - cachedCenterX) / cachedScale;
+        double rawY = (screenY - cachedCenterY) / cachedScale;
+        double xMinusY = rawX / COS_ISO;
+        double xPlusY = (rawY + z) / SIN_ISO;
+        double x = (xMinusY + xPlusY) / 2;
+        double y = (xPlusY - xMinusY) / 2;
+        return new Position3D(x, y, z);
+    }
+
     // ── Drag-and-drop ──────────────────────────────────────────────
 
     private void handleMousePressed(MouseEvent event) {
@@ -242,13 +310,12 @@ public final class RoomTelemetryDisplay extends Region {
         double my = event.getY();
 
         // Check sources
-        java.util.HashSet<String> checkedSources = new java.util.HashSet<>();
+        HashSet<String> checkedSources = new HashSet<>();
         for (SoundWavePath path : telemetryData.wavePaths()) {
             if (checkedSources.add(path.sourceName())) {
                 Position3D sp = path.waypoints().getFirst();
-                double sx = cachedOffsetX + sp.x() * cachedScale;
-                double sy = cachedOffsetY + sp.y() * cachedScale;
-                if (Math.hypot(mx - sx, my - sy) <= SOURCE_RADIUS + 6) {
+                double[] screen = projectToScreen(sp.x(), sp.y(), sp.z());
+                if (Math.hypot(mx - screen[0], my - screen[1]) <= SOURCE_RADIUS + 6) {
                     draggedSourceName = path.sourceName();
                     draggedZ = sp.z();
                     return;
@@ -257,13 +324,12 @@ public final class RoomTelemetryDisplay extends Region {
         }
 
         // Check microphones
-        java.util.HashSet<String> checkedMics = new java.util.HashSet<>();
+        HashSet<String> checkedMics = new HashSet<>();
         for (SoundWavePath path : telemetryData.wavePaths()) {
             if (checkedMics.add(path.microphoneName())) {
                 Position3D mp = path.waypoints().getLast();
-                double mcx = cachedOffsetX + mp.x() * cachedScale;
-                double mcy = cachedOffsetY + mp.y() * cachedScale;
-                if (Math.hypot(mx - mcx, my - mcy) <= MIC_RADIUS + 6) {
+                double[] screen = projectToScreen(mp.x(), mp.y(), mp.z());
+                if (Math.hypot(mx - screen[0], my - screen[1]) <= MIC_RADIUS + 6) {
                     draggedMicName = path.microphoneName();
                     draggedZ = mp.z();
                     return;
@@ -275,16 +341,15 @@ public final class RoomTelemetryDisplay extends Region {
     private void handleMouseDragged(MouseEvent event) {
         if (telemetryData == null || cachedScale <= 0) return;
 
-        double roomX = (event.getX() - cachedOffsetX) / cachedScale;
-        double roomY = (event.getY() - cachedOffsetY) / cachedScale;
+        Position3D roomPos = unprojectFromScreen(event.getX(), event.getY(), draggedZ);
 
         // Clamp to room bounds
         double w = telemetryData.roomDimensions().width();
         double l = telemetryData.roomDimensions().length();
-        roomX = Math.max(0.01, Math.min(w - 0.01, roomX));
-        roomY = Math.max(0.01, Math.min(l - 0.01, roomY));
+        double clampedX = Math.max(0.01, Math.min(w - 0.01, roomPos.x()));
+        double clampedY = Math.max(0.01, Math.min(l - 0.01, roomPos.y()));
 
-        Position3D newPos = new Position3D(roomX, roomY, draggedZ);
+        Position3D newPos = new Position3D(clampedX, clampedY, draggedZ);
 
         if (draggedSourceName != null && onSourceDragged != null) {
             onSourceDragged.accept(draggedSourceName, newPos);
@@ -320,62 +385,65 @@ public final class RoomTelemetryDisplay extends Region {
 
         double roomW = telemetryData.roomDimensions().width();
         double roomL = telemetryData.roomDimensions().length();
+        double roomH = telemetryData.roomDimensions().height();
 
-        // Compute scale to fit the room in the canvas with margins
+        // Compute isometric bounding box and scale to fit canvas
+        double projWidth = (roomW + roomL) * COS_ISO;
+        double projHeight = (roomW + roomL) * SIN_ISO + roomH;
         double availW = w - 2 * ROOM_MARGIN;
         double availH = h - 2 * ROOM_MARGIN;
-        double scale = Math.min(availW / roomW, availH / roomL);
-        double offsetX = (w - roomW * scale) / 2;
-        double offsetY = (h - roomL * scale) / 2;
+        double scale = Math.min(availW / projWidth, availH / projHeight);
 
-        // Cache transform for hit-testing (drag-and-drop)
-        cachedOffsetX = offsetX;
-        cachedOffsetY = offsetY;
+        double centroidRawX = (roomW - roomL) * COS_ISO / 2;
+        double centroidRawY = ((roomW + roomL) * SIN_ISO - roomH) / 2;
+
+        cachedCenterX = w / 2 - centroidRawX * scale;
+        cachedCenterY = h / 2 - centroidRawY * scale;
         cachedScale = scale;
 
-        // ── Draw room ──
-        drawRoom(gc, offsetX, offsetY, roomW * scale, roomL * scale);
+        // ── Draw 3D room ──
+        drawRoom3D(gc, roomW, roomL, roomH);
 
-        // ── Draw grid ──
-        drawGrid(gc, offsetX, offsetY, roomW, roomL, scale);
+        // ── Draw floor grid ──
+        drawFloorGrid(gc, roomW, roomL);
 
         // ── Draw wall labels ──
-        drawWallLabels(gc, offsetX, offsetY, roomW * scale, roomL * scale);
+        drawWallLabels(gc, roomW, roomL, roomH);
 
         // ── Draw dimension labels ──
-        drawDimensionLabels(gc, offsetX, offsetY, roomW, roomL, scale);
+        drawDimensionLabels(gc, roomW, roomL, roomH);
 
         // ── Draw sonar ripples ──
         for (Ripple ripple : ripples) {
-            drawRipple(gc, ripple, offsetX, offsetY, scale);
+            drawRipple(gc, ripple);
         }
 
         // ── Draw critical distance circles ──
-        drawCriticalDistance(gc, offsetX, offsetY, scale);
+        drawCriticalDistance(gc);
 
         // ── Draw wave paths with particles ──
         for (SoundWavePath path : telemetryData.wavePaths()) {
-            drawWavePath(gc, path, offsetX, offsetY, scale);
+            drawWavePath(gc, path);
         }
 
         // ── Draw sound sources (with glow + pulse + power) ──
-        java.util.HashSet<String> drawnSources = new java.util.HashSet<String>();
+        HashSet<String> drawnSources = new HashSet<>();
         for (SoundWavePath path : telemetryData.wavePaths()) {
             if (drawnSources.add(path.sourceName())) {
                 Position3D sp = path.waypoints().getFirst();
                 SoundSource source = findSourceByName(path.sourceName());
                 double powerDb = (source != null) ? source.powerDb() : 80.0;
-                drawSource(gc, sp, path.sourceName(), offsetX, offsetY, scale, powerDb);
+                drawSource(gc, sp, path.sourceName(), powerDb);
             }
         }
 
         // ── Draw microphones (with glow + pulse + aim) ──
-        java.util.HashSet<String> drawnMics = new java.util.HashSet<String>();
+        HashSet<String> drawnMics = new HashSet<>();
         for (SoundWavePath path : telemetryData.wavePaths()) {
             if (drawnMics.add(path.microphoneName())) {
                 Position3D mp = path.waypoints().getLast();
                 MicrophonePlacement mic = findMicByName(path.microphoneName());
-                drawMicrophone(gc, mp, path.microphoneName(), offsetX, offsetY, scale, mic);
+                drawMicrophone(gc, mp, path.microphoneName(), mic);
             }
         }
 
@@ -383,23 +451,23 @@ public final class RoomTelemetryDisplay extends Region {
         List<AudienceMember> audience = telemetryData.audienceMembers();
         for (int i = 0; i < audience.size(); i++) {
             AudienceMember member = audience.get(i);
-            drawAudienceMember(gc, member.position(), member.name(), offsetX, offsetY, scale, i);
+            drawAudienceMember(gc, member.position(), member.name(), i);
         }
 
-        // ── Draw RT60 glow on room border ──
-        drawRt60Glow(gc, offsetX, offsetY, roomW * scale, roomL * scale);
+        // ── Draw RT60 glow on room edges ──
+        drawRt60Glow(gc, roomW, roomL, roomH);
 
         // ── Draw suggestions panel ──
         drawSuggestions(gc, w, h);
 
         // ── Draw room statistics panel ──
-        drawRoomStats(gc, offsetX, offsetY);
+        drawRoomStats(gc);
 
         // ── Draw color legend ──
         drawLegend(gc, w);
 
         // ── Draw scale bar ──
-        drawScaleBar(gc, w, h, scale);
+        drawScaleBar(gc, roomW);
 
         gc.restore();
     }
@@ -408,58 +476,112 @@ public final class RoomTelemetryDisplay extends Region {
         gc.setFill(TEXT_COLOR);
         gc.setFont(Font.font("System", 14));
         gc.setTextAlign(TextAlignment.CENTER);
-        gc.fillText("🎙  Configure a room to see Sound Wave Telemetry  🎙", w / 2, h / 2);
+        gc.fillText("\uD83C\uDF99  Configure a room to see 3D Sound Wave Telemetry  \uD83C\uDF99", w / 2, h / 2);
     }
 
-    private void drawRoom(GraphicsContext gc, double x, double y, double w, double h) {
-        // Room fill
-        gc.setFill(ROOM_FILL);
-        gc.fillRect(x, y, w, h);
+    // ── 3D Room Drawing ────────────────────────────────────────────
 
-        // Room border with rounded feel
+    private void drawRoom3D(GraphicsContext gc, double roomW, double roomL, double roomH) {
+        // Floor corners (z = 0)
+        double[] f0 = projectToScreen(0, 0, 0);
+        double[] f1 = projectToScreen(roomW, 0, 0);
+        double[] f2 = projectToScreen(roomW, roomL, 0);
+        double[] f3 = projectToScreen(0, roomL, 0);
+
+        // Ceiling corners (z = roomH)
+        double[] c0 = projectToScreen(0, 0, roomH);
+        double[] c1 = projectToScreen(roomW, 0, roomH);
+        double[] c2 = projectToScreen(roomW, roomL, roomH);
+        double[] c3 = projectToScreen(0, roomL, roomH);
+
+        // Fill back wall (y = roomL): f3 → f2 → c2 → c3
+        gc.setFill(WALL_BACK_FILL);
+        gc.fillPolygon(
+                new double[]{f3[0], f2[0], c2[0], c3[0]},
+                new double[]{f3[1], f2[1], c2[1], c3[1]}, 4);
+
+        // Fill left wall (x = 0): f0 → f3 → c3 → c0
+        gc.setFill(WALL_LEFT_FILL);
+        gc.fillPolygon(
+                new double[]{f0[0], f3[0], c3[0], c0[0]},
+                new double[]{f0[1], f3[1], c3[1], c0[1]}, 4);
+
+        // Fill floor (z = 0): f0 → f1 → f2 → f3
+        gc.setFill(ROOM_FILL);
+        gc.fillPolygon(
+                new double[]{f0[0], f1[0], f2[0], f3[0]},
+                new double[]{f0[1], f1[1], f2[1], f3[1]}, 4);
+
+        // Draw all 12 box edges as wireframe
         gc.setStroke(ROOM_BORDER);
         gc.setLineWidth(2.0);
-        gc.strokeRect(x, y, w, h);
+        gc.setLineDashes();
+
+        // Floor edges
+        strokeScreenLine(gc, f0, f1);
+        strokeScreenLine(gc, f1, f2);
+        strokeScreenLine(gc, f2, f3);
+        strokeScreenLine(gc, f3, f0);
+        // Ceiling edges
+        strokeScreenLine(gc, c0, c1);
+        strokeScreenLine(gc, c1, c2);
+        strokeScreenLine(gc, c2, c3);
+        strokeScreenLine(gc, c3, c0);
+        // Vertical pillar edges
+        strokeScreenLine(gc, f0, c0);
+        strokeScreenLine(gc, f1, c1);
+        strokeScreenLine(gc, f2, c2);
+        strokeScreenLine(gc, f3, c3);
     }
 
-    private void drawGrid(GraphicsContext gc, double offsetX, double offsetY,
-                           double roomW, double roomL, double scale) {
+    // ── Floor Grid ─────────────────────────────────────────────────
+
+    private void drawFloorGrid(GraphicsContext gc, double roomW, double roomL) {
         gc.setStroke(GRID_COLOR);
         gc.setLineWidth(0.5);
-        // 1-meter grid
+        gc.setLineDashes();
+
+        double[] s = new double[2];
+        double[] e = new double[2];
+
+        // 1-meter grid lines along the X axis (constant x, varying y at z=0)
         for (double m = 1; m < roomW; m += 1) {
-            double x = offsetX + m * scale;
-            gc.strokeLine(x, offsetY, x, offsetY + roomL * scale);
+            projectInto(m, 0, 0, s);
+            projectInto(m, roomL, 0, e);
+            gc.strokeLine(s[0], s[1], e[0], e[1]);
         }
+        // 1-meter grid lines along the Y axis (constant y, varying x at z=0)
         for (double m = 1; m < roomL; m += 1) {
-            double y = offsetY + m * scale;
-            gc.strokeLine(offsetX, y, offsetX + roomW * scale, y);
+            projectInto(0, m, 0, s);
+            projectInto(roomW, m, 0, e);
+            gc.strokeLine(s[0], s[1], e[0], e[1]);
         }
     }
 
-    private void drawRipple(GraphicsContext gc, Ripple ripple,
-                             double offsetX, double offsetY, double scale) {
-        double cx = offsetX + ripple.roomX * scale;
-        double cy = offsetY + ripple.roomY * scale;
-        double radius = ripple.age * RIPPLE_SPEED;
+    // ── Ripples (projected ellipses) ───────────────────────────────
+
+    private void drawRipple(GraphicsContext gc, Ripple ripple) {
+        double radiusM = ripple.age * RIPPLE_SPEED_MPS;
         double opacity = Math.max(0, 1.0 - ripple.age / RIPPLE_MAX_AGE);
 
         gc.setStroke(RIPPLE_COLOR.deriveColor(0, 1, 1, opacity * 0.6));
         gc.setLineWidth(2.0 * opacity + 0.5);
-        gc.strokeOval(cx - radius, cy - radius, radius * 2, radius * 2);
+        gc.setLineDashes();
+        strokeProjectedCircle(gc, ripple.roomX, ripple.roomY, ripple.roomZ, radiusM);
 
         // Inner ghost ring (fun layered effect)
         if (ripple.age > 0.2) {
-            double innerRadius = (ripple.age - 0.2) * RIPPLE_SPEED;
+            double innerRadiusM = (ripple.age - 0.2) * RIPPLE_SPEED_MPS;
             double innerOpacity = Math.max(0, 1.0 - (ripple.age - 0.2) / RIPPLE_MAX_AGE) * 0.3;
             gc.setStroke(RIPPLE_COLOR.deriveColor(0, 1, 1, innerOpacity));
             gc.setLineWidth(1.0);
-            gc.strokeOval(cx - innerRadius, cy - innerRadius, innerRadius * 2, innerRadius * 2);
+            strokeProjectedCircle(gc, ripple.roomX, ripple.roomY, ripple.roomZ, innerRadiusM);
         }
     }
 
-    private void drawWavePath(GraphicsContext gc, SoundWavePath path,
-                               double offsetX, double offsetY, double scale) {
+    // ── Wave Paths ─────────────────────────────────────────────────
+
+    private void drawWavePath(GraphicsContext gc, SoundWavePath path) {
         List<Position3D> waypoints = path.waypoints();
         boolean reflected = path.reflected();
         Color pathColor = reflected ? REFLECTED_PATH_COLOR : DIRECT_PATH_COLOR;
@@ -475,10 +597,10 @@ public final class RoomTelemetryDisplay extends Region {
 
         gc.beginPath();
         for (int i = 0; i < waypoints.size(); i++) {
-            double px = offsetX + waypoints.get(i).x() * scale;
-            double py = offsetY + waypoints.get(i).y() * scale;
-            if (i == 0) gc.moveTo(px, py);
-            else gc.lineTo(px, py);
+            Position3D wp = waypoints.get(i);
+            double[] screen = projectToScreen(wp.x(), wp.y(), wp.z());
+            if (i == 0) gc.moveTo(screen[0], screen[1]);
+            else gc.lineTo(screen[0], screen[1]);
         }
         gc.stroke();
         gc.setLineDashes();
@@ -486,8 +608,9 @@ public final class RoomTelemetryDisplay extends Region {
         // Draw reflection point marker (small diamond) with level label
         if (reflected && waypoints.size() >= 3) {
             Position3D rp = waypoints.get(1);
-            double rx = offsetX + rp.x() * scale;
-            double ry = offsetY + rp.y() * scale;
+            double[] screen = projectToScreen(rp.x(), rp.y(), rp.z());
+            double rx = screen[0];
+            double ry = screen[1];
             gc.setFill(REFLECTED_PATH_COLOR.deriveColor(0, 1, 1, 0.6));
             double d = 4;
             gc.fillPolygon(
@@ -505,7 +628,7 @@ public final class RoomTelemetryDisplay extends Region {
 
         // Show direct path distance and delay at midpoint
         if (!reflected && waypoints.size() >= 2) {
-            double[] midPos = interpolateAlongPath(waypoints, 0.5, offsetX, offsetY, scale);
+            double[] midPos = interpolateAlongPath(waypoints, 0.5);
             gc.setFill(DIRECT_PATH_COLOR.deriveColor(0, 1, 1, 0.6));
             gc.setFont(Font.font("System", 8));
             gc.setTextAlign(TextAlignment.CENTER);
@@ -513,13 +636,13 @@ public final class RoomTelemetryDisplay extends Region {
                     midPos[0], midPos[1] - 6);
         }
 
-        // Draw traveling particles 🎵
+        // Draw traveling particles
         String key = pathKey(path);
         WaveParticleAnimator animator = pathAnimators.get(key);
         if (animator != null) {
             Color particleColor = reflected ? PARTICLE_REFLECTED : PARTICLE_DIRECT;
             for (WaveParticleAnimator.Particle particle : animator.getParticles()) {
-                double[] pos = interpolateAlongPath(waypoints, particle.progress(), offsetX, offsetY, scale);
+                double[] pos = interpolateAlongPath(waypoints, particle.progress());
                 double opacity = particle.opacity();
                 double size = 3.0 + 2.0 * Math.sin(animationTime * 6 + particle.progress() * Math.PI);
 
@@ -534,11 +657,13 @@ public final class RoomTelemetryDisplay extends Region {
         }
     }
 
+    // ── Sound Sources ──────────────────────────────────────────────
+
     private void drawSource(GraphicsContext gc, Position3D pos, String name,
-                             double offsetX, double offsetY, double scale,
                              double powerDb) {
-        double cx = offsetX + pos.x() * scale;
-        double cy = offsetY + pos.y() * scale;
+        double[] screen = projectToScreen(pos.x(), pos.y(), pos.z());
+        double cx = screen[0];
+        double cy = screen[1];
 
         // Animated pulse
         double pulse = 0.5 + 0.5 * Math.sin(animationTime * SOURCE_PULSE_SPEED);
@@ -576,22 +701,34 @@ public final class RoomTelemetryDisplay extends Region {
                     javafx.scene.shape.ArcType.OPEN);
         }
 
+        // Draw a thin vertical "drop line" from source to floor for depth cue
+        double[] floorScreen = projectToScreen(pos.x(), pos.y(), 0);
+        if (Math.abs(cy - floorScreen[1]) > 2) {
+            gc.setStroke(SOURCE_COLOR.deriveColor(0, 1, 1, 0.15));
+            gc.setLineWidth(1.0);
+            gc.setLineDashes(3, 3);
+            gc.strokeLine(cx, cy, floorScreen[0], floorScreen[1]);
+            gc.setLineDashes();
+        }
+
         // Label with name
         gc.setFill(TEXT_COLOR);
         gc.setFont(Font.font("System", 10));
         gc.setTextAlign(TextAlignment.CENTER);
-        gc.fillText("🔊 " + name, cx, cy - SOURCE_RADIUS - LABEL_OFFSET);
+        gc.fillText("\uD83D\uDD0A " + name, cx, cy - SOURCE_RADIUS - LABEL_OFFSET);
 
         // Power dB label below the source name
         gc.setFont(Font.font("System", 8));
         gc.fillText("%.0f dB".formatted(powerDb), cx, cy - SOURCE_RADIUS - LABEL_OFFSET + 12);
     }
 
+    // ── Microphones ────────────────────────────────────────────────
+
     private void drawMicrophone(GraphicsContext gc, Position3D pos, String name,
-                                 double offsetX, double offsetY, double scale,
                                  MicrophonePlacement mic) {
-        double cx = offsetX + pos.x() * scale;
-        double cy = offsetY + pos.y() * scale;
+        double[] screen = projectToScreen(pos.x(), pos.y(), pos.z());
+        double cx = screen[0];
+        double cy = screen[1];
 
         // Animated pulse
         double pulse = 0.5 + 0.5 * Math.sin(animationTime * MIC_PULSE_SPEED + 1.0);
@@ -647,18 +784,30 @@ public final class RoomTelemetryDisplay extends Region {
             }
         }
 
+        // Draw a thin vertical "drop line" from mic to floor for depth cue
+        double[] floorScreen = projectToScreen(pos.x(), pos.y(), 0);
+        if (Math.abs(cy - floorScreen[1]) > 2) {
+            gc.setStroke(MIC_COLOR.deriveColor(0, 1, 1, 0.15));
+            gc.setLineWidth(1.0);
+            gc.setLineDashes(3, 3);
+            gc.strokeLine(cx, cy, floorScreen[0], floorScreen[1]);
+            gc.setLineDashes();
+        }
+
         // Label
         gc.setFill(TEXT_COLOR);
         gc.setFont(Font.font("System", 10));
         gc.setTextAlign(TextAlignment.CENTER);
-        gc.fillText("🎙 " + name, cx, cy + MIC_RADIUS + LABEL_OFFSET + 4);
+        gc.fillText("\uD83C\uDF99 " + name, cx, cy + MIC_RADIUS + LABEL_OFFSET + 4);
     }
 
+    // ── Audience Members ───────────────────────────────────────────
+
     private void drawAudienceMember(GraphicsContext gc, Position3D pos, String name,
-                                     double offsetX, double offsetY, double scale,
                                      int index) {
-        double cx = offsetX + pos.x() * scale;
-        double cy = offsetY + pos.y() * scale;
+        double[] screen = projectToScreen(pos.x(), pos.y(), pos.z());
+        double cx = screen[0];
+        double cy = screen[1];
 
         // Subtle pulse for audience members (slower than performers)
         double pulse = 0.5 + 0.5 * Math.sin(animationTime * AUDIENCE_PULSE_SPEED + pos.x() * 0.5);
@@ -687,7 +836,9 @@ public final class RoomTelemetryDisplay extends Region {
         gc.fillText(name, cx, labelY);
     }
 
-    private void drawRt60Glow(GraphicsContext gc, double x, double y, double w, double h) {
+    // ── RT60 Glow ──────────────────────────────────────────────────
+
+    private void drawRt60Glow(GraphicsContext gc, double roomW, double roomL, double roomH) {
         if (telemetryData == null) return;
 
         double rt60 = telemetryData.estimatedRt60Seconds();
@@ -700,18 +851,39 @@ public final class RoomTelemetryDisplay extends Region {
             glowColor = RT60_HIGH;
         }
 
-        // Pulsing border glow intensity
+        // Pulsing glow on all visible edges
         double pulse = 0.6 + 0.4 * Math.sin(animationTime * 1.5);
         gc.setStroke(glowColor.deriveColor(0, 1, 1, pulse));
         gc.setLineWidth(4.0);
-        gc.strokeRect(x - 2, y - 2, w + 4, h + 4);
+        gc.setLineDashes();
 
-        // RT60 label
+        // Floor edges
+        double[] f0 = projectToScreen(0, 0, 0);
+        double[] f1 = projectToScreen(roomW, 0, 0);
+        double[] f2 = projectToScreen(roomW, roomL, 0);
+        double[] f3 = projectToScreen(0, roomL, 0);
+        strokeScreenLine(gc, f0, f1);
+        strokeScreenLine(gc, f1, f2);
+        strokeScreenLine(gc, f2, f3);
+        strokeScreenLine(gc, f3, f0);
+
+        // Front vertical edges (most prominent to viewer)
+        double[] c0 = projectToScreen(0, 0, roomH);
+        double[] c1 = projectToScreen(roomW, 0, roomH);
+        strokeScreenLine(gc, f0, c0);
+        strokeScreenLine(gc, f1, c1);
+        strokeScreenLine(gc, c0, c1);
+
+        // RT60 label near the front-top edge
         gc.setFill(glowColor);
         gc.setFont(Font.font("System", 11));
-        gc.setTextAlign(TextAlignment.LEFT);
-        gc.fillText("RT60: %.2fs".formatted(rt60), x + 4, y - 8);
+        gc.setTextAlign(TextAlignment.CENTER);
+        double labelX = (c0[0] + c1[0]) / 2;
+        double labelY = Math.min(c0[1], c1[1]) - 10;
+        gc.fillText("RT60: %.2fs".formatted(rt60), labelX, labelY);
     }
+
+    // ── Suggestions Panel (screen-space overlay) ───────────────────
 
     private void drawSuggestions(GraphicsContext gc, double canvasW, double canvasH) {
         if (telemetryData == null || telemetryData.suggestions().isEmpty()) return;
@@ -732,17 +904,17 @@ public final class RoomTelemetryDisplay extends Region {
         gc.setFill(SUGGESTION_TEXT);
         gc.setFont(Font.font("System", 11));
         gc.setTextAlign(TextAlignment.LEFT);
-        gc.fillText("💡 Suggestions", panelX + 8, panelY + 16);
+        gc.fillText("\uD83D\uDCA1 Suggestions", panelX + 8, panelY + 16);
 
         // Each suggestion
         gc.setFont(Font.font("System", 9));
         gc.setFill(TEXT_COLOR);
         for (int i = 0; i < suggestions.size(); i++) {
             String icon = switch (suggestions.get(i)) {
-                case TelemetrySuggestion.AdjustMicPosition _ -> "📍";
-                case TelemetrySuggestion.AdjustMicAngle _ -> "🔄";
-                case TelemetrySuggestion.AddDampening _ -> "🧱";
-                case TelemetrySuggestion.RemoveDampening _ -> "🪟";
+                case TelemetrySuggestion.AdjustMicPosition _ -> "\uD83D\uDCCD";
+                case TelemetrySuggestion.AdjustMicAngle _ -> "\uD83D\uDD04";
+                case TelemetrySuggestion.AddDampening _ -> "\uD83E\uDDF1";
+                case TelemetrySuggestion.RemoveDampening _ -> "\uD83E\uDE9F";
             };
             String text = suggestions.get(i).description();
             if (text.length() > 60) text = text.substring(0, 57) + "...";
@@ -750,59 +922,53 @@ public final class RoomTelemetryDisplay extends Region {
         }
     }
 
-    // ── Dimension labels (User Story 1) ────────────────────────────
+    // ── Dimension Labels (3D) ──────────────────────────────────────
 
-    private void drawDimensionLabels(GraphicsContext gc, double offsetX, double offsetY,
-                                      double roomW, double roomL, double scale) {
+    private void drawDimensionLabels(GraphicsContext gc, double roomW, double roomL,
+                                      double roomH) {
         gc.setFill(TEXT_COLOR);
         gc.setFont(Font.font("System", 10));
-
-        // Width label along the bottom edge
         gc.setTextAlign(TextAlignment.CENTER);
-        double bottomY = offsetY + roomL * scale + 16;
-        gc.fillText("%.1f m".formatted(roomW), offsetX + roomW * scale / 2, bottomY);
 
-        // Length label along the right edge (rotated text simulated as vertical placement)
-        gc.setTextAlign(TextAlignment.CENTER);
-        gc.save();
-        double rightX = offsetX + roomW * scale + 16;
-        double midY = offsetY + roomL * scale / 2;
-        gc.translate(rightX, midY);
-        gc.rotate(90);
-        gc.fillText("%.1f m".formatted(roomL), 0, 0);
-        gc.restore();
+        // Width label along front floor edge (y=0, from x=0 to x=W)
+        double[] wMid = projectToScreen(roomW / 2, 0, 0);
+        gc.fillText("%.1f m".formatted(roomW), wMid[0], wMid[1] + 16);
+
+        // Length label along left floor edge (x=0, from y=0 to y=L)
+        double[] lMid = projectToScreen(0, roomL / 2, 0);
+        gc.fillText("%.1f m".formatted(roomL), lMid[0] - 16, lMid[1]);
+
+        // Height label along front-left vertical edge (x=0, y=0, from z=0 to z=H)
+        double[] hMid = projectToScreen(0, 0, roomH / 2);
+        gc.fillText("%.1f m".formatted(roomH), hMid[0] - 16, hMid[1]);
     }
 
-    // ── Wall labels (User Story 2) ─────────────────────────────────
+    // ── Wall Labels (3D) ───────────────────────────────────────────
 
-    private void drawWallLabels(GraphicsContext gc, double offsetX, double offsetY,
-                                 double roomPixelW, double roomPixelL) {
+    private void drawWallLabels(GraphicsContext gc, double roomW, double roomL,
+                                 double roomH) {
         gc.setFill(WALL_LABEL_COLOR);
         gc.setFont(Font.font("System", 11));
         gc.setTextAlign(TextAlignment.CENTER);
 
-        // Front wall (top edge, y = 0 in room coordinates)
-        gc.fillText("Front", offsetX + roomPixelW / 2, offsetY + 14);
+        // Front wall label (y=0 face, centered at mid-width, mid-height)
+        double[] frontMid = projectToScreen(roomW / 2, 0, roomH / 2);
+        gc.fillText("Front", frontMid[0], frontMid[1]);
 
-        // Back wall (bottom edge, y = length in room coordinates)
-        gc.fillText("Back", offsetX + roomPixelW / 2, offsetY + roomPixelL - 6);
+        // Back wall label (y=L face, centered)
+        double[] backMid = projectToScreen(roomW / 2, roomL, roomH / 2);
+        gc.fillText("Back", backMid[0], backMid[1]);
 
-        // Left wall (left edge, x = 0)
-        gc.save();
-        gc.translate(offsetX + 12, offsetY + roomPixelL / 2);
-        gc.rotate(-90);
-        gc.fillText("Left", 0, 0);
-        gc.restore();
+        // Left wall label (x=0 face, centered)
+        double[] leftMid = projectToScreen(0, roomL / 2, roomH / 2);
+        gc.fillText("Left", leftMid[0] - 8, leftMid[1]);
 
-        // Right wall (right edge, x = width)
-        gc.save();
-        gc.translate(offsetX + roomPixelW - 8, offsetY + roomPixelL / 2);
-        gc.rotate(90);
-        gc.fillText("Right", 0, 0);
-        gc.restore();
+        // Right wall label (x=W face, centered)
+        double[] rightMid = projectToScreen(roomW, roomL / 2, roomH / 2);
+        gc.fillText("Right", rightMid[0] + 8, rightMid[1]);
     }
 
-    // ── Color legend (User Story 3) ────────────────────────────────
+    // ── Color Legend (screen-space overlay) ─────────────────────────
 
     private void drawLegend(GraphicsContext gc, double canvasW) {
         if (telemetryData == null) return;
@@ -879,9 +1045,9 @@ public final class RoomTelemetryDisplay extends Region {
         }
     }
 
-    // ── Room statistics panel (User Story 4) ───────────────────────
+    // ── Room Statistics Panel (screen-space overlay) ────────────────
 
-    private void drawRoomStats(GraphicsContext gc, double offsetX, double offsetY) {
+    private void drawRoomStats(GraphicsContext gc) {
         if (telemetryData == null) return;
 
         RoomDimensions dims = telemetryData.roomDimensions();
@@ -897,8 +1063,8 @@ public final class RoomTelemetryDisplay extends Region {
         int micCount = telemetryData.microphones().size();
 
         List<String> lines = new ArrayList<>();
-        lines.add("Volume: %.1f m³".formatted(volume));
-        lines.add("Surface: %.1f m²".formatted(surfaceArea));
+        lines.add("Volume: %.1f m\u00B3".formatted(volume));
+        lines.add("Surface: %.1f m\u00B2".formatted(surfaceArea));
         if (material != null) {
             lines.add("Material: %s".formatted(formatMaterialName(material)));
         }
@@ -908,8 +1074,8 @@ public final class RoomTelemetryDisplay extends Region {
         double lineHeight = 16;
         double panelW = 170;
         double panelH = lines.size() * lineHeight + 14;
-        double panelX = offsetX + 6;
-        double panelY = offsetY + 22;
+        double panelX = 10;
+        double panelY = 10;
 
         // Background
         gc.setFill(STATS_BG);
@@ -927,14 +1093,14 @@ public final class RoomTelemetryDisplay extends Region {
         }
     }
 
-    // ── Scale bar (User Story 5) ───────────────────────────────────
+    // ── Scale Bar (projected on floor) ─────────────────────────────
 
-    private void drawScaleBar(GraphicsContext gc, double canvasW, double canvasH, double scale) {
-        // Choose a round number of meters that fits within ~120 pixels
+    private void drawScaleBar(GraphicsContext gc, double roomW) {
+        // Draw scale bar along the right floor edge (y=0 edge, near x=W)
         double targetPixels = 100;
-        double targetMeters = targetPixels / scale;
+        double targetMeters = targetPixels / cachedScale;
 
-        // Round to a nice value: 0.5, 1, 2, 5, 10, 20, ...
+        // Round to a nice value
         double scaleMeters;
         if (targetMeters < 0.75) scaleMeters = 0.5;
         else if (targetMeters < 1.5) scaleMeters = 1;
@@ -943,23 +1109,32 @@ public final class RoomTelemetryDisplay extends Region {
         else if (targetMeters < 15) scaleMeters = 10;
         else scaleMeters = 20;
 
-        double barPixels = scaleMeters * scale;
-        double barX = canvasW - barPixels - 20;
-        double barY = canvasH - 20;
-        double tickH = 6;
+        // Position scale bar along the front floor edge near the right corner
+        double barEndX = roomW;
+        double barStartX = Math.max(0, roomW - scaleMeters);
+        double barY = 0; // front edge
+
+        double[] start = projectToScreen(barStartX, barY, 0);
+        double[] end = projectToScreen(barEndX, barY, 0);
 
         gc.setStroke(TEXT_COLOR);
         gc.setLineWidth(1.5);
         gc.setLineDashes();
 
-        // Horizontal bar
-        gc.strokeLine(barX, barY, barX + barPixels, barY);
+        // Main bar line
+        gc.strokeLine(start[0], start[1], end[0], end[1]);
 
-        // Left tick
-        gc.strokeLine(barX, barY - tickH, barX, barY + tickH);
-
-        // Right tick
-        gc.strokeLine(barX + barPixels, barY - tickH, barX + barPixels, barY + tickH);
+        // Perpendicular ticks (perpendicular to the bar direction on screen)
+        double barDx = end[0] - start[0];
+        double barDy = end[1] - start[1];
+        double barLen = Math.hypot(barDx, barDy);
+        double tickH = 6;
+        if (barLen > 0) {
+            double perpX = -barDy / barLen * tickH;
+            double perpY = barDx / barLen * tickH;
+            gc.strokeLine(start[0] + perpX, start[1] + perpY, start[0] - perpX, start[1] - perpY);
+            gc.strokeLine(end[0] + perpX, end[1] + perpY, end[0] - perpX, end[1] - perpY);
+        }
 
         // Label
         gc.setFill(TEXT_COLOR);
@@ -968,12 +1143,14 @@ public final class RoomTelemetryDisplay extends Region {
         String label = (scaleMeters == (int) scaleMeters)
                 ? "%d m".formatted((int) scaleMeters)
                 : "%.1f m".formatted(scaleMeters);
-        gc.fillText(label, barX + barPixels / 2, barY - 8);
+        double midX = (start[0] + end[0]) / 2;
+        double midY = (start[1] + end[1]) / 2;
+        gc.fillText(label, midX, midY + 16);
     }
 
-    // ── Critical distance circles (User Story 8) ───────────────────
+    // ── Critical Distance Circles (projected on source Z plane) ────
 
-    private void drawCriticalDistance(GraphicsContext gc, double offsetX, double offsetY, double scale) {
+    private void drawCriticalDistance(GraphicsContext gc) {
         if (telemetryData == null) return;
 
         double volume = telemetryData.roomDimensions().volume();
@@ -981,33 +1158,57 @@ public final class RoomTelemetryDisplay extends Region {
         if (rt60 <= 0) return;
 
         double criticalDistMeters = 0.057 * Math.sqrt(volume / rt60);
-        double criticalDistPixels = criticalDistMeters * scale;
 
         gc.setStroke(CRITICAL_DISTANCE_COLOR);
         gc.setLineWidth(1.0);
         gc.setLineDashes(6, 4);
 
-        java.util.HashSet<String> drawnSources = new java.util.HashSet<>();
+        HashSet<String> drawnSources = new HashSet<>();
         for (SoundWavePath path : telemetryData.wavePaths()) {
             if (drawnSources.add(path.sourceName())) {
                 Position3D sp = path.waypoints().getFirst();
-                double cx = offsetX + sp.x() * scale;
-                double cy = offsetY + sp.y() * scale;
-
-                gc.strokeOval(cx - criticalDistPixels, cy - criticalDistPixels,
-                        criticalDistPixels * 2, criticalDistPixels * 2);
+                strokeProjectedCircle(gc, sp.x(), sp.y(), sp.z(), criticalDistMeters);
 
                 // "Dc" label at the edge
+                double[] labelPos = projectToScreen(sp.x() + criticalDistMeters, sp.y(), sp.z());
                 gc.setFill(TEXT_COLOR.deriveColor(0, 1, 1, 0.5));
                 gc.setFont(Font.font("System", 8));
                 gc.setTextAlign(TextAlignment.LEFT);
-                gc.fillText("Dc", cx + criticalDistPixels + 2, cy - 2);
+                gc.fillText("Dc", labelPos[0] + 2, labelPos[1] - 2);
             }
         }
         gc.setLineDashes();
     }
 
     // ── Helpers ─────────────────────────────────────────────────────
+
+    /**
+     * Draws a line between two screen-space points.
+     */
+    private static void strokeScreenLine(GraphicsContext gc, double[] a, double[] b) {
+        gc.strokeLine(a[0], a[1], b[0], b[1]);
+    }
+
+    /**
+     * Draws a circle in 3D room space as a projected polygon on the canvas.
+     * The circle lies on a horizontal plane at the given Z height.
+     */
+    private void strokeProjectedCircle(GraphicsContext gc,
+                                        double cx, double cy, double cz,
+                                        double radiusM) {
+        double[] xs = new double[PROJECTED_CIRCLE_SEGMENTS];
+        double[] ys = new double[PROJECTED_CIRCLE_SEGMENTS];
+        double[] tmp = new double[2];
+        for (int i = 0; i < PROJECTED_CIRCLE_SEGMENTS; i++) {
+            double angle = 2 * Math.PI * i / PROJECTED_CIRCLE_SEGMENTS;
+            double px = cx + radiusM * Math.cos(angle);
+            double py = cy + radiusM * Math.sin(angle);
+            projectInto(px, py, cz, tmp);
+            xs[i] = tmp[0];
+            ys[i] = tmp[1];
+        }
+        gc.strokePolygon(xs, ys, PROJECTED_CIRCLE_SEGMENTS);
+    }
 
     private SoundSource findSourceByName(String name) {
         if (telemetryData == null) return null;
@@ -1038,7 +1239,7 @@ public final class RoomTelemetryDisplay extends Region {
     }
 
     private static String pathKey(SoundWavePath path) {
-        return path.sourceName() + "→" + path.microphoneName() + ":" + path.reflected();
+        return path.sourceName() + "\u2192" + path.microphoneName() + ":" + path.reflected();
     }
 
     /**
@@ -1060,17 +1261,16 @@ public final class RoomTelemetryDisplay extends Region {
     }
 
     /**
-     * Interpolates a position along a multi-segment path.
+     * Interpolates a position along a multi-segment path using 3D projection.
      *
      * @param waypoints the path waypoints in room coordinates
      * @param t         progress along the path in [0.0, 1.0]
-     * @return {canvasX, canvasY}
+     * @return {screenX, screenY}
      */
-    private static double[] interpolateAlongPath(List<Position3D> waypoints, double t,
-                                                  double offsetX, double offsetY, double scale) {
+    private double[] interpolateAlongPath(List<Position3D> waypoints, double t) {
         if (waypoints.size() < 2) {
             Position3D p = waypoints.getFirst();
-            return new double[]{offsetX + p.x() * scale, offsetY + p.y() * scale};
+            return projectToScreen(p.x(), p.y(), p.z());
         }
 
         // Compute total length and segment lengths
@@ -1091,13 +1291,14 @@ public final class RoomTelemetryDisplay extends Region {
                 Position3D b = waypoints.get(i + 1);
                 double rx = a.x() + segT * (b.x() - a.x());
                 double ry = a.y() + segT * (b.y() - a.y());
-                return new double[]{offsetX + rx * scale, offsetY + ry * scale};
+                double rz = a.z() + segT * (b.z() - a.z());
+                return projectToScreen(rx, ry, rz);
             }
             accumulated += segLens[i];
         }
 
         Position3D last = waypoints.getLast();
-        return new double[]{offsetX + last.x() * scale, offsetY + last.y() * scale};
+        return projectToScreen(last.x(), last.y(), last.z());
     }
 
     @Override
@@ -1108,5 +1309,5 @@ public final class RoomTelemetryDisplay extends Region {
 
     // ── Inner data carrier ─────────────────────────────────────────
 
-    private record Ripple(double roomX, double roomY, double age) {}
+    private record Ripple(double roomX, double roomY, double roomZ, double age) {}
 }
