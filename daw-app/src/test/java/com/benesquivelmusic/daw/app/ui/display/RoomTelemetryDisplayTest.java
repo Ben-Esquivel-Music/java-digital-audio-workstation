@@ -1,6 +1,9 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
+import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
+import com.benesquivelmusic.daw.sdk.telemetry.RoomTelemetryData;
+import com.benesquivelmusic.daw.sdk.telemetry.SoundWavePath;
 
 import javafx.application.Platform;
 
@@ -8,6 +11,7 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -187,5 +191,138 @@ class RoomTelemetryDisplayTest {
         RoomTelemetryDisplay display = createOnFxThread();
 
         assertThat(display.getTelemetryData()).isNull();
+    }
+
+    // ── 3D Isometric Projection Tests ──────────────────────────────
+
+    /**
+     * Creates a display with pre-set cached projection values for unit testing
+     * the projection methods without requiring the JavaFX toolkit.
+     * Uses reflection-free approach: call projectToScreen after setting
+     * cached values via a test-only setup.
+     */
+    private RoomTelemetryDisplay createWithCachedProjection() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        AtomicReference<RoomTelemetryDisplay> ref = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ref.set(new RoomTelemetryDisplay());
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+        return ref.get();
+    }
+
+    @Test
+    void projectToScreenOriginShouldMapToCenter() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        RoomTelemetryDisplay display = createWithCachedProjection();
+
+        // Simulate a render with known telemetry data to populate cached transform
+        RoomDimensions dims = new RoomDimensions(10.0, 10.0, 3.0);
+        SoundWavePath path = new SoundWavePath(
+                "S", "M",
+                List.of(new Position3D(1, 1, 1), new Position3D(5, 5, 1)),
+                5.0, 0.01, -3.0, false);
+        RoomTelemetryData data = RoomTelemetryData.withoutAudience(
+                dims, List.of(path), 0.5, List.of());
+
+        runOnFxThread(() -> {
+            display.setPrefSize(800, 600);
+            display.resize(800, 600);
+            display.setTelemetryData(data);
+        });
+
+        // For a square room (W=L=10), the origin (0,0,0) should project to a
+        // specific location. The key property: projectToScreen followed by
+        // unprojectFromScreen should give back the original point.
+        double[] screen = display.projectToScreen(5.0, 5.0, 0.0);
+        Position3D roundTrip = display.unprojectFromScreen(screen[0], screen[1], 0.0);
+
+        assertThat(roundTrip.x()).isCloseTo(5.0, org.assertj.core.data.Offset.offset(0.001));
+        assertThat(roundTrip.y()).isCloseTo(5.0, org.assertj.core.data.Offset.offset(0.001));
+        assertThat(roundTrip.z()).isCloseTo(0.0, org.assertj.core.data.Offset.offset(0.001));
+    }
+
+    @Test
+    void unprojectShouldInverseProject() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        RoomTelemetryDisplay display = createWithCachedProjection();
+
+        RoomDimensions dims = new RoomDimensions(12.0, 8.0, 4.0);
+        SoundWavePath path = new SoundWavePath(
+                "S", "M",
+                List.of(new Position3D(2, 3, 1.5), new Position3D(8, 6, 1.5)),
+                7.0, 0.02, -5.0, false);
+        RoomTelemetryData data = RoomTelemetryData.withoutAudience(
+                dims, List.of(path), 0.4, List.of());
+
+        runOnFxThread(() -> {
+            display.setPrefSize(1024, 768);
+            display.resize(1024, 768);
+            display.setTelemetryData(data);
+        });
+
+        // Test multiple points at different heights
+        double[][] testPoints = {
+                {0, 0, 0}, {12, 0, 0}, {0, 8, 0}, {12, 8, 0},
+                {6, 4, 2}, {3, 7, 1}, {10, 2, 3.5}
+        };
+
+        for (double[] pt : testPoints) {
+            double[] screen = display.projectToScreen(pt[0], pt[1], pt[2]);
+            Position3D roundTrip = display.unprojectFromScreen(screen[0], screen[1], pt[2]);
+
+            assertThat(roundTrip.x())
+                    .as("x for point (%.1f, %.1f, %.1f)", pt[0], pt[1], pt[2])
+                    .isCloseTo(pt[0], org.assertj.core.data.Offset.offset(0.001));
+            assertThat(roundTrip.y())
+                    .as("y for point (%.1f, %.1f, %.1f)", pt[0], pt[1], pt[2])
+                    .isCloseTo(pt[1], org.assertj.core.data.Offset.offset(0.001));
+        }
+    }
+
+    @Test
+    void projectShouldPreserveIsometricProperties() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        RoomTelemetryDisplay display = createWithCachedProjection();
+
+        RoomDimensions dims = new RoomDimensions(10.0, 10.0, 3.0);
+        SoundWavePath path = new SoundWavePath(
+                "S", "M",
+                List.of(new Position3D(1, 1, 1), new Position3D(5, 5, 1)),
+                5.0, 0.01, -3.0, false);
+        RoomTelemetryData data = RoomTelemetryData.withoutAudience(
+                dims, List.of(path), 0.5, List.of());
+
+        runOnFxThread(() -> {
+            display.setPrefSize(800, 600);
+            display.resize(800, 600);
+            display.setTelemetryData(data);
+        });
+
+        // In isometric, increasing Z should move the point upward on screen (lower screenY)
+        double[] atFloor = display.projectToScreen(5, 5, 0);
+        double[] atHeight = display.projectToScreen(5, 5, 2);
+
+        assertThat(atHeight[1]).isLessThan(atFloor[1])
+                .as("Higher Z should produce smaller screen Y (higher on screen)");
+
+        // X should increase screenX to the right
+        double[] left = display.projectToScreen(2, 5, 0);
+        double[] right = display.projectToScreen(8, 5, 0);
+
+        assertThat(right[0]).isGreaterThan(left[0])
+                .as("Larger X should produce larger screen X (further right)");
+
+        // Y should decrease screenX (goes to the left in isometric)
+        double[] front = display.projectToScreen(5, 2, 0);
+        double[] back = display.projectToScreen(5, 8, 0);
+
+        assertThat(back[0]).isLessThan(front[0])
+                .as("Larger Y should produce smaller screen X (further left in isometric)");
     }
 }
