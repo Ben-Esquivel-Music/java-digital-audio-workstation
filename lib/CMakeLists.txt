@@ -15,7 +15,10 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${NATIVE_LIBS_OUTPUT_DIR}")
 # ── Build options ───────────────────────────────────────────────────
 option(BUILD_PORTAUDIO      "Build PortAudio shared library"      ON)
 option(BUILD_FLUIDSYNTH     "Build FluidSynth shared library"     ON)
-option(BUILD_ROOMACOUSTICPP "Build RoomAcoustiCpp shared library" ON)
+# NOTE: RoomAcoustiCpp is distributed under GPLv3. Building it as part
+# of this project may impose copyleft obligations on downstream
+# distribution. Enable only after reviewing licensing implications.
+option(BUILD_ROOMACOUSTICPP "Build RoomAcoustiCpp shared library (GPLv3)" ON)
 
 # ── 1. PortAudio ───────────────────────────────────────────────────
 if(BUILD_PORTAUDIO)
@@ -34,43 +37,54 @@ if(BUILD_PORTAUDIO)
 endif()
 
 # ── 2. FluidSynth ─────────────────────────────────────────────────
-# FluidSynth requires GLib2, so it may fail on minimal CI images.
-# The build is attempted but a missing dependency is not fatal.
+# If dependencies are missing, the FluidSynth build is skipped (non-fatal).
 if(BUILD_FLUIDSYNTH)
-    message(STATUS "── Configuring FluidSynth ──")
-    set(BUILD_SHARED_LIBS ON CACHE BOOL "Build FluidSynth as shared library" FORCE)
-    set(enable-aufile      OFF CACHE BOOL "" FORCE)
-    set(enable-dbus        OFF CACHE BOOL "" FORCE)
-    set(enable-ipv6        OFF CACHE BOOL "" FORCE)
-    set(enable-jack        OFF CACHE BOOL "" FORCE)
-    set(enable-ladspa      OFF CACHE BOOL "" FORCE)
-    set(enable-libinstpatch OFF CACHE BOOL "" FORCE)
-    set(enable-midishare   OFF CACHE BOOL "" FORCE)
-    set(enable-opensles    OFF CACHE BOOL "" FORCE)
-    set(enable-oboe        OFF CACHE BOOL "" FORCE)
-    set(enable-network     OFF CACHE BOOL "" FORCE)
-    set(enable-oss         OFF CACHE BOOL "" FORCE)
-    set(enable-dsound      OFF CACHE BOOL "" FORCE)
-    set(enable-waveout     OFF CACHE BOOL "" FORCE)
-    set(enable-winmidi     OFF CACHE BOOL "" FORCE)
-    set(enable-sdl3        OFF CACHE BOOL "" FORCE)
-    set(enable-pulseaudio  OFF CACHE BOOL "" FORCE)
-    set(enable-pipewire    OFF CACHE BOOL "" FORCE)
-    set(enable-readline    OFF CACHE BOOL "" FORCE)
-    set(enable-systemd     OFF CACHE BOOL "" FORCE)
-    add_subdirectory(fluidsynth-2.5.3/fluidsynth-2.5.3 EXCLUDE_FROM_ALL)
-    # Force output into the common native directory
-    if(TARGET libfluidsynth)
-        set_target_properties(libfluidsynth PROPERTIES
-            LIBRARY_OUTPUT_DIRECTORY "${NATIVE_LIBS_OUTPUT_DIR}"
-            RUNTIME_OUTPUT_DIRECTORY "${NATIVE_LIBS_OUTPUT_DIR}"
-        )
+    # Check for FluidSynth's required dependency before entering its CMake.
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(_GLIB2_CHECK QUIET glib-2.0)
+    endif()
+    if(NOT _GLIB2_CHECK_FOUND)
+        message(WARNING "FluidSynth dependencies not found (GLib2); skipping FluidSynth build.")
+    else()
+        message(STATUS "── Configuring FluidSynth ──")
+        set(BUILD_SHARED_LIBS ON CACHE BOOL "Build FluidSynth as shared library" FORCE)
+        set(enable-aufile       OFF CACHE BOOL "" FORCE)
+        set(enable-dbus         OFF CACHE BOOL "" FORCE)
+        set(enable-ipv6         OFF CACHE BOOL "" FORCE)
+        set(enable-jack         OFF CACHE BOOL "" FORCE)
+        set(enable-ladspa       OFF CACHE BOOL "" FORCE)
+        set(enable-libinstpatch OFF CACHE BOOL "" FORCE)
+        set(enable-midishare    OFF CACHE BOOL "" FORCE)
+        set(enable-opensles     OFF CACHE BOOL "" FORCE)
+        set(enable-oboe         OFF CACHE BOOL "" FORCE)
+        set(enable-network      OFF CACHE BOOL "" FORCE)
+        set(enable-oss          OFF CACHE BOOL "" FORCE)
+        set(enable-dsound       OFF CACHE BOOL "" FORCE)
+        set(enable-waveout      OFF CACHE BOOL "" FORCE)
+        set(enable-winmidi      OFF CACHE BOOL "" FORCE)
+        set(enable-sdl3         OFF CACHE BOOL "" FORCE)
+        set(enable-pulseaudio   OFF CACHE BOOL "" FORCE)
+        set(enable-pipewire     OFF CACHE BOOL "" FORCE)
+        set(enable-readline     OFF CACHE BOOL "" FORCE)
+        set(enable-systemd      OFF CACHE BOOL "" FORCE)
+        add_subdirectory(fluidsynth-2.5.3/fluidsynth-2.5.3 EXCLUDE_FROM_ALL)
+        # Force output into the common native directory
+        if(TARGET libfluidsynth)
+            set_target_properties(libfluidsynth PROPERTIES
+                LIBRARY_OUTPUT_DIRECTORY "${NATIVE_LIBS_OUTPUT_DIR}"
+                RUNTIME_OUTPUT_DIRECTORY "${NATIVE_LIBS_OUTPUT_DIR}"
+            )
+        endif()
     endif()
 endif()
 
 # ── 3. RoomAcoustiCpp ─────────────────────────────────────────────
 # Built as a shared library from the upstream sources + the existing
 # extern "C" DLL-linkage API in Spatialiser/Main.cpp.
+#
+# LICENSING: RoomAcoustiCpp is GPLv3-licensed. Disable with
+# -DBUILD_ROOMACOUSTICPP=OFF if copyleft obligations are not acceptable.
 if(BUILD_ROOMACOUSTICPP)
     message(STATUS "── Configuring RoomAcoustiCpp ──")
 
@@ -143,7 +157,8 @@ if(BUILD_ROOMACOUSTICPP)
     # that GCC 13+ enforces strictly. Force-include a compatibility header
     # rather than patching vendored source.
     target_compile_options(roomacousticpp PRIVATE
-        "-include${CMAKE_CURRENT_SOURCE_DIR}/compat/rac_compat.h"
+        $<$<CXX_COMPILER_ID:MSVC>:/FI${CMAKE_CURRENT_SOURCE_DIR}/compat/rac_compat.h>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-include${CMAKE_CURRENT_SOURCE_DIR}/compat/rac_compat.h>
     )
 
     # Context.cpp uses CErrorHandler unconditionally; the 3DTI ErrorHandler.h
@@ -162,6 +177,12 @@ if(BUILD_ROOMACOUSTICPP)
     find_package(Threads)
     if(Threads_FOUND)
         target_link_libraries(roomacousticpp PRIVATE Threads::Threads)
+    endif()
+
+    # Link OpenMP (used by NN codegen sources and DSP/Interpolate.h)
+    find_package(OpenMP COMPONENTS CXX)
+    if(OpenMP_CXX_FOUND)
+        target_link_libraries(roomacousticpp PRIVATE OpenMP::OpenMP_CXX)
     endif()
 endif()
 
