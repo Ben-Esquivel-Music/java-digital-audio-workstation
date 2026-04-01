@@ -251,8 +251,9 @@ class MetronomeControllerTest {
     @Test
     void toggleShouldEnableDisabledMetronome() {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
-        metronome.setEnabled(false);
+        prefs.putBoolean("metronome.enabled", false);
         MetronomeController controller = createController();
+        assertThat(metronome.isEnabled()).isFalse();
 
         controller.onToggleMetronome();
 

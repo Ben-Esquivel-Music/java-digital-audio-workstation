@@ -319,8 +319,11 @@ public final class ArrangementCanvas extends Pane {
         if (adjustedY < 0) {
             return -1;
         }
+        if (slotBottomCache.length != tracks.size()) {
+            rebuildLaneYCache();
+        }
         int n = slotBottomCache.length;
-        if (n == 0 || n != tracks.size()) {
+        if (n == 0) {
             return -1;
         }
         // Binary search: find the first slot whose bottom > adjustedY
