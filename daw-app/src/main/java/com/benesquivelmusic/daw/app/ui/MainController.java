@@ -13,7 +13,6 @@ import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audioimport.AudioFileImporter;
 import com.benesquivelmusic.daw.core.audioimport.AudioImportResult;
-import com.benesquivelmusic.daw.core.audioimport.SupportedAudioFormat;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
@@ -567,14 +566,14 @@ public final class MainController {
     private void installArrangementCanvasDragDrop() {
         arrangementCanvas.setOnDragOver(event -> {
             if (event.getDragboard().hasFiles()) {
-                boolean hasAudio = event.getDragboard().getFiles().stream()
-                        .anyMatch(f -> SupportedAudioFormat.isSupported(f.toPath()));
-                if (hasAudio) {
+                boolean hasWav = event.getDragboard().getFiles().stream()
+                        .anyMatch(f -> isWavFile(f.toPath()));
+                if (hasWav) {
                     event.acceptTransferModes(javafx.scene.input.TransferMode.COPY);
                 }
             } else if (event.getDragboard().hasString()) {
                 String path = event.getDragboard().getString();
-                if (BrowserPanel.isAudioFile(path)) {
+                if (isWavFile(Path.of(path))) {
                     event.acceptTransferModes(javafx.scene.input.TransferMode.COPY);
                 }
             }
@@ -587,17 +586,15 @@ public final class MainController {
 
             if (event.getDragboard().hasFiles()) {
                 for (java.io.File file : event.getDragboard().getFiles()) {
-                    if (SupportedAudioFormat.isSupported(file.toPath())) {
+                    if (isWavFile(file.toPath())) {
                         filesToImport.add(file.toPath());
                     }
                 }
             } else if (event.getDragboard().hasString()) {
                 String pathStr = event.getDragboard().getString();
-                if (BrowserPanel.isAudioFile(pathStr)) {
-                    Path path = Path.of(pathStr);
-                    if (java.nio.file.Files.isRegularFile(path)) {
-                        filesToImport.add(path);
-                    }
+                Path path = Path.of(pathStr);
+                if (isWavFile(path) && java.nio.file.Files.isRegularFile(path)) {
+                    filesToImport.add(path);
                 }
             }
 
@@ -620,15 +617,27 @@ public final class MainController {
                 // Save and restore playhead so import uses the drop position
                 double savedPlayhead = project.getTransport().getPositionInBeats();
                 project.getTransport().setPositionInBeats(dropBeat);
-                importAudioFile(filesToImport.get(0), targetTrack);
-                project.getTransport().setPositionInBeats(savedPlayhead);
-
-                success = true;
+                try {
+                    success = importAudioFile(filesToImport.get(0), targetTrack);
+                } finally {
+                    project.getTransport().setPositionInBeats(savedPlayhead);
+                }
             }
 
             event.setDropCompleted(success);
             event.consume();
         });
+    }
+
+    /**
+     * Returns whether the given file path has a {@code .wav} extension.
+     * Only WAV is currently supported for import by {@link AudioFileImporter}.
+     */
+    private static boolean isWavFile(Path path) {
+        if (path == null || path.getFileName() == null) {
+            return false;
+        }
+        return path.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".wav");
     }
 
     /**
@@ -1436,9 +1445,9 @@ public final class MainController {
     }
 
     /**
-     * Opens a file chooser for importing an audio file, places the imported
-     * clip at the current playhead position on the first available audio track
-     * (or creates a new one), and wraps the operation in an undoable action.
+     * Opens a file chooser for importing a WAV audio file, places the imported
+     * clip at the current playhead position on a new audio track, and wraps the
+     * operation in an undoable action.
      */
     private void onImportAudioFile() {
         Stage stage = (Stage) rootPane.getScene().getWindow();
@@ -1446,7 +1455,6 @@ public final class MainController {
         chooser.setTitle("Import Audio File");
         chooser.getExtensionFilters().addAll(
                 new FileChooser.ExtensionFilter("WAV Files", "*.wav"),
-                new FileChooser.ExtensionFilter("All Supported Audio", "*.wav", "*.aiff", "*.aif", "*.flac", "*.mp3", "*.ogg"),
                 new FileChooser.ExtensionFilter("All Files", "*.*")
         );
         java.io.File selectedFile = chooser.showOpenDialog(stage);
@@ -1463,8 +1471,9 @@ public final class MainController {
      *
      * @param file        the audio file to import
      * @param targetTrack the track to place the clip on, or {@code null} to create a new track
+     * @return {@code true} if the import succeeded, {@code false} otherwise
      */
-    void importAudioFile(Path file, Track targetTrack) {
+    boolean importAudioFile(Path file, Track targetTrack) {
         AudioFileImporter importer = new AudioFileImporter(project);
         double playheadBeat = project.getTransport().getPositionInBeats();
         boolean createdNewTrack = (targetTrack == null);
@@ -1493,6 +1502,7 @@ public final class MainController {
                         if (trackItem != null) {
                             trackListPanel.getChildren().add(trackItem);
                         }
+                        audioTrackCounter++;
                     }
                     result.track().addClip(result.clip());
                     updateArrangementPlaceholder();
@@ -1532,14 +1542,17 @@ public final class MainController {
             statusBarLabel.setText("Imported audio file: " + fileName);
             statusBarLabel.setGraphic(IconNode.of(DawIcon.WAVEFORM, 12));
             LOG.fine(() -> "Imported audio file: " + file);
+            return true;
         } catch (IOException e) {
             LOG.log(Level.WARNING, "Failed to import audio file: " + file, e);
             notificationBar.show(NotificationLevel.ERROR,
                     "Import failed: " + e.getMessage());
+            return false;
         } catch (IllegalArgumentException e) {
             LOG.log(Level.WARNING, "Unsupported audio file: " + file, e);
             notificationBar.show(NotificationLevel.ERROR,
                     "Import failed: " + e.getMessage());
+            return false;
         }
     }
 

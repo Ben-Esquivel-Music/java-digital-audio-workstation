@@ -394,7 +394,22 @@ public final class BrowserPanel extends VBox {
             File[] children = homeDir.listFiles();
             if (children != null) {
                 for (File child : children) {
-                    if (child.isDirectory() && !child.isHidden()) {
+                    if (child.isHidden()) {
+                        continue;
+                    }
+                    if (child.isDirectory()) {
+                        TreeItem<String> dirItem = new TreeItem<>(child.getName());
+                        // Add audio files inside the directory (one level)
+                        File[] grandChildren = child.listFiles();
+                        if (grandChildren != null) {
+                            for (File gc : grandChildren) {
+                                if (gc.isFile() && isAudioFile(gc.getName())) {
+                                    dirItem.getChildren().add(new TreeItem<>(gc.getName()));
+                                }
+                            }
+                        }
+                        homeItem.getChildren().add(dirItem);
+                    } else if (child.isFile() && isAudioFile(child.getName())) {
                         homeItem.getChildren().add(new TreeItem<>(child.getName()));
                     }
                 }
@@ -406,6 +421,17 @@ public final class BrowserPanel extends VBox {
     /**
      * Resolves the full file system path for a selected tree item by walking
      * up the tree hierarchy. Returns {@code null} if the path cannot be resolved.
+     *
+     * <p>The tree structure is:
+     * <pre>
+     *   File System (root)
+     *     └── &lt;homeDirName&gt;        ← represents user.home
+     *           ├── subdir/
+     *           │     └── file.wav
+     *           └── file.wav
+     * </pre>
+     * The first segment after root is the home directory name, which maps to
+     * the parent of user.home + that name (i.e., user.home itself).
      */
     private static String resolveTreeItemPath(TreeItem<String> item) {
         if (item == null) {
@@ -420,8 +446,13 @@ public final class BrowserPanel extends VBox {
         if (segments.isEmpty()) {
             return null;
         }
+        // The first segment is the home directory name; resolve from its parent
         Path userHome = Path.of(System.getProperty("user.home"));
-        Path resolved = userHome;
+        Path base = userHome.getParent();
+        if (base == null) {
+            base = userHome;
+        }
+        Path resolved = base;
         for (String segment : segments) {
             resolved = resolved.resolve(segment);
         }
