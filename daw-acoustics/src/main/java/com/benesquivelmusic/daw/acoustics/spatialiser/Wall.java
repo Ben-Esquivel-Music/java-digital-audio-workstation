@@ -34,6 +34,8 @@ public final class Wall {
 
     public void removeEdge(long id) { edges.remove(id); }
 
+    public void clearEdges() { edges.clear(); }
+
     public boolean emptyEdges() { return edges.size() < 3; }
 
     public Vec3 getNormal() { return new Vec3(normal); }
@@ -50,16 +52,16 @@ public final class Wall {
 
     public boolean lineWallIntersection(Vec3 start, Vec3 end, Vec3 intersection) {
         var result = intersectTriangle(vertices[0], vertices[1], vertices[2], start, Vec3.sub(start, end), true);
-        if (result.hit) {
-            intersection.x = result.point.x;
-            intersection.y = result.point.y;
-            intersection.z = result.point.z;
+        if (result.hit()) {
+            intersection.x = result.point().x;
+            intersection.y = result.point().y;
+            intersection.z = result.point().z;
         }
-        return result.hit;
+        return result.hit();
     }
 
     public boolean lineWallObstruction(Vec3 start, Vec3 end) {
-        return intersectTriangle(vertices[0], vertices[1], vertices[2], start, Vec3.sub(start, end), false).hit;
+        return intersectTriangle(vertices[0], vertices[1], vertices[2], start, Vec3.sub(start, end), false).hit();
     }
 
     public void update(Vec3[] vData) {

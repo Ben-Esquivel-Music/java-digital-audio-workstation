@@ -75,7 +75,7 @@ public final class GraphicEQ {
 
         targetGain.set(result.dcGain());
         gainsEqual.set(false);
-        return false;
+        return true;
     }
 
     public double getOutput(double input, double lerpFactor) {

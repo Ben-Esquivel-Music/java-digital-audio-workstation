@@ -53,7 +53,11 @@ public final class Source extends Access {
         inputBufferUpdated = true;
         double[] src = data.rawData();
         double[] dst = inputBuffer.rawData();
-        System.arraycopy(src, 0, dst, 0, Math.min(src.length, dst.length));
+        int copyLen = Math.min(src.length, dst.length);
+        System.arraycopy(src, 0, dst, 0, copyLen);
+        if (copyLen < dst.length) {
+            java.util.Arrays.fill(dst, copyLen, dst.length, 0.0);
+        }
     }
 
     public void updateDirectivity(SourceDirectivity dir) {

@@ -29,6 +29,7 @@ public final class ImageSource extends Access {
     private final AtomicBoolean clearBuffers = new AtomicBoolean(false);
     private final AtomicBoolean hasChanged = new AtomicBoolean(true);
 
+    private Buffer scratch;
     private int fdnChannel = -1;
     private boolean feedsFDN;
 
@@ -40,6 +41,7 @@ public final class ImageSource extends Access {
         currentPosition = new Vec3();
         targetAbsorption = new AtomicReference<>(new Absorption(config.frequencyBands.length()));
         currentAbsorption = new Absorption(config.frequencyBands.length());
+        scratch = new Buffer(config.numFrames);
     }
 
     /** Update the target parameters from image source data. */
@@ -67,7 +69,8 @@ public final class ImageSource extends Access {
 
             double gain = gainParameter.use(lerpFactor);
             int numFrames = inputBuffer.length();
-            Buffer scratch = new Buffer(numFrames);
+            if (scratch.length() != numFrames) scratch = new Buffer(numFrames);
+            else scratch.reset();
 
             // Apply gain and absorption filter
             for (int i = 0; i < numFrames; i++)

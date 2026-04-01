@@ -37,10 +37,12 @@ public final class Context {
         this.isRunning.set(true);
     }
 
-    public void exit() {
+    public synchronized void exit() {
         isRunning.set(false);
         if (iemThread != null) {
+            iemThread.interrupt();
             try { iemThread.join(2000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            iemThread = null;
         }
     }
 
@@ -163,7 +165,8 @@ public final class Context {
     }
 
     /** Start the background IEM thread. */
-    public void startIEMThread(long intervalMs) {
+    public synchronized void startIEMThread(long intervalMs) {
+        if (iemThread != null && iemThread.isAlive()) return;
         iemThread = Thread.ofVirtual().start(() -> {
             while (isRunning.get()) {
                 try {

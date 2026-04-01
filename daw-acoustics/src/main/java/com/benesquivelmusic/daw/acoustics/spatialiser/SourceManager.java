@@ -49,7 +49,7 @@ public final class SourceManager {
     }
 
     public void updateSource(long id, Vec3 position, Vec4 orientation) {
-        lock.readLock().lock();
+        lock.writeLock().lock();
         try {
             Source source = sources.get(id);
             if (source != null) {
@@ -57,27 +57,27 @@ public final class SourceManager {
                 source.update(position, orientation, distance);
             }
         } finally {
-            lock.readLock().unlock();
+            lock.writeLock().unlock();
         }
     }
 
     public void updateSourceDirectivity(long id, SourceDirectivity directivity) {
-        lock.readLock().lock();
+        lock.writeLock().lock();
         try {
             Source source = sources.get(id);
             if (source != null) source.updateDirectivity(directivity);
         } finally {
-            lock.readLock().unlock();
+            lock.writeLock().unlock();
         }
     }
 
     public void setInputBuffer(long id, Buffer data) {
-        lock.readLock().lock();
+        lock.writeLock().lock();
         try {
             Source source = sources.get(id);
             if (source != null) source.setInputBuffer(data);
         } finally {
-            lock.readLock().unlock();
+            lock.writeLock().unlock();
         }
     }
 

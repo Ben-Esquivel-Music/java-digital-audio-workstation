@@ -80,9 +80,15 @@ public final class Room {
             Wall wall = walls.get(id);
             if (wall == null) return;
 
-            // Remove connected edges
+            // Remove connected edges and clean stale IDs from other walls
             synchronized (edgeLock) {
                 for (long edgeId : new ArrayList<>(wall.getEdges())) {
+                    Edge edge = edges.get(edgeId);
+                    if (edge != null) {
+                        long otherWallId = edge.getWallId1() == id ? edge.getWallId2() : edge.getWallId1();
+                        Wall otherWall = walls.get(otherWallId);
+                        if (otherWall != null) otherWall.removeEdge(edgeId);
+                    }
                     removeEdge(edgeId);
                 }
             }
@@ -128,6 +134,8 @@ public final class Room {
             synchronized (wallLock) {
                 edges.clear();
                 nextEdge = 0;
+                // Clear per-wall edge lists before rebuilding
+                for (Wall wall : walls.values()) wall.clearEdges();
                 List<Long> wallIds = new ArrayList<>(walls.keySet());
                 for (int i = 0; i < wallIds.size(); i++) {
                     for (int j = i + 1; j < wallIds.size(); j++) {
