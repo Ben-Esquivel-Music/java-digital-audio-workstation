@@ -47,6 +47,9 @@ public final class AudioEngine {
     /** Maximum number of tracks supported for pre-allocated buffers. */
     static final int MAX_TRACKS = 64;
 
+    /** Maximum number of return buses supported for pre-allocated buffers. */
+    static final int MAX_RETURN_BUSES = 16;
+
     private final AudioFormat format;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
@@ -64,6 +67,9 @@ public final class AudioEngine {
 
     // Pre-allocated per-track buffers for rendering: [track][channel][frame]
     private float[][][] trackBuffers;
+
+    // Pre-allocated per-return-bus buffers for send routing: [returnBus][channel][frame]
+    private float[][][] returnBuffers;
 
     // Volatile references for lock-free UI ↔ audio thread communication
     private volatile Transport transport;
@@ -106,6 +112,9 @@ public final class AudioEngine {
 
         // Pre-allocate per-track buffers
         trackBuffers = new float[MAX_TRACKS][channels][frames];
+
+        // Pre-allocate per-return-bus buffers for send routing
+        returnBuffers = new float[MAX_RETURN_BUSES][channels][frames];
 
         // Pre-allocate the buffer pool (8 buffers for intermediate processing)
         bufferPool = new AudioBufferPool(8, channels, frames);
@@ -536,8 +545,9 @@ public final class AudioEngine {
             // Render clip audio for each track into pre-allocated per-track buffers
             renderTracks(currentTracks, trackCount, currentTransport, numFrames);
 
-            // Mix all track buffers through the mixer into the mix buffer
-            currentMixer.mixDown(trackBuffers, mixBuffer, numFrames);
+            // Mix all track buffers through the mixer into the mix buffer,
+            // routing sends to return buses which are summed into the main output
+            currentMixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames);
         } else {
             // Fallback: copy input into the mix buffer (original passthrough behavior)
             int channels = Math.min(inputBuffer.length, mixBuffer.length);
