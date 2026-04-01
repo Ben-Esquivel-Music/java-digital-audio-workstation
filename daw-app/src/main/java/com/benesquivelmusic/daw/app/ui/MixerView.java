@@ -3,9 +3,13 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.core.mixer.AddReturnBusAction;
+import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.mixer.RemoveReturnBusAction;
 import com.benesquivelmusic.daw.core.mixer.Send;
 import com.benesquivelmusic.daw.core.mixer.SendMode;
+import com.benesquivelmusic.daw.core.mixer.SetSendRoutingAction;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -16,7 +20,9 @@ import javafx.geometry.Insets;
 import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
+import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
+import javafx.scene.control.ButtonType;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.Label;
 import javafx.scene.control.MenuItem;
@@ -28,8 +34,13 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
+import javafx.scene.paint.Color;
+import javafx.scene.shape.Circle;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * A mixer view that displays all project tracks as vertical channel strips.
@@ -68,6 +79,7 @@ public final class MixerView extends VBox {
     private final HBox channelStrips;
     private final HBox returnBusStrips;
     private final VBox masterStrip;
+    private final List<InsertEffectRack> activeInsertRacks = new ArrayList<>();
 
     /**
      * Creates a new mixer view bound to the given project.
@@ -133,6 +145,12 @@ public final class MixerView extends VBox {
      * keep the mixer view synchronized with the project model.</p>
      */
     public void refresh() {
+        // Dispose existing InsertEffectRack instances to prevent listener leaks
+        for (InsertEffectRack rack : activeInsertRacks) {
+            rack.dispose();
+        }
+        activeInsertRacks.clear();
+
         channelStrips.getChildren().clear();
         for (Track track : project.getTracks()) {
             MixerChannel mixerChannel = project.getMixerChannelForTrack(track);
@@ -149,9 +167,21 @@ public final class MixerView extends VBox {
         Button addReturnBusBtn = new Button("+");
         addReturnBusBtn.getStyleClass().add("track-arm-button");
         addReturnBusBtn.setTooltip(new Tooltip("Add Return Bus"));
+        boolean atLimit = project.getMixer().getReturnBusCount() >= Mixer.MAX_RETURN_BUSES;
+        addReturnBusBtn.setDisable(atLimit);
+        if (atLimit) {
+            addReturnBusBtn.setTooltip(new Tooltip(
+                    "Maximum of " + Mixer.MAX_RETURN_BUSES + " return buses reached"));
+        }
         addReturnBusBtn.setOnAction(_ -> {
             int busCount = project.getMixer().getReturnBusCount();
-            project.getMixer().addReturnBus("Return " + (busCount + 1));
+            String busName = "Return " + (busCount + 1);
+            if (undoManager != null) {
+                AddReturnBusAction action = new AddReturnBusAction(project.getMixer(), busName);
+                undoManager.execute(action);
+            } else {
+                project.getMixer().addReturnBus(busName);
+            }
             refresh();
         });
         returnBusStrips.getChildren().add(addReturnBusBtn);
@@ -278,15 +308,18 @@ public final class MixerView extends VBox {
             controller.openWindow();
         });
 
-        // Send controls — one slider per return bus
+        // Send controls — one slider per return bus with active-routing indicator
         VBox sendBox = new VBox(2);
         for (MixerChannel returnBus : project.getMixer().getReturnBuses()) {
+            Circle sendIndicator = new Circle(4);
+            Send existingSend = mixerChannel.getSendForTarget(returnBus);
+            double initialLevel = existingSend != null ? existingSend.getLevel() : 0.0;
+            sendIndicator.setFill(initialLevel > 0.0 ? Color.web("#00e676") : Color.web("#555555"));
+
             Label sendLabel = new Label("→ " + returnBus.getName());
             sendLabel.getStyleClass().add("mixer-channel-name");
             sendLabel.setMaxWidth(CHANNEL_WIDTH - 12);
-
-            Send existingSend = mixerChannel.getSendForTarget(returnBus);
-            double initialLevel = existingSend != null ? existingSend.getLevel() : 0.0;
+            sendLabel.setGraphic(sendIndicator);
 
             Slider sendSlider = new Slider(0.0, 1.0, initialLevel);
             sendSlider.setPrefWidth(SEND_SLIDER_WIDTH);
@@ -294,6 +327,17 @@ public final class MixerView extends VBox {
             sendSlider.setTooltip(new Tooltip("Send to " + returnBus.getName()));
 
             MixerChannel targetBus = returnBus;
+            // Capture the send state before a drag starts so that undo restores
+            // to the pre-drag state (the slider listener modifies the model live)
+            double[] dragStartLevel = {initialLevel};
+            boolean[] hadSendAtDragStart = {existingSend != null};
+
+            sendSlider.setOnMousePressed(_ -> {
+                Send send = mixerChannel.getSendForTarget(targetBus);
+                hadSendAtDragStart[0] = send != null;
+                dragStartLevel[0] = send != null ? send.getLevel() : 0.0;
+            });
+
             sendSlider.valueProperty().addListener((_, _, newVal) -> {
                 double value = newVal.doubleValue();
                 Send send = mixerChannel.getSendForTarget(targetBus);
@@ -301,6 +345,34 @@ public final class MixerView extends VBox {
                     send.setLevel(value);
                 } else if (value > 0.0) {
                     mixerChannel.addSend(new Send(targetBus, value, SendMode.POST_FADER));
+                }
+                sendIndicator.setFill(value > 0.0 ? Color.web("#00e676") : Color.web("#555555"));
+            });
+
+            // Commit undoable action when the user finishes dragging the slider.
+            // Restore the pre-drag model state so that execute() captures the
+            // correct previousLevel/hadSendBefore for undo, then re-applies
+            // the final value.
+            sendSlider.setOnMouseReleased(_ -> {
+                if (undoManager != null) {
+                    double finalValue = sendSlider.getValue();
+                    Send send = mixerChannel.getSendForTarget(targetBus);
+                    SendMode mode = send != null ? send.getMode() : SendMode.POST_FADER;
+
+                    // Restore pre-drag state so execute() records the right previous
+                    if (!hadSendAtDragStart[0]) {
+                        // No send existed before drag — remove the one created
+                        // by the value listener so execute() records hadSendBefore=false
+                        if (send != null) {
+                            mixerChannel.removeSend(send);
+                        }
+                    } else if (send != null) {
+                        send.setLevel(dragStartLevel[0]);
+                    }
+
+                    SetSendRoutingAction action = new SetSendRoutingAction(
+                            mixerChannel, targetBus, finalValue, mode);
+                    undoManager.execute(action);
                 }
             });
 
@@ -310,14 +382,26 @@ public final class MixerView extends VBox {
             preFaderItem.setOnAction(_ -> {
                 Send send = mixerChannel.getSendForTarget(targetBus);
                 if (send != null) {
-                    send.setMode(SendMode.PRE_FADER);
+                    if (undoManager != null) {
+                        SetSendRoutingAction action = new SetSendRoutingAction(
+                                mixerChannel, targetBus, send.getLevel(), SendMode.PRE_FADER);
+                        undoManager.execute(action);
+                    } else {
+                        send.setMode(SendMode.PRE_FADER);
+                    }
                 }
             });
             MenuItem postFaderItem = new MenuItem("Post-Fader");
             postFaderItem.setOnAction(_ -> {
                 Send send = mixerChannel.getSendForTarget(targetBus);
                 if (send != null) {
-                    send.setMode(SendMode.POST_FADER);
+                    if (undoManager != null) {
+                        SetSendRoutingAction action = new SetSendRoutingAction(
+                                mixerChannel, targetBus, send.getLevel(), SendMode.POST_FADER);
+                        undoManager.execute(action);
+                    } else {
+                        send.setMode(SendMode.POST_FADER);
+                    }
                 }
             });
             sendMenu.getItems().addAll(preFaderItem, postFaderItem);
@@ -343,6 +427,7 @@ public final class MixerView extends VBox {
         int channels = project.getFormat().channels();
         double sr = project.getFormat().sampleRate();
         InsertEffectRack insertRack = new InsertEffectRack(mixerChannel, channels, sr, undoManager);
+        activeInsertRacks.add(insertRack);
 
         strip.getChildren().addAll(
                 nameLabel, typeIcon, insertRack, levelMeter, volumeFader,
@@ -400,13 +485,53 @@ public final class MixerView extends VBox {
                     ? "-fx-background-color: #ff9100; -fx-text-fill: #0d0d0d;" : "");
         });
 
-        HBox buttonRow = new HBox(2, muteBtn);
+        // Remove return bus button
+        Button removeBtn = new Button("✕");
+        removeBtn.getStyleClass().add("track-arm-button");
+        removeBtn.setTooltip(new Tooltip("Remove Return Bus"));
+        removeBtn.setOnAction(_ -> {
+            // Check if any channels have active sends targeting this bus
+            boolean hasActiveSends = project.getMixer().getChannels().stream()
+                    .map(ch -> ch.getSendForTarget(returnBus))
+                    .anyMatch(send -> send != null && send.getLevel() > 0.0);
+
+            if (hasActiveSends) {
+                Alert confirm = new Alert(Alert.AlertType.CONFIRMATION);
+                confirm.setTitle("Remove Return Bus");
+                confirm.setHeaderText("Active sends exist");
+                confirm.setContentText(
+                        "One or more channels have active sends targeting \""
+                                + returnBus.getName()
+                                + "\". Removing it will also remove those sends. Continue?");
+                Optional<ButtonType> result = confirm.showAndWait();
+                if (result.isEmpty() || result.get() != ButtonType.OK) {
+                    return;
+                }
+            }
+
+            if (undoManager != null) {
+                RemoveReturnBusAction action = new RemoveReturnBusAction(
+                        project.getMixer(), returnBus);
+                undoManager.execute(action);
+            } else {
+                project.getMixer().removeReturnBus(returnBus);
+            }
+            refresh();
+        });
+
+        HBox buttonRow = new HBox(2, muteBtn, removeBtn);
         buttonRow.setAlignment(Pos.CENTER);
+
+        // Insert effects rack for return bus
+        int channels = project.getFormat().channels();
+        double sr = project.getFormat().sampleRate();
+        InsertEffectRack insertRack = new InsertEffectRack(returnBus, channels, sr, undoManager);
+        activeInsertRacks.add(insertRack);
 
         Node busIcon = IconNode.of(DawIcon.MIXER, CONTROL_ICON_SIZE);
 
         strip.getChildren().addAll(
-                nameLabel, busIcon, levelMeter, volumeFader,
+                nameLabel, busIcon, insertRack, levelMeter, volumeFader,
                 panLabel, panSlider, buttonRow);
 
         return strip;

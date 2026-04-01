@@ -23,6 +23,9 @@ import java.util.Objects;
  */
 public final class Mixer {
 
+    /** Maximum number of return buses supported by the mixer and audio engine. */
+    public static final int MAX_RETURN_BUSES = 16;
+
     private final List<MixerChannel> channels = new ArrayList<>();
     private final List<MixerChannel> returnBuses = new ArrayList<>();
     private final MixerChannel masterChannel;
@@ -96,9 +99,14 @@ public final class Mixer {
      *
      * @param name the display name for the return bus
      * @return the newly created return bus channel
+     * @throws IllegalStateException if the maximum number of return buses has been reached
      */
     public MixerChannel addReturnBus(String name) {
         Objects.requireNonNull(name, "name must not be null");
+        if (returnBuses.size() >= MAX_RETURN_BUSES) {
+            throw new IllegalStateException(
+                    "cannot exceed " + MAX_RETURN_BUSES + " return buses");
+        }
         MixerChannel returnBus = new MixerChannel(name);
         returnBuses.add(returnBus);
         return returnBus;

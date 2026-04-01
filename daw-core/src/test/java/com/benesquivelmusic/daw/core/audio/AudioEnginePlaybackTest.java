@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.core.audio;
 
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.mixer.Send;
+import com.benesquivelmusic.daw.core.mixer.SendMode;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
@@ -783,5 +785,124 @@ class AudioEnginePlaybackTest {
         assertThat((double) output2[0][1]).isCloseTo(0.06, offset(0.001));
         assertThat((double) output2[0][2]).isCloseTo(0.07, offset(0.001));
         assertThat((double) output2[0][3]).isCloseTo(0.08, offset(0.001));
+    }
+
+    // ── Send/return bus routing in processBlock ─────────────────────────────
+
+    @Test
+    void shouldRouteSendToReturnBusDuringProcessBlock() {
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("Clip", 0.0, 1.0, null);
+        float[][] clipData = new float[CHANNELS][(int) SAMPLES_PER_BEAT];
+        for (int i = 0; i < BUFFER_SIZE; i++) {
+            clipData[0][i] = 1.0f;
+            clipData[1][i] = 1.0f;
+        }
+        clip.setAudioData(clipData);
+        track.addClip(clip);
+
+        MixerChannel mixerChannel = new MixerChannel("Track 1");
+        MixerChannel reverbBus = mixer.getAuxBus();
+        // Add a pre-fader send at full level to the return bus
+        mixerChannel.addSend(new Send(reverbBus, 1.0, SendMode.PRE_FADER));
+        mixer.addChannel(mixerChannel);
+
+        transport.play();
+        engine.setTransport(transport);
+        engine.setMixer(mixer);
+        engine.setTracks(List.of(track));
+        engine.start();
+
+        float[][] input = new float[CHANNELS][BUFFER_SIZE];
+        float[][] output = new float[CHANNELS][BUFFER_SIZE];
+        engine.processBlock(input, output, BUFFER_SIZE);
+
+        // Output should include both the direct channel contribution and the
+        // return bus contribution (pre-fader send at 1.0 + return bus volume 1.0).
+        // With center pan: gain ≈ cos(π/4) ≈ 0.7071
+        // Direct contribution per channel: 1.0 * 0.7071
+        // Return bus contribution per channel: 1.0 * 1.0 (return bus sums raw pre-fader)
+        // Total should be significantly greater than direct-only
+        double directGain = Math.cos(Math.PI / 4.0);
+        for (int i = 0; i < BUFFER_SIZE; i++) {
+            // Output must be greater than just the direct signal
+            assertThat((double) output[0][i]).isGreaterThan(directGain);
+        }
+    }
+
+    @Test
+    void shouldNotRouteSendWhenSendLevelIsZero() {
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("Clip", 0.0, 1.0, null);
+        float[][] clipData = new float[CHANNELS][(int) SAMPLES_PER_BEAT];
+        for (int i = 0; i < BUFFER_SIZE; i++) {
+            clipData[0][i] = 0.5f;
+            clipData[1][i] = 0.5f;
+        }
+        clip.setAudioData(clipData);
+        track.addClip(clip);
+
+        MixerChannel mixerChannel = new MixerChannel("Track 1");
+        MixerChannel reverbBus = mixer.getAuxBus();
+        // Send level of 0.0 — should contribute nothing to return bus
+        mixerChannel.addSend(new Send(reverbBus, 0.0, SendMode.PRE_FADER));
+        mixer.addChannel(mixerChannel);
+
+        transport.play();
+        engine.setTransport(transport);
+        engine.setMixer(mixer);
+        engine.setTracks(List.of(track));
+        engine.start();
+
+        float[][] input = new float[CHANNELS][BUFFER_SIZE];
+        float[][] output = new float[CHANNELS][BUFFER_SIZE];
+        engine.processBlock(input, output, BUFFER_SIZE);
+
+        // Output should be only the direct channel contribution (no return bus)
+        double expectedGain = Math.cos(Math.PI / 4.0);
+        for (int i = 0; i < BUFFER_SIZE; i++) {
+            assertThat((double) output[0][i]).isCloseTo(0.5 * expectedGain, offset(0.001));
+        }
+    }
+
+    @Test
+    void shouldApplyPostFaderSendWithChannelVolume() {
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("Clip", 0.0, 1.0, null);
+        float[][] clipData = new float[CHANNELS][(int) SAMPLES_PER_BEAT];
+        for (int i = 0; i < BUFFER_SIZE; i++) {
+            clipData[0][i] = 1.0f;
+            clipData[1][i] = 1.0f;
+        }
+        clip.setAudioData(clipData);
+        track.addClip(clip);
+
+        MixerChannel mixerChannel = new MixerChannel("Track 1");
+        mixerChannel.setVolume(0.5);
+        MixerChannel reverbBus = mixer.getAuxBus();
+        // Post-fader send: send level is multiplied by channel volume
+        mixerChannel.addSend(new Send(reverbBus, 1.0, SendMode.POST_FADER));
+        mixer.addChannel(mixerChannel);
+
+        transport.play();
+        engine.setTransport(transport);
+        engine.setMixer(mixer);
+        engine.setTracks(List.of(track));
+        engine.start();
+
+        float[][] input = new float[CHANNELS][BUFFER_SIZE];
+        float[][] outputWithSend = new float[CHANNELS][BUFFER_SIZE];
+        engine.processBlock(input, outputWithSend, BUFFER_SIZE);
+
+        // Post-fader send at volume 0.5: return bus gets 0.5 * 1.0 * signal = 0.5 per channel.
+        // Direct contribution (stereo, center pan): 1.0 * 0.5 * cos(π/4) per left channel.
+        // Return bus contribution (mono sum into output): 0.5 * 1.0 (return bus vol) per channel.
+        // Total left output = direct + return = 0.5 * cos(π/4) + 0.5 ≈ 0.8536
+        double directGainPerChannel = 0.5 * Math.cos(Math.PI / 4.0);
+        double returnContribution = 0.5; // post-fader: volume * sendLevel * signal * returnBusVol
+        double expectedTotal = directGainPerChannel + returnContribution;
+        for (int i = 0; i < BUFFER_SIZE; i++) {
+            assertThat((double) outputWithSend[0][i]).isCloseTo(expectedTotal, offset(0.01));
+        }
     }
 }

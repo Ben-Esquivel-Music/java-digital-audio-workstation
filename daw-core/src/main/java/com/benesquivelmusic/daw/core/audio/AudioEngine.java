@@ -65,6 +65,9 @@ public final class AudioEngine {
     // Pre-allocated per-track buffers for rendering: [track][channel][frame]
     private float[][][] trackBuffers;
 
+    // Pre-allocated per-return-bus buffers for send routing: [returnBus][channel][frame]
+    private float[][][] returnBuffers;
+
     // Volatile references for lock-free UI ↔ audio thread communication
     private volatile Transport transport;
     private volatile Mixer mixer;
@@ -75,6 +78,9 @@ public final class AudioEngine {
 
     // Optional performance monitor for CPU load and underrun tracking
     private volatile PerformanceMonitor performanceMonitor;
+
+    // Flag to log return-bus cap warning only once
+    private volatile boolean returnBusCapWarningLogged;
 
     /**
      * Creates a new audio engine with the specified format.
@@ -106,6 +112,9 @@ public final class AudioEngine {
 
         // Pre-allocate per-track buffers
         trackBuffers = new float[MAX_TRACKS][channels][frames];
+
+        // Pre-allocate per-return-bus buffers for send routing
+        returnBuffers = new float[Mixer.MAX_RETURN_BUSES][channels][frames];
 
         // Pre-allocate the buffer pool (8 buffers for intermediate processing)
         bufferPool = new AudioBufferPool(8, channels, frames);
@@ -536,8 +545,18 @@ public final class AudioEngine {
             // Render clip audio for each track into pre-allocated per-track buffers
             renderTracks(currentTracks, trackCount, currentTransport, numFrames);
 
-            // Mix all track buffers through the mixer into the mix buffer
-            currentMixer.mixDown(trackBuffers, mixBuffer, numFrames);
+            // Warn once if the mixer has more return buses than pre-allocated buffers
+            if (!returnBusCapWarningLogged
+                    && currentMixer.getReturnBusCount() > Mixer.MAX_RETURN_BUSES) {
+                returnBusCapWarningLogged = true;
+                LOG.warning(() -> "Mixer has " + currentMixer.getReturnBusCount()
+                        + " return buses but only " + Mixer.MAX_RETURN_BUSES
+                        + " are supported; extra buses will not receive send audio");
+            }
+
+            // Mix all track buffers through the mixer into the mix buffer,
+            // routing sends to return buses which are summed into the main output
+            currentMixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames);
         } else {
             // Fallback: copy input into the mix buffer (original passthrough behavior)
             int channels = Math.min(inputBuffer.length, mixBuffer.length);
