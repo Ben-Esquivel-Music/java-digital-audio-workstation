@@ -130,6 +130,7 @@ class ClipInteractionControllerTest {
                 tracks.add(new Track("Track 1", TrackType.AUDIO));
                 tracks.add(new Track("Track 2", TrackType.AUDIO));
                 ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
                 ref.set(new ClipInteractionController(canvas, createHost()));
             } finally {
                 latch.countDown();
@@ -204,6 +205,7 @@ class ClipInteractionControllerTest {
         Platform.runLater(() -> {
             try {
                 ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
                 ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
                 controller.install();
 
@@ -235,6 +237,7 @@ class ClipInteractionControllerTest {
         Platform.runLater(() -> {
             try {
                 ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
                 ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
                 controller.install();
 
@@ -266,6 +269,7 @@ class ClipInteractionControllerTest {
         Platform.runLater(() -> {
             try {
                 ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
                 ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
                 controller.install();
 
@@ -301,6 +305,7 @@ class ClipInteractionControllerTest {
         Platform.runLater(() -> {
             try {
                 ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
                 ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
                 controller.install();
 
@@ -340,6 +345,7 @@ class ClipInteractionControllerTest {
         Platform.runLater(() -> {
             try {
                 ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
                 ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
                 controller.install();
 
@@ -376,6 +382,7 @@ class ClipInteractionControllerTest {
         Platform.runLater(() -> {
             try {
                 ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
                 ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
                 controller.install();
 
@@ -452,6 +459,7 @@ class ClipInteractionControllerTest {
         Platform.runLater(() -> {
             try {
                 ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
                 ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
                 controller.install();
 
@@ -478,6 +486,7 @@ class ClipInteractionControllerTest {
         Platform.runLater(() -> {
             try {
                 ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
                 ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
                 controller.install();
 
