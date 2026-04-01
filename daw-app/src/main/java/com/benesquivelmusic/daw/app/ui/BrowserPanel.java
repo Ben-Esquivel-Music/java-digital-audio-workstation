@@ -18,6 +18,9 @@ import javafx.scene.control.TextField;
 import javafx.scene.control.Tooltip;
 import javafx.scene.control.TreeItem;
 import javafx.scene.control.TreeView;
+import javafx.scene.input.ClipboardContent;
+import javafx.scene.input.Dragboard;
+import javafx.scene.input.TransferMode;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
@@ -113,6 +116,21 @@ public final class BrowserPanel extends VBox {
         fileSystemTree.getStyleClass().add("browser-tree");
         VBox.setVgrow(fileSystemTree, Priority.ALWAYS);
 
+        // Enable drag-and-drop from the file tree onto the arrangement view
+        fileSystemTree.setOnDragDetected(event -> {
+            TreeItem<String> selected = fileSystemTree.getSelectionModel().getSelectedItem();
+            if (selected != null && isAudioFile(selected.getValue())) {
+                String filePath = resolveTreeItemPath(selected);
+                if (filePath != null) {
+                    Dragboard db = fileSystemTree.startDragAndDrop(TransferMode.COPY);
+                    ClipboardContent content = new ClipboardContent();
+                    content.putString(filePath);
+                    db.setContent(content);
+                }
+            }
+            event.consume();
+        });
+
         Tab fileSystemTab = new Tab("Files");
         fileSystemTab.setClosable(false);
         fileSystemTab.setGraphic(IconNode.of(DawIcon.FOLDER, 12));
@@ -124,6 +142,18 @@ public final class BrowserPanel extends VBox {
         samplesListView = new ListView<>(filteredSampleItems);
         samplesListView.setPlaceholder(new Label("No samples found"));
         samplesListView.getStyleClass().add("browser-list");
+
+        // Enable drag-and-drop from the samples list onto the arrangement view
+        samplesListView.setOnDragDetected(event -> {
+            String selected = samplesListView.getSelectionModel().getSelectedItem();
+            if (selected != null && isAudioFile(selected)) {
+                Dragboard db = samplesListView.startDragAndDrop(TransferMode.COPY);
+                ClipboardContent content = new ClipboardContent();
+                content.putString(selected);
+                db.setContent(content);
+            }
+            event.consume();
+        });
 
         Tab samplesTab = new Tab("Samples");
         samplesTab.setClosable(false);
@@ -364,12 +394,68 @@ public final class BrowserPanel extends VBox {
             File[] children = homeDir.listFiles();
             if (children != null) {
                 for (File child : children) {
-                    if (child.isDirectory() && !child.isHidden()) {
+                    if (child.isHidden()) {
+                        continue;
+                    }
+                    if (child.isDirectory()) {
+                        TreeItem<String> dirItem = new TreeItem<>(child.getName());
+                        // Add audio files inside the directory (one level)
+                        File[] grandChildren = child.listFiles();
+                        if (grandChildren != null) {
+                            for (File gc : grandChildren) {
+                                if (gc.isFile() && isAudioFile(gc.getName())) {
+                                    dirItem.getChildren().add(new TreeItem<>(gc.getName()));
+                                }
+                            }
+                        }
+                        homeItem.getChildren().add(dirItem);
+                    } else if (child.isFile() && isAudioFile(child.getName())) {
                         homeItem.getChildren().add(new TreeItem<>(child.getName()));
                     }
                 }
             }
             root.getChildren().add(homeItem);
         }
+    }
+
+    /**
+     * Resolves the full file system path for a selected tree item by walking
+     * up the tree hierarchy. Returns {@code null} if the path cannot be resolved.
+     *
+     * <p>The tree structure is:
+     * <pre>
+     *   File System (root)
+     *     └── &lt;homeDirName&gt;        ← represents user.home
+     *           ├── subdir/
+     *           │     └── file.wav
+     *           └── file.wav
+     * </pre>
+     * The first segment after root is the home directory name, which maps to
+     * the parent of user.home + that name (i.e., user.home itself).
+     */
+    private static String resolveTreeItemPath(TreeItem<String> item) {
+        if (item == null) {
+            return null;
+        }
+        java.util.ArrayDeque<String> segments = new java.util.ArrayDeque<>();
+        TreeItem<String> current = item;
+        while (current != null && current.getParent() != null) {
+            segments.push(current.getValue());
+            current = current.getParent();
+        }
+        if (segments.isEmpty()) {
+            return null;
+        }
+        // The first segment is the home directory name; resolve from its parent
+        Path userHome = Path.of(System.getProperty("user.home"));
+        Path base = userHome.getParent();
+        if (base == null) {
+            base = userHome;
+        }
+        Path resolved = base;
+        for (String segment : segments) {
+            resolved = resolved.resolve(segment);
+        }
+        return resolved.toString();
     }
 }
