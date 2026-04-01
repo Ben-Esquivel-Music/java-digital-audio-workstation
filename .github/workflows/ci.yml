@@ -25,6 +25,12 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
 
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake build-essential libasound2-dev pkg-config \
+            libglib2.0-dev libsndfile1-dev
+
       - name: Build and test
         run: mvn -B clean verify
 
