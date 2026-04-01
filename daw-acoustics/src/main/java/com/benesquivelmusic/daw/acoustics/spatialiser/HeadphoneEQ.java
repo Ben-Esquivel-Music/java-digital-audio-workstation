@@ -13,8 +13,10 @@ public final class HeadphoneEQ {
     private final FIRFilter rightFilter;
 
     public HeadphoneEQ(int maxFilterLength) {
-        leftFilter = new FIRFilter(new Buffer(), maxFilterLength);
-        rightFilter = new FIRFilter(new Buffer(), maxFilterLength);
+        Buffer identity = new Buffer(1);
+        identity.set(0, 1.0);
+        leftFilter = new FIRFilter(identity, maxFilterLength);
+        rightFilter = new FIRFilter(identity, maxFilterLength);
     }
 
     public void setFilters(Buffer leftIR, Buffer rightIR) {
