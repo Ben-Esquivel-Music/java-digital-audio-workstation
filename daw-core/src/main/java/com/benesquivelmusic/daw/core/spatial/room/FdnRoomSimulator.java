@@ -9,8 +9,6 @@ import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
 import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
 
-import java.util.Objects;
-
 /**
  * Room acoustic simulator that delegates to the full daw-acoustics engine
  * ({@link AcousticsRoomSimulator}).

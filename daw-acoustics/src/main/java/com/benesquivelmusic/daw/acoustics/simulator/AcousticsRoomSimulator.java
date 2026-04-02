@@ -3,7 +3,6 @@ package com.benesquivelmusic.daw.acoustics.simulator;
 import com.benesquivelmusic.daw.acoustics.common.Absorption;
 import com.benesquivelmusic.daw.acoustics.common.Coefficients;
 import com.benesquivelmusic.daw.acoustics.common.Definitions;
-import com.benesquivelmusic.daw.acoustics.common.Matrix;
 import com.benesquivelmusic.daw.acoustics.common.Vec3;
 import com.benesquivelmusic.daw.acoustics.common.Vec4;
 import com.benesquivelmusic.daw.acoustics.dsp.Buffer;
@@ -18,7 +17,6 @@ import com.benesquivelmusic.daw.sdk.telemetry.ListenerOrientation;
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
 import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
-import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
 
 import java.util.ArrayList;
 import java.util.Arrays;
