@@ -19,9 +19,14 @@ import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrackManager;
+import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
+import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
+import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
+import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
 
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilder;
@@ -99,6 +104,7 @@ public final class ProjectSerializer {
         buildTrackGroups(document, root, project);
         buildMetronome(document, root, project.getMetronome());
         buildReferenceTrackManager(document, root, project.getReferenceTrackManager());
+        buildRoomConfiguration(document, root, project.getRoomConfiguration());
     }
 
     private void buildMetadata(Document document, Element root, DawProject project) {
@@ -397,6 +403,53 @@ public final class ProjectSerializer {
             trackElem.setAttribute("loop-end", String.valueOf(ref.getLoopEndInBeats()));
             trackElem.setAttribute("integrated-lufs", String.valueOf(ref.getIntegratedLufs()));
             refElem.appendChild(trackElem);
+        }
+    }
+
+    private void buildRoomConfiguration(Document document, Element root,
+                                         RoomConfiguration config) {
+        if (config == null) {
+            return;
+        }
+
+        Element configElem = document.createElement("room-configuration");
+        configElem.setAttribute("width", String.valueOf(config.getDimensions().width()));
+        configElem.setAttribute("length", String.valueOf(config.getDimensions().length()));
+        configElem.setAttribute("height", String.valueOf(config.getDimensions().height()));
+        configElem.setAttribute("wall-material", config.getWallMaterial().name());
+        root.appendChild(configElem);
+
+        for (SoundSource source : config.getSoundSources()) {
+            Element sourceElem = document.createElement("sound-source");
+            sourceElem.setAttribute("name", source.name());
+            Position3D pos = source.position();
+            sourceElem.setAttribute("x", String.valueOf(pos.x()));
+            sourceElem.setAttribute("y", String.valueOf(pos.y()));
+            sourceElem.setAttribute("z", String.valueOf(pos.z()));
+            sourceElem.setAttribute("power-db", String.valueOf(source.powerDb()));
+            configElem.appendChild(sourceElem);
+        }
+
+        for (MicrophonePlacement mic : config.getMicrophones()) {
+            Element micElem = document.createElement("microphone");
+            micElem.setAttribute("name", mic.name());
+            Position3D pos = mic.position();
+            micElem.setAttribute("x", String.valueOf(pos.x()));
+            micElem.setAttribute("y", String.valueOf(pos.y()));
+            micElem.setAttribute("z", String.valueOf(pos.z()));
+            micElem.setAttribute("azimuth", String.valueOf(mic.azimuth()));
+            micElem.setAttribute("elevation", String.valueOf(mic.elevation()));
+            configElem.appendChild(micElem);
+        }
+
+        for (AudienceMember member : config.getAudienceMembers()) {
+            Element memberElem = document.createElement("audience-member");
+            memberElem.setAttribute("name", member.name());
+            Position3D pos = member.position();
+            memberElem.setAttribute("x", String.valueOf(pos.x()));
+            memberElem.setAttribute("y", String.valueOf(pos.y()));
+            memberElem.setAttribute("z", String.valueOf(pos.z()));
+            configElem.appendChild(memberElem);
         }
     }
 }

@@ -24,10 +24,17 @@ import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.recording.Subdivision;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrackManager;
+import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackColor;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
+import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
+import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
+import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
+import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
+import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
 
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -57,6 +64,9 @@ import org.xml.sax.SAXException;
  * missing values fall back to sensible defaults to ensure graceful degradation.</p>
  */
 public final class ProjectDeserializer {
+
+    /** Maximum valid azimuth value — just below 360° (exclusive upper bound). */
+    private static final double MAX_AZIMUTH_EXCLUSIVE = Math.nextDown(360.0);
 
     private final List<String> missingFiles = new ArrayList<>();
 
@@ -186,6 +196,12 @@ public final class ProjectDeserializer {
         List<Element> refTrackContainers = getDirectChildElements(root, "reference-tracks");
         if (!refTrackContainers.isEmpty()) {
             parseReferenceTrackManager(refTrackContainers.getFirst(), project);
+        }
+
+        // Parse room configuration (sound wave telemetry)
+        List<Element> roomConfigElements = getDirectChildElements(root, "room-configuration");
+        if (!roomConfigElements.isEmpty()) {
+            parseRoomConfiguration(roomConfigElements.getFirst(), project);
         }
 
         return project;
@@ -755,5 +771,64 @@ public final class ProjectDeserializer {
     private static boolean parseBooleanAttr(Element element, String attr) {
         String value = element.getAttribute(attr);
         return "true".equalsIgnoreCase(value);
+    }
+
+    private void parseRoomConfiguration(Element elem, DawProject project) {
+        double width = parseDoubleAttr(elem, "width", 0);
+        double length = parseDoubleAttr(elem, "length", 0);
+        double height = parseDoubleAttr(elem, "height", 0);
+
+        if (width <= 0 || length <= 0 || height <= 0) {
+            return;
+        }
+
+        String materialStr = elem.getAttribute("wall-material");
+        WallMaterial material;
+        try {
+            material = WallMaterial.valueOf(materialStr);
+        } catch (IllegalArgumentException | NullPointerException e) {
+            material = WallMaterial.DRYWALL;
+        }
+
+        RoomDimensions dimensions = new RoomDimensions(width, length, height);
+        RoomConfiguration config = new RoomConfiguration(dimensions, material);
+
+        for (Element sourceElem : getDirectChildElements(elem, "sound-source")) {
+            String name = sourceElem.getAttribute("name");
+            if (name.isEmpty()) continue;
+            double x = parseDoubleAttr(sourceElem, "x", 0);
+            double y = parseDoubleAttr(sourceElem, "y", 0);
+            double z = parseDoubleAttr(sourceElem, "z", 0);
+            double powerDb = parseDoubleAttr(sourceElem, "power-db", 85.0);
+            config.addSoundSource(new SoundSource(name, new Position3D(x, y, z), powerDb));
+        }
+
+        for (Element micElem : getDirectChildElements(elem, "microphone")) {
+            String name = micElem.getAttribute("name");
+            if (name.isEmpty()) continue;
+            double x = parseDoubleAttr(micElem, "x", 0);
+            double y = parseDoubleAttr(micElem, "y", 0);
+            double z = parseDoubleAttr(micElem, "z", 0);
+            double rawAzimuth = parseDoubleAttr(micElem, "azimuth", 0);
+            double normalizedAzimuth = rawAzimuth % 360.0;
+            if (normalizedAzimuth < 0) {
+                normalizedAzimuth += 360.0;
+            }
+            double azimuth = clampDouble(normalizedAzimuth, 0.0, MAX_AZIMUTH_EXCLUSIVE);
+            double elevation = clampDouble(parseDoubleAttr(micElem, "elevation", 0), -90, 90);
+            config.addMicrophone(new MicrophonePlacement(name, new Position3D(x, y, z),
+                    azimuth, elevation));
+        }
+
+        for (Element memberElem : getDirectChildElements(elem, "audience-member")) {
+            String name = memberElem.getAttribute("name");
+            if (name.isEmpty()) continue;
+            double x = parseDoubleAttr(memberElem, "x", 0);
+            double y = parseDoubleAttr(memberElem, "y", 0);
+            double z = parseDoubleAttr(memberElem, "z", 0);
+            config.addAudienceMember(new AudienceMember(name, new Position3D(x, y, z)));
+        }
+
+        project.setRoomConfiguration(config);
     }
 }

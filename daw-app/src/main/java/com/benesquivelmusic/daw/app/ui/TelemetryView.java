@@ -5,9 +5,12 @@ import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
 import com.benesquivelmusic.daw.core.telemetry.SoundWaveTelemetryEngine;
+import com.benesquivelmusic.daw.core.project.DawProject;
+import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
 import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
+import com.benesquivelmusic.daw.sdk.telemetry.RoomPreset;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomTelemetryData;
 import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
 import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
@@ -73,6 +76,8 @@ public final class TelemetryView extends VBox {
     private long lastNanos;
     private boolean displayingTelemetry;
     private RoomConfiguration lastConfig;
+    private DawProject project;
+    private Runnable onDirtyChanged;
     private final PauseTransition dragDebounce;
 
     /**
@@ -229,8 +234,16 @@ public final class TelemetryView extends VBox {
         for (MicrophonePlacement mic : setupPanel.getMicrophones()) {
             config.addMicrophone(mic);
         }
+        // Preserve audience members from the previous configuration since
+        // the setup panel does not yet have audience member editing
+        if (lastConfig != null) {
+            for (AudienceMember member : lastConfig.getAudienceMembers()) {
+                config.addAudienceMember(member);
+            }
+        }
 
         lastConfig = config;
+        saveConfigToProject(config);
         RoomTelemetryData data = SoundWaveTelemetryEngine.compute(config);
         display.setTelemetryData(data);
         showDisplayState();
@@ -258,6 +271,9 @@ public final class TelemetryView extends VBox {
         for (MicrophonePlacement mic : lastConfig.getMicrophones()) {
             updated.addMicrophone(mic);
         }
+        for (AudienceMember member : lastConfig.getAudienceMembers()) {
+            updated.addAudienceMember(member);
+        }
 
         lastConfig = updated;
         dragDebounce.playFromStart();
@@ -283,6 +299,9 @@ public final class TelemetryView extends VBox {
             } else {
                 updated.addMicrophone(mic);
             }
+        }
+        for (AudienceMember member : lastConfig.getAudienceMembers()) {
+            updated.addAudienceMember(member);
         }
 
         lastConfig = updated;
@@ -394,6 +413,52 @@ public final class TelemetryView extends VBox {
     }
 
     /**
+     * Sets the project associated with this telemetry view.
+     *
+     * <p>If the project has a saved room configuration, the setup panel
+     * is pre-populated with that configuration. If the project has no
+     * room configuration (or is {@code null}), the setup panel is reset
+     * to defaults to prevent stale values from a previous project being
+     * persisted into the new one.</p>
+     *
+     * <p>The room configuration is saved back to the project whenever
+     * telemetry is generated.</p>
+     *
+     * @param project the DAW project (may be {@code null})
+     */
+    public void setProject(DawProject project) {
+        this.project = project;
+        if (project != null && project.getRoomConfiguration() != null) {
+            loadProjectRoomConfiguration();
+        } else {
+            resetSetupPanelToDefaults();
+        }
+    }
+
+    /**
+     * Returns the currently associated project, or {@code null}.
+     *
+     * @return the project
+     */
+    public DawProject getProject() {
+        return project;
+    }
+
+    /**
+     * Sets a callback invoked when the telemetry view modifies the project
+     * (e.g. after generating telemetry or drag-repositioning sources/mics).
+     *
+     * <p>The host controller should use this to set its own dirty flag so
+     * the "Unsaved Changes" prompt triggers correctly on project
+     * switch/exit.</p>
+     *
+     * @param callback the callback to invoke when the project is dirtied
+     */
+    public void setOnDirtyChanged(Runnable callback) {
+        this.onDirtyChanged = callback;
+    }
+
+    /**
      * Starts the animation timer for continuous rendering.
      * Call this when the telemetry view becomes the active view.
      * The timer only runs when the view is in display state.
@@ -411,5 +476,63 @@ public final class TelemetryView extends VBox {
      */
     public void stopAnimation() {
         animationTimer.stop();
+    }
+
+    // ── Project integration ──────────────────────────────────────────
+
+    /**
+     * Loads the room configuration from the associated project into the
+     * setup panel. If the project has a saved room configuration, the
+     * panel fields are pre-populated with those values. The loaded config
+     * is stored as {@code lastConfig} so that audience members (not yet
+     * editable in the setup panel) are preserved across regenerations.
+     */
+    private void loadProjectRoomConfiguration() {
+        if (project == null || project.getRoomConfiguration() == null) {
+            return;
+        }
+        RoomConfiguration config = project.getRoomConfiguration();
+        setupPanel.getWidthField().setText(String.valueOf(config.getDimensions().width()));
+        setupPanel.getLengthField().setText(String.valueOf(config.getDimensions().length()));
+        setupPanel.getHeightField().setText(String.valueOf(config.getDimensions().height()));
+        setupPanel.getWallMaterialCombo().setValue(config.getWallMaterial());
+        setupPanel.getSoundSources().setAll(config.getSoundSources());
+        setupPanel.getMicrophones().setAll(config.getMicrophones());
+        // Store config so audience members are preserved during regeneration
+        lastConfig = config;
+    }
+
+    /**
+     * Resets the setup panel fields to default values (STUDIO preset).
+     * Called when switching to a project with no saved room configuration
+     * to prevent stale values from a previous project leaking through.
+     */
+    private void resetSetupPanelToDefaults() {
+        RoomPreset defaults = RoomPreset.STUDIO;
+        RoomDimensions dims = defaults.dimensions();
+        setupPanel.getWidthField().setText(String.valueOf(dims.width()));
+        setupPanel.getLengthField().setText(String.valueOf(dims.length()));
+        setupPanel.getHeightField().setText(String.valueOf(dims.height()));
+        setupPanel.getWallMaterialCombo().setValue(defaults.wallMaterial());
+        setupPanel.getSoundSources().clear();
+        setupPanel.getMicrophones().clear();
+        lastConfig = null;
+        if (displayingTelemetry) {
+            showSetupState();
+        }
+    }
+
+    /**
+     * Saves the given room configuration to the associated project and
+     * notifies the host controller via the dirty callback.
+     */
+    private void saveConfigToProject(RoomConfiguration config) {
+        if (project != null && config != null) {
+            project.setRoomConfiguration(config);
+            project.markDirty();
+            if (onDirtyChanged != null) {
+                onDirtyChanged.run();
+            }
+        }
     }
 }

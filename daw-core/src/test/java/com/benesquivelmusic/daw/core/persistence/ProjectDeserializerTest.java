@@ -5,8 +5,15 @@ import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.FadeCurveType;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.project.DawProject;
+import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
+import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
+import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
+import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
+import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
+import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
+import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
 
 import org.junit.jupiter.api.Test;
 
@@ -319,5 +326,83 @@ class ProjectDeserializerTest {
 
         assertThat(restored.getTracks().get(0).getSoundFontAssignment())
                 .isEqualTo(assignment);
+    }
+
+    @Test
+    void shouldRoundTripRoomConfiguration() throws IOException {
+        DawProject original = new DawProject("Test", AudioFormat.CD_QUALITY);
+        RoomConfiguration config = new RoomConfiguration(
+                new RoomDimensions(12, 9, 4), WallMaterial.CONCRETE);
+        config.addSoundSource(new SoundSource("Guitar", new Position3D(3, 2, 1), 85));
+        config.addSoundSource(new SoundSource("Vocals", new Position3D(5, 2, 1.5), 75));
+        config.addMicrophone(new MicrophonePlacement("Overhead", new Position3D(4, 4, 2), 45, 10));
+        config.addAudienceMember(new AudienceMember("Row 1", new Position3D(2, 7, 0)));
+        original.setRoomConfiguration(config);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        RoomConfiguration restoredConfig = restored.getRoomConfiguration();
+        assertThat(restoredConfig).isNotNull();
+        assertThat(restoredConfig.getDimensions().width()).isEqualTo(12);
+        assertThat(restoredConfig.getDimensions().length()).isEqualTo(9);
+        assertThat(restoredConfig.getDimensions().height()).isEqualTo(4);
+        assertThat(restoredConfig.getWallMaterial()).isEqualTo(WallMaterial.CONCRETE);
+        assertThat(restoredConfig.getSoundSources()).hasSize(2);
+        assertThat(restoredConfig.getSoundSources().get(0).name()).isEqualTo("Guitar");
+        assertThat(restoredConfig.getSoundSources().get(0).position().x()).isEqualTo(3);
+        assertThat(restoredConfig.getSoundSources().get(0).powerDb()).isEqualTo(85);
+        assertThat(restoredConfig.getSoundSources().get(1).name()).isEqualTo("Vocals");
+        assertThat(restoredConfig.getMicrophones()).hasSize(1);
+        assertThat(restoredConfig.getMicrophones().get(0).name()).isEqualTo("Overhead");
+        assertThat(restoredConfig.getMicrophones().get(0).azimuth()).isCloseTo(45.0, within(0.01));
+        assertThat(restoredConfig.getMicrophones().get(0).elevation()).isCloseTo(10.0, within(0.01));
+        assertThat(restoredConfig.getAudienceMembers()).hasSize(1);
+        assertThat(restoredConfig.getAudienceMembers().get(0).name()).isEqualTo("Row 1");
+    }
+
+    @Test
+    void shouldDeserializeProjectWithoutRoomConfiguration() throws IOException {
+        DawProject original = new DawProject("Test", AudioFormat.CD_QUALITY);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getRoomConfiguration()).isNull();
+    }
+
+    @Test
+    void shouldRoundTripRoomConfigurationWithNoSourcesOrMics() throws IOException {
+        DawProject original = new DawProject("Test", AudioFormat.CD_QUALITY);
+        RoomConfiguration config = new RoomConfiguration(
+                new RoomDimensions(5, 4, 2.5), WallMaterial.ACOUSTIC_FOAM);
+        original.setRoomConfiguration(config);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        RoomConfiguration restoredConfig = restored.getRoomConfiguration();
+        assertThat(restoredConfig).isNotNull();
+        assertThat(restoredConfig.getDimensions().width()).isEqualTo(5);
+        assertThat(restoredConfig.getWallMaterial()).isEqualTo(WallMaterial.ACOUSTIC_FOAM);
+        assertThat(restoredConfig.getSoundSources()).isEmpty();
+        assertThat(restoredConfig.getMicrophones()).isEmpty();
+        assertThat(restoredConfig.getAudienceMembers()).isEmpty();
+    }
+
+    @Test
+    void shouldRoundTripRoomConfigurationWithAllWallMaterials() throws IOException {
+        for (WallMaterial material : WallMaterial.values()) {
+            DawProject original = new DawProject("Test", AudioFormat.CD_QUALITY);
+            original.setRoomConfiguration(new RoomConfiguration(
+                    new RoomDimensions(10, 8, 3), material));
+
+            String xml = serializer.serialize(original);
+            DawProject restored = deserializer.deserialize(xml);
+
+            assertThat(restored.getRoomConfiguration().getWallMaterial())
+                    .as("Wall material %s should round-trip", material)
+                    .isEqualTo(material);
+        }
     }
 }

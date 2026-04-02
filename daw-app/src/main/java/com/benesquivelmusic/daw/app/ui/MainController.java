@@ -666,6 +666,7 @@ public final class MainController {
                     }
                     @Override public void onProjectUIRebuild(MixerView newMixerView) {
                         viewNavigationController.setMixerView(newMixerView);
+                        viewNavigationController.onProjectChanged();
                         metronome = new Metronome(
                                 project.getFormat().sampleRate(),
                                 project.getFormat().channels());
@@ -711,6 +712,7 @@ public final class MainController {
                     @Override public void onEditorTrim() { MainController.this.onEditorTrim(); }
                     @Override public void onEditorFadeIn() { MainController.this.onEditorFadeIn(); }
                     @Override public void onEditorFadeOut() { MainController.this.onEditorFadeOut(); }
+                    @Override public void markProjectDirty() { projectDirty = true; }
                 });
     }
 

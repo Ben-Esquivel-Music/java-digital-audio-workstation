@@ -24,6 +24,7 @@ class ViewNavigationControllerTest {
         assertThat(hostClass.getMethod("onEditorTrim")).isNotNull();
         assertThat(hostClass.getMethod("onEditorFadeIn")).isNotNull();
         assertThat(hostClass.getMethod("onEditorFadeOut")).isNotNull();
+        assertThat(hostClass.getMethod("markProjectDirty")).isNotNull();
     }
 
     @Test

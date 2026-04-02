@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrackManager;
+import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackColor;
 import com.benesquivelmusic.daw.core.track.TrackGroup;
@@ -38,6 +39,7 @@ public final class DawProject {
     private final MarkerManager markerManager;
     private final ReferenceTrackManager referenceTrackManager;
     private final Metronome metronome;
+    private RoomConfiguration roomConfiguration;
     private ProjectMetadata metadata;
     private boolean dirty;
 
@@ -243,6 +245,25 @@ public final class DawProject {
     /** Returns the metronome. */
     public Metronome getMetronome() {
         return metronome;
+    }
+
+    /**
+     * Returns the room configuration for sound wave telemetry, or
+     * {@code null} if no room has been configured for this project.
+     *
+     * @return the room configuration, or {@code null}
+     */
+    public RoomConfiguration getRoomConfiguration() {
+        return roomConfiguration;
+    }
+
+    /**
+     * Sets the room configuration for sound wave telemetry.
+     *
+     * @param roomConfiguration the room configuration, or {@code null} to clear
+     */
+    public void setRoomConfiguration(RoomConfiguration roomConfiguration) {
+        this.roomConfiguration = roomConfiguration;
     }
 
     /**

@@ -1,9 +1,14 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.display.RoomTelemetryDisplay;
+import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.project.DawProject;
+import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
+import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
 import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
+import com.benesquivelmusic.daw.sdk.telemetry.RoomPreset;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomTelemetryData;
 import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
 import com.benesquivelmusic.daw.sdk.telemetry.SoundWavePath;
@@ -24,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -445,6 +451,200 @@ class TelemetryViewTest {
         Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
+        assertThat(view.getLastConfig()).isNull();
+    }
+
+    // ── Project integration ──────────────────────────────────────────
+
+    @Test
+    void shouldHaveNullProjectByDefault() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+
+        assertThat(view.getProject()).isNull();
+    }
+
+    @Test
+    void shouldAcceptProjectReference() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+
+        runOnFxThread(() -> view.setProject(project));
+
+        assertThat(view.getProject()).isSameAs(project);
+    }
+
+    @Test
+    void setProjectShouldPopulateSetupPanelFromRoomConfig() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        RoomConfiguration config = new RoomConfiguration(
+                new RoomDimensions(15, 12, 5), WallMaterial.CONCRETE);
+        config.addSoundSource(new SoundSource("Piano", new Position3D(7, 6, 1), 80));
+        config.addMicrophone(new MicrophonePlacement("Overhead", new Position3D(7, 5, 2.5), 0, 0));
+        project.setRoomConfiguration(config);
+
+        runOnFxThread(() -> view.setProject(project));
+
+        TelemetrySetupPanel panel = view.getSetupPanel();
+        assertThat(panel.getWidthField().getText()).isEqualTo("15.0");
+        assertThat(panel.getLengthField().getText()).isEqualTo("12.0");
+        assertThat(panel.getHeightField().getText()).isEqualTo("5.0");
+        assertThat(panel.getWallMaterialCombo().getValue()).isEqualTo(WallMaterial.CONCRETE);
+        assertThat(panel.getSoundSources()).hasSize(1);
+        assertThat(panel.getSoundSources().get(0).name()).isEqualTo("Piano");
+        assertThat(panel.getMicrophones()).hasSize(1);
+        assertThat(panel.getMicrophones().get(0).name()).isEqualTo("Overhead");
+    }
+
+    @Test
+    void setProjectWithNoRoomConfigShouldNotChangeSetupPanel() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        runOnFxThread(() -> view.setProject(project));
+
+        TelemetrySetupPanel panel = view.getSetupPanel();
+        assertThat(panel.getSoundSources()).isEmpty();
+        assertThat(panel.getMicrophones()).isEmpty();
+    }
+
+    @Test
+    void generateShouldSaveConfigToProject() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        AtomicBoolean dirtyCallbackFired = new AtomicBoolean(false);
+
+        runOnFxThread(() -> {
+            view.setProject(project);
+            view.setOnDirtyChanged(() -> dirtyCallbackFired.set(true));
+            TelemetrySetupPanel panel = view.getSetupPanel();
+            panel.getSourceNameField().setText("Guitar");
+            panel.getSourceXField().setText("2.0");
+            panel.getSourceYField().setText("3.0");
+            panel.getSourceZField().setText("1.0");
+            panel.getAddSourceButton().fire();
+            panel.getMicNameField().setText("Mic1");
+            panel.getMicXField().setText("3.0");
+            panel.getMicYField().setText("4.0");
+            panel.getMicZField().setText("1.5");
+            panel.getAddMicButton().fire();
+            view.getGenerateButton().fire();
+        });
+
+        assertThat(project.getRoomConfiguration()).isNotNull();
+        assertThat(project.getRoomConfiguration().getSoundSources()).hasSize(1);
+        assertThat(project.getRoomConfiguration().getMicrophones()).hasSize(1);
+        assertThat(project.isDirty()).isTrue();
+        assertThat(dirtyCallbackFired.get()).isTrue();
+    }
+
+    @Test
+    void generateWithoutProjectShouldNotThrow() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+
+        runOnFxThread(() -> {
+            TelemetrySetupPanel panel = view.getSetupPanel();
+            panel.getSourceNameField().setText("Guitar");
+            panel.getSourceXField().setText("2.0");
+            panel.getSourceYField().setText("3.0");
+            panel.getSourceZField().setText("1.0");
+            panel.getAddSourceButton().fire();
+            panel.getMicNameField().setText("Mic1");
+            panel.getMicXField().setText("3.0");
+            panel.getMicYField().setText("4.0");
+            panel.getMicZField().setText("1.5");
+            panel.getAddMicButton().fire();
+            view.getGenerateButton().fire();
+        });
+
+        assertThat(view.isDisplayingTelemetry()).isTrue();
+    }
+
+    @Test
+    void generateShouldPreserveAudienceMembers() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        RoomConfiguration config = new RoomConfiguration(
+                new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        config.addSoundSource(new SoundSource("Guitar", new Position3D(3, 2, 1), 85));
+        config.addMicrophone(new MicrophonePlacement("Mic1", new Position3D(5, 4, 1.5), 0, 0));
+        config.addAudienceMember(new AudienceMember("Seat A", new Position3D(2, 7, 0)));
+        config.addAudienceMember(new AudienceMember("Seat B", new Position3D(4, 7, 0)));
+        project.setRoomConfiguration(config);
+
+        runOnFxThread(() -> {
+            view.setProject(project);
+            view.getGenerateButton().fire();
+        });
+
+        RoomConfiguration saved = project.getRoomConfiguration();
+        assertThat(saved).isNotNull();
+        assertThat(saved.getAudienceMembers()).hasSize(2);
+        assertThat(saved.getAudienceMembers().get(0).name()).isEqualTo("Seat A");
+        assertThat(saved.getAudienceMembers().get(1).name()).isEqualTo("Seat B");
+    }
+
+    @Test
+    void setProjectWithNoConfigShouldResetPanelToDefaults() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+
+        // First, set a project with a saved room config
+        DawProject project1 = new DawProject("Project1", AudioFormat.CD_QUALITY);
+        RoomConfiguration config = new RoomConfiguration(
+                new RoomDimensions(20, 15, 6), WallMaterial.CONCRETE);
+        config.addSoundSource(new SoundSource("Drums", new Position3D(10, 7, 1), 100));
+        project1.setRoomConfiguration(config);
+
+        runOnFxThread(() -> view.setProject(project1));
+
+        // Verify it loaded
+        TelemetrySetupPanel panel = view.getSetupPanel();
+        assertThat(panel.getWidthField().getText()).isEqualTo("20.0");
+        assertThat(panel.getSoundSources()).hasSize(1);
+
+        // Now switch to a project with no room config
+        DawProject project2 = new DawProject("Project2", AudioFormat.CD_QUALITY);
+        runOnFxThread(() -> view.setProject(project2));
+
+        // Panel should be reset to defaults (STUDIO preset)
+        RoomDimensions studioDefaults = RoomPreset.STUDIO.dimensions();
+        assertThat(panel.getWidthField().getText()).isEqualTo(String.valueOf(studioDefaults.width()));
+        assertThat(panel.getLengthField().getText()).isEqualTo(String.valueOf(studioDefaults.length()));
+        assertThat(panel.getHeightField().getText()).isEqualTo(String.valueOf(studioDefaults.height()));
+        assertThat(panel.getWallMaterialCombo().getValue()).isEqualTo(RoomPreset.STUDIO.wallMaterial());
+        assertThat(panel.getSoundSources()).isEmpty();
+        assertThat(panel.getMicrophones()).isEmpty();
+    }
+
+    @Test
+    void setNullProjectShouldResetPanelToDefaults() throws Exception {
+        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
+        TelemetryView view = createOnFxThread();
+
+        // Set a project with config
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        RoomConfiguration config = new RoomConfiguration(
+                new RoomDimensions(20, 15, 6), WallMaterial.CONCRETE);
+        config.addSoundSource(new SoundSource("Drums", new Position3D(10, 7, 1), 100));
+        project.setRoomConfiguration(config);
+        runOnFxThread(() -> view.setProject(project));
+
+        // Now set null project
+        runOnFxThread(() -> view.setProject(null));
+
+        TelemetrySetupPanel panel = view.getSetupPanel();
+        assertThat(panel.getSoundSources()).isEmpty();
+        assertThat(panel.getMicrophones()).isEmpty();
+        assertThat(view.getProject()).isNull();
         assertThat(view.getLastConfig()).isNull();
     }
 }
