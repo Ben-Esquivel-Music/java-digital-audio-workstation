@@ -42,7 +42,6 @@ public final class AacExporter {
     // FDK-AAC parameter IDs
     private static final int AACENC_AOT = 0x0100;
     private static final int AACENC_BITRATE = 0x0101;
-    private static final int AACENC_BITRATEMODE = 0x0102;
     private static final int AACENC_SAMPLERATE = 0x0103;
     private static final int AACENC_CHANNELMODE = 0x0106;
     private static final int AACENC_TRANSMUX = 0x0300;

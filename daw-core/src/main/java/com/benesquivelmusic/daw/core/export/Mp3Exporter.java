@@ -37,9 +37,6 @@ import java.util.Objects;
  */
 public final class Mp3Exporter {
 
-    /** VBR mode constant: VBR disabled (CBR). */
-    private static final int VBR_OFF = 0;
-
     /** VBR mode constant: VBR default (mtrh). */
     private static final int VBR_DEFAULT = 4;
 
