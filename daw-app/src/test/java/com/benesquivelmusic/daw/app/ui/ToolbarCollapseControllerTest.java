@@ -6,9 +6,8 @@ import javafx.scene.control.ContentDisplay;
 import javafx.scene.control.Label;
 import javafx.scene.layout.VBox;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -17,37 +16,8 @@ import java.util.prefs.Preferences;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class ToolbarCollapseControllerTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private void runOnFxThread(Runnable action) throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
@@ -69,7 +39,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void shouldRejectNullSidebarToolbar() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             assertThatThrownBy(() -> new ToolbarCollapseController(
                     null, new Button(), freshPrefs()))
@@ -79,7 +48,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void shouldRejectNullExpandCollapseButton() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             assertThatThrownBy(() -> new ToolbarCollapseController(
                     new VBox(), null, freshPrefs()))
@@ -89,7 +57,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void shouldRejectNullPreferences() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             assertThatThrownBy(() -> new ToolbarCollapseController(
                     new VBox(), new Button(), null))
@@ -101,7 +68,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void shouldStartExpandedByDefault() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             VBox sidebar = new VBox();
             Button toggleButton = new Button("Expand");
@@ -115,7 +81,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void shouldSetExpandedWidthOnInitialize() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             VBox sidebar = new VBox();
             Button toggleButton = new Button("Expand");
@@ -136,7 +101,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void shouldCollapseOnFirstToggle() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             VBox sidebar = new VBox();
             Button toggleButton = new Button("Expand");
@@ -152,7 +116,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void shouldExpandOnSecondToggle() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             VBox sidebar = new VBox();
             Button toggleButton = new Button("Expand");
@@ -171,7 +134,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void shouldSetButtonsToGraphicOnlyWhenCollapsed() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             VBox sidebar = new VBox();
             Button sidebarButton = new Button("Home");
@@ -192,7 +154,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void shouldSetButtonsToLeftWhenExpanded() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             VBox sidebar = new VBox();
             Button sidebarButton = new Button("Home");
@@ -213,7 +174,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void shouldHideSectionLabelsWhenCollapsed() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             VBox sidebar = new VBox();
             Label sectionLabel = new Label("TOOLS");
@@ -235,7 +195,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void shouldShowSectionLabelsWhenExpanded() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             VBox sidebar = new VBox();
             Label sectionLabel = new Label("TOOLS");
@@ -257,7 +216,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void shouldPersistCollapsedState() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             Preferences prefs = freshPrefs();
             VBox sidebar = new VBox();
@@ -276,7 +234,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void shouldRestoreCollapsedStateFromPrefs() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             Preferences prefs = freshPrefs();
             prefs.putBoolean(ToolbarCollapseController.PREF_KEY_TOOLBAR_COLLAPSED, true);
@@ -293,7 +250,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void shouldRestoreExpandedStateFromPrefs() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             Preferences prefs = freshPrefs();
             prefs.putBoolean(ToolbarCollapseController.PREF_KEY_TOOLBAR_COLLAPSED, false);
@@ -312,7 +268,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void shouldWireButtonOnAction() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             VBox sidebar = new VBox();
             Button toggleButton = new Button("Expand");
@@ -328,7 +283,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void shouldSetCollapsedButtonWidth() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             VBox sidebar = new VBox();
             Button sidebarButton = new Button("Home");
@@ -349,7 +303,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void shouldSetExpandedButtonWidth() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             VBox sidebar = new VBox();
             Button sidebarButton = new Button("Home");
@@ -370,7 +323,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void shouldShowExpandTextWhenCollapsed() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             VBox sidebar = new VBox();
             Button toggleButton = new Button("Expand");
@@ -386,7 +338,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void shouldShowCollapseTextWhenExpanded() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             VBox sidebar = new VBox();
             Button toggleButton = new Button("Expand");
@@ -402,7 +353,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void shouldSetCollapsedWidthOnSidebar() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             Preferences prefs = freshPrefs();
             prefs.putBoolean(ToolbarCollapseController.PREF_KEY_TOOLBAR_COLLAPSED, true);
@@ -422,7 +372,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void setCollapsedTrueShouldCollapseWhenExpanded() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             VBox sidebar = new VBox();
             Button toggleButton = new Button("Expand");
@@ -438,7 +387,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void setCollapsedFalseShouldExpandWhenCollapsed() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             VBox sidebar = new VBox();
             Button toggleButton = new Button("Expand");
@@ -456,7 +404,6 @@ class ToolbarCollapseControllerTest {
 
     @Test
     void setCollapsedShouldNoOpWhenAlreadyInRequestedState() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             VBox sidebar = new VBox();
             Button toggleButton = new Button("Expand");

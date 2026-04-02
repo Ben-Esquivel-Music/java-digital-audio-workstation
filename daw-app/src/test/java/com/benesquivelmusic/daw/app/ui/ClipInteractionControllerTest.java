@@ -10,10 +10,9 @@ import javafx.application.Platform;
 import javafx.scene.input.MouseButton;
 import javafx.scene.input.MouseEvent;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -23,36 +22,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class ClipInteractionControllerTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-        } catch (UnsupportedOperationException ignored) {
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private UndoManager undoManager;
     private List<Track> tracks;
@@ -121,7 +92,6 @@ class ClipInteractionControllerTest {
 
     @Test
     void shouldResolveTrackIndex() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<ClipInteractionController> ref = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
@@ -146,7 +116,6 @@ class ClipInteractionControllerTest {
 
     @Test
     void shouldResolveBeatPosition() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<ClipInteractionController> ref = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
@@ -167,7 +136,6 @@ class ClipInteractionControllerTest {
 
     @Test
     void shouldFindClipAtBeat() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<ClipInteractionController> ref = new AtomicReference<>();
         Track track = new Track("Track 1", TrackType.AUDIO);
@@ -195,7 +163,6 @@ class ClipInteractionControllerTest {
 
     @Test
     void pencilShouldCreateClipViaMousePress() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         Track track = new Track("Track 1", TrackType.AUDIO);
         tracks.add(track);
@@ -226,7 +193,6 @@ class ClipInteractionControllerTest {
 
     @Test
     void pencilShouldNotCreateClipOnExistingClip() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         Track track = new Track("Track 1", TrackType.AUDIO);
         track.addClip(new AudioClip("Existing", 4.0, 4.0, null));
@@ -257,7 +223,6 @@ class ClipInteractionControllerTest {
 
     @Test
     void eraserShouldRemoveClipViaMousePress() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         Track track = new Track("Track 1", TrackType.AUDIO);
         AudioClip clip = new AudioClip("Vocal", 2.0, 4.0, null);
@@ -293,7 +258,6 @@ class ClipInteractionControllerTest {
 
     @Test
     void scissorsShouldSplitClipViaMousePress() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         Track track = new Track("Track 1", TrackType.AUDIO);
         AudioClip clip = new AudioClip("Vocal", 0.0, 8.0, null);
@@ -331,7 +295,6 @@ class ClipInteractionControllerTest {
 
     @Test
     void glueShouldMergeAdjacentClipsViaMousePress() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         Track track = new Track("Track 1", TrackType.AUDIO);
         AudioClip first = new AudioClip("Part A", 0.0, 4.0, null);
@@ -370,7 +333,6 @@ class ClipInteractionControllerTest {
 
     @Test
     void pointerShouldMoveClipViaDrag() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         Track track = new Track("Track 1", TrackType.AUDIO);
         AudioClip clip = new AudioClip("Vocal", 2.0, 4.0, null);
@@ -449,7 +411,6 @@ class ClipInteractionControllerTest {
 
     @Test
     void pointerShouldSeekWhenClickingEmptySpace() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         Track track = new Track("Track 1", TrackType.AUDIO);
         tracks.add(track);
@@ -476,7 +437,6 @@ class ClipInteractionControllerTest {
 
     @Test
     void pointerShouldSeekWhenClickingBelowAllTracks() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         Track track = new Track("Track 1", TrackType.AUDIO);
         tracks.add(track);

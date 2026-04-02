@@ -10,9 +10,8 @@ import com.benesquivelmusic.daw.sdk.mastering.MasteringStageType;
 import javafx.application.Platform;
 import javafx.scene.control.Label;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -21,38 +20,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class MasteringViewTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized — will verify below
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-                // Platform.runLater failed — toolkit is not functional
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private MasteringView createOnFxThread() throws Exception {
         AtomicReference<MasteringView> ref = new AtomicReference<>();
@@ -102,7 +71,6 @@ class MasteringViewTest {
 
     @Test
     void shouldHaveContentAreaStyleClass() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         MasteringView view = createOnFxThread();
 
         assertThat(view).isNotNull();
@@ -111,7 +79,6 @@ class MasteringViewTest {
 
     @Test
     void shouldStartWithEmptyStageContainer() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         MasteringView view = createOnFxThread();
 
         assertThat(view.getStageContainer().getChildren()).isEmpty();
@@ -119,7 +86,6 @@ class MasteringViewTest {
 
     @Test
     void shouldExposeMasteringChain() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         MasteringChain chain = new MasteringChain();
         MasteringView view = createOnFxThread(chain);
 
@@ -128,7 +94,6 @@ class MasteringViewTest {
 
     @Test
     void shouldExposePresetSelector() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         MasteringView view = createOnFxThread();
 
         assertThat(view.getPresetSelector()).isNotNull();
@@ -138,7 +103,6 @@ class MasteringViewTest {
 
     @Test
     void shouldExposeAbToggle() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         MasteringView view = createOnFxThread();
 
         assertThat(view.getAbToggle()).isNotNull();
@@ -147,7 +111,6 @@ class MasteringViewTest {
 
     @Test
     void shouldExposeLoudnessDisplay() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         MasteringView view = createOnFxThread();
 
         assertThat(view.getLoudnessDisplay()).isNotNull();
@@ -156,7 +119,6 @@ class MasteringViewTest {
 
     @Test
     void shouldExposeStatusLabel() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         MasteringView view = createOnFxThread();
 
         assertThat(view.getStatusLabel()).isNotNull();
@@ -165,7 +127,6 @@ class MasteringViewTest {
 
     @Test
     void shouldLoadPresetAndPopulateStageContainer() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         MasteringView view = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -182,7 +143,6 @@ class MasteringViewTest {
 
     @Test
     void shouldLoadRockPreset() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         MasteringView view = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -195,7 +155,6 @@ class MasteringViewTest {
 
     @Test
     void shouldToggleChainBypassWithAbButton() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         MasteringView view = createOnFxThread();
 
         assertThat(view.getMasteringChain().isChainBypassed()).isFalse();
@@ -210,7 +169,6 @@ class MasteringViewTest {
 
     @Test
     void shouldRefreshWithExistingChain() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         MasteringChain chain = new MasteringChain();
         chain.addStage(MasteringStageType.GAIN_STAGING, "Gain", new PassthroughProcessor());
         chain.addStage(MasteringStageType.LIMITING, "Limiter", new PassthroughProcessor());
@@ -224,7 +182,6 @@ class MasteringViewTest {
 
     @Test
     void shouldHandleEmptyChainRefresh() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         MasteringView view = createOnFxThread();
 
         runOnFxThread(view::refresh);
@@ -234,7 +191,6 @@ class MasteringViewTest {
 
     @Test
     void selectingDefaultPresetOptionShouldNotModifyChain() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         MasteringView view = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -247,7 +203,6 @@ class MasteringViewTest {
 
     @Test
     void defaultConstructorShouldCreateEmptyChain() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         MasteringView view = createOnFxThread();
 
         assertThat(view.getMasteringChain()).isNotNull();

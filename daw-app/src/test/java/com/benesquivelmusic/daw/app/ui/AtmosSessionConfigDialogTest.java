@@ -10,9 +10,8 @@ import com.benesquivelmusic.daw.sdk.spatial.SpeakerLayout;
 
 import javafx.application.Platform;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -22,37 +21,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class AtmosSessionConfigDialogTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private AtmosSessionConfigDialog createOnFxThread() throws Exception {
         AtomicReference<AtmosSessionConfigDialog> ref = new AtomicReference<>();
@@ -96,7 +66,6 @@ class AtmosSessionConfigDialogTest {
 
     @Test
     void shouldRejectNullConfig() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AtomicReference<Throwable> thrown = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
@@ -114,7 +83,6 @@ class AtmosSessionConfigDialogTest {
 
     @Test
     void shouldCreateWithDefaultConfig() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AtmosSessionConfigDialog dialog = createOnFxThread();
 
         assertThat(dialog).isNotNull();
@@ -124,7 +92,6 @@ class AtmosSessionConfigDialogTest {
 
     @Test
     void shouldExposeLayoutCombo() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AtmosSessionConfigDialog dialog = createOnFxThread();
 
         assertThat(dialog.getLayoutCombo()).isNotNull();
@@ -134,7 +101,6 @@ class AtmosSessionConfigDialogTest {
 
     @Test
     void shouldExposeSampleRateCombo() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AtmosSessionConfigDialog dialog = createOnFxThread();
 
         assertThat(dialog.getSampleRateCombo()).isNotNull();
@@ -143,7 +109,6 @@ class AtmosSessionConfigDialogTest {
 
     @Test
     void shouldExposeBitDepthCombo() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AtmosSessionConfigDialog dialog = createOnFxThread();
 
         assertThat(dialog.getBitDepthCombo()).isNotNull();
@@ -152,7 +117,6 @@ class AtmosSessionConfigDialogTest {
 
     @Test
     void shouldExposeTrackCountLabel() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AtmosSessionConfigDialog dialog = createOnFxThread();
 
         assertThat(dialog.getTrackCountLabel()).isNotNull();
@@ -162,7 +126,6 @@ class AtmosSessionConfigDialogTest {
 
     @Test
     void shouldShowValidationResult() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AtmosSessionConfig config = new AtmosSessionConfig();
         config.addBedChannel(new BedChannel("t1", SpeakerLabel.L));
         config.addBedChannel(new BedChannel("t2", SpeakerLabel.R));
@@ -175,7 +138,6 @@ class AtmosSessionConfigDialogTest {
 
     @Test
     void shouldShowValidationErrors() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AtmosSessionConfig config = new AtmosSessionConfig();
         config.addBedChannel(new BedChannel("t1", SpeakerLabel.L));
         config.addBedChannel(new BedChannel("t2", SpeakerLabel.L));
@@ -188,7 +150,6 @@ class AtmosSessionConfigDialogTest {
 
     @Test
     void shouldApplyConfigFromDialogFields() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AtmosSessionConfigDialog dialog = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -203,7 +164,6 @@ class AtmosSessionConfigDialogTest {
 
     @Test
     void shouldInitFromExistingConfig() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AtmosSessionConfig config = new AtmosSessionConfig(
                 SpeakerLayout.LAYOUT_5_1_4, 96000, 32);
         config.addBedChannel(new BedChannel("bed-L", SpeakerLabel.L));
@@ -220,7 +180,6 @@ class AtmosSessionConfigDialogTest {
 
     @Test
     void shouldNotifyExportRequestListener() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AtmosSessionConfig config = new AtmosSessionConfig();
         config.addBedChannel(new BedChannel("t1", SpeakerLabel.L));
         AtmosSessionConfigDialog dialog = createOnFxThread(config);
@@ -242,7 +201,6 @@ class AtmosSessionConfigDialogTest {
 
     @Test
     void shouldBlockExportOnValidationFailure() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AtmosSessionConfig config = new AtmosSessionConfig();
         config.addBedChannel(new BedChannel("t1", SpeakerLabel.L));
         config.addBedChannel(new BedChannel("t2", SpeakerLabel.L));

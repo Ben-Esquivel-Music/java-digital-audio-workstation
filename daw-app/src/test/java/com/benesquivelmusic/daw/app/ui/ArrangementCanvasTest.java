@@ -9,9 +9,8 @@ import com.benesquivelmusic.daw.core.track.TrackType;
 
 import javafx.application.Platform;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -20,45 +19,13 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class ArrangementCanvasTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized — will verify below
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        // Verify the FX Application Thread is actually processing events.
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-                // Platform.runLater failed — toolkit is not functional
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     // ── Construction ────────────────────────────────────────────────────────
 
     @Test
     void shouldCreateCanvasWithToolkit() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<ArrangementCanvas> ref = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
@@ -77,7 +44,6 @@ class ArrangementCanvasTest {
 
     @Test
     void shouldAcceptTracksAndRedraw() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
@@ -104,7 +70,6 @@ class ArrangementCanvasTest {
 
     @Test
     void shouldSetPixelsPerBeat() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<ArrangementCanvas> ref = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
@@ -123,7 +88,6 @@ class ArrangementCanvasTest {
 
     @Test
     void shouldIgnoreNonPositivePixelsPerBeat() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<ArrangementCanvas> ref = new AtomicReference<>();
         AtomicReference<Double> beforeRef = new AtomicReference<>();
@@ -144,7 +108,6 @@ class ArrangementCanvasTest {
 
     @Test
     void shouldSetScrollOffsets() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<ArrangementCanvas> ref = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
@@ -165,7 +128,6 @@ class ArrangementCanvasTest {
 
     @Test
     void shouldClampNegativeScrollToZero() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<ArrangementCanvas> ref = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
@@ -186,7 +148,6 @@ class ArrangementCanvasTest {
 
     @Test
     void shouldSetTrackHeight() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<ArrangementCanvas> ref = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
@@ -205,7 +166,6 @@ class ArrangementCanvasTest {
 
     @Test
     void shouldClampTrackHeightToMinimum() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<ArrangementCanvas> ref = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
@@ -224,7 +184,6 @@ class ArrangementCanvasTest {
 
     @Test
     void shouldHandleNullTrackList() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
@@ -240,7 +199,6 @@ class ArrangementCanvasTest {
 
     @Test
     void shouldHandleEmptyTrackList() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
@@ -256,7 +214,6 @@ class ArrangementCanvasTest {
 
     @Test
     void shouldRenderAudioClipWithWaveformData() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
@@ -286,7 +243,6 @@ class ArrangementCanvasTest {
 
     @Test
     void shouldRenderMidiClipWithNotes() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
@@ -312,7 +268,6 @@ class ArrangementCanvasTest {
 
     @Test
     void shouldSetPlayheadBeat() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
@@ -329,7 +284,6 @@ class ArrangementCanvasTest {
 
     @Test
     void shouldHandleMultipleTracksWithMixedTypes() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
@@ -364,7 +318,6 @@ class ArrangementCanvasTest {
 
     @Test
     void shouldReturnPlayheadBeat() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<ArrangementCanvas> ref = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
@@ -385,7 +338,6 @@ class ArrangementCanvasTest {
 
     @Test
     void shouldToggleAutoScroll() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {

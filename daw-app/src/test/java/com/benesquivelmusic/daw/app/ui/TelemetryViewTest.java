@@ -22,9 +22,8 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -34,39 +33,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class TelemetryViewTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized — will verify below
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        // Verify the FX Application Thread is actually processing events.
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-                // Platform.runLater failed — toolkit is not functional
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private TelemetryView createOnFxThread() throws Exception {
         AtomicReference<TelemetryView> ref = new AtomicReference<>();
@@ -96,7 +64,6 @@ class TelemetryViewTest {
 
     @Test
     void shouldHaveContentAreaStyleClass() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         assertThat(view).isNotNull();
@@ -105,7 +72,6 @@ class TelemetryViewTest {
 
     @Test
     void shouldShowSetupPanelInitially() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         assertThat(view.isDisplayingTelemetry()).isFalse();
@@ -115,7 +81,6 @@ class TelemetryViewTest {
 
     @Test
     void shouldContainHeaderBarAndSetupPanelInSetupState() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         // Setup state: headerBar, setupPanel, generateErrorLabel, generateButton
@@ -128,7 +93,6 @@ class TelemetryViewTest {
 
     @Test
     void headerBarShouldContainLabelWithPanelHeaderStyleClass() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         HBox headerBar = view.getHeaderBar();
@@ -138,7 +102,6 @@ class TelemetryViewTest {
 
     @Test
     void headerShouldContainTelemetryText() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         HBox headerBar = view.getHeaderBar();
@@ -148,7 +111,6 @@ class TelemetryViewTest {
 
     @Test
     void headerShouldHaveGraphicIcon() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         HBox headerBar = view.getHeaderBar();
@@ -158,7 +120,6 @@ class TelemetryViewTest {
 
     @Test
     void reconfigureButtonShouldBeHiddenInSetupState() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         assertThat(view.getReconfigureButton().isVisible()).isFalse();
@@ -167,7 +128,6 @@ class TelemetryViewTest {
 
     @Test
     void setupPanelShouldFillAvailableSpace() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         Node setupPanel = view.getChildren().get(1);
@@ -176,7 +136,6 @@ class TelemetryViewTest {
 
     @Test
     void shouldExposeRoomTelemetryDisplay() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         assertThat(view.getDisplay()).isNotNull();
@@ -185,7 +144,6 @@ class TelemetryViewTest {
 
     @Test
     void shouldExposeSetupPanel() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         assertThat(view.getSetupPanel()).isNotNull();
@@ -194,7 +152,6 @@ class TelemetryViewTest {
 
     @Test
     void setTelemetryDataWithNonNullShouldSwitchToDisplayState() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         RoomDimensions dimensions = new RoomDimensions(10.0, 8.0, 3.0);
@@ -216,7 +173,6 @@ class TelemetryViewTest {
 
     @Test
     void setTelemetryDataWithNullShouldShowSetupState() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         // First switch to display state
@@ -238,7 +194,6 @@ class TelemetryViewTest {
 
     @Test
     void displayShouldFillAvailableSpaceInDisplayState() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         RoomDimensions dimensions = new RoomDimensions(10.0, 8.0, 3.0);
@@ -257,7 +212,6 @@ class TelemetryViewTest {
 
     @Test
     void startAndStopAnimationShouldNotThrow() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         runOnFxThread(view::startAnimation);
@@ -266,7 +220,6 @@ class TelemetryViewTest {
 
     @Test
     void shouldHaveZeroSpacing() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         assertThat(view.getSpacing()).isEqualTo(0);
@@ -274,7 +227,6 @@ class TelemetryViewTest {
 
     @Test
     void generateWithNoSourcesShouldShowError() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         // Add a mic but no sources
@@ -296,7 +248,6 @@ class TelemetryViewTest {
 
     @Test
     void generateWithNoMicsShouldShowError() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         // Add a source but no mics
@@ -318,7 +269,6 @@ class TelemetryViewTest {
 
     @Test
     void generateWithValidInputsShouldSwitchToDisplayState() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -347,7 +297,6 @@ class TelemetryViewTest {
 
     @Test
     void reconfigureButtonShouldReturnToSetupState() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         // Switch to display state first
@@ -372,7 +321,6 @@ class TelemetryViewTest {
 
     @Test
     void generateWithInvalidDimensionsShouldShowError() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -401,7 +349,6 @@ class TelemetryViewTest {
 
     @Test
     void startAnimationInSetupStateShouldNotThrow() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         // Should not start animation in setup state
@@ -414,7 +361,6 @@ class TelemetryViewTest {
 
     @Test
     void displayShouldHaveDragCallbacksWired() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         assertThat(view.getDisplay().getOnSourceDragged()).isNotNull();
@@ -423,7 +369,6 @@ class TelemetryViewTest {
 
     @Test
     void generateShouldSaveLastConfig() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -448,7 +393,6 @@ class TelemetryViewTest {
 
     @Test
     void lastConfigShouldBeNullBeforeGeneration() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         assertThat(view.getLastConfig()).isNull();
@@ -458,7 +402,6 @@ class TelemetryViewTest {
 
     @Test
     void shouldHaveNullProjectByDefault() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         assertThat(view.getProject()).isNull();
@@ -466,7 +409,6 @@ class TelemetryViewTest {
 
     @Test
     void shouldAcceptProjectReference() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
         DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
 
@@ -477,7 +419,6 @@ class TelemetryViewTest {
 
     @Test
     void setProjectShouldPopulateSetupPanelFromRoomConfig() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
@@ -502,7 +443,6 @@ class TelemetryViewTest {
 
     @Test
     void setProjectWithNoRoomConfigShouldNotChangeSetupPanel() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
@@ -515,7 +455,6 @@ class TelemetryViewTest {
 
     @Test
     void generateShouldSaveConfigToProject() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
         DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
         AtomicBoolean dirtyCallbackFired = new AtomicBoolean(false);
@@ -546,7 +485,6 @@ class TelemetryViewTest {
 
     @Test
     void generateWithoutProjectShouldNotThrow() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -569,7 +507,6 @@ class TelemetryViewTest {
 
     @Test
     void generateShouldPreserveAudienceMembers() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
         DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
         RoomConfiguration config = new RoomConfiguration(
@@ -594,7 +531,6 @@ class TelemetryViewTest {
 
     @Test
     void setProjectWithNoConfigShouldResetPanelToDefaults() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         // First, set a project with a saved room config
@@ -627,7 +563,6 @@ class TelemetryViewTest {
 
     @Test
     void setNullProjectShouldResetPanelToDefaults() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetryView view = createOnFxThread();
 
         // Set a project with config

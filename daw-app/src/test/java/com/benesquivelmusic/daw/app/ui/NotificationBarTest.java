@@ -2,9 +2,8 @@ package com.benesquivelmusic.daw.app.ui;
 
 import javafx.application.Platform;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -13,37 +12,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class NotificationBarTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private NotificationBar createOnFxThread() throws Exception {
         AtomicReference<NotificationBar> ref = new AtomicReference<>();
@@ -73,7 +43,6 @@ class NotificationBarTest {
 
     @Test
     void shouldStartHidden() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         NotificationBar bar = createOnFxThread();
 
         assertThat(bar).isNotNull();
@@ -84,7 +53,6 @@ class NotificationBarTest {
 
     @Test
     void showShouldMakeBarVisible() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         NotificationBar bar = createOnFxThread();
 
         runOnFxThread(() -> bar.show(NotificationLevel.SUCCESS, "Track added"));
@@ -97,7 +65,6 @@ class NotificationBarTest {
 
     @Test
     void showShouldApplyLevelStyleClass() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         NotificationBar bar = createOnFxThread();
 
         runOnFxThread(() -> bar.show(NotificationLevel.ERROR, "Save failed"));
@@ -108,7 +75,6 @@ class NotificationBarTest {
 
     @Test
     void showShouldReplaceExistingNotification() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         NotificationBar bar = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -124,7 +90,6 @@ class NotificationBarTest {
 
     @Test
     void dismissShouldStartFadeOutAnimation() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         NotificationBar bar = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -140,7 +105,6 @@ class NotificationBarTest {
 
     @Test
     void showWithUndoShouldDisplayUndoLink() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         NotificationBar bar = createOnFxThread();
 
         runOnFxThread(() -> bar.showWithUndo(NotificationLevel.SUCCESS,
@@ -152,7 +116,6 @@ class NotificationBarTest {
 
     @Test
     void showWithoutUndoShouldHideUndoLink() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         NotificationBar bar = createOnFxThread();
 
         runOnFxThread(() -> bar.show(NotificationLevel.INFO, "Just info"));
@@ -163,7 +126,6 @@ class NotificationBarTest {
 
     @Test
     void shouldHaveNotificationBarStyleClass() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         NotificationBar bar = createOnFxThread();
 
         assertThat(bar.getStyleClass()).contains("notification-bar");
@@ -171,7 +133,6 @@ class NotificationBarTest {
 
     @Test
     void eachLevelShouldApplyCorrectStyleClass() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         NotificationBar bar = createOnFxThread();
 
         for (NotificationLevel level : NotificationLevel.values()) {
@@ -182,7 +143,6 @@ class NotificationBarTest {
 
     @Test
     void showWithUndoShouldInvokeCallbackWhenUndoTriggered() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         NotificationBar bar = createOnFxThread();
         AtomicBoolean undoCalled = new AtomicBoolean(false);
 

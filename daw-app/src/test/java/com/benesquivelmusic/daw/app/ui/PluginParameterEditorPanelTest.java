@@ -7,9 +7,8 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 
 import javafx.application.Platform;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.List;
 import java.util.Map;
@@ -20,37 +19,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class PluginParameterEditorPanelTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private PluginParameterEditorPanel createOnFxThread(List<PluginParameter> params) throws Exception {
         AtomicReference<PluginParameterEditorPanel> ref = new AtomicReference<>();
@@ -86,7 +56,6 @@ class PluginParameterEditorPanelTest {
 
     @Test
     void shouldCreatePanelWithParameters() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         List<PluginParameter> params = List.of(
                 new PluginParameter(0, "Gain", -24.0, 24.0, 0.0),
@@ -102,7 +71,6 @@ class PluginParameterEditorPanelTest {
 
     @Test
     void shouldHaveStyleClass() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         PluginParameterEditorPanel panel = createOnFxThread(List.of(
                 new PluginParameter(0, "Test", 0.0, 1.0, 0.5)
@@ -113,7 +81,6 @@ class PluginParameterEditorPanelTest {
 
     @Test
     void shouldProvideAbComparison() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         PluginParameterEditorPanel panel = createOnFxThread(List.of(
                 new PluginParameter(0, "Gain", -24.0, 24.0, 0.0)
@@ -126,7 +93,6 @@ class PluginParameterEditorPanelTest {
 
     @Test
     void shouldSetPresets() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         PluginParameterEditorPanel panel = createOnFxThread(List.of(
                 new PluginParameter(0, "Gain", -24.0, 24.0, 0.0)
@@ -145,7 +111,6 @@ class PluginParameterEditorPanelTest {
 
     @Test
     void shouldProvideAbToggleButton() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         PluginParameterEditorPanel panel = createOnFxThread(List.of(
                 new PluginParameter(0, "Gain", -24.0, 24.0, 0.0)
@@ -157,7 +122,6 @@ class PluginParameterEditorPanelTest {
 
     @Test
     void shouldHandleEmptyParameterList() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         PluginParameterEditorPanel panel = createOnFxThread(List.of());
 

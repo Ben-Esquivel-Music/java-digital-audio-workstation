@@ -2,9 +2,8 @@ package com.benesquivelmusic.daw.app.ui;
 
 import javafx.application.Platform;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -14,37 +13,8 @@ import java.util.prefs.Preferences;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class SettingsDialogTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private <T> T runOnFxThread(java.util.concurrent.Callable<T> callable) throws Exception {
         AtomicReference<T> ref = new AtomicReference<>();
@@ -68,7 +38,6 @@ class SettingsDialogTest {
 
     @Test
     void applySettingsShouldInvokeChangeListener() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AtomicBoolean listenerInvoked = new AtomicBoolean(false);
         AtomicReference<SettingsModel> receivedModel = new AtomicReference<>();
 
@@ -90,7 +59,6 @@ class SettingsDialogTest {
 
     @Test
     void applySettingsShouldNotFailWithoutListener() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         runOnFxThread(() -> {
             Preferences prefs = Preferences.userRoot().node("settingsDialogTest_" + System.nanoTime());
@@ -103,7 +71,6 @@ class SettingsDialogTest {
 
     @Test
     void applySettingsShouldPersistValuesBeforeNotifyingListener() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AtomicReference<Double> tempoAtCallback = new AtomicReference<>();
 
         runOnFxThread(() -> {
@@ -121,7 +88,6 @@ class SettingsDialogTest {
 
     @Test
     void listenerShouldReceiveUpdatedUiScale() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AtomicReference<Double> scaleAtCallback = new AtomicReference<>();
 
         runOnFxThread(() -> {
