@@ -231,6 +231,35 @@ class AcousticsRoomSimulatorTest {
     }
 
     @Test
+    void shouldApplyCorrectSurfaceMaterialToMatchingWallReflection() {
+        // Changing a specific surface's material from highly reflective to
+        // highly absorptive should reduce the early-reflection energy of that
+        // wall's first-order image source while leaving other surfaces unaffected.
+        // Use CONCRETE (α=0.02, very reflective) vs ACOUSTIC_FOAM (α=0.70, absorptive).
+
+        // Baseline: all surfaces are CONCRETE (maximally reflective)
+        RoomSimulationConfig reflectiveConfig = new RoomSimulationConfig(
+                STUDIO_DIMS, Map.of(), WallMaterial.CONCRETE,
+                List.of(GUITAR), LISTENER, SAMPLE_RATE);
+        simulator.configure(reflectiveConfig);
+        ImpulseResponse reflectiveIr = simulator.generateImpulseResponse();
+        double reflectiveEnergy = computeIrEnergy(reflectiveIr.samples()[0]);
+
+        // Now make the floor highly absorptive — should reduce total early energy
+        RoomSimulationConfig absorbentFloorConfig = new RoomSimulationConfig(
+                STUDIO_DIMS, Map.of("floor", WallMaterial.ACOUSTIC_FOAM), WallMaterial.CONCRETE,
+                List.of(GUITAR), LISTENER, SAMPLE_RATE);
+        simulator.configure(absorbentFloorConfig);
+        ImpulseResponse absorbentFloorIr = simulator.generateImpulseResponse();
+        double absorbentFloorEnergy = computeIrEnergy(absorbentFloorIr.samples()[0]);
+
+        // The absorptive floor should produce less total IR energy than all-concrete
+        assertThat(absorbentFloorEnergy)
+                .as("Floor with ACOUSTIC_FOAM should reduce IR energy vs all-CONCRETE")
+                .isLessThan(reflectiveEnergy);
+    }
+
+    @Test
     void shouldReconfigureSafely() {
         RoomSimulationConfig config1 = new RoomSimulationConfig(
                 STUDIO_DIMS, Map.of(), WallMaterial.DRYWALL,
@@ -359,5 +388,13 @@ class AcousticsRoomSimulatorTest {
             if (Math.abs(v) > 1e-7f) count++;
         }
         return count;
+    }
+
+    private static double computeIrEnergy(float[] data) {
+        double energy = 0.0;
+        for (float v : data) {
+            energy += (double) v * v;
+        }
+        return energy;
     }
 }

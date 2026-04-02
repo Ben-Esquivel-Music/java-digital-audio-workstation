@@ -131,10 +131,21 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
     @Override
     public void addSource(SoundSource source) {
         Objects.requireNonNull(source, "source must not be null");
+        String name = source.name();
+
+        // Enforce unique source names by removing any existing source with the same name.
+        Long existingId = sourceIdMap.remove(name);
+        if (existingId != null) {
+            if (context != null) {
+                context.removeSource(existingId);
+            }
+            sources.removeIf(s -> s.name().equals(name));
+        }
+
         sources.add(source);
         if (context != null) {
             long id = context.initSource();
-            sourceIdMap.put(source.name(), id);
+            sourceIdMap.put(name, id);
             Position3D pos = source.position();
             context.updateSource(id, new Vec3(pos.x(), pos.y(), pos.z()), new Vec4());
         }
@@ -425,13 +436,14 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
             }
 
             // First-order image sources (6 surfaces)
+            // Order must match SURFACE_NAMES: floor, ceiling, leftWall, rightWall, frontWall, backWall
             Position3D[] images = {
+                    new Position3D(sp.x(), sp.y(), -sp.z()),                       // floor (z=0)
+                    new Position3D(sp.x(), sp.y(), 2 * dims.height() - sp.z()),    // ceiling (z=height)
                     new Position3D(-sp.x(), sp.y(), sp.z()),                       // left wall (x=0)
                     new Position3D(2 * dims.width() - sp.x(), sp.y(), sp.z()),     // right wall (x=width)
                     new Position3D(sp.x(), -sp.y(), sp.z()),                       // front wall (y=0)
                     new Position3D(sp.x(), 2 * dims.length() - sp.y(), sp.z()),    // back wall (y=length)
-                    new Position3D(sp.x(), sp.y(), -sp.z()),                       // floor (z=0)
-                    new Position3D(sp.x(), sp.y(), 2 * dims.height() - sp.z())     // ceiling (z=height)
             };
 
             for (int i = 0; i < images.length; i++) {
@@ -592,6 +604,10 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
         private final double[] workSumReal;
         private final double[] workSumImag;
 
+        // Pre-allocated scratch buffers for partial-block handling (avoids allocation in convolve)
+        private final float[] scratchIn;
+        private final float[] scratchOut;
+
         ProcessingState(float[] ir, int blockSize) {
             this.ir = ir;
             this.blockSize = blockSize;
@@ -621,6 +637,10 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
             workInputImag = new double[fftSize];
             workSumReal = new double[fftSize];
             workSumImag = new double[fftSize];
+
+            // Pre-allocate scratch buffers for partial-block handling
+            scratchIn = new float[blockSize];
+            scratchOut = new float[blockSize];
         }
 
         /**
@@ -638,12 +658,12 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
                     processOneBlock(input, output, processed, processed);
                     processed += blockSize;
                 } else {
-                    // Pad the last partial block with zeros
-                    float[] paddedIn = new float[blockSize];
-                    System.arraycopy(input, processed, paddedIn, 0, remaining);
-                    float[] paddedOut = new float[blockSize];
-                    processOneBlock(paddedIn, paddedOut, 0, 0);
-                    System.arraycopy(paddedOut, 0, output, processed, remaining);
+                    // Pad the last partial block using pre-allocated scratch buffers
+                    Arrays.fill(scratchIn, 0.0f);
+                    System.arraycopy(input, processed, scratchIn, 0, remaining);
+                    Arrays.fill(scratchOut, 0.0f);
+                    processOneBlock(scratchIn, scratchOut, 0, 0);
+                    System.arraycopy(scratchOut, 0, output, processed, remaining);
                     processed += remaining;
                 }
             }

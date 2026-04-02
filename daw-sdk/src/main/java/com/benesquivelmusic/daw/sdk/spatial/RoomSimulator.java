@@ -104,8 +104,10 @@ public interface RoomSimulator extends AudioProcessor {
     /**
      * Returns whether this simulator is using native acceleration.
      *
-     * <p>As of the daw-acoustics engine integration, all implementations
-     * are pure-Java and this method returns {@code false}.</p>
+     * <p>As of the daw-acoustics engine integration, the built-in
+     * implementations are pure-Java and typically return {@code false}
+     * here. Third-party or future implementations may override this
+     * behavior to take advantage of native acceleration.</p>
      *
      * @return {@code true} if native acceleration is active
      */
