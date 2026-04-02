@@ -49,3 +49,6 @@ buildNumber.properties
 *.swo
 *~
 .DS_Store
+
+# Native library build artifacts (CMake)
+lib/build/
