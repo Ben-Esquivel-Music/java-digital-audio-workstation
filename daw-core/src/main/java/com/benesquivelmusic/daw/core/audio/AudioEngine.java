@@ -69,8 +69,8 @@ public final class AudioEngine {
     // Pre-allocated per-return-bus buffers for send routing: [returnBus][channel][frame]
     private float[][][] returnBuffers;
 
-    // MIDI track renderer for SoundFont synthesis
-    private MidiTrackRenderer midiTrackRenderer;
+    // MIDI track renderer for SoundFont synthesis (volatile for safe stop() from UI thread)
+    private volatile MidiTrackRenderer midiTrackRenderer;
 
     // Volatile references for lock-free UI ↔ audio thread communication
     private volatile Transport transport;
@@ -183,6 +183,16 @@ public final class AudioEngine {
      */
     MidiTrackRenderer getMidiTrackRenderer() {
         return midiTrackRenderer;
+    }
+
+    /**
+     * Replaces the MIDI track renderer. Package-private for testing — allows
+     * tests to inject a custom renderer without reflection.
+     *
+     * @param renderer the MIDI track renderer to use, or {@code null}
+     */
+    void setMidiTrackRenderer(MidiTrackRenderer renderer) {
+        this.midiTrackRenderer = renderer;
     }
 
     /**
@@ -572,6 +582,7 @@ public final class AudioEngine {
         Transport currentTransport = this.transport;
         Mixer currentMixer = this.mixer;
         List<Track> currentTracks = this.tracks;
+        MidiTrackRenderer currentMidiRenderer = this.midiTrackRenderer;
 
         boolean playbackActive = currentTransport != null
                 && currentMixer != null
@@ -583,7 +594,8 @@ public final class AudioEngine {
             int trackCount = Math.min(currentTracks.size(), MAX_TRACKS);
 
             // Render clip audio for each track into pre-allocated per-track buffers
-            renderTracks(currentTracks, trackCount, currentTransport, numFrames);
+            renderTracks(currentTracks, trackCount, currentTransport,
+                         currentMidiRenderer, numFrames);
 
             // Warn once if the mixer has more return buses than pre-allocated buffers
             if (!returnBusCapWarningLogged
@@ -636,11 +648,12 @@ public final class AudioEngine {
      * @param tracks       the list of tracks to render
      * @param trackCount   the number of tracks to process (capped at {@link #MAX_TRACKS})
      * @param transport    the transport providing position and loop state
+     * @param midiRenderer the snapshotted MIDI track renderer (may be {@code null})
      * @param numFrames    the total number of frames in this block
      */
     @RealTimeSafe
     private void renderTracks(List<Track> tracks, int trackCount, Transport transport,
-                              int numFrames) {
+                              MidiTrackRenderer midiRenderer, int numFrames) {
         // Clear per-track buffers
         int audioChannels = format.channels();
         for (int t = 0; t < trackCount; t++) {
@@ -674,14 +687,18 @@ public final class AudioEngine {
 
             // Render this contiguous segment for all tracks
             renderSegment(tracks, trackCount, currentBeat, samplesPerBeat,
-                          framesProcessed, framesToProcess);
+                          midiRenderer, framesProcessed, framesToProcess);
 
             framesProcessed += framesToProcess;
             currentBeat += framesToProcess / samplesPerBeat;
 
-            // Handle loop wrap
+            // Handle loop wrap — send all-notes-off to MIDI renderers to prevent
+            // stuck notes spanning the loop boundary
             if (loopEnabled && loopLength > 0.0 && currentBeat >= loopEnd) {
                 currentBeat = loopStart + (currentBeat - loopEnd);
+                if (midiRenderer != null) {
+                    midiRenderer.allNotesOff();
+                }
             }
         }
     }
@@ -700,12 +717,14 @@ public final class AudioEngine {
      * @param trackCount      the number of tracks to process
      * @param startBeat       the beat position at the start of this segment
      * @param samplesPerBeat  samples per beat at the current tempo
+     * @param midiRenderer    the snapshotted MIDI track renderer (may be {@code null})
      * @param frameOffset     the frame offset within the block's track buffer
      * @param framesToProcess the number of frames in this segment
      */
     @RealTimeSafe
     private void renderSegment(List<Track> tracks, int trackCount,
                                double startBeat, double samplesPerBeat,
+                               MidiTrackRenderer midiRenderer,
                                int frameOffset, int framesToProcess) {
         double endBeat = startBeat + framesToProcess / samplesPerBeat;
 
@@ -715,8 +734,8 @@ public final class AudioEngine {
             // Render MIDI tracks via SoundFont synthesis
             if (track.getType() == TrackType.MIDI
                     && track.getSoundFontAssignment() != null
-                    && midiTrackRenderer != null) {
-                midiTrackRenderer.renderMidiTrack(track, trackBuffers[t],
+                    && midiRenderer != null) {
+                midiRenderer.renderMidiTrack(track, trackBuffers[t],
                         startBeat, endBeat, samplesPerBeat,
                         frameOffset, framesToProcess);
                 continue;

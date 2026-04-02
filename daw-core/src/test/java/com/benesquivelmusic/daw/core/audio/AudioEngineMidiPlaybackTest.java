@@ -1,6 +1,5 @@
 package com.benesquivelmusic.daw.core.audio;
 
-import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
@@ -16,7 +15,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -79,8 +77,9 @@ class AudioEngineMidiPlaybackTest {
         engine.setTracks(List.of(midiTrack));
         engine.start();
 
-        // Inject the test MidiTrackRenderer
-        injectMidiTrackRenderer(engine, midiRenderer);
+        // Prepare and inject the test MidiTrackRenderer
+        midiRenderer.prepareRenderer(midiTrack);
+        engine.setMidiTrackRenderer(midiRenderer);
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
         float[][] output = new float[CHANNELS][BUFFER_SIZE];
@@ -114,7 +113,8 @@ class AudioEngineMidiPlaybackTest {
         engine.setMixer(mixer);
         engine.setTracks(List.of(midiTrack));
         engine.start();
-        injectMidiTrackRenderer(engine, midiRenderer);
+        midiRenderer.prepareRenderer(midiTrack);
+        engine.setMidiTrackRenderer(midiRenderer);
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
         float[][] output = new float[CHANNELS][BUFFER_SIZE];
@@ -149,7 +149,8 @@ class AudioEngineMidiPlaybackTest {
         engine.setMixer(mixer);
         engine.setTracks(List.of(midiTrack));
         engine.start();
-        injectMidiTrackRenderer(engine, midiRenderer);
+        midiRenderer.prepareRenderer(midiTrack);
+        engine.setMidiTrackRenderer(midiRenderer);
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
         float[][] output = new float[CHANNELS][BUFFER_SIZE];
@@ -205,7 +206,8 @@ class AudioEngineMidiPlaybackTest {
         engine.setMixer(mixer);
         engine.setTracks(List.of(midiTrack));
         engine.start();
-        injectMidiTrackRenderer(engine, midiRenderer);
+        midiRenderer.prepareRenderer(midiTrack);
+        engine.setMidiTrackRenderer(midiRenderer);
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
         float[][] output = new float[CHANNELS][BUFFER_SIZE];
@@ -249,7 +251,8 @@ class AudioEngineMidiPlaybackTest {
         engine.setMixer(mixer);
         engine.setTracks(List.of(audioTrack, midiTrack));
         engine.start();
-        injectMidiTrackRenderer(engine, midiRenderer);
+        midiRenderer.prepareRenderer(midiTrack);
+        engine.setMidiTrackRenderer(midiRenderer);
 
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
         float[][] output = new float[CHANNELS][BUFFER_SIZE];
@@ -280,7 +283,8 @@ class AudioEngineMidiPlaybackTest {
         engine.setMixer(mixer);
         engine.setTracks(List.of(midiTrack));
         engine.start();
-        injectMidiTrackRenderer(engine, midiRenderer);
+        midiRenderer.prepareRenderer(midiTrack);
+        engine.setMidiTrackRenderer(midiRenderer);
 
         // First render — establishes the renderer
         float[][] input = new float[CHANNELS][BUFFER_SIZE];
@@ -292,10 +296,11 @@ class AudioEngineMidiPlaybackTest {
         assertThat(instance.selectedBank).isEqualTo(0);
         assertThat(instance.selectedProgram).isEqualTo(0);
 
-        // Change the SoundFont assignment
+        // Change the SoundFont assignment and prepare the renderer
         SoundFontAssignment newAssignment = new SoundFontAssignment(
                 DUMMY_SF2_PATH, 0, 42, "Electric Piano");
         midiTrack.setSoundFontAssignment(newAssignment);
+        midiRenderer.prepareRenderer(midiTrack);
 
         // Reset transport to beat 0 for a clean second render
         transport.setPositionInBeats(0.0);
@@ -304,6 +309,118 @@ class AudioEngineMidiPlaybackTest {
 
         // The same renderer instance should have been reused with the new preset
         assertThat(instance.selectedProgram).isEqualTo(42);
+    }
+
+    // ── Sample-accurate timing ──────────────────────────────────────────────
+
+    @Test
+    void shouldRenderSilenceBeforeNoteStartingMidSegment() {
+        // Use a larger buffer to make mid-segment timing testable
+        int largeBuffer = 1024;
+        AudioFormat largeFormat = new AudioFormat(SAMPLE_RATE, CHANNELS, 16, largeBuffer);
+        AudioEngine largeEngine = new AudioEngine(largeFormat);
+
+        // At 999 BPM, samplesPerBeat = 44100 * 60 / 999 ≈ 2648.6
+        // Column 1 = beat 0.25 → frame ≈ 662
+        // This places the note-on about halfway through our 1024-frame buffer.
+        Transport fastTransport = new Transport();
+        fastTransport.setTempo(999.0);
+
+        StubSoundFontRenderer stubRenderer = new StubSoundFontRenderer(0.5f);
+        MidiTrackRenderer midiRenderer = new MidiTrackRenderer(
+                SAMPLE_RATE, largeBuffer, stubRenderer::newInstance);
+
+        Track midiTrack = new Track("MIDI Track", TrackType.MIDI);
+        midiTrack.setSoundFontAssignment(ASSIGNMENT);
+        // Note at column 1 (beat 0.25), duration 8 columns (2 beats)
+        midiTrack.getMidiClip().addNote(MidiNoteData.of(60, 1, 8, 100));
+
+        MixerChannel mixerChannel = new MixerChannel("MIDI Track");
+        Mixer largeMixer = new Mixer();
+        largeMixer.addChannel(mixerChannel);
+
+        fastTransport.play();
+        largeEngine.setTransport(fastTransport);
+        largeEngine.setMixer(largeMixer);
+        largeEngine.setTracks(List.of(midiTrack));
+        largeEngine.start();
+        midiRenderer.prepareRenderer(midiTrack);
+        largeEngine.setMidiTrackRenderer(midiRenderer);
+
+        float[][] input = new float[CHANNELS][largeBuffer];
+        float[][] output = new float[CHANNELS][largeBuffer];
+        largeEngine.processBlock(input, output, largeBuffer);
+
+        // The note starts at beat 0.25. At 999 BPM with 44100 Hz:
+        // samplesPerBeat = 44100 * 60 / 999 ≈ 2648.6
+        // frame at beat 0.25 ≈ 662
+        // Everything before frame 662 should be silence (only the render() no-event
+        // sub-chunk runs before the note-on event)
+        double samplesPerBeat = SAMPLE_RATE * 60.0 / 999.0;
+        int noteOnFrame = (int) Math.round(0.25 * samplesPerBeat);
+
+        // Check silence before note onset
+        for (int i = 0; i < noteOnFrame - 1; i++) {
+            assertThat(output[0][i]).as("frame %d should be silent before note-on", i)
+                    .isCloseTo(0.0f, offset(0.001f));
+        }
+
+        // Check non-silence after note onset (stub fills with 0.5f after note-on)
+        // The note-on triggers at noteOnFrame, so rendering after that should produce audio
+        boolean hasNonZeroAfterNote = false;
+        for (int i = noteOnFrame + 1; i < largeBuffer; i++) {
+            if (Math.abs(output[0][i]) > 0.001f) {
+                hasNonZeroAfterNote = true;
+                break;
+            }
+        }
+        assertThat(hasNonZeroAfterNote).isTrue();
+    }
+
+    // ── Loop wrap stuck notes ───────────────────────────────────────────────
+
+    @Test
+    void shouldSendAllNotesOffOnLoopWrap() {
+        // Use a small buffer and configure loop to wrap within the block
+        // At 120 BPM, samplesPerBeat = 22050
+        // Loop from beat 0 to beat 0.001 → ~22 frames
+        // With BUFFER_SIZE=8, beat range per block = 8/22050 ≈ 0.000363 beats
+        // We need the loop to wrap within our 8-frame block.
+        // Loop end = 0.0002 beats → ~4.4 frames. Transport at beat ~0.0001.
+        StubSoundFontRenderer stubRenderer = new StubSoundFontRenderer(0.0f);
+        MidiTrackRenderer midiRenderer = new MidiTrackRenderer(
+                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance);
+
+        Track midiTrack = new Track("MIDI Track", TrackType.MIDI);
+        midiTrack.setSoundFontAssignment(ASSIGNMENT);
+        // A note that spans the entire first beat
+        midiTrack.getMidiClip().addNote(MidiNoteData.of(60, 0, 4, 100));
+
+        MixerChannel mixerChannel = new MixerChannel("MIDI Track");
+        mixer.addChannel(mixerChannel);
+
+        // Set up loop that wraps within our block
+        transport.setLoopEnabled(true);
+        transport.setLoopRegion(0.0, 0.0002); // ~4.4 frames at 120 BPM
+        transport.setPositionInBeats(0.0001); // Start near loop end
+        transport.play();
+
+        engine.setTransport(transport);
+        engine.setMixer(mixer);
+        engine.setTracks(List.of(midiTrack));
+        engine.start();
+        midiRenderer.prepareRenderer(midiTrack);
+        engine.setMidiTrackRenderer(midiRenderer);
+
+        StubSoundFontRenderer instance = stubRenderer.lastCreatedInstance;
+
+        float[][] input = new float[CHANNELS][BUFFER_SIZE];
+        float[][] output = new float[CHANNELS][BUFFER_SIZE];
+        engine.processBlock(input, output, BUFFER_SIZE);
+
+        // The loop should have wrapped during processing and sent allNotesOff
+        assertThat(instance).isNotNull();
+        assertThat(instance.allNotesOffCallCount).isGreaterThanOrEqualTo(1);
     }
 
     // ── MidiTrackRenderer unit tests ────────────────────────────────────────
@@ -322,6 +439,9 @@ class AudioEngineMidiPlaybackTest {
         // Both note start (0.0) and end (0.25) don't both fall in this tiny range.
         // Only the note start (0.0) falls in the range.
         track.getMidiClip().addNote(new MidiNoteData(60, 0, 1, 100, 0));
+
+        // Prepare the renderer before the RT render call
+        renderer.prepareRenderer(track);
 
         float[][] buffer = new float[2][BUFFER_SIZE];
         double samplesPerBeat = SAMPLE_RATE * 60.0 / TEMPO;
@@ -355,6 +475,8 @@ class AudioEngineMidiPlaybackTest {
         track.setSoundFontAssignment(ASSIGNMENT);
         track.getMidiClip().addNote(MidiNoteData.of(60, 0, 4, 100));
 
+        renderer.prepareRenderer(track);
+
         float[][] buffer = new float[2][BUFFER_SIZE];
         double samplesPerBeat = SAMPLE_RATE * 60.0 / TEMPO;
         renderer.renderMidiTrack(track, buffer, 0.0,
@@ -376,6 +498,8 @@ class AudioEngineMidiPlaybackTest {
         Track track = new Track("MIDI Track", TrackType.MIDI);
         track.setSoundFontAssignment(ASSIGNMENT);
         track.getMidiClip().addNote(MidiNoteData.of(60, 0, 4, 100));
+
+        renderer.prepareRenderer(track);
 
         float[][] buffer = new float[2][BUFFER_SIZE];
         double samplesPerBeat = SAMPLE_RATE * 60.0 / TEMPO;
@@ -446,19 +570,37 @@ class AudioEngineMidiPlaybackTest {
         }
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────────────
+    @Test
+    void midiTrackRendererShouldSkipWhenNotPrepared() {
+        // Verify that renderMidiTrack returns silently when no renderer
+        // has been prepared via prepareRenderer
+        StubSoundFontRenderer stubRenderer = new StubSoundFontRenderer(0.5f);
+        MidiTrackRenderer midiRenderer = new MidiTrackRenderer(
+                SAMPLE_RATE, BUFFER_SIZE, stubRenderer::newInstance);
 
-    /**
-     * Injects a custom MidiTrackRenderer into the engine by replacing the
-     * one allocated during start().
-     */
-    private static void injectMidiTrackRenderer(AudioEngine engine, MidiTrackRenderer renderer) {
-        try {
-            java.lang.reflect.Field field = AudioEngine.class.getDeclaredField("midiTrackRenderer");
-            field.setAccessible(true);
-            field.set(engine, renderer);
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to inject MidiTrackRenderer", e);
+        Track midiTrack = new Track("MIDI Track", TrackType.MIDI);
+        midiTrack.setSoundFontAssignment(ASSIGNMENT);
+        midiTrack.getMidiClip().addNote(MidiNoteData.of(60, 0, 4, 100));
+
+        MixerChannel mixerChannel = new MixerChannel("MIDI Track");
+        mixer.addChannel(mixerChannel);
+
+        transport.play();
+        engine.setTransport(transport);
+        engine.setMixer(mixer);
+        engine.setTracks(List.of(midiTrack));
+        engine.start();
+        // Do NOT call prepareRenderer — renderer should skip silently
+        engine.setMidiTrackRenderer(midiRenderer);
+
+        float[][] input = new float[CHANNELS][BUFFER_SIZE];
+        float[][] output = new float[CHANNELS][BUFFER_SIZE];
+        engine.processBlock(input, output, BUFFER_SIZE);
+
+        // Should produce silence since no renderer was prepared
+        for (int i = 0; i < BUFFER_SIZE; i++) {
+            assertThat(output[0][i]).isEqualTo(0.0f);
+            assertThat(output[1][i]).isEqualTo(0.0f);
         }
     }
 
@@ -467,7 +609,8 @@ class AudioEngineMidiPlaybackTest {
     /**
      * Factory that creates stub SoundFontRenderer instances for testing.
      * Each created instance records all events and fills render buffers
-     * with a known value.
+     * with a known value only when notes are active (after NOTE_ON and
+     * before NOTE_OFF), simulating real synthesizer behavior.
      */
     private static class StubSoundFontRenderer implements SoundFontRenderer {
 
@@ -478,6 +621,8 @@ class AudioEngineMidiPlaybackTest {
         boolean closed;
         boolean initialized;
         int instanceCount;
+        int allNotesOffCallCount;
+        int activeNotes;
         StubSoundFontRenderer lastCreatedInstance;
 
         StubSoundFontRenderer(float renderValue) {
@@ -523,13 +668,20 @@ class AudioEngineMidiPlaybackTest {
         @Override
         public void sendEvent(MidiEvent event) {
             receivedEvents.add(event);
+            if (event.type() == MidiEvent.Type.NOTE_ON) {
+                activeNotes++;
+            } else if (event.type() == MidiEvent.Type.NOTE_OFF) {
+                activeNotes = Math.max(0, activeNotes - 1);
+            }
         }
 
         @Override
         public void render(float[][] outputBuffer, int numFrames) {
-            for (int ch = 0; ch < outputBuffer.length; ch++) {
-                for (int i = 0; i < numFrames; i++) {
-                    outputBuffer[ch][i] += renderValue;
+            if (activeNotes > 0) {
+                for (int ch = 0; ch < outputBuffer.length; ch++) {
+                    for (int i = 0; i < numFrames; i++) {
+                        outputBuffer[ch][i] += renderValue;
+                    }
                 }
             }
         }
@@ -559,7 +711,10 @@ class AudioEngineMidiPlaybackTest {
         }
 
         @Override
-        public void allNotesOff() {}
+        public void allNotesOff() {
+            allNotesOffCallCount++;
+            activeNotes = 0;
+        }
 
         @Override
         public void close() {

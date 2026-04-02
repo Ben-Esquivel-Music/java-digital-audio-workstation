@@ -11,6 +11,7 @@ import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.midi.MidiEvent;
 import com.benesquivelmusic.daw.sdk.midi.SoundFontRenderer;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,8 +26,20 @@ import java.util.logging.Logger;
  * a {@link SoundFontRenderer} instance, loads the assigned SoundFont, selects the
  * correct bank/program, and renders MIDI note events into audio buffers.</p>
  *
- * <p>The renderer falls back to a {@link JavaSoundRenderer} when the FluidSynth
- * native library is not available on the system.</p>
+ * <p>Renderer creation and SoundFont loading are performed eagerly via
+ * {@link #prepareRenderer(Track)} — called from the UI thread when assignments
+ * change or during engine start. The audio-thread method
+ * {@link #renderMidiTrack(Track, float[][], double, double, double, int, int)}
+ * only accesses already-initialized renderers and never performs I/O.</p>
+ *
+ * <p>MIDI note events are rendered with sample-accurate timing by splitting the
+ * segment into sub-chunks around each note-on/note-off boundary and rendering
+ * each sub-chunk separately.</p>
+ *
+ * <p>When the FluidSynth native library is not available, the renderer logs a
+ * warning and falls back to {@link JavaSoundRenderer}. Note that the Java Sound
+ * fallback cannot render raw float audio into buffers — MIDI tracks will be
+ * silent in this configuration. Use FluidSynth for audible MIDI playback.</p>
  *
  * <p>MIDI note timing uses grid columns from {@link MidiNoteData}, where each
  * column equals {@value #BEATS_PER_COLUMN} beats (1/16 note at 4/4).</p>
@@ -99,13 +112,42 @@ final class MidiTrackRenderer implements AutoCloseable {
     }
 
     /**
+     * Prepares a renderer for the given MIDI track by initializing the
+     * synthesizer, loading the assigned SoundFont, and selecting the preset.
+     *
+     * <p>This method performs I/O (disk reads for SoundFont files) and native
+     * allocations. It must <strong>not</strong> be called from the real-time
+     * audio thread. Call it from the UI thread when a SoundFont assignment
+     * changes, or during engine startup.</p>
+     *
+     * <p>If a renderer already exists for the track, this method checks for
+     * assignment changes and reloads the SoundFont / selects a new preset
+     * as needed.</p>
+     *
+     * @param track the MIDI track to prepare a renderer for
+     */
+    void prepareRenderer(Track track) {
+        Objects.requireNonNull(track, "track must not be null");
+        SoundFontAssignment assignment = track.getSoundFontAssignment();
+        if (assignment == null) {
+            return;
+        }
+        ensureRenderer(track, assignment);
+    }
+
+    /**
      * Renders a MIDI track's note data into the provided track buffer for the
-     * given beat range.
+     * given beat range, with sample-accurate timing.
      *
      * <p>For each note in the track's {@link MidiClip} that overlaps the beat
-     * range [{@code startBeat}, {@code endBeat}), this method sends note-on and
-     * note-off events at the correct frame positions, then renders the synthesizer
-     * output into the track buffer.</p>
+     * range [{@code startBeat}, {@code endBeat}), this method computes per-event
+     * frame offsets and renders in sub-chunks: render up to the next event
+     * offset, send the event, continue rendering the remainder.</p>
+     *
+     * <p>This method only accesses already-initialized renderers — it never
+     * performs I/O or native allocations. If no renderer has been prepared
+     * for the track (via {@link #prepareRenderer(Track)}), this method
+     * returns silently.</p>
      *
      * @param track           the MIDI track to render
      * @param trackBuffer     the output buffer {@code [channel][frame]}
@@ -127,9 +169,17 @@ final class MidiTrackRenderer implements AutoCloseable {
             return;
         }
 
-        RendererState state = ensureRenderer(track, assignment);
+        String trackId = track.getId();
+        RendererState state = rendererStates.get(trackId);
         if (state == null) {
+            // No renderer prepared — skip silently (will be prepared on the UI thread)
             return;
+        }
+
+        // Check for assignment change (just update the flag; actual reload
+        // happens on the next prepareRenderer call from the UI thread)
+        if (!assignment.equals(state.currentAssignment)) {
+            state.needsReload = true;
         }
 
         MidiClip clip = track.getMidiClip();
@@ -138,24 +188,22 @@ final class MidiTrackRenderer implements AutoCloseable {
             return;
         }
 
-        // Schedule note-on and note-off events for notes overlapping this segment
-        scheduleNoteEvents(state, clip.getNotes(), startBeat, endBeat,
-                samplesPerBeat, framesToProcess);
+        // Render with sample-accurate sub-chunk timing
+        renderWithSubChunks(state, clip.getNotes(), startBeat, endBeat,
+                samplesPerBeat, trackBuffer, frameOffset, framesToProcess);
+    }
 
-        // Render the synthesizer output into the pre-allocated buffer
-        clearRenderBuffer(framesToProcess);
-        try {
-            state.renderer.render(midiRenderBuffer, framesToProcess);
-        } catch (Exception e) {
-            LOG.log(Level.WARNING, "MIDI render failed for track " + track.getName(), e);
-            return;
-        }
-
-        // Copy rendered audio into the track buffer (additive)
-        int channels = Math.min(midiRenderBuffer.length, trackBuffer.length);
-        for (int ch = 0; ch < channels; ch++) {
-            for (int f = 0; f < framesToProcess; f++) {
-                trackBuffer[ch][frameOffset + f] += midiRenderBuffer[ch][f];
+    /**
+     * Sends all-notes-off to all active renderers. Call this when the
+     * transport loops back to prevent stuck notes spanning the loop boundary.
+     */
+    @RealTimeSafe
+    void allNotesOff() {
+        for (RendererState state : rendererStates.values()) {
+            try {
+                state.renderer.allNotesOff();
+            } catch (Exception e) {
+                // Ignore errors on the RT thread
             }
         }
     }
@@ -211,6 +259,7 @@ final class MidiTrackRenderer implements AutoCloseable {
     private static final class RendererState {
         final SoundFontRenderer renderer;
         SoundFontAssignment currentAssignment;
+        volatile boolean needsReload;
 
         RendererState(SoundFontRenderer renderer, SoundFontAssignment assignment) {
             this.renderer = renderer;
@@ -218,12 +267,14 @@ final class MidiTrackRenderer implements AutoCloseable {
         }
     }
 
-    // ── Renderer lifecycle ──────────────────────────────────────────────────
+    // ── Renderer lifecycle (non-RT thread only) ─────────────────────────────
 
     /**
      * Ensures a renderer is active for the given track with the correct
      * SoundFont assignment. If the assignment has changed, the SoundFont
      * is reloaded and the new preset is selected.
+     *
+     * <p>This method performs I/O and must not be called from the audio thread.</p>
      */
     private RendererState ensureRenderer(Track track, SoundFontAssignment assignment) {
         String trackId = track.getId();
@@ -231,8 +282,9 @@ final class MidiTrackRenderer implements AutoCloseable {
 
         if (state != null) {
             // Check for assignment change
-            if (!assignment.equals(state.currentAssignment)) {
+            if (!assignment.equals(state.currentAssignment) || state.needsReload) {
                 handleAssignmentChange(state, assignment);
+                state.needsReload = false;
             }
             return state;
         }
@@ -290,6 +342,11 @@ final class MidiTrackRenderer implements AutoCloseable {
     /**
      * Creates a SoundFontRenderer, preferring FluidSynth and falling back to
      * Java Sound. Uses the injected factory if provided.
+     *
+     * <p>Note: the Java Sound fallback ({@link JavaSoundRenderer}) cannot render
+     * raw float audio into buffers — its {@code render()} method is a no-op.
+     * MIDI tracks will be silent when using the Java Sound fallback. FluidSynth
+     * is required for audible MIDI track playback in the audio engine.</p>
      */
     private SoundFontRenderer createRenderer() {
         if (rendererFactory != null) {
@@ -303,40 +360,142 @@ final class MidiTrackRenderer implements AutoCloseable {
                         "FluidSynth renderer creation failed; falling back to Java Sound", e);
             }
         }
+        LOG.warning("FluidSynth native library not available. Falling back to Java Sound "
+                + "renderer which cannot render float audio buffers — MIDI tracks will be "
+                + "silent. Install FluidSynth for audible MIDI playback.");
         return new JavaSoundRenderer();
     }
 
-    // ── Note event scheduling ───────────────────────────────────────────────
+    // ── Sub-chunk rendering for sample-accurate timing ──────────────────────
 
     /**
-     * Schedules note-on and note-off events for notes overlapping the current
-     * beat range. Events are sent to the renderer at the correct frame positions
-     * within the segment.
+     * Renders MIDI notes with sample-accurate timing by splitting the segment
+     * into sub-chunks around each note-on/note-off boundary.
+     *
+     * <p>For each event boundary, the renderer advances to the event's frame
+     * offset, sends all events at that frame, then continues rendering the
+     * remainder of the segment.</p>
      */
     @RealTimeSafe
-    private void scheduleNoteEvents(RendererState state, List<MidiNoteData> notes,
-                                    double startBeat, double endBeat,
-                                    double samplesPerBeat, int framesToProcess) {
-        for (int i = 0; i < notes.size(); i++) {
-            MidiNoteData note = notes.get(i);
-            double noteStartBeat = note.startColumn() * BEATS_PER_COLUMN;
-            double noteEndBeat = note.endColumn() * BEATS_PER_COLUMN;
+    private void renderWithSubChunks(RendererState state, List<MidiNoteData> notes,
+                                     double startBeat, double endBeat,
+                                     double samplesPerBeat,
+                                     float[][] trackBuffer, int frameOffset,
+                                     int framesToProcess) {
+        int currentFrame = 0;
+        // Track which note-on and note-off events have been sent via
+        // a simple "minimum frame to consider" that advances past sent events.
+        int minEventFrame = 0;
 
-            // Skip notes that don't overlap this segment at all
-            if (noteEndBeat <= startBeat || noteStartBeat >= endBeat) {
-                continue;
+        while (currentFrame < framesToProcess) {
+            // Find the smallest event frame offset >= minEventFrame
+            int nextEventFrame = framesToProcess; // sentinel: end of segment
+
+            for (int i = 0; i < notes.size(); i++) {
+                MidiNoteData note = notes.get(i);
+                double noteStartBeat = note.startColumn() * BEATS_PER_COLUMN;
+                double noteEndBeat = note.endColumn() * BEATS_PER_COLUMN;
+
+                // Note-on: if note starts within this segment
+                if (noteStartBeat >= startBeat && noteStartBeat < endBeat) {
+                    int noteOnFrame = (int) Math.round((noteStartBeat - startBeat) * samplesPerBeat);
+                    noteOnFrame = Math.max(0, Math.min(noteOnFrame, framesToProcess - 1));
+                    if (noteOnFrame >= minEventFrame && noteOnFrame < nextEventFrame) {
+                        nextEventFrame = noteOnFrame;
+                    }
+                }
+
+                // Note-off: if note ends within this segment
+                if (noteEndBeat > startBeat && noteEndBeat <= endBeat) {
+                    int noteOffFrame = (int) Math.round((noteEndBeat - startBeat) * samplesPerBeat);
+                    noteOffFrame = Math.max(0, Math.min(noteOffFrame, framesToProcess));
+                    if (noteOffFrame >= minEventFrame && noteOffFrame < nextEventFrame) {
+                        nextEventFrame = noteOffFrame;
+                    }
+                }
             }
 
-            // Note-on: only send if the note starts within this segment
-            if (noteStartBeat >= startBeat && noteStartBeat < endBeat) {
-                state.renderer.sendEvent(
-                        MidiEvent.noteOn(note.channel(), note.noteNumber(), note.velocity()));
+            // If no more events, nextEventFrame == framesToProcess
+            boolean hasEvents = nextEventFrame < framesToProcess;
+
+            // Render from currentFrame to nextEventFrame
+            int chunkSize = nextEventFrame - currentFrame;
+            if (chunkSize > 0) {
+                clearRenderBuffer(chunkSize);
+                try {
+                    state.renderer.render(midiRenderBuffer, chunkSize);
+                } catch (Exception e) {
+                    LOG.log(Level.WARNING, "MIDI render failed", e);
+                    return;
+                }
+
+                int channels = Math.min(midiRenderBuffer.length, trackBuffer.length);
+                for (int ch = 0; ch < channels; ch++) {
+                    for (int f = 0; f < chunkSize; f++) {
+                        trackBuffer[ch][frameOffset + currentFrame + f] += midiRenderBuffer[ch][f];
+                    }
+                }
             }
 
-            // Note-off: only send if the note ends within this segment
-            if (noteEndBeat > startBeat && noteEndBeat <= endBeat) {
-                state.renderer.sendEvent(
-                        MidiEvent.noteOff(note.channel(), note.noteNumber()));
+            currentFrame = nextEventFrame;
+
+            if (!hasEvents) {
+                break;
+            }
+
+            // Send all events at nextEventFrame
+            for (int i = 0; i < notes.size(); i++) {
+                MidiNoteData note = notes.get(i);
+                double noteStartBeat = note.startColumn() * BEATS_PER_COLUMN;
+                double noteEndBeat = note.endColumn() * BEATS_PER_COLUMN;
+
+                if (noteStartBeat >= startBeat && noteStartBeat < endBeat) {
+                    int noteOnFrame = (int) Math.round((noteStartBeat - startBeat) * samplesPerBeat);
+                    noteOnFrame = Math.max(0, Math.min(noteOnFrame, framesToProcess - 1));
+                    if (noteOnFrame == nextEventFrame) {
+                        try {
+                            state.renderer.sendEvent(
+                                    MidiEvent.noteOn(note.channel(), note.noteNumber(), note.velocity()));
+                        } catch (Exception e) {
+                            LOG.log(Level.WARNING, "Failed to send MIDI note-on", e);
+                        }
+                    }
+                }
+
+                if (noteEndBeat > startBeat && noteEndBeat <= endBeat) {
+                    int noteOffFrame = (int) Math.round((noteEndBeat - startBeat) * samplesPerBeat);
+                    noteOffFrame = Math.max(0, Math.min(noteOffFrame, framesToProcess));
+                    if (noteOffFrame == nextEventFrame) {
+                        try {
+                            state.renderer.sendEvent(
+                                    MidiEvent.noteOff(note.channel(), note.noteNumber()));
+                        } catch (Exception e) {
+                            LOG.log(Level.WARNING, "Failed to send MIDI note-off", e);
+                        }
+                    }
+                }
+            }
+
+            // Advance past all events at this frame to avoid re-sending them
+            minEventFrame = nextEventFrame + 1;
+        }
+
+        // Render any remaining frames after the last event
+        int remaining = framesToProcess - currentFrame;
+        if (remaining > 0) {
+            clearRenderBuffer(remaining);
+            try {
+                state.renderer.render(midiRenderBuffer, remaining);
+            } catch (Exception e) {
+                LOG.log(Level.WARNING, "MIDI render failed", e);
+                return;
+            }
+
+            int channels = Math.min(midiRenderBuffer.length, trackBuffer.length);
+            for (int ch = 0; ch < channels; ch++) {
+                for (int f = 0; f < remaining; f++) {
+                    trackBuffer[ch][frameOffset + currentFrame + f] += midiRenderBuffer[ch][f];
+                }
             }
         }
     }
@@ -345,7 +504,7 @@ final class MidiTrackRenderer implements AutoCloseable {
 
     private void clearRenderBuffer(int framesToProcess) {
         for (float[] channel : midiRenderBuffer) {
-            java.util.Arrays.fill(channel, 0, framesToProcess, 0.0f);
+            Arrays.fill(channel, 0, framesToProcess, 0.0f);
         }
     }
 
