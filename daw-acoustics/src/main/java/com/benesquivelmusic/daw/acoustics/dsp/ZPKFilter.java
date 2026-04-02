@@ -56,9 +56,9 @@ public final class ZPKFilter extends IIRFilter2 {
 
     private void updateCoefficients(double[] zpk) {
         double z1 = zpk[0], z2 = zpk[1], p1 = zpk[2], p2 = zpk[3], k = zpk[4];
-        b0 = Definitions.pow10(k);
-        b1 = -(z1 + z2) * b0;
-        b2 = (z1 * z2) * b0;
+        b0 = k;
+        b1 = -k * (z1 + z2);
+        b2 = k * z1 * z2;
         a1 = -(p1 + p2);
         a2 = p1 * p2;
     }

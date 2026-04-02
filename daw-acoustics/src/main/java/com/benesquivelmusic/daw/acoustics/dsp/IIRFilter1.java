@@ -24,7 +24,7 @@ public abstract class IIRFilter1 {
     }
 
     public double getOutput(double input, double lerpFactor) {
-        if (!initialised.get()) return input;
+        if (!initialised.get()) return 0.0;
         if (clearBuffers.compareAndSet(true, false)) y0 = 0.0;
         if (!parametersEqual.get()) interpolateParameters(lerpFactor);
         double output = b0 * input + y0;
@@ -42,9 +42,10 @@ public abstract class IIRFilter1 {
             double sinW = Math.sin(omega);
             double numRe = b0 + b1 * cosW;
             double numIm = -b1 * sinW;
-            double denRe = a0 + a1 * cosW;
+            double denRe = 1.0 + a1 * cosW;
             double denIm = -a1 * sinW;
-            response.set(i, Math.sqrt((numRe * numRe + numIm * numIm) / (denRe * denRe + denIm * denIm)));
+            double mag = Math.sqrt((numRe * numRe + numIm * numIm) / (denRe * denRe + denIm * denIm));
+            response.set(i, 20.0 * Definitions.log10(mag));
         }
         return response;
     }

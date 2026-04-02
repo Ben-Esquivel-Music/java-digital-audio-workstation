@@ -25,13 +25,18 @@ public final class PeakHighShelf extends IIRFilter2Param1 {
 
     @Override
     protected void updateCoefficients(double gain) {
-        double sqrtA = Math.sqrt(gain);
-        double norm = (sqrtA + 1.0) - (sqrtA - 1.0) * cosOmega + alpha * sqrtA;
-        b0 = (sqrtA * ((sqrtA + 1.0) + (sqrtA - 1.0) * cosOmega + alpha * sqrtA)) / norm;
-        b1 = (-2.0 * sqrtA * ((sqrtA - 1.0) + (sqrtA + 1.0) * cosOmega)) / norm;
-        b2 = (sqrtA * ((sqrtA + 1.0) + (sqrtA - 1.0) * cosOmega - alpha * sqrtA)) / norm;
+        double A = Math.sqrt(gain);
+        double v1 = A + 1.0;
+        double v2 = A - 1.0;
+        double v3 = v1 * cosOmega;
+        double v4 = v2 * cosOmega;
+        double v5 = Math.sqrt(A) * alpha; // 2 * sqrt(A) * alpha_standard
+        double norm = v1 - v4 + v5;
         a0 = 1.0;
-        a1 = (2.0 * ((sqrtA - 1.0) - (sqrtA + 1.0) * cosOmega)) / norm;
-        a2 = ((sqrtA + 1.0) - (sqrtA - 1.0) * cosOmega - alpha * sqrtA) / norm;
+        a1 = (2.0 * (v2 - v3)) / norm;
+        a2 = (v1 - v4 - v5) / norm;
+        b0 = A * (v1 + v4 + v5) / norm;
+        b1 = -2.0 * A * (v2 + v3) / norm;
+        b2 = A * (v1 + v4 - v5) / norm;
     }
 }

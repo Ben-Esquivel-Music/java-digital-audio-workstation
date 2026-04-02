@@ -50,13 +50,13 @@ public final class HighShelf extends IIRFilter1 {
     }
 
     private void updateCoefficients(double fc, double gain) {
-        double omega = Definitions.PI_2 * fc * T;
-        double fPre = 2.0 * fc * Math.tan(omega / 2.0);
-        double A = gain * T * fPre;
-        double B = A + 2.0 * gain;
-        double C = T * fPre + 2.0;
-        b0 = B / C;
-        a1 = (T * fPre - 2.0) / C;
-        b1 = (A - 2.0 * gain) / C;
+        double omega = Definitions.cot(Definitions.PI_1 * fc * T); // 2 * PI * fc * T / 2
+        double sqrtG = Math.sqrt(gain);
+        double v1 = omega / sqrtG;
+        double v2 = omega * sqrtG;
+        a0 = 1.0 / (1.0 + v1); // a0 isn't used in getOutput
+        a1 = (1.0 - v1) * a0;
+        b0 = (1.0 + v2) * a0;
+        b1 = (1.0 - v2) * a0;
     }
 }

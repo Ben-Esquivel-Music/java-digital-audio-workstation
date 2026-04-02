@@ -41,25 +41,33 @@ public final class FIRFilter {
     }
 
     public double getOutput(double input, double lerpFactor) {
-        if (!initialised.get()) return input;
+        if (!initialised.get()) return 0.0;
 
         if (clearInputLine.compareAndSet(true, false)) inputLine.reset();
 
         if (!irsEqual.get()) interpolateIR(lerpFactor);
 
         double[] line = inputLine.rawData();
+        double[] ir = currentIR.rawData();
+
+        // Using a double buffer size to avoid checks in process loop
         line[count] = input;
         line[count + maxFilterLength] = input;
 
         double output = 0.0;
-        double[] ir = currentIR.rawData();
-        int baseIdx = count;
-        for (int i = 0; i < irLength; i++) {
-            output += ir[i] * line[baseIdx + maxFilterLength - i];
+        int index = count;
+        for (int i = 0; i < irLength; i += 8) {
+            output += ir[i] * line[index++];
+            output += ir[i + 1] * line[index++];
+            output += ir[i + 2] * line[index++];
+            output += ir[i + 3] * line[index++];
+            output += ir[i + 4] * line[index++];
+            output += ir[i + 5] * line[index++];
+            output += ir[i + 6] * line[index++];
+            output += ir[i + 7] * line[index++];
         }
 
-        count++;
-        if (count >= maxFilterLength) count = 0;
+        if (--count < 0) count = maxFilterLength - 1;
 
         return output;
     }

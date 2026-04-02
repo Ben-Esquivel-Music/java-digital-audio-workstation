@@ -25,14 +25,15 @@ public final class PeakingFilter extends IIRFilter2Param1 {
 
     @Override
     protected void updateCoefficients(double gain) {
-        double alphaTimesGain = alpha * gain;
-        double alphaOverGain = alpha / gain;
-        double norm = 1.0 + alphaOverGain;
-        b0 = (1.0 + alphaTimesGain) / norm;
-        b1 = cosOmega / norm;
-        b2 = (1.0 - alphaTimesGain) / norm;
+        double A = Math.sqrt(gain);
+        double v1 = alpha * A;
+        double v2 = alpha / A;
+        double norm = 1.0 + v2;
         a0 = 1.0;
-        a1 = b1;
-        a2 = (1.0 - alphaOverGain) / norm;
+        a1 = cosOmega / norm;
+        a2 = (1.0 - v2) / norm;
+        b0 = (1.0 + v1) / norm;
+        b1 = a1;
+        b2 = (1.0 - v1) / norm;
     }
 }
