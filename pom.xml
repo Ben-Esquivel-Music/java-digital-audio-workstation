@@ -76,6 +76,11 @@
                 <artifactId>daw-core</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <dependency>
+                <groupId>com.benesquivelmusic</groupId>
+                <artifactId>daw-acoustics</artifactId>
+                <version>${project.version}</version>
+            </dependency>
 
             <!-- JavaFX -->
             <dependency>

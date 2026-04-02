@@ -33,7 +33,7 @@ import java.util.Random;
  * from SOFA files via {@link com.benesquivelmusic.daw.core.spatial.binaural.SofaFileParser}.</p>
  *
  * @see FftUtils
- * @see FdnRoomSimulator
+ * @see com.benesquivelmusic.daw.acoustics.simulator.AcousticsRoomSimulator
  */
 public final class SpatialRirResynthesizer {
 

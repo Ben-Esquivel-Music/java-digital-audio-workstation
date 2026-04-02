@@ -22,6 +22,10 @@
             <groupId>com.benesquivelmusic</groupId>
             <artifactId>daw-sdk</artifactId>
         </dependency>
+        <dependency>
+            <groupId>com.benesquivelmusic</groupId>
+            <artifactId>daw-acoustics</artifactId>
+        </dependency>
     </dependencies>
 
     <build>

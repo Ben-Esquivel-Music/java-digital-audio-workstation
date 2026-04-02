@@ -29,7 +29,7 @@ import java.util.Objects;
  *       {@link HrtfInterpolator} for directional filtering.</li>
  *   <li><b>Room coloration</b> — subtle low-order Feedback Delay Network
  *       (FDN) reverb with Householder feedback matrix, reusing techniques
- *       from {@link com.benesquivelmusic.daw.core.spatial.room.FdnRoomSimulator},
+ *       from {@link com.benesquivelmusic.daw.acoustics.simulator.AcousticsRoomSimulator},
  *       to add environmental context.</li>
  *   <li><b>Headphone compensation EQ</b> — a high-shelf
  *       {@link BiquadFilter} to compensate for headphone response

@@ -1,8 +1,8 @@
 package com.benesquivelmusic.daw.core.spatial.binaural;
 
-import com.benesquivelmusic.daw.core.spatial.room.FdnRoomSimulator;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.spatial.HrtfData;
+import com.benesquivelmusic.daw.sdk.spatial.RoomSimulator;
 import com.benesquivelmusic.daw.sdk.spatial.SphericalCoordinate;
 
 import java.util.Arrays;
@@ -31,7 +31,7 @@ import java.util.Objects;
  *   <li>Early reflection modeling (3 reflections per speaker) for enhanced
  *       externalization, based on HRTF-filtered virtual reflections at
  *       offset azimuths and elevations</li>
- *   <li>Room simulation via {@link FdnRoomSimulator} for an ambient
+ *   <li>Room simulation via {@link RoomSimulator} for an ambient
  *       reverb tail</li>
  * </ul>
  *
@@ -79,7 +79,7 @@ public final class StereoToBinauralConverter implements AudioProcessor {
     private PartitionedConvolver rightToRightEar;
 
     // Optional room simulator for ambient tail
-    private FdnRoomSimulator roomSimulator;
+    private RoomSimulator roomSimulator;
 
     // Pre-allocated workspace buffers (avoid allocation in process)
     private final float[] leftInputPadded;
@@ -278,17 +278,17 @@ public final class StereoToBinauralConverter implements AudioProcessor {
      * Sets an optional room simulator for ambient tail generation.
      *
      * <p>The simulator must be pre-configured via
-     * {@link FdnRoomSimulator#configure} before being set here.
+     * {@link RoomSimulator#configure} before being set here.
      * Pass {@code null} to disable room simulation.</p>
      *
      * @param simulator the configured room simulator, or {@code null}
      */
-    public void setRoomSimulator(FdnRoomSimulator simulator) {
+    public void setRoomSimulator(RoomSimulator simulator) {
         this.roomSimulator = simulator;
     }
 
     /** Returns the currently set room simulator, or {@code null} if none. */
-    public FdnRoomSimulator getRoomSimulator() {
+    public RoomSimulator getRoomSimulator() {
         return roomSimulator;
     }
 
