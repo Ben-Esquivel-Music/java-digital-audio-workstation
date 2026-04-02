@@ -17,6 +17,8 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 057 | [Connect Audio Engine Playback Pipeline to Hardware Output](057-audio-engine-hardware-playback-loop.md) | 🔴 Critical | Audio Engine |
 | 060 | [Complete Recording Pipeline with Audio Capture and Clip Creation](060-recording-audio-capture-integration.md) | 🔴 Critical | Recording |
 | 063 | [Complete Project Serialization Including Clips, Mixer, and Automation](063-project-serialization-full-state.md) | 🔴 Critical | Persistence |
+| 067 | [MIDI Track Playback via SoundFont Synthesis in Audio Engine](067-midi-playback-soundfont-synthesis.md) | 🔴 Critical | Audio Engine |
+| 074 | [Wire MIDI Recording Pipeline into Transport and Arrangement View](074-midi-recording-pipeline-integration.md) | 🔴 Critical | Recording |
 
 ## Arrangement View & Editing
 
@@ -36,6 +38,11 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 059 | [Automation Lane UI Rendering and Breakpoint Editing](059-automation-lane-ui-rendering.md) | 🟠 High | Automation |
 | 061 | [Interactive Clip Fade-In and Fade-Out Handles in Arrangement View](061-clip-fade-handles.md) | 🟠 High | Editing |
 | 064 | [Audio File Import with Clip Placement in Arrangement View](064-audio-file-import-to-arrangement.md) | 🟠 High | File I/O |
+| 070 | [Implement Clip Paste Over, Trim to Selection, and Crop Operations](070-clip-paste-over-trim-to-selection-crop.md) | 🟠 High | Editing |
+| 071 | [Loop Region Visualization and Editing in Arrangement View](071-loop-region-visualization.md) | 🟠 High | Transport |
+| 072 | [Time Selection Range Visualization and Interaction](072-time-selection-range-visualization.md) | 🟠 High | Editing |
+| 075 | [Rubber-Band Multi-Clip Selection in Arrangement View](075-rubber-band-multi-clip-selection.md) | 🟠 High | Editing |
+| 076 | [Multi-Clip Group Move, Delete, and Duplicate](076-multi-clip-group-operations.md) | 🟠 High | Editing |
 | 031 | [Clip Crossfade Editing Between Overlapping Clips](031-clip-crossfades.md) | 🟡 Medium | Editing |
 | 032 | [Markers and Locators for Session Navigation](032-markers-and-locators.md) | 🟡 Medium | Navigation |
 | 021 | [Waveform Zoom and Scroll with Minimap Navigation](021-waveform-zoom-and-minimap.md) | 🟡 Medium | Navigation |
@@ -73,6 +80,7 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | # | Story | Priority | Area |
 |---|-------|----------|------|
 | 015 | [Mastering Chain View with Presets and A/B Comparison](015-mastering-chain-view.md) | 🟡 Medium | Mastering |
+| 073 | [Mastering Chain Live Audio Processing and Gain Reduction Metering](073-mastering-chain-live-processing.md) | 🟠 High | Mastering |
 | 025 | [Album Sequencing and Assembly View](025-album-sequencing.md) | 🟡 Medium | Mastering |
 | 041 | [Reference Track A/B Comparison](041-reference-track-comparison.md) | 🟡 Medium | Mixing |
 
@@ -81,6 +89,8 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | # | Story | Priority | Area |
 |---|-------|----------|------|
 | 011 | [Multi-Format Audio Export with Dithering and Sample Rate Conversion](011-multi-format-export.md) | 🟠 High | Export |
+| 068 | [Support FLAC, AIFF, OGG, and MP3 Audio File Import](068-non-wav-audio-file-import.md) | 🟠 High | File I/O |
+| 069 | [Support OGG, MP3, and AAC Audio Export Formats](069-ogg-mp3-aac-audio-export.md) | 🟠 High | Export |
 | 029 | [Track Stem Export (Bounce Individual Tracks)](029-track-stem-export.md) | 🟡 Medium | Export |
 | 020 | [DAWproject Format Import/Export for Session Interoperability](020-dawproject-import-export.md) | 🟡 Medium | Interop |
 | 026 | [ADM BWF Export for Dolby Atmos Deliverables](026-adm-bwf-atmos-export.md) | 🟢 Low | Immersive |
