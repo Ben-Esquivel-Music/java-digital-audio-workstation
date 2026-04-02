@@ -23,9 +23,10 @@ import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
  *   <li>Convolution-based audio processing (via {@link AudioProcessor})</li>
  * </ul>
  *
- * <p>Implementations may use a pure-Java fallback (FDN) or a native
- * accelerated path via the FFM API (JEP 454) binding to the
- * RoomAcoustiC++ library.</p>
+ * <p>Implementations may use the pure-Java daw-acoustics engine (ported
+ * from RoomAcoustiCpp) which provides image-source early reflections,
+ * FDN late reverberation, and frequency-dependent absorption — no native
+ * library is required.</p>
  */
 public interface RoomSimulator extends AudioProcessor {
 
@@ -101,8 +102,12 @@ public interface RoomSimulator extends AudioProcessor {
     ImpulseResponse generateImpulseResponse();
 
     /**
-     * Returns whether this simulator is using native acceleration via
-     * the RoomAcoustiC++ FFM bridge.
+     * Returns whether this simulator is using native acceleration.
+     *
+     * <p>As of the daw-acoustics engine integration, the built-in
+     * implementations are pure-Java and typically return {@code false}
+     * here. Third-party or future implementations may override this
+     * behavior to take advantage of native acceleration.</p>
      *
      * @return {@code true} if native acceleration is active
      */
