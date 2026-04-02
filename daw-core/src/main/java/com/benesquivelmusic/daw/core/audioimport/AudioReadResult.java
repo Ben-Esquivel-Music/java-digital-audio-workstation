@@ -27,6 +27,24 @@ public record AudioReadResult(float[][] audioData, int sampleRate, int channels,
         if (bitDepth < 0) {
             throw new IllegalArgumentException("bitDepth must not be negative: " + bitDepth);
         }
+        if (audioData.length != channels) {
+            throw new IllegalArgumentException(
+                    "audioData length must match channels: audioData.length=" + audioData.length
+                            + ", channels=" + channels);
+        }
+        int expectedFrames = -1;
+        for (int channel = 0; channel < audioData.length; channel++) {
+            float[] channelData = Objects.requireNonNull(
+                    audioData[channel],
+                    "audioData[" + channel + "] must not be null");
+            if (expectedFrames == -1) {
+                expectedFrames = channelData.length;
+            } else if (channelData.length != expectedFrames) {
+                throw new IllegalArgumentException(
+                        "All channel arrays must have the same frame count: audioData[" + channel
+                                + "].length=" + channelData.length + ", expected=" + expectedFrames);
+            }
+        }
     }
 
     /** Returns the total number of sample frames. */

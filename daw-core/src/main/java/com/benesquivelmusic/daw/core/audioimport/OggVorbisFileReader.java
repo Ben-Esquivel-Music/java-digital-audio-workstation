@@ -25,9 +25,9 @@ public final class OggVorbisFileReader {
      *
      * @param path the path to the OGG file
      * @return the decoded audio result containing samples and format info
-     * @throws IOException              if an I/O error occurs or OGG decoding is
-     *                                  not supported in this environment
-     * @throws IllegalArgumentException if the file is not a valid OGG file
+     * @throws IOException if an I/O error occurs, the file cannot be decoded
+     *                     as OGG Vorbis, or OGG decoding is not supported in
+     *                     this environment
      */
     public static AudioReadResult read(Path path) throws IOException {
         Objects.requireNonNull(path, "path must not be null");

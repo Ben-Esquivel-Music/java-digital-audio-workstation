@@ -143,6 +143,10 @@ public final class AiffFileReader {
         if (numFrames <= 0) {
             throw new IllegalArgumentException("Invalid number of frames: " + numFrames);
         }
+        if (bitDepth != 8 && bitDepth != 16 && bitDepth != 24 && bitDepth != 32) {
+            throw new IllegalArgumentException("Unsupported AIFF bit depth: " + bitDepth
+                    + " (supported: 8, 16, 24, 32)");
+        }
 
         int bytesPerSample = bitDepth / 8;
         int bytesPerFrame = channels * bytesPerSample;

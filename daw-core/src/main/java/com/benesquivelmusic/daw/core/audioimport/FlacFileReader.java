@@ -580,13 +580,18 @@ public final class FlacFileReader {
                 bitsInBuffer += 8;
             }
             bitsInBuffer -= n;
-            int value = (bitBuffer >> bitsInBuffer) & ((1 << n) - 1);
-            bitBuffer &= (1 << bitsInBuffer) - 1;
+            int valueMask = (n == 32) ? -1 : ((1 << n) - 1);
+            int value = (bitBuffer >> bitsInBuffer) & valueMask;
+            int bufferMask = (bitsInBuffer == 32) ? -1 : ((1 << bitsInBuffer) - 1);
+            bitBuffer &= bufferMask;
             return value;
         }
 
         int readSignedBits(int n) {
             int value = readBits(n);
+            if (n == 32) {
+                return value;
+            }
             // Sign-extend
             if (n > 0 && (value & (1 << (n - 1))) != 0) {
                 value |= (-1 << n);

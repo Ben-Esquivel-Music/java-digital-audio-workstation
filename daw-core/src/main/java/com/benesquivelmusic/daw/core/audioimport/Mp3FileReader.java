@@ -25,9 +25,9 @@ public final class Mp3FileReader {
      *
      * @param path the path to the MP3 file
      * @return the decoded audio result containing samples and format info
-     * @throws IOException              if an I/O error occurs or MP3 decoding is
-     *                                  not supported in this environment
-     * @throws IllegalArgumentException if the file is not a valid MP3 file
+     * @throws IOException if an I/O error occurs, the file cannot be decoded
+     *                     as MP3, or MP3 decoding is not supported in this
+     *                     environment
      */
     public static AudioReadResult read(Path path) throws IOException {
         Objects.requireNonNull(path, "path must not be null");

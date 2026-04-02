@@ -61,9 +61,14 @@ final class AudioSystemDecoder {
             AudioInputStream pcmStream;
             if (AudioSystem.isConversionSupported(targetFormat, sourceFormat)) {
                 pcmStream = AudioSystem.getAudioInputStream(targetFormat, sourceStream);
-            } else {
-                // Source is already PCM or no conversion available
+            } else if (sourceFormat.getEncoding() == AudioFormat.Encoding.PCM_SIGNED
+                    || sourceFormat.getEncoding() == AudioFormat.Encoding.PCM_UNSIGNED) {
+                // Source is already PCM — use it directly
                 pcmStream = sourceStream;
+            } else {
+                throw new IOException(
+                        formatName + " decoding failed: no PCM conversion available for encoding "
+                                + sourceFormat.getEncoding() + ". Install a compatible audio SPI.");
             }
 
             try (pcmStream) {
@@ -71,6 +76,11 @@ final class AudioSystemDecoder {
                 int channels = format.getChannels();
                 int sampleRate = (int) format.getSampleRate();
                 int sampleSizeInBits = format.getSampleSizeInBits();
+
+                if (sampleSizeInBits <= 0) {
+                    throw new IOException(
+                            formatName + " decoding failed: unknown sample size from audio stream.");
+                }
 
                 // Read all PCM bytes
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();

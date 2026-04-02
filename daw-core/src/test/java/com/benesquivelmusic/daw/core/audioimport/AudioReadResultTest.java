@@ -54,4 +54,32 @@ class AudioReadResultTest {
         assertThatThrownBy(() -> new AudioReadResult(audioData, 44100, 2, -1))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void shouldRejectChannelMismatch() {
+        float[][] audioData = new float[1][100]; // 1 channel array but channels=2
+        assertThatThrownBy(() -> new AudioReadResult(audioData, 44100, 2, 16))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("audioData length must match channels");
+    }
+
+    @Test
+    void shouldRejectNullChannelArray() {
+        float[][] audioData = new float[2][];
+        audioData[0] = new float[100];
+        audioData[1] = null;
+        assertThatThrownBy(() -> new AudioReadResult(audioData, 44100, 2, 16))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("audioData[1]");
+    }
+
+    @Test
+    void shouldRejectInconsistentFrameCounts() {
+        float[][] audioData = new float[2][];
+        audioData[0] = new float[100];
+        audioData[1] = new float[200];
+        assertThatThrownBy(() -> new AudioReadResult(audioData, 44100, 2, 16))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("same frame count");
+    }
 }
