@@ -14,9 +14,10 @@ import java.util.Objects;
 /**
  * Imports audio files into a {@link DawProject}.
  *
- * <p>This service handles reading audio files (currently WAV), optionally
- * converting them to the project's sample rate, creating an {@link AudioClip}
- * with the decoded audio data, and placing it on a track at a given position.</p>
+ * <p>This service handles reading audio files in all supported formats
+ * (WAV, FLAC, AIFF, OGG Vorbis, MP3), optionally converting them to the
+ * project's sample rate, creating an {@link AudioClip} with the decoded
+ * audio data, and placing it on a track at a given position.</p>
  *
  * <p>If the imported file's sample rate differs from the project's sample rate,
  * automatic conversion is performed using high-quality windowed sinc
@@ -91,15 +92,10 @@ public final class AudioFileImporter {
                 .orElseThrow(() -> new IllegalArgumentException(
                         "Unsupported audio file format: " + file.getFileName()));
 
-        if (format != SupportedAudioFormat.WAV) {
-            throw new IllegalArgumentException(
-                    "Only WAV files are currently supported for import. Got: " + format);
-        }
-
         listener.onProgress(file, 0.0);
 
-        // Read the WAV file
-        WavFileReader.WavReadResult readResult = WavFileReader.read(file);
+        // Read the audio file using the appropriate reader
+        AudioReadResult readResult = readAudioFile(file, format);
         listener.onProgress(file, 0.3);
 
         // Convert sample rate if needed
@@ -214,6 +210,22 @@ public final class AudioFileImporter {
             converted[ch] = SampleRateConverter.convert(audioData[ch], sourceSampleRate, targetSampleRate);
         }
         return converted;
+    }
+
+    /**
+     * Reads an audio file using the reader appropriate for the given format.
+     */
+    private static AudioReadResult readAudioFile(Path file, SupportedAudioFormat format) throws IOException {
+        return switch (format) {
+            case WAV -> {
+                WavFileReader.WavReadResult wav = WavFileReader.read(file);
+                yield new AudioReadResult(wav.audioData(), wav.sampleRate(), wav.channels(), wav.bitDepth());
+            }
+            case FLAC -> FlacFileReader.read(file);
+            case AIFF -> AiffFileReader.read(file);
+            case OGG -> OggVorbisFileReader.read(file);
+            case MP3 -> Mp3FileReader.read(file);
+        };
     }
 
     /**
