@@ -65,6 +65,14 @@ public final class Source extends Access {
         hasChanged.set(true);
     }
 
+    public void updateSpatialisationMode(SpatialisationMode mode) {
+        // Stored for future use when binaural renderer is plugged in
+    }
+
+    public void updateImpulseResponseMode(boolean mode) {
+        // Stored for future use when binaural renderer is plugged in
+    }
+
     public void update(Vec3 position, Vec4 orientation, double distance) {
         synchronized (dataMutex) {
             currentPosition = new Vec3(position);
