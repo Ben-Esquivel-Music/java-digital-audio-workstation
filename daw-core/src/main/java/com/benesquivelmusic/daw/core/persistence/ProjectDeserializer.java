@@ -65,6 +65,9 @@ import org.xml.sax.SAXException;
  */
 public final class ProjectDeserializer {
 
+    /** Maximum valid azimuth value — just below 360° (exclusive upper bound). */
+    private static final double MAX_AZIMUTH_EXCLUSIVE = Math.nextDown(360.0);
+
     private final List<String> missingFiles = new ArrayList<>();
 
     /**
@@ -811,7 +814,7 @@ public final class ProjectDeserializer {
             if (normalizedAzimuth < 0) {
                 normalizedAzimuth += 360.0;
             }
-            double azimuth = clampDouble(normalizedAzimuth, 0.0, Math.nextDown(360.0));
+            double azimuth = clampDouble(normalizedAzimuth, 0.0, MAX_AZIMUTH_EXCLUSIVE);
             double elevation = clampDouble(parseDoubleAttr(micElem, "elevation", 0), -90, 90);
             config.addMicrophone(new MicrophonePlacement(name, new Position3D(x, y, z),
                     azimuth, elevation));
