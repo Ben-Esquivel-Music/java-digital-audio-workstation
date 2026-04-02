@@ -20,15 +20,13 @@ public final class HighPass extends IIRFilter2Param1 {
 
     @Override
     protected void updateCoefficients(double fc) {
-        double omega = Definitions.PI_2 * fc * T;
-        double cosW = Math.cos(omega);
-        double alpha = Math.sin(omega) / Definitions.SQRT_2;
-        double norm = 1.0 + alpha;
-        b0 = (1.0 + cosW) / (2.0 * norm);
-        b1 = -(1.0 + cosW) / norm;
-        b2 = b0;
-        a0 = 1.0;
-        a1 = -2.0 * cosW / norm;
-        a2 = (1.0 - alpha) / norm;
+        double omega = Definitions.cot(Definitions.PI_1 * fc * T); // 2 * PI * fc * T / 2
+        double omega_sq = omega * omega;
+        a0 = 1.0 / (1.0 + Definitions.SQRT_2 * omega + omega_sq); // a0 isn't used in getOutput
+        a1 = (2.0 - 2.0 * omega_sq) * a0;
+        a2 = (1.0 - Definitions.SQRT_2 * omega + omega_sq) * a0;
+        b0 = omega_sq * a0;
+        b1 = -2.0 * omega_sq * a0;
+        b2 = omega_sq * a0;
     }
 }

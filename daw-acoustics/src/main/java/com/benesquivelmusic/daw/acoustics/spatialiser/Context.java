@@ -32,7 +32,7 @@ public final class Context {
         this.reverb = new Reverb(config);
         this.sources = new SourceManager(config);
         this.imageEdgeModel = new ImageEdge(room, config);
-        this.headphoneEQ = new HeadphoneEQ(config.numFrames);
+        this.headphoneEQ = new HeadphoneEQ(2048);
         this.reverbInput = new Matrix(config.numReverbSources, config.numFrames);
         this.isRunning.set(true);
     }
@@ -64,10 +64,12 @@ public final class Context {
 
     public void updateReverbTime(ReverbFormula model) {
         room.updateReverbTimeFormula(model);
+        reverb.setTargetT60(room.getReverbTime());
     }
 
     public void updateReverbTime(Coefficients T60) {
         room.updateReverbTime(T60);
+        reverb.setTargetT60(room.getReverbTime());
     }
 
     public void updateDiffractionModel(DiffractionModel model) {
@@ -79,6 +81,7 @@ public final class Context {
     public ImageEdge getImageEdgeModel() { return imageEdgeModel; }
 
     public boolean initLateReverb(double volume, double[] dimensions, FDNMatrix matrix) {
+        if (dimensions == null || dimensions.length == 0) return false;
         Coefficients T60 = room.getReverbTime(volume);
         reverb.initLateReverb(T60, dimensions, matrix, config);
         return true;
@@ -104,13 +107,18 @@ public final class Context {
     public void removeSource(long id) { sources.removeSource(id); }
 
     public long initWall(Vec3[] vertices, Absorption absorption) {
-        return room.initWall(vertices, absorption);
+        if (absorption.length() != config.frequencyBands.length()) return -1;
+        long id = room.initWall(vertices, absorption);
+        room.initEdges(id);
+        return id;
     }
 
     public void updateWall(long id, Vec3[] vData) { room.updateWall(id, vData); }
 
     public void updateWallAbsorption(long id, Absorption absorption) {
+        if (absorption.length() != config.frequencyBands.length()) return;
         room.updateWallAbsorption(id, absorption);
+        reverb.setTargetT60(room.getReverbTime());
     }
 
     public void removeWall(long id) { room.removeWall(id); }
@@ -131,6 +139,8 @@ public final class Context {
             outputBuffer.resize(2 * config.numFrames);
 
         outputBuffer.reset();
+        reverbInput.reset();
+        double lerpFactor = config.getLerpFactor();
 
         // Process sources: direct, reflections, etc.
         // In the full C++ implementation, this calls into 3DTI for binaural processing.
@@ -148,15 +158,12 @@ public final class Context {
         }
 
         // Process late reverberation
-        reverb.processAudio(reverbInput, outputBuffer, config.getLerpFactor());
+        reverb.processAudio(reverbInput, outputBuffer, lerpFactor);
+        reverbInput.reset();
 
         // Apply headphone EQ if set
-        if (applyHeadphoneEQ) {
-            Buffer eqOutput = new Buffer(outputBuffer.length());
-            headphoneEQ.processAudio(outputBuffer, eqOutput, config.getLerpFactor());
-            for (int i = 0; i < outputBuffer.length(); i++)
-                outputBuffer.set(i, eqOutput.get(i));
-        }
+        if (applyHeadphoneEQ)
+            headphoneEQ.processAudio(outputBuffer, outputBuffer, lerpFactor);
     }
 
     public void updateImpulseResponseMode(boolean mode) {

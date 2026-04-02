@@ -35,64 +35,78 @@ public final class GraphicEQ {
     }
 
     public GraphicEQ(Coefficients gain, Coefficients fc, double Q, int sampleRate) {
-        numFilters = fc.length();
+        numFilters = gain.length() + 2;
         previousInput = new Coefficients(gain);
 
-        lowShelf = new PeakLowShelf(fc.get(0), Q, sampleRate);
-        peakingFilters = new ArrayList<>();
-        for (int i = 1; i < numFilters - 1; i++)
-            peakingFilters.add(new PeakingFilter(fc.get(i), Q, sampleRate));
-        highShelf = new PeakHighShelf(fc.get(numFilters - 1), Q, sampleRate);
+        Coefficients f = createFrequencyVector(fc);
 
-        initMatrix(fc, Q, sampleRate);
+        initMatrix(f, Q, sampleRate);
 
         var result = calculateGains(gain);
-        Rowvec filterGains = result.filterGains();
+        double[] filterGains = result.filterGains;
 
-        lowShelf.setTargetGain(filterGains.get(0));
-        for (int i = 0; i < peakingFilters.size(); i++)
-            peakingFilters.get(i).setTargetGain(filterGains.get(i + 1));
-        highShelf.setTargetGain(filterGains.get(numFilters - 1));
+        // Increasing the low shelf frequency by SQRT_2 creates a smoother response at low frequencies
+        lowShelf = new PeakLowShelf(f.get(0) * Definitions.SQRT_2, filterGains[0], Q, sampleRate);
+        peakingFilters = new ArrayList<>();
+        for (int i = 1; i < numFilters - 1; i++)
+            peakingFilters.add(new PeakingFilter(f.get(i), filterGains[i], Q, sampleRate));
+        // Increasing the high shelf frequency by SQRT_2 creates a smoother response at high frequencies
+        highShelf = new PeakHighShelf(Math.min(f.get(numFilters - 2) * Definitions.SQRT_2, 20000.0), filterGains[numFilters - 1], Q, sampleRate);
 
-        targetGain = new AtomicReference<>(result.dcGain());
-        currentGain = result.dcGain();
+        targetGain = new AtomicReference<>(result.dcGain);
+        currentGain = result.dcGain;
 
         gainsEqual.set(true);
         initialised.set(true);
     }
 
     public boolean setTargetGains(Coefficients gains) {
-        if (Interpolation.equals(gains, previousInput)) return false;
+        if (Interpolation.equals(gains, previousInput)) {
+            if (gainsEqual.get() && gains.allLessOrEqual(0.0))
+                return true;
+            return false;
+        }
         previousInput = new Coefficients(gains);
 
         var result = calculateGains(gains);
-        Rowvec filterGains = result.filterGains();
+        double[] filterGains = result.filterGains;
 
-        lowShelf.setTargetGain(filterGains.get(0));
-        for (int i = 0; i < peakingFilters.size(); i++)
-            peakingFilters.get(i).setTargetGain(filterGains.get(i + 1));
-        highShelf.setTargetGain(filterGains.get(numFilters - 1));
-
-        targetGain.set(result.dcGain());
+        targetGain.set(result.dcGain);
         gainsEqual.set(false);
-        return true;
+        lowShelf.setTargetGain(filterGains[0]);
+        for (int i = 0; i < peakingFilters.size(); i++)
+            peakingFilters.get(i).setTargetGain(filterGains[i + 1]);
+        highShelf.setTargetGain(filterGains[numFilters - 1]);
+        return gains.allLessOrEqual(0.0);
     }
 
     public double getOutput(double input, double lerpFactor) {
-        if (!initialised.get()) return input;
+        if (!initialised.get()) return 0.0;
+
         if (!gainsEqual.get()) interpolateGain(lerpFactor);
 
-        double output = input * currentGain;
-        output = lowShelf.getOutput(output, lerpFactor);
+        if (numFilters == 3) // Only one peaking filter: single band EQ is just a gain
+            return input * currentGain;
+
+        double out = lowShelf.getOutput(input, lerpFactor);
         for (PeakingFilter f : peakingFilters)
-            output = f.getOutput(output, lerpFactor);
-        output = highShelf.getOutput(output, lerpFactor);
-        return output;
+            out = f.getOutput(out, lerpFactor);
+        out = highShelf.getOutput(out, lerpFactor);
+        out *= currentGain;
+        return out;
     }
 
     public void processAudio(Buffer inBuffer, Buffer outBuffer, double lerpFactor) {
+        if (!initialised.get()) {
+            outBuffer.reset();
+            return;
+        }
+        if (currentGain == 0.0 && gainsEqual.get()) {
+            outBuffer.reset();
+            return;
+        }
         for (int i = 0; i < inBuffer.length(); i++)
-            outBuffer.set(i, outBuffer.get(i) + getOutput(inBuffer.get(i), lerpFactor));
+            outBuffer.set(i, getOutput(inBuffer.get(i), lerpFactor));
     }
 
     public void clearBuffers() {
@@ -110,72 +124,91 @@ public final class GraphicEQ {
     }
 
     private void initMatrix(Coefficients fc, double Q, double fs) {
-        Coefficients fVec = createFrequencyVector(fc);
-        int n = fVec.length();
+        double pdb = 6.0;
+        double p = Math.pow(10.0, pdb / 20.0);
 
-        Matrix respMatrix = new Matrix(n, numFilters);
+        filterResponseMatrix = new Matrix(numFilters, numFilters);
 
         // Low shelf response
-        PeakLowShelf tempLow = new PeakLowShelf(fc.get(0), 2.0, Q, (int) fs);
-        Coefficients lowResp = tempLow.getFrequencyResponse(fVec);
-        for (int i = 0; i < n; i++) respMatrix.set(i, 0, lowResp.get(i));
+        PeakLowShelf tempLowShelf = new PeakLowShelf(fc.get(0) * Definitions.SQRT_2, p, Q, (int) fs);
+        Coefficients out = tempLowShelf.getFrequencyResponse(fc);
+        for (int i = 0; i < numFilters; i++)
+            filterResponseMatrix.set(0, i, out.get(i));
 
         // Peaking filter responses
         for (int j = 1; j < numFilters - 1; j++) {
-            PeakingFilter tempPeak = new PeakingFilter(fc.get(j), 2.0, Q, (int) fs);
-            Coefficients peakResp = tempPeak.getFrequencyResponse(fVec);
-            for (int i = 0; i < n; i++) respMatrix.set(i, j, peakResp.get(i));
+            PeakingFilter tempPeakingFilter = new PeakingFilter(fc.get(j), p, Q, (int) fs);
+            out = tempPeakingFilter.getFrequencyResponse(fc);
+            for (int i = 0; i < out.length(); i++)
+                filterResponseMatrix.set(j, i, out.get(i));
         }
 
         // High shelf response
-        PeakHighShelf tempHigh = new PeakHighShelf(fc.get(numFilters - 1), 2.0, Q, (int) fs);
-        Coefficients highResp = tempHigh.getFrequencyResponse(fVec);
-        for (int i = 0; i < n; i++) respMatrix.set(i, numFilters - 1, highResp.get(i));
+        PeakHighShelf tempHighShelf = new PeakHighShelf(
+                Math.min(fc.get(numFilters - 2) * Definitions.SQRT_2, 20000.0), p, Q, (int) fs);
+        out = tempHighShelf.getFrequencyResponse(fc);
+        for (int i = 0; i < out.length(); i++)
+            filterResponseMatrix.set(numFilters - 1, i, out.get(i));
 
-        respMatrix.log10();
-
-        // Invert via normal equations: (A^T A)^-1 A^T
-        Matrix at = respMatrix.transpose();
-        Matrix ata = Matrix.multiply(at, respMatrix);
-        ata.inverse();
-        filterResponseMatrix = Matrix.multiply(ata, at);
+        filterResponseMatrix.inverse();
+        filterResponseMatrix.mulLocal(pdb);
     }
 
-    private record GainResult(Rowvec filterGains, double dcGain) {}
+    private record GainResult(double[] filterGains, double dcGain) {}
 
     private GainResult calculateGains(Coefficients gains) {
-        Coefficients fVec = createFrequencyVector(new Coefficients(numFilters));
+        double[] inputGains = new double[numFilters];
+        java.util.Arrays.fill(inputGains, 1.0);
 
-        // Convert gains to log-space target vector
-        Vec target = new Vec(fVec.length());
-        Coefficients gainLogPow = new Coefficients(gains);
-        gainLogPow.mulLocal(0.05); // gains/20
-        gainLogPow.pow10Local();
+        if (gains.allLessOrEqual(0.0))
+            return new GainResult(inputGains, 0.0);
 
-        for (int i = 0; i < fVec.length(); i++) {
-            // Interpolate to match each frequency
-            int band = Math.min(i, gainLogPow.length() - 1);
-            target.set(i, Definitions.log10(gainLogPow.get(band)));
+        if (gains.length() == 1) {
+            inputGains[0] = gains.get(0);
+            inputGains[1] = gains.get(0);
+            inputGains[2] = gains.get(0);
+        } else {
+            inputGains[0] = (gains.get(0) + gains.get(1)) / 2.0; // Low shelf gain
+            for (int i = 1; i < numFilters - 1; i++)
+                inputGains[i] = gains.get(i - 1); // Peaking filter gains
+            inputGains[numFilters - 1] = (gains.get(numFilters - 4) + gains.get(numFilters - 3)) / 2.0; // High shelf gain
         }
 
-        // Multiply filterResponseMatrix by target to get filter dB gains
-        Matrix result = Matrix.multiply(filterResponseMatrix, target);
-
-        Rowvec filterGains = new Rowvec(numFilters);
+        // Clamp to EPS, take log10
         for (int i = 0; i < numFilters; i++)
-            filterGains.set(i, Definitions.pow10(result.get(i, 0)));
+            inputGains[i] = Math.max(inputGains[i], Definitions.EPS);
+        for (int i = 0; i < numFilters; i++)
+            inputGains[i] = Definitions.log10(inputGains[i]);
 
-        // DC gain = product of all filter gains at DC / target DC gain
-        double dcGain = gainLogPow.get(0);
-        return new GainResult(filterGains, dcGain);
+        // Remove average filter gain
+        double meandBGain = 0;
+        for (double g : inputGains) meandBGain += g;
+        meandBGain /= numFilters;
+        for (int i = 0; i < numFilters; i++)
+            inputGains[i] -= meandBGain;
+
+        // Multiply row vector by filterResponseMatrix: inputGains = inputGains * filterResponseMatrix
+        double[] result = new double[numFilters];
+        for (int i = 0; i < numFilters; i++) {
+            double sum = 0;
+            for (int j = 0; j < numFilters; j++)
+                sum += inputGains[j] * filterResponseMatrix.get(j, i);
+            result[i] = sum;
+        }
+
+        // Convert back to linear
+        for (int i = 0; i < numFilters; i++)
+            result[i] = Definitions.pow10(result[i]);
+
+        return new GainResult(result, Definitions.pow10(meandBGain));
     }
 
     private Coefficients createFrequencyVector(Coefficients fc) {
-        // One point per band
-        Coefficients fVec = new Coefficients(numFilters);
-        for (int i = 0; i < numFilters; i++) {
-            fVec.set(i, previousInput.length() > i ? 20.0 * Math.pow(10.0, i * 3.0 / numFilters) : 1000.0);
-        }
-        return fVec;
+        Coefficients f = new Coefficients(numFilters);
+        f.set(0, Math.max(fc.get(0) / 2.0, 20.0));
+        for (int i = 1; i < numFilters - 1; i++)
+            f.set(i, fc.get(i - 1));
+        f.set(numFilters - 1, Math.min(fc.get(fc.length() - 1) * 2.0, 20000.0));
+        return f;
     }
 }

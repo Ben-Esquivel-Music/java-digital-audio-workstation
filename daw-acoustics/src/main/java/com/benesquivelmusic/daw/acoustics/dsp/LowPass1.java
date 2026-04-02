@@ -37,10 +37,10 @@ public final class LowPass1 extends IIRFilter1 {
     }
 
     private void updateCoefficients(double fc) {
-        double fPre = 2.0 * fc * Math.tan(Definitions.PI_2 * fc * T / 2.0);
-        double a = T * fPre + 2.0;
-        b0 = T * fPre / a;
-        b1 = b0;
-        a1 = (T * fPre - 2.0) / a;
+        double K = Definitions.PI_2 * fc * T;
+        a0 = 1.0 / (K + 2.0); // a0 isn't used in getOutput
+        a1 = (K - 2.0) * a0;
+        b0 = K * a0;
+        b1 = K * a0;
     }
 }

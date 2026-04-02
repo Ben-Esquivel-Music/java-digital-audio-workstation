@@ -47,16 +47,23 @@ public final class HighShelfMatched extends IIRFilter1 {
     }
 
     private void updateCoefficients(double fc, double gain) {
-        double fm = fc / Math.sqrt(gain);
-        double phim = 1.0 - Math.cos(Definitions.PI_2 * fm * T);
-        double phi0 = 1.0 - Math.cos(Definitions.PI_1 * T / T); // PI / sampleRate
-        double phiM = 1.0 - Math.cos(Definitions.PI_2 * fc * T * Math.sqrt(gain));
-        // Simplified matched shelf: p = sqrt( phim / phi0 ), then b0 / a0
-        double p = phim != 0 ? Math.sqrt(phim / (2.0 * (1.0 - Math.cos(Definitions.PI_2 * fm * T)))) : 0.5;
-        double gFac = gain;
-        a0 = 1.0;
-        b0 = gFac * (1.0 + p) / (1.0 + gFac * p);
-        a1 = -(1.0 - gFac * p) / (1.0 + gFac * p);
-        b1 = gFac * (1.0 - p) / (1.0 + gFac * p);
+        double fm = 0.9;
+        double fmSq = 1.0 / (fm * fm);
+        double newFc = 2.0 * fc * T;
+        newFc *= newFc;
+        double Phim = 1.0 - Math.cos(Definitions.PI_1 * fm);
+        Phim = 1.0 / Phim;
+
+        double alpha = 2.0 / Definitions.PI_SQ * (fmSq + 1.0 / (gain * newFc)) - Phim;
+        double beta = 2.0 / Definitions.PI_SQ * (fmSq + gain / newFc) - Phim;
+
+        a1 = -alpha / (1.0 + alpha + Math.sqrt(1.0 + 2.0 * alpha));
+        double bAll = -beta / (1.0 + beta + Math.sqrt(1.0 + 2.0 * beta));
+        b0 = (1.0 + alpha) / (1.0 + bAll);
+        b1 = bAll * b0;
+
+        double DCg = (b0 + b1) / (1.0 + a1);
+        b0 /= DCg;
+        b1 /= DCg;
     }
 }

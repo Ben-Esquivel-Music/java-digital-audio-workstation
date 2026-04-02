@@ -29,7 +29,7 @@ public abstract class IIRFilter {
     }
 
     public double getOutput(double input, double lerpFactor) {
-        if (!initialised.get()) return input;
+        if (!initialised.get()) return 0.0;
         if (clearBuffers.compareAndSet(true, false)) y.reset();
         if (!parametersEqual.get()) interpolateParameters(lerpFactor);
 
@@ -46,8 +46,6 @@ public abstract class IIRFilter {
         Coefficients response = new Coefficients(frequencies.length());
         for (int i = 0; i < frequencies.length(); i++) {
             double omega = Definitions.PI_2 * frequencies.get(i) * T;
-            double cosW = Math.cos(omega);
-            double sinW = Math.sin(omega);
             double numRe = 0, numIm = 0, denRe = 0, denIm = 0;
             for (int k = 0; k <= order; k++) {
                 double ck = Math.cos(k * omega);
@@ -58,7 +56,7 @@ public abstract class IIRFilter {
                 denIm -= a.get(k) * sk;
             }
             double mag = Math.sqrt((numRe * numRe + numIm * numIm) / (denRe * denRe + denIm * denIm));
-            response.set(i, mag);
+            response.set(i, 20.0 * Definitions.log10(mag));
         }
         return response;
     }

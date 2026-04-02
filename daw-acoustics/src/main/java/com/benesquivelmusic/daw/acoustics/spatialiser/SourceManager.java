@@ -100,10 +100,22 @@ public final class SourceManager {
     }
 
     public void updateSpatialisationMode(SpatialisationMode mode) {
-        // propagate to sources as needed
+        lock.readLock().lock();
+        try {
+            for (Source source : sources.values())
+                source.updateSpatialisationMode(mode);
+        } finally {
+            lock.readLock().unlock();
+        }
     }
 
     public void updateImpulseResponseMode(boolean mode) {
-        // propagate to sources as needed
+        lock.readLock().lock();
+        try {
+            for (Source source : sources.values())
+                source.updateImpulseResponseMode(mode);
+        } finally {
+            lock.readLock().unlock();
+        }
     }
 }
