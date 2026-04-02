@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.sdk.export.AudioMetadata;
 import com.benesquivelmusic.daw.sdk.export.DitherType;
+import com.benesquivelmusic.daw.core.export.FlacExporter;
 import com.benesquivelmusic.daw.core.export.WavExporter;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -300,13 +301,14 @@ class AudioFileImporterTest {
     }
 
     @Test
-    void shouldRejectNonWavSupportedFormat() throws IOException {
+    void shouldAttemptToImportMp3File() throws IOException {
         Path mp3File = tempDir.resolve("song.mp3");
         java.nio.file.Files.writeString(mp3File, "fake mp3 data");
 
+        // MP3 import is now supported — the importer should attempt to read the file
+        // and fail due to invalid data or missing SPI, not because of format rejection
         assertThatThrownBy(() -> importer.importFile(mp3File, 0.0))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("WAV");
+                .isInstanceOf(IOException.class);
     }
 
     @Test
@@ -328,5 +330,45 @@ class AudioFileImporterTest {
         Path wavFile = tempDir.resolve(fileName);
         WavExporter.write(audio, sampleRate, 16, DitherType.NONE, AudioMetadata.EMPTY, wavFile);
         return wavFile;
+    }
+
+    private Path createTestFlac(String fileName, int sampleRate, double durationSeconds) throws IOException {
+        int numSamples = (int) (sampleRate * durationSeconds);
+        float[][] audio = new float[2][numSamples];
+        for (int i = 0; i < numSamples; i++) {
+            float value = (float) (0.5 * Math.sin(2.0 * Math.PI * 440.0 * i / sampleRate));
+            audio[0][i] = value;
+            audio[1][i] = value;
+        }
+        Path flacFile = tempDir.resolve(fileName);
+        FlacExporter.write(audio, sampleRate, 16, DitherType.NONE, flacFile);
+        return flacFile;
+    }
+
+    // ── FLAC import tests ───────────────────────────────────────────────────
+
+    @Test
+    void shouldImportFlacFile() throws IOException {
+        Path flacFile = createTestFlac("track.flac", 44100, 1.0);
+
+        AudioImportResult result = importer.importFile(flacFile, 0.0);
+
+        assertThat(result.track()).isNotNull();
+        assertThat(result.clip()).isNotNull();
+        assertThat(result.sourceFile()).isEqualTo(flacFile);
+        assertThat(result.wasConverted()).isFalse();
+        assertThat(result.track().getName()).isEqualTo("track");
+        assertThat(result.clip().getAudioData()).isNotNull();
+    }
+
+    @Test
+    void shouldConvertFlacSampleRate() throws IOException {
+        // Project is 44100 Hz (CD_QUALITY), file is 48000 Hz
+        Path flacFile = createTestFlac("hires.flac", 48000, 0.5);
+
+        AudioImportResult result = importer.importFile(flacFile, 0.0);
+
+        assertThat(result.wasConverted()).isTrue();
+        assertThat(result.clip().getAudioData()).isNotNull();
     }
 }

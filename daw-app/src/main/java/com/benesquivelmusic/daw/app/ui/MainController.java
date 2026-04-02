@@ -13,6 +13,7 @@ import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audioimport.AudioFileImporter;
 import com.benesquivelmusic.daw.core.audioimport.AudioImportResult;
+import com.benesquivelmusic.daw.core.audioimport.SupportedAudioFormat;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
@@ -566,14 +567,14 @@ public final class MainController {
     private void installArrangementCanvasDragDrop() {
         arrangementCanvas.setOnDragOver(event -> {
             if (event.getDragboard().hasFiles()) {
-                boolean hasWav = event.getDragboard().getFiles().stream()
-                        .anyMatch(f -> isWavFile(f.toPath()));
-                if (hasWav) {
+                boolean hasAudio = event.getDragboard().getFiles().stream()
+                        .anyMatch(f -> isSupportedAudioFile(f.toPath()));
+                if (hasAudio) {
                     event.acceptTransferModes(javafx.scene.input.TransferMode.COPY);
                 }
             } else if (event.getDragboard().hasString()) {
                 String path = event.getDragboard().getString();
-                if (isWavFile(Path.of(path))) {
+                if (isSupportedAudioFile(Path.of(path))) {
                     event.acceptTransferModes(javafx.scene.input.TransferMode.COPY);
                 }
             }
@@ -586,14 +587,14 @@ public final class MainController {
 
             if (event.getDragboard().hasFiles()) {
                 for (java.io.File file : event.getDragboard().getFiles()) {
-                    if (isWavFile(file.toPath())) {
+                    if (isSupportedAudioFile(file.toPath())) {
                         filesToImport.add(file.toPath());
                     }
                 }
             } else if (event.getDragboard().hasString()) {
                 String pathStr = event.getDragboard().getString();
                 Path path = Path.of(pathStr);
-                if (isWavFile(path) && java.nio.file.Files.isRegularFile(path)) {
+                if (isSupportedAudioFile(path) && java.nio.file.Files.isRegularFile(path)) {
                     filesToImport.add(path);
                 }
             }
@@ -630,14 +631,10 @@ public final class MainController {
     }
 
     /**
-     * Returns whether the given file path has a {@code .wav} extension.
-     * Only WAV is currently supported for import by {@link AudioFileImporter}.
+     * Returns whether the given file path has a supported audio file extension.
      */
-    private static boolean isWavFile(Path path) {
-        if (path == null || path.getFileName() == null) {
-            return false;
-        }
-        return path.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".wav");
+    private static boolean isSupportedAudioFile(Path path) {
+        return SupportedAudioFormat.isSupported(path);
     }
 
     /**
@@ -1448,16 +1445,22 @@ public final class MainController {
     }
 
     /**
-     * Opens a file chooser for importing a WAV audio file, places the imported
-     * clip at the current playhead position on a new audio track, and wraps the
-     * operation in an undoable action.
+     * Opens a file chooser for importing an audio file in any supported format,
+     * places the imported clip at the current playhead position on a new audio
+     * track, and wraps the operation in an undoable action.
      */
     private void onImportAudioFile() {
         Stage stage = (Stage) rootPane.getScene().getWindow();
         FileChooser chooser = new FileChooser();
         chooser.setTitle("Import Audio File");
         chooser.getExtensionFilters().addAll(
+                new FileChooser.ExtensionFilter("Audio Files",
+                        "*.wav", "*.flac", "*.aiff", "*.aif", "*.ogg", "*.mp3"),
                 new FileChooser.ExtensionFilter("WAV Files", "*.wav"),
+                new FileChooser.ExtensionFilter("FLAC Files", "*.flac"),
+                new FileChooser.ExtensionFilter("AIFF Files", "*.aiff", "*.aif"),
+                new FileChooser.ExtensionFilter("OGG Files", "*.ogg"),
+                new FileChooser.ExtensionFilter("MP3 Files", "*.mp3"),
                 new FileChooser.ExtensionFilter("All Files", "*.*")
         );
         java.io.File selectedFile = chooser.showOpenDialog(stage);
@@ -1531,7 +1534,7 @@ public final class MainController {
             viewNavigationController.getMixerView().refresh();
             projectDirty = true;
 
-            // Show success notification with file name and duration
+            // Show success notification with file name, format, duration, and conversion info
             double durationSeconds = 0.0;
             float[][] audioData = result.clip().getAudioData();
             if (audioData != null && audioData.length > 0) {
@@ -1539,9 +1542,13 @@ public final class MainController {
                 durationSeconds = (double) audioData[0].length / sampleRate;
             }
             String fileName = file.getFileName().toString();
+            String formatName = SupportedAudioFormat.fromPath(file)
+                    .map(f -> f.name())
+                    .orElse("Audio");
             String durationStr = String.format("%.1fs", durationSeconds);
+            String conversionNote = result.wasConverted() ? ", sample rate converted" : "";
             notificationBar.show(NotificationLevel.SUCCESS,
-                    "Imported: " + fileName + " (" + durationStr + ")");
+                    "Imported: " + fileName + " (" + formatName + ", " + durationStr + conversionNote + ")");
             statusBarLabel.setText("Imported audio file: " + fileName);
             statusBarLabel.setGraphic(IconNode.of(DawIcon.WAVEFORM, 12));
             LOG.fine(() -> "Imported audio file: " + file);
