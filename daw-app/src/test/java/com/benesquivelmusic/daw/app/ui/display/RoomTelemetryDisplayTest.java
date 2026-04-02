@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
+import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomTelemetryData;
@@ -7,9 +8,8 @@ import com.benesquivelmusic.daw.sdk.telemetry.SoundWavePath;
 
 import javafx.application.Platform;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -18,40 +18,12 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class RoomTelemetryDisplayTest {
 
-    private static boolean toolkitAvailable;
     private static final double AUDIENCE_RADIUS = 7.0;
     private static final double LABEL_OFFSET = 18.0;
     private static final double AUDIENCE_LABEL_STAGGER = 12.0;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private RoomTelemetryDisplay createOnFxThread() throws Exception {
         AtomicReference<RoomTelemetryDisplay> ref = new AtomicReference<>();
@@ -148,7 +120,6 @@ class RoomTelemetryDisplayTest {
 
     @Test
     void shouldAcceptSourceDragCallback() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         RoomTelemetryDisplay display = createOnFxThread();
 
         AtomicReference<String> capturedName = new AtomicReference<>();
@@ -164,7 +135,6 @@ class RoomTelemetryDisplayTest {
 
     @Test
     void shouldAcceptMicDragCallback() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         RoomTelemetryDisplay display = createOnFxThread();
 
         runOnFxThread(() -> display.setOnMicDragged((name, pos) -> {}));
@@ -174,7 +144,6 @@ class RoomTelemetryDisplayTest {
 
     @Test
     void dragCallbacksShouldBeNullByDefault() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         RoomTelemetryDisplay display = createOnFxThread();
 
         // When no callback is set, the getter returns null
@@ -187,7 +156,6 @@ class RoomTelemetryDisplayTest {
 
     @Test
     void telemetryDataShouldBeNullInitially() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         RoomTelemetryDisplay display = createOnFxThread();
 
         assertThat(display.getTelemetryData()).isNull();
@@ -197,7 +165,6 @@ class RoomTelemetryDisplayTest {
 
     @Test
     void projectAndUnprojectShouldRoundTripRoomCenter() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         RoomTelemetryDisplay display = createOnFxThread();
 
         // Simulate a render with known telemetry data to populate cached transform
@@ -227,7 +194,6 @@ class RoomTelemetryDisplayTest {
 
     @Test
     void unprojectShouldInverseProject() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         RoomTelemetryDisplay display = createOnFxThread();
 
         RoomDimensions dims = new RoomDimensions(12.0, 8.0, 4.0);
@@ -265,7 +231,6 @@ class RoomTelemetryDisplayTest {
 
     @Test
     void projectShouldPreserveIsometricProperties() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         RoomTelemetryDisplay display = createOnFxThread();
 
         RoomDimensions dims = new RoomDimensions(10.0, 10.0, 3.0);

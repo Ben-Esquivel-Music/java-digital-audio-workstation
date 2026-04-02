@@ -7,9 +7,8 @@ import com.benesquivelmusic.daw.sdk.mastering.CrossfadeCurve;
 
 import javafx.application.Platform;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -18,37 +17,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class AlbumAssemblyViewTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private AlbumAssemblyView createOnFxThread() throws Exception {
         AtomicReference<AlbumAssemblyView> ref = new AtomicReference<>();
@@ -98,7 +68,6 @@ class AlbumAssemblyViewTest {
 
     @Test
     void shouldHaveContentAreaStyleClass() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AlbumAssemblyView view = createOnFxThread();
 
         assertThat(view).isNotNull();
@@ -107,7 +76,6 @@ class AlbumAssemblyViewTest {
 
     @Test
     void shouldStartWithEmptyTrackContainer() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AlbumAssemblyView view = createOnFxThread();
 
         assertThat(view.getTrackContainer().getChildren()).isEmpty();
@@ -115,7 +83,6 @@ class AlbumAssemblyViewTest {
 
     @Test
     void shouldExposeAlbumSequence() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AlbumSequence sequence = new AlbumSequence("My Album", "My Artist");
         AlbumAssemblyView view = createOnFxThread(sequence);
 
@@ -124,7 +91,6 @@ class AlbumAssemblyViewTest {
 
     @Test
     void shouldExposeStatusLabel() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AlbumAssemblyView view = createOnFxThread();
 
         assertThat(view.getStatusLabel()).isNotNull();
@@ -133,7 +99,6 @@ class AlbumAssemblyViewTest {
 
     @Test
     void shouldExposeTotalDurationLabel() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AlbumAssemblyView view = createOnFxThread();
 
         assertThat(view.getTotalDurationLabel()).isNotNull();
@@ -142,7 +107,6 @@ class AlbumAssemblyViewTest {
 
     @Test
     void shouldExposeExportTypeSelector() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AlbumAssemblyView view = createOnFxThread();
 
         assertThat(view.getExportTypeSelector()).isNotNull();
@@ -151,7 +115,6 @@ class AlbumAssemblyViewTest {
 
     @Test
     void shouldDefaultToSingleContinuousExport() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AlbumAssemblyView view = createOnFxThread();
 
         assertThat(view.getSelectedExportType()).isEqualTo(AlbumExportType.SINGLE_CONTINUOUS);
@@ -159,7 +122,6 @@ class AlbumAssemblyViewTest {
 
     @Test
     void shouldSelectIndividualTracksExport() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AlbumAssemblyView view = createOnFxThread();
 
         runOnFxThread(() ->
@@ -170,7 +132,6 @@ class AlbumAssemblyViewTest {
 
     @Test
     void shouldExposeAlbumTitleField() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AlbumSequence sequence = new AlbumSequence("Test Album", "Test Artist");
         AlbumAssemblyView view = createOnFxThread(sequence);
 
@@ -180,7 +141,6 @@ class AlbumAssemblyViewTest {
 
     @Test
     void shouldExposeAlbumArtistField() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AlbumSequence sequence = new AlbumSequence("Test Album", "Test Artist");
         AlbumAssemblyView view = createOnFxThread(sequence);
 
@@ -190,7 +150,6 @@ class AlbumAssemblyViewTest {
 
     @Test
     void shouldRefreshWithTracksInSequence() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AlbumSequence sequence = new AlbumSequence("Album", "Artist");
         sequence.addTrack(AlbumTrackEntry.of("Track 1", 180.0));
         sequence.addTrack(AlbumTrackEntry.of("Track 2", 240.0));
@@ -204,7 +163,6 @@ class AlbumAssemblyViewTest {
 
     @Test
     void shouldRefreshWithSingleTrack() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AlbumSequence sequence = new AlbumSequence("Album", "Artist");
         sequence.addTrack(AlbumTrackEntry.of("Solo Track", 300.0));
         AlbumAssemblyView view = createOnFxThread(sequence);
@@ -217,7 +175,6 @@ class AlbumAssemblyViewTest {
 
     @Test
     void shouldHandleEmptySequenceRefresh() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AlbumAssemblyView view = createOnFxThread();
 
         runOnFxThread(view::refresh);
@@ -227,7 +184,6 @@ class AlbumAssemblyViewTest {
 
     @Test
     void shouldRefreshWithThreeTracks() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AlbumSequence sequence = new AlbumSequence("Album", "Artist");
         sequence.addTrack(AlbumTrackEntry.of("T1", 100.0));
         sequence.addTrack(AlbumTrackEntry.of("T2", 200.0));
@@ -242,7 +198,6 @@ class AlbumAssemblyViewTest {
 
     @Test
     void defaultConstructorShouldCreateDefaultSequence() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AlbumAssemblyView view = createOnFxThread();
 
         assertThat(view.getAlbumSequence()).isNotNull();
@@ -252,7 +207,6 @@ class AlbumAssemblyViewTest {
 
     @Test
     void shouldRefreshWithCrossfadeTrack() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         AlbumSequence sequence = new AlbumSequence("Album", "Artist");
         sequence.addTrack(AlbumTrackEntry.of("T1", 180.0));
         sequence.addTrack(AlbumTrackEntry.of("T2", 240.0)

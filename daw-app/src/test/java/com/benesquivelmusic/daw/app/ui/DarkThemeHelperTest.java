@@ -7,9 +7,8 @@ import javafx.scene.control.Dialog;
 import javafx.scene.control.DialogPane;
 import javafx.scene.layout.StackPane;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -17,37 +16,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class DarkThemeHelperTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private <T> T runOnFxThread(java.util.concurrent.Callable<T> callable) throws Exception {
         AtomicReference<T> ref = new AtomicReference<>();
@@ -85,7 +55,6 @@ class DarkThemeHelperTest {
 
     @Test
     void applyToDialogShouldAddStylesheet() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         boolean hasStylesheet = runOnFxThread(() -> {
             Dialog<Void> dialog = new Dialog<>();
             dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
@@ -99,7 +68,6 @@ class DarkThemeHelperTest {
 
     @Test
     void applyToDialogShouldAddRootPaneStyleClass() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         boolean hasRootPaneClass = runOnFxThread(() -> {
             Dialog<Void> dialog = new Dialog<>();
             dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
@@ -111,7 +79,6 @@ class DarkThemeHelperTest {
 
     @Test
     void applyToDialogShouldBeIdempotent() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         int stylesheetCount = runOnFxThread(() -> {
             Dialog<Void> dialog = new Dialog<>();
             dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
@@ -127,7 +94,6 @@ class DarkThemeHelperTest {
 
     @Test
     void applyToSceneShouldAddStylesheet() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         boolean hasStylesheet = runOnFxThread(() -> {
             Scene scene = new Scene(new StackPane(), 100, 100);
             DarkThemeHelper.applyTo(scene);
@@ -139,7 +105,6 @@ class DarkThemeHelperTest {
 
     @Test
     void applyToSceneShouldBeIdempotent() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         int stylesheetCount = runOnFxThread(() -> {
             Scene scene = new Scene(new StackPane(), 100, 100);
             DarkThemeHelper.applyTo(scene);
@@ -153,7 +118,6 @@ class DarkThemeHelperTest {
 
     @Test
     void helpDialogShouldHaveDarkThemeStylesheet() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         boolean hasStylesheet = runOnFxThread(() -> {
             HelpDialog dialog = new HelpDialog();
             return dialog.getDialogPane().getStylesheets().stream()
@@ -164,7 +128,6 @@ class DarkThemeHelperTest {
 
     @Test
     void helpDialogShouldHaveRootPaneStyleClass() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         boolean hasRootPaneClass = runOnFxThread(() -> {
             HelpDialog dialog = new HelpDialog();
             return dialog.getDialogPane().getStyleClass().contains("root-pane");

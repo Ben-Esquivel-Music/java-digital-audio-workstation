@@ -9,9 +9,8 @@ import javafx.scene.control.Button;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.MenuItem;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -23,37 +22,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class ToolbarContextMenuControllerTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private void runOnFxThread(Runnable action) throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
@@ -129,7 +99,6 @@ class ToolbarContextMenuControllerTest {
 
     @Test
     void shouldRejectNullViewButtons() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             assertThatThrownBy(() -> new ToolbarContextMenuController(
                     null,
@@ -145,7 +114,6 @@ class ToolbarContextMenuControllerTest {
 
     @Test
     void shouldRejectNullProjectButtons() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             assertThatThrownBy(() -> new ToolbarContextMenuController(
                     new Button[]{new Button()},
@@ -161,7 +129,6 @@ class ToolbarContextMenuControllerTest {
 
     @Test
     void shouldRejectNullToolButtons() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             assertThatThrownBy(() -> new ToolbarContextMenuController(
                     new Button[]{new Button()},
@@ -177,7 +144,6 @@ class ToolbarContextMenuControllerTest {
 
     @Test
     void shouldRejectNullProjectManager() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             assertThatThrownBy(() -> new ToolbarContextMenuController(
                     new Button[]{new Button()},
@@ -193,7 +159,6 @@ class ToolbarContextMenuControllerTest {
 
     @Test
     void shouldRejectNullStatusUpdater() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             assertThatThrownBy(() -> new ToolbarContextMenuController(
                     new Button[]{new Button()},
@@ -209,7 +174,6 @@ class ToolbarContextMenuControllerTest {
 
     @Test
     void shouldRejectNullResetViewLayoutAction() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             assertThatThrownBy(() -> new ToolbarContextMenuController(
                     new Button[]{new Button()},
@@ -225,7 +189,6 @@ class ToolbarContextMenuControllerTest {
 
     @Test
     void shouldRejectNullLoadProjectAction() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             assertThatThrownBy(() -> new ToolbarContextMenuController(
                     new Button[]{new Button()},
@@ -243,7 +206,6 @@ class ToolbarContextMenuControllerTest {
 
     @Test
     void shouldReturnNullViewContextMenuBeforeShown() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             Button[] viewButtons = { new Button("Arrangement"), new Button("Mixer") };
             Button[] projectButtons = { new Button("New"), new Button("Open") };
@@ -258,7 +220,6 @@ class ToolbarContextMenuControllerTest {
 
     @Test
     void shouldReturnNullProjectContextMenuBeforeShown() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             Button[] viewButtons = { new Button("Arrangement") };
             Button[] projectButtons = { new Button("New") };
@@ -273,7 +234,6 @@ class ToolbarContextMenuControllerTest {
 
     @Test
     void shouldReturnNullToolsContextMenuBeforeShown() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             Button[] viewButtons = { new Button("Arrangement") };
             Button[] projectButtons = { new Button("New") };
@@ -290,7 +250,6 @@ class ToolbarContextMenuControllerTest {
 
     @Test
     void shouldWireContextMenuHandlerOnViewButtons() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             Button viewButton = new Button("Arrangement");
             Button[] viewButtons = { viewButton };
@@ -306,7 +265,6 @@ class ToolbarContextMenuControllerTest {
 
     @Test
     void shouldWireContextMenuHandlerOnProjectButtons() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             Button projectButton = new Button("New");
             Button[] viewButtons = { new Button("Arrangement") };
@@ -322,7 +280,6 @@ class ToolbarContextMenuControllerTest {
 
     @Test
     void shouldWireContextMenuHandlerOnToolButtons() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             Button toolButton = new Button("Plugins");
             Button[] viewButtons = { new Button("Arrangement") };
@@ -340,7 +297,6 @@ class ToolbarContextMenuControllerTest {
 
     @Test
     void viewContextMenuShouldContainResetViewLayout() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             Button[] viewButtons = { new Button("Arrangement") };
             Button[] projectButtons = { new Button("New") };
@@ -361,7 +317,6 @@ class ToolbarContextMenuControllerTest {
 
     @Test
     void viewContextMenuShouldContainDetachViewDisabled() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             Button[] viewButtons = { new Button("Arrangement") };
             Button[] projectButtons = { new Button("New") };
@@ -383,7 +338,6 @@ class ToolbarContextMenuControllerTest {
 
     @Test
     void resetViewLayoutShouldCallAction() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             boolean[] resetCalled = { false };
             List<String> statusMessages = new ArrayList<>();
@@ -416,7 +370,6 @@ class ToolbarContextMenuControllerTest {
 
     @Test
     void projectContextMenuShouldContainNoRecentProjectsWhenEmpty() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             Button[] viewButtons = { new Button("Arrangement") };
             Button[] projectButtons = { new Button("New") };
@@ -438,7 +391,6 @@ class ToolbarContextMenuControllerTest {
 
     @Test
     void projectContextMenuShouldContainRevealInFileManager() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             Button[] viewButtons = { new Button("Arrangement") };
             Button[] projectButtons = { new Button("New") };
@@ -461,7 +413,6 @@ class ToolbarContextMenuControllerTest {
 
     @Test
     void projectContextMenuShouldContainProjectProperties() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             Button[] viewButtons = { new Button("Arrangement") };
             Button[] projectButtons = { new Button("New") };
@@ -486,7 +437,6 @@ class ToolbarContextMenuControllerTest {
 
     @Test
     void toolsContextMenuShouldContainCustomizeToolsDisabled() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             Button[] viewButtons = { new Button("Arrangement") };
             Button[] projectButtons = { new Button("New") };
@@ -510,7 +460,6 @@ class ToolbarContextMenuControllerTest {
 
     @Test
     void shouldWireAllViewButtonsWithContextMenuHandler() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             Button arrangementBtn = new Button("Arrangement");
             Button mixerBtn = new Button("Mixer");

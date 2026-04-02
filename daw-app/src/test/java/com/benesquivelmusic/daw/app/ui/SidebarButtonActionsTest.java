@@ -4,9 +4,8 @@ import javafx.application.Platform;
 import javafx.scene.control.Button;
 import javafx.scene.layout.BorderPane;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -21,37 +20,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the {@link BrowserPanelController} (for Search) and by directly exercising
  * the underlying model classes (for Home).</p>
  */
+@ExtendWith(JavaFxToolkitExtension.class)
 class SidebarButtonActionsTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private void runOnFxThread(Runnable action) throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
@@ -92,7 +62,6 @@ class SidebarButtonActionsTest {
 
     @Test
     void searchActionShouldOpenBrowserPanelIfHidden() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             BrowserPanel panel = new BrowserPanel();
             Button button = new Button("Library");
@@ -115,7 +84,6 @@ class SidebarButtonActionsTest {
 
     @Test
     void searchActionShouldNotToggleIfAlreadyVisible() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             BrowserPanel panel = new BrowserPanel();
             Button button = new Button("Library");
@@ -138,7 +106,6 @@ class SidebarButtonActionsTest {
 
     @Test
     void searchActionShouldFocusSearchField() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             BrowserPanel panel = new BrowserPanel();
             // Verify the search field is accessible
@@ -150,7 +117,6 @@ class SidebarButtonActionsTest {
 
     @Test
     void helpDialogShouldBeCreatable() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             HelpDialog dialog = new HelpDialog();
             assertThat(dialog.getTitle()).isEqualTo("Help");

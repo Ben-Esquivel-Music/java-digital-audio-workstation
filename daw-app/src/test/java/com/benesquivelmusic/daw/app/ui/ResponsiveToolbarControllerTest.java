@@ -6,9 +6,8 @@ import javafx.scene.Scene;
 import javafx.scene.control.Button;
 import javafx.scene.layout.VBox;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -17,37 +16,8 @@ import java.util.prefs.Preferences;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class ResponsiveToolbarControllerTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private void runOnFxThread(Runnable action) throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
@@ -81,7 +51,6 @@ class ResponsiveToolbarControllerTest {
 
     @Test
     void shouldRejectZeroThreshold() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             ToolbarCollapseController collapse =
                     new ToolbarCollapseController(new VBox(), new Button(), freshPrefs());
@@ -92,7 +61,6 @@ class ResponsiveToolbarControllerTest {
 
     @Test
     void shouldRejectNegativeThreshold() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             ToolbarCollapseController collapse =
                     new ToolbarCollapseController(new VBox(), new Button(), freshPrefs());
@@ -105,7 +73,6 @@ class ResponsiveToolbarControllerTest {
 
     @Test
     void shouldUseDefaultCollapseThreshold() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             ToolbarCollapseController collapse =
                     new ToolbarCollapseController(new VBox(), new Button(), freshPrefs());
@@ -118,7 +85,6 @@ class ResponsiveToolbarControllerTest {
 
     @Test
     void shouldUseCustomCollapseThreshold() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             ToolbarCollapseController collapse =
                     new ToolbarCollapseController(new VBox(), new Button(), freshPrefs());
@@ -132,7 +98,6 @@ class ResponsiveToolbarControllerTest {
 
     @Test
     void shouldRejectNullSceneOnAttach() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             ToolbarCollapseController collapse =
                     new ToolbarCollapseController(new VBox(), new Button(), freshPrefs());
@@ -145,7 +110,6 @@ class ResponsiveToolbarControllerTest {
 
     @Test
     void shouldRejectNullSceneOnDetach() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             ToolbarCollapseController collapse =
                     new ToolbarCollapseController(new VBox(), new Button(), freshPrefs());
@@ -160,7 +124,6 @@ class ResponsiveToolbarControllerTest {
 
     @Test
     void shouldCollapseWhenAttachedToNarrowScene() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             VBox sidebar = new VBox();
             Button toggleButton = new Button("Expand");
@@ -183,7 +146,6 @@ class ResponsiveToolbarControllerTest {
 
     @Test
     void shouldExpandWhenAttachedToWideScene() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             VBox sidebar = new VBox();
             Button toggleButton = new Button("Expand");
@@ -210,7 +172,6 @@ class ResponsiveToolbarControllerTest {
 
     @Test
     void shouldCollapseAtExactThreshold() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             VBox sidebar = new VBox();
             Button toggleButton = new Button("Expand");
@@ -230,7 +191,6 @@ class ResponsiveToolbarControllerTest {
 
     @Test
     void shouldExpandJustAboveThreshold() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             VBox sidebar = new VBox();
             Button toggleButton = new Button("Expand");
@@ -256,7 +216,6 @@ class ResponsiveToolbarControllerTest {
 
     @Test
     void shouldNotFailOnDetachWithoutAttach() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             ToolbarCollapseController collapse =
                     new ToolbarCollapseController(new VBox(), new Button(), freshPrefs());

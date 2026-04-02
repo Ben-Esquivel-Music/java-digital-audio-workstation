@@ -2,9 +2,8 @@ package com.benesquivelmusic.daw.app.ui;
 
 import javafx.application.Platform;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -12,37 +11,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class NotificationHistoryPanelTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private NotificationHistoryPanel createOnFxThread(
             NotificationHistoryService service) throws Exception {
@@ -73,7 +43,6 @@ class NotificationHistoryPanelTest {
 
     @Test
     void shouldStartWithEmptyList() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         NotificationHistoryService service = new NotificationHistoryService();
         NotificationHistoryPanel panel = createOnFxThread(service);
 
@@ -83,7 +52,6 @@ class NotificationHistoryPanelTest {
 
     @Test
     void shouldDisplayRecordedEntries() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         NotificationHistoryService service = new NotificationHistoryService();
         NotificationHistoryPanel panel = createOnFxThread(service);
 
@@ -101,7 +69,6 @@ class NotificationHistoryPanelTest {
 
     @Test
     void clearShouldEmptyTheList() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         NotificationHistoryService service = new NotificationHistoryService();
         NotificationHistoryPanel panel = createOnFxThread(service);
 
@@ -117,7 +84,6 @@ class NotificationHistoryPanelTest {
 
     @Test
     void shouldHaveBrowserPanelStyleClass() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         NotificationHistoryService service = new NotificationHistoryService();
         NotificationHistoryPanel panel = createOnFxThread(service);
 
@@ -126,7 +92,6 @@ class NotificationHistoryPanelTest {
 
     @Test
     void disposeShouldStopUpdates() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         NotificationHistoryService service = new NotificationHistoryService();
         NotificationHistoryPanel panel = createOnFxThread(service);
 

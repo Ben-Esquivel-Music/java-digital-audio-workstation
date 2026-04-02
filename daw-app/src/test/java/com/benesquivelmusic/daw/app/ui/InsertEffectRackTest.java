@@ -8,9 +8,8 @@ import com.benesquivelmusic.daw.core.undo.UndoManager;
 
 import javafx.application.Platform;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -19,37 +18,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class InsertEffectRackTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private InsertEffectRack createOnFxThread(MixerChannel channel, UndoManager undoManager)
             throws Exception {
@@ -86,7 +56,6 @@ class InsertEffectRackTest {
 
     @Test
     void shouldRenderEmptySlotsForNewChannel() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         MixerChannel channel = new MixerChannel("Test");
         InsertEffectRack rack = createOnFxThread(channel, null);
 
@@ -97,7 +66,6 @@ class InsertEffectRackTest {
 
     @Test
     void shouldRenderPopulatedAndEmptySlots() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         MixerChannel channel = new MixerChannel("Test");
         InsertSlot slot = InsertEffectFactory.createSlot(
                 InsertEffectType.COMPRESSOR, 2, 44100.0);
@@ -112,7 +80,6 @@ class InsertEffectRackTest {
 
     @Test
     void shouldRebuildSlotsAfterAddingEffect() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         MixerChannel channel = new MixerChannel("Test");
         InsertEffectRack rack = createOnFxThread(channel, null);
 
@@ -128,7 +95,6 @@ class InsertEffectRackTest {
 
     @Test
     void shouldHaveInsertEffectsRackStyleClass() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         MixerChannel channel = new MixerChannel("Test");
         InsertEffectRack rack = createOnFxThread(channel, null);
 
@@ -137,7 +103,6 @@ class InsertEffectRackTest {
 
     @Test
     void shouldWorkWithUndoManager() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         MixerChannel channel = new MixerChannel("Test");
         UndoManager undoManager = new UndoManager();
         InsertEffectRack rack = createOnFxThread(channel, undoManager);
@@ -148,7 +113,6 @@ class InsertEffectRackTest {
 
     @Test
     void shouldWireEffectsToChannelEffectsChain() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         MixerChannel channel = new MixerChannel("Test");
         InsertSlot slot = InsertEffectFactory.createSlot(
                 InsertEffectType.COMPRESSOR, 2, 44100.0);
@@ -164,7 +128,6 @@ class InsertEffectRackTest {
 
     @Test
     void shouldBypassedEffectNotInChain() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         MixerChannel channel = new MixerChannel("Test");
         InsertSlot slot = InsertEffectFactory.createSlot(
                 InsertEffectType.COMPRESSOR, 2, 44100.0);

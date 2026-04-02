@@ -8,9 +8,8 @@ import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
 
 import javafx.application.Platform;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -19,38 +18,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class TelemetrySetupPanelTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-                // Platform.runLater failed
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private TelemetrySetupPanel createOnFxThread() throws Exception {
         AtomicReference<TelemetrySetupPanel> ref = new AtomicReference<>();
@@ -82,7 +51,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void shouldExposeSourceNameField() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         assertThat(panel.getSourceNameField()).isNotNull();
@@ -90,7 +58,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void shouldExposeSourcePositionFields() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         assertThat(panel.getSourceXField()).isNotNull();
@@ -100,7 +67,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void shouldExposeAddAndRemoveButtons() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         assertThat(panel.getAddSourceButton()).isNotNull();
@@ -111,7 +77,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void shouldExposeSourceListView() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         assertThat(panel.getSourceListView()).isNotNull();
@@ -121,7 +86,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void shouldExposeSourceErrorLabel() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         assertThat(panel.getSourceErrorLabel()).isNotNull();
@@ -132,7 +96,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addSourceShouldAddValidSource() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -152,7 +115,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addSourceShouldUseDefaultPowerOf85Db() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -169,7 +131,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addSourceShouldClearFieldsAfterSuccess() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -188,7 +149,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addSourceShouldAcceptZeroPositionValues() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -205,7 +165,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addSourceShouldTrimName() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -222,7 +181,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addMultipleSourcesShouldAccumulate() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -248,7 +206,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addSourceShouldRejectEmptyName() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -266,7 +223,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addSourceShouldRejectBlankName() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -284,7 +240,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addSourceShouldRejectNegativeX() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -302,7 +257,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addSourceShouldRejectNegativeY() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -320,7 +274,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addSourceShouldRejectNegativeZ() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -338,7 +291,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addSourceShouldRejectNonNumericPosition() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -356,7 +308,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addSourceShouldRejectEmptyPositionFields() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -377,7 +328,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addSourceShouldShowMultipleErrors() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -399,7 +349,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void successfulAddShouldClearPreviousError() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -427,7 +376,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void removeSelectedSourceShouldRemoveWhenSelected() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -446,7 +394,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void removeSelectedSourceShouldDoNothingWhenNoneSelected() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -466,7 +413,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void removeSelectedSourceShouldRemoveOnlySelected() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -494,7 +440,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parseNonNegativeDoubleShouldAcceptZero() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result1 = new AtomicReference<>();
         AtomicReference<Double> result2 = new AtomicReference<>();
@@ -508,7 +453,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parseNonNegativeDoubleShouldAcceptPositive() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result1 = new AtomicReference<>();
         AtomicReference<Double> result2 = new AtomicReference<>();
@@ -522,7 +466,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parseNonNegativeDoubleShouldRejectNegative() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result1 = new AtomicReference<>();
         AtomicReference<Double> result2 = new AtomicReference<>();
@@ -536,7 +479,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parseNonNegativeDoubleShouldRejectNonNumeric() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result1 = new AtomicReference<>();
         AtomicReference<Double> result2 = new AtomicReference<>();
@@ -550,7 +492,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parseNonNegativeDoubleShouldRejectNullAndBlank() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result1 = new AtomicReference<>();
         AtomicReference<Double> result2 = new AtomicReference<>();
@@ -567,7 +508,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parseNonNegativeDoubleShouldTrimWhitespace() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result = new AtomicReference<>();
         runOnFxThread(() -> result.set(TelemetrySetupPanel.parseNonNegativeDouble("  3.5  ")));
@@ -578,7 +518,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void defaultPowerDbShouldBe85() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         assertThat(TelemetrySetupPanel.DEFAULT_POWER_DB).isEqualTo(85.0);
     }
@@ -587,7 +526,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void listViewShouldBeBackedByObservableList() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         assertThat(panel.getSourceListView().getItems())
@@ -598,7 +536,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void shouldExposeMicNameField() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         assertThat(panel.getMicNameField()).isNotNull();
@@ -606,7 +543,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void shouldExposeMicPositionFields() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         assertThat(panel.getMicXField()).isNotNull();
@@ -616,7 +552,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void shouldExposeMicAngleFields() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         assertThat(panel.getMicAzimuthField()).isNotNull();
@@ -625,7 +560,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void shouldExposeMicAddAndRemoveButtons() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         assertThat(panel.getAddMicButton()).isNotNull();
@@ -636,7 +570,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void shouldExposeMicListView() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         assertThat(panel.getMicListView()).isNotNull();
@@ -646,7 +579,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void shouldExposeMicErrorLabel() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         assertThat(panel.getMicErrorLabel()).isNotNull();
@@ -655,7 +587,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void micListViewShouldBeBackedByObservableList() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         assertThat(panel.getMicListView().getItems())
@@ -666,7 +597,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addMicShouldAddValidMic() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -689,7 +619,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addMicShouldClearFieldsAfterSuccess() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -712,7 +641,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addMicShouldTrimName() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -731,7 +659,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addMicShouldAcceptZeroPositionValues() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -750,7 +677,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addMultipleMicsShouldAccumulate() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -780,7 +706,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addMicShouldRejectEmptyName() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -800,7 +725,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addMicShouldRejectBlankName() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -820,7 +744,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addMicShouldRejectNegativeX() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -840,7 +763,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addMicShouldRejectNegativeY() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -860,7 +782,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addMicShouldRejectNegativeZ() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -880,7 +801,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addMicShouldRejectAzimuthAt360() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -900,7 +820,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addMicShouldRejectNegativeAzimuth() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -920,7 +839,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addMicShouldRejectElevationBelow90() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -940,7 +858,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addMicShouldRejectElevationAbove90() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -960,7 +877,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addMicShouldAcceptBoundaryAzimuth359() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -979,7 +895,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addMicShouldAcceptBoundaryElevationMinus90() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -998,7 +913,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addMicShouldAcceptBoundaryElevation90() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -1017,7 +931,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void addMicShouldShowMultipleErrors() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -1043,7 +956,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void successfulAddMicShouldClearPreviousError() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -1071,7 +983,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void removeSelectedMicShouldRemoveWhenSelected() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -1092,7 +1003,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void removeSelectedMicShouldDoNothingWhenNoneSelected() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -1113,7 +1023,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void removeSelectedMicShouldRemoveOnlySelected() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -1145,7 +1054,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parseAzimuthShouldAcceptZero() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result = new AtomicReference<>();
         runOnFxThread(() -> result.set(TelemetrySetupPanel.parseAzimuth("0")));
@@ -1154,7 +1062,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parseAzimuthShouldAcceptJustBelow360() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result = new AtomicReference<>();
         runOnFxThread(() -> result.set(TelemetrySetupPanel.parseAzimuth("359.99")));
@@ -1163,7 +1070,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parseAzimuthShouldReject360() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result = new AtomicReference<>();
         runOnFxThread(() -> result.set(TelemetrySetupPanel.parseAzimuth("360")));
@@ -1172,7 +1078,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parseAzimuthShouldRejectNegative() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result = new AtomicReference<>();
         runOnFxThread(() -> result.set(TelemetrySetupPanel.parseAzimuth("-1")));
@@ -1181,7 +1086,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parseAzimuthShouldRejectNullAndBlank() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result1 = new AtomicReference<>();
         AtomicReference<Double> result2 = new AtomicReference<>();
@@ -1200,7 +1104,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parseElevationShouldAcceptZero() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result = new AtomicReference<>();
         runOnFxThread(() -> result.set(TelemetrySetupPanel.parseElevation("0")));
@@ -1209,7 +1112,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parseElevationShouldAcceptMinus90() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result = new AtomicReference<>();
         runOnFxThread(() -> result.set(TelemetrySetupPanel.parseElevation("-90")));
@@ -1218,7 +1120,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parseElevationShouldAccept90() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result = new AtomicReference<>();
         runOnFxThread(() -> result.set(TelemetrySetupPanel.parseElevation("90")));
@@ -1227,7 +1128,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parseElevationShouldRejectBelow90() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result = new AtomicReference<>();
         runOnFxThread(() -> result.set(TelemetrySetupPanel.parseElevation("-91")));
@@ -1236,7 +1136,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parseElevationShouldRejectAbove90() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result = new AtomicReference<>();
         runOnFxThread(() -> result.set(TelemetrySetupPanel.parseElevation("91")));
@@ -1245,7 +1144,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parseElevationShouldRejectNullAndBlank() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result1 = new AtomicReference<>();
         AtomicReference<Double> result2 = new AtomicReference<>();
@@ -1264,7 +1162,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parsePositiveDoubleShouldAcceptValidPositive() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result1 = new AtomicReference<>();
         AtomicReference<Double> result2 = new AtomicReference<>();
@@ -1281,7 +1178,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parsePositiveDoubleShouldRejectZero() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result1 = new AtomicReference<>();
         AtomicReference<Double> result2 = new AtomicReference<>();
@@ -1295,7 +1191,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parsePositiveDoubleShouldRejectNegative() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result1 = new AtomicReference<>();
         AtomicReference<Double> result2 = new AtomicReference<>();
@@ -1309,7 +1204,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parsePositiveDoubleShouldRejectNullEmptyAndWhitespace() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result1 = new AtomicReference<>();
         AtomicReference<Double> result2 = new AtomicReference<>();
@@ -1326,7 +1220,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parsePositiveDoubleShouldRejectNonNumeric() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result1 = new AtomicReference<>();
         AtomicReference<Double> result2 = new AtomicReference<>();
@@ -1343,7 +1236,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void parsePositiveDoubleShouldTrimWhitespace() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<Double> result = new AtomicReference<>();
         runOnFxThread(() -> result.set(TelemetrySetupPanel.parsePositiveDouble("  3.5  ")));
@@ -1354,7 +1246,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void formatPresetNameShouldProduceNonEmptyStringForAllPresets() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         for (RoomPreset preset : RoomPreset.values()) {
             AtomicReference<String> result = new AtomicReference<>();
@@ -1365,7 +1256,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void formatPresetNameShouldContainDimensionValues() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         for (RoomPreset preset : RoomPreset.values()) {
             AtomicReference<String> result = new AtomicReference<>();
@@ -1383,7 +1273,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void formatPresetNameShouldContainFormattedEnumName() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<String> result = new AtomicReference<>();
         runOnFxThread(() -> result.set(
@@ -1395,7 +1284,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void formatMaterialNameShouldProduceNonEmptyStringForAllMaterials() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         for (WallMaterial material : WallMaterial.values()) {
             AtomicReference<String> result = new AtomicReference<>();
@@ -1406,7 +1294,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void formatMaterialNameShouldContainAbsorptionAndCoefficient() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         for (WallMaterial material : WallMaterial.values()) {
             AtomicReference<String> result = new AtomicReference<>();
@@ -1420,7 +1307,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void formatMaterialNameShouldContainFormattedEnumName() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<String> result = new AtomicReference<>();
         runOnFxThread(() -> result.set(
@@ -1432,7 +1318,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void shouldExposeWidthSlider() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         assertThat(panel.getWidthSlider()).isNotNull();
@@ -1440,7 +1325,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void shouldExposeLengthSlider() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         assertThat(panel.getLengthSlider()).isNotNull();
@@ -1448,7 +1332,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void shouldExposeHeightSlider() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         assertThat(panel.getHeightSlider()).isNotNull();
@@ -1456,7 +1339,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void slidersShouldHaveDefaultStudioValues() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         RoomPreset studio = RoomPreset.STUDIO;
@@ -1467,7 +1349,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void sliderChangeShouldUpdateTextField() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> panel.getWidthSlider().setValue(15.0));
@@ -1477,7 +1358,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void textFieldChangeShouldUpdateSlider() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> panel.getWidthField().setText("20.0"));
@@ -1487,7 +1367,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void presetSelectionShouldUpdateSliders() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> panel.getPresetCombo().setValue(RoomPreset.CONCERT_HALL));
@@ -1504,7 +1383,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void shouldExposeRt60Label() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         assertThat(panel.getRt60Label()).isNotNull();
@@ -1512,7 +1390,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void rt60LabelShouldContainRt60Text() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         assertThat(panel.getRt60Label().getText()).contains("RT60");
@@ -1520,7 +1397,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void rt60LabelShouldUpdateWhenDimensionsChange() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         AtomicReference<String> initial = new AtomicReference<>();
@@ -1533,7 +1409,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void rt60LabelShouldUpdateWhenMaterialChanges() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         AtomicReference<String> initial = new AtomicReference<>();
@@ -1548,7 +1423,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void shouldExposeAbsorptionLabel() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         assertThat(panel.getAbsorptionLabel()).isNotNull();
@@ -1557,7 +1431,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void shouldExposeAbsorptionBar() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         assertThat(panel.getAbsorptionBar()).isNotNull();
@@ -1566,7 +1439,6 @@ class TelemetrySetupPanelTest {
 
     @Test
     void absorptionShouldUpdateWhenMaterialChanges() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         TelemetrySetupPanel panel = createOnFxThread();
 
         runOnFxThread(() -> panel.getWallMaterialCombo().setValue(WallMaterial.ACOUSTIC_FOAM));

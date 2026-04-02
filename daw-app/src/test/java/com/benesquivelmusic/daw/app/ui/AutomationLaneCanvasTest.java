@@ -8,9 +8,8 @@ import com.benesquivelmusic.daw.core.track.TrackType;
 
 import javafx.application.Platform;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -23,41 +22,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Tests for the automation lane rendering and visibility features of
  * {@link ArrangementCanvas}.
  */
+@ExtendWith(JavaFxToolkitExtension.class)
 class AutomationLaneCanvasTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-        } catch (UnsupportedOperationException ignored) {
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) { }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     // ── Automation lane visibility toggle ────────────────────────────────────
 
     @Test
     void shouldToggleAutomationLaneVisibility() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         AtomicReference<ArrangementCanvas> ref = new AtomicReference<>();
         Track track = new Track("Audio 1", TrackType.AUDIO);
@@ -82,7 +53,6 @@ class AutomationLaneCanvasTest {
 
     @Test
     void shouldDefaultToVolumeParameter() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         Track track = new Track("Audio 1", TrackType.AUDIO);
         CountDownLatch latch = new CountDownLatch(1);
@@ -103,7 +73,6 @@ class AutomationLaneCanvasTest {
 
     @Test
     void shouldChangeAutomationParameter() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         Track track = new Track("Audio 1", TrackType.AUDIO);
         CountDownLatch latch = new CountDownLatch(1);
@@ -125,7 +94,6 @@ class AutomationLaneCanvasTest {
 
     @Test
     void shouldReturnNullParameterWhenLaneNotVisible() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         Track track = new Track("Audio 1", TrackType.AUDIO);
         CountDownLatch latch = new CountDownLatch(1);
@@ -147,7 +115,6 @@ class AutomationLaneCanvasTest {
 
     @Test
     void shouldResolveTrackIndexWithNoAutomationLanes() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         Track t1 = new Track("Track 1", TrackType.AUDIO);
         Track t2 = new Track("Track 2", TrackType.AUDIO);
@@ -170,7 +137,6 @@ class AutomationLaneCanvasTest {
 
     @Test
     void shouldResolveTrackIndexWithAutomationLaneExpanded() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         Track t1 = new Track("Track 1", TrackType.AUDIO);
         Track t2 = new Track("Track 2", TrackType.AUDIO);
@@ -197,7 +163,6 @@ class AutomationLaneCanvasTest {
 
     @Test
     void shouldDetectYInAutomationLane() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         Track t1 = new Track("Track 1", TrackType.AUDIO);
         CountDownLatch latch = new CountDownLatch(1);
@@ -221,7 +186,6 @@ class AutomationLaneCanvasTest {
 
     @Test
     void shouldReturnFalseForYInAutomationLaneWhenNotExpanded() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         Track t1 = new Track("Track 1", TrackType.AUDIO);
         CountDownLatch latch = new CountDownLatch(1);
@@ -244,7 +208,6 @@ class AutomationLaneCanvasTest {
 
     @Test
     void shouldRenderAutomationEnvelope() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
@@ -272,7 +235,6 @@ class AutomationLaneCanvasTest {
 
     @Test
     void shouldRenderCurvedAutomationEnvelope() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
@@ -296,7 +258,6 @@ class AutomationLaneCanvasTest {
 
     @Test
     void shouldReturnAutomationLaneYForExpandedTrack() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         Track t1 = new Track("Track 1", TrackType.AUDIO);
         CountDownLatch latch = new CountDownLatch(1);
@@ -318,7 +279,6 @@ class AutomationLaneCanvasTest {
 
     @Test
     void shouldReturnNegativeOneLaneYForCollapsedTrack() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
 
         Track t1 = new Track("Track 1", TrackType.AUDIO);
         CountDownLatch latch = new CountDownLatch(1);

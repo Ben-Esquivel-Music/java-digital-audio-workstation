@@ -6,9 +6,8 @@ import com.benesquivelmusic.daw.core.transport.Transport;
 
 import javafx.application.Platform;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -18,37 +17,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class TimelineRulerTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI)
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private TimelineRuler createOnFxThread(Transport transport) throws Exception {
         AtomicReference<TimelineRuler> ref = new AtomicReference<>();
@@ -65,7 +35,6 @@ class TimelineRulerTest {
 
     @Test
     void shouldRejectNullTransport() {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
         assertThatThrownBy(() -> {
             CountDownLatch latch = new CountDownLatch(1);
             AtomicReference<Throwable> error = new AtomicReference<>();
@@ -86,7 +55,6 @@ class TimelineRulerTest {
 
     @Test
     void shouldCreateWithDefaultSettings() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
         Transport transport = new Transport();
         TimelineRuler ruler = createOnFxThread(transport);
 
@@ -103,7 +71,6 @@ class TimelineRulerTest {
 
     @Test
     void shouldApplyZoomLevel() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
         Transport transport = new Transport();
         TimelineRuler ruler = createOnFxThread(transport);
 
@@ -119,7 +86,6 @@ class TimelineRulerTest {
 
     @Test
     void shouldRejectNonPositivePixelsPerBeat() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
         Transport transport = new Transport();
         TimelineRuler ruler = createOnFxThread(transport);
 
@@ -141,7 +107,6 @@ class TimelineRulerTest {
 
     @Test
     void shouldSetPlayheadPosition() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
         Transport transport = new Transport();
         TimelineRuler ruler = createOnFxThread(transport);
 
@@ -156,7 +121,6 @@ class TimelineRulerTest {
 
     @Test
     void shouldClampNegativePlayheadToZero() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
         Transport transport = new Transport();
         TimelineRuler ruler = createOnFxThread(transport);
 
@@ -173,7 +137,6 @@ class TimelineRulerTest {
 
     @Test
     void shouldSetScrollOffset() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
         Transport transport = new Transport();
         TimelineRuler ruler = createOnFxThread(transport);
 
@@ -188,7 +151,6 @@ class TimelineRulerTest {
 
     @Test
     void shouldClampNegativeScrollToZero() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
         Transport transport = new Transport();
         TimelineRuler ruler = createOnFxThread(transport);
 
@@ -205,7 +167,6 @@ class TimelineRulerTest {
 
     @Test
     void shouldToggleDisplayMode() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
         Transport transport = new Transport();
         TimelineRuler ruler = createOnFxThread(transport);
 
@@ -222,7 +183,6 @@ class TimelineRulerTest {
 
     @Test
     void shouldSetTotalBeats() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
         Transport transport = new Transport();
         TimelineRuler ruler = createOnFxThread(transport);
 
@@ -237,7 +197,6 @@ class TimelineRulerTest {
 
     @Test
     void shouldClampNegativeTotalBeatsToZero() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
         Transport transport = new Transport();
         TimelineRuler ruler = createOnFxThread(transport);
 
@@ -254,7 +213,6 @@ class TimelineRulerTest {
 
     @Test
     void shouldToggleAutoScroll() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
         Transport transport = new Transport();
         TimelineRuler ruler = createOnFxThread(transport);
 
@@ -271,7 +229,6 @@ class TimelineRulerTest {
 
     @Test
     void shouldRejectNullSeekListener() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
         Transport transport = new Transport();
         TimelineRuler ruler = createOnFxThread(transport);
 
@@ -283,7 +240,6 @@ class TimelineRulerTest {
 
     @Test
     void shouldHaveCorrectDefaultHeight() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available");
         Transport transport = new Transport();
         TimelineRuler ruler = createOnFxThread(transport);
 

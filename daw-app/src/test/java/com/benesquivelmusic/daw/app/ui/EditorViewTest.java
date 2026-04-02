@@ -8,9 +8,8 @@ import com.benesquivelmusic.daw.core.track.TrackType;
 import javafx.application.Platform;
 import javafx.scene.Cursor;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -18,41 +17,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class EditorViewTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized — will verify below
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        // Verify the FX Application Thread is actually processing events.
-        // Platform.runLater() itself can block if the toolkit is wedged,
-        // so we call it from a daemon thread with a timeout.
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-                // Platform.runLater failed — toolkit is not functional
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private EditorView createOnFxThread() throws Exception {
         AtomicReference<EditorView> ref = new AtomicReference<>();
@@ -82,7 +48,6 @@ class EditorViewTest {
 
     @Test
     void shouldStartInEmptyMode() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         assertThat(view).isNotNull();
@@ -92,7 +57,6 @@ class EditorViewTest {
 
     @Test
     void shouldShowPlaceholderWhenEmpty() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         assertThat(view.getContentArea().getChildren()).hasSize(1);
@@ -102,7 +66,6 @@ class EditorViewTest {
 
     @Test
     void shouldSwitchToMidiModeForMidiTrack() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
         Track midiTrack = new Track("Piano", TrackType.MIDI);
 
@@ -114,7 +77,6 @@ class EditorViewTest {
 
     @Test
     void shouldSwitchToAudioModeForAudioTrack() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
         Track audioTrack = new Track("Vocals", TrackType.AUDIO);
 
@@ -126,7 +88,6 @@ class EditorViewTest {
 
     @Test
     void shouldSwitchBackToEmptyWhenTrackCleared() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
         Track audioTrack = new Track("Vocals", TrackType.AUDIO);
 
@@ -140,7 +101,6 @@ class EditorViewTest {
 
     @Test
     void shouldHaveEditorPanelStyleClass() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         assertThat(view.getStyleClass()).contains("editor-panel");
@@ -148,7 +108,6 @@ class EditorViewTest {
 
     @Test
     void shouldHaveToolBar() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         assertThat(view.getToolBar()).isNotNull();
@@ -158,7 +117,6 @@ class EditorViewTest {
 
     @Test
     void shouldHaveWaveformDisplayInAudioMode() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         assertThat(view.getWaveformDisplay()).isNotNull();
@@ -167,7 +125,6 @@ class EditorViewTest {
 
     @Test
     void shouldHavePianoRollCanvasInMidiMode() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         assertThat(view.getPianoRollCanvas()).isNotNull();
@@ -176,7 +133,6 @@ class EditorViewTest {
 
     @Test
     void shouldHaveVelocityCanvasInMidiMode() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         assertThat(view.getVelocityCanvas()).isNotNull();
@@ -185,7 +141,6 @@ class EditorViewTest {
 
     @Test
     void shouldTreatAuxTrackAsAudioMode() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
         Track auxTrack = new Track("Bus 1", TrackType.AUX);
 
@@ -196,7 +151,6 @@ class EditorViewTest {
 
     @Test
     void shouldTreatMasterTrackAsAudioMode() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
         Track masterTrack = new Track("Master", TrackType.MASTER);
 
@@ -207,7 +161,6 @@ class EditorViewTest {
 
     @Test
     void placeholderShouldContainMessage() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         assertThat(view.getPlaceholderLabel().getText())
@@ -225,7 +178,6 @@ class EditorViewTest {
 
     @Test
     void shouldDefaultToPointerTool() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         assertThat(view.getActiveEditTool()).isEqualTo(EditTool.POINTER);
@@ -233,7 +185,6 @@ class EditorViewTest {
 
     @Test
     void shouldChangeActiveEditTool() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         runOnFxThread(() -> view.setActiveEditTool(EditTool.PENCIL));
@@ -248,7 +199,6 @@ class EditorViewTest {
 
     @Test
     void shouldChangeCursorToDefaultForPointer() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         runOnFxThread(() -> view.setActiveEditTool(EditTool.PENCIL));
@@ -259,7 +209,6 @@ class EditorViewTest {
 
     @Test
     void shouldChangeCursorToCrosshairForPencil() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         runOnFxThread(() -> view.setActiveEditTool(EditTool.PENCIL));
@@ -269,7 +218,6 @@ class EditorViewTest {
 
     @Test
     void shouldChangeCursorToHandForEraser() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         runOnFxThread(() -> view.setActiveEditTool(EditTool.ERASER));
@@ -279,7 +227,6 @@ class EditorViewTest {
 
     @Test
     void shouldNotifyOnToolChangedCallback() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
         AtomicReference<EditTool> notified = new AtomicReference<>();
 
@@ -297,7 +244,6 @@ class EditorViewTest {
 
     @Test
     void shouldStartWithDefaultZoomLevel() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         assertThat(view.getZoomLevel()).isNotNull();
@@ -306,7 +252,6 @@ class EditorViewTest {
 
     @Test
     void zoomInShouldIncreaseZoomLevel() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         double initialZoom = view.getZoomLevel().getLevel();
@@ -320,7 +265,6 @@ class EditorViewTest {
 
     @Test
     void zoomOutShouldDecreaseZoomLevel() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         // Zoom in first to have room to zoom out
@@ -337,7 +281,6 @@ class EditorViewTest {
 
     @Test
     void zoomShouldResizeCanvasWidth() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         double initialWidth = view.getPianoRollCanvas().getWidth();
@@ -352,7 +295,6 @@ class EditorViewTest {
 
     @Test
     void shouldStartWithEmptyNotes() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         assertThat(view.getNotes()).isEmpty();
@@ -361,7 +303,6 @@ class EditorViewTest {
 
     @Test
     void pencilToolShouldInsertNote() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -387,7 +328,6 @@ class EditorViewTest {
 
     @Test
     void pencilToolShouldNotInsertDuplicateNote() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -409,7 +349,6 @@ class EditorViewTest {
 
     @Test
     void eraserToolShouldDeleteNote() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -443,7 +382,6 @@ class EditorViewTest {
 
     @Test
     void pointerToolShouldSelectNote() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -477,7 +415,6 @@ class EditorViewTest {
 
     @Test
     void pointerToolShouldDeselectWhenClickingEmptySpace() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         runOnFxThread(() -> {
@@ -519,7 +456,6 @@ class EditorViewTest {
 
     @Test
     void toolBarButtonsShouldHaveActiveStyleClass() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         // Pointer is active by default — first button should have active class
@@ -540,7 +476,6 @@ class EditorViewTest {
 
     @Test
     void audioHandleButtonsShouldBeDisabledByDefault() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
 
         assertThat(view.getTrimButton()).isNotNull();
@@ -551,7 +486,6 @@ class EditorViewTest {
 
     @Test
     void audioHandleButtonsShouldBeDisabledForMidiTrack() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
         Track midiTrack = new Track("Keys", TrackType.MIDI);
 
@@ -564,7 +498,6 @@ class EditorViewTest {
 
     @Test
     void audioHandleButtonsShouldBeDisabledForEmptyAudioTrack() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
         Track audioTrack = new Track("Vocals", TrackType.AUDIO);
 
@@ -577,7 +510,6 @@ class EditorViewTest {
 
     @Test
     void audioHandleButtonsShouldBeEnabledForAudioTrackWithClip() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
         Track audioTrack = new Track("Vocals", TrackType.AUDIO);
         audioTrack.addClip(new AudioClip("Take 1", 0.0, 8.0, "/audio/take1.wav"));
@@ -591,7 +523,6 @@ class EditorViewTest {
 
     @Test
     void trimButtonShouldFireCallback() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
         Track audioTrack = new Track("Vocals", TrackType.AUDIO);
         audioTrack.addClip(new AudioClip("Take 1", 0.0, 8.0, null));
@@ -608,7 +539,6 @@ class EditorViewTest {
 
     @Test
     void fadeInButtonShouldFireCallback() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
         Track audioTrack = new Track("Vocals", TrackType.AUDIO);
         audioTrack.addClip(new AudioClip("Take 1", 0.0, 8.0, null));
@@ -625,7 +555,6 @@ class EditorViewTest {
 
     @Test
     void fadeOutButtonShouldFireCallback() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
         Track audioTrack = new Track("Vocals", TrackType.AUDIO);
         audioTrack.addClip(new AudioClip("Take 1", 0.0, 8.0, null));
@@ -642,7 +571,6 @@ class EditorViewTest {
 
     @Test
     void audioHandleButtonsShouldDisableWhenTrackCleared() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         EditorView view = createOnFxThread();
         Track audioTrack = new Track("Vocals", TrackType.AUDIO);
         audioTrack.addClip(new AudioClip("Take 1", 0.0, 8.0, null));

@@ -3,9 +3,8 @@ package com.benesquivelmusic.daw.app.ui;
 import javafx.application.Platform;
 import javafx.scene.control.Tab;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -16,37 +15,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class BrowserPanelTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private BrowserPanel createOnFxThread() throws Exception {
         AtomicReference<BrowserPanel> ref = new AtomicReference<>();
@@ -76,14 +46,12 @@ class BrowserPanelTest {
 
     @Test
     void shouldHaveBrowserPanelStyleClass() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         BrowserPanel panel = createOnFxThread();
         assertThat(panel.getStyleClass()).contains("browser-panel");
     }
 
     @Test
     void shouldHaveSearchField() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         BrowserPanel panel = createOnFxThread();
         assertThat(panel.getSearchField()).isNotNull();
         assertThat(panel.getSearchField().getPromptText()).isEqualTo("Filter files...");
@@ -91,14 +59,12 @@ class BrowserPanelTest {
 
     @Test
     void shouldHaveFourTabs() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         BrowserPanel panel = createOnFxThread();
         assertThat(panel.getTabPane().getTabs()).hasSize(4);
     }
 
     @Test
     void shouldHaveExpectedTabNames() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         BrowserPanel panel = createOnFxThread();
         List<String> tabNames = panel.getTabPane().getTabs().stream()
                 .map(Tab::getText)
@@ -108,7 +74,6 @@ class BrowserPanelTest {
 
     @Test
     void shouldHaveNonClosableTabs() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         BrowserPanel panel = createOnFxThread();
         for (Tab tab : panel.getTabPane().getTabs()) {
             assertThat(tab.isClosable()).isFalse();
@@ -117,7 +82,6 @@ class BrowserPanelTest {
 
     @Test
     void shouldHaveFileSystemTree() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         BrowserPanel panel = createOnFxThread();
         assertThat(panel.getFileSystemTree()).isNotNull();
         assertThat(panel.getFileSystemTree().getRoot()).isNotNull();
@@ -126,28 +90,24 @@ class BrowserPanelTest {
 
     @Test
     void shouldHaveSamplesListView() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         BrowserPanel panel = createOnFxThread();
         assertThat(panel.getSamplesListView()).isNotNull();
     }
 
     @Test
     void shouldHavePresetsListView() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         BrowserPanel panel = createOnFxThread();
         assertThat(panel.getPresetsListView()).isNotNull();
     }
 
     @Test
     void shouldHaveProjectFilesListView() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         BrowserPanel panel = createOnFxThread();
         assertThat(panel.getProjectFilesListView()).isNotNull();
     }
 
     @Test
     void shouldAddAndClearSamples() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         BrowserPanel panel = createOnFxThread();
         runOnFxThread(() -> {
             panel.addSamples(List.of("kick.wav", "snare.wav", "hihat.flac"));
@@ -160,7 +120,6 @@ class BrowserPanelTest {
 
     @Test
     void shouldAddAndClearPresets() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         BrowserPanel panel = createOnFxThread();
         runOnFxThread(() -> {
             panel.addPresets(List.of("Init Patch", "Lead Synth"));
@@ -173,7 +132,6 @@ class BrowserPanelTest {
 
     @Test
     void shouldAddAndClearProjectFiles() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         BrowserPanel panel = createOnFxThread();
         runOnFxThread(() -> {
             panel.addProjectFiles(List.of("vocals.wav", "bass.mp3"));
@@ -186,7 +144,6 @@ class BrowserPanelTest {
 
     @Test
     void shouldFilterSamplesBySearchText() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         BrowserPanel panel = createOnFxThread();
         runOnFxThread(() -> {
             panel.addSamples(List.of("kick.wav", "snare.wav", "hihat.flac", "kick_hard.wav"));
@@ -198,7 +155,6 @@ class BrowserPanelTest {
 
     @Test
     void shouldClearFilterWhenSearchTextCleared() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         BrowserPanel panel = createOnFxThread();
         runOnFxThread(() -> {
             panel.addSamples(List.of("kick.wav", "snare.wav", "hihat.flac"));
@@ -247,7 +203,6 @@ class BrowserPanelTest {
 
     @Test
     void shouldHavePreviewPlayButton() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         BrowserPanel panel = createOnFxThread();
         assertThat(panel.getPreviewPlayButton()).isNotNull();
         assertThat(panel.getPreviewPlayButton().getTooltip()).isNotNull();
@@ -255,7 +210,6 @@ class BrowserPanelTest {
 
     @Test
     void shouldHavePreviewStopButton() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         BrowserPanel panel = createOnFxThread();
         assertThat(panel.getPreviewStopButton()).isNotNull();
         assertThat(panel.getPreviewStopButton().getTooltip()).isNotNull();
@@ -263,7 +217,6 @@ class BrowserPanelTest {
 
     @Test
     void shouldHavePreviewVolumeSlider() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         BrowserPanel panel = createOnFxThread();
         assertThat(panel.getPreviewVolumeSlider()).isNotNull();
         assertThat(panel.getPreviewVolumeSlider().getMin()).isEqualTo(0.0);
@@ -273,14 +226,12 @@ class BrowserPanelTest {
 
     @Test
     void shouldHavePreviewMetadataLabel() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         BrowserPanel panel = createOnFxThread();
         assertThat(panel.getPreviewMetadataLabel()).isNotNull();
     }
 
     @Test
     void shouldHavePreviewControlBar() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         BrowserPanel panel = createOnFxThread();
         assertThat(panel.getPreviewControlBar()).isNotNull();
         assertThat(panel.getPreviewControlBar().getChildren()).isNotEmpty();

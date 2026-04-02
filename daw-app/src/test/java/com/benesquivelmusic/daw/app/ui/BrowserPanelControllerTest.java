@@ -4,9 +4,8 @@ import javafx.application.Platform;
 import javafx.scene.control.Button;
 import javafx.scene.layout.BorderPane;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -14,37 +13,8 @@ import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class BrowserPanelControllerTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private void runOnFxThread(Runnable action) throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
@@ -60,7 +30,6 @@ class BrowserPanelControllerTest {
 
     @Test
     void shouldRejectNullBrowserPanel() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             assertThatThrownBy(() -> new BrowserPanelController(
                     null, new Button(), new BorderPane()))
@@ -70,7 +39,6 @@ class BrowserPanelControllerTest {
 
     @Test
     void shouldRejectNullButton() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             assertThatThrownBy(() -> new BrowserPanelController(
                     new BrowserPanel(), null, new BorderPane()))
@@ -80,7 +48,6 @@ class BrowserPanelControllerTest {
 
     @Test
     void shouldRejectNullRootPane() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             assertThatThrownBy(() -> new BrowserPanelController(
                     new BrowserPanel(), new Button(), null))
@@ -90,7 +57,6 @@ class BrowserPanelControllerTest {
 
     @Test
     void shouldStartWithPanelHidden() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             BrowserPanel panel = new BrowserPanel();
             Button button = new Button("Library");
@@ -105,7 +71,6 @@ class BrowserPanelControllerTest {
 
     @Test
     void shouldTogglePanelVisible() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             BrowserPanel panel = new BrowserPanel();
             Button button = new Button("Library");
@@ -122,7 +87,6 @@ class BrowserPanelControllerTest {
 
     @Test
     void shouldTogglePanelBackToHidden() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             BrowserPanel panel = new BrowserPanel();
             Button button = new Button("Library");
@@ -141,7 +105,6 @@ class BrowserPanelControllerTest {
 
     @Test
     void shouldAddActiveStyleWhenPanelVisible() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             BrowserPanel panel = new BrowserPanel();
             Button button = new Button("Library");
@@ -156,7 +119,6 @@ class BrowserPanelControllerTest {
 
     @Test
     void shouldRemoveActiveStyleWhenPanelHidden() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             BrowserPanel panel = new BrowserPanel();
             Button button = new Button("Library");
@@ -170,7 +132,6 @@ class BrowserPanelControllerTest {
 
     @Test
     void shouldWireButtonOnAction() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             BrowserPanel panel = new BrowserPanel();
             Button button = new Button("Library");
@@ -184,7 +145,6 @@ class BrowserPanelControllerTest {
 
     @Test
     void shouldReturnBrowserPanel() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             BrowserPanel panel = new BrowserPanel();
             Button button = new Button("Library");
@@ -197,7 +157,6 @@ class BrowserPanelControllerTest {
 
     @Test
     void shouldInvokeVisibilityChangedCallbackOnToggle() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             BrowserPanel panel = new BrowserPanel();
             Button button = new Button("Library");
@@ -215,7 +174,6 @@ class BrowserPanelControllerTest {
 
     @Test
     void shouldNotFailWithoutVisibilityChangedCallback() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             BrowserPanel panel = new BrowserPanel();
             Button button = new Button("Library");

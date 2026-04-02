@@ -8,10 +8,9 @@ import javafx.scene.control.Button;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.EnumMap;
 import java.util.Map;
@@ -23,37 +22,8 @@ import java.util.prefs.Preferences;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class VisualizationPanelControllerTest {
-
-    private static boolean toolkitAvailable;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     private Preferences prefs;
     private VisualizationPreferences vizPrefs;
@@ -114,7 +84,6 @@ class VisualizationPanelControllerTest {
 
     @Test
     void shouldRejectNullVizTileRow() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             assertThatThrownBy(() -> new VisualizationPanelController(
                     null, new Button(), vizPrefs, new EnumMap<>(DisplayTile.class)))
@@ -124,7 +93,6 @@ class VisualizationPanelControllerTest {
 
     @Test
     void shouldRejectNullButton() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             assertThatThrownBy(() -> new VisualizationPanelController(
                     new HBox(), null, vizPrefs, new EnumMap<>(DisplayTile.class)))
@@ -134,7 +102,6 @@ class VisualizationPanelControllerTest {
 
     @Test
     void shouldRejectNullPreferences() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             assertThatThrownBy(() -> new VisualizationPanelController(
                     new HBox(), new Button(), null, new EnumMap<>(DisplayTile.class)))
@@ -144,7 +111,6 @@ class VisualizationPanelControllerTest {
 
     @Test
     void shouldRejectNullTileLookup() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             assertThatThrownBy(() -> new VisualizationPanelController(
                     new HBox(), new Button(), vizPrefs, null))
@@ -154,7 +120,6 @@ class VisualizationPanelControllerTest {
 
     @Test
     void shouldInitializeWithRowVisible() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         VisualizationPanelController controller = runOnFxThread(() -> {
             HBox vizTileRow = new HBox();
             Button button = new Button("Visualizations");
@@ -174,7 +139,6 @@ class VisualizationPanelControllerTest {
 
     @Test
     void shouldInitializeWithRowHiddenWhenPrefFalse() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         vizPrefs.setRowVisible(false);
         runOnFxThread(() -> {
             HBox vizTileRow = new HBox();
@@ -193,7 +157,6 @@ class VisualizationPanelControllerTest {
 
     @Test
     void shouldToggleRowVisibility() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             HBox vizTileRow = new HBox();
             Button button = new Button("Visualizations");
@@ -217,7 +180,6 @@ class VisualizationPanelControllerTest {
 
     @Test
     void shouldHideTileWhenPrefSetBeforeInit() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         vizPrefs.setTileVisible(DisplayTile.SPECTRUM, false);
         runOnFxThread(() -> {
             HBox vizTileRow = new HBox();
@@ -240,7 +202,6 @@ class VisualizationPanelControllerTest {
 
     @Test
     void shouldAddActiveStyleWhenRowVisible() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             HBox vizTileRow = new HBox();
             Button button = new Button("Visualizations");
@@ -257,7 +218,6 @@ class VisualizationPanelControllerTest {
 
     @Test
     void shouldRemoveActiveStyleWhenRowHidden() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         vizPrefs.setRowVisible(false);
         runOnFxThread(() -> {
             HBox vizTileRow = new HBox();
@@ -275,7 +235,6 @@ class VisualizationPanelControllerTest {
 
     @Test
     void shouldBuildContextMenu() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() -> {
             HBox vizTileRow = new HBox();
             Button button = new Button("Visualizations");

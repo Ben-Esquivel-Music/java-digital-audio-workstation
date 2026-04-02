@@ -10,9 +10,8 @@ import com.benesquivelmusic.daw.core.undo.UndoManager;
 
 import javafx.application.Platform;
 
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
@@ -25,49 +24,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 /**
- * Tests for the {@link ProjectLifecycleController} helper logic that can be
- * exercised without a live JavaFX scene or toolkit.
+ * Tests for the {@link ProjectLifecycleController} helper logic that require
+ * a live JavaFX toolkit but can be exercised without a live JavaFX scene.
  */
+@ExtendWith(JavaFxToolkitExtension.class)
 class ProjectLifecycleControllerTest {
-
-    private static boolean toolkitAvailable;
 
     @TempDir
     Path tempDir;
-
-    @BeforeAll
-    static void initToolkit() throws Exception {
-        toolkitAvailable = false;
-        CountDownLatch startupLatch = new CountDownLatch(1);
-        try {
-            Platform.startup(startupLatch::countDown);
-            if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                return;
-            }
-        } catch (IllegalStateException ignored) {
-            // Toolkit already initialized
-        } catch (UnsupportedOperationException ignored) {
-            // No display available (headless CI environment)
-            return;
-        }
-        CountDownLatch verifyLatch = new CountDownLatch(1);
-        Thread verifier = new Thread(() -> {
-            try {
-                Platform.runLater(verifyLatch::countDown);
-            } catch (Exception ignored) {
-            }
-        });
-        verifier.setDaemon(true);
-        verifier.start();
-        verifier.join(3000);
-        toolkitAvailable = verifyLatch.await(3, TimeUnit.SECONDS);
-    }
 
     // ── Constructor null-safety ──────────────────────────────────────────────
 
     @Test
     void constructorRejectsNullProjectManager() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() ->
             assertThatNullPointerException()
                 .isThrownBy(() -> new ProjectLifecycleController(
@@ -79,7 +48,6 @@ class ProjectLifecycleControllerTest {
 
     @Test
     void constructorRejectsNullSessionInterchangeController() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() ->
             assertThatNullPointerException()
                 .isThrownBy(() -> new ProjectLifecycleController(
@@ -91,7 +59,6 @@ class ProjectLifecycleControllerTest {
 
     @Test
     void constructorRejectsNullNotificationBar() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() ->
             assertThatNullPointerException()
                 .isThrownBy(() -> new ProjectLifecycleController(
@@ -103,7 +70,6 @@ class ProjectLifecycleControllerTest {
 
     @Test
     void constructorRejectsNullStatusBarLabel() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() ->
             assertThatNullPointerException()
                 .isThrownBy(() -> new ProjectLifecycleController(
@@ -115,7 +81,6 @@ class ProjectLifecycleControllerTest {
 
     @Test
     void constructorRejectsNullCheckpointLabel() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() ->
             assertThatNullPointerException()
                 .isThrownBy(() -> new ProjectLifecycleController(
@@ -127,7 +92,6 @@ class ProjectLifecycleControllerTest {
 
     @Test
     void constructorRejectsNullRootPane() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() ->
             assertThatNullPointerException()
                 .isThrownBy(() -> new ProjectLifecycleController(
@@ -139,7 +103,6 @@ class ProjectLifecycleControllerTest {
 
     @Test
     void constructorRejectsNullRecentProjectsButton() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() ->
             assertThatNullPointerException()
                 .isThrownBy(() -> new ProjectLifecycleController(
@@ -151,7 +114,6 @@ class ProjectLifecycleControllerTest {
 
     @Test
     void constructorRejectsNullTrackListPanel() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() ->
             assertThatNullPointerException()
                 .isThrownBy(() -> new ProjectLifecycleController(
@@ -163,7 +125,6 @@ class ProjectLifecycleControllerTest {
 
     @Test
     void constructorRejectsNullHost() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         runOnFxThread(() ->
             assertThatNullPointerException()
                 .isThrownBy(() -> new ProjectLifecycleController(
@@ -177,7 +138,6 @@ class ProjectLifecycleControllerTest {
 
     @Test
     void resetProjectStateClosesCurrentProject() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         ProjectManager pm = dummyProjectManager();
         pm.createProject("Test", tempDir);
 
@@ -196,7 +156,6 @@ class ProjectLifecycleControllerTest {
 
     @Test
     void resetProjectStateDoesNothingWhenNoProject() throws Exception {
-        Assumptions.assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless CI)");
         ProjectManager pm = dummyProjectManager();
 
         AtomicReference<ProjectLifecycleController> ref = new AtomicReference<>();
@@ -281,4 +240,3 @@ class ProjectLifecycleControllerTest {
         };
     }
 }
-
