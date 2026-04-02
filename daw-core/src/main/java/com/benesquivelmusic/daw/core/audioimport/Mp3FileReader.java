@@ -5,11 +5,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Objects;
 
-import javax.sound.sampled.AudioFormat;
-import javax.sound.sampled.AudioInputStream;
-import javax.sound.sampled.AudioSystem;
-import javax.sound.sampled.UnsupportedAudioFileException;
-
 /**
  * Reads MP3 (MPEG Audio Layer III) files and decodes them into normalized
  * {@code float[][]} arrays.
