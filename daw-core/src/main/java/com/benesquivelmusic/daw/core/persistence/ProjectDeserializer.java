@@ -806,7 +806,12 @@ public final class ProjectDeserializer {
             double x = parseDoubleAttr(micElem, "x", 0);
             double y = parseDoubleAttr(micElem, "y", 0);
             double z = parseDoubleAttr(micElem, "z", 0);
-            double azimuth = clampDouble(parseDoubleAttr(micElem, "azimuth", 0), 0, 359.99);
+            double rawAzimuth = parseDoubleAttr(micElem, "azimuth", 0);
+            double normalizedAzimuth = rawAzimuth % 360.0;
+            if (normalizedAzimuth < 0) {
+                normalizedAzimuth += 360.0;
+            }
+            double azimuth = clampDouble(normalizedAzimuth, 0.0, Math.nextDown(360.0));
             double elevation = clampDouble(parseDoubleAttr(micElem, "elevation", 0), -90, 90);
             config.addMicrophone(new MicrophonePlacement(name, new Position3D(x, y, z),
                     azimuth, elevation));

@@ -39,6 +39,7 @@ final class ViewNavigationController {
         void onEditorTrim();
         void onEditorFadeIn();
         void onEditorFadeOut();
+        void markProjectDirty();
     }
 
     // ── Dependencies ─────────────────────────────────────────────────────────
@@ -174,6 +175,7 @@ final class ViewNavigationController {
         // Telemetry view — sound wave telemetry room visualizer
         telemetryView = new TelemetryView();
         telemetryView.setProject(host.project());
+        telemetryView.setOnDirtyChanged(host::markProjectDirty);
         viewCache.put(DawView.TELEMETRY, telemetryView);
 
         // Mastering view — mastering chain with presets and A/B comparison
@@ -587,5 +589,17 @@ final class ViewNavigationController {
     void setMixerView(MixerView newMixerView) {
         this.mixerView = Objects.requireNonNull(newMixerView, "newMixerView must not be null");
         viewCache.put(DawView.MIXER, mixerView);
+    }
+
+    /**
+     * Rebinds project-scoped views to the current project. Must be called
+     * after the host's project reference is replaced (e.g. on new/open).
+     * Currently rebinds the telemetry view; other views that hold a project
+     * reference should be added here as needed.
+     */
+    void onProjectChanged() {
+        if (telemetryView != null) {
+            telemetryView.setProject(host.project());
+        }
     }
 }
