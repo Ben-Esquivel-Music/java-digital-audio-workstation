@@ -24,8 +24,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 /**
- * Tests for the {@link ProjectLifecycleController} helper logic that can be
- * exercised without a live JavaFX scene or toolkit.
+ * Tests for the {@link ProjectLifecycleController} helper logic that require
+ * a live JavaFX toolkit but can be exercised without a live JavaFX scene.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class ProjectLifecycleControllerTest {

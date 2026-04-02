@@ -30,28 +30,37 @@ public final class JavaFxToolkitExtension implements BeforeAllCallback {
     @Override
     public void beforeAll(ExtensionContext context) throws Exception {
         if (initialized.compareAndSet(false, true)) {
-            CountDownLatch startupLatch = new CountDownLatch(1);
             try {
-                Platform.startup(startupLatch::countDown);
-                if (!startupLatch.await(5, TimeUnit.SECONDS)) {
-                    initialized.set(false);
+                CountDownLatch startupLatch = new CountDownLatch(1);
+                try {
+                    Platform.startup(startupLatch::countDown);
+                    if (!startupLatch.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException(
+                                "JavaFX toolkit startup timed out — ensure a display is available "
+                                        + "(e.g. run with xvfb-run or set DISPLAY)");
+                    }
+                } catch (IllegalStateException e) {
+                    String message = e.getMessage();
+                    if (message != null && message.contains("Toolkit already initialized")) {
+                        // Toolkit already initialized by a previous test class — this is fine.
+                    } else {
+                        throw e;
+                    }
+                }
+                // Verify the FX Application Thread is processing events.
+                CountDownLatch verifyLatch = new CountDownLatch(1);
+                Platform.runLater(verifyLatch::countDown);
+                if (!verifyLatch.await(5, TimeUnit.SECONDS)) {
                     throw new IllegalStateException(
-                            "JavaFX toolkit startup timed out — ensure a display is available "
-                                    + "(e.g. run with xvfb-run or set DISPLAY)");
+                            "JavaFX Application Thread is not responsive — ensure a display is available");
                 }
-            } catch (IllegalStateException e) {
-                if (e.getMessage() != null && e.getMessage().contains("timed out")) {
-                    throw e;
-                }
-                // Toolkit already initialized by a previous test class — this is fine.
-            }
-            // Verify the FX Application Thread is processing events.
-            CountDownLatch verifyLatch = new CountDownLatch(1);
-            Platform.runLater(verifyLatch::countDown);
-            if (!verifyLatch.await(5, TimeUnit.SECONDS)) {
+            } catch (InterruptedException e) {
                 initialized.set(false);
-                throw new IllegalStateException(
-                        "JavaFX Application Thread is not responsive — ensure a display is available");
+                Thread.currentThread().interrupt();
+                throw e;
+            } catch (RuntimeException | Error e) {
+                initialized.set(false);
+                throw e;
             }
         }
     }
