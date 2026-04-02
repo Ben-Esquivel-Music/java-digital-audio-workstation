@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.audio;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
 import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
@@ -68,6 +69,9 @@ public final class AudioEngine {
     // Pre-allocated per-return-bus buffers for send routing: [returnBus][channel][frame]
     private float[][][] returnBuffers;
 
+    // MIDI track renderer for SoundFont synthesis
+    private MidiTrackRenderer midiTrackRenderer;
+
     // Volatile references for lock-free UI ↔ audio thread communication
     private volatile Transport transport;
     private volatile Mixer mixer;
@@ -122,6 +126,9 @@ public final class AudioEngine {
         // Pre-allocate intermediate buffers in the master effects chain
         masterChain.allocateIntermediateBuffers(channels, frames);
 
+        // Pre-allocate MIDI track renderer for SoundFont synthesis
+        midiTrackRenderer = new MidiTrackRenderer(format.sampleRate(), frames);
+
         return true;
     }
 
@@ -131,7 +138,14 @@ public final class AudioEngine {
      * @return {@code true} if the engine was stopped, {@code false} if already stopped
      */
     public boolean stop() {
-        return running.compareAndSet(true, false);
+        if (!running.compareAndSet(true, false)) {
+            return false;
+        }
+        if (midiTrackRenderer != null) {
+            midiTrackRenderer.close();
+            midiTrackRenderer = null;
+        }
+        return true;
     }
 
     /**
@@ -159,6 +173,16 @@ public final class AudioEngine {
      */
     public EffectsChain getMasterChain() {
         return masterChain;
+    }
+
+    /**
+     * Returns the MIDI track renderer used for SoundFont synthesis, or
+     * {@code null} if the engine has not been started.
+     *
+     * @return the MIDI track renderer
+     */
+    MidiTrackRenderer getMidiTrackRenderer() {
+        return midiTrackRenderer;
     }
 
     /**
@@ -667,6 +691,11 @@ public final class AudioEngine {
      * the pre-allocated track buffers. This segment does not cross a loop
      * boundary.
      *
+     * <p>For audio tracks, clip audio data is copied from the clip buffers.
+     * For MIDI tracks with a {@link com.benesquivelmusic.daw.core.midi.SoundFontAssignment},
+     * MIDI note events are sent to the SoundFont renderer and the synthesized
+     * audio is rendered into the track buffer.</p>
+     *
      * @param tracks          the list of tracks
      * @param trackCount      the number of tracks to process
      * @param startBeat       the beat position at the start of this segment
@@ -682,6 +711,17 @@ public final class AudioEngine {
 
         for (int t = 0; t < trackCount; t++) {
             Track track = tracks.get(t);
+
+            // Render MIDI tracks via SoundFont synthesis
+            if (track.getType() == TrackType.MIDI
+                    && track.getSoundFontAssignment() != null
+                    && midiTrackRenderer != null) {
+                midiTrackRenderer.renderMidiTrack(track, trackBuffers[t],
+                        startBeat, endBeat, samplesPerBeat,
+                        frameOffset, framesToProcess);
+                continue;
+            }
+
             List<AudioClip> clips = track.getClips();
 
             for (int c = 0; c < clips.size(); c++) {
