@@ -50,7 +50,7 @@ public final class GraphicEQ {
         peakingFilters = new ArrayList<>();
         for (int i = 1; i < numFilters - 1; i++)
             peakingFilters.add(new PeakingFilter(f.get(i), filterGains[i], Q, sampleRate));
-        // Decreasing the high shelf frequency by SQRT_2 creates a smoother response at high frequencies
+        // Increasing the high shelf frequency by SQRT_2 creates a smoother response at high frequencies
         highShelf = new PeakHighShelf(Math.min(f.get(numFilters - 2) * Definitions.SQRT_2, 20000.0), filterGains[numFilters - 1], Q, sampleRate);
 
         targetGain = new AtomicReference<>(result.dcGain);
@@ -61,8 +61,10 @@ public final class GraphicEQ {
     }
 
     public boolean setTargetGains(Coefficients gains) {
-        if (gains.equals(previousInput)) {
-            return gainsEqual.get() && gains.allLessOrEqual(0.0);
+        if (Interpolation.equals(gains, previousInput)) {
+            if (gainsEqual.get() && gains.allLessOrEqual(0.0))
+                return true;
+            return false;
         }
         previousInput = new Coefficients(gains);
 
@@ -75,7 +77,7 @@ public final class GraphicEQ {
         for (int i = 0; i < peakingFilters.size(); i++)
             peakingFilters.get(i).setTargetGain(filterGains[i + 1]);
         highShelf.setTargetGain(filterGains[numFilters - 1]);
-        return false;
+        return gains.allLessOrEqual(0.0);
     }
 
     public double getOutput(double input, double lerpFactor) {

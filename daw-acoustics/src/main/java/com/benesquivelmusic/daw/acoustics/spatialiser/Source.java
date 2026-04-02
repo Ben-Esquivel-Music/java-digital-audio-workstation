@@ -21,6 +21,8 @@ public final class Source extends Access {
     private Vec3 currentPosition = new Vec3();
     private Vec4 currentOrientation = new Vec4();
     private final AtomicReference<SourceDirectivity> directivity = new AtomicReference<>(SourceDirectivity.OMNI);
+    private final AtomicReference<SpatialisationMode> spatialisationMode = new AtomicReference<>(SpatialisationMode.NONE);
+    private final AtomicBoolean impulseResponseMode = new AtomicBoolean(false);
     private final AtomicBoolean hasChanged = new AtomicBoolean(true);
     private final Buffer inputBuffer;
     private boolean inputBufferUpdated;
@@ -66,11 +68,13 @@ public final class Source extends Access {
     }
 
     public void updateSpatialisationMode(SpatialisationMode mode) {
-        // Stored for future use when binaural renderer is plugged in
+        spatialisationMode.set(mode);
+        hasChanged.set(true);
     }
 
     public void updateImpulseResponseMode(boolean mode) {
-        // Stored for future use when binaural renderer is plugged in
+        impulseResponseMode.set(mode);
+        hasChanged.set(true);
     }
 
     public void update(Vec3 position, Vec4 orientation, double distance) {

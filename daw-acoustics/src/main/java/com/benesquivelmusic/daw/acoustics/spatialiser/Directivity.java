@@ -57,6 +57,7 @@ public final class Directivity {
     private double evaluateSH(int bandIdx, double theta, double phi) {
         if (bandIdx >= coefficients.size()) return 1.0;
         List<Complex> coeffs = coefficients.get(bandIdx);
+        if (coeffs.isEmpty()) return 1.0;
         int maxOrder = (int) Math.sqrt(coeffs.size()) - 1;
         Complex output = coeffs.getFirst();
         for (int l = 1; l <= maxOrder; l++) {
