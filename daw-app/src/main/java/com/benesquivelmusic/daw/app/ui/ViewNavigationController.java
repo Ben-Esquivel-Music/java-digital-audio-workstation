@@ -173,6 +173,7 @@ final class ViewNavigationController {
 
         // Telemetry view — sound wave telemetry room visualizer
         telemetryView = new TelemetryView();
+        telemetryView.setProject(host.project());
         viewCache.put(DawView.TELEMETRY, telemetryView);
 
         // Mastering view — mastering chain with presets and A/B comparison
