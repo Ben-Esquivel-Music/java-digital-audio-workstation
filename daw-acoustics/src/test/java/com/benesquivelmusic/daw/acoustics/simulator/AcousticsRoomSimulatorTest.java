@@ -263,4 +263,101 @@ class AcousticsRoomSimulatorTest {
         assertThat(ir).isNotNull();
         assertThat(ir.lengthInSamples()).isGreaterThan(0);
     }
+
+    @Test
+    void shouldPrecomputeIrOnConfigure() {
+        // After configure(), process() should work immediately without calling
+        // generateImpulseResponse() — the IR is precomputed eagerly.
+        SoundSource nearSource =
+                new SoundSource("NearGuitar", new Position3D(3.0, 3.5, 1.2), 85);
+        RoomSimulationConfig config = new RoomSimulationConfig(
+                STUDIO_DIMS, Map.of(), WallMaterial.DRYWALL,
+                List.of(nearSource), LISTENER, SAMPLE_RATE);
+        simulator.configure(config);
+
+        int numFrames = 512;
+        float[][] input = new float[1][numFrames];
+        float[][] output = new float[1][numFrames];
+        input[0][0] = 1.0f;
+
+        // This should not throw or need to regenerate internally
+        simulator.process(input, output, numFrames);
+
+        boolean hasNonZero = false;
+        for (float sample : output[0]) {
+            if (Math.abs(sample) > 1e-10f) {
+                hasNonZero = true;
+                break;
+            }
+        }
+        assertThat(hasNonZero).isTrue();
+    }
+
+    @Test
+    void shouldStreamConvolutionAcrossMultipleBlocks() {
+        // Test that streaming convolution preserves the IR tail across blocks
+        SoundSource nearSource =
+                new SoundSource("NearGuitar", new Position3D(3.0, 3.5, 1.2), 85);
+        RoomSimulationConfig config = new RoomSimulationConfig(
+                STUDIO_DIMS, Map.of(), WallMaterial.DRYWALL,
+                List.of(nearSource), LISTENER, SAMPLE_RATE);
+        simulator.configure(config);
+
+        // Process two consecutive blocks, with an impulse in the first
+        int numFrames = 256;
+        float[][] input1 = new float[1][numFrames];
+        float[][] output1 = new float[1][numFrames];
+        input1[0][0] = 1.0f;
+
+        float[][] input2 = new float[1][numFrames];
+        float[][] output2 = new float[1][numFrames];
+        // Second block is silence
+
+        simulator.process(input1, output1, numFrames);
+        simulator.process(input2, output2, numFrames);
+
+        // The reverb tail should spill into the second block (overlap-save)
+        boolean secondBlockHasOutput = false;
+        for (float sample : output2[0]) {
+            if (Math.abs(sample) > 1e-10f) {
+                secondBlockHasOutput = true;
+                break;
+            }
+        }
+        assertThat(secondBlockHasOutput)
+                .as("Reverb tail should continue into the second block")
+                .isTrue();
+    }
+
+    @Test
+    void shouldIncludeAllSourcesInIr() {
+        // Test that multiple sources produce more energy than a single source
+        SoundSource guitar = new SoundSource("Guitar", new Position3D(2, 2, 1), 85);
+        RoomSimulationConfig singleSourceConfig = new RoomSimulationConfig(
+                STUDIO_DIMS, Map.of(), WallMaterial.DRYWALL,
+                List.of(guitar), LISTENER, SAMPLE_RATE);
+        simulator.configure(singleSourceConfig);
+        ImpulseResponse singleIr = simulator.generateImpulseResponse();
+
+        SoundSource drums = new SoundSource("Drums", new Position3D(4, 3, 1), 90);
+        SoundSource vocals = new SoundSource("Vocals", new Position3D(3, 1, 1.5), 80);
+        RoomSimulationConfig multiSourceConfig = new RoomSimulationConfig(
+                STUDIO_DIMS, Map.of(), WallMaterial.DRYWALL,
+                List.of(guitar, drums, vocals), LISTENER, SAMPLE_RATE);
+        simulator.configure(multiSourceConfig);
+        ImpulseResponse multiIr = simulator.generateImpulseResponse();
+
+        // Multi-source IR should have more non-zero samples (more early reflections)
+        int singleNonZero = countNonZeroSamples(singleIr.samples()[0]);
+        int multiNonZero = countNonZeroSamples(multiIr.samples()[0]);
+        assertThat(multiNonZero).isGreaterThan(singleNonZero);
+    }
+
+    private static int countNonZeroSamples(float[] data) {
+        int count = 0;
+        for (float v : data) {
+            if (Math.abs(v) > 1e-7f) count++;
+        }
+        return count;
+    }
 }

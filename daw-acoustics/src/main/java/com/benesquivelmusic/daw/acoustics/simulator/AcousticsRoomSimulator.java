@@ -24,6 +24,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Full-featured room acoustic simulator using the daw-acoustics engine
@@ -32,7 +33,7 @@ import java.util.Objects;
  * <p>This implementation replaces the native RoomAcoustiC++ FFM bridge with a
  * pure-Java engine that combines:</p>
  * <ul>
- *   <li>Image-source method for early reflections</li>
+ *   <li>Image-source method for early reflections (all configured sources)</li>
  *   <li>Feedback Delay Network (Householder variant) for late reverberation</li>
  *   <li>Per-surface frequency-dependent absorption</li>
  *   <li>Air absorption modeling</li>
@@ -41,6 +42,12 @@ import java.util.Objects;
  * <p>The engine uses the full {@link Context} and {@link Room} infrastructure
  * ported from RoomAcoustiCpp, providing physically-based room acoustics
  * simulation without any native library dependency.</p>
+ *
+ * <h2>Thread Safety</h2>
+ * <p>Configuration methods ({@link #configure}, {@link #setListenerOrientation},
+ * {@link #addSource}, etc.) precompute the impulse response eagerly and publish
+ * it via an {@link AtomicReference}. The real-time {@link #process} method reads
+ * the current snapshot atomically and never allocates or blocks.</p>
  */
 public final class AcousticsRoomSimulator implements RoomSimulator {
 
@@ -56,11 +63,19 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
     /** Number of FDN reverb sources. */
     private static final int NUM_REVERB_SOURCES = 12;
 
-    private RoomSimulationConfig config;
-    private ListenerOrientation listenerOrientation;
+    /** Convolution block size for the overlap-save streaming convolver (power of 2). */
+    private static final int CONV_BLOCK_SIZE = 256;
+
+    // --- Thread-safe snapshot published to the audio thread ---
+    private final AtomicReference<ProcessingState> processingState =
+            new AtomicReference<>(null);
+
+    // --- Mutable configuration state (accessed only from config thread) ---
+    private volatile RoomSimulationConfig config;
+    private volatile ListenerOrientation listenerOrientation;
     private final List<SoundSource> sources = new ArrayList<>();
 
-    // Acoustics engine state
+    // Acoustics engine state (config thread only)
     private Context context;
     private Config acousticsConfig;
     private final Map<String, Long> sourceIdMap = new LinkedHashMap<>();
@@ -68,10 +83,6 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
     // Room geometry wall IDs (floor, ceiling, left, right, front, back — 2 triangles each)
     private final long[] wallIds = new long[12];
     private int wallCount;
-
-    // Convolution / IR state
-    private float[] currentIr;
-    private boolean needsIrUpdate = true;
 
     /**
      * Creates an acoustics room simulator. Call {@link #configure(RoomSimulationConfig)}
@@ -91,7 +102,7 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
         this.sourceIdMap.clear();
 
         initializeAcousticsEngine();
-        this.needsIrUpdate = true;
+        rebuildIr();
     }
 
     @Override
@@ -109,7 +120,7 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
                     new Vec3(pos.x(), pos.y(), pos.z()),
                     orientationToVec4(orientation));
         }
-        this.needsIrUpdate = true;
+        rebuildIr();
     }
 
     @Override
@@ -127,7 +138,7 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
             Position3D pos = source.position();
             context.updateSource(id, new Vec3(pos.x(), pos.y(), pos.z()), new Vec4());
         }
-        this.needsIrUpdate = true;
+        rebuildIr();
     }
 
     @Override
@@ -138,7 +149,7 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
             if (id != null && context != null) {
                 context.removeSource(id);
             }
-            this.needsIrUpdate = true;
+            rebuildIr();
         }
         return removed;
     }
@@ -154,7 +165,7 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
                 if (id != null && context != null) {
                     context.updateSource(id, new Vec3(position.x(), position.y(), position.z()), new Vec4());
                 }
-                this.needsIrUpdate = true;
+                rebuildIr();
                 return true;
             }
         }
@@ -165,34 +176,10 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
     public ImpulseResponse generateImpulseResponse() {
         ensureConfigured();
 
-        RoomDimensions dims = config.dimensions();
-        int sampleRate = config.sampleRate();
+        float[] ir = synthesizeIr();
+        publishIr(ir);
 
-        // Compute RT60 using the acoustics engine's room model
-        double avgAbsorption = config.averageAbsorption();
-        double rt60 = estimateRt60(dims, avgAbsorption);
-
-        // IR length = RT60 * sampleRate (capped at a reasonable maximum)
-        int irLength = Math.min((int) (rt60 * sampleRate), sampleRate * 4);
-        irLength = Math.max(irLength, sampleRate / 10); // minimum 100ms
-
-        float[] ir = new float[irLength];
-
-        // 1. Early reflections via image-source method
-        if (!sources.isEmpty() && listenerOrientation != null) {
-            addEarlyReflections(ir, sampleRate, dims);
-        }
-
-        // 2. Late reverberation via the acoustics engine FDN
-        addFdnReverbTail(ir, sampleRate, rt60);
-
-        // Normalize the IR
-        normalizeIr(ir);
-
-        this.currentIr = ir;
-        this.needsIrUpdate = false;
-
-        return new ImpulseResponse(new float[][]{ir}, sampleRate);
+        return new ImpulseResponse(new float[][]{ir}, config.sampleRate());
     }
 
     @Override
@@ -202,23 +189,22 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
 
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
-        if (config == null) {
-            // Pass through if not configured
-            for (int ch = 0; ch < Math.min(inputBuffer.length, outputBuffer.length); ch++) {
+        // Read the current processing snapshot atomically — no allocation, no blocking.
+        ProcessingState state = processingState.get();
+
+        if (state == null) {
+            // Not configured or IR not yet available — pass through unchanged
+            int channels = Math.min(inputBuffer.length, outputBuffer.length);
+            for (int ch = 0; ch < channels; ch++) {
                 System.arraycopy(inputBuffer[ch], 0, outputBuffer[ch], 0, numFrames);
             }
             return;
         }
 
-        // Regenerate IR if needed
-        if (needsIrUpdate || currentIr == null) {
-            generateImpulseResponse();
-        }
-
-        // Apply IR via convolution
-        int irLen = Math.min(currentIr.length, numFrames);
-        for (int ch = 0; ch < Math.min(inputBuffer.length, outputBuffer.length); ch++) {
-            convolveBlock(inputBuffer[ch], outputBuffer[ch], numFrames, currentIr, irLen);
+        // Apply IR via stateful overlap-save convolution
+        int channels = Math.min(inputBuffer.length, outputBuffer.length);
+        for (int ch = 0; ch < channels; ch++) {
+            state.convolve(inputBuffer[ch], outputBuffer[ch], numFrames);
         }
     }
 
@@ -227,8 +213,10 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
         if (context != null) {
             context.resetFDN();
         }
-        currentIr = null;
-        needsIrUpdate = true;
+        processingState.set(null);
+        if (config != null) {
+            rebuildIr();
+        }
     }
 
     @Override
@@ -239,6 +227,58 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
     @Override
     public int getOutputChannelCount() {
         return 1;
+    }
+
+    // ----------------------------------------------------------------
+    // IR synthesis and publishing
+    // ----------------------------------------------------------------
+
+    /**
+     * Rebuilds the IR and publishes a new processing snapshot.
+     * Called from configuration methods (not the audio thread).
+     */
+    private void rebuildIr() {
+        if (config == null) return;
+        float[] ir = synthesizeIr();
+        publishIr(ir);
+    }
+
+    /**
+     * Synthesizes a new impulse response from the current room configuration.
+     */
+    private float[] synthesizeIr() {
+        RoomDimensions dims = config.dimensions();
+        int sampleRate = config.sampleRate();
+
+        double avgAbsorption = config.averageAbsorption();
+        double rt60 = estimateRt60(dims, avgAbsorption);
+
+        // IR length = RT60 * sampleRate (capped at a reasonable maximum)
+        int irLength = Math.min((int) (rt60 * sampleRate), sampleRate * 4);
+        irLength = Math.max(irLength, sampleRate / 10); // minimum 100ms
+
+        float[] ir = new float[irLength];
+
+        // 1. Early reflections via image-source method (all sources)
+        if (!sources.isEmpty() && listenerOrientation != null) {
+            addEarlyReflections(ir, sampleRate, dims);
+        }
+
+        // 2. Late reverberation via the acoustics engine FDN (all sources)
+        addFdnReverbTail(ir, sampleRate);
+
+        // Normalize the IR
+        normalizeIr(ir);
+
+        return ir;
+    }
+
+    /**
+     * Publishes a new IR into the thread-safe processing state.
+     * The audio thread will pick it up atomically on its next process() call.
+     */
+    private void publishIr(float[] ir) {
+        processingState.set(new ProcessingState(ir, CONV_BLOCK_SIZE));
     }
 
     // ----------------------------------------------------------------
@@ -368,47 +408,49 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
     }
 
     // ----------------------------------------------------------------
-    // Early reflections (image-source method)
+    // Early reflections (image-source method) — all sources
     // ----------------------------------------------------------------
 
     private void addEarlyReflections(float[] ir, int sampleRate, RoomDimensions dims) {
-        SoundSource source = sources.getFirst();
-        Position3D sp = source.position();
         Position3D lp = listenerOrientation.position();
 
-        // Direct sound
-        double directDist = sp.distanceTo(lp);
-        int directSample = distanceToSample(directDist, sampleRate);
-        if (directSample >= 0 && directSample < ir.length) {
-            ir[directSample] += (float) (1.0 / Math.max(directDist, 0.01));
-        }
+        for (SoundSource source : sources) {
+            Position3D sp = source.position();
 
-        // First-order image sources (6 surfaces)
-        Position3D[] images = {
-                new Position3D(-sp.x(), sp.y(), sp.z()),                       // left wall (x=0)
-                new Position3D(2 * dims.width() - sp.x(), sp.y(), sp.z()),     // right wall (x=width)
-                new Position3D(sp.x(), -sp.y(), sp.z()),                       // front wall (y=0)
-                new Position3D(sp.x(), 2 * dims.length() - sp.y(), sp.z()),    // back wall (y=length)
-                new Position3D(sp.x(), sp.y(), -sp.z()),                       // floor (z=0)
-                new Position3D(sp.x(), sp.y(), 2 * dims.height() - sp.z())     // ceiling (z=height)
-        };
-
-        for (int i = 0; i < images.length; i++) {
-            String surface = RoomSimulationConfig.SURFACE_NAMES.get(i);
-            double absorption = config.materialForSurface(surface).absorptionCoefficient();
-            double reflectionGain = 1.0 - absorption;
-
-            double dist = images[i].distanceTo(lp);
-            int sample = distanceToSample(dist, sampleRate);
-            if (sample >= 0 && sample < ir.length) {
-                // Apply air absorption attenuation for longer paths
-                double airAtten = Math.exp(-0.005 * dist);
-                ir[sample] += (float) (reflectionGain * airAtten / Math.max(dist, 0.01));
+            // Direct sound
+            double directDist = sp.distanceTo(lp);
+            int directSample = distanceToSample(directDist, sampleRate);
+            if (directSample >= 0 && directSample < ir.length) {
+                ir[directSample] += (float) (1.0 / Math.max(directDist, 0.01));
             }
-        }
 
-        // Second-order image sources (wall pairs) for richer early reflections
-        addSecondOrderReflections(ir, sampleRate, dims, sp, lp);
+            // First-order image sources (6 surfaces)
+            Position3D[] images = {
+                    new Position3D(-sp.x(), sp.y(), sp.z()),                       // left wall (x=0)
+                    new Position3D(2 * dims.width() - sp.x(), sp.y(), sp.z()),     // right wall (x=width)
+                    new Position3D(sp.x(), -sp.y(), sp.z()),                       // front wall (y=0)
+                    new Position3D(sp.x(), 2 * dims.length() - sp.y(), sp.z()),    // back wall (y=length)
+                    new Position3D(sp.x(), sp.y(), -sp.z()),                       // floor (z=0)
+                    new Position3D(sp.x(), sp.y(), 2 * dims.height() - sp.z())     // ceiling (z=height)
+            };
+
+            for (int i = 0; i < images.length; i++) {
+                String surface = RoomSimulationConfig.SURFACE_NAMES.get(i);
+                double absorption = config.materialForSurface(surface).absorptionCoefficient();
+                double reflectionGain = 1.0 - absorption;
+
+                double dist = images[i].distanceTo(lp);
+                int sample = distanceToSample(dist, sampleRate);
+                if (sample >= 0 && sample < ir.length) {
+                    // Apply air absorption attenuation for longer paths
+                    double airAtten = Math.exp(-0.005 * dist);
+                    ir[sample] += (float) (reflectionGain * airAtten / Math.max(dist, 0.01));
+                }
+            }
+
+            // Second-order image sources (wall pairs) for richer early reflections
+            addSecondOrderReflections(ir, sampleRate, dims, sp, lp);
+        }
     }
 
     /**
@@ -423,7 +465,6 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
         double h = dims.height();
 
         // Second-order pairs: reflect across two opposite walls
-        // x-axis reflections
         Position3D[] secondOrder = {
                 new Position3D(-sp.x(), -sp.y(), sp.z()),
                 new Position3D(-sp.x(), 2 * l - sp.y(), sp.z()),
@@ -456,7 +497,7 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
     // FDN late reverberation synthesis (using acoustics engine)
     // ----------------------------------------------------------------
 
-    private void addFdnReverbTail(float[] ir, int sampleRate, double rt60) {
+    private void addFdnReverbTail(float[] ir, int sampleRate) {
         // Use the acoustics engine's FDN for late reverberation
         // Synthesize reverb tail starting after early reflections
         int earlyReflEnd = (int) (0.05 * sampleRate); // 50ms early reflection window
@@ -475,6 +516,9 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
         Buffer inputBuffer = new Buffer(blockSize);
         Buffer outputBuffer = new Buffer(blockSize * 2); // stereo output
 
+        // Submit impulse to all registered sources
+        List<Long> allSourceIds = new ArrayList<>(sourceIdMap.values());
+
         for (int block = 0; block < totalBlocks; block++) {
             inputBuffer.reset();
 
@@ -483,19 +527,25 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
                 inputBuffer.set(0, 1.0);
             }
 
-            // Submit audio to first source (if available)
-            if (!sourceIdMap.isEmpty()) {
-                Long firstId = sourceIdMap.values().iterator().next();
-                context.submitAudio(firstId, inputBuffer);
+            // Submit audio to all sources
+            for (Long srcId : allSourceIds) {
+                context.submitAudio(srcId, inputBuffer);
             }
 
             // Get processed output
             outputBuffer.reset();
             context.getOutput(outputBuffer);
 
-            // Copy stereo output to mono IR (averaging L/R)
+            // Copy stereo output to mono IR (averaging L/R), skipping the dry
+            // impulse spike at the very start to capture only the reverb component
             int irOffset = startSample + block * blockSize;
             for (int i = 0; i < blockSize && (irOffset + i) < ir.length; i++) {
+                // Skip the first output sample of the first block — it contains
+                // the dry direct sound which would dominate normalization
+                if (block == 0 && i == 0) {
+                    continue;
+                }
+
                 double left = outputBuffer.get(i * 2);
                 double right = outputBuffer.get(i * 2 + 1);
                 ir[irOffset + i] += (float) ((left + right) * 0.5);
@@ -504,15 +554,198 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
     }
 
     // ----------------------------------------------------------------
-    // Convolution
+    // Stateful overlap-save streaming convolution
     // ----------------------------------------------------------------
 
-    private void convolveBlock(float[] input, float[] output, int numFrames,
-                               float[] ir, int irLen) {
-        Arrays.fill(output, 0, numFrames, 0.0f);
-        for (int n = 0; n < numFrames; n++) {
-            for (int k = 0; k < irLen && (n - k) >= 0; k++) {
-                output[n] += input[n - k] * ir[k];
+    /**
+     * Immutable processing snapshot that holds the IR and the stateful
+     * overlap-save convolver. Published via {@link AtomicReference} so the
+     * audio thread can read it without locking.
+     */
+    static final class ProcessingState {
+        private final float[] ir;
+        private final int blockSize;
+        private final int fftSize;
+        private final int numPartitions;
+
+        // Pre-computed IR partitions in frequency domain
+        private final double[][] irPartitionsReal;
+        private final double[][] irPartitionsImag;
+
+        // Frequency-domain delay line (circular buffer of input FFTs)
+        private final double[][] fdlReal;
+        private final double[][] fdlImag;
+        private int fdlIndex;
+
+        // Previous input block for overlap-save
+        private final float[] prevInput;
+
+        // Workspace buffers (pre-allocated — no allocation in convolve)
+        private final double[] workInputReal;
+        private final double[] workInputImag;
+        private final double[] workSumReal;
+        private final double[] workSumImag;
+
+        ProcessingState(float[] ir, int blockSize) {
+            this.ir = ir;
+            this.blockSize = blockSize;
+            this.fftSize = blockSize * 2;
+            this.numPartitions = (ir.length + blockSize - 1) / blockSize;
+
+            // Partition and FFT the impulse response
+            irPartitionsReal = new double[numPartitions][fftSize];
+            irPartitionsImag = new double[numPartitions][fftSize];
+            for (int p = 0; p < numPartitions; p++) {
+                int offset = p * blockSize;
+                int len = Math.min(blockSize, ir.length - offset);
+                for (int i = 0; i < len; i++) {
+                    irPartitionsReal[p][i] = ir[offset + i];
+                }
+                fft(irPartitionsReal[p], irPartitionsImag[p], false);
+            }
+
+            // Initialize frequency-domain delay line
+            fdlReal = new double[numPartitions][fftSize];
+            fdlImag = new double[numPartitions][fftSize];
+            fdlIndex = 0;
+            prevInput = new float[blockSize];
+
+            // Pre-allocate workspace
+            workInputReal = new double[fftSize];
+            workInputImag = new double[fftSize];
+            workSumReal = new double[fftSize];
+            workSumImag = new double[fftSize];
+        }
+
+        /**
+         * Applies the full IR to the input using overlap-save streaming convolution.
+         * Handles arbitrary numFrames by processing in blockSize-sized chunks.
+         */
+        void convolve(float[] input, float[] output, int numFrames) {
+            Arrays.fill(output, 0, numFrames, 0.0f);
+
+            int processed = 0;
+            while (processed < numFrames) {
+                int remaining = numFrames - processed;
+                if (remaining >= blockSize) {
+                    // Process a full block
+                    processOneBlock(input, output, processed, processed);
+                    processed += blockSize;
+                } else {
+                    // Pad the last partial block with zeros
+                    float[] paddedIn = new float[blockSize];
+                    System.arraycopy(input, processed, paddedIn, 0, remaining);
+                    float[] paddedOut = new float[blockSize];
+                    processOneBlock(paddedIn, paddedOut, 0, 0);
+                    System.arraycopy(paddedOut, 0, output, processed, remaining);
+                    processed += remaining;
+                }
+            }
+        }
+
+        private void processOneBlock(float[] input, float[] output,
+                                     int inputOffset, int outputOffset) {
+            // Form overlap-save input: [prevInput | currentInput]
+            Arrays.fill(workInputImag, 0.0);
+            for (int i = 0; i < blockSize; i++) {
+                workInputReal[i] = prevInput[i];
+                workInputReal[i + blockSize] = input[inputOffset + i];
+            }
+
+            // Save current input as previous for next block
+            System.arraycopy(input, inputOffset, prevInput, 0, blockSize);
+
+            // FFT the input
+            fft(workInputReal, workInputImag, false);
+
+            // Store in FDL
+            System.arraycopy(workInputReal, 0, fdlReal[fdlIndex], 0, fftSize);
+            System.arraycopy(workInputImag, 0, fdlImag[fdlIndex], 0, fftSize);
+
+            // Accumulate: multiply each FDL entry with corresponding IR partition
+            Arrays.fill(workSumReal, 0.0);
+            Arrays.fill(workSumImag, 0.0);
+            for (int p = 0; p < numPartitions; p++) {
+                int fdlIdx = ((fdlIndex - p) % numPartitions + numPartitions) % numPartitions;
+                double[] xr = fdlReal[fdlIdx];
+                double[] xi = fdlImag[fdlIdx];
+                double[] hr = irPartitionsReal[p];
+                double[] hi = irPartitionsImag[p];
+
+                for (int i = 0; i < fftSize; i++) {
+                    workSumReal[i] += xr[i] * hr[i] - xi[i] * hi[i];
+                    workSumImag[i] += xr[i] * hi[i] + xi[i] * hr[i];
+                }
+            }
+
+            // IFFT
+            fft(workSumReal, workSumImag, true);
+
+            // Output last blockSize samples (overlap-save)
+            for (int i = 0; i < blockSize; i++) {
+                output[outputOffset + i] = (float) workSumReal[i + blockSize];
+            }
+
+            // Advance FDL index
+            fdlIndex = (fdlIndex + 1) % numPartitions;
+        }
+
+        /** Returns the IR data (for tests / generateImpulseResponse). */
+        float[] getIr() {
+            return ir;
+        }
+
+        // ---- Radix-2 Cooley–Tukey FFT (same as PartitionedConvolver) ------
+
+        static void fft(double[] real, double[] imag, boolean inverse) {
+            int n = real.length;
+            if (n <= 1) return;
+
+            // Bit-reversal permutation
+            for (int i = 1, j = 0; i < n; i++) {
+                int bit = n >> 1;
+                while ((j & bit) != 0) {
+                    j ^= bit;
+                    bit >>= 1;
+                }
+                j ^= bit;
+                if (i < j) {
+                    double tmp = real[i]; real[i] = real[j]; real[j] = tmp;
+                    tmp = imag[i]; imag[i] = imag[j]; imag[j] = tmp;
+                }
+            }
+
+            // Butterfly stages
+            for (int len = 2; len <= n; len <<= 1) {
+                double angle = (inverse ? 1 : -1) * 2.0 * Math.PI / len;
+                double wReal = Math.cos(angle);
+                double wImag = Math.sin(angle);
+
+                for (int i = 0; i < n; i += len) {
+                    double curR = 1.0, curI = 0.0;
+                    int half = len >> 1;
+                    for (int j = 0; j < half; j++) {
+                        int a = i + j;
+                        int b = i + j + half;
+                        double ur = real[a], ui = imag[a];
+                        double vr = real[b] * curR - imag[b] * curI;
+                        double vi = real[b] * curI + imag[b] * curR;
+                        real[a] = ur + vr;
+                        imag[a] = ui + vi;
+                        real[b] = ur - vr;
+                        imag[b] = ui - vi;
+                        double newCurR = curR * wReal - curI * wImag;
+                        curI = curR * wImag + curI * wReal;
+                        curR = newCurR;
+                    }
+                }
+            }
+
+            if (inverse) {
+                for (int i = 0; i < n; i++) {
+                    real[i] /= n;
+                    imag[i] /= n;
+                }
             }
         }
     }
