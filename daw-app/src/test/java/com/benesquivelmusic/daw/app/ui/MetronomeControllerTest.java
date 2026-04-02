@@ -22,8 +22,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * toggle logic, and null-argument validation.
  *
  * <p>Tests that create JavaFX controls ({@code Button}, {@code Label},
- * {@code NotificationBar}) require the JavaFX toolkit; these are gated
- * skipped on headless CI runners.</p>
+ * {@code NotificationBar}) require the JavaFX toolkit, which is
+ * initialized by the {@link JavaFxToolkitExtension}.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class MetronomeControllerTest {
