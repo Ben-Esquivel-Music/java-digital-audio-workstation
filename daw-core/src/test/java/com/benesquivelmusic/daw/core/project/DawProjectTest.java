@@ -1,8 +1,14 @@
 package com.benesquivelmusic.daw.core.project;
 
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
+import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
+import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
+import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
+import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
+import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
 
 import org.junit.jupiter.api.Test;
 
@@ -300,5 +306,40 @@ class DawProjectTest {
         project.markDirty();
         project.markClean();
         assertThat(project.isDirty()).isFalse();
+    }
+
+    @Test
+    void shouldHaveNullRoomConfigurationByDefault() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+
+        assertThat(project.getRoomConfiguration()).isNull();
+    }
+
+    @Test
+    void shouldSetAndGetRoomConfiguration() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        RoomConfiguration config = new RoomConfiguration(
+                new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        config.addSoundSource(new SoundSource("Guitar", new Position3D(3, 2, 1), 85));
+        config.addMicrophone(new MicrophonePlacement("Mic1", new Position3D(5, 4, 1.5), 0, 0));
+
+        project.setRoomConfiguration(config);
+
+        assertThat(project.getRoomConfiguration()).isSameAs(config);
+        assertThat(project.getRoomConfiguration().getDimensions().width()).isEqualTo(10);
+        assertThat(project.getRoomConfiguration().getSoundSources()).hasSize(1);
+        assertThat(project.getRoomConfiguration().getMicrophones()).hasSize(1);
+    }
+
+    @Test
+    void shouldClearRoomConfigurationWithNull() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        RoomConfiguration config = new RoomConfiguration(
+                new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL);
+        project.setRoomConfiguration(config);
+
+        project.setRoomConfiguration(null);
+
+        assertThat(project.getRoomConfiguration()).isNull();
     }
 }

@@ -5,8 +5,15 @@ import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.FadeCurveType;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.project.DawProject;
+import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
+import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
+import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
+import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
+import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
+import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
+import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
 
 import org.junit.jupiter.api.Test;
 
@@ -194,5 +201,46 @@ class ProjectSerializerTest {
         String xml = serializer.serialize(project);
 
         assertThat(xml).doesNotContain("soundfont-assignment");
+    }
+
+    @Test
+    void shouldSerializeRoomConfiguration() throws IOException {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        RoomConfiguration config = new RoomConfiguration(
+                new RoomDimensions(12, 9, 4), WallMaterial.CONCRETE);
+        config.addSoundSource(new SoundSource("Guitar", new Position3D(3, 2, 1), 85));
+        config.addSoundSource(new SoundSource("Vocals", new Position3D(5, 2, 1.5), 75));
+        config.addMicrophone(new MicrophonePlacement("Overhead", new Position3D(4, 4, 2), 45, 10));
+        config.addAudienceMember(new AudienceMember("Seat 1", new Position3D(2, 7, 0)));
+        project.setRoomConfiguration(config);
+
+        ProjectSerializer serializer = new ProjectSerializer();
+        String xml = serializer.serialize(project);
+
+        assertThat(xml).contains("<room-configuration");
+        assertThat(xml).contains("width=\"12.0\"");
+        assertThat(xml).contains("length=\"9.0\"");
+        assertThat(xml).contains("height=\"4.0\"");
+        assertThat(xml).contains("wall-material=\"CONCRETE\"");
+        assertThat(xml).contains("<sound-source");
+        assertThat(xml).contains("name=\"Guitar\"");
+        assertThat(xml).contains("name=\"Vocals\"");
+        assertThat(xml).contains("power-db=\"85.0\"");
+        assertThat(xml).contains("<microphone");
+        assertThat(xml).contains("name=\"Overhead\"");
+        assertThat(xml).contains("azimuth=\"45.0\"");
+        assertThat(xml).contains("elevation=\"10.0\"");
+        assertThat(xml).contains("<audience-member");
+        assertThat(xml).contains("name=\"Seat 1\"");
+    }
+
+    @Test
+    void shouldNotSerializeRoomConfigurationWhenNull() throws IOException {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+
+        ProjectSerializer serializer = new ProjectSerializer();
+        String xml = serializer.serialize(project);
+
+        assertThat(xml).doesNotContain("room-configuration");
     }
 }
