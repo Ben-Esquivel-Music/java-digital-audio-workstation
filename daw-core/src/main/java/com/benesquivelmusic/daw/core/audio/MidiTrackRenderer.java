@@ -389,115 +389,145 @@ final class MidiTrackRenderer implements AutoCloseable {
 
         while (currentFrame < framesToProcess) {
             // Find the smallest event frame offset >= minEventFrame
-            int nextEventFrame = framesToProcess; // sentinel: end of segment
-
-            for (int i = 0; i < notes.size(); i++) {
-                MidiNoteData note = notes.get(i);
-                double noteStartBeat = note.startColumn() * BEATS_PER_COLUMN;
-                double noteEndBeat = note.endColumn() * BEATS_PER_COLUMN;
-
-                // Note-on: if note starts within this segment
-                if (noteStartBeat >= startBeat && noteStartBeat < endBeat) {
-                    int noteOnFrame = (int) Math.round((noteStartBeat - startBeat) * samplesPerBeat);
-                    noteOnFrame = Math.max(0, Math.min(noteOnFrame, framesToProcess - 1));
-                    if (noteOnFrame >= minEventFrame && noteOnFrame < nextEventFrame) {
-                        nextEventFrame = noteOnFrame;
-                    }
-                }
-
-                // Note-off: if note ends within this segment
-                if (noteEndBeat > startBeat && noteEndBeat <= endBeat) {
-                    int noteOffFrame = (int) Math.round((noteEndBeat - startBeat) * samplesPerBeat);
-                    noteOffFrame = Math.max(0, Math.min(noteOffFrame, framesToProcess));
-                    if (noteOffFrame >= minEventFrame && noteOffFrame < nextEventFrame) {
-                        nextEventFrame = noteOffFrame;
-                    }
-                }
-            }
+            int nextEventFrame = findNextEventFrame(notes, startBeat, endBeat,
+                    samplesPerBeat, framesToProcess, minEventFrame);
 
             // If no more events, nextEventFrame == framesToProcess
             boolean hasEvents = nextEventFrame < framesToProcess;
 
-            // Render from currentFrame to nextEventFrame
-            int chunkSize = nextEventFrame - currentFrame;
-            if (chunkSize > 0) {
-                clearRenderBuffer(chunkSize);
-                try {
-                    state.renderer.render(midiRenderBuffer, chunkSize);
-                } catch (Exception e) {
-                    LOG.log(Level.WARNING, "MIDI render failed", e);
-                    return;
-                }
-
-                int channels = Math.min(midiRenderBuffer.length, trackBuffer.length);
-                for (int ch = 0; ch < channels; ch++) {
-                    for (int f = 0; f < chunkSize; f++) {
-                        trackBuffer[ch][frameOffset + currentFrame + f] += midiRenderBuffer[ch][f];
-                    }
-                }
-            }
-
-            currentFrame = nextEventFrame;
+            // Render sub-chunk from currentFrame to nextEventFrame
+            currentFrame = renderSubChunk(state, trackBuffer, frameOffset,
+                    currentFrame, nextEventFrame);
 
             if (!hasEvents) {
                 break;
             }
 
             // Send all events at nextEventFrame
-            for (int i = 0; i < notes.size(); i++) {
-                MidiNoteData note = notes.get(i);
-                double noteStartBeat = note.startColumn() * BEATS_PER_COLUMN;
-                double noteEndBeat = note.endColumn() * BEATS_PER_COLUMN;
-
-                if (noteStartBeat >= startBeat && noteStartBeat < endBeat) {
-                    int noteOnFrame = (int) Math.round((noteStartBeat - startBeat) * samplesPerBeat);
-                    noteOnFrame = Math.max(0, Math.min(noteOnFrame, framesToProcess - 1));
-                    if (noteOnFrame == nextEventFrame) {
-                        try {
-                            state.renderer.sendEvent(
-                                    MidiEvent.noteOn(note.channel(), note.noteNumber(), note.velocity()));
-                        } catch (Exception e) {
-                            LOG.log(Level.WARNING, "Failed to send MIDI note-on", e);
-                        }
-                    }
-                }
-
-                if (noteEndBeat > startBeat && noteEndBeat <= endBeat) {
-                    int noteOffFrame = (int) Math.round((noteEndBeat - startBeat) * samplesPerBeat);
-                    noteOffFrame = Math.max(0, Math.min(noteOffFrame, framesToProcess));
-                    if (noteOffFrame == nextEventFrame) {
-                        try {
-                            state.renderer.sendEvent(
-                                    MidiEvent.noteOff(note.channel(), note.noteNumber()));
-                        } catch (Exception e) {
-                            LOG.log(Level.WARNING, "Failed to send MIDI note-off", e);
-                        }
-                    }
-                }
-            }
+            sendEventsAtFrame(state, notes, startBeat, endBeat,
+                    samplesPerBeat, framesToProcess, nextEventFrame);
 
             // Advance past all events at this frame to avoid re-sending them
             minEventFrame = nextEventFrame + 1;
         }
 
         // Render any remaining frames after the last event
-        int remaining = framesToProcess - currentFrame;
-        if (remaining > 0) {
-            clearRenderBuffer(remaining);
-            try {
-                state.renderer.render(midiRenderBuffer, remaining);
-            } catch (Exception e) {
-                LOG.log(Level.WARNING, "MIDI render failed", e);
-                return;
-            }
+        renderSubChunk(state, trackBuffer, frameOffset, currentFrame, framesToProcess);
+    }
 
-            int channels = Math.min(midiRenderBuffer.length, trackBuffer.length);
-            for (int ch = 0; ch < channels; ch++) {
-                for (int f = 0; f < remaining; f++) {
-                    trackBuffer[ch][frameOffset + currentFrame + f] += midiRenderBuffer[ch][f];
+    /**
+     * Finds the next event frame offset >= minFrame for any note-on or note-off
+     * that falls within the segment [startBeat, endBeat).
+     *
+     * @return the frame offset of the next event, or {@code framesToProcess}
+     *         if no more events exist
+     */
+    @RealTimeSafe
+    private static int findNextEventFrame(List<MidiNoteData> notes,
+                                          double startBeat, double endBeat,
+                                          double samplesPerBeat, int framesToProcess,
+                                          int minFrame) {
+        int nextFrame = framesToProcess;
+        for (int i = 0; i < notes.size(); i++) {
+            MidiNoteData note = notes.get(i);
+            double noteStartBeat = note.startColumn() * BEATS_PER_COLUMN;
+            double noteEndBeat = note.endColumn() * BEATS_PER_COLUMN;
+
+            if (noteStartBeat >= startBeat && noteStartBeat < endBeat) {
+                int frame = beatToFrame(noteStartBeat, startBeat, samplesPerBeat, framesToProcess - 1);
+                if (frame >= minFrame && frame < nextFrame) {
+                    nextFrame = frame;
+                }
+            }
+            if (noteEndBeat > startBeat && noteEndBeat <= endBeat) {
+                int frame = beatToFrame(noteEndBeat, startBeat, samplesPerBeat, framesToProcess);
+                if (frame >= minFrame && frame < nextFrame) {
+                    nextFrame = frame;
                 }
             }
         }
+        return nextFrame;
+    }
+
+    /**
+     * Sends all note-on/note-off events that land exactly at the given frame.
+     */
+    @RealTimeSafe
+    private static void sendEventsAtFrame(RendererState state, List<MidiNoteData> notes,
+                                          double startBeat, double endBeat,
+                                          double samplesPerBeat, int framesToProcess,
+                                          int targetFrame) {
+        for (int i = 0; i < notes.size(); i++) {
+            MidiNoteData note = notes.get(i);
+            double noteStartBeat = note.startColumn() * BEATS_PER_COLUMN;
+            double noteEndBeat = note.endColumn() * BEATS_PER_COLUMN;
+
+            if (noteStartBeat >= startBeat && noteStartBeat < endBeat) {
+                int frame = beatToFrame(noteStartBeat, startBeat, samplesPerBeat, framesToProcess - 1);
+                if (frame == targetFrame) {
+                    try {
+                        state.renderer.sendEvent(
+                                MidiEvent.noteOn(note.channel(), note.noteNumber(), note.velocity()));
+                    } catch (Exception e) {
+                        LOG.log(Level.WARNING, "Failed to send MIDI note-on", e);
+                    }
+                }
+            }
+
+            if (noteEndBeat > startBeat && noteEndBeat <= endBeat) {
+                int frame = beatToFrame(noteEndBeat, startBeat, samplesPerBeat, framesToProcess);
+                if (frame == targetFrame) {
+                    try {
+                        state.renderer.sendEvent(
+                                MidiEvent.noteOff(note.channel(), note.noteNumber()));
+                    } catch (Exception e) {
+                        LOG.log(Level.WARNING, "Failed to send MIDI note-off", e);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Renders a sub-chunk of audio from {@code fromFrame} to {@code toFrame}
+     * and copies the result into the track buffer.
+     *
+     * @return the new current frame position (= toFrame)
+     */
+    @RealTimeSafe
+    private int renderSubChunk(RendererState state, float[][] trackBuffer,
+                               int frameOffset, int fromFrame, int toFrame) {
+        int chunkSize = toFrame - fromFrame;
+        if (chunkSize <= 0) {
+            return toFrame;
+        }
+
+        clearRenderBuffer(chunkSize);
+        try {
+            state.renderer.render(midiRenderBuffer, chunkSize);
+        } catch (Exception e) {
+            LOG.log(Level.WARNING, "MIDI render failed", e);
+            return toFrame;
+        }
+
+        int channels = Math.min(midiRenderBuffer.length, trackBuffer.length);
+        for (int ch = 0; ch < channels; ch++) {
+            for (int f = 0; f < chunkSize; f++) {
+                trackBuffer[ch][frameOffset + fromFrame + f] += midiRenderBuffer[ch][f];
+            }
+        }
+        return toFrame;
+    }
+
+    /**
+     * Converts a beat position to a frame index within the current segment,
+     * clamped to [0, maxFrame].
+     */
+    @RealTimeSafe
+    private static int beatToFrame(double beat, double startBeat,
+                                   double samplesPerBeat, int maxFrame) {
+        int frame = (int) Math.round((beat - startBeat) * samplesPerBeat);
+        return Math.max(0, Math.min(frame, maxFrame));
     }
 
     // ── Buffer utilities ────────────────────────────────────────────────────
