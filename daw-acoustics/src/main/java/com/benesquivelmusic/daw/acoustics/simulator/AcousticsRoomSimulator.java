@@ -558,9 +558,15 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
     // ----------------------------------------------------------------
 
     /**
-     * Immutable processing snapshot that holds the IR and the stateful
-     * overlap-save convolver. Published via {@link AtomicReference} so the
-     * audio thread can read it without locking.
+     * Processing state holding the IR and the stateful overlap-save convolver.
+     * Published via {@link AtomicReference} so the audio thread can read it
+     * without locking.
+     *
+     * <p><b>Thread-safety note:</b> The reference itself is published atomically,
+     * but the internal convolution state (FDL, prevInput, workspace buffers) is
+     * mutated by the audio thread during {@link #convolve}. A new instance is
+     * created each time the IR changes, so the audio thread always operates on
+     * its own exclusive instance — no concurrent mutation occurs.</p>
      */
     static final class ProcessingState {
         private final float[] ir;
@@ -666,7 +672,7 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
             Arrays.fill(workSumReal, 0.0);
             Arrays.fill(workSumImag, 0.0);
             for (int p = 0; p < numPartitions; p++) {
-                int fdlIdx = ((fdlIndex - p) % numPartitions + numPartitions) % numPartitions;
+                int fdlIdx = circularIndex(fdlIndex, p, numPartitions);
                 double[] xr = fdlReal[fdlIdx];
                 double[] xi = fdlImag[fdlIdx];
                 double[] hr = irPartitionsReal[p];
@@ -693,6 +699,13 @@ public final class AcousticsRoomSimulator implements RoomSimulator {
         /** Returns the IR data (for tests / generateImpulseResponse). */
         float[] getIr() {
             return ir;
+        }
+
+        // ---- Helpers --------------------------------------------------------
+
+        /** Returns {@code (base - offset) mod size}, handling negative values. */
+        private static int circularIndex(int base, int offset, int size) {
+            return ((base - offset) % size + size) % size;
         }
 
         // ---- Radix-2 Cooley–Tukey FFT (same as PartitionedConvolver) ------
