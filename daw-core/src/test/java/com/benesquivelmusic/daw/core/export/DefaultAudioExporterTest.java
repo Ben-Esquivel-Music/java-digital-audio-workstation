@@ -71,15 +71,42 @@ class DefaultAudioExporterTest {
     }
 
     @Test
-    void shouldReturnFailureForUnsupportedFormat() throws IOException {
+    void shouldExportMp3Successfully() throws IOException {
         DefaultAudioExporter exporter = new DefaultAudioExporter();
         float[][] audio = generateStereoSine(44100, 0.1, 440.0);
         AudioExportConfig config = new AudioExportConfig(AudioExportFormat.MP3, 44100, 16, DitherType.NONE);
 
         ExportResult result = exporter.export(audio, 44100, tempDir, "test", config);
 
-        assertThat(result.success()).isFalse();
-        assertThat(result.message()).contains("not yet implemented");
+        assertThat(result.success()).isTrue();
+        assertThat(result.outputPath()).exists();
+        assertThat(result.outputPath().getFileName().toString()).isEqualTo("test.mp3");
+    }
+
+    @Test
+    void shouldExportOggSuccessfully() throws IOException {
+        DefaultAudioExporter exporter = new DefaultAudioExporter();
+        float[][] audio = generateStereoSine(44100, 0.5, 440.0);
+        AudioExportConfig config = new AudioExportConfig(AudioExportFormat.OGG, 44100, 16, DitherType.NONE);
+
+        ExportResult result = exporter.export(audio, 44100, tempDir, "test_ogg", config);
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.outputPath()).exists();
+        assertThat(result.outputPath().getFileName().toString()).isEqualTo("test_ogg.ogg");
+    }
+
+    @Test
+    void shouldExportAacSuccessfully() throws IOException {
+        DefaultAudioExporter exporter = new DefaultAudioExporter();
+        float[][] audio = generateStereoSine(44100, 0.5, 440.0);
+        AudioExportConfig config = new AudioExportConfig(AudioExportFormat.AAC, 44100, 16, DitherType.NONE);
+
+        ExportResult result = exporter.export(audio, 44100, tempDir, "test_aac", config);
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.outputPath()).exists();
+        assertThat(result.outputPath().getFileName().toString()).isEqualTo("test_aac.aac");
     }
 
     @Test
