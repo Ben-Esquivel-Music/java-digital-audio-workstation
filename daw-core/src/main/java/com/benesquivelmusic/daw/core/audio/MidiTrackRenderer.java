@@ -7,12 +7,10 @@ import com.benesquivelmusic.daw.core.midi.fluidsynth.FluidSynthBindings;
 import com.benesquivelmusic.daw.core.midi.fluidsynth.FluidSynthRenderer;
 import com.benesquivelmusic.daw.core.midi.javasound.JavaSoundRenderer;
 import com.benesquivelmusic.daw.core.track.Track;
-import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.midi.MidiEvent;
 import com.benesquivelmusic.daw.sdk.midi.SoundFontRenderer;
 
-import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
