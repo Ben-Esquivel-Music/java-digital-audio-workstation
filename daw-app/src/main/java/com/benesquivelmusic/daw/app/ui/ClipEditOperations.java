@@ -82,7 +82,6 @@ final class ClipEditOperations {
         List<AudioClip> addedClips = new ArrayList<>();
 
         // Compute the combined paste span across all entries
-        double pasteStart = playhead;
         double pasteEnd = playhead;
         List<AudioClip> pastedDuplicates = new ArrayList<>();
         for (AudioClip original : clipsToPaste) {
@@ -96,14 +95,14 @@ final class ClipEditOperations {
         for (AudioClip clip : new ArrayList<>(track.getClips())) {
             double clipStart = clip.getStartBeat();
             double clipEnd = clip.getEndBeat();
-            if (clipStart < pasteEnd && clipEnd > pasteStart) {
+            if (clipStart < pasteEnd && clipEnd > playhead) {
                 track.removeClip(clip);
                 removedClips.add(clip);
-                if (clipStart < pasteStart) {
+                if (clipStart < playhead) {
                     AudioClip before = clip.duplicate();
                     before.setStartBeat(clipStart);
                     before.setSourceOffsetBeats(clip.getSourceOffsetBeats());
-                    before.setDurationBeats(pasteStart - clipStart);
+                    before.setDurationBeats(playhead - clipStart);
                     track.addClip(before);
                     addedClips.add(before);
                 }
