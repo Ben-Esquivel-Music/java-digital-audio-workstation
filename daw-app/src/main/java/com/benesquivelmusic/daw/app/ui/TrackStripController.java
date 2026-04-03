@@ -555,8 +555,67 @@ final class TrackStripController {
             Tooltip.install(pasteItem.getGraphic(), new Tooltip("Nothing copied to clipboard"));
         }
         pasteItem.setOnAction(_ -> {
-            notificationBar.show(NotificationLevel.WARNING,
-                    "Paste Over — not yet implemented");
+            List<ClipboardEntry> entries = clipboardManager.getEntries();
+            if (entries.isEmpty()) {
+                statusBarLabel.setText("Nothing to paste");
+                statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO_CIRCLE, 12));
+                return;
+            }
+            double playhead = project.getTransport().getPositionInBeats();
+            undoManager.execute(new UndoableAction() {
+                private final List<AudioClip> removedClips = new ArrayList<>();
+                private final List<AudioClip> addedSplitClips = new ArrayList<>();
+                private final List<AudioClip> pastedClips = new ArrayList<>();
+                @Override public String description() { return "Paste Over: " + track.getName(); }
+                @Override public void execute() {
+                    removedClips.clear();
+                    addedSplitClips.clear();
+                    pastedClips.clear();
+                    for (ClipboardEntry entry : entries) {
+                        AudioClip pasted = entry.clip().duplicate();
+                        pasted.setStartBeat(playhead);
+                        double pasteEnd = playhead + pasted.getDurationBeats();
+                        // Split/remove overlapping clips
+                        for (AudioClip clip : new ArrayList<>(track.getClips())) {
+                            double clipStart = clip.getStartBeat();
+                            double clipEnd = clip.getEndBeat();
+                            if (clipStart < pasteEnd && clipEnd > playhead) {
+                                track.removeClip(clip);
+                                removedClips.add(clip);
+                                if (clipStart < playhead) {
+                                    AudioClip before = clip.duplicate();
+                                    before.setStartBeat(clipStart);
+                                    before.setSourceOffsetBeats(clip.getSourceOffsetBeats());
+                                    before.setDurationBeats(playhead - clipStart);
+                                    track.addClip(before);
+                                    addedSplitClips.add(before);
+                                }
+                                if (clipEnd > pasteEnd) {
+                                    AudioClip after = clip.duplicate();
+                                    after.setSourceOffsetBeats(clip.getSourceOffsetBeats() + (pasteEnd - clipStart));
+                                    after.setStartBeat(pasteEnd);
+                                    after.setDurationBeats(clipEnd - pasteEnd);
+                                    track.addClip(after);
+                                    addedSplitClips.add(after);
+                                }
+                            }
+                        }
+                        track.addClip(pasted);
+                        pastedClips.add(pasted);
+                    }
+                }
+                @Override public void undo() {
+                    for (AudioClip clip : pastedClips) track.removeClip(clip);
+                    for (AudioClip clip : addedSplitClips) track.removeClip(clip);
+                    for (AudioClip clip : removedClips) track.addClip(clip);
+                }
+            });
+            host.updateUndoRedoState();
+            statusBarLabel.setText("Pasted over: " + track.getName() + " at beat " + String.format("%.1f", playhead));
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.PASTE, 12));
+            notificationBar.showWithUndo(NotificationLevel.SUCCESS,
+                    "Pasted over: " + track.getName(), host::undoLastAction);
+            host.markProjectDirty();
         });
 
         MenuItem splitItem = new MenuItem("Split at Playhead");
@@ -628,8 +687,57 @@ final class TrackStripController {
             Tooltip.install(trimItem.getGraphic(), new Tooltip("No active time selection"));
         }
         trimItem.setOnAction(_ -> {
-            notificationBar.show(NotificationLevel.WARNING,
-                    "Trim to Selection — not yet implemented");
+            double selStart = selectionModel.getStartBeat();
+            double selEnd = selectionModel.getEndBeat();
+            // Collect clips that overlap the selection
+            List<AudioClip> clipsToTrim = new ArrayList<>();
+            for (AudioClip clip : track.getClips()) {
+                if (clip.getStartBeat() < selEnd && clip.getEndBeat() > selStart) {
+                    clipsToTrim.add(clip);
+                }
+            }
+            if (clipsToTrim.isEmpty()) {
+                statusBarLabel.setText("No clips overlap the selection on: " + track.getName());
+                statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO_CIRCLE, 12));
+                return;
+            }
+            undoManager.execute(new UndoableAction() {
+                private final List<double[]> savedState = new ArrayList<>();
+                {
+                    for (AudioClip clip : clipsToTrim) {
+                        savedState.add(new double[]{
+                                clip.getStartBeat(), clip.getDurationBeats(), clip.getSourceOffsetBeats()});
+                    }
+                }
+                @Override public String description() { return "Trim to Selection: " + track.getName(); }
+                @Override public void execute() {
+                    for (AudioClip clip : clipsToTrim) {
+                        double newStart = Math.max(clip.getStartBeat(), selStart);
+                        double newEnd = Math.min(clip.getEndBeat(), selEnd);
+                        if (newEnd > newStart) {
+                            double offsetDelta = newStart - clip.getStartBeat();
+                            clip.setSourceOffsetBeats(clip.getSourceOffsetBeats() + offsetDelta);
+                            clip.setStartBeat(newStart);
+                            clip.setDurationBeats(newEnd - newStart);
+                        }
+                    }
+                }
+                @Override public void undo() {
+                    for (int i = 0; i < clipsToTrim.size(); i++) {
+                        AudioClip clip = clipsToTrim.get(i);
+                        double[] saved = savedState.get(i);
+                        clip.setStartBeat(saved[0]);
+                        clip.setDurationBeats(saved[1]);
+                        clip.setSourceOffsetBeats(saved[2]);
+                    }
+                }
+            });
+            host.updateUndoRedoState();
+            statusBarLabel.setText("Trimmed to selection: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.TRIM, 12));
+            notificationBar.showWithUndo(NotificationLevel.SUCCESS,
+                    "Trimmed to selection: " + track.getName(), host::undoLastAction);
+            host.markProjectDirty();
         });
 
         MenuItem cropItem = new MenuItem("Crop");
@@ -641,8 +749,56 @@ final class TrackStripController {
             Tooltip.install(cropItem.getGraphic(), new Tooltip("No active time selection"));
         }
         cropItem.setOnAction(_ -> {
-            notificationBar.show(NotificationLevel.WARNING,
-                    "Crop — not yet implemented");
+            double selStart = selectionModel.getStartBeat();
+            double selEnd = selectionModel.getEndBeat();
+            List<AudioClip> allClips = new ArrayList<>(track.getClips());
+            if (allClips.isEmpty()) {
+                statusBarLabel.setText("No clips to crop on: " + track.getName());
+                statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO_CIRCLE, 12));
+                return;
+            }
+            undoManager.execute(new UndoableAction() {
+                private final List<AudioClip> removedClips = new ArrayList<>();
+                private final List<AudioClip> addedClips = new ArrayList<>();
+                @Override public String description() { return "Crop: " + track.getName(); }
+                @Override public void execute() {
+                    removedClips.clear();
+                    addedClips.clear();
+                    for (AudioClip clip : new ArrayList<>(track.getClips())) {
+                        double clipStart = clip.getStartBeat();
+                        double clipEnd = clip.getEndBeat();
+                        if (clipEnd <= selStart || clipStart >= selEnd) {
+                            // Completely outside — remove
+                            track.removeClip(clip);
+                            removedClips.add(clip);
+                        } else if (clipStart < selStart || clipEnd > selEnd) {
+                            // Partially inside — replace with trimmed copy
+                            double newStart = Math.max(clipStart, selStart);
+                            double newEnd = Math.min(clipEnd, selEnd);
+                            AudioClip trimmed = clip.duplicate();
+                            double offsetDelta = newStart - clipStart;
+                            trimmed.setSourceOffsetBeats(clip.getSourceOffsetBeats() + offsetDelta);
+                            trimmed.setStartBeat(newStart);
+                            trimmed.setDurationBeats(newEnd - newStart);
+                            track.removeClip(clip);
+                            removedClips.add(clip);
+                            track.addClip(trimmed);
+                            addedClips.add(trimmed);
+                        }
+                        // Fully inside — keep as-is
+                    }
+                }
+                @Override public void undo() {
+                    for (AudioClip clip : addedClips) track.removeClip(clip);
+                    for (AudioClip clip : removedClips) track.addClip(clip);
+                }
+            });
+            host.updateUndoRedoState();
+            statusBarLabel.setText("Cropped: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.CROP, 12));
+            notificationBar.showWithUndo(NotificationLevel.SUCCESS,
+                    "Cropped: " + track.getName(), host::undoLastAction);
+            host.markProjectDirty();
         });
 
         MenuItem moveItem = new MenuItem("Move");
