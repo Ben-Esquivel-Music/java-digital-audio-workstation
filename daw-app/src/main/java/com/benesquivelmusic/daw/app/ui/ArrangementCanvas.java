@@ -50,6 +50,7 @@ public final class ArrangementCanvas extends Pane {
     static final Color TRIM_PREVIEW_COLOR = Color.web("#00E5FF", 0.8);
     static final Color FADE_HANDLE_COLOR = Color.web("#ffffff", 0.85);
     static final Color FADE_HANDLE_FILL_COLOR = Color.web("#ffffff", 0.3);
+    static final Color LOOP_HIGHLIGHT_COLOR = Color.web("#b388ff", 0.08);
 
     private static final Font CLIP_LABEL_FONT = Font.font("SansSerif", 10);
     private static final double CLIP_CORNER_RADIUS = 4.0;
@@ -81,6 +82,11 @@ public final class ArrangementCanvas extends Pane {
     private boolean autoScroll = true;
     private double trimPreviewBeat = -1.0;
     private int trimPreviewTrackIndex = -1;
+
+    // Loop region overlay state
+    private boolean loopEnabled = false;
+    private double loopStartBeat = 0.0;
+    private double loopEndBeat = 16.0;
 
     /**
      * Tracks which track IDs have their automation lane expanded.
@@ -211,6 +217,35 @@ public final class ArrangementCanvas extends Pane {
      */
     public void refresh() {
         redraw();
+    }
+
+    /**
+     * Updates the loop region overlay state and redraws.
+     *
+     * @param enabled   whether the loop region should be displayed
+     * @param startBeat the loop start position in beats
+     * @param endBeat   the loop end position in beats
+     */
+    public void setLoopRegion(boolean enabled, double startBeat, double endBeat) {
+        this.loopEnabled = enabled;
+        this.loopStartBeat = startBeat;
+        this.loopEndBeat = endBeat;
+        redraw();
+    }
+
+    /** Returns {@code true} if the loop region overlay is enabled. */
+    public boolean isLoopEnabled() {
+        return loopEnabled;
+    }
+
+    /** Returns the loop start beat for the overlay. */
+    public double getLoopStartBeat() {
+        return loopStartBeat;
+    }
+
+    /** Returns the loop end beat for the overlay. */
+    public double getLoopEndBeat() {
+        return loopEndBeat;
     }
 
     /**
@@ -455,6 +490,7 @@ public final class ArrangementCanvas extends Pane {
         gc.clearRect(0, 0, w, h);
 
         drawTrackLanes(gc, w, h);
+        drawLoopHighlight(gc, w, h);
         drawClips(gc, w, h);
         drawAutomationLanes(gc, w, h);
         drawTrimPreview(gc, w, h);
@@ -921,6 +957,20 @@ public final class ArrangementCanvas extends Pane {
         }
         gc.setFill(PLAYHEAD_COLOR);
         gc.fillRect(x - PLAYHEAD_WIDTH / 2.0, 0, PLAYHEAD_WIDTH, canvasHeight);
+    }
+
+    private void drawLoopHighlight(GraphicsContext gc, double canvasWidth, double canvasHeight) {
+        if (!loopEnabled) {
+            return;
+        }
+        double x1 = (loopStartBeat - scrollXBeats) * pixelsPerBeat;
+        double x2 = (loopEndBeat - scrollXBeats) * pixelsPerBeat;
+        double drawX1 = Math.max(0, x1);
+        double drawX2 = Math.min(canvasWidth, x2);
+        if (drawX2 > drawX1) {
+            gc.setFill(LOOP_HIGHLIGHT_COLOR);
+            gc.fillRect(drawX1, 0, drawX2 - drawX1, canvasHeight);
+        }
     }
 
     private void drawTrimPreview(GraphicsContext gc, double canvasWidth, double canvasHeight) {
