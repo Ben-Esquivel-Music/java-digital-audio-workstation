@@ -6,6 +6,9 @@ import com.benesquivelmusic.daw.core.transport.Transport;
 
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.control.Tooltip;
+import javafx.scene.input.MouseButton;
+import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.Pane;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
@@ -26,6 +29,12 @@ import java.util.function.Consumer;
  * It also renders the current playhead position as a prominent vertical line
  * and displays the tempo and time signature.</p>
  *
+ * <p>When loop mode is enabled on the transport, the ruler renders the loop
+ * region as a semi-transparent colored bar between the loop start and end
+ * positions, with draggable locator handles at each boundary. Users can
+ * Shift+click-drag on the ruler to define a new loop region in a single
+ * gesture.</p>
+ *
  * <p>Click-to-seek: clicking anywhere on the ruler fires the registered
  * seek callback with the corresponding beat position.</p>
  */
@@ -44,12 +53,17 @@ public final class TimelineRuler extends Pane {
     static final Color BAR_LINE_COLOR = Color.web("#7c4dff", 0.6);
     static final Color BEAT_LINE_COLOR = Color.web("#555577", 0.4);
     static final Color TEMPO_TEXT_COLOR = Color.web("#aaaacc");
+    static final Color LOOP_REGION_COLOR = Color.web("#b388ff", 0.3);
+    static final Color LOOP_HANDLE_COLOR = Color.web("#b388ff", 0.9);
+    static final Color LOOP_HANDLE_LINE_COLOR = Color.web("#b388ff", 0.7);
 
     private static final Font LABEL_FONT = Font.font("Monospaced", 10);
     private static final Font TEMPO_FONT = Font.font("Monospaced", 9);
     private static final double TICK_MAJOR_HEIGHT = 12.0;
     private static final double TICK_MINOR_HEIGHT = 6.0;
     private static final double PLAYHEAD_WIDTH = 2.0;
+    private static final double LOOP_HANDLE_WIDTH = 6.0;
+    private static final double LOOP_HANDLE_HIT_ZONE = 8.0;
 
     private final TimelineRulerModel model;
     private final Canvas canvas;
@@ -60,7 +74,18 @@ public final class TimelineRuler extends Pane {
     private double totalBeats = 0.0;
     private boolean autoScroll = true;
 
+    // Loop handle dragging state
+    private enum LoopDragMode { NONE, START_HANDLE, END_HANDLE, DEFINING_REGION }
+    private LoopDragMode loopDragMode = LoopDragMode.NONE;
+    private double loopDragAnchorBeat = 0.0;
+
+    // Snap configuration
+    private boolean snapEnabled = false;
+    private GridResolution gridResolution = GridResolution.QUARTER;
+
     private final List<Consumer<Double>> seekListeners = new ArrayList<>();
+
+    private final Tooltip loopTooltip = new Tooltip();
 
     /**
      * Creates a timeline ruler backed by the given transport.
@@ -83,13 +108,11 @@ public final class TimelineRuler extends Pane {
         canvas.widthProperty().addListener((obs, oldV, newV) -> redraw());
         canvas.heightProperty().addListener((obs, oldV, newV) -> redraw());
 
-        canvas.setOnMousePressed(event -> {
-            double beatPos = model.pixelToBeats(event.getX() + scrollOffsetBeats * pixelsPerBeat, pixelsPerBeat);
-            setPlayheadPositionBeats(beatPos);
-            for (Consumer<Double> listener : seekListeners) {
-                listener.accept(beatPos);
-            }
-        });
+        canvas.setOnMousePressed(this::handleMousePressed);
+        canvas.setOnMouseDragged(this::handleMouseDragged);
+        canvas.setOnMouseReleased(this::handleMouseReleased);
+        canvas.setOnMouseMoved(this::handleMouseMoved);
+        canvas.setOnMouseExited(event -> Tooltip.uninstall(canvas, loopTooltip));
     }
 
     /** Returns the underlying ruler model. */
@@ -175,6 +198,26 @@ public final class TimelineRuler extends Pane {
         this.autoScroll = autoScroll;
     }
 
+    /** Returns {@code true} if snap-to-grid is enabled for loop locator dragging. */
+    public boolean isSnapEnabled() {
+        return snapEnabled;
+    }
+
+    /** Sets whether snap-to-grid is applied when dragging loop locators. */
+    public void setSnapEnabled(boolean snapEnabled) {
+        this.snapEnabled = snapEnabled;
+    }
+
+    /** Returns the current grid resolution used for snap-to-grid. */
+    public GridResolution getGridResolution() {
+        return gridResolution;
+    }
+
+    /** Sets the grid resolution used for snap-to-grid on loop locators. */
+    public void setGridResolution(GridResolution gridResolution) {
+        this.gridResolution = Objects.requireNonNull(gridResolution, "gridResolution must not be null");
+    }
+
     /** Toggles the time display mode and redraws. */
     public void toggleDisplayMode() {
         model.toggleDisplayMode();
@@ -199,8 +242,10 @@ public final class TimelineRuler extends Pane {
         gc.setFill(RULER_BACKGROUND);
         gc.fillRect(0, 0, w, h);
 
+        drawLoopRegion(gc, w, h);
         drawTempoAndTimeSignature(gc, h);
         drawSubdivisions(gc, w, h);
+        drawLoopHandles(gc, h);
         drawPlayhead(gc, h);
     }
 
@@ -263,6 +308,169 @@ public final class TimelineRuler extends Pane {
                     new double[]{0, 0, triangleSize},
                     3);
         }
+    }
+
+    private void drawLoopRegion(GraphicsContext gc, double w, double h) {
+        Transport transport = model.getTransport();
+        if (!transport.isLoopEnabled()) {
+            return;
+        }
+        double loopStart = transport.getLoopStartInBeats();
+        double loopEnd = transport.getLoopEndInBeats();
+        double x1 = (loopStart - scrollOffsetBeats) * pixelsPerBeat;
+        double x2 = (loopEnd - scrollOffsetBeats) * pixelsPerBeat;
+
+        double drawX1 = Math.max(0, x1);
+        double drawX2 = Math.min(w, x2);
+        if (drawX2 > drawX1) {
+            gc.setFill(LOOP_REGION_COLOR);
+            gc.fillRect(drawX1, 0, drawX2 - drawX1, h);
+        }
+    }
+
+    private void drawLoopHandles(GraphicsContext gc, double h) {
+        Transport transport = model.getTransport();
+        if (!transport.isLoopEnabled()) {
+            return;
+        }
+        double loopStart = transport.getLoopStartInBeats();
+        double loopEnd = transport.getLoopEndInBeats();
+        double w = canvas.getWidth();
+
+        double startX = (loopStart - scrollOffsetBeats) * pixelsPerBeat;
+        if (startX >= -LOOP_HANDLE_WIDTH && startX <= w + LOOP_HANDLE_WIDTH) {
+            gc.setStroke(LOOP_HANDLE_LINE_COLOR);
+            gc.setLineWidth(1.5);
+            gc.strokeLine(startX, 0, startX, h);
+            gc.setFill(LOOP_HANDLE_COLOR);
+            gc.fillRect(startX - LOOP_HANDLE_WIDTH / 2.0, 0, LOOP_HANDLE_WIDTH, h * 0.5);
+        }
+
+        double endX = (loopEnd - scrollOffsetBeats) * pixelsPerBeat;
+        if (endX >= -LOOP_HANDLE_WIDTH && endX <= w + LOOP_HANDLE_WIDTH) {
+            gc.setStroke(LOOP_HANDLE_LINE_COLOR);
+            gc.setLineWidth(1.5);
+            gc.strokeLine(endX, 0, endX, h);
+            gc.setFill(LOOP_HANDLE_COLOR);
+            gc.fillRect(endX - LOOP_HANDLE_WIDTH / 2.0, 0, LOOP_HANDLE_WIDTH, h * 0.5);
+        }
+    }
+
+    // ── Mouse interaction for loop handles ──────────────────────────────────
+
+    private void handleMousePressed(MouseEvent event) {
+        if (event.getButton() != MouseButton.PRIMARY) {
+            return;
+        }
+
+        Transport transport = model.getTransport();
+        double beatPos = pixelToScrolledBeat(event.getX());
+
+        // Shift+click: define a new loop region
+        if (event.isShiftDown()) {
+            double snapped = snapBeat(beatPos);
+            loopDragMode = LoopDragMode.DEFINING_REGION;
+            loopDragAnchorBeat = snapped;
+            transport.setLoopEnabled(true);
+            transport.setLoopRegion(snapped, snapped + 0.001);
+            redraw();
+            return;
+        }
+
+        // Check if click is near a loop handle (when loop is enabled)
+        if (transport.isLoopEnabled()) {
+            double startX = (transport.getLoopStartInBeats() - scrollOffsetBeats) * pixelsPerBeat;
+            double endX = (transport.getLoopEndInBeats() - scrollOffsetBeats) * pixelsPerBeat;
+
+            if (Math.abs(event.getX() - startX) <= LOOP_HANDLE_HIT_ZONE) {
+                loopDragMode = LoopDragMode.START_HANDLE;
+                return;
+            }
+            if (Math.abs(event.getX() - endX) <= LOOP_HANDLE_HIT_ZONE) {
+                loopDragMode = LoopDragMode.END_HANDLE;
+                return;
+            }
+        }
+
+        // Default: click-to-seek
+        loopDragMode = LoopDragMode.NONE;
+        setPlayheadPositionBeats(beatPos);
+        for (Consumer<Double> listener : seekListeners) {
+            listener.accept(beatPos);
+        }
+    }
+
+    private void handleMouseDragged(MouseEvent event) {
+        if (loopDragMode == LoopDragMode.NONE) {
+            return;
+        }
+
+        Transport transport = model.getTransport();
+        double beatPos = snapBeat(Math.max(0.0, pixelToScrolledBeat(event.getX())));
+
+        switch (loopDragMode) {
+            case START_HANDLE -> {
+                double end = transport.getLoopEndInBeats();
+                if (beatPos < end) {
+                    transport.setLoopRegion(beatPos, end);
+                }
+            }
+            case END_HANDLE -> {
+                double start = transport.getLoopStartInBeats();
+                if (beatPos > start) {
+                    transport.setLoopRegion(start, beatPos);
+                }
+            }
+            case DEFINING_REGION -> {
+                double regionStart = Math.min(loopDragAnchorBeat, beatPos);
+                double regionEnd = Math.max(loopDragAnchorBeat, beatPos);
+                if (regionEnd > regionStart) {
+                    transport.setLoopRegion(regionStart, regionEnd);
+                }
+            }
+            default -> { /* NONE — handled above */ }
+        }
+        redraw();
+    }
+
+    private void handleMouseReleased(MouseEvent event) {
+        loopDragMode = LoopDragMode.NONE;
+    }
+
+    private void handleMouseMoved(MouseEvent event) {
+        Transport transport = model.getTransport();
+        if (!transport.isLoopEnabled()) {
+            Tooltip.uninstall(canvas, loopTooltip);
+            return;
+        }
+
+        double startX = (transport.getLoopStartInBeats() - scrollOffsetBeats) * pixelsPerBeat;
+        double endX = (transport.getLoopEndInBeats() - scrollOffsetBeats) * pixelsPerBeat;
+        double mouseX = event.getX();
+
+        if (Math.abs(mouseX - startX) <= LOOP_HANDLE_HIT_ZONE) {
+            String label = model.formatPosition(transport.getLoopStartInBeats());
+            loopTooltip.setText("Loop Start: " + label);
+            Tooltip.install(canvas, loopTooltip);
+        } else if (Math.abs(mouseX - endX) <= LOOP_HANDLE_HIT_ZONE) {
+            String label = model.formatPosition(transport.getLoopEndInBeats());
+            loopTooltip.setText("Loop End: " + label);
+            Tooltip.install(canvas, loopTooltip);
+        } else {
+            Tooltip.uninstall(canvas, loopTooltip);
+        }
+    }
+
+    private double pixelToScrolledBeat(double pixelX) {
+        return model.pixelToBeats(pixelX + scrollOffsetBeats * pixelsPerBeat, pixelsPerBeat);
+    }
+
+    private double snapBeat(double beat) {
+        if (snapEnabled) {
+            return SnapQuantizer.quantize(beat, gridResolution,
+                    model.getTransport().getTimeSignatureNumerator());
+        }
+        return beat;
     }
 
     private boolean isBarBoundary(double beat, int beatsPerBar) {

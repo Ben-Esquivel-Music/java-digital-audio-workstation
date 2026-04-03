@@ -1306,6 +1306,7 @@ public final class MainController {
     @FXML
     private void onToggleLoop() {
         transportController.onToggleLoop();
+        syncLoopRegionToCanvas();
     }
 
     @FXML
@@ -1837,6 +1838,7 @@ public final class MainController {
             return;
         }
         arrangementCanvas.setTracks(project.getTracks());
+        syncLoopRegionToCanvas();
     }
 
     /**
@@ -1875,6 +1877,31 @@ public final class MainController {
         }
         if (arrangementCanvas != null) {
             arrangementCanvas.setPlayheadBeat(beat);
+        }
+        syncLoopRegionToCanvas();
+    }
+
+    /**
+     * Pushes the current loop region state from the transport into the
+     * arrangement canvas and timeline ruler so that the loop overlay stays
+     * synchronized with the transport model.
+     */
+    private void syncLoopRegionToCanvas() {
+        Transport transport = project.getTransport();
+        if (arrangementCanvas != null) {
+            arrangementCanvas.setLoopRegion(
+                    transport.isLoopEnabled(),
+                    transport.getLoopStartInBeats(),
+                    transport.getLoopEndInBeats());
+        }
+        if (timelineRuler != null) {
+            boolean snap = viewNavigationController != null
+                    ? viewNavigationController.isSnapEnabled() : snapEnabled;
+            GridResolution res = viewNavigationController != null
+                    ? viewNavigationController.getGridResolution() : gridResolution;
+            timelineRuler.setSnapEnabled(snap);
+            timelineRuler.setGridResolution(res);
+            timelineRuler.redraw();
         }
     }
 

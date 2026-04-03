@@ -253,4 +253,123 @@ class TimelineRulerTest {
         assertThat(TimelineRuler.DEFAULT_HEIGHT).isGreaterThan(0);
         assertThat(TimelineRuler.BASE_PIXELS_PER_BEAT).isGreaterThan(0);
     }
+
+    // ── loop region colors ──────────────────────────────────────────────────
+
+    @Test
+    void loopRegionColorsShouldBeDefined() {
+        assertThat(TimelineRuler.LOOP_REGION_COLOR).isNotNull();
+        assertThat(TimelineRuler.LOOP_HANDLE_COLOR).isNotNull();
+        assertThat(TimelineRuler.LOOP_HANDLE_LINE_COLOR).isNotNull();
+    }
+
+    // ── snap configuration ──────────────────────────────────────────────────
+
+    @Test
+    void shouldDefaultSnapDisabled() throws Exception {
+        Transport transport = new Transport();
+        TimelineRuler ruler = createOnFxThread(transport);
+
+        assertThat(ruler.isSnapEnabled()).isFalse();
+        assertThat(ruler.getGridResolution()).isEqualTo(GridResolution.QUARTER);
+    }
+
+    @Test
+    void shouldSetSnapEnabled() throws Exception {
+        Transport transport = new Transport();
+        TimelineRuler ruler = createOnFxThread(transport);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            ruler.setSnapEnabled(true);
+            ruler.setGridResolution(GridResolution.EIGHTH);
+            latch.countDown();
+        });
+        latch.await(5, TimeUnit.SECONDS);
+        assertThat(ruler.isSnapEnabled()).isTrue();
+        assertThat(ruler.getGridResolution()).isEqualTo(GridResolution.EIGHTH);
+    }
+
+    @Test
+    void shouldRejectNullGridResolution() throws Exception {
+        Transport transport = new Transport();
+        TimelineRuler ruler = createOnFxThread(transport);
+
+        assertThatThrownBy(() -> ruler.setGridResolution(null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    // ── loop region rendering ───────────────────────────────────────────────
+
+    @Test
+    void shouldRedrawWithLoopRegionWhenEnabled() throws Exception {
+        Transport transport = new Transport();
+        transport.setLoopEnabled(true);
+        transport.setLoopRegion(4.0, 12.0);
+
+        TimelineRuler ruler = createOnFxThread(transport);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            ruler.resize(400, TimelineRuler.DEFAULT_HEIGHT);
+            ruler.redraw();
+            latch.countDown();
+        });
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+        // Verify no exception was thrown — loop region rendered successfully
+    }
+
+    @Test
+    void shouldRedrawWithoutLoopRegionWhenDisabled() throws Exception {
+        Transport transport = new Transport();
+        transport.setLoopEnabled(false);
+
+        TimelineRuler ruler = createOnFxThread(transport);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            ruler.resize(400, TimelineRuler.DEFAULT_HEIGHT);
+            ruler.redraw();
+            latch.countDown();
+        });
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+    }
+
+    @Test
+    void shouldRedrawLoopRegionAtDifferentZoomLevels() throws Exception {
+        Transport transport = new Transport();
+        transport.setLoopEnabled(true);
+        transport.setLoopRegion(0.0, 32.0);
+
+        TimelineRuler ruler = createOnFxThread(transport);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            ruler.resize(400, TimelineRuler.DEFAULT_HEIGHT);
+            ruler.applyZoom(0.25);
+            ruler.redraw();
+            ruler.applyZoom(4.0);
+            ruler.redraw();
+            latch.countDown();
+        });
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+    }
+
+    @Test
+    void shouldRedrawLoopRegionWithScrollOffset() throws Exception {
+        Transport transport = new Transport();
+        transport.setLoopEnabled(true);
+        transport.setLoopRegion(8.0, 16.0);
+
+        TimelineRuler ruler = createOnFxThread(transport);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            ruler.resize(400, TimelineRuler.DEFAULT_HEIGHT);
+            ruler.setScrollOffsetBeats(10.0);
+            ruler.redraw();
+            latch.countDown();
+        });
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+    }
 }

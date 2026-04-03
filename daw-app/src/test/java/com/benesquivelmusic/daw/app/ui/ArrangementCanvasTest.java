@@ -351,4 +351,85 @@ class ArrangementCanvasTest {
         });
         assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
     }
+
+    // ── Loop region overlay ─────────────────────────────────────────────────
+
+    @Test
+    void shouldSetLoopRegion() throws Exception {
+
+        AtomicReference<ArrangementCanvas> ref = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setLoopRegion(true, 4.0, 12.0);
+                ref.set(canvas);
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(ref.get().isLoopEnabled()).isTrue();
+        assertThat(ref.get().getLoopStartBeat()).isEqualTo(4.0);
+        assertThat(ref.get().getLoopEndBeat()).isEqualTo(12.0);
+    }
+
+    @Test
+    void shouldDefaultLoopRegionDisabled() throws Exception {
+
+        AtomicReference<ArrangementCanvas> ref = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ref.set(new ArrangementCanvas());
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(ref.get().isLoopEnabled()).isFalse();
+    }
+
+    @Test
+    void shouldRenderLoopRegionWithTracks() throws Exception {
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                Track audio = new Track("Audio 1", TrackType.AUDIO);
+                audio.addClip(new AudioClip("Clip", 0.0, 16.0, null));
+                canvas.setTracks(List.of(audio));
+                canvas.setLoopRegion(true, 4.0, 12.0);
+                canvas.refresh();
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+    }
+
+    @Test
+    void shouldDisableLoopRegion() throws Exception {
+
+        AtomicReference<ArrangementCanvas> ref = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setLoopRegion(true, 4.0, 12.0);
+                canvas.setLoopRegion(false, 4.0, 12.0);
+                ref.set(canvas);
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(ref.get().isLoopEnabled()).isFalse();
+    }
+
+    @Test
+    void loopHighlightColorShouldBeDefined() {
+        assertThat(ArrangementCanvas.LOOP_HIGHLIGHT_COLOR).isNotNull();
+    }
 }
