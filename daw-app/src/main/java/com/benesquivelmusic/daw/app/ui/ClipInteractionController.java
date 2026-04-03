@@ -211,17 +211,6 @@ final class ClipInteractionController {
     }
 
     /**
-     * Returns {@code true} if the given beat is within the current time
-     * selection range.
-     */
-    private boolean isBeatInSelection(double beat) {
-        SelectionModel sm = host.selectionModel();
-        return sm.hasSelection()
-                && beat >= sm.getStartBeat()
-                && beat <= sm.getEndBeat();
-    }
-
-    /**
      * Snaps a beat position to the grid if snap-to-grid is enabled.
      */
     private double snapBeat(double beat) {
