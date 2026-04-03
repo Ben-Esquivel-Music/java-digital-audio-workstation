@@ -80,6 +80,7 @@ final class ClipInteractionController {
 
     // Time selection drag state
     private boolean selectionDragging;
+    private boolean selectionDragShift;
     private double selectionDragAnchorBeat;
 
     /**
@@ -235,17 +236,19 @@ final class ClipInteractionController {
         } else {
             sm.clearSelection();
             canvas.setSelectionRange(false, 0, 0);
+            host.updateStatusBar("");
         }
     }
 
     /**
-     * Clears the current time selection and updates the canvas overlay.
-     * Does not trigger a full canvas refresh — the caller is responsible
-     * for calling {@link Host#refreshCanvas()} if needed.
+     * Clears the current time selection and updates the canvas overlay and
+     * status bar. Does not trigger a full canvas refresh — the caller is
+     * responsible for calling {@link Host#refreshCanvas()} if needed.
      */
     private void clearTimeSelection() {
         host.selectionModel().clearSelection();
         canvas.setSelectionRange(false, 0, 0);
+        host.updateStatusBar("");
     }
 
     // ── Mouse event handlers ─────────────────────────────────────────────────
@@ -504,12 +507,15 @@ final class ClipInteractionController {
             double hi = Math.max(selectionDragAnchorBeat, snappedBeat);
             if (lo < hi) {
                 applySelection(lo, hi);
-            } else {
-                // Click without drag — clear selection and seek
+            } else if (!selectionDragShift) {
+                // Click without drag (non-shift) — clear selection and seek
                 clearTimeSelection();
                 host.seekToPosition(snappedBeat);
             }
+            // When shift was held and lo == hi, the existing selection is
+            // preserved (no-op) rather than unexpectedly cleared.
             selectionDragging = false;
+            selectionDragShift = false;
             host.refreshCanvas();
             return;
         }
@@ -600,7 +606,8 @@ final class ClipInteractionController {
     private void beginTimeSelectionDrag(double beat, boolean shiftDown) {
         double snappedBeat = snapBeat(beat);
         SelectionModel sm = host.selectionModel();
-        if (shiftDown && sm.hasSelection()) {
+        selectionDragShift = shiftDown && sm.hasSelection();
+        if (selectionDragShift) {
             // Extend selection: anchor is the farther existing edge
             double distToStart = Math.abs(snappedBeat - sm.getStartBeat());
             double distToEnd = Math.abs(snappedBeat - sm.getEndBeat());

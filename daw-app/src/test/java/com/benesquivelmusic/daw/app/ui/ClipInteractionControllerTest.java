@@ -757,4 +757,70 @@ class ClipInteractionControllerTest {
         assertThat(selectionModel.getStartBeat()).isEqualTo(2.0);
         assertThat(selectionModel.getEndBeat()).isEqualTo(8.0);
     }
+
+    @Test
+    void shiftClickOnSelectionEdgeShouldPreserveSelection() throws Exception {
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+        // Pre-set a selection from 2.0 to 6.0
+        selectionModel.setSelection(2.0, 6.0);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                canvas.setSelectionRange(true, 2.0, 6.0);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Shift-click exactly on the left edge (beat 2.0, x=80)
+                // lo == hi so selection should be preserved, not cleared
+                canvas.fireEvent(mousePressedShift(80.0, 40.0));
+                canvas.fireEvent(mouseReleased(80.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        // Selection should still be active (not cleared by the lo==hi branch)
+        assertThat(selectionModel.hasSelection()).isTrue();
+        assertThat(selectionModel.getStartBeat()).isEqualTo(2.0);
+        assertThat(selectionModel.getEndBeat()).isEqualTo(6.0);
+    }
+
+    @Test
+    void clearingSelectionShouldClearStatusBar() throws Exception {
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+        // Pre-set a selection so status bar would show "Selection: ..."
+        selectionModel.setSelection(1.0, 5.0);
+        lastStatusBarText = "Selection: 1.00 – 5.00 (4.00 beats)";
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Click on empty space and release — clears selection
+                canvas.fireEvent(mousePressed(120.0, 40.0));
+                canvas.fireEvent(mouseReleased(120.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(selectionModel.hasSelection()).isFalse();
+        // Status bar should have been cleared (no stale selection text)
+        assertThat(lastStatusBarText).isEmpty();
+    }
 }
