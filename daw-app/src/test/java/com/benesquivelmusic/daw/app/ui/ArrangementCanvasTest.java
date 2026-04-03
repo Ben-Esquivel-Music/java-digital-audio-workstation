@@ -432,4 +432,95 @@ class ArrangementCanvasTest {
     void loopHighlightColorShouldBeDefined() {
         assertThat(ArrangementCanvas.LOOP_HIGHLIGHT_COLOR).isNotNull();
     }
+
+    // ── Time selection overlay ──────────────────────────────────────────────
+
+    @Test
+    void shouldSetSelectionRange() throws Exception {
+
+        AtomicReference<ArrangementCanvas> ref = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setSelectionRange(true, 2.0, 8.0);
+                ref.set(canvas);
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(ref.get().isSelectionActive()).isTrue();
+        assertThat(ref.get().getSelectionStartBeat()).isEqualTo(2.0);
+        assertThat(ref.get().getSelectionEndBeat()).isEqualTo(8.0);
+    }
+
+    @Test
+    void shouldDefaultSelectionInactive() throws Exception {
+
+        AtomicReference<ArrangementCanvas> ref = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ref.set(new ArrangementCanvas());
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(ref.get().isSelectionActive()).isFalse();
+    }
+
+    @Test
+    void shouldClearSelectionRange() throws Exception {
+
+        AtomicReference<ArrangementCanvas> ref = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setSelectionRange(true, 2.0, 8.0);
+                canvas.setSelectionRange(false, 0, 0);
+                ref.set(canvas);
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(ref.get().isSelectionActive()).isFalse();
+    }
+
+    @Test
+    void shouldRenderSelectionWithTracks() throws Exception {
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                Track audio = new Track("Audio 1", TrackType.AUDIO);
+                audio.addClip(new AudioClip("Clip", 0.0, 16.0, null));
+                canvas.setTracks(List.of(audio));
+                canvas.setSelectionRange(true, 4.0, 12.0);
+                canvas.refresh();
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+    }
+
+    @Test
+    void selectionHighlightColorShouldBeDefined() {
+        assertThat(ArrangementCanvas.SELECTION_HIGHLIGHT_COLOR).isNotNull();
+    }
+
+    @Test
+    void selectionBorderColorShouldBeDefined() {
+        assertThat(ArrangementCanvas.SELECTION_BORDER_COLOR).isNotNull();
+    }
+
+    @Test
+    void selectionHandleColorShouldBeDefined() {
+        assertThat(ArrangementCanvas.SELECTION_HANDLE_COLOR).isNotNull();
+    }
 }
