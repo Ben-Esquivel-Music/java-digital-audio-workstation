@@ -18,6 +18,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class ExportServiceTest {
 
@@ -204,6 +205,8 @@ class ExportServiceTest {
 
     @Test
     void shouldExportMp3WithFullPipeline() throws IOException {
+        assumeTrue(NativeCodecAvailability.isLameAvailable(),
+                "libmp3lame not available");
         ExportService service = new ExportService();
         float[][] audio = generateStereoSine(44100, 1.0, 440.0, 0.5f);
         AudioExportConfig config = new AudioExportConfig(

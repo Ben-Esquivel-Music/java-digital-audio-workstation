@@ -16,6 +16,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class DefaultAudioExporterTest {
 
@@ -72,6 +73,8 @@ class DefaultAudioExporterTest {
 
     @Test
     void shouldExportMp3Successfully() throws IOException {
+        assumeTrue(NativeCodecAvailability.isLameAvailable(),
+                "libmp3lame not available");
         DefaultAudioExporter exporter = new DefaultAudioExporter();
         float[][] audio = generateStereoSine(44100, 0.1, 440.0);
         AudioExportConfig config = new AudioExportConfig(AudioExportFormat.MP3, 44100, 16, DitherType.NONE);
@@ -85,6 +88,8 @@ class DefaultAudioExporterTest {
 
     @Test
     void shouldExportOggSuccessfully() throws IOException {
+        assumeTrue(NativeCodecAvailability.isVorbisAvailable(),
+                "libvorbis/libogg not available");
         DefaultAudioExporter exporter = new DefaultAudioExporter();
         float[][] audio = generateStereoSine(44100, 0.5, 440.0);
         AudioExportConfig config = new AudioExportConfig(AudioExportFormat.OGG, 44100, 16, DitherType.NONE);
@@ -98,6 +103,8 @@ class DefaultAudioExporterTest {
 
     @Test
     void shouldExportAacSuccessfully() throws IOException {
+        assumeTrue(NativeCodecAvailability.isFdkAacAvailable(),
+                "libfdk-aac not available");
         DefaultAudioExporter exporter = new DefaultAudioExporter();
         float[][] audio = generateStereoSine(44100, 0.5, 440.0);
         AudioExportConfig config = new AudioExportConfig(AudioExportFormat.AAC, 44100, 16, DitherType.NONE);

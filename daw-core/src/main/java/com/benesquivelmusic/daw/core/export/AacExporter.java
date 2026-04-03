@@ -69,14 +69,16 @@ public final class AacExporter {
     private static final long BUFDESC_BUF_EL_SIZES = 32;
     private static final long SIZEOF_BUFDESC = 40;
 
-    // AACENC_InArgs struct layout
+    // AACENC_InArgs struct layout — over-allocated for ABI safety across
+    // FDK-AAC versions that may include additional fields beyond the two
+    // documented INT fields (numInSamples, numAncBytes).
     private static final long INARGS_NUM_IN_SAMPLES = 0;
-    private static final long SIZEOF_INARGS = 8;
+    private static final long SIZEOF_INARGS = 32;
 
-    // AACENC_OutArgs struct layout
+    // AACENC_OutArgs struct layout — over-allocated for ABI safety
     private static final long OUTARGS_NUM_OUT_BYTES = 0;
     private static final long OUTARGS_NUM_IN_SAMPLES = 4;
-    private static final long SIZEOF_OUTARGS = 16;
+    private static final long SIZEOF_OUTARGS = 32;
 
     // AACENC_InfoStruct layout
     private static final long INFO_FRAME_LENGTH = 16;
@@ -165,8 +167,10 @@ public final class AacExporter {
                 checkAac(aacEncoderSetParam, handle, AACENC_CHANNELMODE,
                         channels == 1 ? MODE_1 : MODE_2);
 
-                // Map quality [0.0, 1.0] to bitrate per channel (64–192 kbps per channel)
-                int bitratePerChannel = (int) (64000 + quality * 128000);
+                // Clamp quality to the supported [0.0, 1.0] range before mapping
+                // to bitrate per channel (64–192 kbps per channel).
+                double clampedQuality = Math.max(0.0, Math.min(1.0, quality));
+                int bitratePerChannel = (int) (64000 + clampedQuality * 128000);
                 checkAac(aacEncoderSetParam, handle, AACENC_BITRATE,
                         bitratePerChannel * channels);
 

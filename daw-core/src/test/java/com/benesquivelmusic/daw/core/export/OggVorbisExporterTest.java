@@ -3,20 +3,29 @@ package com.benesquivelmusic.daw.core.export;
 import com.benesquivelmusic.daw.sdk.export.AudioMetadata;
 import com.benesquivelmusic.daw.sdk.export.DitherType;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class OggVorbisExporterTest {
 
     @TempDir
     Path tempDir;
+
+    @BeforeAll
+    static void checkNativeLibrary() {
+        assumeTrue(NativeCodecAvailability.isVorbisAvailable(),
+                "libvorbis/libogg not available — skipping OGG Vorbis exporter tests");
+    }
 
     @Test
     void shouldWriteValidOggFile() throws IOException {
@@ -30,7 +39,7 @@ class OggVorbisExporterTest {
         byte[] data = Files.readAllBytes(outputPath);
         assertThat(data.length).isGreaterThan(0);
         // Verify Ogg magic number: "OggS"
-        assertThat(new String(data, 0, 4)).isEqualTo("OggS");
+        assertThat(new String(data, 0, 4, StandardCharsets.US_ASCII)).isEqualTo("OggS");
     }
 
     @Test
@@ -58,7 +67,7 @@ class OggVorbisExporterTest {
 
         assertThat(outputPath).exists();
         byte[] data = Files.readAllBytes(outputPath);
-        assertThat(new String(data, 0, 4)).isEqualTo("OggS");
+        assertThat(new String(data, 0, 4, StandardCharsets.US_ASCII)).isEqualTo("OggS");
     }
 
     @Test

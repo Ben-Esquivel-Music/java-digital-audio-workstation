@@ -101,11 +101,11 @@ public final class Mp3Exporter {
             MethodHandle lameSetQuality = linker.downcallHandle(
                     lame.find("lame_set_quality").orElseThrow(),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
-            MethodHandle lameSetWriteId3TagAutomatic = linker.downcallHandle(
-                    lame.find("lame_set_write_id3tag_automatic").orElseThrow(),
-                    FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
             MethodHandle id3tagInit = linker.downcallHandle(
                     lame.find("id3tag_init").orElseThrow(),
+                    FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+            MethodHandle id3tagAddV2 = linker.downcallHandle(
+                    lame.find("id3tag_add_v2").orElseThrow(),
                     FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
             MethodHandle id3tagSetTitle = linker.downcallHandle(
                     lame.find("id3tag_set_title").orElseThrow(),
@@ -119,10 +119,6 @@ public final class Mp3Exporter {
             MethodHandle lameInitParams = linker.downcallHandle(
                     lame.find("lame_init_params").orElseThrow(),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
-            MethodHandle lameGetLametagFrame = linker.downcallHandle(
-                    lame.find("lame_get_lametag_frame").orElseThrow(),
-                    FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS,
-                            ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
             MethodHandle lameEncodeBufferInterleaved = linker.downcallHandle(
                     lame.find("lame_encode_buffer_interleaved").orElseThrow(),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS,
@@ -147,19 +143,23 @@ public final class Mp3Exporter {
                 lameSetNumChannels.invoke(gfp, channels);
                 lameSetInSamplerate.invoke(gfp, sampleRate);
 
+                // Clamp quality to the supported [0.0, 1.0] range
+                double clampedQuality = Math.max(0.0, Math.min(1.0, quality));
+
                 // Use VBR with quality mapped from [0.0, 1.0] to LAME's [9, 0]
                 // LAME VBR quality: 0 = highest, 9 = lowest
                 lameSetVBR.invoke(gfp, VBR_DEFAULT);
-                float vbrQuality = (float) ((1.0 - quality) * 9.0);
+                float vbrQuality = (float) ((1.0 - clampedQuality) * 9.0);
                 lameSetVBRQuality.invoke(gfp, vbrQuality);
 
                 // Internal algorithm quality: 0 = best, 9 = fastest
-                int algoQuality = (int) ((1.0 - quality) * 7.0);
+                int algoQuality = (int) ((1.0 - clampedQuality) * 7.0);
                 lameSetQuality.invoke(gfp, algoQuality);
 
-                // Configure ID3 tags — write them ourselves for proper placement
-                lameSetWriteId3TagAutomatic.invoke(gfp, 0);
+                // Configure ID3 tags — let LAME automatically write ID3v2 at
+                // the start of the bitstream (the default behavior)
                 id3tagInit.invoke(gfp);
+                id3tagAddV2.invoke(gfp);
                 setId3Tag(id3tagSetTitle, gfp, metadata.title(), arena);
                 setId3Tag(id3tagSetArtist, gfp, metadata.artist(), arena);
                 setId3Tag(id3tagSetAlbum, gfp, metadata.album(), arena);
@@ -185,14 +185,6 @@ public final class Mp3Exporter {
                 byte[] mp3Bytes = new byte[mp3BufSize];
 
                 try (OutputStream out = Files.newOutputStream(outputPath)) {
-                    // Write ID3v2 tag at start of file
-                    int id3v2Size = 32768; // generous buffer for ID3v2
-                    MemorySegment id3v2Buf = arena.allocate(id3v2Size);
-                    long id3v2Written = (long) lameGetLametagFrame.invoke(gfp,
-                            id3v2Buf, (long) id3v2Size);
-                    // lame_get_lametag_frame returns 0 before encoding starts,
-                    // so we skip writing the LAME tag header here.
-
                     // Encode audio in chunks
                     int samplesWritten = 0;
                     MemorySegment pcmBuf = arena.allocate(

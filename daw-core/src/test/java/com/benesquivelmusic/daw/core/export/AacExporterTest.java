@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.export;
 import com.benesquivelmusic.daw.sdk.export.AudioMetadata;
 import com.benesquivelmusic.daw.sdk.export.DitherType;
 
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -12,11 +13,18 @@ import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class AacExporterTest {
 
     @TempDir
     Path tempDir;
+
+    @BeforeAll
+    static void checkNativeLibrary() {
+        assumeTrue(NativeCodecAvailability.isFdkAacAvailable(),
+                "libfdk-aac not available — skipping AAC exporter tests");
+    }
 
     @Test
     void shouldWriteValidAacFile() throws IOException {
