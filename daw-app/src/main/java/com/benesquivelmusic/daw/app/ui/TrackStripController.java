@@ -555,8 +555,31 @@ final class TrackStripController {
             Tooltip.install(pasteItem.getGraphic(), new Tooltip("Nothing copied to clipboard"));
         }
         pasteItem.setOnAction(_ -> {
-            notificationBar.show(NotificationLevel.WARNING,
-                    "Paste Over — not yet implemented");
+            List<ClipboardEntry> entriesSnapshot = new ArrayList<>(clipboardManager.getEntries());
+            if (entriesSnapshot.isEmpty()) {
+                statusBarLabel.setText("Nothing to paste");
+                statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO_CIRCLE, 12));
+                return;
+            }
+            List<AudioClip> clipsToPaste = entriesSnapshot.stream()
+                    .map(ClipboardEntry::clip).toList();
+            double playhead = project.getTransport().getPositionInBeats();
+            undoManager.execute(new UndoableAction() {
+                private ClipEditOperations.Result result;
+                @Override public String description() { return "Paste Over: " + track.getName(); }
+                @Override public void execute() {
+                    result = ClipEditOperations.pasteOver(track, clipsToPaste, playhead);
+                }
+                @Override public void undo() {
+                    result.undo(track);
+                }
+            });
+            host.updateUndoRedoState();
+            statusBarLabel.setText("Pasted over: " + track.getName() + " at beat " + String.format("%.1f", playhead));
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.PASTE, 12));
+            notificationBar.showWithUndo(NotificationLevel.SUCCESS,
+                    "Pasted over: " + track.getName(), host::undoLastAction);
+            host.markProjectDirty();
         });
 
         MenuItem splitItem = new MenuItem("Split at Playhead");
@@ -628,8 +651,37 @@ final class TrackStripController {
             Tooltip.install(trimItem.getGraphic(), new Tooltip("No active time selection"));
         }
         trimItem.setOnAction(_ -> {
-            notificationBar.show(NotificationLevel.WARNING,
-                    "Trim to Selection — not yet implemented");
+            double selStart = selectionModel.getStartBeat();
+            double selEnd = selectionModel.getEndBeat();
+            // Pre-check: are there any clips that overlap the selection?
+            boolean hasOverlapping = false;
+            for (AudioClip clip : track.getClips()) {
+                if (clip.getStartBeat() < selEnd && clip.getEndBeat() > selStart) {
+                    hasOverlapping = true;
+                    break;
+                }
+            }
+            if (!hasOverlapping) {
+                statusBarLabel.setText("No clips overlap the selection on: " + track.getName());
+                statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO_CIRCLE, 12));
+                return;
+            }
+            undoManager.execute(new UndoableAction() {
+                private ClipEditOperations.TrimResult result;
+                @Override public String description() { return "Trim to Selection: " + track.getName(); }
+                @Override public void execute() {
+                    result = ClipEditOperations.trimToSelection(track, selStart, selEnd);
+                }
+                @Override public void undo() {
+                    if (result != null) result.undo();
+                }
+            });
+            host.updateUndoRedoState();
+            statusBarLabel.setText("Trimmed to selection: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.TRIM, 12));
+            notificationBar.showWithUndo(NotificationLevel.SUCCESS,
+                    "Trimmed to selection: " + track.getName(), host::undoLastAction);
+            host.markProjectDirty();
         });
 
         MenuItem cropItem = new MenuItem("Crop");
@@ -641,8 +693,29 @@ final class TrackStripController {
             Tooltip.install(cropItem.getGraphic(), new Tooltip("No active time selection"));
         }
         cropItem.setOnAction(_ -> {
-            notificationBar.show(NotificationLevel.WARNING,
-                    "Crop — not yet implemented");
+            double selStart = selectionModel.getStartBeat();
+            double selEnd = selectionModel.getEndBeat();
+            if (track.getClips().isEmpty()) {
+                statusBarLabel.setText("No clips to crop on: " + track.getName());
+                statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO_CIRCLE, 12));
+                return;
+            }
+            undoManager.execute(new UndoableAction() {
+                private ClipEditOperations.Result result;
+                @Override public String description() { return "Crop: " + track.getName(); }
+                @Override public void execute() {
+                    result = ClipEditOperations.crop(track, selStart, selEnd);
+                }
+                @Override public void undo() {
+                    result.undo(track);
+                }
+            });
+            host.updateUndoRedoState();
+            statusBarLabel.setText("Cropped: " + track.getName());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.CROP, 12));
+            notificationBar.showWithUndo(NotificationLevel.SUCCESS,
+                    "Cropped: " + track.getName(), host::undoLastAction);
+            host.markProjectDirty();
         });
 
         MenuItem moveItem = new MenuItem("Move");
