@@ -35,6 +35,8 @@ class ClipInteractionControllerTest {
     private int refreshCount;
 
     private double seekedPosition;
+    private SelectionModel selectionModel;
+    private String lastStatusBarText;
 
     @BeforeEach
     void setUp() {
@@ -47,6 +49,8 @@ class ClipInteractionControllerTest {
         trackHeight = 80.0;
         refreshCount = 0;
         seekedPosition = -1.0;
+        selectionModel = new SelectionModel();
+        lastStatusBarText = null;
     }
 
     private ClipInteractionController.Host createHost() {
@@ -63,6 +67,8 @@ class ClipInteractionControllerTest {
             @Override public int beatsPerBar() { return 4; }
             @Override public void refreshCanvas() { refreshCount++; }
             @Override public void seekToPosition(double beat) { seekedPosition = beat; }
+            @Override public SelectionModel selectionModel() { return selectionModel; }
+            @Override public void updateStatusBar(String text) { lastStatusBarText = text; }
         };
     }
 

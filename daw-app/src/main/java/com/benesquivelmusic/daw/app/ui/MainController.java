@@ -551,6 +551,10 @@ public final class MainController {
                     @Override public void seekToPosition(double beat) {
                         MainController.this.seekToPosition(beat);
                     }
+                    @Override public SelectionModel selectionModel() { return selectionModel; }
+                    @Override public void updateStatusBar(String text) {
+                        statusBarLabel.setText(text);
+                    }
                 });
         clipInteractionController.install();
 
@@ -1839,6 +1843,7 @@ public final class MainController {
         }
         arrangementCanvas.setTracks(project.getTracks());
         syncLoopRegionToCanvas();
+        syncSelectionToCanvas();
     }
 
     /**
@@ -1902,6 +1907,15 @@ public final class MainController {
             timelineRuler.setSnapEnabled(snap);
             timelineRuler.setGridResolution(res);
             timelineRuler.redraw();
+        }
+    }
+
+    private void syncSelectionToCanvas() {
+        if (arrangementCanvas != null) {
+            arrangementCanvas.setSelectionRange(
+                    selectionModel.hasSelection(),
+                    selectionModel.getStartBeat(),
+                    selectionModel.getEndBeat());
         }
     }
 
