@@ -18,6 +18,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class ExportServiceTest {
 
@@ -203,7 +204,9 @@ class ExportServiceTest {
     }
 
     @Test
-    void shouldHandleUnsupportedFormat() throws IOException {
+    void shouldExportMp3WithFullPipeline() throws IOException {
+        assumeTrue(NativeCodecAvailability.isLameAvailable(),
+                "libmp3lame not available");
         ExportService service = new ExportService();
         float[][] audio = generateStereoSine(44100, 1.0, 440.0, 0.5f);
         AudioExportConfig config = new AudioExportConfig(
@@ -213,8 +216,10 @@ class ExportServiceTest {
                 audio, 44100, tempDir, "mp3_test", config,
                 ExportRange.FULL, null, ExportProgressListener.NONE);
 
-        assertThat(result.exportResult().success()).isFalse();
-        assertThat(result.exportResult().message()).contains("not yet implemented");
+        assertThat(result.exportResult().success()).isTrue();
+        assertThat(result.exportResult().outputPath()).exists();
+        assertThat(result.exportResult().outputPath().getFileName().toString())
+                .isEqualTo("mp3_test.mp3");
     }
 
     @Test

@@ -26,10 +26,11 @@ import java.util.Objects;
  *   <li>Format-specific encoding and file writing</li>
  * </ol>
  *
- * <p>Supports WAV and FLAC output natively. OGG, MP3, and AAC formats
- * are declared in the SDK for future implementation (e.g., via FFM API
- * integration with native codecs) and will return a failure result
- * until implemented.</p>
+ * <p>Supports WAV and FLAC output natively. OGG Vorbis, MP3, and AAC
+ * formats are encoded via FFM API (JEP 454) bindings to native codec
+ * libraries (libvorbisenc, libmp3lame, libfdk-aac). If a native library
+ * is not installed, the export returns a failure result with an
+ * installation hint.</p>
  */
 public final class DefaultAudioExporter implements AudioExporter {
 
@@ -85,11 +86,15 @@ public final class DefaultAudioExporter implements AudioExporter {
                         config.bitDepth(), config.ditherType(), config.metadata(), outputPath);
                 case FLAC -> FlacExporter.write(converted, config.sampleRate(),
                         config.bitDepth(), config.ditherType(), outputPath);
-                case OGG, MP3, AAC ->
-                        throw new UnsupportedOperationException(
-                                config.format() + " export is not yet implemented. "
-                                        + "Future versions will use the FFM API (JEP 454) "
-                                        + "for native codec integration.");
+                case OGG -> OggVorbisExporter.write(converted, config.sampleRate(),
+                        config.bitDepth(), config.ditherType(), config.metadata(),
+                        config.quality(), outputPath);
+                case MP3 -> Mp3Exporter.write(converted, config.sampleRate(),
+                        config.bitDepth(), config.ditherType(), config.metadata(),
+                        config.quality(), outputPath);
+                case AAC -> AacExporter.write(converted, config.sampleRate(),
+                        config.bitDepth(), config.ditherType(), config.metadata(),
+                        config.quality(), outputPath);
             }
 
             listener.onProgress(1.0, "Complete");
