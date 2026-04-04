@@ -58,33 +58,32 @@
                 <Button fx:id="metronomeButton" text="Metronome" onAction="#onToggleMetronome"
                         styleClass="transport-button, metronome-button"/>
 
-                <Separator orientation="VERTICAL"/>
+                <Separator orientation="VERTICAL" visible="false" managed="false"/>
 
-                <!-- Group 2: Track controls (icons applied programmatically) -->
+                <!-- Group 2: Track controls (available via Edit menu shortcuts) -->
                 <HBox fx:id="trackGroup" spacing="4" alignment="CENTER"
-                      styleClass="toolbar-button-group">
+                      styleClass="toolbar-button-group"
+                      visible="false" managed="false">
                     <Button fx:id="addAudioTrackButton" text="Audio Track" onAction="#onAddAudioTrack"
                             styleClass="transport-button"/>
                     <Button fx:id="addMidiTrackButton" text="MIDI Track" onAction="#onAddMidiTrack"
                             styleClass="transport-button"/>
                 </HBox>
 
-                <Separator orientation="VERTICAL"/>
-
-                <!-- Group 3: Undo / Redo (icons applied programmatically) -->
+                <!-- Group 3: Undo / Redo (available via Edit menu) -->
                 <HBox fx:id="undoRedoGroup" spacing="4" alignment="CENTER"
-                      styleClass="toolbar-button-group">
+                      styleClass="toolbar-button-group"
+                      visible="false" managed="false">
                     <Button fx:id="undoButton" text="Undo" onAction="#onUndo"
                             styleClass="transport-button"/>
                     <Button fx:id="redoButton" text="Redo" onAction="#onRedo"
                             styleClass="transport-button"/>
                 </HBox>
 
-                <Separator orientation="VERTICAL"/>
-
-                <!-- Group 4: Snap, Save, Plugins (icons applied programmatically) -->
+                <!-- Group 4: Snap, Save, Plugins (available via menus) -->
                 <HBox fx:id="utilityGroup" spacing="4" alignment="CENTER"
-                      styleClass="toolbar-button-group">
+                      styleClass="toolbar-button-group"
+                      visible="false" managed="false">
                     <Button fx:id="snapButton" text="Snap"
                             styleClass="transport-button"/>
                     <Button fx:id="saveButton" text="Save" onAction="#onSaveProject"
@@ -132,7 +131,7 @@
             <Button fx:id="masteringViewButton" text="Mastering"
                     styleClass="sidebar-button"/>
 
-            <Separator styleClass="sidebar-separator"/>
+            <Separator fx:id="toolsSectionSeparator" styleClass="sidebar-separator"/>
 
             <!-- Edit Tools -->
             <Label text="TOOLS" styleClass="toolbar-section-label"/>
@@ -147,7 +146,7 @@
             <Button fx:id="glueToolButton" text="Glue"
                     styleClass="sidebar-button"/>
 
-            <Separator styleClass="sidebar-separator"/>
+            <Separator fx:id="toolsZoomSeparator" styleClass="sidebar-separator"/>
 
             <!-- Zoom Controls -->
             <Label text="ZOOM" styleClass="toolbar-section-label"/>
@@ -158,7 +157,7 @@
             <Button fx:id="zoomToFitButton" text="Zoom to Fit"
                     styleClass="sidebar-button"/>
 
-            <Separator styleClass="sidebar-separator"/>
+            <Separator fx:id="zoomProjectSeparator" styleClass="sidebar-separator"/>
 
             <!-- Project Management -->
             <Label text="PROJECT" styleClass="toolbar-section-label"/>

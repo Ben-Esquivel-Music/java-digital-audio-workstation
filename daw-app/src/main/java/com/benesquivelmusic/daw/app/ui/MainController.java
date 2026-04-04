@@ -42,6 +42,7 @@ import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.control.Separator;
 import javafx.scene.control.TextField;
 import javafx.scene.control.Tooltip;
 import javafx.scene.input.KeyCombination;
@@ -153,6 +154,9 @@ public final class MainController {
     @FXML private Button zoomInButton;
     @FXML private Button zoomOutButton;
     @FXML private Button zoomToFitButton;
+    @FXML private Separator toolsSectionSeparator;
+    @FXML private Separator toolsZoomSeparator;
+    @FXML private Separator zoomProjectSeparator;
 
     private DawProject project;
     private PluginRegistry pluginRegistry;
@@ -247,6 +251,10 @@ public final class MainController {
     /** Encapsulates all frame-by-frame and transition-based animations. */
     private AnimationController animationController;
 
+    // ── Menu bar controller ─────────────────────────────────────────────────
+    /** Traditional DAW menu bar (File, Edit, Plugins, Window, Help). */
+    private DawMenuBarController menuBarController;
+
     // ── Toolbar appearance controller ────────────────────────────────────────
     /** Applies icons, tooltips, and overflow behavior to the toolbar. */
     private ToolbarAppearanceController toolbarAppearanceController;
@@ -334,9 +342,17 @@ public final class MainController {
         viewNavigationController.initializeEditTools();
         viewNavigationController.initializeSnapControls();
         viewNavigationController.initializeZoomControls();
+        viewNavigationController.setOnViewChanged(this::updateSidebarForActiveView);
         initializeToolbarCollapse(prefs);
         initializeToolbarContextMenus();
         initializeSidebarActions();
+        createMenuBar();
+        selectionModel.setSelectionChangeListener(() -> {
+            if (menuBarController != null) {
+                menuBarController.syncMenuState();
+            }
+        });
+        updateSidebarForActiveView();
 
         // Register keyboard shortcuts after the scene is available
         playButton.sceneProperty().addListener((_, _, scene) -> {
@@ -808,6 +824,117 @@ public final class MainController {
         searchButton.setOnAction(event -> onSearch());
         helpButton.setOnAction(event -> onHelp());
         LOG.fine("Sidebar action buttons initialized");
+    }
+
+    /**
+     * Creates the traditional DAW menu bar and inserts it at the very top
+     * of the window, above the transport bar.
+     */
+    private void createMenuBar() {
+        menuBarController = new DawMenuBarController(
+                new DawMenuBarController.Host() {
+                    @Override public com.benesquivelmusic.daw.core.project.DawProject project() { return project; }
+                    @Override public boolean isProjectDirty() { return projectDirty; }
+                    @Override public boolean canUndo() { return undoManager.canUndo(); }
+                    @Override public boolean canRedo() { return undoManager.canRedo(); }
+                    @Override public boolean hasClipboardContent() { return clipboardManager.hasContent(); }
+                    @Override public boolean hasSelection() { return selectionModel.hasClipSelection(); }
+                    @Override public DawView activeView() {
+                        return viewNavigationController != null
+                                ? viewNavigationController.getActiveView() : activeView;
+                    }
+                    @Override public void onNewProject() { projectLifecycleController.onNewProject(); }
+                    @Override public void onOpenProject() { projectLifecycleController.onOpenProject(); }
+                    @Override public void onSaveProject() { projectLifecycleController.onSaveProject(); }
+                    @Override public void onRecentProjects() { projectLifecycleController.onRecentProjects(); }
+                    @Override public void onImportSession() { projectLifecycleController.onImportSession(); }
+                    @Override public void onExportSession() { projectLifecycleController.onExportSession(); }
+                    @Override public void onImportAudioFile() { MainController.this.onImportAudioFile(); }
+                    @Override public void onUndo() { MainController.this.onUndo(); }
+                    @Override public void onRedo() { MainController.this.onRedo(); }
+                    @Override public void onCopy() { onCopyClips(); }
+                    @Override public void onCut() { onCutClips(); }
+                    @Override public void onPaste() { onPasteClips(); }
+                    @Override public void onDuplicate() { onDuplicateClips(); }
+                    @Override public void onDeleteSelection() { MainController.this.onDeleteSelection(); }
+                    @Override public void onToggleSnap() { viewNavigationController.onToggleSnap(); }
+                    @Override public void onManagePlugins() { MainController.this.onManagePlugins(); }
+                    @Override public void onOpenSettings() { MainController.this.onOpenSettings(); }
+                    @Override public void onSwitchView(DawView view) {
+                        viewNavigationController.switchView(view);
+                    }
+                    @Override public void onToggleBrowser() {
+                        if (historyPanelVisible) { toggleHistoryPanel(); }
+                        browserPanelController.toggleBrowserPanel();
+                    }
+                    @Override public void onToggleHistory() { toggleHistoryPanel(); }
+                    @Override public void onToggleNotificationHistory() {
+                        MainController.this.toggleNotificationHistoryPanel();
+                    }
+                    @Override public void onToggleVisualizations() {
+                        vizPanelController.toggleRowVisibility();
+                    }
+                    @Override public void onToggleToolbar() { MainController.this.onToggleToolbar(); }
+                    @Override public void onHelp() { MainController.this.onHelp(); }
+                },
+                keyBindingManager);
+        javafx.scene.control.MenuBar bar = menuBarController.build();
+
+        // Insert the menu bar at the top of the root pane's top VBox,
+        // above the transport bar
+        Node topNode = rootPane.getTop();
+        if (topNode instanceof VBox topVBox) {
+            topVBox.getChildren().addFirst(bar);
+        }
+
+        LOG.fine("DAW menu bar created and added to top of window");
+    }
+
+    /**
+     * Updates the visibility of the sidebar TOOLS and ZOOM sections based on
+     * the currently active view. Edit tools and zoom controls are only shown
+     * for views where they are relevant (Arrangement and Editor).
+     */
+    private void updateSidebarForActiveView() {
+        DawView view = viewNavigationController != null
+                ? viewNavigationController.getActiveView() : activeView;
+        boolean showTools = (view == DawView.ARRANGEMENT || view == DawView.EDITOR);
+
+        // Edit tool buttons
+        setNodeVisible(pointerToolButton, showTools);
+        setNodeVisible(pencilToolButton, showTools);
+        setNodeVisible(eraserToolButton, showTools);
+        setNodeVisible(scissorsToolButton, showTools);
+        setNodeVisible(glueToolButton, showTools);
+
+        // Zoom buttons
+        setNodeVisible(zoomInButton, showTools);
+        setNodeVisible(zoomOutButton, showTools);
+        setNodeVisible(zoomToFitButton, showTools);
+
+        // Separators around the TOOLS and ZOOM sections
+        setNodeVisible(toolsSectionSeparator, showTools);
+        setNodeVisible(toolsZoomSeparator, showTools);
+        setNodeVisible(zoomProjectSeparator, showTools);
+
+        // Section labels for TOOLS and ZOOM
+        for (Node child : sidebarToolbar.getChildren()) {
+            if (child instanceof Label label
+                    && label.getStyleClass().contains("toolbar-section-label")) {
+                String text = label.getText();
+                if ("TOOLS".equals(text) || "ZOOM".equals(text)) {
+                    setNodeVisible(label, showTools);
+                }
+            }
+        }
+    }
+
+    /**
+     * Sets a node visible and managed (or hidden and unmanaged).
+     */
+    private static void setNodeVisible(Node node, boolean visible) {
+        node.setVisible(visible);
+        node.setManaged(visible);
     }
 
     /**
@@ -1447,16 +1574,25 @@ public final class MainController {
     @FXML
     private void onSaveProject() {
         projectLifecycleController.onSaveProject();
+        if (menuBarController != null) {
+            menuBarController.syncMenuState();
+        }
     }
 
     @FXML
     private void onNewProject() {
         projectLifecycleController.onNewProject();
+        if (menuBarController != null) {
+            menuBarController.syncMenuState();
+        }
     }
 
     @FXML
     private void onOpenProject() {
         projectLifecycleController.onOpenProject();
+        if (menuBarController != null) {
+            menuBarController.syncMenuState();
+        }
     }
 
     @FXML
@@ -1680,6 +1816,9 @@ public final class MainController {
             return;
         }
         clipboardManager.copyClips(selected);
+        if (menuBarController != null) {
+            menuBarController.syncMenuState();
+        }
         statusBarLabel.setText("Copied " + selected.size() + " clip(s)");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.COPY, 12));
     }
@@ -2075,5 +2214,9 @@ public final class MainController {
                 : "Nothing to redo";
         undoButton.setTooltip(new Tooltip(undoTip));
         redoButton.setTooltip(new Tooltip(redoTip));
+
+        if (menuBarController != null) {
+            menuBarController.syncMenuState();
+        }
     }
 }

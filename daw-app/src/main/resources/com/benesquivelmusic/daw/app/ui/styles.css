@@ -1290,3 +1290,77 @@
 .track-drop-below {
     -fx-effect: dropshadow(gaussian, #7c4dff, 10, 0.0, 0, 2);
 }
+
+/* ── DAW Menu Bar ── */
+.daw-menu-bar {
+    -fx-background-color: #0d0d0d;
+    -fx-border-color: transparent transparent #222222 transparent;
+    -fx-border-width: 0 0 1 0;
+    -fx-padding: 0;
+}
+
+.daw-menu-bar .menu-button {
+    -fx-background-color: transparent;
+    -fx-text-fill: #b0b0b0;
+    -fx-font-size: 12px;
+    -fx-padding: 4 10;
+    -fx-cursor: hand;
+}
+
+.daw-menu-bar .menu-button:hover,
+.daw-menu-bar .menu-button:focused,
+.daw-menu-bar .menu-button:showing {
+    -fx-background-color: #242424;
+    -fx-text-fill: #e0e0e0;
+}
+
+.daw-menu-bar .menu-button > .label {
+    -fx-text-fill: #b0b0b0;
+}
+
+.daw-menu-bar .menu-button:hover > .label,
+.daw-menu-bar .menu-button:focused > .label,
+.daw-menu-bar .menu-button:showing > .label {
+    -fx-text-fill: #e0e0e0;
+}
+
+/* Menu dropdown context menu (scoped to menu bar) */
+.daw-menu-bar .context-menu {
+    -fx-background-color: #1a1a1a;
+    -fx-border-color: #2a2a2a;
+    -fx-border-width: 1;
+    -fx-border-radius: 4;
+    -fx-background-radius: 4;
+    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.6), 12, 0, 0, 4);
+    -fx-padding: 4 0;
+}
+
+.daw-menu-bar .menu-item {
+    -fx-background-color: transparent;
+    -fx-padding: 4 16 4 8;
+}
+
+.daw-menu-bar .menu-item:hover,
+.daw-menu-bar .menu-item:focused {
+    -fx-background-color: #2e2e2e;
+}
+
+.daw-menu-bar .menu-item .label {
+    -fx-text-fill: #e0e0e0;
+    -fx-font-size: 12px;
+}
+
+.daw-menu-bar .menu-item:disabled .label {
+    -fx-text-fill: #555555;
+}
+
+.daw-menu-bar .menu-item .accelerator-text {
+    -fx-text-fill: #808080;
+    -fx-font-size: 11px;
+}
+
+.daw-menu-bar .separator-menu-item > .line {
+    -fx-border-color: #2a2a2a;
+    -fx-border-width: 1 0 0 0;
+    -fx-padding: 0 4;
+}

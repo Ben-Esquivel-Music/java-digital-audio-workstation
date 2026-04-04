@@ -92,6 +92,9 @@ final class ViewNavigationController {
     /** Optional callback invoked after the active tool changes. */
     private Runnable onEditToolChanged;
 
+    /** Optional callback invoked after the active view changes. */
+    private Runnable onViewChanged;
+
     /** Whether snap-to-grid is enabled. */
     private boolean snapEnabled;
     /** The currently active grid resolution. */
@@ -229,6 +232,9 @@ final class ViewNavigationController {
         statusBarLabel.setText("Switched to " + view.name().charAt(0)
                 + view.name().substring(1).toLowerCase() + " view");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
+        if (onViewChanged != null) {
+            onViewChanged.run();
+        }
         LOG.fine(() -> "Switched to view: " + view);
     }
 
@@ -324,6 +330,15 @@ final class ViewNavigationController {
      */
     void setOnEditToolChanged(Runnable callback) {
         this.onEditToolChanged = callback;
+    }
+
+    /**
+     * Registers a callback invoked whenever the active view changes.
+     *
+     * @param callback the callback, or {@code null} to clear
+     */
+    void setOnViewChanged(Runnable callback) {
+        this.onViewChanged = callback;
     }
 
     /**
