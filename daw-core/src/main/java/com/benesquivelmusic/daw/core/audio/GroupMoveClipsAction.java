@@ -87,9 +87,14 @@ public final class GroupMoveClipsAction implements UndoableAction {
         double effectiveBeatDelta = Math.max(beatDelta, -minimumStartBeat);
 
         // Precompute track-index map for O(1) cross-track lookups.
-        Map<Track, Integer> trackIndex = new HashMap<>(allTracks.size());
-        for (int i = 0; i < allTracks.size(); i++) {
-            trackIndex.put(allTracks.get(i), i);
+        Map<Track, Integer> trackIndex;
+        if (trackDelta != 0 && !allTracks.isEmpty()) {
+            trackIndex = new HashMap<>(allTracks.size());
+            for (int i = 0; i < allTracks.size(); i++) {
+                trackIndex.put(allTracks.get(i), i);
+            }
+        } else {
+            trackIndex = Map.of();
         }
 
         for (Map.Entry<Track, AudioClip> entry : entries) {

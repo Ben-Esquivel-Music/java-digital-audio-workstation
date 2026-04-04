@@ -620,13 +620,15 @@ final class ClipInteractionController {
                 // After cross-track move, update the selection's track mapping
                 // so that subsequent operations reference the correct tracks.
                 if (trackDelta != 0) {
+                    var movedClips = new java.util.HashSet<AudioClip>(entries.size());
+                    for (Map.Entry<Track, AudioClip> e : entries) {
+                        movedClips.add(e.getValue());
+                    }
                     host.selectionModel().clearClipSelection();
                     for (Track t : host.tracks()) {
                         for (AudioClip c : t.getClips()) {
-                            for (Map.Entry<Track, AudioClip> e : entries) {
-                                if (c == e.getValue()) {
-                                    host.selectionModel().toggleClipSelection(t, c);
-                                }
+                            if (movedClips.contains(c)) {
+                                host.selectionModel().toggleClipSelection(t, c);
                             }
                         }
                     }
