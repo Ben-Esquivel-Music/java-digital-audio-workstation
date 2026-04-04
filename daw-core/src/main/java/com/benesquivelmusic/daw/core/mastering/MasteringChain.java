@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.mastering;
 
+import com.benesquivelmusic.daw.core.dsp.GainReductionProvider;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringChainPreset;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringStageConfig;
@@ -12,6 +13,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicLongArray;
+import java.util.logging.Logger;
 
 /**
  * An ordered mastering signal chain with preset management, per-stage
@@ -31,7 +34,12 @@ import java.util.Objects;
  *   <li>Preset save/load — capture and restore full chain configuration</li>
  * </ul>
  */
-public final class MasteringChain {
+public final class MasteringChain implements AudioProcessor {
+
+    private static final Logger LOG = Logger.getLogger(MasteringChain.class.getName());
+
+    /** Default number of channels for stereo mastering. */
+    private static final int DEFAULT_CHANNELS = 2;
 
     /**
      * A single stage in the mastering chain.
@@ -73,12 +81,43 @@ public final class MasteringChain {
     }
 
     private final List<Stage> stages = new ArrayList<>();
+    private final int channels;
     private boolean chainBypassed;
     private double referenceGainDb;
     private float[][][] intermediateBuffers;
+    private int allocatedFrameSize;
+    private volatile boolean intermediateBufferWarningLogged;
+
+    // Per-stage metering data: snapshot-publish pattern with per-element atomicity.
+    // Audio thread writes via AtomicLongArray (doubleToRawLongBits); UI thread reads
+    // via longBitsToDouble. Each mutator (add/insert/remove) publishes new arrays.
+    private volatile AtomicLongArray stageInputPeakDb;
+    private volatile AtomicLongArray stageOutputPeakDb;
+    private volatile AtomicLongArray stageGainReductionDb;
+
+    /**
+     * Creates a mastering chain with the default stereo channel count (2).
+     */
+    public MasteringChain() {
+        this(DEFAULT_CHANNELS);
+    }
+
+    /**
+     * Creates a mastering chain with the specified channel count.
+     *
+     * @param channels the number of audio channels
+     */
+    public MasteringChain(int channels) {
+        if (channels <= 0) {
+            throw new IllegalArgumentException("channels must be positive: " + channels);
+        }
+        this.channels = channels;
+    }
 
     /**
      * Adds a stage to the end of the mastering chain.
+     *
+     * <p>Metering arrays are re-allocated to match the new stage count.</p>
      *
      * @param type      the mastering stage type
      * @param name      the display name
@@ -86,10 +125,14 @@ public final class MasteringChain {
      */
     public void addStage(MasteringStageType type, String name, AudioProcessor processor) {
         stages.add(new Stage(type, name, processor));
+        reallocateMeteringArrays();
+        resizeIntermediateBuffers();
     }
 
     /**
      * Inserts a stage at the specified index.
+     *
+     * <p>Metering arrays are re-allocated to match the new stage count.</p>
      *
      * @param index     the insertion index
      * @param type      the mastering stage type
@@ -99,16 +142,23 @@ public final class MasteringChain {
     public void insertStage(int index, MasteringStageType type, String name,
                             AudioProcessor processor) {
         stages.add(index, new Stage(type, name, processor));
+        reallocateMeteringArrays();
+        resizeIntermediateBuffers();
     }
 
     /**
      * Removes the stage at the specified index.
      *
+     * <p>Metering arrays are re-allocated to match the new stage count.</p>
+     *
      * @param index the index of the stage to remove
      * @return the removed stage
      */
     public Stage removeStage(int index) {
-        return stages.remove(index);
+        Stage removed = stages.remove(index);
+        reallocateMeteringArrays();
+        resizeIntermediateBuffers();
+        return removed;
     }
 
     /**
@@ -173,75 +223,198 @@ public final class MasteringChain {
     /**
      * Pre-allocates intermediate buffers for real-time-safe processing.
      *
-     * @param channels the number of audio channels
+     * <p>The {@code channels} parameter must match the chain's channel count
+     * (as returned by {@link #getInputChannelCount()}) to avoid misconfiguration.</p>
+     *
+     * @param channels the number of audio channels (must match the chain's channel count)
      * @param frames   the number of sample frames per buffer
+     * @throws IllegalArgumentException if channels does not match the chain's channel count
      */
     public void allocateIntermediateBuffers(int channels, int frames) {
-        if (channels <= 0) {
-            throw new IllegalArgumentException("channels must be positive: " + channels);
+        if (channels != this.channels) {
+            throw new IllegalArgumentException(
+                    "channels (" + channels + ") must match chain channel count (" + this.channels + ")");
         }
         if (frames <= 0) {
             throw new IllegalArgumentException("frames must be positive: " + frames);
         }
+        allocatedFrameSize = frames;
         int maxNeeded = Math.max(stages.size() - 1, 0);
         intermediateBuffers = new float[maxNeeded][channels][frames];
     }
 
     /**
+     * Resizes intermediate buffers to match the current stage count, if they
+     * have been previously allocated via {@link #allocateIntermediateBuffers(int, int)}.
+     *
+     * <p>Called from stage mutation methods (add/insert/remove) to keep the
+     * intermediate buffer array in sync with the stage count. If buffers have
+     * not yet been allocated, this is a no-op.</p>
+     */
+    private void resizeIntermediateBuffers() {
+        if (allocatedFrameSize > 0) {
+            int maxNeeded = Math.max(stages.size() - 1, 0);
+            intermediateBuffers = new float[maxNeeded][channels][allocatedFrameSize];
+        }
+    }
+
+    /**
      * Processes audio through the mastering chain.
      *
-     * <p>Respects chain bypass (A/B mode), per-stage bypass, and solo.</p>
+     * <p>Respects chain bypass (A/B mode), per-stage bypass, and solo.
+     * Updates per-stage metering data (input/output peak levels and
+     * gain reduction) after processing each active stage.</p>
+     *
+     * <p>This method is real-time safe when intermediate buffers have been
+     * pre-allocated via {@link #allocateIntermediateBuffers(int, int)}
+     * and metering arrays are pre-allocated via stage mutations.</p>
      *
      * @param inputBuffer  input audio data {@code [channel][frame]}
      * @param outputBuffer output audio data {@code [channel][frame]}
      * @param numFrames    the number of frames to process
      */
+    @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         if (chainBypassed || stages.isEmpty()) {
             copyWithGain(inputBuffer, outputBuffer, numFrames, referenceGainDb);
             return;
         }
 
-        boolean hasSolo = stages.stream().anyMatch(Stage::isSolo);
-        List<Stage> activeStages = new ArrayList<>();
-        for (Stage stage : stages) {
-            if (hasSolo) {
-                if (stage.isSolo()) {
-                    activeStages.add(stage);
-                }
-            } else if (!stage.isBypassed()) {
-                activeStages.add(stage);
+        // Detect solo with allocation-free indexed loop
+        boolean hasSolo = false;
+        for (int i = 0; i < stages.size(); i++) {
+            if (stages.get(i).isSolo()) {
+                hasSolo = true;
+                break;
             }
         }
 
-        if (activeStages.isEmpty()) {
+        // Pre-compute the last active stage index (O(n) once, not per-stage)
+        int lastActiveIndex = -1;
+        for (int i = stages.size() - 1; i >= 0; i--) {
+            Stage s = stages.get(i);
+            if (hasSolo ? s.isSolo() : !s.isBypassed()) {
+                lastActiveIndex = i;
+                break;
+            }
+        }
+
+        if (lastActiveIndex < 0) {
             copyBuffer(inputBuffer, outputBuffer, numFrames);
             return;
         }
 
+        // Snapshot metering arrays (volatile read once)
+        AtomicLongArray inputPeaks = stageInputPeakDb;
+        AtomicLongArray outputPeaks = stageOutputPeakDb;
+        AtomicLongArray gainReductions = stageGainReductionDb;
+
         float[][] currentInput = inputBuffer;
-        for (int i = 0; i < activeStages.size(); i++) {
+        int activeIndex = 0;
+        for (int stageIndex = 0; stageIndex < stages.size(); stageIndex++) {
+            Stage stage = stages.get(stageIndex);
+
+            // Skip inactive stages
+            if (hasSolo) {
+                if (!stage.isSolo()) continue;
+            } else if (stage.isBypassed()) {
+                continue;
+            }
+
             float[][] currentOutput;
-            if (i == activeStages.size() - 1) {
+            if (stageIndex == lastActiveIndex) {
                 currentOutput = outputBuffer;
-            } else if (intermediateBuffers != null && i < intermediateBuffers.length) {
-                currentOutput = intermediateBuffers[i];
+            } else if (intermediateBuffers != null && activeIndex < intermediateBuffers.length) {
+                currentOutput = intermediateBuffers[activeIndex];
                 clearBuffer(currentOutput, numFrames);
             } else {
-                currentOutput = new float[outputBuffer.length][numFrames];
+                // Intermediate buffers not available for non-final stage.
+                // Degrade gracefully: log once and bypass remaining stages.
+                if (!intermediateBufferWarningLogged) {
+                    intermediateBufferWarningLogged = true;
+                    LOG.warning("Intermediate buffers not pre-allocated for MasteringChain; "
+                            + "call allocateIntermediateBuffers() before processing. "
+                            + "Bypassing remaining stages.");
+                }
+                // Copy what we have so far to the output and stop processing
+                copyBuffer(currentInput, outputBuffer, numFrames);
+                return;
             }
-            activeStages.get(i).getProcessor().process(currentInput, currentOutput, numFrames);
+
+            // Measure input peak level
+            updatePeak(inputPeaks, stageIndex, currentInput, numFrames);
+
+            stage.getProcessor().process(currentInput, currentOutput, numFrames);
+
+            // Measure output peak level
+            updatePeak(outputPeaks, stageIndex, currentOutput, numFrames);
+
+            // Read gain reduction from dynamics processors
+            updateGainReduction(gainReductions, stageIndex, stage.getProcessor());
+
             currentInput = currentOutput;
+            activeIndex++;
         }
     }
 
     /**
      * Resets all processors in the chain.
      */
+    @Override
     public void reset() {
         for (Stage stage : stages) {
             stage.getProcessor().reset();
         }
+    }
+
+    @Override
+    public int getInputChannelCount() {
+        return channels;
+    }
+
+    @Override
+    public int getOutputChannelCount() {
+        return channels;
+    }
+
+    // --- Metering accessors (read from UI thread) ---
+
+    /**
+     * Returns the input peak level in dB for the specified stage.
+     *
+     * @param stageIndex the stage index
+     * @return the input peak level in dB, or {@code -120.0} if not available
+     */
+    public double getStageInputPeakDb(int stageIndex) {
+        AtomicLongArray peaks = stageInputPeakDb;
+        return (peaks != null && stageIndex >= 0 && stageIndex < peaks.length())
+                ? Double.longBitsToDouble(peaks.get(stageIndex)) : -120.0;
+    }
+
+    /**
+     * Returns the output peak level in dB for the specified stage.
+     *
+     * @param stageIndex the stage index
+     * @return the output peak level in dB, or {@code -120.0} if not available
+     */
+    public double getStageOutputPeakDb(int stageIndex) {
+        AtomicLongArray peaks = stageOutputPeakDb;
+        return (peaks != null && stageIndex >= 0 && stageIndex < peaks.length())
+                ? Double.longBitsToDouble(peaks.get(stageIndex)) : -120.0;
+    }
+
+    /**
+     * Returns the gain reduction in dB for the specified stage.
+     *
+     * <p>Returns {@code 0.0} for stages that do not perform dynamics processing.</p>
+     *
+     * @param stageIndex the stage index
+     * @return the gain reduction in dB (≤ 0), or {@code 0.0} if not applicable
+     */
+    public double getStageGainReductionDb(int stageIndex) {
+        AtomicLongArray gr = stageGainReductionDb;
+        return (gr != null && stageIndex >= 0 && stageIndex < gr.length())
+                ? Double.longBitsToDouble(gr.get(stageIndex)) : 0.0;
     }
 
     /**
@@ -323,5 +496,61 @@ public final class MasteringChain {
         for (float[] channel : buffer) {
             Arrays.fill(channel, 0, numFrames, 0.0f);
         }
+    }
+
+    // --- Metering helpers ---
+
+    /**
+     * Allocates new metering arrays matching the current stage count.
+     * Called from add/insert/remove stage — never from the audio thread.
+     * Publishes via volatile reference for lock-free cross-thread reads.
+     */
+    private void reallocateMeteringArrays() {
+        int n = stages.size();
+        long defaultPeak = Double.doubleToRawLongBits(-120.0);
+        AtomicLongArray newInput = new AtomicLongArray(n);
+        AtomicLongArray newOutput = new AtomicLongArray(n);
+        AtomicLongArray newGr = new AtomicLongArray(n);
+        for (int i = 0; i < n; i++) {
+            newInput.set(i, defaultPeak);
+            newOutput.set(i, defaultPeak);
+            // GR defaults to 0.0 (AtomicLongArray zero-initializes, and
+            // Double.doubleToRawLongBits(0.0) == 0L)
+        }
+        // Publish all three via volatile writes
+        stageInputPeakDb = newInput;
+        stageOutputPeakDb = newOutput;
+        stageGainReductionDb = newGr;
+    }
+
+    private static void updatePeak(AtomicLongArray peaks, int stageIndex,
+                                    float[][] buffer, int numFrames) {
+        if (peaks != null && stageIndex >= 0 && stageIndex < peaks.length()) {
+            peaks.set(stageIndex, Double.doubleToRawLongBits(measurePeakDb(buffer, numFrames)));
+        }
+    }
+
+    private static void updateGainReduction(AtomicLongArray gr, int stageIndex,
+                                             AudioProcessor processor) {
+        if (gr != null && stageIndex >= 0 && stageIndex < gr.length()) {
+            if (processor instanceof GainReductionProvider provider) {
+                gr.set(stageIndex, Double.doubleToRawLongBits(provider.getGainReductionDb()));
+            } else {
+                gr.set(stageIndex, Double.doubleToRawLongBits(0.0));
+            }
+        }
+    }
+
+    private static double measurePeakDb(float[][] buffer, int numFrames) {
+        double peak = 0.0;
+        for (float[] channel : buffer) {
+            for (int i = 0; i < numFrames; i++) {
+                double abs = Math.abs(channel[i]);
+                if (abs > peak) {
+                    peak = abs;
+                }
+            }
+        }
+        return (peak > 0.0) ? 20.0 * Math.log10(peak) : -120.0;
     }
 }
