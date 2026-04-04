@@ -348,6 +348,29 @@ class KeyboardProcessorTest {
     }
 
     @Test
+    void setPresetDuringRecordingShouldFinalizeHeldNotes() {
+        long[] clockTimeMs = useFakeClock(1000L);
+
+        // Use a preset with transpose +12
+        KeyboardPreset transposedPreset = KeyboardPreset.grandPiano().withTranspose(12);
+        processor.setPreset(transposedPreset);
+
+        processor.startRecording(120.0, 0);
+        processor.noteOn(60, 100);  // recorded as note 72 (60+12)
+        assertThat(processor.isNoteActive(60)).isTrue();
+
+        // Change preset while note is held — should finalize the note
+        clockTimeMs[0] = 1250L; // 250ms later = 2 columns
+        processor.setPreset(KeyboardPreset.electricPiano());
+
+        // Note should be finalized with correct duration
+        List<MidiNoteData> notes = processor.getRecordedNotes();
+        assertThat(notes).hasSize(1);
+        assertThat(notes.getFirst().noteNumber()).isEqualTo(72);
+        assertThat(notes.getFirst().durationColumns()).isEqualTo(2);
+    }
+
+    @Test
     void shouldClearRecordedNotesOnNewRecording() {
         processor.startRecording(120.0, 0);
         processor.noteOn(60, 100);

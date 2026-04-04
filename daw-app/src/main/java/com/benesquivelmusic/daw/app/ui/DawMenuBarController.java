@@ -156,7 +156,6 @@ public final class DawMenuBarController {
 
         saveItem.setDisable(!dirty);
         exportSessionItem.setDisable(!hasTracks);
-        importAudioFileItem.setDisable(false);
 
         undoItem.setDisable(!canUndo);
         redoItem.setDisable(!canRedo);

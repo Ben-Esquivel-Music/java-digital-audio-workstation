@@ -146,9 +146,36 @@ public final class KeyboardProcessor {
      */
     public void setPreset(KeyboardPreset newPreset) {
         Objects.requireNonNull(newPreset, "preset must not be null");
+        finalizeHeldRecordingNotesBeforePresetChange();
         allNotesOff();
         this.preset = newPreset;
         applyPresetToRenderer();
+    }
+
+    /**
+     * Finalizes any notes that are currently being recorded before changing
+     * the preset. This is necessary because transpose is part of the note
+     * indexing used by recording bookkeeping, so changing the preset first
+     * can prevent a later note-off from resolving the original note-on slot.
+     */
+    private void finalizeHeldRecordingNotesBeforePresetChange() {
+        if (!recording) {
+            return;
+        }
+        int transpose = preset.transpose();
+        for (int recordedIndex = 0; recordedIndex < noteOnColumns.length; recordedIndex++) {
+            if (noteOnColumns[recordedIndex] < 0) {
+                continue;
+            }
+
+            int note = recordedIndex - transpose;
+            if (note >= 0 && note < 128) {
+                noteOff(note);
+            } else {
+                noteOnColumns[recordedIndex] = -1;
+                noteOnVelocities[recordedIndex] = 0;
+            }
+        }
     }
 
     /**
