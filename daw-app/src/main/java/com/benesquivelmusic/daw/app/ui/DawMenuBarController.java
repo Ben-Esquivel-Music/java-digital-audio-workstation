@@ -119,6 +119,7 @@ public final class DawMenuBarController {
      * @return the menu bar ready to be added to the scene graph
      */
     public MenuBar build() {
+        menuBar.getMenus().clear();
         menuBar.getMenus().addAll(
                 buildFileMenu(),
                 buildEditMenu(),
