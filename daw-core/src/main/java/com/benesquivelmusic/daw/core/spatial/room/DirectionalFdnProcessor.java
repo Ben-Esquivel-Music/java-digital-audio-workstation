@@ -84,8 +84,8 @@ public final class DirectionalFdnProcessor implements AudioProcessor {
     /** Per-delay-line one-pole lowpass filter state. */
     private float[] dampingState;
 
-    /** Per-delay-line FOA encoding coefficients [delayLine][4]. */
-    private double[][] ambiCoefficients;
+    /** Per-delay-line FOA encoding coefficients [delayLine][4], pre-scaled by 1/NUM_DELAY_LINES. */
+    private float[][] ambiCoefficients;
 
     /** Azimuth per delay line (radians). */
     private double[] azimuths;
@@ -138,7 +138,7 @@ public final class DirectionalFdnProcessor implements AudioProcessor {
         this.dampingState = new float[NUM_DELAY_LINES];
         this.azimuths = new double[NUM_DELAY_LINES];
         this.elevations = new double[NUM_DELAY_LINES];
-        this.ambiCoefficients = new double[NUM_DELAY_LINES][];
+        this.ambiCoefficients = new float[NUM_DELAY_LINES][];
         this.delayOutputs = new float[NUM_DELAY_LINES];
 
         buildDelayLines();
@@ -266,11 +266,11 @@ public final class DirectionalFdnProcessor implements AudioProcessor {
                 monoIn /= inputBuffer.length;
             }
 
-            // Read from all delay lines
+            // Read from all delay lines. Since each delay buffer length matches
+            // its corresponding delay length, the delayed sample is always at
+            // the current write position.
             for (int i = 0; i < NUM_DELAY_LINES; i++) {
-                int readPos = (writePositions[i] - delayLengths[i] + delayBuffers[i].length)
-                        % delayBuffers[i].length;
-                delayOutputs[i] = delayBuffers[i][readPos];
+                delayOutputs[i] = delayBuffers[i][writePositions[i]];
             }
 
             // Householder feedback: H*y = (2/N) * sum(y) * ones - y
@@ -297,21 +297,14 @@ public final class DirectionalFdnProcessor implements AudioProcessor {
                 writePositions[i] = (writePositions[i] + 1) % delayBuffers[i].length;
             }
 
-            // Encode each delay line output to FOA and accumulate
+            // Encode each delay line output to FOA and accumulate.
+            // Coefficients are pre-scaled by 1/NUM_DELAY_LINES to manage headroom.
             for (int i = 0; i < NUM_DELAY_LINES; i++) {
-                double[] coeffs = ambiCoefficients[i];
+                float[] coeffs = ambiCoefficients[i];
                 float output = delayOutputs[i];
                 for (int ch = 0; ch < outChannels; ch++) {
-                    outputBuffer[ch][n] += (float) (output * coeffs[ch]);
+                    outputBuffer[ch][n] += output * coeffs[ch];
                 }
-            }
-        }
-
-        // Normalize output by number of delay lines to prevent clipping
-        float normFactor = 1.0f / NUM_DELAY_LINES;
-        for (int ch = 0; ch < outChannels; ch++) {
-            for (int n = 0; n < numFrames; n++) {
-                outputBuffer[ch][n] *= normFactor;
             }
         }
     }
@@ -354,6 +347,9 @@ public final class DirectionalFdnProcessor implements AudioProcessor {
 
         makeDelaysMutuallyPrime();
         computeFeedbackGains();
+
+        Arrays.fill(dampingState, 0.0f);
+        Arrays.fill(delayOutputs, 0.0f);
     }
 
     /**
@@ -394,7 +390,12 @@ public final class DirectionalFdnProcessor implements AudioProcessor {
             azimuths[i] = baseAzimuth * spread;
             elevations[i] = baseElevation * spread;
 
-            ambiCoefficients[i] = SphericalHarmonics.encode(azimuths[i], elevations[i], 1);
+            double[] rawCoeffs = SphericalHarmonics.encode(azimuths[i], elevations[i], 1);
+            float scale = 1.0f / NUM_DELAY_LINES;
+            ambiCoefficients[i] = new float[rawCoeffs.length];
+            for (int ch = 0; ch < rawCoeffs.length; ch++) {
+                ambiCoefficients[i][ch] = (float) rawCoeffs[ch] * scale;
+            }
         }
     }
 
