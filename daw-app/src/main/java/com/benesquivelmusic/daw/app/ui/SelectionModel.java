@@ -166,6 +166,36 @@ public final class SelectionModel {
     }
 
     /**
+     * Adds all clips whose time range overlaps the given beat region on
+     * the specified tracks to the current clip selection (additive
+     * rubber-band selection).
+     *
+     * <p>Unlike {@link #selectClipsInRegion}, the existing clip selection
+     * is <em>not</em> cleared — new matches are merged into whatever is
+     * already selected. This supports Shift+rubber-band workflows.</p>
+     *
+     * @param tracks        the tracks to search
+     * @param regionStart   the start beat of the selection region
+     * @param regionEnd     the end beat of the selection region
+     * @throws NullPointerException     if {@code tracks} is {@code null}
+     * @throws IllegalArgumentException if {@code regionStart} &ge; {@code regionEnd}
+     */
+    public void addClipsInRegion(List<Track> tracks, double regionStart, double regionEnd) {
+        Objects.requireNonNull(tracks, "tracks must not be null");
+        if (regionStart >= regionEnd) {
+            throw new IllegalArgumentException(
+                    "regionStart must be less than regionEnd: " + regionStart + " >= " + regionEnd);
+        }
+        for (Track track : tracks) {
+            for (AudioClip clip : track.getClips()) {
+                if (clip.getStartBeat() < regionEnd && clip.getEndBeat() > regionStart) {
+                    selectedClips.put(clip, track);
+                }
+            }
+        }
+    }
+
+    /**
      * Returns an unmodifiable list of the currently selected clips as
      * {@link ClipboardEntry} instances (each carrying its source track).
      *

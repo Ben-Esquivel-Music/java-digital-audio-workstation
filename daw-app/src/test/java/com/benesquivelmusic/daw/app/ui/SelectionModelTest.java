@@ -295,4 +295,72 @@ class SelectionModelTest {
         assertThatThrownBy(() -> model.getSelectedClips().clear())
                 .isInstanceOf(UnsupportedOperationException.class);
     }
+
+    // ── Additive rubber-band selection tests ────────────────────────────────
+
+    @Test
+    void addClipsInRegionShouldAddToExistingSelection() {
+        SelectionModel model = new SelectionModel();
+        Track track = new Track("Drums", TrackType.AUDIO);
+        AudioClip clip1 = new AudioClip("kick", 0.0, 4.0, null);
+        AudioClip clip2 = new AudioClip("snare", 4.0, 4.0, null);
+        AudioClip clip3 = new AudioClip("hat", 10.0, 2.0, null);
+        track.addClip(clip1);
+        track.addClip(clip2);
+        track.addClip(clip3);
+
+        // First select clip1
+        model.selectClip(track, clip1);
+        // Then additively select clips in region 9..13 (should include clip3)
+        model.addClipsInRegion(List.of(track), 9.0, 13.0);
+
+        assertThat(model.getSelectedClips()).hasSize(2);
+        assertThat(model.isClipSelected(clip1)).isTrue();
+        assertThat(model.isClipSelected(clip3)).isTrue();
+        assertThat(model.isClipSelected(clip2)).isFalse();
+    }
+
+    @Test
+    void addClipsInRegionShouldNotClearExisting() {
+        SelectionModel model = new SelectionModel();
+        Track track = new Track("Drums", TrackType.AUDIO);
+        AudioClip clip1 = new AudioClip("kick", 0.0, 4.0, null);
+        AudioClip clip2 = new AudioClip("snare", 10.0, 4.0, null);
+        track.addClip(clip1);
+        track.addClip(clip2);
+
+        model.selectClip(track, clip1);
+        model.addClipsInRegion(List.of(track), 9.0, 15.0);
+
+        assertThat(model.isClipSelected(clip1)).isTrue();
+        assertThat(model.isClipSelected(clip2)).isTrue();
+    }
+
+    @Test
+    void addClipsInRegionShouldRejectNullTracks() {
+        SelectionModel model = new SelectionModel();
+        assertThatThrownBy(() -> model.addClipsInRegion(null, 0.0, 5.0))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void addClipsInRegionShouldRejectInvalidRegion() {
+        SelectionModel model = new SelectionModel();
+        assertThatThrownBy(() -> model.addClipsInRegion(List.of(), 5.0, 3.0))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void addClipsInRegionWithNoOverlapShouldNotChangeSelection() {
+        SelectionModel model = new SelectionModel();
+        Track track = new Track("Drums", TrackType.AUDIO);
+        AudioClip clip1 = new AudioClip("kick", 0.0, 4.0, null);
+        track.addClip(clip1);
+
+        model.selectClip(track, clip1);
+        model.addClipsInRegion(List.of(track), 10.0, 15.0);
+
+        assertThat(model.getSelectedClips()).hasSize(1);
+        assertThat(model.isClipSelected(clip1)).isTrue();
+    }
 }

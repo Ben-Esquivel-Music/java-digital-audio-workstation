@@ -83,6 +83,12 @@ final class ClipInteractionController {
     private boolean selectionDragShift;
     private double selectionDragAnchorBeat;
 
+    // Rubber-band (marquee) clip selection drag state
+    private boolean rubberBandDragging;
+    private boolean rubberBandShift;
+    private double rubberBandAnchorX;
+    private double rubberBandAnchorY;
+
     /**
      * Identifies which edge of the time selection is being dragged for
      * fine-tuning the selection boundaries.
@@ -141,6 +147,7 @@ final class ClipInteractionController {
         canvas.setOnMouseDragged(this::onMouseDragged);
         canvas.setOnMouseReleased(this::onMouseReleased);
         canvas.setOnMouseMoved(this::onMouseMoved);
+        canvas.setSelectionModel(host.selectionModel());
         updateCursor();
     }
 
@@ -420,6 +427,13 @@ final class ClipInteractionController {
             return;
         }
 
+        // Rubber-band clip selection drag
+        if (rubberBandDragging) {
+            canvas.setRubberBand(true, rubberBandAnchorX, rubberBandAnchorY,
+                    event.getX(), event.getY());
+            return;
+        }
+
         // Time selection drag
         if (selectionDragging) {
             double snappedBeat = snapBeat(beatAt(event.getX()));
@@ -497,6 +511,38 @@ final class ClipInteractionController {
             updateSelectionHandleDrag(event.getX());
             selectionHandleDrag = null;
             updateCursor();
+            return;
+        }
+
+        // Complete rubber-band clip selection drag
+        if (rubberBandDragging) {
+            canvas.setRubberBand(false, 0, 0, 0, 0);
+            double x1 = rubberBandAnchorX;
+            double y1 = rubberBandAnchorY;
+            double x2 = event.getX();
+            double y2 = event.getY();
+            double beatStart = beatAt(Math.min(x1, x2));
+            double beatEnd = beatAt(Math.max(x1, x2));
+            boolean dragged = Math.abs(x2 - x1) > 2 || Math.abs(y2 - y1) > 2;
+            if (dragged && beatStart < beatEnd) {
+                List<Track> coveredTracks = tracksInYRange(y1, y2);
+                if (!coveredTracks.isEmpty()) {
+                    if (rubberBandShift) {
+                        host.selectionModel().addClipsInRegion(coveredTracks, beatStart, beatEnd);
+                    } else {
+                        host.selectionModel().selectClipsInRegion(coveredTracks, beatStart, beatEnd);
+                    }
+                }
+            } else if (!rubberBandShift) {
+                // Click without drag (non-shift) — clear selections and seek
+                host.selectionModel().clearClipSelection();
+                clearTimeSelection();
+                double snappedBeat = snapBeat(beatAt(event.getX()));
+                host.seekToPosition(snappedBeat);
+            }
+            rubberBandDragging = false;
+            rubberBandShift = false;
+            host.refreshCanvas();
             return;
         }
 
@@ -582,15 +628,25 @@ final class ClipInteractionController {
     private void handlePointerPress(Track track, double beat, MouseEvent event) {
         AudioClip clip = clipAt(track, beat);
         if (clip == null) {
-            // Empty space in a track lane — begin time selection drag
-            beginTimeSelectionDrag(beat, event.isShiftDown());
+            // Empty space in a track lane — begin rubber-band clip selection
+            beginRubberBandDrag(event.getX(), event.getY(), event.isShiftDown());
             return;
         }
-        // Click on a clip — clear selection and start clip drag
+        // Click on a clip
         clearTimeSelection();
-        dragClip = clip;
-        dragSourceTrack = track;
-        dragStartBeat = beat;
+        if (event.isShiftDown()) {
+            // Shift-click toggles this clip in the selection
+            int trackIndex = trackIndexAt(event.getY());
+            host.selectionModel().toggleClipSelection(track, clip);
+            host.refreshCanvas();
+        } else {
+            // Normal click — select only this clip and start drag
+            host.selectionModel().selectClip(track, clip);
+            host.refreshCanvas();
+            dragClip = clip;
+            dragSourceTrack = track;
+            dragStartBeat = beat;
+        }
         LOG.fine(() -> "Pointer: selected clip '" + clip.getName() + "' at beat " + beat);
     }
 
@@ -629,6 +685,44 @@ final class ClipInteractionController {
         selectionDragging = true;
         // Seek immediately so the playhead moves to the click position
         host.seekToPosition(snappedBeat);
+    }
+
+    /**
+     * Begins a rubber-band (marquee) clip selection drag. The anchor pixel
+     * coordinates are stored and updated as the user drags to form a 2D
+     * selection rectangle. On release, all clips that overlap the rectangle
+     * are selected via the selection model.
+     *
+     * <p>If Shift is held, the rubber-band selection is additive — clips
+     * within the rectangle are added to the existing selection.</p>
+     */
+    private void beginRubberBandDrag(double x, double y, boolean shiftDown) {
+        rubberBandDragging = true;
+        rubberBandShift = shiftDown;
+        rubberBandAnchorX = x;
+        rubberBandAnchorY = y;
+        if (!shiftDown) {
+            host.selectionModel().clearClipSelection();
+            clearTimeSelection();
+        }
+    }
+
+    /**
+     * Returns all tracks whose clip lanes overlap the vertical pixel range
+     * between {@code y1} and {@code y2} (in canvas space).
+     */
+    private List<Track> tracksInYRange(double y1, double y2) {
+        double topY = Math.min(y1, y2);
+        double bottomY = Math.max(y1, y2);
+        List<Track> result = new java.util.ArrayList<>();
+        for (int i = 0; i < host.tracks().size(); i++) {
+            double laneTop = canvas.computeLaneY(i);
+            double laneBottom = laneTop + host.trackHeight();
+            if (laneTop < bottomY && laneBottom > topY) {
+                result.add(host.tracks().get(i));
+            }
+        }
+        return result;
     }
 
     /**
