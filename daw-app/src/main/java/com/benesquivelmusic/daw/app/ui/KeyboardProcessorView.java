@@ -87,6 +87,7 @@ public final class KeyboardProcessorView extends VBox {
     private final KeyboardProcessor.KeyboardEventListener keyboardListener;
     private final AnimationTimer playbackTimer;
     private int lastPressedNote = -1;
+    private boolean updatingControls;
 
     // Controls
     private final ComboBox<KeyboardPreset> presetCombo;
@@ -120,7 +121,11 @@ public final class KeyboardProcessorView extends VBox {
         presetCombo = new ComboBox<>(FXCollections.observableArrayList(KeyboardPreset.factoryPresets()));
         presetCombo.setCellFactory(_ -> new PresetCell());
         presetCombo.setButtonCell(new PresetCell());
-        presetCombo.getSelectionModel().selectFirst();
+        KeyboardPreset currentPreset = processor.getPreset();
+        presetCombo.getSelectionModel().select(currentPreset);
+        if (presetCombo.getSelectionModel().getSelectedIndex() < 0) {
+            presetCombo.getSelectionModel().selectFirst();
+        }
         presetCombo.setTooltip(new Tooltip("Select instrument preset"));
         presetCombo.setOnAction(_ -> onPresetChanged());
 
@@ -231,15 +236,23 @@ public final class KeyboardProcessorView extends VBox {
         KeyboardPreset selected = presetCombo.getValue();
         if (selected != null) {
             processor.setPreset(selected);
-            velocitySlider.setValue(selected.defaultVelocity());
-            curveCombo.getSelectionModel().select(selected.velocityCurve());
-            transposeSpinner.getValueFactory().setValue(selected.transpose());
+            updatingControls = true;
+            try {
+                velocitySlider.setValue(selected.defaultVelocity());
+                curveCombo.getSelectionModel().select(selected.velocityCurve());
+                transposeSpinner.getValueFactory().setValue(selected.transpose());
+            } finally {
+                updatingControls = false;
+            }
             resizeCanvas();
             paintKeyboard();
         }
     }
 
     private void onCurveChanged() {
+        if (updatingControls) {
+            return;
+        }
         VelocityCurve curve = curveCombo.getValue();
         if (curve != null) {
             processor.setPreset(processor.getPreset().withVelocityCurve(curve));
@@ -247,6 +260,9 @@ public final class KeyboardProcessorView extends VBox {
     }
 
     private void onTransposeChanged(int newValue) {
+        if (updatingControls) {
+            return;
+        }
         processor.setPreset(processor.getPreset().withTranspose(newValue));
     }
 

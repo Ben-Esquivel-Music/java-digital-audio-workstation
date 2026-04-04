@@ -46,8 +46,11 @@ public enum VelocityCurve {
     },
 
     /**
-     * Fixed velocity — all notes are output at exactly the configured
-     * velocity, regardless of input.
+     * Fixed velocity — the raw input is ignored and the preset's
+     * {@link KeyboardPreset#defaultVelocity() defaultVelocity} is used
+     * instead. The {@code apply()} implementation returns the input
+     * unchanged (identity); the {@link KeyboardProcessor} is responsible
+     * for substituting the configured default when this curve is active.
      */
     FIXED {
         @Override

@@ -8,6 +8,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.LongSupplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -70,6 +71,7 @@ public final class KeyboardProcessor {
     private final int channel;
     private final MidiClip clip;
     private final List<KeyboardEventListener> listeners = new CopyOnWriteArrayList<>();
+    private LongSupplier clock = System::currentTimeMillis;
 
     // Active note tracking
     private final boolean[] activeNotes = new boolean[128];
@@ -117,6 +119,7 @@ public final class KeyboardProcessor {
         for (int i = 0; i < 128; i++) {
             noteOnColumns[i] = -1;
         }
+        applyPresetToRenderer();
     }
 
     // ── Preset Management ──────────────────────────────────────────────
@@ -178,7 +181,12 @@ public final class KeyboardProcessor {
             return; // Out of MIDI range after transposition
         }
 
-        int mappedVelocity = p.velocityCurve().apply(velocity);
+        int mappedVelocity;
+        if (p.velocityCurve() == VelocityCurve.FIXED) {
+            mappedVelocity = p.defaultVelocity();
+        } else {
+            mappedVelocity = p.velocityCurve().apply(velocity);
+        }
         if (mappedVelocity < 1) {
             mappedVelocity = 1;
         }
@@ -202,7 +210,7 @@ public final class KeyboardProcessor {
 
         // Recording
         if (recording) {
-            long now = System.currentTimeMillis();
+            long now = clock.getAsLong();
             if (recordingStartTimeMs < 0) {
                 recordingStartTimeMs = now;
             }
@@ -245,7 +253,7 @@ public final class KeyboardProcessor {
 
         // Recording
         if (recording && noteOnColumns[transposed] >= 0) {
-            long now = System.currentTimeMillis();
+            long now = clock.getAsLong();
             int column = timestampToColumn(now - recordingStartTimeMs) + startColumnOffset;
             int startCol = noteOnColumns[transposed];
             int duration = Math.max(1, column - startCol);
@@ -382,7 +390,7 @@ public final class KeyboardProcessor {
             return;
         }
         this.tempo = tempo;
-        this.playbackStartTimeMs = System.currentTimeMillis();
+        this.playbackStartTimeMs = clock.getAsLong();
         this.playbackPositionColumn = -1;
         this.playing = true;
     }
@@ -397,6 +405,7 @@ public final class KeyboardProcessor {
         playing = false;
         playbackStartTimeMs = -1;
         allNotesOff();
+        renderer.allNotesOff();
     }
 
     /**
@@ -421,7 +430,7 @@ public final class KeyboardProcessor {
             return;
         }
 
-        long elapsed = System.currentTimeMillis() - playbackStartTimeMs;
+        long elapsed = clock.getAsLong() - playbackStartTimeMs;
         int currentColumn = timestampToColumn(elapsed);
 
         if (currentColumn <= playbackPositionColumn) {
@@ -439,7 +448,14 @@ public final class KeyboardProcessor {
         for (int col = playbackPositionColumn + 1; col <= currentColumn; col++) {
             for (MidiNoteData note : notes) {
                 if (note.startColumn() == col) {
-                    MidiEvent event = MidiEvent.noteOn(note.channel(), note.noteNumber(),
+                    int noteNum = note.noteNumber();
+                    synchronized (activeNotes) {
+                        if (!activeNotes[noteNum]) {
+                            activeNotes[noteNum] = true;
+                            activeNoteCount++;
+                        }
+                    }
+                    MidiEvent event = MidiEvent.noteOn(note.channel(), noteNum,
                             note.velocity());
                     try {
                         renderer.sendEvent(event);
@@ -449,7 +465,14 @@ public final class KeyboardProcessor {
                     notifyListeners(event);
                 }
                 if (note.endColumn() == col) {
-                    MidiEvent event = MidiEvent.noteOff(note.channel(), note.noteNumber());
+                    int noteNum = note.noteNumber();
+                    synchronized (activeNotes) {
+                        if (activeNotes[noteNum]) {
+                            activeNotes[noteNum] = false;
+                            activeNoteCount--;
+                        }
+                    }
+                    MidiEvent event = MidiEvent.noteOff(note.channel(), noteNum);
                     try {
                         renderer.sendEvent(event);
                     } catch (Exception e) {
@@ -517,6 +540,16 @@ public final class KeyboardProcessor {
      */
     public int getChannel() {
         return channel;
+    }
+
+    /**
+     * Replaces the system clock with a custom supplier.
+     * Package-private for testing; allows deterministic playback/recording tests.
+     *
+     * @param clock the clock supplier returning epoch milliseconds
+     */
+    void setClock(LongSupplier clock) {
+        this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
     /**

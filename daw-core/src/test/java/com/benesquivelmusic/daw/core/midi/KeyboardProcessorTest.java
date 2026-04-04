@@ -85,6 +85,16 @@ class KeyboardProcessorTest {
     }
 
     @Test
+    void shouldApplyInitialPresetToRenderer() {
+        // Constructor should have applied Grand Piano preset (bank=0, program=0)
+        assertThat(renderer.presetSelections).anySatisfy(ps -> {
+            assertThat(ps.channel()).isZero();
+            assertThat(ps.bank()).isZero();
+            assertThat(ps.program()).isZero();
+        });
+    }
+
+    @Test
     void shouldRejectNullPresetOnSet() {
         assertThatThrownBy(() -> processor.setPreset(null))
                 .isInstanceOf(NullPointerException.class);
@@ -206,6 +216,19 @@ class KeyboardProcessorTest {
         assertThat(event.data2()).isLessThan(64);
     }
 
+    @Test
+    void fixedCurveShouldUseDefaultVelocity() {
+        // Organ preset uses FIXED curve with defaultVelocity=100
+        processor.setPreset(KeyboardPreset.organ());
+        renderer.receivedEvents.clear();
+        processor.noteOn(60, 50); // raw velocity 50, but FIXED → defaultVelocity 100
+
+        MidiEvent event = renderer.receivedEvents.stream()
+                .filter(e -> e.type() == MidiEvent.Type.NOTE_ON)
+                .findFirst().orElseThrow();
+        assertThat(event.data2()).isEqualTo(100);
+    }
+
     // ── Recording ──────────────────────────────────────────────────────
 
     @Test
@@ -311,20 +334,54 @@ class KeyboardProcessorTest {
 
     @Test
     void advancePlaybackShouldTriggerNotesAtColumnZero() {
-        // Add a note starting at column 0
+        // Use a fake clock to make the test deterministic
+        long[] fakeTime = {1000L};
+        processor.setClock(() -> fakeTime[0]);
+
         processor.getClip().addNote(MidiNoteData.of(60, 0, 2, 100));
         renderer.receivedEvents.clear();
-        processor.startPlayback(120.0);
+        processor.startPlayback(120.0);  // captures fakeTime[0] = 1000
         assertThat(processor.isPlaying()).isTrue();
 
-        // First advancePlayback should trigger note-on for column 0
-        // (timestampToColumn will return 0 for very small elapsed time)
+        // advancePlayback with same time → column 0 (elapsed = 0)
         processor.advancePlayback();
 
         assertThat(renderer.receivedEvents).anySatisfy(e -> {
             assertThat(e.type()).isEqualTo(MidiEvent.Type.NOTE_ON);
             assertThat(e.data1()).isEqualTo(60);
         });
+    }
+
+    @Test
+    void playbackShouldUpdateActiveNotes() {
+        long[] fakeTime = {1000L};
+        processor.setClock(() -> fakeTime[0]);
+
+        processor.getClip().addNote(MidiNoteData.of(60, 0, 2, 100));
+        renderer.receivedEvents.clear();
+        processor.startPlayback(120.0);
+
+        // Advance to column 0 — note-on should mark note active
+        processor.advancePlayback();
+        assertThat(processor.isNoteActive(60)).isTrue();
+        assertThat(processor.getActiveNoteCount()).isEqualTo(1);
+
+        // Advance to column 2 (end of note) — note-off should deactivate
+        // At 120 BPM: 1 column = 0.125s = 125ms, column 2 = 250ms
+        fakeTime[0] = 1250L;
+        processor.advancePlayback();
+        assertThat(processor.isNoteActive(60)).isFalse();
+        assertThat(processor.getActiveNoteCount()).isZero();
+    }
+
+    @Test
+    void stopPlaybackShouldCallRendererAllNotesOff() {
+        processor.getClip().addNote(MidiNoteData.of(60, 0, 4, 100));
+        processor.startPlayback(120.0);
+        assertThat(processor.isPlaying()).isTrue();
+        renderer.allNotesOffCalled = false;
+        processor.stopPlayback();
+        assertThat(renderer.allNotesOffCalled).isTrue();
     }
 
     // ── Clip ───────────────────────────────────────────────────────────
@@ -471,6 +528,7 @@ class KeyboardProcessorTest {
 
         record PresetSelection(int channel, int bank, int program) {}
         final List<PresetSelection> presetSelections = new CopyOnWriteArrayList<>();
+        volatile boolean allNotesOffCalled;
 
         @Override public void initialize(double sampleRate, int bufferSize) {}
         @Override public SoundFontInfo loadSoundFont(Path path) { return new SoundFontInfo(0, path, List.of()); }
@@ -487,7 +545,7 @@ class KeyboardProcessorTest {
         @Override public void setGain(float gain) {}
         @Override public boolean isAvailable() { return true; }
         @Override public String getRendererName() { return "Stub"; }
-        @Override public void allNotesOff() {}
+        @Override public void allNotesOff() { allNotesOffCalled = true; }
         @Override public void close() {}
     }
 }
