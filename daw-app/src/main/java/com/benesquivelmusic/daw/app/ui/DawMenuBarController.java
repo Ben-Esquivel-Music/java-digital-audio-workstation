@@ -3,7 +3,6 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.project.DawProject;
-import com.benesquivelmusic.daw.core.transport.TransportState;
 
 import javafx.scene.control.Menu;
 import javafx.scene.control.MenuBar;
@@ -182,8 +181,6 @@ public final class DawMenuBarController {
 
         saveItem = menuItem("Save Project", DawIcon.DOWNLOAD,
                 DawAction.SAVE, host::onSaveProject);
-
-        new SeparatorMenuItem();
 
         MenuItem importSession = menuItem("Import Session\u2026", DawIcon.DOWNLOAD,
                 DawAction.IMPORT_SESSION, host::onImportSession);
