@@ -42,6 +42,7 @@ import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.control.Separator;
 import javafx.scene.control.TextField;
 import javafx.scene.control.Tooltip;
 import javafx.scene.input.KeyCombination;
@@ -153,6 +154,9 @@ public final class MainController {
     @FXML private Button zoomInButton;
     @FXML private Button zoomOutButton;
     @FXML private Button zoomToFitButton;
+    @FXML private Separator toolsSectionSeparator;
+    @FXML private Separator toolsZoomSeparator;
+    @FXML private Separator zoomProjectSeparator;
 
     private DawProject project;
     private PluginRegistry pluginRegistry;
@@ -343,6 +347,11 @@ public final class MainController {
         initializeToolbarContextMenus();
         initializeSidebarActions();
         createMenuBar();
+        selectionModel.setSelectionChangeListener(() -> {
+            if (menuBarController != null) {
+                menuBarController.syncMenuState();
+            }
+        });
         updateSidebarForActiveView();
 
         // Register keyboard shortcuts after the scene is available
@@ -903,7 +912,12 @@ public final class MainController {
         setNodeVisible(zoomOutButton, showTools);
         setNodeVisible(zoomToFitButton, showTools);
 
-        // Section labels and separators for TOOLS and ZOOM
+        // Separators around the TOOLS and ZOOM sections
+        setNodeVisible(toolsSectionSeparator, showTools);
+        setNodeVisible(toolsZoomSeparator, showTools);
+        setNodeVisible(zoomProjectSeparator, showTools);
+
+        // Section labels for TOOLS and ZOOM
         for (Node child : sidebarToolbar.getChildren()) {
             if (child instanceof Label label
                     && label.getStyleClass().contains("toolbar-section-label")) {
@@ -1560,16 +1574,25 @@ public final class MainController {
     @FXML
     private void onSaveProject() {
         projectLifecycleController.onSaveProject();
+        if (menuBarController != null) {
+            menuBarController.syncMenuState();
+        }
     }
 
     @FXML
     private void onNewProject() {
         projectLifecycleController.onNewProject();
+        if (menuBarController != null) {
+            menuBarController.syncMenuState();
+        }
     }
 
     @FXML
     private void onOpenProject() {
         projectLifecycleController.onOpenProject();
+        if (menuBarController != null) {
+            menuBarController.syncMenuState();
+        }
     }
 
     @FXML
@@ -1793,6 +1816,9 @@ public final class MainController {
             return;
         }
         clipboardManager.copyClips(selected);
+        if (menuBarController != null) {
+            menuBarController.syncMenuState();
+        }
         statusBarLabel.setText("Copied " + selected.size() + " clip(s)");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.COPY, 12));
     }
