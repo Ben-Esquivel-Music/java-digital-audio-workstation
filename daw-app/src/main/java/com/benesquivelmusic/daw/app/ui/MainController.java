@@ -1712,16 +1712,46 @@ public final class MainController {
             return;
         }
         double playhead = project.getTransport().getPositionInBeats();
+        List<Track> currentTracks = project.getTracks();
         List<Map.Entry<Track, AudioClip>> sourceEntries = new ArrayList<>();
         for (ClipboardEntry entry : entries) {
-            sourceEntries.add(Map.entry(entry.sourceTrack(), entry.clip()));
+            Track resolved = resolveTrack(entry.sourceTrack(), currentTracks);
+            if (resolved != null) {
+                sourceEntries.add(Map.entry(resolved, entry.clip()));
+            }
+        }
+        if (sourceEntries.isEmpty()) {
+            return;
         }
         undoManager.execute(new PasteClipsAction(sourceEntries, null, playhead));
         refreshArrangementCanvas();
         updateUndoRedoState();
-        statusBarLabel.setText("Pasted " + entries.size() + " clip(s) at beat " + String.format("%.1f", playhead));
+        statusBarLabel.setText("Pasted " + sourceEntries.size() + " clip(s) at beat " + String.format("%.1f", playhead));
         statusBarLabel.setGraphic(IconNode.of(DawIcon.PASTE, 12));
         projectDirty = true;
+    }
+
+    /**
+     * Resolves a clipboard source track against the current project track
+     * list. Returns the same track instance if it still exists, otherwise
+     * looks up by track ID, then falls back to the first track of the same
+     * type. Returns {@code null} if no suitable track is found.
+     */
+    private Track resolveTrack(Track source, List<Track> currentTracks) {
+        if (currentTracks.contains(source)) {
+            return source;
+        }
+        for (Track t : currentTracks) {
+            if (t.getId().equals(source.getId())) {
+                return t;
+            }
+        }
+        for (Track t : currentTracks) {
+            if (t.getType() == source.getType()) {
+                return t;
+            }
+        }
+        return null;
     }
 
     private void onDuplicateClips() {
