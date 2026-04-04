@@ -31,6 +31,7 @@ import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
 
+import javafx.animation.FadeTransition;
 import javafx.animation.Timeline;
 import javafx.fxml.FXML;
 import javafx.geometry.Insets;
@@ -422,6 +423,21 @@ public final class MainController {
                     @Override public void startTimeTicker() { animationController.startTimeTicker(); }
                     @Override public void pauseTimeTicker() { animationController.pauseTimeTicker(); }
                     @Override public void stopTimeTicker() { animationController.stopTimeTicker(); }
+                    @Override public void flashMidiActivity(com.benesquivelmusic.daw.core.track.Track track) {
+                        for (Node child : trackListPanel.getChildren()) {
+                            if (child.getUserData() == track) {
+                                Node armBtn = child.lookup(".track-arm-button");
+                                if (armBtn != null) {
+                                    FadeTransition flash = new FadeTransition(
+                                            Duration.millis(120), armBtn);
+                                    flash.setFromValue(0.4);
+                                    flash.setToValue(1.0);
+                                    flash.play();
+                                }
+                                break;
+                            }
+                        }
+                    }
                 });
     }
 

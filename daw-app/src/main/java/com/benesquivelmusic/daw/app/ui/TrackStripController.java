@@ -149,6 +149,7 @@ final class TrackStripController {
     HBox addTrackToUI(Track track, int uiIndex) {
         HBox trackItem = new HBox(8);
         trackItem.getStyleClass().add("track-item");
+        trackItem.setUserData(track);
         trackItem.setPadding(new Insets(6, 8, 6, 8));
         trackItem.setAlignment(Pos.CENTER_LEFT);
 

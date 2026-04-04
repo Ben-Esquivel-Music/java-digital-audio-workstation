@@ -112,6 +112,32 @@ class MidiRecorderTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    @Test
+    void shouldDefaultCountInDurationToZero() {
+        MidiClip clip = new MidiClip();
+        MidiRecorder recorder = new MidiRecorder(new StubMidiDevice(), clip, 120.0, 0);
+
+        assertThat(recorder.getCountInDurationUs()).isZero();
+    }
+
+    @Test
+    void shouldSetCountInDuration() {
+        MidiClip clip = new MidiClip();
+        MidiRecorder recorder = new MidiRecorder(new StubMidiDevice(), clip, 120.0, 0);
+        recorder.setCountInDurationUs(2_000_000L);
+
+        assertThat(recorder.getCountInDurationUs()).isEqualTo(2_000_000L);
+    }
+
+    @Test
+    void shouldRejectNegativeCountInDuration() {
+        MidiClip clip = new MidiClip();
+        MidiRecorder recorder = new MidiRecorder(new StubMidiDevice(), clip, 120.0, 0);
+
+        assertThatThrownBy(() -> recorder.setCountInDurationUs(-1))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     /**
      * Minimal stub for {@link javax.sound.midi.MidiDevice} to avoid depending
      * on real MIDI hardware in unit tests.

@@ -65,6 +65,14 @@ final class TransportController {
         void startTimeTicker();
         void pauseTimeTicker();
         void stopTimeTicker();
+
+        /**
+         * Flashes a MIDI activity indicator on the given track's strip.
+         * Called from the MIDI receiver thread via {@link javafx.application.Platform#runLater}.
+         *
+         * @param track the track that received MIDI activity
+         */
+        void flashMidiActivity(Track track);
     }
 
     private final DawProject project;
@@ -267,7 +275,7 @@ final class TransportController {
 
         // Start MIDI recording for armed MIDI tracks
         if (!armedMidiTracks.isEmpty()) {
-            startMidiRecording(armedMidiTracks);
+            startMidiRecording(armedMidiTracks, countIn);
         }
 
         // If no audio pipeline was started, transition transport to recording
@@ -338,11 +346,25 @@ final class TransportController {
 
     /**
      * Creates and starts a {@link MidiRecorder} for each armed MIDI track.
+     *
+     * <p>When a count-in mode is active, the recorder's count-in duration is
+     * set so that notes played during the pre-roll are discarded. An event
+     * listener is registered on each recorder to flash a MIDI activity
+     * indicator on the track's arm button during capture.</p>
+     *
+     * @param midiTracks the armed MIDI tracks
+     * @param countIn    the count-in mode (may be {@link CountInMode#OFF})
      */
-    private void startMidiRecording(List<Track> midiTracks) {
+    private void startMidiRecording(List<Track> midiTracks, CountInMode countIn) {
         Transport transport = project.getTransport();
         double startBeat = transport.getPositionInBeats();
         int startColumnOffset = (int) Math.round(startBeat / MidiRecorder.BEATS_PER_COLUMN);
+
+        // Compute count-in duration in microseconds
+        int beatsPerBar = transport.getTimeSignatureNumerator();
+        int countInBeats = countIn.getTotalBeats(beatsPerBar);
+        double countInSeconds = countInBeats * (60.0 / transport.getTempo());
+        long countInDurationUs = Math.round(countInSeconds * 1_000_000L);
 
         for (Track track : midiTracks) {
             MidiDevice device = resolveMidiDevice(track.getMidiInputDeviceName());
@@ -357,6 +379,12 @@ final class TransportController {
             MidiRecorder recorder = new MidiRecorder(
                     device, track.getMidiClip(), transport.getTempo(), 0);
             recorder.setStartColumnOffset(startColumnOffset);
+            recorder.setCountInDurationUs(countInDurationUs);
+
+            // Wire MIDI activity indicator — flash the track strip on each event
+            Track capturedTrack = track;
+            recorder.addEventListener(_ -> javafx.application.Platform.runLater(
+                    () -> host.flashMidiActivity(capturedTrack)));
 
             try {
                 recorder.startRecording();
