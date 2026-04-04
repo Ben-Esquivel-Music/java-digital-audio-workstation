@@ -838,7 +838,7 @@ public final class MainController {
                     @Override public boolean canUndo() { return undoManager.canUndo(); }
                     @Override public boolean canRedo() { return undoManager.canRedo(); }
                     @Override public boolean hasClipboardContent() { return clipboardManager.hasContent(); }
-                    @Override public boolean hasSelection() { return !selectionModel.getSelectedClips().isEmpty(); }
+                    @Override public boolean hasSelection() { return selectionModel.hasClipSelection(); }
                     @Override public DawView activeView() {
                         return viewNavigationController != null
                                 ? viewNavigationController.getActiveView() : activeView;

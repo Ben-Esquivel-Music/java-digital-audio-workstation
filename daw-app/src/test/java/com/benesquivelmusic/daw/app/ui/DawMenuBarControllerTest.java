@@ -469,6 +469,21 @@ class DawMenuBarControllerTest {
         });
     }
 
+    // ── Idempotent build ────────────────────────────────────────────────────
+
+    @Test
+    void buildShouldBeIdempotent() throws Exception {
+        runOnFxThread(() -> {
+            StubHost host = new StubHost();
+            DawMenuBarController controller =
+                    new DawMenuBarController(host, freshKeyBindingManager());
+            controller.build();
+            controller.build();
+
+            assertThat(controller.getMenuBar().getMenus()).hasSize(5);
+        });
+    }
+
     // ── Constants ────────────────────────────────────────────────────────────
 
     @Test
