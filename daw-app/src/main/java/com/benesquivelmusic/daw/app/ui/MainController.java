@@ -1394,6 +1394,7 @@ public final class MainController {
             @Override public void execute() {
                 if (initialExecute) {
                     track = project.createMidiTrack(name);
+                    track.setMidiInputDeviceName(selectedMidi.getName());
                     trackItem = trackStripController.addTrackToUI(track);
                     initialExecute = false;
                 } else {

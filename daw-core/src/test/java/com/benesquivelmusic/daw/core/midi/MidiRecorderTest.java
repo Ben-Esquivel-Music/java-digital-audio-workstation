@@ -86,6 +86,32 @@ class MidiRecorderTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    @Test
+    void shouldDefaultStartColumnOffsetToZero() {
+        MidiClip clip = new MidiClip();
+        MidiRecorder recorder = new MidiRecorder(new StubMidiDevice(), clip, 120.0, 0);
+
+        assertThat(recorder.getStartColumnOffset()).isZero();
+    }
+
+    @Test
+    void shouldSetStartColumnOffset() {
+        MidiClip clip = new MidiClip();
+        MidiRecorder recorder = new MidiRecorder(new StubMidiDevice(), clip, 120.0, 0);
+        recorder.setStartColumnOffset(16);
+
+        assertThat(recorder.getStartColumnOffset()).isEqualTo(16);
+    }
+
+    @Test
+    void shouldRejectNegativeStartColumnOffset() {
+        MidiClip clip = new MidiClip();
+        MidiRecorder recorder = new MidiRecorder(new StubMidiDevice(), clip, 120.0, 0);
+
+        assertThatThrownBy(() -> recorder.setStartColumnOffset(-1))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     /**
      * Minimal stub for {@link javax.sound.midi.MidiDevice} to avoid depending
      * on real MIDI hardware in unit tests.

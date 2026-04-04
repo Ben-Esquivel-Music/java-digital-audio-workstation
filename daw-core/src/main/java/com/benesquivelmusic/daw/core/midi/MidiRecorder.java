@@ -84,6 +84,7 @@ public final class MidiRecorder {
     // Active note tracking: index = MIDI note number, value = start column (-1 = inactive)
     private final int[] activeNoteStarts = new int[128];
     private final int[] activeNoteVelocities = new int[128];
+    private int startColumnOffset;
 
     /**
      * Creates a new MIDI recorder.
@@ -146,6 +147,31 @@ public final class MidiRecorder {
      */
     public void removeEventListener(RecordingEventListener listener) {
         eventListeners.remove(listener);
+    }
+
+    /**
+     * Sets the column offset applied to all recorded note start positions.
+     *
+     * <p>Use this to position recorded notes relative to the transport's
+     * current beat when recording starts. For example, if recording starts
+     * at beat 4.0 and each column is 0.25 beats, the offset is 16.</p>
+     *
+     * @param offset the column offset (must be &ge; 0)
+     */
+    public void setStartColumnOffset(int offset) {
+        if (offset < 0) {
+            throw new IllegalArgumentException("startColumnOffset must be >= 0: " + offset);
+        }
+        this.startColumnOffset = offset;
+    }
+
+    /**
+     * Returns the column offset applied to recorded note start positions.
+     *
+     * @return the column offset
+     */
+    public int getStartColumnOffset() {
+        return startColumnOffset;
     }
 
     /**
@@ -299,7 +325,7 @@ public final class MidiRecorder {
                 MidiEvent event = MidiEvent.noteOn(msgChannel, noteNumber, velocity);
                 notifyEventReceived(event);
 
-                int column = timestampToColumn(relativeUs);
+                int column = timestampToColumn(relativeUs) + startColumnOffset;
                 activeNoteStarts[noteNumber] = column;
                 activeNoteVelocities[noteNumber] = velocity;
 
@@ -311,7 +337,7 @@ public final class MidiRecorder {
 
                 if (activeNoteStarts[noteNumber] >= 0) {
                     int startColumn = activeNoteStarts[noteNumber];
-                    int endColumn = timestampToColumn(relativeUs);
+                    int endColumn = timestampToColumn(relativeUs) + startColumnOffset;
                     int duration = Math.max(1, endColumn - startColumn);
                     MidiNoteData note = new MidiNoteData(noteNumber, startColumn,
                             duration, activeNoteVelocities[noteNumber], channel);
