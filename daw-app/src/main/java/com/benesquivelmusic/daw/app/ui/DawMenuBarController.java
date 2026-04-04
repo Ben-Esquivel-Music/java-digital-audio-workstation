@@ -157,6 +157,8 @@ public final class DawMenuBarController {
         saveItem.setDisable(!dirty);
         exportSessionItem.setDisable(!hasTracks);
 
+        importAudioFileItem.setDisable(false);
+
         undoItem.setDisable(!canUndo);
         redoItem.setDisable(!canRedo);
         copyItem.setDisable(!hasSel);
@@ -187,7 +189,15 @@ public final class DawMenuBarController {
         exportSessionItem = menuItem("Export Session\u2026", DawIcon.UPLOAD,
                 DawAction.EXPORT_SESSION, host::onExportSession);
 
-        importAudioFileItem = menuItem("Import Audio File\u2026", DawIcon.WAVEFORM,
+        
+      
+      
+      
+      
+      
+      
+      
+      = menuItem("Import Audio File\u2026", DawIcon.WAVEFORM,
                 DawAction.IMPORT_AUDIO_FILE, host::onImportAudioFile);
 
         fileMenu.getItems().addAll(
