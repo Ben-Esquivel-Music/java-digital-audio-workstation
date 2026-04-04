@@ -79,6 +79,8 @@ class DitherProcessorTest {
     void shouldRejectInvalidBitDepth() {
         assertThatThrownBy(() -> new DitherProcessor(1, 0))
                 .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new DitherProcessor(1, 1))
+                .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new DitherProcessor(1, 33))
                 .isInstanceOf(IllegalArgumentException.class);
     }

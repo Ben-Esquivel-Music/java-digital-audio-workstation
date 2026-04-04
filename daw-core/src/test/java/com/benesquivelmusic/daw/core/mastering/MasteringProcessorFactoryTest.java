@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class MasteringProcessorFactoryTest {
 
@@ -170,5 +171,20 @@ class MasteringProcessorFactoryTest {
                 assertThat(Float.isFinite(output[ch][i])).isTrue();
             }
         }
+    }
+
+    @Test
+    void shouldRejectNonStereoChannelsForStereoImaging() {
+        MasteringStageConfig config = MasteringStageConfig.of(
+                MasteringStageType.STEREO_IMAGING, "Stereo Width",
+                Map.of("width", 1.3));
+
+        assertThatThrownBy(() -> MasteringProcessorFactory.createProcessor(config, 1, SAMPLE_RATE))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("STEREO_IMAGING");
+
+        assertThatThrownBy(() -> MasteringProcessorFactory.createProcessor(config, 4, SAMPLE_RATE))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("STEREO_IMAGING");
     }
 }

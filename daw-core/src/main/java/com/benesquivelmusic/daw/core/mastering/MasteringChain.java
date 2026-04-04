@@ -13,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.logging.Logger;
 
 /**
  * An ordered mastering signal chain with preset management, per-stage
@@ -33,6 +34,8 @@ import java.util.Objects;
  * </ul>
  */
 public final class MasteringChain implements AudioProcessor {
+
+    private static final Logger LOG = Logger.getLogger(MasteringChain.class.getName());
 
     /** Default number of channels for stereo mastering. */
     private static final int DEFAULT_CHANNELS = 2;
@@ -81,8 +84,11 @@ public final class MasteringChain implements AudioProcessor {
     private boolean chainBypassed;
     private double referenceGainDb;
     private float[][][] intermediateBuffers;
+    private volatile boolean intermediateBufferWarningLogged;
 
-    // Per-stage metering data (written on audio thread, read on UI thread)
+    // Per-stage metering data: snapshot-publish pattern.
+    // Audio thread writes to the snapshot arrays; UI thread reads them.
+    // Each mutator (add/insert/remove) publishes new arrays via volatile ref.
     private volatile double[] stageInputPeakDb;
     private volatile double[] stageOutputPeakDb;
     private volatile double[] stageGainReductionDb;
@@ -109,16 +115,21 @@ public final class MasteringChain implements AudioProcessor {
     /**
      * Adds a stage to the end of the mastering chain.
      *
+     * <p>Metering arrays are re-allocated to match the new stage count.</p>
+     *
      * @param type      the mastering stage type
      * @param name      the display name
      * @param processor the audio processor
      */
     public void addStage(MasteringStageType type, String name, AudioProcessor processor) {
         stages.add(new Stage(type, name, processor));
+        reallocateMeteringArrays();
     }
 
     /**
      * Inserts a stage at the specified index.
+     *
+     * <p>Metering arrays are re-allocated to match the new stage count.</p>
      *
      * @param index     the insertion index
      * @param type      the mastering stage type
@@ -128,16 +139,21 @@ public final class MasteringChain implements AudioProcessor {
     public void insertStage(int index, MasteringStageType type, String name,
                             AudioProcessor processor) {
         stages.add(index, new Stage(type, name, processor));
+        reallocateMeteringArrays();
     }
 
     /**
      * Removes the stage at the specified index.
      *
+     * <p>Metering arrays are re-allocated to match the new stage count.</p>
+     *
      * @param index the index of the stage to remove
      * @return the removed stage
      */
     public Stage removeStage(int index) {
-        return stages.remove(index);
+        Stage removed = stages.remove(index);
+        reallocateMeteringArrays();
+        return removed;
     }
 
     /**
@@ -223,6 +239,10 @@ public final class MasteringChain implements AudioProcessor {
      * Updates per-stage metering data (input/output peak levels and
      * gain reduction) after processing each active stage.</p>
      *
+     * <p>This method is real-time safe when intermediate buffers have been
+     * pre-allocated via {@link #allocateIntermediateBuffers(int, int)}
+     * and metering arrays are pre-allocated via stage mutations.</p>
+     *
      * @param inputBuffer  input audio data {@code [channel][frame]}
      * @param outputBuffer output audio data {@code [channel][frame]}
      * @param numFrames    the number of frames to process
@@ -235,52 +255,76 @@ public final class MasteringChain implements AudioProcessor {
         }
 
         boolean hasSolo = stages.stream().anyMatch(Stage::isSolo);
-        List<Stage> activeStages = new ArrayList<>();
-        for (Stage stage : stages) {
-            if (hasSolo) {
-                if (stage.isSolo()) {
-                    activeStages.add(stage);
-                }
-            } else if (!stage.isBypassed()) {
-                activeStages.add(stage);
-            }
-        }
 
-        if (activeStages.isEmpty()) {
-            copyBuffer(inputBuffer, outputBuffer, numFrames);
-            return;
-        }
-
-        ensureMeteringArrays();
+        // Snapshot metering arrays (volatile read once)
+        double[] inputPeaks = stageInputPeakDb;
+        double[] outputPeaks = stageOutputPeakDb;
+        double[] gainReductions = stageGainReductionDb;
 
         float[][] currentInput = inputBuffer;
-        for (int i = 0; i < activeStages.size(); i++) {
-            Stage stage = activeStages.get(i);
-            int stageIndex = stages.indexOf(stage);
+        int activeIndex = 0;
+        for (int stageIndex = 0; stageIndex < stages.size(); stageIndex++) {
+            Stage stage = stages.get(stageIndex);
+
+            // Skip inactive stages
+            if (hasSolo) {
+                if (!stage.isSolo()) continue;
+            } else if (stage.isBypassed()) {
+                continue;
+            }
 
             float[][] currentOutput;
-            if (i == activeStages.size() - 1) {
+            // Determine if this is the last active stage by scanning ahead
+            boolean isLastActive = isLastActiveStage(stageIndex, hasSolo);
+            if (isLastActive) {
                 currentOutput = outputBuffer;
-            } else if (intermediateBuffers != null && i < intermediateBuffers.length) {
-                currentOutput = intermediateBuffers[i];
+            } else if (intermediateBuffers != null && activeIndex < intermediateBuffers.length) {
+                currentOutput = intermediateBuffers[activeIndex];
                 clearBuffer(currentOutput, numFrames);
             } else {
-                currentOutput = new float[outputBuffer.length][numFrames];
+                // Intermediate buffers not pre-allocated — log warning once
+                if (!intermediateBufferWarningLogged) {
+                    intermediateBufferWarningLogged = true;
+                    LOG.warning("Intermediate buffers not pre-allocated for MasteringChain; "
+                            + "call allocateIntermediateBuffers() before processing");
+                }
+                currentOutput = outputBuffer;
             }
 
             // Measure input peak level
-            updateInputPeak(stageIndex, currentInput, numFrames);
+            updatePeak(inputPeaks, stageIndex, currentInput, numFrames);
 
             stage.getProcessor().process(currentInput, currentOutput, numFrames);
 
             // Measure output peak level
-            updateOutputPeak(stageIndex, currentOutput, numFrames);
+            updatePeak(outputPeaks, stageIndex, currentOutput, numFrames);
 
             // Read gain reduction from dynamics processors
-            updateGainReduction(stageIndex, stage.getProcessor());
+            updateGainReduction(gainReductions, stageIndex, stage.getProcessor());
 
             currentInput = currentOutput;
+            activeIndex++;
         }
+
+        // If no stages were active, pass through
+        if (activeIndex == 0) {
+            copyBuffer(inputBuffer, outputBuffer, numFrames);
+        }
+    }
+
+    /**
+     * Returns whether the stage at the given index is the last active stage.
+     */
+    private boolean isLastActiveStage(int fromIndex, boolean hasSolo) {
+        for (int i = fromIndex + 1; i < stages.size(); i++) {
+            Stage s = stages.get(i);
+            if (hasSolo) {
+                if (s.isSolo()) return false;
+            } else if (!s.isBypassed()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -424,36 +468,36 @@ public final class MasteringChain implements AudioProcessor {
         }
     }
 
-    // --- Metering helpers (called on audio thread) ---
+    // --- Metering helpers ---
 
-    private void ensureMeteringArrays() {
+    /**
+     * Allocates new metering arrays matching the current stage count.
+     * Called from add/insert/remove stage — never from the audio thread.
+     * Publishes via volatile reference for lock-free cross-thread reads.
+     */
+    private void reallocateMeteringArrays() {
         int n = stages.size();
-        if (stageInputPeakDb == null || stageInputPeakDb.length != n) {
-            stageInputPeakDb = new double[n];
-            stageOutputPeakDb = new double[n];
-            stageGainReductionDb = new double[n];
-            Arrays.fill(stageInputPeakDb, -120.0);
-            Arrays.fill(stageOutputPeakDb, -120.0);
-        }
+        double[] newInput = new double[n];
+        double[] newOutput = new double[n];
+        double[] newGr = new double[n];
+        Arrays.fill(newInput, -120.0);
+        Arrays.fill(newOutput, -120.0);
+        // Publish all three via volatile writes
+        stageInputPeakDb = newInput;
+        stageOutputPeakDb = newOutput;
+        stageGainReductionDb = newGr;
     }
 
-    private void updateInputPeak(int stageIndex, float[][] buffer, int numFrames) {
-        double[] peaks = stageInputPeakDb;
-        if (peaks != null && stageIndex < peaks.length) {
+    private static void updatePeak(double[] peaks, int stageIndex,
+                                    float[][] buffer, int numFrames) {
+        if (peaks != null && stageIndex >= 0 && stageIndex < peaks.length) {
             peaks[stageIndex] = measurePeakDb(buffer, numFrames);
         }
     }
 
-    private void updateOutputPeak(int stageIndex, float[][] buffer, int numFrames) {
-        double[] peaks = stageOutputPeakDb;
-        if (peaks != null && stageIndex < peaks.length) {
-            peaks[stageIndex] = measurePeakDb(buffer, numFrames);
-        }
-    }
-
-    private void updateGainReduction(int stageIndex, AudioProcessor processor) {
-        double[] gr = stageGainReductionDb;
-        if (gr != null && stageIndex < gr.length) {
+    private static void updateGainReduction(double[] gr, int stageIndex,
+                                             AudioProcessor processor) {
+        if (gr != null && stageIndex >= 0 && stageIndex < gr.length) {
             if (processor instanceof GainReductionProvider provider) {
                 gr[stageIndex] = provider.getGainReductionDb();
             } else {

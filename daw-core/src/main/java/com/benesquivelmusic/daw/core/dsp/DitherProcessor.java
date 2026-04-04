@@ -33,8 +33,8 @@ public final class DitherProcessor implements AudioProcessor {
         if (channels <= 0) {
             throw new IllegalArgumentException("channels must be positive: " + channels);
         }
-        if (targetBitDepth < 1 || targetBitDepth > 32) {
-            throw new IllegalArgumentException("targetBitDepth must be in [1, 32]: " + targetBitDepth);
+        if (targetBitDepth < 2 || targetBitDepth > 32) {
+            throw new IllegalArgumentException("targetBitDepth must be in [2, 32]: " + targetBitDepth);
         }
         this.channels = channels;
         this.targetBitDepth = targetBitDepth;
@@ -52,8 +52,8 @@ public final class DitherProcessor implements AudioProcessor {
         if (channels <= 0) {
             throw new IllegalArgumentException("channels must be positive: " + channels);
         }
-        if (targetBitDepth < 1 || targetBitDepth > 32) {
-            throw new IllegalArgumentException("targetBitDepth must be in [1, 32]: " + targetBitDepth);
+        if (targetBitDepth < 2 || targetBitDepth > 32) {
+            throw new IllegalArgumentException("targetBitDepth must be in [2, 32]: " + targetBitDepth);
         }
         this.channels = channels;
         this.targetBitDepth = targetBitDepth;
@@ -99,8 +99,8 @@ public final class DitherProcessor implements AudioProcessor {
      * @param targetBitDepth the target bit depth (e.g., 16 or 24)
      */
     public void setTargetBitDepth(int targetBitDepth) {
-        if (targetBitDepth < 1 || targetBitDepth > 32) {
-            throw new IllegalArgumentException("targetBitDepth must be in [1, 32]: " + targetBitDepth);
+        if (targetBitDepth < 2 || targetBitDepth > 32) {
+            throw new IllegalArgumentException("targetBitDepth must be in [2, 32]: " + targetBitDepth);
         }
         this.targetBitDepth = targetBitDepth;
     }

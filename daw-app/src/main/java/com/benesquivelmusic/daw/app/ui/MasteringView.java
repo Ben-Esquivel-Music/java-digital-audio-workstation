@@ -82,6 +82,10 @@ public final class MasteringView extends VBox {
 
     /**
      * Creates a new mastering view with an empty mastering chain.
+     *
+     * <p><strong>Note:</strong> Uses default sample rate (44100 Hz) and channels (2).
+     * Prefer {@link #MasteringView(MasteringChain, double, int)} with the engine's
+     * actual audio format for correct processor configuration.</p>
      */
     public MasteringView() {
         this(new MasteringChain(), DEFAULT_SAMPLE_RATE, DEFAULT_CHANNELS);
@@ -89,6 +93,10 @@ public final class MasteringView extends VBox {
 
     /**
      * Creates a new mastering view bound to the given mastering chain.
+     *
+     * <p><strong>Note:</strong> Uses default sample rate (44100 Hz) and channels (2).
+     * Prefer {@link #MasteringView(MasteringChain, double, int)} with the engine's
+     * actual audio format for correct processor configuration.</p>
      *
      * @param masteringChain the mastering chain to visualize and control
      */
@@ -179,6 +187,13 @@ public final class MasteringView extends VBox {
         meterSection.setPadding(new Insets(0, 10, 8, 10));
 
         getChildren().addAll(headerBar, new Separator(), stageScroll, meterSection, statusLabel);
+
+        // Stop the meter timer when the view is removed from the scene
+        sceneProperty().addListener((obs, oldScene, newScene) -> {
+            if (newScene == null) {
+                stopMeterTimer();
+            }
+        });
     }
 
     /**
@@ -409,11 +424,12 @@ public final class MasteringView extends VBox {
 
             @Override
             public void handle(long now) {
-                if (now - lastUpdate < METER_UPDATE_INTERVAL_NS) {
+                long elapsed = now - lastUpdate;
+                if (elapsed < METER_UPDATE_INTERVAL_NS) {
                     return;
                 }
                 lastUpdate = now;
-                updateMeters();
+                updateMeters(elapsed);
             }
         };
         meterTimer.start();
@@ -433,8 +449,10 @@ public final class MasteringView extends VBox {
      * Reads metering data from the mastering chain and updates UI labels
      * and meters. Called from the JavaFX application thread by the
      * animation timer.
+     *
+     * @param deltaNanos the actual elapsed time in nanoseconds since last update
      */
-    private void updateMeters() {
+    private void updateMeters(long deltaNanos) {
         int stageCount = masteringChain.size();
         for (int i = 0; i < Math.min(stageCount, grLabels.size()); i++) {
             double gr = masteringChain.getStageGainReductionDb(i);
@@ -445,7 +463,7 @@ public final class MasteringView extends VBox {
                     ? Math.pow(10.0, outputDb / 20.0)
                     : 0.0;
             LevelData levelData = new LevelData(linear, linear, outputDb, outputDb, outputDb > 0.0);
-            levelMeters.get(i).update(levelData, METER_UPDATE_INTERVAL_NS);
+            levelMeters.get(i).update(levelData, deltaNanos);
         }
     }
 }

@@ -41,6 +41,7 @@ public final class MasteringProcessorFactory {
      * @param channels   the number of audio channels (typically 2 for stereo mastering)
      * @param sampleRate the sample rate in Hz
      * @return a configured audio processor
+     * @throws IllegalArgumentException if STEREO_IMAGING is requested with channels ≠ 2
      */
     public static AudioProcessor createProcessor(MasteringStageConfig config,
                                                   int channels, double sampleRate) {
@@ -49,7 +50,7 @@ public final class MasteringProcessorFactory {
             case EQ_CORRECTIVE  -> createCorrectiveEq(config.parameters(), channels, sampleRate);
             case COMPRESSION    -> createCompressor(config.parameters(), channels, sampleRate);
             case EQ_TONAL       -> createTonalEq(config.parameters(), channels, sampleRate);
-            case STEREO_IMAGING -> createStereoImager(config.parameters(), sampleRate);
+            case STEREO_IMAGING -> createStereoImager(config.parameters(), channels, sampleRate);
             case LIMITING       -> createLimiter(config.parameters(), channels, sampleRate);
             case DITHERING      -> createDitherer(config.parameters(), channels);
         };
@@ -101,7 +102,11 @@ public final class MasteringProcessorFactory {
     }
 
     private static AudioProcessor createStereoImager(Map<String, Double> params,
-                                                      double sampleRate) {
+                                                      int channels, double sampleRate) {
+        if (channels != 2) {
+            throw new IllegalArgumentException(
+                    "STEREO_IMAGING requires exactly 2 channels, got " + channels);
+        }
         StereoImagerProcessor imager = new StereoImagerProcessor(sampleRate);
         if (params.containsKey("width")) {
             imager.setWidth(params.get("width"));
