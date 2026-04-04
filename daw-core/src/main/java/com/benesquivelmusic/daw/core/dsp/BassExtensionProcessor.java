@@ -67,12 +67,12 @@ public final class BassExtensionProcessor implements AudioProcessor {
     private double mix;
 
     // Per-channel lowpass filters for bass isolation
-    private BiquadFilter[] bassIsolationLp;
+    private volatile BiquadFilter[] bassIsolationLp;
 
     // Per-channel bandpass filters for harmonic shaping (one per channel)
     // Passes the harmonic range: crossover to harmonicOrder × crossover
-    private BiquadFilter[] harmonicBpLow;
-    private BiquadFilter[] harmonicBpHigh;
+    private volatile BiquadFilter[] harmonicBpLow;
+    private volatile BiquadFilter[] harmonicBpHigh;
 
     /**
      * Creates a bass extension processor with default settings.
@@ -102,14 +102,26 @@ public final class BassExtensionProcessor implements AudioProcessor {
 
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
-        int activeCh = Math.min(channels, inputBuffer.length);
+        int activeCh = Math.min(channels, Math.min(inputBuffer.length, outputBuffer.length));
+
+        if (mix == 0.0 || harmonicLevel == 0.0) {
+            for (int ch = 0; ch < activeCh; ch++) {
+                System.arraycopy(inputBuffer[ch], 0, outputBuffer[ch], 0, numFrames);
+            }
+            return;
+        }
+
+        // Snapshot volatile filter references for safe concurrent access
+        BiquadFilter[] lpFilters = bassIsolationLp;
+        BiquadFilter[] bpLow = harmonicBpLow;
+        BiquadFilter[] bpHigh = harmonicBpHigh;
 
         for (int ch = 0; ch < activeCh; ch++) {
             for (int frame = 0; frame < numFrames; frame++) {
                 float dry = inputBuffer[ch][frame];
 
                 // 1. Isolate bass via lowpass filter
-                float bass = bassIsolationLp[ch].processSample(dry);
+                float bass = lpFilters[ch].processSample(dry);
 
                 // 2. Generate harmonics via half-wave rectification
                 //    Half-wave rectification of a sinusoid produces a DC component,
@@ -129,8 +141,8 @@ public final class BassExtensionProcessor implements AudioProcessor {
 
                 // 4. Bandpass filter harmonics to suppress sub-harmonic artifacts
                 //    and high-order distortion
-                harmonicSignal = harmonicBpLow[ch].processSample(harmonicSignal);
-                harmonicSignal = harmonicBpHigh[ch].processSample(harmonicSignal);
+                harmonicSignal = bpLow[ch].processSample(harmonicSignal);
+                harmonicSignal = bpHigh[ch].processSample(harmonicSignal);
 
                 // 5. Scale harmonics by harmonic level
                 float enhanced = dry + harmonicSignal * (float) harmonicLevel;
@@ -284,7 +296,7 @@ public final class BassExtensionProcessor implements AudioProcessor {
                     BUTTERWORTH_Q, 0);
         }
 
-        // Swap references atomically (single write per field)
+        // Publish fully-populated arrays via volatile writes
         bassIsolationLp = newBassIsolationLp;
         harmonicBpLow = newHarmonicBpLow;
         harmonicBpHigh = newHarmonicBpHigh;
