@@ -342,4 +342,48 @@ class TrackTest {
 
         assertThat(copy.getSoundFontAssignment()).isNull();
     }
+
+    // ── MIDI input device name tests ────────────────────────────────────────
+
+    @Test
+    void shouldDefaultToNoMidiInputDeviceName() {
+        Track track = new Track("MIDI 1", TrackType.MIDI);
+        assertThat(track.getMidiInputDeviceName()).isNull();
+    }
+
+    @Test
+    void shouldSetMidiInputDeviceName() {
+        Track track = new Track("MIDI 1", TrackType.MIDI);
+        track.setMidiInputDeviceName("USB MIDI Controller");
+
+        assertThat(track.getMidiInputDeviceName()).isEqualTo("USB MIDI Controller");
+    }
+
+    @Test
+    void shouldClearMidiInputDeviceName() {
+        Track track = new Track("MIDI 1", TrackType.MIDI);
+        track.setMidiInputDeviceName("USB MIDI Controller");
+        track.setMidiInputDeviceName(null);
+
+        assertThat(track.getMidiInputDeviceName()).isNull();
+    }
+
+    @Test
+    void shouldDuplicateTrackWithMidiInputDeviceName() {
+        Track original = new Track("MIDI 1", TrackType.MIDI);
+        original.setMidiInputDeviceName("USB MIDI Controller");
+
+        Track copy = original.duplicate("MIDI 1 (copy)");
+
+        assertThat(copy.getMidiInputDeviceName()).isEqualTo("USB MIDI Controller");
+    }
+
+    @Test
+    void shouldDuplicateTrackWithoutMidiInputDeviceName() {
+        Track original = new Track("MIDI 1", TrackType.MIDI);
+
+        Track copy = original.duplicate("MIDI 1 (copy)");
+
+        assertThat(copy.getMidiInputDeviceName()).isNull();
+    }
 }

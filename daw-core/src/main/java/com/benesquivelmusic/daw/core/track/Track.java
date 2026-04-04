@@ -49,6 +49,7 @@ public final class Track {
     private float[][] frozenAudioData;
     private final TakeComping takeComping = new TakeComping();
     private SoundFontAssignment soundFontAssignment;
+    private String midiInputDeviceName;
 
     /**
      * Creates a new track with the given name and type.
@@ -322,6 +323,26 @@ public final class Track {
         this.soundFontAssignment = soundFontAssignment;
     }
 
+    /**
+     * Returns the name of the MIDI input device assigned to this track, or
+     * {@code null} if no MIDI input device has been assigned.
+     *
+     * @return the MIDI input device name, or {@code null}
+     */
+    public String getMidiInputDeviceName() {
+        return midiInputDeviceName;
+    }
+
+    /**
+     * Assigns a MIDI input device to this track by name. Pass {@code null}
+     * to clear the assignment.
+     *
+     * @param midiInputDeviceName the MIDI device name, or {@code null}
+     */
+    public void setMidiInputDeviceName(String midiInputDeviceName) {
+        this.midiInputDeviceName = midiInputDeviceName;
+    }
+
     // ── Folder track support ────────────────────────────────────────────────
 
     /**
@@ -501,6 +522,7 @@ public final class Track {
         copy.setInputDeviceIndex(inputDeviceIndex);
         copy.setColor(color);
         copy.setSoundFontAssignment(soundFontAssignment);
+        copy.setMidiInputDeviceName(midiInputDeviceName);
         for (AudioClip clip : clips) {
             copy.addClip(clip.duplicate());
         }

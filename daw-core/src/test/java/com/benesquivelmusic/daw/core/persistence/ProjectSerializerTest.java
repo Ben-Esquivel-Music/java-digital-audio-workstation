@@ -243,4 +243,27 @@ class ProjectSerializerTest {
 
         assertThat(xml).doesNotContain("room-configuration");
     }
+
+    @Test
+    void shouldSerializeMidiInputDeviceName() throws IOException {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track midi = project.createMidiTrack("Keys");
+        midi.setMidiInputDeviceName("USB MIDI Controller");
+
+        ProjectSerializer serializer = new ProjectSerializer();
+        String xml = serializer.serialize(project);
+
+        assertThat(xml).contains("midi-input-device=\"USB MIDI Controller\"");
+    }
+
+    @Test
+    void shouldNotSerializeMidiInputDeviceNameWhenNull() throws IOException {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        project.createMidiTrack("Synth");
+
+        ProjectSerializer serializer = new ProjectSerializer();
+        String xml = serializer.serialize(project);
+
+        assertThat(xml).doesNotContain("midi-input-device");
+    }
 }

@@ -68,7 +68,7 @@ public final class MidiRecorder {
     /**
      * The number of beats each grid column represents (sixteenth note = 0.25).
      */
-    private static final double BEATS_PER_COLUMN = 0.25;
+    public static final double BEATS_PER_COLUMN = 0.25;
 
     private final MidiDevice device;
     private final MidiClip clip;
@@ -84,6 +84,11 @@ public final class MidiRecorder {
     // Active note tracking: index = MIDI note number, value = start column (-1 = inactive)
     private final int[] activeNoteStarts = new int[128];
     private final int[] activeNoteVelocities = new int[128];
+    private int startColumnOffset;
+    private long countInDurationUs;
+
+    /** Notes recorded during the current session only (not pre-existing clip notes). */
+    private final List<MidiNoteData> sessionNotes = new ArrayList<>();
 
     /**
      * Creates a new MIDI recorder.
@@ -149,6 +154,58 @@ public final class MidiRecorder {
     }
 
     /**
+     * Sets the column offset applied to all recorded note start positions.
+     *
+     * <p>Use this to position recorded notes relative to the transport's
+     * current beat when recording starts. For example, if recording starts
+     * at beat 4.0 and each column is 0.25 beats, the offset is 16.</p>
+     *
+     * @param offset the column offset (must be &ge; 0)
+     */
+    public void setStartColumnOffset(int offset) {
+        if (offset < 0) {
+            throw new IllegalArgumentException("startColumnOffset must be >= 0: " + offset);
+        }
+        this.startColumnOffset = offset;
+    }
+
+    /**
+     * Returns the column offset applied to recorded note start positions.
+     *
+     * @return the column offset
+     */
+    public int getStartColumnOffset() {
+        return startColumnOffset;
+    }
+
+    /**
+     * Sets the count-in duration during which incoming MIDI events are
+     * discarded. Notes played during the count-in pre-roll are ignored so
+     * they do not appear in the recorded clip.
+     *
+     * <p>The duration is specified in microseconds and measured relative to
+     * the first MIDI message received after {@link #startRecording()} is
+     * called. A value of {@code 0} disables count-in filtering.</p>
+     *
+     * @param durationUs the count-in duration in microseconds (must be &ge; 0)
+     */
+    public void setCountInDurationUs(long durationUs) {
+        if (durationUs < 0) {
+            throw new IllegalArgumentException("countInDurationUs must be >= 0: " + durationUs);
+        }
+        this.countInDurationUs = durationUs;
+    }
+
+    /**
+     * Returns the count-in duration in microseconds.
+     *
+     * @return the count-in duration
+     */
+    public long getCountInDurationUs() {
+        return countInDurationUs;
+    }
+
+    /**
      * Starts recording MIDI input from the device.
      *
      * @throws MidiUnavailableException if the device cannot be opened or no
@@ -166,6 +223,7 @@ public final class MidiRecorder {
         transmitter.setReceiver(new MidiInputReceiver());
         recording = true;
         recordingStartTimeUs = -1;
+        sessionNotes.clear();
         for (int i = 0; i < 128; i++) {
             activeNoteStarts[i] = -1;
             activeNoteVelocities[i] = 0;
@@ -210,12 +268,13 @@ public final class MidiRecorder {
     }
 
     /**
-     * Returns an unmodifiable view of the recorded notes so far.
+     * Returns an unmodifiable view of the notes recorded during the
+     * current (or most recent) session only — not pre-existing clip notes.
      *
-     * @return the note list
+     * @return the session-recorded note list
      */
     public List<MidiNoteData> getRecordedNotes() {
-        return Collections.unmodifiableList(new ArrayList<>(clip.getNotes()));
+        return Collections.unmodifiableList(new ArrayList<>(sessionNotes));
     }
 
     /**
@@ -242,6 +301,7 @@ public final class MidiRecorder {
                 MidiNoteData note = new MidiNoteData(noteNumber, startColumn,
                         duration, activeNoteVelocities[noteNumber], channel);
                 clip.addNote(note);
+                sessionNotes.add(note);
                 notifyNoteRecorded(note);
                 activeNoteStarts[noteNumber] = -1;
             }
@@ -294,28 +354,45 @@ public final class MidiRecorder {
             int noteNumber = shortMsg.getData1();
             int velocity = shortMsg.getData2();
 
+            // Ignore events on channels other than the configured recording channel
+            if (msgChannel != channel) {
+                return;
+            }
+
+            // Notify event listeners even during count-in (for activity indicators)
+            if (command == ShortMessage.NOTE_ON && velocity > 0) {
+                notifyEventReceived(MidiEvent.noteOn(msgChannel, noteNumber, velocity));
+            } else if (command == ShortMessage.NOTE_OFF
+                    || (command == ShortMessage.NOTE_ON && velocity == 0)) {
+                notifyEventReceived(MidiEvent.noteOff(msgChannel, noteNumber));
+            }
+
+            // Discard note data during count-in pre-roll
+            if (countInDurationUs > 0 && relativeUs < countInDurationUs) {
+                return;
+            }
+
+            // Adjust relative time to exclude count-in period
+            long adjustedUs = countInDurationUs > 0
+                    ? relativeUs - countInDurationUs : relativeUs;
+
             if (command == ShortMessage.NOTE_ON && velocity > 0) {
                 // Note On
-                MidiEvent event = MidiEvent.noteOn(msgChannel, noteNumber, velocity);
-                notifyEventReceived(event);
-
-                int column = timestampToColumn(relativeUs);
+                int column = timestampToColumn(adjustedUs) + startColumnOffset;
                 activeNoteStarts[noteNumber] = column;
                 activeNoteVelocities[noteNumber] = velocity;
 
             } else if (command == ShortMessage.NOTE_OFF
                     || (command == ShortMessage.NOTE_ON && velocity == 0)) {
                 // Note Off
-                MidiEvent event = MidiEvent.noteOff(msgChannel, noteNumber);
-                notifyEventReceived(event);
-
                 if (activeNoteStarts[noteNumber] >= 0) {
                     int startColumn = activeNoteStarts[noteNumber];
-                    int endColumn = timestampToColumn(relativeUs);
+                    int endColumn = timestampToColumn(adjustedUs) + startColumnOffset;
                     int duration = Math.max(1, endColumn - startColumn);
                     MidiNoteData note = new MidiNoteData(noteNumber, startColumn,
                             duration, activeNoteVelocities[noteNumber], channel);
                     clip.addNote(note);
+                    sessionNotes.add(note);
                     notifyNoteRecorded(note);
                     activeNoteStarts[noteNumber] = -1;
                 }

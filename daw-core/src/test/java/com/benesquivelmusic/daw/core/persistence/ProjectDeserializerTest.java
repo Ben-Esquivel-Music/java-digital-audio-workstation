@@ -405,4 +405,28 @@ class ProjectDeserializerTest {
                     .isEqualTo(material);
         }
     }
+
+    @Test
+    void shouldRoundTripMidiInputDeviceName() throws IOException {
+        DawProject original = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track midi = original.createMidiTrack("Keys");
+        midi.setMidiInputDeviceName("USB MIDI Controller");
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getTracks().get(0).getMidiInputDeviceName())
+                .isEqualTo("USB MIDI Controller");
+    }
+
+    @Test
+    void shouldDeserializeTrackWithoutMidiInputDeviceName() throws IOException {
+        DawProject original = new DawProject("Test", AudioFormat.CD_QUALITY);
+        original.createMidiTrack("Synth");
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getTracks().get(0).getMidiInputDeviceName()).isNull();
+    }
 }

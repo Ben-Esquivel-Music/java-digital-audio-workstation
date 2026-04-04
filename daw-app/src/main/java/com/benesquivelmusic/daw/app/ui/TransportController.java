@@ -4,12 +4,16 @@ import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
+import com.benesquivelmusic.daw.core.midi.MidiNoteData;
+import com.benesquivelmusic.daw.core.midi.MidiRecorder;
+import com.benesquivelmusic.daw.core.midi.RecordMidiNotesAction;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
@@ -22,9 +26,14 @@ import javafx.scene.control.ButtonType;
 import javafx.scene.control.Label;
 import javafx.util.Duration;
 
+import javax.sound.midi.MidiDevice;
+import javax.sound.midi.MidiSystem;
+import javax.sound.midi.MidiUnavailableException;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -56,6 +65,14 @@ final class TransportController {
         void startTimeTicker();
         void pauseTimeTicker();
         void stopTimeTicker();
+
+        /**
+         * Flashes a MIDI activity indicator on the given track's strip.
+         * Called from the MIDI receiver thread via {@link javafx.application.Platform#runLater}.
+         *
+         * @param track the track that received MIDI activity
+         */
+        void flashMidiActivity(Track track);
     }
 
     private final DawProject project;
@@ -74,6 +91,7 @@ final class TransportController {
     private final Host host;
 
     private RecordingPipeline recordingPipeline;
+    private final Map<Track, MidiRecorder> activeMidiRecorders = new LinkedHashMap<>();
     private boolean loopEnabled;
 
     TransportController(DawProject project,
@@ -162,6 +180,9 @@ final class TransportController {
             recordingPipeline = null;
         }
 
+        // Finalize MIDI recording if any MIDI recorders are active
+        stopMidiRecording();
+
         project.getTransport().stop();
         audioEngine.stopAudioOutput();
         host.stopTimeTicker();
@@ -204,38 +225,68 @@ final class TransportController {
             return;
         }
 
-        // Create output directory for recording segments
-        Path outputDir;
-        try {
-            outputDir = Files.createTempDirectory("daw-recording-");
-        } catch (IOException e) {
-            LOG.log(Level.SEVERE, "Failed to create recording output directory", e);
-            statusBarLabel.setText("Recording failed — could not create output directory");
-            statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
-            notificationBar.show(NotificationLevel.ERROR,
-                    "Recording failed — could not create output directory");
-            return;
+        // Partition armed tracks into audio and MIDI
+        List<Track> armedAudioTracks = new ArrayList<>();
+        List<Track> armedMidiTracks = new ArrayList<>();
+        for (Track track : armedTracks) {
+            if (track.getType() == TrackType.MIDI) {
+                armedMidiTracks.add(track);
+            } else {
+                armedAudioTracks.add(track);
+            }
         }
 
-        // Create and start the recording pipeline with the user-configured count-in
         CountInMode countIn = host.countInMode();
-        recordingPipeline = new RecordingPipeline(
-                audioEngine, project.getTransport(), project.getFormat(), outputDir, armedTracks,
-                countIn, InputMonitoringMode.OFF, null);
-        recordingPipeline.start();
 
-        // Open audio input stream with the first armed track's input device
-        try {
-            int inputDevice = armedTracks.stream()
-                    .mapToInt(Track::getInputDeviceIndex)
-                    .filter(idx -> idx >= 0)
-                    .findFirst()
-                    .orElse(0); // default input device
-            audioEngine.startAudioInputOutput(inputDevice);
-        } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "Failed to start audio input for recording", e);
-            notificationBar.show(NotificationLevel.ERROR,
-                    "Audio device error: " + e.getMessage());
+        // Start audio recording pipeline for non-MIDI armed tracks
+        if (!armedAudioTracks.isEmpty()) {
+            // Create output directory for recording segments
+            Path outputDir;
+            try {
+                outputDir = Files.createTempDirectory("daw-recording-");
+            } catch (IOException e) {
+                LOG.log(Level.SEVERE, "Failed to create recording output directory", e);
+                statusBarLabel.setText("Recording failed — could not create output directory");
+                statusBarLabel.setGraphic(IconNode.of(DawIcon.PHANTOM_POWER, 12));
+                notificationBar.show(NotificationLevel.ERROR,
+                        "Recording failed — could not create output directory");
+                return;
+            }
+
+            recordingPipeline = new RecordingPipeline(
+                    audioEngine, project.getTransport(), project.getFormat(), outputDir,
+                    armedAudioTracks, countIn, InputMonitoringMode.OFF, null);
+            recordingPipeline.start();
+
+            // Open audio input stream with the first armed audio track's input device
+            try {
+                int inputDevice = armedAudioTracks.stream()
+                        .mapToInt(Track::getInputDeviceIndex)
+                        .filter(idx -> idx >= 0)
+                        .findFirst()
+                        .orElse(0);
+                audioEngine.startAudioInputOutput(inputDevice);
+            } catch (RuntimeException e) {
+                LOG.log(Level.WARNING, "Failed to start audio input for recording", e);
+                notificationBar.show(NotificationLevel.ERROR,
+                        "Audio device error: " + e.getMessage());
+            }
+        }
+
+        // Start MIDI recording for armed MIDI tracks
+        if (!armedMidiTracks.isEmpty()) {
+            startMidiRecording(armedMidiTracks, countIn);
+        }
+
+        // If no audio pipeline was started, transition transport to recording
+        // and start audio output (for playback of existing tracks during MIDI recording)
+        if (armedAudioTracks.isEmpty()) {
+            try {
+                audioEngine.startAudioOutput();
+            } catch (RuntimeException e) {
+                LOG.log(Level.WARNING, "Failed to start audio output", e);
+            }
+            project.getTransport().record();
         }
 
         host.startTimeTicker();
@@ -289,6 +340,124 @@ final class TransportController {
         statusBarLabel.setText(loopState);
         statusBarLabel.setGraphic(IconNode.of(DawIcon.LOOP, 12));
         LOG.fine(loopState);
+    }
+
+    // ── MIDI recording helpers ───────────────────────────────────────────────
+
+    /**
+     * Creates and starts a {@link MidiRecorder} for each armed MIDI track.
+     *
+     * <p>When a count-in mode is active, the recorder's count-in duration is
+     * set so that notes played during the pre-roll are discarded. An event
+     * listener is registered on each recorder to flash a MIDI activity
+     * indicator on the track's arm button during capture.</p>
+     *
+     * @param midiTracks the armed MIDI tracks
+     * @param countIn    the count-in mode (may be {@link CountInMode#OFF})
+     */
+    private void startMidiRecording(List<Track> midiTracks, CountInMode countIn) {
+        Transport transport = project.getTransport();
+        double startBeat = transport.getPositionInBeats();
+        int startColumnOffset = (int) Math.round(startBeat / MidiRecorder.BEATS_PER_COLUMN);
+
+        // Compute count-in duration in microseconds
+        int beatsPerBar = transport.getTimeSignatureNumerator();
+        int countInBeats = countIn.getTotalBeats(beatsPerBar);
+        double countInSeconds = countInBeats * (60.0 / transport.getTempo());
+        long countInDurationUs = Math.round(countInSeconds * 1_000_000L);
+
+        for (Track track : midiTracks) {
+            MidiDevice device = resolveMidiDevice(track.getMidiInputDeviceName());
+            if (device == null) {
+                LOG.warning("No MIDI input device found for track: " + track.getName()
+                        + " (device name: " + track.getMidiInputDeviceName() + ")");
+                notificationBar.show(NotificationLevel.WARNING,
+                        "MIDI device not found for track: " + track.getName());
+                continue;
+            }
+
+            MidiRecorder recorder = new MidiRecorder(
+                    device, track.getMidiClip(), transport.getTempo(), 0);
+            recorder.setStartColumnOffset(startColumnOffset);
+            recorder.setCountInDurationUs(countInDurationUs);
+
+            // Wire MIDI activity indicator — flash the track strip on each event
+            recorder.addEventListener(_ -> javafx.application.Platform.runLater(
+                    () -> host.flashMidiActivity(track)));
+
+            try {
+                recorder.startRecording();
+                track.setRecording(true);
+                activeMidiRecorders.put(track, recorder);
+                LOG.fine(() -> "Started MIDI recording on track: " + track.getName());
+            } catch (MidiUnavailableException e) {
+                LOG.log(Level.WARNING, "Failed to start MIDI recording on track: "
+                        + track.getName(), e);
+                notificationBar.show(NotificationLevel.ERROR,
+                        "MIDI recording failed on track: " + track.getName());
+            }
+        }
+    }
+
+    /**
+     * Stops all active MIDI recorders and registers an undoable action for
+     * each track's recorded notes.
+     */
+    private void stopMidiRecording() {
+        if (activeMidiRecorders.isEmpty()) {
+            return;
+        }
+
+        int totalNotes = 0;
+        for (Map.Entry<Track, MidiRecorder> entry : activeMidiRecorders.entrySet()) {
+            Track track = entry.getKey();
+            MidiRecorder recorder = entry.getValue();
+            recorder.stopRecording();
+            track.setRecording(false);
+
+            List<MidiNoteData> recordedNotes = recorder.getRecordedNotes();
+            if (!recordedNotes.isEmpty()) {
+                totalNotes += recordedNotes.size();
+                undoManager.execute(new RecordMidiNotesAction(
+                        track.getMidiClip(), recordedNotes));
+            }
+        }
+        activeMidiRecorders.clear();
+
+        if (totalNotes > 0) {
+            String msg = "Recording stopped — " + totalNotes + " MIDI note"
+                    + (totalNotes > 1 ? "s" : "") + " captured";
+            if (statusBarLabel.getText() == null
+                    || !statusBarLabel.getText().startsWith("Recording stopped")) {
+                statusBarLabel.setText(msg);
+            }
+            notificationBar.show(NotificationLevel.SUCCESS, msg);
+        }
+    }
+
+    /**
+     * Resolves a MIDI input device by name from the system's available devices.
+     *
+     * @param deviceName the device name to look up
+     * @return the MIDI device, or {@code null} if not found or unavailable
+     */
+    private static MidiDevice resolveMidiDevice(String deviceName) {
+        if (deviceName == null) {
+            return null;
+        }
+        for (MidiDevice.Info info : MidiSystem.getMidiDeviceInfo()) {
+            if (info.getName().equals(deviceName)) {
+                try {
+                    MidiDevice device = MidiSystem.getMidiDevice(info);
+                    if (device.getMaxTransmitters() != 0) {
+                        return device;
+                    }
+                } catch (MidiUnavailableException e) {
+                    // skip unavailable device
+                }
+            }
+        }
+        return null;
     }
 
     // ── Status update ────────────────────────────────────────────────────────

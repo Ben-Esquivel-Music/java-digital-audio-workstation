@@ -257,6 +257,11 @@ public final class ProjectDeserializer {
             track.setInputDeviceIndex(inputDevice);
         }
 
+        String midiInputDevice = elem.getAttribute("midi-input-device");
+        if (!midiInputDevice.isEmpty()) {
+            track.setMidiInputDeviceName(midiInputDevice);
+        }
+
         String colorHex = elem.getAttribute("color");
         if (!colorHex.isEmpty()) {
             try {
