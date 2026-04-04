@@ -344,6 +344,7 @@ class KeyboardProcessorTest {
 
         List<MidiNoteData> notes = processor.getRecordedNotes();
         assertThat(notes).hasSize(1);
+        assertThat(notes.getFirst().noteNumber()).isEqualTo(60);
         assertThat(notes.getFirst().durationColumns()).isEqualTo(2);
     }
 
