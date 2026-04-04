@@ -56,6 +56,28 @@ class RecordMidiNotesActionTest {
     }
 
     @Test
+    void shouldNotRemovePreExistingNotesOnUndo() {
+        // Simulate a clip that already had notes before recording started
+        MidiNoteData preExisting = MidiNoteData.of(48, 0, 8, 80);
+        clip.addNote(preExisting);
+
+        // Simulate real-time recording adding new notes
+        MidiNoteData recorded1 = MidiNoteData.of(60, 16, 4, 100);
+        MidiNoteData recorded2 = MidiNoteData.of(64, 20, 4, 90);
+        clip.addNote(recorded1);
+        clip.addNote(recorded2);
+
+        // Action only tracks session-recorded notes, not the pre-existing one
+        RecordMidiNotesAction action = new RecordMidiNotesAction(
+                clip, java.util.List.of(recorded1, recorded2));
+        action.execute(); // first execute: no-op
+        action.undo();    // should only remove recorded notes
+
+        assertThat(clip.size()).isEqualTo(1);
+        assertThat(clip.getNotes()).containsExactly(preExisting);
+    }
+
+    @Test
     void shouldReAddNotesOnRedo() {
         MidiNoteData note1 = MidiNoteData.of(60, 0, 4, 100);
         MidiNoteData note2 = MidiNoteData.of(64, 4, 4, 90);

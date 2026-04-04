@@ -267,7 +267,7 @@ final class TransportController {
 
         // Start MIDI recording for armed MIDI tracks
         if (!armedMidiTracks.isEmpty()) {
-            startMidiRecording(armedMidiTracks, countIn);
+            startMidiRecording(armedMidiTracks);
         }
 
         // If no audio pipeline was started, transition transport to recording
@@ -339,10 +339,10 @@ final class TransportController {
     /**
      * Creates and starts a {@link MidiRecorder} for each armed MIDI track.
      */
-    private void startMidiRecording(List<Track> midiTracks, CountInMode countIn) {
+    private void startMidiRecording(List<Track> midiTracks) {
         Transport transport = project.getTransport();
         double startBeat = transport.getPositionInBeats();
-        int startColumnOffset = (int) Math.round(startBeat / 0.25);
+        int startColumnOffset = (int) Math.round(startBeat / MidiRecorder.BEATS_PER_COLUMN);
 
         for (Track track : midiTracks) {
             MidiDevice device = resolveMidiDevice(track.getMidiInputDeviceName());

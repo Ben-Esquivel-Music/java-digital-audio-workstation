@@ -68,7 +68,7 @@ public final class MidiRecorder {
     /**
      * The number of beats each grid column represents (sixteenth note = 0.25).
      */
-    private static final double BEATS_PER_COLUMN = 0.25;
+    public static final double BEATS_PER_COLUMN = 0.25;
 
     private final MidiDevice device;
     private final MidiClip clip;
@@ -85,6 +85,9 @@ public final class MidiRecorder {
     private final int[] activeNoteStarts = new int[128];
     private final int[] activeNoteVelocities = new int[128];
     private int startColumnOffset;
+
+    /** Notes recorded during the current session only (not pre-existing clip notes). */
+    private final List<MidiNoteData> sessionNotes = new ArrayList<>();
 
     /**
      * Creates a new MIDI recorder.
@@ -192,6 +195,7 @@ public final class MidiRecorder {
         transmitter.setReceiver(new MidiInputReceiver());
         recording = true;
         recordingStartTimeUs = -1;
+        sessionNotes.clear();
         for (int i = 0; i < 128; i++) {
             activeNoteStarts[i] = -1;
             activeNoteVelocities[i] = 0;
@@ -236,12 +240,13 @@ public final class MidiRecorder {
     }
 
     /**
-     * Returns an unmodifiable view of the recorded notes so far.
+     * Returns an unmodifiable view of the notes recorded during the
+     * current (or most recent) session only — not pre-existing clip notes.
      *
-     * @return the note list
+     * @return the session-recorded note list
      */
     public List<MidiNoteData> getRecordedNotes() {
-        return Collections.unmodifiableList(new ArrayList<>(clip.getNotes()));
+        return Collections.unmodifiableList(new ArrayList<>(sessionNotes));
     }
 
     /**
@@ -268,6 +273,7 @@ public final class MidiRecorder {
                 MidiNoteData note = new MidiNoteData(noteNumber, startColumn,
                         duration, activeNoteVelocities[noteNumber], channel);
                 clip.addNote(note);
+                sessionNotes.add(note);
                 notifyNoteRecorded(note);
                 activeNoteStarts[noteNumber] = -1;
             }
@@ -320,6 +326,11 @@ public final class MidiRecorder {
             int noteNumber = shortMsg.getData1();
             int velocity = shortMsg.getData2();
 
+            // Ignore events on channels other than the configured recording channel
+            if (msgChannel != channel) {
+                return;
+            }
+
             if (command == ShortMessage.NOTE_ON && velocity > 0) {
                 // Note On
                 MidiEvent event = MidiEvent.noteOn(msgChannel, noteNumber, velocity);
@@ -342,6 +353,7 @@ public final class MidiRecorder {
                     MidiNoteData note = new MidiNoteData(noteNumber, startColumn,
                             duration, activeNoteVelocities[noteNumber], channel);
                     clip.addNote(note);
+                    sessionNotes.add(note);
                     notifyNoteRecorded(note);
                     activeNoteStarts[noteNumber] = -1;
                 }

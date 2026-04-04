@@ -170,6 +170,11 @@ public final class ProjectSerializer {
         elem.setAttribute("input-device", String.valueOf(track.getInputDeviceIndex()));
         elem.setAttribute("collapsed", String.valueOf(track.isCollapsed()));
 
+        String midiInputDeviceName = track.getMidiInputDeviceName();
+        if (midiInputDeviceName != null) {
+            elem.setAttribute("midi-input-device", midiInputDeviceName);
+        }
+
         List<AudioClip> clips = track.getClips();
         if (!clips.isEmpty()) {
             Element clipsElem = document.createElement("clips");
