@@ -523,4 +523,145 @@ class ArrangementCanvasTest {
     void selectionHandleColorShouldBeDefined() {
         assertThat(ArrangementCanvas.SELECTION_HANDLE_COLOR).isNotNull();
     }
+
+    // ── Rubber-band selection overlay ────────────────────────────────────────
+
+    @Test
+    void rubberBandFillColorShouldBeDefined() {
+        assertThat(ArrangementCanvas.RUBBER_BAND_FILL_COLOR).isNotNull();
+    }
+
+    @Test
+    void rubberBandBorderColorShouldBeDefined() {
+        assertThat(ArrangementCanvas.RUBBER_BAND_BORDER_COLOR).isNotNull();
+    }
+
+    @Test
+    void clipSelectedBorderColorShouldBeDefined() {
+        assertThat(ArrangementCanvas.CLIP_SELECTED_BORDER_COLOR).isNotNull();
+    }
+
+    @Test
+    void clipSelectedOverlayColorShouldBeDefined() {
+        assertThat(ArrangementCanvas.CLIP_SELECTED_OVERLAY_COLOR).isNotNull();
+    }
+
+    @Test
+    void shouldSetAndClearRubberBand() throws Exception {
+
+        AtomicReference<ArrangementCanvas> ref = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setRubberBand(true, 10, 20, 100, 80);
+                ref.set(canvas);
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(ref.get().isRubberBandActive()).isTrue();
+    }
+
+    @Test
+    void shouldClearRubberBand() throws Exception {
+
+        AtomicReference<ArrangementCanvas> ref = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setRubberBand(true, 10, 20, 100, 80);
+                canvas.setRubberBand(false, 0, 0, 0, 0);
+                ref.set(canvas);
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(ref.get().isRubberBandActive()).isFalse();
+    }
+
+    @Test
+    void shouldDefaultRubberBandInactive() throws Exception {
+
+        AtomicReference<ArrangementCanvas> ref = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ref.set(new ArrangementCanvas());
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(ref.get().isRubberBandActive()).isFalse();
+    }
+
+    @Test
+    void shouldRenderRubberBandWithTracks() throws Exception {
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                Track audio = new Track("Audio 1", TrackType.AUDIO);
+                audio.addClip(new AudioClip("Clip", 0.0, 16.0, null));
+                canvas.setTracks(List.of(audio));
+                canvas.setRubberBand(true, 10, 5, 200, 70);
+                canvas.refresh();
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+    }
+
+    @Test
+    void shouldRenderSelectedClipHighlight() throws Exception {
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                Track audio = new Track("Audio 1", TrackType.AUDIO);
+                AudioClip clip = new AudioClip("Clip", 0.0, 16.0, null);
+                audio.addClip(clip);
+                canvas.setTracks(List.of(audio));
+
+                SelectionModel sm = new SelectionModel();
+                sm.selectClip(audio, clip);
+                canvas.setSelectionModel(sm);
+
+                canvas.refresh();
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+    }
+
+    @Test
+    void shouldRenderSelectedMidiClipHighlight() throws Exception {
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                Track midi = new Track("MIDI 1", TrackType.MIDI);
+                midi.getMidiClip().addNote(MidiNoteData.of(60, 0, 8, 100));
+                canvas.setTracks(List.of(midi));
+
+                SelectionModel sm = new SelectionModel();
+                sm.selectMidiClip(midi, midi.getMidiClip());
+                canvas.setSelectionModel(sm);
+
+                canvas.refresh();
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+    }
 }

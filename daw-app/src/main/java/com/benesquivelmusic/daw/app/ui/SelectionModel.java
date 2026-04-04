@@ -1,7 +1,10 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.midi.MidiClip;
+import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackType;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -27,6 +30,14 @@ public final class SelectionModel {
     private double endBeat;
 
     private final Map<AudioClip, Track> selectedClips = new LinkedHashMap<>();
+    private final Map<MidiClip, Track> selectedMidiClips = new LinkedHashMap<>();
+
+    /**
+     * Beats per grid column — used to convert MIDI note column positions to
+     * beat positions for region overlap tests. Derived from
+     * {@link EditorView#BEATS_PER_COLUMN} to keep a single source of truth.
+     */
+    static final double BEATS_PER_COLUMN = EditorView.BEATS_PER_COLUMN;
 
     /**
      * Creates a selection model with no active selection.
@@ -100,7 +111,7 @@ public final class SelectionModel {
      * @return whether any clips are selected
      */
     public boolean hasClipSelection() {
-        return !selectedClips.isEmpty();
+        return !selectedClips.isEmpty() || !selectedMidiClips.isEmpty();
     }
 
     /**
@@ -114,6 +125,7 @@ public final class SelectionModel {
         Objects.requireNonNull(track, "track must not be null");
         Objects.requireNonNull(clip, "clip must not be null");
         selectedClips.clear();
+        selectedMidiClips.clear();
         selectedClips.put(clip, track);
     }
 
@@ -156,10 +168,61 @@ public final class SelectionModel {
                     "regionStart must be less than regionEnd: " + regionStart + " >= " + regionEnd);
         }
         selectedClips.clear();
+        selectedMidiClips.clear();
         for (Track track : tracks) {
             for (AudioClip clip : track.getClips()) {
                 if (clip.getStartBeat() < regionEnd && clip.getEndBeat() > regionStart) {
                     selectedClips.put(clip, track);
+                }
+            }
+            if (track.getType() == TrackType.MIDI) {
+                MidiClip midiClip = track.getMidiClip();
+                if (!midiClip.isEmpty()) {
+                    double midiStart = midiClipStartBeat(midiClip);
+                    double midiEnd = midiClipEndBeat(midiClip);
+                    if (midiStart < regionEnd && midiEnd > regionStart) {
+                        selectedMidiClips.put(midiClip, track);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Adds all clips whose time range overlaps the given beat region on
+     * the specified tracks to the current clip selection (additive
+     * rubber-band selection).
+     *
+     * <p>Unlike {@link #selectClipsInRegion}, the existing clip selection
+     * is <em>not</em> cleared — new matches are merged into whatever is
+     * already selected. This supports Shift+rubber-band workflows.</p>
+     *
+     * @param tracks        the tracks to search
+     * @param regionStart   the start beat of the selection region
+     * @param regionEnd     the end beat of the selection region
+     * @throws NullPointerException     if {@code tracks} is {@code null}
+     * @throws IllegalArgumentException if {@code regionStart} &ge; {@code regionEnd}
+     */
+    public void addClipsInRegion(List<Track> tracks, double regionStart, double regionEnd) {
+        Objects.requireNonNull(tracks, "tracks must not be null");
+        if (regionStart >= regionEnd) {
+            throw new IllegalArgumentException(
+                    "regionStart must be less than regionEnd: " + regionStart + " >= " + regionEnd);
+        }
+        for (Track track : tracks) {
+            for (AudioClip clip : track.getClips()) {
+                if (clip.getStartBeat() < regionEnd && clip.getEndBeat() > regionStart) {
+                    selectedClips.put(clip, track);
+                }
+            }
+            if (track.getType() == TrackType.MIDI) {
+                MidiClip midiClip = track.getMidiClip();
+                if (!midiClip.isEmpty()) {
+                    double midiStart = midiClipStartBeat(midiClip);
+                    double midiEnd = midiClipEndBeat(midiClip);
+                    if (midiStart < regionEnd && midiEnd > regionStart) {
+                        selectedMidiClips.put(midiClip, track);
+                    }
                 }
             }
         }
@@ -194,5 +257,98 @@ public final class SelectionModel {
      */
     public void clearClipSelection() {
         selectedClips.clear();
+        selectedMidiClips.clear();
+    }
+
+    // ── MIDI clip selection ─────────────────────────────────────────────────
+
+    /**
+     * Selects a single MIDI clip, clearing any previous clip selection
+     * (both audio and MIDI).
+     *
+     * @param track   the track that contains the MIDI clip
+     * @param midiClip the MIDI clip to select
+     * @throws NullPointerException if either argument is {@code null}
+     */
+    public void selectMidiClip(Track track, MidiClip midiClip) {
+        Objects.requireNonNull(track, "track must not be null");
+        Objects.requireNonNull(midiClip, "midiClip must not be null");
+        selectedClips.clear();
+        selectedMidiClips.clear();
+        selectedMidiClips.put(midiClip, track);
+    }
+
+    /**
+     * Toggles the selection state of a MIDI clip (Shift-click behaviour).
+     *
+     * <p>If the MIDI clip is already selected it is deselected; otherwise it
+     * is added to the current selection.</p>
+     *
+     * @param track   the track that contains the MIDI clip
+     * @param midiClip the MIDI clip to toggle
+     * @throws NullPointerException if either argument is {@code null}
+     */
+    public void toggleMidiClipSelection(Track track, MidiClip midiClip) {
+        Objects.requireNonNull(track, "track must not be null");
+        Objects.requireNonNull(midiClip, "midiClip must not be null");
+        if (selectedMidiClips.containsKey(midiClip)) {
+            selectedMidiClips.remove(midiClip);
+        } else {
+            selectedMidiClips.put(midiClip, track);
+        }
+    }
+
+    /**
+     * Returns {@code true} if the given MIDI clip is currently selected.
+     *
+     * @param midiClip the MIDI clip to check
+     * @return whether the MIDI clip is selected
+     */
+    public boolean isMidiClipSelected(MidiClip midiClip) {
+        return selectedMidiClips.containsKey(midiClip);
+    }
+
+    // ── MIDI clip beat bounds helpers ────────────────────────────────────────
+
+    /**
+     * Computes the start beat of a non-empty MIDI clip from the earliest
+     * note's start column.
+     *
+     * @param midiClip the MIDI clip (must not be empty)
+     * @return the start beat
+     * @throws IllegalArgumentException if the clip is empty
+     */
+    static double midiClipStartBeat(MidiClip midiClip) {
+        if (midiClip.isEmpty()) {
+            throw new IllegalArgumentException("MIDI clip must not be empty");
+        }
+        int minColumn = Integer.MAX_VALUE;
+        for (MidiNoteData note : midiClip.getNotes()) {
+            if (note.startColumn() < minColumn) {
+                minColumn = note.startColumn();
+            }
+        }
+        return minColumn * BEATS_PER_COLUMN;
+    }
+
+    /**
+     * Computes the end beat of a non-empty MIDI clip from the latest
+     * note's end column.
+     *
+     * @param midiClip the MIDI clip (must not be empty)
+     * @return the end beat
+     * @throws IllegalArgumentException if the clip is empty
+     */
+    static double midiClipEndBeat(MidiClip midiClip) {
+        if (midiClip.isEmpty()) {
+            throw new IllegalArgumentException("MIDI clip must not be empty");
+        }
+        int maxEndColumn = 0;
+        for (MidiNoteData note : midiClip.getNotes()) {
+            if (note.endColumn() > maxEndColumn) {
+                maxEndColumn = note.endColumn();
+            }
+        }
+        return maxEndColumn * BEATS_PER_COLUMN;
     }
 }

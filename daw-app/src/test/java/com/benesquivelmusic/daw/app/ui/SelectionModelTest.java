@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.midi.MidiClip;
+import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 
@@ -294,5 +296,264 @@ class SelectionModelTest {
 
         assertThatThrownBy(() -> model.getSelectedClips().clear())
                 .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    // ── Additive rubber-band selection tests ────────────────────────────────
+
+    @Test
+    void addClipsInRegionShouldAddToExistingSelection() {
+        SelectionModel model = new SelectionModel();
+        Track track = new Track("Drums", TrackType.AUDIO);
+        AudioClip clip1 = new AudioClip("kick", 0.0, 4.0, null);
+        AudioClip clip2 = new AudioClip("snare", 4.0, 4.0, null);
+        AudioClip clip3 = new AudioClip("hat", 10.0, 2.0, null);
+        track.addClip(clip1);
+        track.addClip(clip2);
+        track.addClip(clip3);
+
+        // First select clip1
+        model.selectClip(track, clip1);
+        // Then additively select clips in region 9..13 (should include clip3)
+        model.addClipsInRegion(List.of(track), 9.0, 13.0);
+
+        assertThat(model.getSelectedClips()).hasSize(2);
+        assertThat(model.isClipSelected(clip1)).isTrue();
+        assertThat(model.isClipSelected(clip3)).isTrue();
+        assertThat(model.isClipSelected(clip2)).isFalse();
+    }
+
+    @Test
+    void addClipsInRegionShouldNotClearExisting() {
+        SelectionModel model = new SelectionModel();
+        Track track = new Track("Drums", TrackType.AUDIO);
+        AudioClip clip1 = new AudioClip("kick", 0.0, 4.0, null);
+        AudioClip clip2 = new AudioClip("snare", 10.0, 4.0, null);
+        track.addClip(clip1);
+        track.addClip(clip2);
+
+        model.selectClip(track, clip1);
+        model.addClipsInRegion(List.of(track), 9.0, 15.0);
+
+        assertThat(model.isClipSelected(clip1)).isTrue();
+        assertThat(model.isClipSelected(clip2)).isTrue();
+    }
+
+    @Test
+    void addClipsInRegionShouldRejectNullTracks() {
+        SelectionModel model = new SelectionModel();
+        assertThatThrownBy(() -> model.addClipsInRegion(null, 0.0, 5.0))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void addClipsInRegionShouldRejectInvalidRegion() {
+        SelectionModel model = new SelectionModel();
+        assertThatThrownBy(() -> model.addClipsInRegion(List.of(), 5.0, 3.0))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void addClipsInRegionWithNoOverlapShouldNotChangeSelection() {
+        SelectionModel model = new SelectionModel();
+        Track track = new Track("Drums", TrackType.AUDIO);
+        AudioClip clip1 = new AudioClip("kick", 0.0, 4.0, null);
+        track.addClip(clip1);
+
+        model.selectClip(track, clip1);
+        model.addClipsInRegion(List.of(track), 10.0, 15.0);
+
+        assertThat(model.getSelectedClips()).hasSize(1);
+        assertThat(model.isClipSelected(clip1)).isTrue();
+    }
+
+    // ── MIDI clip selection tests ────────────────────────────────────────────
+
+    @Test
+    void selectMidiClipShouldSelectSingleMidiClip() {
+        SelectionModel model = new SelectionModel();
+        Track track = new Track("MIDI 1", TrackType.MIDI);
+        MidiClip midiClip = track.getMidiClip();
+        midiClip.addNote(MidiNoteData.of(60, 0, 4, 100));
+
+        model.selectMidiClip(track, midiClip);
+
+        assertThat(model.hasClipSelection()).isTrue();
+        assertThat(model.isMidiClipSelected(midiClip)).isTrue();
+    }
+
+    @Test
+    void selectMidiClipShouldClearPreviousAudioSelection() {
+        SelectionModel model = new SelectionModel();
+        Track audio = new Track("Audio 1", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("kick", 0.0, 4.0, null);
+        audio.addClip(clip);
+        model.selectClip(audio, clip);
+
+        Track midi = new Track("MIDI 1", TrackType.MIDI);
+        MidiClip midiClip = midi.getMidiClip();
+        midiClip.addNote(MidiNoteData.of(60, 0, 4, 100));
+
+        model.selectMidiClip(midi, midiClip);
+
+        assertThat(model.isClipSelected(clip)).isFalse();
+        assertThat(model.isMidiClipSelected(midiClip)).isTrue();
+    }
+
+    @Test
+    void toggleMidiClipSelectionShouldAddAndRemove() {
+        SelectionModel model = new SelectionModel();
+        Track track = new Track("MIDI 1", TrackType.MIDI);
+        MidiClip midiClip = track.getMidiClip();
+        midiClip.addNote(MidiNoteData.of(60, 0, 4, 100));
+
+        model.toggleMidiClipSelection(track, midiClip);
+        assertThat(model.isMidiClipSelected(midiClip)).isTrue();
+
+        model.toggleMidiClipSelection(track, midiClip);
+        assertThat(model.isMidiClipSelected(midiClip)).isFalse();
+    }
+
+    @Test
+    void clearClipSelectionShouldClearMidiClips() {
+        SelectionModel model = new SelectionModel();
+        Track track = new Track("MIDI 1", TrackType.MIDI);
+        MidiClip midiClip = track.getMidiClip();
+        midiClip.addNote(MidiNoteData.of(60, 0, 4, 100));
+
+        model.selectMidiClip(track, midiClip);
+        model.clearClipSelection();
+
+        assertThat(model.hasClipSelection()).isFalse();
+        assertThat(model.isMidiClipSelected(midiClip)).isFalse();
+    }
+
+    @Test
+    void selectClipsInRegionShouldIncludeMidiClips() {
+        SelectionModel model = new SelectionModel();
+        Track midi = new Track("MIDI 1", TrackType.MIDI);
+        // Notes at columns 4–8 = beats 1.0–2.0
+        midi.getMidiClip().addNote(MidiNoteData.of(60, 4, 4, 100));
+
+        model.selectClipsInRegion(List.of(midi), 0.5, 2.5);
+
+        assertThat(model.isMidiClipSelected(midi.getMidiClip())).isTrue();
+    }
+
+    @Test
+    void selectClipsInRegionShouldExcludeNonOverlappingMidiClips() {
+        SelectionModel model = new SelectionModel();
+        Track midi = new Track("MIDI 1", TrackType.MIDI);
+        // Notes at columns 0–4 = beats 0.0–1.0
+        midi.getMidiClip().addNote(MidiNoteData.of(60, 0, 4, 100));
+
+        model.selectClipsInRegion(List.of(midi), 5.0, 10.0);
+
+        assertThat(model.isMidiClipSelected(midi.getMidiClip())).isFalse();
+    }
+
+    @Test
+    void selectClipsInRegionShouldSelectBothAudioAndMidiClips() {
+        SelectionModel model = new SelectionModel();
+        Track audio = new Track("Audio 1", TrackType.AUDIO);
+        AudioClip audioClip = new AudioClip("vocal", 0.0, 4.0, null);
+        audio.addClip(audioClip);
+
+        Track midi = new Track("MIDI 1", TrackType.MIDI);
+        midi.getMidiClip().addNote(MidiNoteData.of(60, 4, 8, 100));
+
+        model.selectClipsInRegion(List.of(audio, midi), 0.5, 3.0);
+
+        assertThat(model.isClipSelected(audioClip)).isTrue();
+        assertThat(model.isMidiClipSelected(midi.getMidiClip())).isTrue();
+    }
+
+    @Test
+    void selectClipsInRegionShouldSkipEmptyMidiClips() {
+        SelectionModel model = new SelectionModel();
+        Track midi = new Track("MIDI 1", TrackType.MIDI);
+        // No notes added — clip is empty
+
+        model.selectClipsInRegion(List.of(midi), 0.0, 10.0);
+
+        assertThat(model.isMidiClipSelected(midi.getMidiClip())).isFalse();
+    }
+
+    @Test
+    void selectClipsInRegionShouldSkipNonMidiTracks() {
+        SelectionModel model = new SelectionModel();
+        Track audio = new Track("Audio 1", TrackType.AUDIO);
+        // Audio tracks have a getMidiClip() too but it should not be selected
+        audio.getMidiClip().addNote(MidiNoteData.of(60, 0, 4, 100));
+
+        model.selectClipsInRegion(List.of(audio), 0.0, 10.0);
+
+        assertThat(model.isMidiClipSelected(audio.getMidiClip())).isFalse();
+    }
+
+    @Test
+    void addClipsInRegionShouldIncludeMidiClips() {
+        SelectionModel model = new SelectionModel();
+        Track audio = new Track("Audio 1", TrackType.AUDIO);
+        AudioClip audioClip = new AudioClip("vocal", 0.0, 4.0, null);
+        audio.addClip(audioClip);
+        model.selectClip(audio, audioClip);
+
+        Track midi = new Track("MIDI 1", TrackType.MIDI);
+        midi.getMidiClip().addNote(MidiNoteData.of(60, 20, 8, 100));
+
+        model.addClipsInRegion(List.of(midi), 4.0, 8.0);
+
+        assertThat(model.isClipSelected(audioClip)).isTrue();
+        assertThat(model.isMidiClipSelected(midi.getMidiClip())).isTrue();
+    }
+
+    @Test
+    void selectClipShouldClearPreviousMidiSelection() {
+        SelectionModel model = new SelectionModel();
+        Track midi = new Track("MIDI 1", TrackType.MIDI);
+        MidiClip midiClip = midi.getMidiClip();
+        midiClip.addNote(MidiNoteData.of(60, 0, 4, 100));
+        model.selectMidiClip(midi, midiClip);
+
+        Track audio = new Track("Audio 1", TrackType.AUDIO);
+        AudioClip audioClip = new AudioClip("kick", 0.0, 4.0, null);
+        model.selectClip(audio, audioClip);
+
+        assertThat(model.isMidiClipSelected(midiClip)).isFalse();
+        assertThat(model.isClipSelected(audioClip)).isTrue();
+    }
+
+    @Test
+    void midiClipStartBeatShouldComputeFromMinColumn() {
+        MidiClip midiClip = new MidiClip();
+        midiClip.addNote(MidiNoteData.of(60, 8, 4, 100));
+        midiClip.addNote(MidiNoteData.of(64, 4, 4, 100));
+
+        // Min start column is 4, so start beat is 4 * 0.25 = 1.0
+        assertThat(SelectionModel.midiClipStartBeat(midiClip)).isCloseTo(1.0, offset(0.001));
+    }
+
+    @Test
+    void midiClipEndBeatShouldComputeFromMaxEndColumn() {
+        MidiClip midiClip = new MidiClip();
+        midiClip.addNote(MidiNoteData.of(60, 0, 4, 100));
+        midiClip.addNote(MidiNoteData.of(64, 4, 8, 100));
+
+        // Max end column is 4 + 8 = 12, so end beat is 12 * 0.25 = 3.0
+        assertThat(SelectionModel.midiClipEndBeat(midiClip)).isCloseTo(3.0, offset(0.001));
+    }
+
+    @Test
+    void midiClipStartBeatShouldRejectEmptyClip() {
+        MidiClip midiClip = new MidiClip();
+        assertThatThrownBy(() -> SelectionModel.midiClipStartBeat(midiClip))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void midiClipEndBeatShouldRejectEmptyClip() {
+        MidiClip midiClip = new MidiClip();
+        assertThatThrownBy(() -> SelectionModel.midiClipEndBeat(midiClip))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }

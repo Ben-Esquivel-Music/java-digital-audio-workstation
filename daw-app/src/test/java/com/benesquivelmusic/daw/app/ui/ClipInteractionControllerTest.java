@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.CrossTrackMoveAction;
+import com.benesquivelmusic.daw.core.midi.MidiClip;
+import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
@@ -388,7 +390,7 @@ class ClipInteractionControllerTest {
         // Clip should have moved from beat 2.0 to beat 6.0
         // (released at beat 7.0, drag offset was 1.0 beat into the clip)
         assertThat(clip.getStartBeat()).isEqualTo(6.0);
-        assertThat(refreshCount).isEqualTo(1);
+        assertThat(refreshCount).isEqualTo(2);
     }
 
     // ── Cross-track move ─────────────────────────────────────────────────────
@@ -453,6 +455,7 @@ class ClipInteractionControllerTest {
 
                 // Click at x=160 (beat 4.0 at 40px/beat), y=40 (track 0, no clips)
                 canvas.fireEvent(mousePressed(160.0, 40.0));
+                canvas.fireEvent(mouseReleased(160.0, 40.0));
             } finally {
                 latch.countDown();
             }
@@ -491,9 +494,13 @@ class ClipInteractionControllerTest {
     // ── Time selection ──────────────────────────────────────────────────────
 
     @Test
-    void dragOnEmptySpaceShouldCreateTimeSelection() throws Exception {
+    void dragOnEmptySpaceShouldRubberBandSelectClips() throws Exception {
 
         Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip1 = new AudioClip("Clip A", 1.0, 3.0, null);
+        AudioClip clip2 = new AudioClip("Clip B", 5.0, 2.0, null);
+        track.addClip(clip1);
+        track.addClip(clip2);
         tracks.add(track);
         activeTool = EditTool.POINTER;
 
@@ -505,19 +512,19 @@ class ClipInteractionControllerTest {
                 ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
                 controller.install();
 
-                // Press at beat 2.0 (x=80), drag to beat 6.0 (x=240), release
-                canvas.fireEvent(mousePressed(80.0, 40.0));
-                canvas.fireEvent(mouseDragged(240.0, 40.0));
-                canvas.fireEvent(mouseReleased(240.0, 40.0));
+                // Drag from beat 0.5 (x=20) to beat 4.5 (x=180) across clip1 region
+                canvas.fireEvent(mousePressed(20.0, 40.0));
+                canvas.fireEvent(mouseDragged(180.0, 40.0));
+                canvas.fireEvent(mouseReleased(180.0, 40.0));
             } finally {
                 latch.countDown();
             }
         });
         assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
 
-        assertThat(selectionModel.hasSelection()).isTrue();
-        assertThat(selectionModel.getStartBeat()).isEqualTo(2.0);
-        assertThat(selectionModel.getEndBeat()).isEqualTo(6.0);
+        assertThat(selectionModel.hasClipSelection()).isTrue();
+        assertThat(selectionModel.isClipSelected(clip1)).isTrue();
+        assertThat(selectionModel.isClipSelected(clip2)).isFalse();
     }
 
     @Test
@@ -569,9 +576,9 @@ class ClipInteractionControllerTest {
                 ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
                 controller.install();
 
-                // Shift-click at beat 10.0 (x=400) to extend
-                canvas.fireEvent(mousePressedShift(400.0, 40.0));
-                canvas.fireEvent(mouseReleased(400.0, 40.0));
+                // Shift-click below tracks at beat 10.0 (x=400, y=200) to extend
+                canvas.fireEvent(mousePressedShift(400.0, 200.0));
+                canvas.fireEvent(mouseReleased(400.0, 200.0));
             } finally {
                 latch.countDown();
             }
@@ -628,10 +635,10 @@ class ClipInteractionControllerTest {
                 ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
                 controller.install();
 
-                // Drag from beat 1.0 to beat 5.0
-                canvas.fireEvent(mousePressed(40.0, 40.0));
-                canvas.fireEvent(mouseDragged(200.0, 40.0));
-                canvas.fireEvent(mouseReleased(200.0, 40.0));
+                // Drag below tracks from beat 1.0 to beat 5.0
+                canvas.fireEvent(mousePressed(40.0, 200.0));
+                canvas.fireEvent(mouseDragged(200.0, 200.0));
+                canvas.fireEvent(mouseReleased(200.0, 200.0));
             } finally {
                 latch.countDown();
             }
@@ -822,5 +829,418 @@ class ClipInteractionControllerTest {
         assertThat(selectionModel.hasSelection()).isFalse();
         // Status bar should have been cleared (no stale selection text)
         assertThat(lastStatusBarText).isEmpty();
+    }
+
+    // ── Rubber-band multi-clip selection ─────────────────────────────────────
+
+    @Test
+    void rubberBandShouldSelectMultipleClips() throws Exception {
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip1 = new AudioClip("Kick", 0.0, 4.0, null);
+        AudioClip clip2 = new AudioClip("Snare", 4.0, 4.0, null);
+        AudioClip clip3 = new AudioClip("Hat", 12.0, 2.0, null);
+        track.addClip(clip1);
+        track.addClip(clip2);
+        track.addClip(clip3);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Start rubber-band at beat 9.0 (x=360, empty space between clips 2 and 3),
+                // drag backwards to beat 0.0 (x=0) to encompass clips 1 and 2
+                canvas.fireEvent(mousePressed(360.0, 10.0));
+                canvas.fireEvent(mouseDragged(0.0, 70.0));
+                canvas.fireEvent(mouseReleased(0.0, 70.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(selectionModel.hasClipSelection()).isTrue();
+        assertThat(selectionModel.isClipSelected(clip1)).isTrue();
+        assertThat(selectionModel.isClipSelected(clip2)).isTrue();
+        assertThat(selectionModel.isClipSelected(clip3)).isFalse();
+    }
+
+    @Test
+    void rubberBandShouldSelectAcrossMultipleTracks() throws Exception {
+
+        Track track1 = new Track("Track 1", TrackType.AUDIO);
+        Track track2 = new Track("Track 2", TrackType.AUDIO);
+        AudioClip clip1 = new AudioClip("Vocal", 2.0, 4.0, null);
+        AudioClip clip2 = new AudioClip("Bass", 3.0, 3.0, null);
+        track1.addClip(clip1);
+        track2.addClip(clip2);
+        tracks.add(track1);
+        tracks.add(track2);
+        activeTool = EditTool.POINTER;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Rubber-band drag spanning both tracks (y: 10 to 150)
+                canvas.fireEvent(mousePressed(60.0, 10.0));
+                canvas.fireEvent(mouseDragged(280.0, 150.0));
+                canvas.fireEvent(mouseReleased(280.0, 150.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(selectionModel.isClipSelected(clip1)).isTrue();
+        assertThat(selectionModel.isClipSelected(clip2)).isTrue();
+    }
+
+    @Test
+    void shiftRubberBandShouldAddToExistingSelection() throws Exception {
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip1 = new AudioClip("Kick", 0.0, 4.0, null);
+        AudioClip clip2 = new AudioClip("Snare", 8.0, 4.0, null);
+        track.addClip(clip1);
+        track.addClip(clip2);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+        // Pre-select clip1
+        selectionModel.selectClip(track, clip1);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Shift + rubber-band drag over clip2 region (beats 7–13)
+                canvas.fireEvent(mousePressedShift(280.0, 10.0));
+                canvas.fireEvent(mouseDragged(520.0, 70.0));
+                canvas.fireEvent(mouseReleased(520.0, 70.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(selectionModel.isClipSelected(clip1)).isTrue();
+        assertThat(selectionModel.isClipSelected(clip2)).isTrue();
+    }
+
+    @Test
+    void rubberBandWithoutDragShouldClearClipSelection() throws Exception {
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("Kick", 0.0, 4.0, null);
+        track.addClip(clip);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+        // Pre-select a clip
+        selectionModel.selectClip(track, clip);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Click on empty space in the track (after the clip)
+                canvas.fireEvent(mousePressed(200.0, 40.0));
+                canvas.fireEvent(mouseReleased(200.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(selectionModel.hasClipSelection()).isFalse();
+    }
+
+    @Test
+    void shiftClickOnClipShouldToggleSelection() throws Exception {
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip1 = new AudioClip("Kick", 0.0, 4.0, null);
+        AudioClip clip2 = new AudioClip("Snare", 4.0, 4.0, null);
+        track.addClip(clip1);
+        track.addClip(clip2);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+        // Pre-select clip1
+        selectionModel.selectClip(track, clip1);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Shift-click on clip2 at beat 5.0 (x=200)
+                canvas.fireEvent(mousePressedShift(200.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(selectionModel.isClipSelected(clip1)).isTrue();
+        assertThat(selectionModel.isClipSelected(clip2)).isTrue();
+    }
+
+    @Test
+    void shiftClickOnSelectedClipShouldDeselectIt() throws Exception {
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("Kick", 0.0, 4.0, null);
+        track.addClip(clip);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+        // Pre-select the clip
+        selectionModel.selectClip(track, clip);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Shift-click on the already selected clip at beat 2.0 (x=80)
+                canvas.fireEvent(mousePressedShift(80.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(selectionModel.isClipSelected(clip)).isFalse();
+    }
+
+    @Test
+    void clickOnClipShouldSelectOnlyThatClip() throws Exception {
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip1 = new AudioClip("Kick", 0.0, 4.0, null);
+        AudioClip clip2 = new AudioClip("Snare", 4.0, 4.0, null);
+        track.addClip(clip1);
+        track.addClip(clip2);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+        // Pre-select both clips
+        selectionModel.selectClip(track, clip1);
+        selectionModel.toggleClipSelection(track, clip2);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Click on clip2 at beat 5.0 (x=200) — should deselect clip1
+                canvas.fireEvent(mousePressed(200.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(selectionModel.isClipSelected(clip2)).isTrue();
+        assertThat(selectionModel.isClipSelected(clip1)).isFalse();
+    }
+
+    // ── MIDI clip interaction tests ─────────────────────────────────────────
+
+    @Test
+    void shouldFindMidiClipAtBeat() throws Exception {
+
+        AtomicReference<ClipInteractionController> ref = new AtomicReference<>();
+        Track midiTrack = new Track("MIDI 1", TrackType.MIDI);
+        // Notes at columns 8–16 = beats 2.0–4.0
+        midiTrack.getMidiClip().addNote(MidiNoteData.of(60, 8, 8, 100));
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                ref.set(new ClipInteractionController(canvas, createHost()));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        ClipInteractionController controller = ref.get();
+        assertThat(controller.midiClipAt(midiTrack, 3.0)).isSameAs(midiTrack.getMidiClip());
+        assertThat(controller.midiClipAt(midiTrack, 1.0)).isNull();
+        assertThat(controller.midiClipAt(midiTrack, 5.0)).isNull();
+    }
+
+    @Test
+    void shouldNotFindMidiClipOnAudioTrack() throws Exception {
+
+        AtomicReference<ClipInteractionController> ref = new AtomicReference<>();
+        Track audioTrack = new Track("Audio 1", TrackType.AUDIO);
+        audioTrack.getMidiClip().addNote(MidiNoteData.of(60, 0, 4, 100));
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                ref.set(new ClipInteractionController(canvas, createHost()));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        ClipInteractionController controller = ref.get();
+        assertThat(controller.midiClipAt(audioTrack, 0.5)).isNull();
+    }
+
+    @Test
+    void clickOnMidiClipShouldSelectIt() throws Exception {
+
+        Track midiTrack = new Track("MIDI 1", TrackType.MIDI);
+        // Notes at columns 0–8 = beats 0.0–2.0
+        midiTrack.getMidiClip().addNote(MidiNoteData.of(60, 0, 8, 100));
+        tracks.add(midiTrack);
+        activeTool = EditTool.POINTER;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Click at beat 1.0 (x=40) on the MIDI clip
+                canvas.fireEvent(mousePressed(40.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(selectionModel.isMidiClipSelected(midiTrack.getMidiClip())).isTrue();
+    }
+
+    @Test
+    void shiftClickOnMidiClipShouldToggleSelection() throws Exception {
+
+        Track midiTrack = new Track("MIDI 1", TrackType.MIDI);
+        // Notes at columns 0–8 = beats 0.0–2.0
+        MidiClip midiClip = midiTrack.getMidiClip();
+        midiClip.addNote(MidiNoteData.of(60, 0, 8, 100));
+        tracks.add(midiTrack);
+        activeTool = EditTool.POINTER;
+
+        // Pre-select the MIDI clip
+        selectionModel.selectMidiClip(midiTrack, midiClip);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Shift-click at beat 1.0 (x=40) to toggle off
+                canvas.fireEvent(mousePressedShift(40.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(selectionModel.isMidiClipSelected(midiClip)).isFalse();
+    }
+
+    @Test
+    void rubberBandShouldSelectMidiClips() throws Exception {
+
+        Track midiTrack = new Track("MIDI 1", TrackType.MIDI);
+        // Notes at columns 4–12 = beats 1.0–3.0
+        midiTrack.getMidiClip().addNote(MidiNoteData.of(60, 4, 8, 100));
+        tracks.add(midiTrack);
+        activeTool = EditTool.POINTER;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Rubber-band from beat 5.0 (x=200, empty) to beat 0.0 (x=0)
+                canvas.fireEvent(mousePressed(200.0, 10.0));
+                canvas.fireEvent(mouseDragged(0.0, 70.0));
+                canvas.fireEvent(mouseReleased(0.0, 70.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(selectionModel.isMidiClipSelected(midiTrack.getMidiClip())).isTrue();
+    }
+
+    @Test
+    void rubberBandShouldSelectBothAudioAndMidiClips() throws Exception {
+
+        Track audioTrack = new Track("Audio 1", TrackType.AUDIO);
+        AudioClip audioClip = new AudioClip("Vocal", 0.0, 4.0, null);
+        audioTrack.addClip(audioClip);
+        tracks.add(audioTrack);
+
+        Track midiTrack = new Track("MIDI 1", TrackType.MIDI);
+        // Notes at columns 4–12 = beats 1.0–3.0
+        midiTrack.getMidiClip().addNote(MidiNoteData.of(60, 4, 8, 100));
+        tracks.add(midiTrack);
+        activeTool = EditTool.POINTER;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Rubber-band spanning both tracks (y: 10 to 150)
+                canvas.fireEvent(mousePressed(200.0, 10.0));
+                canvas.fireEvent(mouseDragged(0.0, 150.0));
+                canvas.fireEvent(mouseReleased(0.0, 150.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(selectionModel.isClipSelected(audioClip)).isTrue();
+        assertThat(selectionModel.isMidiClipSelected(midiTrack.getMidiClip())).isTrue();
     }
 }

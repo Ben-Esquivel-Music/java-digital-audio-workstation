@@ -55,6 +55,10 @@ public final class ArrangementCanvas extends Pane {
     static final Color SELECTION_BORDER_COLOR = Color.web("#42A5F5", 0.6);
     static final Color SELECTION_HANDLE_COLOR = Color.web("#42A5F5", 0.9);
     static final Color SELECTION_HANDLE_FILL_COLOR = Color.web("#42A5F5", 0.4);
+    static final Color RUBBER_BAND_FILL_COLOR = Color.web("#42A5F5", 0.15);
+    static final Color RUBBER_BAND_BORDER_COLOR = Color.web("#42A5F5", 0.7);
+    static final Color CLIP_SELECTED_BORDER_COLOR = Color.web("#42A5F5", 0.9);
+    static final Color CLIP_SELECTED_OVERLAY_COLOR = Color.web("#42A5F5", 0.25);
 
     private static final double SELECTION_BORDER_WIDTH = 1.0;
     /** Width of the draggable handle zones at each selection edge, in pixels. */
@@ -101,6 +105,16 @@ public final class ArrangementCanvas extends Pane {
     private boolean selectionActive = false;
     private double selectionStartBeat = 0.0;
     private double selectionEndBeat = 0.0;
+
+    // Rubber-band selection overlay state (pixel coordinates)
+    private boolean rubberBandActive = false;
+    private double rubberBandX1;
+    private double rubberBandY1;
+    private double rubberBandX2;
+    private double rubberBandY2;
+
+    /** Selection model used to check which clips are currently selected. */
+    private SelectionModel selectionModel;
 
     /**
      * Tracks which track IDs have their automation lane expanded.
@@ -308,6 +322,44 @@ public final class ArrangementCanvas extends Pane {
     void setTrimPreview(double beat, int trackIndex) {
         this.trimPreviewBeat = beat;
         this.trimPreviewTrackIndex = trackIndex;
+    }
+
+    // ── Rubber-band selection overlay ──────────────────────────────────────
+
+    /**
+     * Sets the rubber-band selection rectangle state for rendering during
+     * a drag gesture. The coordinates are in canvas pixel space.
+     *
+     * @param active whether the rubber-band rectangle should be displayed
+     * @param x1     the X of the anchor corner
+     * @param y1     the Y of the anchor corner
+     * @param x2     the X of the current drag position
+     * @param y2     the Y of the current drag position
+     */
+    void setRubberBand(boolean active, double x1, double y1, double x2, double y2) {
+        this.rubberBandActive = active;
+        this.rubberBandX1 = x1;
+        this.rubberBandY1 = y1;
+        this.rubberBandX2 = x2;
+        this.rubberBandY2 = y2;
+        redraw();
+    }
+
+    /** Returns {@code true} if the rubber-band overlay is currently active. */
+    boolean isRubberBandActive() {
+        return rubberBandActive;
+    }
+
+    /**
+     * Sets the {@link SelectionModel} used to determine which clips are
+     * currently selected, so that selected clips can be highlighted during
+     * rendering.
+     *
+     * @param selectionModel the selection model, or {@code null} to disable
+     *                       clip selection highlighting
+     */
+    void setSelectionModel(SelectionModel selectionModel) {
+        this.selectionModel = selectionModel;
     }
 
     // ── Automation lane visibility ─────────────────────────────────────────
@@ -544,6 +596,7 @@ public final class ArrangementCanvas extends Pane {
         drawClips(gc, w, h);
         drawAutomationLanes(gc, w, h);
         drawSelectionHighlight(gc, w, h);
+        drawRubberBand(gc, w, h);
         drawTrimPreview(gc, w, h);
         drawPlayhead(gc, w, h);
     }
@@ -649,6 +702,17 @@ public final class ArrangementCanvas extends Pane {
         gc.setLineWidth(1.0);
         gc.strokeRoundRect(clipX, clipY, clipWidth, clipHeight,
                 CLIP_CORNER_RADIUS, CLIP_CORNER_RADIUS);
+
+        // Selection highlight overlay for selected clips
+        if (selectionModel != null && selectionModel.isClipSelected(clip)) {
+            gc.setFill(CLIP_SELECTED_OVERLAY_COLOR);
+            gc.fillRoundRect(clipX, clipY, clipWidth, clipHeight,
+                    CLIP_CORNER_RADIUS, CLIP_CORNER_RADIUS);
+            gc.setStroke(CLIP_SELECTED_BORDER_COLOR);
+            gc.setLineWidth(2.0);
+            gc.strokeRoundRect(clipX, clipY, clipWidth, clipHeight,
+                    CLIP_CORNER_RADIUS, CLIP_CORNER_RADIUS);
+        }
 
         // Fade-in overlay (curve shape)
         if (clip.getFadeInBeats() > 0) {
@@ -951,6 +1015,17 @@ public final class ArrangementCanvas extends Pane {
         gc.strokeRoundRect(clipX, clipY, clipWidth, clipHeight,
                 CLIP_CORNER_RADIUS, CLIP_CORNER_RADIUS);
 
+        // Selection highlight overlay for selected MIDI clips
+        if (selectionModel != null && selectionModel.isMidiClipSelected(midiClip)) {
+            gc.setFill(CLIP_SELECTED_OVERLAY_COLOR);
+            gc.fillRoundRect(clipX, clipY, clipWidth, clipHeight,
+                    CLIP_CORNER_RADIUS, CLIP_CORNER_RADIUS);
+            gc.setStroke(CLIP_SELECTED_BORDER_COLOR);
+            gc.setLineWidth(2.0);
+            gc.strokeRoundRect(clipX, clipY, clipWidth, clipHeight,
+                    CLIP_CORNER_RADIUS, CLIP_CORNER_RADIUS);
+        }
+
         // Draw mini piano-roll notes
         int noteRange = maxNote - minNote + 1;
         if (noteRange < 1) {
@@ -1068,6 +1143,35 @@ public final class ArrangementCanvas extends Pane {
         gc.setLineWidth(1.0);
         gc.strokeRoundRect(x - SELECTION_HANDLE_VISUAL_WIDTH / 2.0, handleY,
                 SELECTION_HANDLE_VISUAL_WIDTH, handleHeight, 2.0, 2.0);
+    }
+
+    private void drawRubberBand(GraphicsContext gc, double canvasWidth, double canvasHeight) {
+        if (!rubberBandActive) {
+            return;
+        }
+        double x = Math.min(rubberBandX1, rubberBandX2);
+        double y = Math.min(rubberBandY1, rubberBandY2);
+        double w = Math.abs(rubberBandX2 - rubberBandX1);
+        double h = Math.abs(rubberBandY2 - rubberBandY1);
+        // Clamp to canvas bounds
+        double drawX = Math.max(0, x);
+        double drawY = Math.max(0, y);
+        double drawRight = Math.min(canvasWidth, x + w);
+        double drawBottom = Math.min(canvasHeight, y + h);
+        if (drawRight <= drawX || drawBottom <= drawY) {
+            return;
+        }
+        double drawW = drawRight - drawX;
+        double drawH = drawBottom - drawY;
+
+        gc.setFill(RUBBER_BAND_FILL_COLOR);
+        gc.fillRect(drawX, drawY, drawW, drawH);
+
+        gc.setStroke(RUBBER_BAND_BORDER_COLOR);
+        gc.setLineWidth(1.0);
+        gc.setLineDashes(4.0, 3.0);
+        gc.strokeRect(drawX, drawY, drawW, drawH);
+        gc.setLineDashes((double[]) null);
     }
 
     private void drawTrimPreview(GraphicsContext gc, double canvasWidth, double canvasHeight) {
