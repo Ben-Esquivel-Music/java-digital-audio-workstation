@@ -5,8 +5,8 @@ import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.midi.KeyboardPreset;
 import com.benesquivelmusic.daw.core.midi.KeyboardProcessor;
 import com.benesquivelmusic.daw.core.midi.VelocityCurve;
-import com.benesquivelmusic.daw.sdk.midi.MidiEvent;
 
+import javafx.animation.AnimationTimer;
 import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.geometry.Insets;
@@ -84,6 +84,8 @@ public final class KeyboardProcessorView extends VBox {
 
     private final KeyboardProcessor processor;
     private final Canvas keyboardCanvas;
+    private final KeyboardProcessor.KeyboardEventListener keyboardListener;
+    private final AnimationTimer playbackTimer;
     private int lastPressedNote = -1;
 
     // Controls
@@ -194,8 +196,28 @@ public final class KeyboardProcessorView extends VBox {
         keyboardCanvas.setOnMouseDragged(this::onMouseDragged);
         keyboardCanvas.setOnMouseReleased(this::onMouseReleased);
 
-        // Register listener for visual feedback
-        processor.addListener(event -> Platform.runLater(this::paintKeyboard));
+        // Register listener for visual feedback (stored for cleanup)
+        keyboardListener = event -> Platform.runLater(this::paintKeyboard);
+        processor.addListener(keyboardListener);
+
+        // Animation timer to drive playback advancement
+        playbackTimer = new AnimationTimer() {
+            @Override
+            public void handle(long now) {
+                if (processor.isPlaying()) {
+                    processor.advancePlayback();
+                } else {
+                    stop();
+                }
+            }
+        };
+
+        // Clean up listener and timer when removed from scene graph
+        sceneProperty().addListener((_, _, newScene) -> {
+            if (newScene == null) {
+                dispose();
+            }
+        });
 
         getChildren().addAll(title, presetRow, velocityRow, transportRow, keyboardCanvas);
         HBox.setHgrow(presetCombo, Priority.ALWAYS);
@@ -241,6 +263,9 @@ public final class KeyboardProcessorView extends VBox {
     private void onPlay() {
         if (!processor.isPlaying()) {
             processor.startPlayback(120.0);
+            if (processor.isPlaying()) {
+                playbackTimer.start();
+            }
         }
     }
 
@@ -252,6 +277,7 @@ public final class KeyboardProcessorView extends VBox {
         if (processor.isPlaying()) {
             processor.stopPlayback();
         }
+        playbackTimer.stop();
     }
 
     private void onClear() {
@@ -357,12 +383,15 @@ public final class KeyboardProcessorView extends VBox {
         int highestNote = Math.min(127, (p.highestOctave() + 2) * NOTES_PER_OCTAVE - 1);
 
         // Draw white keys
+        int transpose = p.transpose();
         int whiteIndex = 0;
         for (int note = lowestNote; note <= highestNote; note++) {
             int noteIndex = note % NOTES_PER_OCTAVE;
             if (!KeyboardProcessor.isBlackKey(noteIndex)) {
                 double x = whiteIndex * WHITE_KEY_WIDTH;
-                boolean active = processor.isNoteActive(note);
+                int transposed = note + transpose;
+                boolean active = transposed >= 0 && transposed <= 127
+                        && processor.isNoteActive(transposed);
                 gc.setFill(active ? WHITE_KEY_PRESSED_COLOR : WHITE_KEY_COLOR);
                 gc.fillRect(x, 0, WHITE_KEY_WIDTH - 1, WHITE_KEY_HEIGHT);
                 gc.setStroke(KEY_BORDER_COLOR);
@@ -387,7 +416,9 @@ public final class KeyboardProcessorView extends VBox {
             int noteIndex = note % NOTES_PER_OCTAVE;
             if (KeyboardProcessor.isBlackKey(noteIndex)) {
                 double bx = whiteIndex * WHITE_KEY_WIDTH - BLACK_KEY_WIDTH / 2.0;
-                boolean active = processor.isNoteActive(note);
+                int transposedBlack = note + transpose;
+                boolean active = transposedBlack >= 0 && transposedBlack <= 127
+                        && processor.isNoteActive(transposedBlack);
                 gc.setFill(active ? BLACK_KEY_PRESSED_COLOR : BLACK_KEY_COLOR);
                 gc.fillRect(bx, 0, BLACK_KEY_WIDTH, BLACK_KEY_HEIGHT);
                 gc.setStroke(KEY_BORDER_COLOR);
@@ -456,6 +487,18 @@ public final class KeyboardProcessorView extends VBox {
      */
     ToggleButton getRecordButton() {
         return recordButton;
+    }
+
+    // ── Disposal ─────────────────────────────────────────────────────────
+
+    /**
+     * Removes the keyboard event listener and stops the playback timer.
+     * Called automatically when the view is removed from the scene graph,
+     * or may be called manually when the view is no longer needed.
+     */
+    public void dispose() {
+        playbackTimer.stop();
+        processor.removeListener(keyboardListener);
     }
 
     // ── Inner Classes ──────────────────────────────────────────────────

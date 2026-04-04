@@ -149,9 +149,9 @@ public final class KeyboardProcessor {
     private void applyPresetToRenderer() {
         KeyboardPreset p = preset;
         try {
-            renderer.sendEvent(MidiEvent.programChange(channel, p.program()));
+            renderer.selectPreset(channel, p.bank(), p.program());
         } catch (Exception e) {
-            LOG.log(Level.WARNING, "Failed to apply preset program change", e);
+            LOG.log(Level.WARNING, "Failed to apply preset bank/program", e);
         }
     }
 
@@ -383,7 +383,7 @@ public final class KeyboardProcessor {
         }
         this.tempo = tempo;
         this.playbackStartTimeMs = System.currentTimeMillis();
-        this.playbackPositionColumn = 0;
+        this.playbackPositionColumn = -1;
         this.playing = true;
     }
 

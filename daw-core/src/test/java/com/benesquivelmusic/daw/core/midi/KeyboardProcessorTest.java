@@ -74,12 +74,13 @@ class KeyboardProcessorTest {
     }
 
     @Test
-    void shouldSendProgramChangeOnPresetChange() {
+    void shouldSendBankAndProgramOnPresetChange() {
         processor.setPreset(KeyboardPreset.electricPiano());
-        // Should have a program change event (program=4)
-        assertThat(renderer.receivedEvents).anySatisfy(e -> {
-            assertThat(e.type()).isEqualTo(MidiEvent.Type.PROGRAM_CHANGE);
-            assertThat(e.data1()).isEqualTo(4);
+        // Should have called selectPreset with bank=0, program=4
+        assertThat(renderer.presetSelections).anySatisfy(ps -> {
+            assertThat(ps.channel()).isZero();
+            assertThat(ps.bank()).isZero();
+            assertThat(ps.program()).isEqualTo(4);
         });
     }
 
@@ -308,6 +309,24 @@ class KeyboardProcessorTest {
         assertThat(processor.isPlaying()).isFalse();
     }
 
+    @Test
+    void advancePlaybackShouldTriggerNotesAtColumnZero() {
+        // Add a note starting at column 0
+        processor.getClip().addNote(MidiNoteData.of(60, 0, 2, 100));
+        renderer.receivedEvents.clear();
+        processor.startPlayback(120.0);
+        assertThat(processor.isPlaying()).isTrue();
+
+        // First advancePlayback should trigger note-on for column 0
+        // (timestampToColumn will return 0 for very small elapsed time)
+        processor.advancePlayback();
+
+        assertThat(renderer.receivedEvents).anySatisfy(e -> {
+            assertThat(e.type()).isEqualTo(MidiEvent.Type.NOTE_ON);
+            assertThat(e.data1()).isEqualTo(60);
+        });
+    }
+
     // ── Clip ───────────────────────────────────────────────────────────
 
     @Test
@@ -450,11 +469,16 @@ class KeyboardProcessorTest {
     private static final class StubRenderer implements SoundFontRenderer {
         final List<MidiEvent> receivedEvents = new CopyOnWriteArrayList<>();
 
+        record PresetSelection(int channel, int bank, int program) {}
+        final List<PresetSelection> presetSelections = new CopyOnWriteArrayList<>();
+
         @Override public void initialize(double sampleRate, int bufferSize) {}
         @Override public SoundFontInfo loadSoundFont(Path path) { return new SoundFontInfo(0, path, List.of()); }
         @Override public void unloadSoundFont(int soundFontId) {}
         @Override public List<SoundFontInfo> getLoadedSoundFonts() { return Collections.emptyList(); }
-        @Override public void selectPreset(int channel, int bank, int program) {}
+        @Override public void selectPreset(int channel, int bank, int program) {
+            presetSelections.add(new PresetSelection(channel, bank, program));
+        }
         @Override public void sendEvent(MidiEvent event) { receivedEvents.add(event); }
         @Override public void render(float[][] outputBuffer, int numFrames) {}
         @Override public float[][] bounce(List<MidiEvent> events, int totalFrames) { return new float[2][totalFrames]; }
