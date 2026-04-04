@@ -235,7 +235,6 @@ public final class AmbienceUpmixer implements AudioProcessor {
         this.targetLayout = layout;
         this.outputChannelCount = layout.channelCount();
         rebuildHeightChannelIndices();
-        rebuildDecorrelators();
     }
 
     /**
@@ -326,15 +325,35 @@ public final class AmbienceUpmixer implements AudioProcessor {
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         ensureBuffers(numFrames);
 
-        // Zero all output channels
-        for (int ch = 0; ch < outputChannelCount && ch < outputBuffer.length; ch++) {
+        // Zero all provided output channels so any host-supplied channels not
+        // used by the current target layout do not retain stale audio.
+        for (int ch = 0; ch < outputBuffer.length; ch++) {
             Arrays.fill(outputBuffer[ch], 0, numFrames, 0.0f);
+        }
+
+        if (inputBuffer.length == 0) {
+            return;
         }
 
         if (inputBuffer.length < INPUT_CHANNELS) {
             // Mono or unexpected input — pass through to first output channel
             if (outputBuffer.length > 0) {
                 System.arraycopy(inputBuffer[0], 0, outputBuffer[0], 0, numFrames);
+            }
+            return;
+        }
+
+        // When the target layout has no height channels, ambient extraction
+        // has nowhere to go — pass L/R through unchanged to avoid narrowing
+        // the stereo image.
+        if (activeHeightCount == 0) {
+            int lIdx = targetLayout.indexOf(SpeakerLabel.L);
+            int rIdx = targetLayout.indexOf(SpeakerLabel.R);
+            if (lIdx >= 0 && lIdx < outputBuffer.length) {
+                System.arraycopy(inputBuffer[0], 0, outputBuffer[lIdx], 0, numFrames);
+            }
+            if (rIdx >= 0 && rIdx < outputBuffer.length) {
+                System.arraycopy(inputBuffer[1], 0, outputBuffer[rIdx], 0, numFrames);
             }
             return;
         }
@@ -361,8 +380,8 @@ public final class AmbienceUpmixer implements AudioProcessor {
             }
         }
 
-        // If no height channels or no extraction, we're done
-        if (activeHeightCount == 0 || ambientExtraction == 0.0) {
+        // If no extraction, we're done (L/R already have the full signal)
+        if (ambientExtraction == 0.0) {
             return;
         }
 
@@ -380,7 +399,6 @@ public final class AmbienceUpmixer implements AudioProcessor {
         float decorrelGain = (float) decorrelationAmount;
         float dryGain = 1.0f - decorrelGain;
 
-        int heightIdx = 0;
         for (int h = 0; h < heightChannelIndices.length; h++) {
             int outCh = heightChannelIndices[h];
             if (outCh < 0 || outCh >= outputBuffer.length) {
@@ -399,8 +417,8 @@ public final class AmbienceUpmixer implements AudioProcessor {
             }
 
             // Apply decorrelation (dry/wet blend with Schroeder allpass)
-            if (decorrelGain > 0 && heightIdx < decorrelators.length) {
-                SchroederAllpass allpass = decorrelators[heightIdx];
+            if (decorrelGain > 0 && h < decorrelators.length) {
+                SchroederAllpass allpass = decorrelators[h];
                 for (int i = 0; i < numFrames; i++) {
                     float dry = decorrelatorTemp[i];
                     float wet = allpass.processSample(dry);
@@ -411,8 +429,6 @@ public final class AmbienceUpmixer implements AudioProcessor {
                     outputBuffer[outCh][i] += decorrelatorTemp[i];
                 }
             }
-
-            heightIdx++;
         }
     }
 

@@ -1,11 +1,9 @@
 package com.benesquivelmusic.daw.core.spatial;
 
-import com.benesquivelmusic.daw.sdk.spatial.SpeakerLabel;
 import com.benesquivelmusic.daw.sdk.spatial.SpeakerLayout;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
-import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -363,9 +361,16 @@ class AmbienceUpmixerTest {
         float[][] output = new float[2][NUM_FRAMES];
         upmixer.process(input, output, NUM_FRAMES);
 
-        // Should still have output in L/R
-        double lrEnergy = channelEnergy(output, 0, 2, NUM_FRAMES);
-        assertThat(lrEnergy).isGreaterThan(0.0);
+        // With a stereo-only layout, there are no height channels to synthesize,
+        // so ambient extraction should not alter the original L/R program.
+        for (int i = 0; i < NUM_FRAMES; i++) {
+            assertThat((double) output[0][i])
+                    .as("left output should pass through unchanged at frame %d", i)
+                    .isCloseTo(input[0][i], within(TOLERANCE));
+            assertThat((double) output[1][i])
+                    .as("right output should pass through unchanged at frame %d", i)
+                    .isCloseTo(input[1][i], within(TOLERANCE));
+        }
     }
 
     // ---- Processing: Zero Height Level ----
@@ -442,6 +447,23 @@ class AmbienceUpmixerTest {
     }
 
     // ---- Mono Input Fallback ----
+
+    @Test
+    void shouldHandleEmptyInput() {
+        AmbienceUpmixer upmixer = new AmbienceUpmixer(SAMPLE_RATE);
+        float[][] emptyInput = new float[0][];
+        float[][] output = new float[12][NUM_FRAMES];
+
+        // Should not throw — gracefully returns with zeroed output
+        upmixer.process(emptyInput, output, NUM_FRAMES);
+
+        for (int ch = 0; ch < 12; ch++) {
+            for (int i = 0; i < NUM_FRAMES; i++) {
+                assertThat((double) output[ch][i]).as("ch=%d frame=%d", ch, i)
+                        .isCloseTo(0.0, within(TOLERANCE));
+            }
+        }
+    }
 
     @Test
     void shouldHandleMonoInput() {
