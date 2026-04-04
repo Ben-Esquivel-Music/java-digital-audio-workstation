@@ -125,8 +125,7 @@ public final class AdaaWaveshaper {
      *
      * <ul>
      *   <li>{@code f(x) = x / (1 + |x|)}</li>
-     *   <li>{@code F(x) = |x| - ln(1 + |x|)} (for {@code x ≥ 0}),
-     *       sign-adjusted for symmetry</li>
+     *   <li>{@code F(x) = |x| - ln(1 + |x|)} (even function)</li>
      * </ul>
      */
     public static final TransferFunction SOFT_CLIP = new TransferFunction() {
