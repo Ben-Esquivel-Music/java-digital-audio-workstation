@@ -145,18 +145,20 @@ public final class AnalogDistortionProcessor implements AudioProcessor {
                 //    gain-bandwidth product. Higher drive → lower bandwidth.
                 fb = fb + (1.0 - fbCoeff) * (x - fb);
 
-                // 2. Slew-rate limiting: clamp the rate of change
+                // 2. Slew-rate limiting: clamp the rate of change of the
+                //    lowpass output, while keeping the lowpass state intact.
+                double slewed = fb;
                 double delta = fb - slew;
                 if (delta > maxSlew) {
-                    fb = slew + maxSlew;
+                    slewed = slew + maxSlew;
                 } else if (delta < -maxSlew) {
-                    fb = slew - maxSlew;
+                    slewed = slew - maxSlew;
                 }
-                slew = fb;
+                slew = slewed;
 
                 // 3. Diode clipper: arcsinh-based Shockley equation approximation
                 //    with configurable asymmetry
-                double clipped = diodeClip(fb, asym);
+                double clipped = diodeClip(slewed, asym);
 
                 // 4. Tone control: high-shelf biquad tilt EQ
                 float toned = filters[ch].processSample((float) clipped);
@@ -216,9 +218,13 @@ public final class AnalogDistortionProcessor implements AudioProcessor {
     /**
      * Sets the drive gain in dB.
      *
-     * @param driveDb the drive gain
+     * @param driveDb the drive gain (must be finite)
+     * @throws IllegalArgumentException if driveDb is not finite
      */
     public void setDriveDb(double driveDb) {
+        if (!Double.isFinite(driveDb)) {
+            throw new IllegalArgumentException("driveDb must be finite: " + driveDb);
+        }
         this.driveDb = driveDb;
         this.driveLinear = Math.pow(10.0, driveDb / 20.0);
         updateFeedbackCoefficient();
@@ -292,9 +298,13 @@ public final class AnalogDistortionProcessor implements AudioProcessor {
     /**
      * Sets the output level in dB.
      *
-     * @param outputLevelDb the output level gain
+     * @param outputLevelDb the output level gain (must be finite)
+     * @throws IllegalArgumentException if outputLevelDb is not finite
      */
     public void setOutputLevelDb(double outputLevelDb) {
+        if (!Double.isFinite(outputLevelDb)) {
+            throw new IllegalArgumentException("outputLevelDb must be finite: " + outputLevelDb);
+        }
         this.outputLevelDb = outputLevelDb;
         this.outputLinear = Math.pow(10.0, outputLevelDb / 20.0);
     }

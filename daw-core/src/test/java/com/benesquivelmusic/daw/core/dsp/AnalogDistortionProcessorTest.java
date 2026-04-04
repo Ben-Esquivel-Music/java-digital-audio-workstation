@@ -246,6 +246,19 @@ class AnalogDistortionProcessorTest {
         // Both channels should have signal
         assertThat(rms(output[0], 1024, 2048)).isGreaterThan(0.001);
         assertThat(rms(output[1], 1024, 2048)).isGreaterThan(0.001);
+
+        // Channels should differ — low cross-channel correlation confirms
+        // independent processing (no crosstalk)
+        double crossCorrelation = 0;
+        double energy0 = 0;
+        double energy1 = 0;
+        for (int i = 1024; i < 2048; i++) {
+            crossCorrelation += output[0][i] * output[1][i];
+            energy0 += output[0][i] * output[0][i];
+            energy1 += output[1][i] * output[1][i];
+        }
+        double normalizedCorrelation = crossCorrelation / Math.sqrt(energy0 * energy1);
+        assertThat(Math.abs(normalizedCorrelation)).isLessThan(0.9);
     }
 
     @Test
@@ -263,6 +276,28 @@ class AnalogDistortionProcessorTest {
         assertThatThrownBy(() -> proc.setSlewRate(0))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> proc.setSlewRate(-1))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void shouldRejectInvalidDriveDb() {
+        AnalogDistortionProcessor proc = new AnalogDistortionProcessor(1, 44100.0);
+        assertThatThrownBy(() -> proc.setDriveDb(Double.NaN))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> proc.setDriveDb(Double.POSITIVE_INFINITY))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> proc.setDriveDb(Double.NEGATIVE_INFINITY))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void shouldRejectInvalidOutputLevelDb() {
+        AnalogDistortionProcessor proc = new AnalogDistortionProcessor(1, 44100.0);
+        assertThatThrownBy(() -> proc.setOutputLevelDb(Double.NaN))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> proc.setOutputLevelDb(Double.POSITIVE_INFINITY))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> proc.setOutputLevelDb(Double.NEGATIVE_INFINITY))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
