@@ -136,6 +136,19 @@ class KeyboardProcessorTest {
     }
 
     @Test
+    void isNoteActiveShouldApplyTranspose() {
+        processor.setPreset(KeyboardPreset.grandPiano().withTranspose(12));
+        renderer.receivedEvents.clear();
+        processor.noteOn(60, 100); // transposed → 72 in activeNotes
+        // isNoteActive(60) should apply transpose internally → checks activeNotes[72]
+        assertThat(processor.isNoteActive(60)).isTrue();
+        assertThat(processor.getActiveNoteCount()).isEqualTo(1);
+
+        processor.noteOff(60);
+        assertThat(processor.isNoteActive(60)).isFalse();
+    }
+
+    @Test
     void shouldNotDoubleNoteOn() {
         processor.noteOn(60, 100);
         processor.noteOn(60, 100); // duplicate, should be ignored
@@ -199,6 +212,25 @@ class KeyboardProcessorTest {
         assertThat(processor.isNoteActive(60)).isFalse();
         assertThat(processor.isNoteActive(64)).isFalse();
         assertThat(processor.isNoteActive(67)).isFalse();
+    }
+
+    @Test
+    void allNotesOffShouldNotifyListeners() {
+        processor.noteOn(60, 100);
+        processor.noteOn(64, 100);
+
+        List<MidiEvent> events = new ArrayList<>();
+        processor.addListener(events::add);
+
+        processor.allNotesOff();
+
+        // Should have received NOTE_OFF events for both notes
+        List<MidiEvent> noteOffEvents = events.stream()
+                .filter(e -> e.type() == MidiEvent.Type.NOTE_OFF)
+                .toList();
+        assertThat(noteOffEvents).hasSize(2);
+        assertThat(noteOffEvents).anySatisfy(e -> assertThat(e.data1()).isEqualTo(60));
+        assertThat(noteOffEvents).anySatisfy(e -> assertThat(e.data1()).isEqualTo(64));
     }
 
     // ── Velocity Curve Application ─────────────────────────────────────
@@ -293,6 +325,26 @@ class KeyboardProcessorTest {
         List<MidiNoteData> notes = processor.getRecordedNotes();
         assertThat(notes).hasSize(1);
         assertThat(notes.getFirst().durationColumns()).isEqualTo(4); // not hard-coded 1
+    }
+
+    @Test
+    void noteOffShouldFinalizeRecordingEvenAfterAllNotesOff() {
+        long[] clockTimeMs = useFakeClock(1000L);
+
+        processor.startRecording(120.0, 0);
+        processor.noteOn(60, 100);  // starts recording at column 0
+
+        // allNotesOff silences the note but noteOnColumns should still be set
+        processor.allNotesOff();
+        assertThat(processor.isNoteActive(60)).isFalse();
+
+        // noteOff should still finalize the recorded note
+        clockTimeMs[0] = 1250L; // 250ms later = 2 columns
+        processor.noteOff(60);
+
+        List<MidiNoteData> notes = processor.getRecordedNotes();
+        assertThat(notes).hasSize(1);
+        assertThat(notes.getFirst().durationColumns()).isEqualTo(2);
     }
 
     @Test

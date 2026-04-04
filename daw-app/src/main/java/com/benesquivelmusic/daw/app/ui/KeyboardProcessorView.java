@@ -405,15 +405,12 @@ public final class KeyboardProcessorView extends VBox {
         int highestNote = Math.min(127, (p.highestOctave() + 2) * NOTES_PER_OCTAVE - 1);
 
         // Draw white keys
-        int transpose = p.transpose();
         int whiteIndex = 0;
         for (int note = lowestNote; note <= highestNote; note++) {
             int noteIndex = note % NOTES_PER_OCTAVE;
             if (!KeyboardProcessor.isBlackKey(noteIndex)) {
                 double x = whiteIndex * WHITE_KEY_WIDTH;
-                int transposed = note + transpose;
-                boolean active = transposed >= 0 && transposed <= 127
-                        && processor.isNoteActive(transposed);
+                boolean active = processor.isNoteActive(note);
                 gc.setFill(active ? WHITE_KEY_PRESSED_COLOR : WHITE_KEY_COLOR);
                 gc.fillRect(x, 0, WHITE_KEY_WIDTH - 1, WHITE_KEY_HEIGHT);
                 gc.setStroke(KEY_BORDER_COLOR);
@@ -438,9 +435,7 @@ public final class KeyboardProcessorView extends VBox {
             int noteIndex = note % NOTES_PER_OCTAVE;
             if (KeyboardProcessor.isBlackKey(noteIndex)) {
                 double bx = whiteIndex * WHITE_KEY_WIDTH - BLACK_KEY_WIDTH / 2.0;
-                int transposedBlack = note + transpose;
-                boolean active = transposedBlack >= 0 && transposedBlack <= 127
-                        && processor.isNoteActive(transposedBlack);
+                boolean active = processor.isNoteActive(note);
                 gc.setFill(active ? BLACK_KEY_PRESSED_COLOR : BLACK_KEY_COLOR);
                 gc.fillRect(bx, 0, BLACK_KEY_WIDTH, BLACK_KEY_HEIGHT);
                 gc.setStroke(KEY_BORDER_COLOR);

@@ -239,24 +239,27 @@ public final class KeyboardProcessor {
             return;
         }
 
+        boolean sendNoteOff;
         synchronized (activeNotes) {
-            if (!activeNotes[transposed]) {
-                return; // Not active
+            sendNoteOff = activeNotes[transposed];
+            if (sendNoteOff) {
+                activeNotes[transposed] = false;
+                activeNoteCount--;
             }
-            activeNotes[transposed] = false;
-            activeNoteCount--;
         }
 
-        MidiEvent event = MidiEvent.noteOff(channel, transposed);
-        try {
-            renderer.sendEvent(event);
-        } catch (Exception e) {
-            LOG.log(Level.WARNING, "Failed to send note-off to renderer", e);
+        if (sendNoteOff) {
+            MidiEvent event = MidiEvent.noteOff(channel, transposed);
+            try {
+                renderer.sendEvent(event);
+            } catch (Exception e) {
+                LOG.log(Level.WARNING, "Failed to send note-off to renderer", e);
+            }
+
+            notifyListeners(event);
         }
 
-        notifyListeners(event);
-
-        // Recording
+        // Recording — finalize even if note was already silenced by allNotesOff()
         if (recording && noteOnColumns[transposed] >= 0) {
             long now = clock.getAsLong();
             int column = timestampToColumn(now - recordingStartTimeMs) + startColumnOffset;
@@ -290,24 +293,34 @@ public final class KeyboardProcessor {
         }
 
         for (int noteNumber : notesToTurnOff) {
+            MidiEvent event = MidiEvent.noteOff(channel, noteNumber);
             try {
-                renderer.sendEvent(MidiEvent.noteOff(channel, noteNumber));
+                renderer.sendEvent(event);
             } catch (Exception e) {
                 LOG.log(Level.WARNING, "Failed to send all-notes-off", e);
             }
+            notifyListeners(event);
         }
     }
 
     /**
      * Returns whether the given MIDI note is currently active (sounding).
      *
-     * @param noteNumber the MIDI note number (0–127)
+     * <p>The supplied note number is interpreted the same way as in
+     * {@code noteOn(int, int)} and {@code noteOff(int)}: the current preset
+     * transpose is applied before checking the active-note state.</p>
+     *
+     * @param noteNumber the pre-transpose MIDI note number (0–127)
      * @return {@code true} if the note is active
      */
     public boolean isNoteActive(int noteNumber) {
         validateNoteNumber(noteNumber);
+        int transposed = noteNumber + preset.transpose();
+        if (transposed < 0 || transposed > 127) {
+            return false;
+        }
         synchronized (activeNotes) {
-            return activeNotes[noteNumber];
+            return activeNotes[transposed];
         }
     }
 
