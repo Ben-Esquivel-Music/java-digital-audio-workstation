@@ -382,9 +382,8 @@ final class TransportController {
             recorder.setCountInDurationUs(countInDurationUs);
 
             // Wire MIDI activity indicator — flash the track strip on each event
-            Track capturedTrack = track;
             recorder.addEventListener(_ -> javafx.application.Platform.runLater(
-                    () -> host.flashMidiActivity(capturedTrack)));
+                    () -> host.flashMidiActivity(track)));
 
             try {
                 recorder.startRecording();
