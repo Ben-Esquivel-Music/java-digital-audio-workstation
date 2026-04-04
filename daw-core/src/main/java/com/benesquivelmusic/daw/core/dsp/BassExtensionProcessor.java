@@ -70,7 +70,7 @@ public final class BassExtensionProcessor implements AudioProcessor {
     private BiquadFilter[] bassIsolationLp;
 
     // Per-channel bandpass filters for harmonic shaping (one per channel)
-    // Passes the harmonic range: 2× crossover to harmonicOrder × crossover
+    // Passes the harmonic range: crossover to harmonicOrder × crossover
     private BiquadFilter[] harmonicBpLow;
     private BiquadFilter[] harmonicBpHigh;
 
@@ -113,7 +113,7 @@ public final class BassExtensionProcessor implements AudioProcessor {
 
                 // 2. Generate harmonics via half-wave rectification
                 //    Half-wave rectification of a sinusoid produces a DC component,
-                //    the fundamental, and even harmonics (2nd, 3rd, 4th, ...).
+                //    the fundamental, and higher harmonics (including 2nd, 3rd, 4th, ...).
                 float rectified = Math.max(0.0f, bass);
 
                 // 3. Polynomial waveshaping to emphasize selected harmonics.
@@ -188,6 +188,7 @@ public final class BassExtensionProcessor implements AudioProcessor {
                             + MAX_HARMONIC_ORDER + "]: " + harmonicOrder);
         }
         this.harmonicOrder = harmonicOrder;
+        rebuildFilters();
     }
 
     /**
@@ -257,9 +258,11 @@ public final class BassExtensionProcessor implements AudioProcessor {
      * order settings.
      */
     private void rebuildFilters() {
-        bassIsolationLp = new BiquadFilter[channels];
-        harmonicBpLow = new BiquadFilter[channels];
-        harmonicBpHigh = new BiquadFilter[channels];
+        // Build fully-populated local arrays before assigning to instance fields
+        // so that process() on the audio thread never observes partially-initialized arrays.
+        BiquadFilter[] newBassIsolationLp = new BiquadFilter[channels];
+        BiquadFilter[] newHarmonicBpLow = new BiquadFilter[channels];
+        BiquadFilter[] newHarmonicBpHigh = new BiquadFilter[channels];
 
         // Harmonic bandpass range: from crossover up to harmonicOrder × crossover.
         // The highpass at crossoverHz suppresses the DC and sub-fundamental content
@@ -268,17 +271,22 @@ public final class BassExtensionProcessor implements AudioProcessor {
         double bpHighCutoff = Math.min(harmonicOrder * crossoverHz, sampleRate * 0.45);
 
         for (int ch = 0; ch < channels; ch++) {
-            bassIsolationLp[ch] = BiquadFilter.create(
+            newBassIsolationLp[ch] = BiquadFilter.create(
                     BiquadFilter.FilterType.LOW_PASS, sampleRate, crossoverHz,
                     BUTTERWORTH_Q, 0);
 
-            harmonicBpLow[ch] = BiquadFilter.create(
+            newHarmonicBpLow[ch] = BiquadFilter.create(
                     BiquadFilter.FilterType.HIGH_PASS, sampleRate, crossoverHz,
                     BUTTERWORTH_Q, 0);
 
-            harmonicBpHigh[ch] = BiquadFilter.create(
+            newHarmonicBpHigh[ch] = BiquadFilter.create(
                     BiquadFilter.FilterType.LOW_PASS, sampleRate, bpHighCutoff,
                     BUTTERWORTH_Q, 0);
         }
+
+        // Swap references atomically (single write per field)
+        bassIsolationLp = newBassIsolationLp;
+        harmonicBpLow = newHarmonicBpLow;
+        harmonicBpHigh = newHarmonicBpHigh;
     }
 }

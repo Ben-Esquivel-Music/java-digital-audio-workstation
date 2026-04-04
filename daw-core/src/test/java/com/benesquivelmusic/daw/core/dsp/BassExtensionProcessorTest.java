@@ -401,6 +401,38 @@ class BassExtensionProcessorTest {
         assertThat(proc.getHarmonicLevel()).isEqualTo(1.0);
     }
 
+    @Test
+    void changingHarmonicOrderOnSameInstanceShouldUpdateFilterRange() {
+        // Verifies that setHarmonicOrder() rebuilds filters so the bandpass
+        // cutoff tracks the new harmonic range.
+        int length = 8192;
+        float[][] input = new float[1][length];
+        for (int i = 0; i < length; i++) {
+            input[0][i] = (float) (0.8 * Math.sin(2.0 * Math.PI * 60.0 * i / SAMPLE_RATE));
+        }
+
+        BassExtensionProcessor proc = new BassExtensionProcessor(1, SAMPLE_RATE);
+        proc.setCrossoverHz(80.0);
+        proc.setHarmonicLevel(1.0);
+
+        // Process with order 2
+        proc.setHarmonicOrder(2);
+        float[][] output2 = new float[1][length];
+        proc.process(input, output2, length);
+        double rms2 = rms(output2[0], length / 2, length);
+
+        // Reset and process the same input with order 4 on the same instance
+        proc.reset();
+        proc.setHarmonicOrder(4);
+        float[][] output4 = new float[1][length];
+        proc.process(input, output4, length);
+        double rms4 = rms(output4[0], length / 2, length);
+
+        // Higher order widens the harmonic bandpass and adds more harmonic
+        // content, so the output energy should differ
+        assertThat(rms4).isGreaterThan(rms2);
+    }
+
     private static double rms(float[] buffer, int start, int end) {
         double sum = 0;
         for (int i = start; i < end; i++) {
