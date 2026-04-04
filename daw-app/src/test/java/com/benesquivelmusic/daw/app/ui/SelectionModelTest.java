@@ -556,4 +556,101 @@ class SelectionModelTest {
         assertThatThrownBy(() -> SelectionModel.midiClipEndBeat(midiClip))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    // ── Selection change listener ───────────────────────────────────────────
+
+    @Test
+    void selectClipShouldFireSelectionChangeListener() {
+        SelectionModel model = new SelectionModel();
+        int[] callCount = {0};
+        model.setSelectionChangeListener(() -> callCount[0]++);
+        Track track = new Track("T1", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("c.wav", 0.0, 1.0, null);
+        track.addClip(clip);
+        model.selectClip(track, clip);
+        assertThat(callCount[0]).isEqualTo(1);
+    }
+
+    @Test
+    void toggleClipSelectionShouldFireSelectionChangeListener() {
+        SelectionModel model = new SelectionModel();
+        int[] callCount = {0};
+        model.setSelectionChangeListener(() -> callCount[0]++);
+        Track track = new Track("T1", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("c.wav", 0.0, 1.0, null);
+        track.addClip(clip);
+        model.toggleClipSelection(track, clip);
+        assertThat(callCount[0]).isEqualTo(1);
+    }
+
+    @Test
+    void clearClipSelectionShouldFireSelectionChangeListener() {
+        SelectionModel model = new SelectionModel();
+        Track track = new Track("T1", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("c.wav", 0.0, 1.0, null);
+        track.addClip(clip);
+        model.selectClip(track, clip);
+        int[] callCount = {0};
+        model.setSelectionChangeListener(() -> callCount[0]++);
+        model.clearClipSelection();
+        assertThat(callCount[0]).isEqualTo(1);
+    }
+
+    @Test
+    void selectClipsInRegionShouldFireSelectionChangeListener() {
+        SelectionModel model = new SelectionModel();
+        int[] callCount = {0};
+        model.setSelectionChangeListener(() -> callCount[0]++);
+        Track track = new Track("T1", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("c.wav", 1.0, 3.0, null);
+        track.addClip(clip);
+        model.selectClipsInRegion(List.of(track), 0.0, 4.0);
+        assertThat(callCount[0]).isEqualTo(1);
+    }
+
+    @Test
+    void addClipsInRegionShouldFireSelectionChangeListener() {
+        SelectionModel model = new SelectionModel();
+        int[] callCount = {0};
+        model.setSelectionChangeListener(() -> callCount[0]++);
+        Track track = new Track("T1", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("c.wav", 1.0, 3.0, null);
+        track.addClip(clip);
+        model.addClipsInRegion(List.of(track), 0.0, 4.0);
+        assertThat(callCount[0]).isEqualTo(1);
+    }
+
+    @Test
+    void selectMidiClipShouldFireSelectionChangeListener() {
+        SelectionModel model = new SelectionModel();
+        int[] callCount = {0};
+        model.setSelectionChangeListener(() -> callCount[0]++);
+        Track track = new Track("M1", TrackType.MIDI);
+        MidiClip midiClip = track.getMidiClip();
+        midiClip.addNote(MidiNoteData.of(60, 0, 4, 100));
+        model.selectMidiClip(track, midiClip);
+        assertThat(callCount[0]).isEqualTo(1);
+    }
+
+    @Test
+    void toggleMidiClipSelectionShouldFireSelectionChangeListener() {
+        SelectionModel model = new SelectionModel();
+        int[] callCount = {0};
+        model.setSelectionChangeListener(() -> callCount[0]++);
+        Track track = new Track("M1", TrackType.MIDI);
+        MidiClip midiClip = track.getMidiClip();
+        midiClip.addNote(MidiNoteData.of(60, 0, 4, 100));
+        model.toggleMidiClipSelection(track, midiClip);
+        assertThat(callCount[0]).isEqualTo(1);
+    }
+
+    @Test
+    void nullListenerShouldNotThrow() {
+        SelectionModel model = new SelectionModel();
+        model.setSelectionChangeListener(null);
+        Track track = new Track("T1", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("c.wav", 0.0, 1.0, null);
+        track.addClip(clip);
+        model.selectClip(track, clip); // should not throw
+    }
 }

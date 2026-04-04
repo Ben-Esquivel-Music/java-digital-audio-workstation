@@ -131,7 +131,7 @@
             <Button fx:id="masteringViewButton" text="Mastering"
                     styleClass="sidebar-button"/>
 
-            <Separator styleClass="sidebar-separator"/>
+            <Separator fx:id="toolsSectionSeparator" styleClass="sidebar-separator"/>
 
             <!-- Edit Tools -->
             <Label text="TOOLS" styleClass="toolbar-section-label"/>
@@ -146,7 +146,7 @@
             <Button fx:id="glueToolButton" text="Glue"
                     styleClass="sidebar-button"/>
 
-            <Separator styleClass="sidebar-separator"/>
+            <Separator fx:id="toolsZoomSeparator" styleClass="sidebar-separator"/>
 
             <!-- Zoom Controls -->
             <Label text="ZOOM" styleClass="toolbar-section-label"/>
@@ -157,7 +157,7 @@
             <Button fx:id="zoomToFitButton" text="Zoom to Fit"
                     styleClass="sidebar-button"/>
 
-            <Separator styleClass="sidebar-separator"/>
+            <Separator fx:id="zoomProjectSeparator" styleClass="sidebar-separator"/>
 
             <!-- Project Management -->
             <Label text="PROJECT" styleClass="toolbar-section-label"/>

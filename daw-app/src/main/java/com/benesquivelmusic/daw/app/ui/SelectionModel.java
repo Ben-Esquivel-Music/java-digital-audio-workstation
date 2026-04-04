@@ -32,6 +32,9 @@ public final class SelectionModel {
     private final Map<AudioClip, Track> selectedClips = new LinkedHashMap<>();
     private final Map<MidiClip, Track> selectedMidiClips = new LinkedHashMap<>();
 
+    /** Optional callback invoked whenever the clip selection changes. */
+    private Runnable selectionChangeListener;
+
     /**
      * Beats per grid column — used to convert MIDI note column positions to
      * beat positions for region overlap tests. Derived from
@@ -46,6 +49,22 @@ public final class SelectionModel {
         this.active = false;
         this.startBeat = 0.0;
         this.endBeat = 0.0;
+    }
+
+    /**
+     * Sets a listener that is invoked whenever the clip selection changes.
+     * Pass {@code null} to remove the listener.
+     *
+     * @param listener the selection change listener, or {@code null}
+     */
+    public void setSelectionChangeListener(Runnable listener) {
+        this.selectionChangeListener = listener;
+    }
+
+    private void fireSelectionChanged() {
+        if (selectionChangeListener != null) {
+            selectionChangeListener.run();
+        }
     }
 
     // ── Time selection ──────────────────────────────────────────────────────
@@ -127,6 +146,7 @@ public final class SelectionModel {
         selectedClips.clear();
         selectedMidiClips.clear();
         selectedClips.put(clip, track);
+        fireSelectionChanged();
     }
 
     /**
@@ -147,6 +167,7 @@ public final class SelectionModel {
         } else {
             selectedClips.put(clip, track);
         }
+        fireSelectionChanged();
     }
 
     /**
@@ -186,6 +207,7 @@ public final class SelectionModel {
                 }
             }
         }
+        fireSelectionChanged();
     }
 
     /**
@@ -226,6 +248,7 @@ public final class SelectionModel {
                 }
             }
         }
+        fireSelectionChanged();
     }
 
     /**
@@ -258,6 +281,7 @@ public final class SelectionModel {
     public void clearClipSelection() {
         selectedClips.clear();
         selectedMidiClips.clear();
+        fireSelectionChanged();
     }
 
     // ── MIDI clip selection ─────────────────────────────────────────────────
@@ -276,6 +300,7 @@ public final class SelectionModel {
         selectedClips.clear();
         selectedMidiClips.clear();
         selectedMidiClips.put(midiClip, track);
+        fireSelectionChanged();
     }
 
     /**
@@ -296,6 +321,7 @@ public final class SelectionModel {
         } else {
             selectedMidiClips.put(midiClip, track);
         }
+        fireSelectionChanged();
     }
 
     /**
