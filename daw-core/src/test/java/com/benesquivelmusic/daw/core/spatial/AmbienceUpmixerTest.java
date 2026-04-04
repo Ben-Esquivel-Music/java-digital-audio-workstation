@@ -173,7 +173,7 @@ class AmbienceUpmixerTest {
         AmbienceUpmixer upmixer = new AmbienceUpmixer(SAMPLE_RATE);
         upmixer.setAmbientExtraction(0.0);
 
-        float[][] input = stereoTestSignal(440.0, NUM_FRAMES);
+        float[][] input = wideStereoSignal(440.0, NUM_FRAMES);
         float[][] output = new float[12][NUM_FRAMES];
         upmixer.process(input, output, NUM_FRAMES);
 
@@ -357,7 +357,7 @@ class AmbienceUpmixerTest {
                 SAMPLE_RATE, SpeakerLayout.LAYOUT_STEREO);
         upmixer.setAmbientExtraction(0.5);
 
-        float[][] input = stereoTestSignal(440.0, NUM_FRAMES);
+        float[][] input = wideStereoSignal(440.0, NUM_FRAMES);
         float[][] output = new float[2][NUM_FRAMES];
         upmixer.process(input, output, NUM_FRAMES);
 

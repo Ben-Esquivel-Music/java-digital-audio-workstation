@@ -101,6 +101,7 @@ public final class AmbienceUpmixer implements AudioProcessor {
     private float[] tempLow;
     private float[] tempHigh;
     private float[] decorrelatorTemp;
+    private float[] pbaSumBuffer;
 
     /**
      * Creates an ambience upmixer with default parameters targeting 7.1.4 layout.
@@ -336,24 +337,50 @@ public final class AmbienceUpmixer implements AudioProcessor {
         }
 
         if (inputBuffer.length < INPUT_CHANNELS) {
-            // Mono or unexpected input — pass through to first output channel
-            if (outputBuffer.length > 0) {
-                System.arraycopy(inputBuffer[0], 0, outputBuffer[0], 0, numFrames);
+            // Mono or unexpected input — pass through to the layout's primary
+            // front speaker (prefer L, then C, then first available output).
+            int monoIdx = targetLayout.indexOf(SpeakerLabel.L);
+            if (monoIdx < 0) {
+                monoIdx = targetLayout.indexOf(SpeakerLabel.C);
+            }
+            if (monoIdx < 0 && outputBuffer.length > 0) {
+                monoIdx = 0;
+            }
+            if (monoIdx >= 0 && monoIdx < outputBuffer.length) {
+                System.arraycopy(inputBuffer[0], 0, outputBuffer[monoIdx], 0, numFrames);
             }
             return;
         }
 
         // When the target layout has no height channels, ambient extraction
-        // has nowhere to go — pass L/R through unchanged to avoid narrowing
-        // the stereo image.
+        // has nowhere to go — preserve audible output in the base layout.
         if (activeHeightCount == 0) {
             int lIdx = targetLayout.indexOf(SpeakerLabel.L);
             int rIdx = targetLayout.indexOf(SpeakerLabel.R);
+            boolean wroteOutput = false;
+
             if (lIdx >= 0 && lIdx < outputBuffer.length) {
                 System.arraycopy(inputBuffer[0], 0, outputBuffer[lIdx], 0, numFrames);
+                wroteOutput = true;
             }
             if (rIdx >= 0 && rIdx < outputBuffer.length) {
                 System.arraycopy(inputBuffer[1], 0, outputBuffer[rIdx], 0, numFrames);
+                wroteOutput = true;
+            }
+
+            if (!wroteOutput) {
+                int cIdx = targetLayout.indexOf(SpeakerLabel.C);
+                int fallbackIdx = (cIdx >= 0 && cIdx < outputBuffer.length) ? cIdx
+                        : (outputBuffer.length > 0 ? 0 : -1);
+
+                if (fallbackIdx >= 0) {
+                    float[] out = outputBuffer[fallbackIdx];
+                    float[] inL = inputBuffer[0];
+                    float[] inR = inputBuffer[1];
+                    for (int i = 0; i < numFrames; i++) {
+                        out[i] = 0.5f * (inL[i] + inR[i]);
+                    }
+                }
             }
             return;
         }
@@ -394,11 +421,20 @@ public final class AmbienceUpmixer implements AudioProcessor {
         // Step 4: Split ambient into frequency bands via PBA crossovers
         splitIntoBands(sideBuffer, numFrames);
 
-        // Step 5: Route PBA-weighted bands to height channels with decorrelation
+        // Step 5: Compute PBA-weighted band sum once (same across all heights)
         float hGain = (float) heightLevel;
         float decorrelGain = (float) decorrelationAmount;
         float dryGain = 1.0f - decorrelGain;
 
+        for (int i = 0; i < numFrames; i++) {
+            float sum = 0.0f;
+            for (int b = 0; b < bandBuffers.length; b++) {
+                sum += bandBuffers[b][i] * (float) pbaWeights[b];
+            }
+            pbaSumBuffer[i] = sum * hGain;
+        }
+
+        // Step 6: Route to height channels with per-channel polarity and decorrelation
         for (int h = 0; h < heightChannelIndices.length; h++) {
             int outCh = heightChannelIndices[h];
             if (outCh < 0 || outCh >= outputBuffer.length) {
@@ -407,13 +443,9 @@ public final class AmbienceUpmixer implements AudioProcessor {
 
             float polarity = HEIGHT_POLARITY[h % HEIGHT_POLARITY.length];
 
-            // Sum all PBA-weighted bands for this height channel
+            // Apply polarity to the pre-computed band sum
             for (int i = 0; i < numFrames; i++) {
-                float sum = 0.0f;
-                for (int b = 0; b < bandBuffers.length; b++) {
-                    sum += bandBuffers[b][i] * (float) pbaWeights[b];
-                }
-                decorrelatorTemp[i] = sum * hGain * polarity;
+                decorrelatorTemp[i] = pbaSumBuffer[i] * polarity;
             }
 
             // Apply decorrelation (dry/wet blend with Schroeder allpass)
@@ -509,6 +541,7 @@ public final class AmbienceUpmixer implements AudioProcessor {
         tempLow = new float[numFrames];
         tempHigh = new float[numFrames];
         decorrelatorTemp = new float[numFrames];
+        pbaSumBuffer = new float[numFrames];
         int numBands = pbaFrequencies.length + 1;
         bandBuffers = new float[numBands][numFrames];
     }
