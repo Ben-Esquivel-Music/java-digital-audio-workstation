@@ -187,7 +187,7 @@ class DirectionalFdnProcessorTest {
         // All FOA channels should have some energy with full directional spread
         assertThat(channelEnergy[0]).as("W energy").isGreaterThan(0);
         assertThat(channelEnergy[1]).as("Y energy").isGreaterThan(0);
-        // Z energy may be small but present (due to elevation variation)
+        assertThat(channelEnergy[2]).as("Z energy").isGreaterThan(0);
         assertThat(channelEnergy[3]).as("X energy").isGreaterThan(0);
     }
 

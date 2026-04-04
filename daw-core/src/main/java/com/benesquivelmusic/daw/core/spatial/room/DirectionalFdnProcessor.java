@@ -11,7 +11,7 @@ import java.util.Arrays;
  *
  * <p>Each of the N internal FDN delay lines is assigned a spherical direction
  * (azimuth, elevation). The output of each delay line is encoded to
- * first-order Ambisonics (W, X, Y, Z) using real spherical harmonic
+ * first-order Ambisonics (W, Y, Z, X) using real spherical harmonic
  * coefficients (ACN/SN3D), then summed across all delay lines. This
  * produces spatially distributed late reverberation — reflections arrive
  * from many directions rather than collapsing to a single point.</p>
@@ -41,10 +41,10 @@ import java.util.Arrays;
  * </ul>
  *
  * <p>Thread safety: this processor is <b>not</b> thread-safe. The
- * {@link #process} method must be called from a single thread (typically
- * the real-time audio thread). Parameter setters may be called from another
- * thread; they write to {@code volatile} fields that are read on the next
- * {@code process} call.</p>
+ * {@link #process} method and all parameter setters must not be called
+ * concurrently. Invoke setters on the same thread that calls
+ * {@link #process} (typically the real-time audio thread), or provide
+ * external synchronization so state updates cannot race with processing.</p>
  *
  * @see SphericalHarmonics
  * @see com.benesquivelmusic.daw.core.spatial.ambisonics.AmbisonicEncoder
@@ -66,12 +66,12 @@ public final class DirectionalFdnProcessor implements AudioProcessor {
             1.000, 1.069, 1.151, 1.237, 1.327, 1.423, 1.523, 1.619
     };
 
-    // ---- Configuration (volatile for safe cross-thread parameter updates) ----
+    // ---- Configuration ----
     private final int sampleRate;
-    private volatile double roomSize;
-    private volatile double decaySeconds;
-    private volatile double damping;
-    private volatile double directionalSpread;
+    private double roomSize;
+    private double decaySeconds;
+    private double damping;
+    private double directionalSpread;
 
     // ---- FDN state ----
     private float[][] delayBuffers;
@@ -92,6 +92,9 @@ public final class DirectionalFdnProcessor implements AudioProcessor {
 
     /** Elevation per delay line (radians). */
     private double[] elevations;
+
+    /** Pre-allocated scratch buffer for Householder feedback computation. */
+    private final float[] delayOutputs;
 
     /**
      * Creates a directional FDN reverb processor.
@@ -136,6 +139,7 @@ public final class DirectionalFdnProcessor implements AudioProcessor {
         this.azimuths = new double[NUM_DELAY_LINES];
         this.elevations = new double[NUM_DELAY_LINES];
         this.ambiCoefficients = new double[NUM_DELAY_LINES][];
+        this.delayOutputs = new float[NUM_DELAY_LINES];
 
         buildDelayLines();
         buildDirections();
@@ -243,17 +247,14 @@ public final class DirectionalFdnProcessor implements AudioProcessor {
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         int outChannels = Math.min(outputBuffer.length, FOA_CHANNELS);
 
-        // Zero the output channels
-        for (int ch = 0; ch < outChannels; ch++) {
+        // Zero all provided output channels so any channels beyond FOA do not
+        // retain stale data when hosts supply buffers with more than 4 channels.
+        for (int ch = 0; ch < outputBuffer.length; ch++) {
             Arrays.fill(outputBuffer[ch], 0, numFrames, 0.0f);
         }
 
-        // Read volatile parameters once per process call
-        double currentDamping = this.damping;
-        float dampCoeff = (float) currentDamping;
-
-        // Temporary array for Householder feedback computation
-        float[] delayOutputs = new float[NUM_DELAY_LINES];
+        // Read parameters once per process call
+        float dampCoeff = (float) this.damping;
 
         for (int n = 0; n < numFrames; n++) {
             // Downmix input to mono
@@ -286,8 +287,9 @@ public final class DirectionalFdnProcessor implements AudioProcessor {
                 // Apply per-line feedback gain (decay control)
                 feedback *= feedbackGains[i];
 
-                // Apply one-pole lowpass damping filter
-                dampingState[i] = dampingState[i] + dampCoeff * (feedback - dampingState[i]);
+                // Apply one-pole lowpass damping filter; higher dampCoeff retains
+                // more previous state and therefore increases high-frequency absorption.
+                dampingState[i] = feedback * (1.0f - dampCoeff) + dampingState[i] * dampCoeff;
                 float dampedFeedback = dampingState[i];
 
                 // Write: mono input + damped feedback
