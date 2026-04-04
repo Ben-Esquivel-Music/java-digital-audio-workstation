@@ -51,6 +51,15 @@ public final class ArrangementCanvas extends Pane {
     static final Color FADE_HANDLE_COLOR = Color.web("#ffffff", 0.85);
     static final Color FADE_HANDLE_FILL_COLOR = Color.web("#ffffff", 0.3);
     static final Color LOOP_HIGHLIGHT_COLOR = Color.web("#b388ff", 0.08);
+    static final Color SELECTION_HIGHLIGHT_COLOR = Color.web("#42A5F5", 0.18);
+    static final Color SELECTION_BORDER_COLOR = Color.web("#42A5F5", 0.6);
+    static final Color SELECTION_HANDLE_COLOR = Color.web("#42A5F5", 0.9);
+    static final Color SELECTION_HANDLE_FILL_COLOR = Color.web("#42A5F5", 0.4);
+
+    private static final double SELECTION_BORDER_WIDTH = 1.0;
+    /** Width of the draggable handle zones at each selection edge, in pixels. */
+    static final double SELECTION_HANDLE_WIDTH = 6.0;
+    private static final double SELECTION_HANDLE_VISUAL_WIDTH = 4.0;
 
     private static final Font CLIP_LABEL_FONT = Font.font("SansSerif", 10);
     private static final double CLIP_CORNER_RADIUS = 4.0;
@@ -87,6 +96,11 @@ public final class ArrangementCanvas extends Pane {
     private boolean loopEnabled = false;
     private double loopStartBeat = 0.0;
     private double loopEndBeat = 16.0;
+
+    // Time selection overlay state
+    private boolean selectionActive = false;
+    private double selectionStartBeat = 0.0;
+    private double selectionEndBeat = 0.0;
 
     /**
      * Tracks which track IDs have their automation lane expanded.
@@ -246,6 +260,42 @@ public final class ArrangementCanvas extends Pane {
     /** Returns the loop end beat for the overlay. */
     public double getLoopEndBeat() {
         return loopEndBeat;
+    }
+
+    // ── Time selection overlay ─────────────────────────────────────────────
+
+    /**
+     * Updates the time selection overlay state and redraws.
+     *
+     * <p>When {@code active} is {@code true}, a semi-transparent highlighted
+     * region is rendered from {@code startBeat} to {@code endBeat} spanning
+     * all visible track lanes, with draggable handles at the left and right
+     * edges.</p>
+     *
+     * @param active    whether the selection overlay should be displayed
+     * @param startBeat the selection start position in beats
+     * @param endBeat   the selection end position in beats
+     */
+    public void setSelectionRange(boolean active, double startBeat, double endBeat) {
+        this.selectionActive = active;
+        this.selectionStartBeat = startBeat;
+        this.selectionEndBeat = endBeat;
+        redraw();
+    }
+
+    /** Returns {@code true} if the time selection overlay is active. */
+    public boolean isSelectionActive() {
+        return selectionActive;
+    }
+
+    /** Returns the selection start beat for the overlay. */
+    public double getSelectionStartBeat() {
+        return selectionStartBeat;
+    }
+
+    /** Returns the selection end beat for the overlay. */
+    public double getSelectionEndBeat() {
+        return selectionEndBeat;
     }
 
     /**
@@ -493,6 +543,7 @@ public final class ArrangementCanvas extends Pane {
         drawLoopHighlight(gc, w, h);
         drawClips(gc, w, h);
         drawAutomationLanes(gc, w, h);
+        drawSelectionHighlight(gc, w, h);
         drawTrimPreview(gc, w, h);
         drawPlayhead(gc, w, h);
     }
@@ -971,6 +1022,52 @@ public final class ArrangementCanvas extends Pane {
             gc.setFill(LOOP_HIGHLIGHT_COLOR);
             gc.fillRect(drawX1, 0, drawX2 - drawX1, canvasHeight);
         }
+    }
+
+    private void drawSelectionHighlight(GraphicsContext gc, double canvasWidth, double canvasHeight) {
+        if (!selectionActive || selectionStartBeat >= selectionEndBeat) {
+            return;
+        }
+        double x1 = (selectionStartBeat - scrollXBeats) * pixelsPerBeat;
+        double x2 = (selectionEndBeat - scrollXBeats) * pixelsPerBeat;
+        double drawX1 = Math.max(0, x1);
+        double drawX2 = Math.min(canvasWidth, x2);
+        if (drawX2 <= drawX1) {
+            return;
+        }
+
+        // Semi-transparent fill spanning all track lanes
+        gc.setFill(SELECTION_HIGHLIGHT_COLOR);
+        gc.fillRect(drawX1, 0, drawX2 - drawX1, canvasHeight);
+
+        // Left and right border lines
+        gc.setStroke(SELECTION_BORDER_COLOR);
+        gc.setLineWidth(SELECTION_BORDER_WIDTH);
+        if (x1 >= 0 && x1 <= canvasWidth) {
+            gc.strokeLine(x1, 0, x1, canvasHeight);
+        }
+        if (x2 >= 0 && x2 <= canvasWidth) {
+            gc.strokeLine(x2, 0, x2, canvasHeight);
+        }
+
+        // Draggable handle indicators at left and right edges
+        drawSelectionHandle(gc, x1, canvasHeight);
+        drawSelectionHandle(gc, x2, canvasHeight);
+    }
+
+    private void drawSelectionHandle(GraphicsContext gc, double x, double canvasHeight) {
+        if (x < -SELECTION_HANDLE_VISUAL_WIDTH || x > canvas.getWidth() + SELECTION_HANDLE_VISUAL_WIDTH) {
+            return;
+        }
+        double handleHeight = Math.min(40.0, canvasHeight * 0.3);
+        double handleY = (canvasHeight - handleHeight) / 2.0;
+        gc.setFill(SELECTION_HANDLE_FILL_COLOR);
+        gc.fillRoundRect(x - SELECTION_HANDLE_VISUAL_WIDTH / 2.0, handleY,
+                SELECTION_HANDLE_VISUAL_WIDTH, handleHeight, 2.0, 2.0);
+        gc.setStroke(SELECTION_HANDLE_COLOR);
+        gc.setLineWidth(1.0);
+        gc.strokeRoundRect(x - SELECTION_HANDLE_VISUAL_WIDTH / 2.0, handleY,
+                SELECTION_HANDLE_VISUAL_WIDTH, handleHeight, 2.0, 2.0);
     }
 
     private void drawTrimPreview(GraphicsContext gc, double canvasWidth, double canvasHeight) {

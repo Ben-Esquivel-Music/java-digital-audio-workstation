@@ -63,6 +63,8 @@ final class ClipInteractionController {
         int beatsPerBar();
         void refreshCanvas();
         void seekToPosition(double beat);
+        SelectionModel selectionModel();
+        void updateStatusBar(String text);
     }
 
     private final ArrangementCanvas canvas;
@@ -75,6 +77,22 @@ final class ClipInteractionController {
     private AudioClip dragClip;
     private Track dragSourceTrack;
     private double dragStartBeat;
+
+    // Time selection drag state
+    private boolean selectionDragging;
+    private boolean selectionDragShift;
+    private double selectionDragAnchorBeat;
+
+    /**
+     * Identifies which edge of the time selection is being dragged for
+     * fine-tuning the selection boundaries.
+     */
+    enum SelectionEdge {
+        LEFT,
+        RIGHT
+    }
+
+    private SelectionEdge selectionHandleDrag;
 
     // Drag state for automation breakpoint moves
     private AutomationPoint dragAutomationPoint;
@@ -169,6 +187,68 @@ final class ClipInteractionController {
             }
         }
         return null;
+    }
+
+    /**
+     * Tests whether the given X coordinate is within the draggable handle
+     * zone of either selection edge. Returns the hit edge, or {@code null}
+     * if no handle was hit.
+     */
+    SelectionEdge hitTestSelectionHandle(double x) {
+        SelectionModel sm = host.selectionModel();
+        if (!sm.hasSelection()) {
+            return null;
+        }
+        double leftX = (sm.getStartBeat() - host.scrollXBeats()) * host.pixelsPerBeat();
+        double rightX = (sm.getEndBeat() - host.scrollXBeats()) * host.pixelsPerBeat();
+        double threshold = ArrangementCanvas.SELECTION_HANDLE_WIDTH;
+        if (Math.abs(x - leftX) <= threshold) {
+            return SelectionEdge.LEFT;
+        }
+        if (Math.abs(x - rightX) <= threshold) {
+            return SelectionEdge.RIGHT;
+        }
+        return null;
+    }
+
+    /**
+     * Snaps a beat position to the grid if snap-to-grid is enabled.
+     */
+    private double snapBeat(double beat) {
+        if (host.snapEnabled()) {
+            return SnapQuantizer.quantize(beat, host.gridResolution(), host.beatsPerBar());
+        }
+        return Math.max(0.0, beat);
+    }
+
+    /**
+     * Updates the selection model, arrangement canvas overlay, and status bar
+     * to reflect the given selection range.
+     */
+    private void applySelection(double startBeat, double endBeat) {
+        SelectionModel sm = host.selectionModel();
+        if (startBeat < endBeat) {
+            sm.setSelection(startBeat, endBeat);
+            canvas.setSelectionRange(true, startBeat, endBeat);
+            double duration = endBeat - startBeat;
+            host.updateStatusBar(String.format(
+                    "Selection: %.2f – %.2f (%.2f beats)", startBeat, endBeat, duration));
+        } else {
+            sm.clearSelection();
+            canvas.setSelectionRange(false, 0, 0);
+            host.updateStatusBar("");
+        }
+    }
+
+    /**
+     * Clears the current time selection and updates the canvas overlay and
+     * status bar. Does not trigger a full canvas refresh — the caller is
+     * responsible for calling {@link Host#refreshCanvas()} if needed.
+     */
+    private void clearTimeSelection() {
+        host.selectionModel().clearSelection();
+        canvas.setSelectionRange(false, 0, 0);
+        host.updateStatusBar("");
     }
 
     // ── Mouse event handlers ─────────────────────────────────────────────────
@@ -269,9 +349,20 @@ final class ClipInteractionController {
             }
         }
 
+        // Check for selection handle activation (pointer tool)
+        if (host.activeTool() == EditTool.POINTER) {
+            SelectionEdge handleHit = hitTestSelectionHandle(event.getX());
+            if (handleHit != null) {
+                selectionHandleDrag = handleHit;
+                canvas.setCursor(Cursor.H_RESIZE);
+                return;
+            }
+        }
+
         if (trackIndex < 0) {
             if (host.activeTool() == EditTool.POINTER) {
-                host.seekToPosition(beat);
+                // Click below all tracks: start selection or clear
+                beginTimeSelectionDrag(beat, event.isShiftDown());
             }
             return;
         }
@@ -322,6 +413,25 @@ final class ClipInteractionController {
             host.refreshCanvas();
             return;
         }
+
+        // Selection handle drag
+        if (selectionHandleDrag != null) {
+            updateSelectionHandleDrag(event.getX());
+            return;
+        }
+
+        // Time selection drag
+        if (selectionDragging) {
+            double snappedBeat = snapBeat(beatAt(event.getX()));
+            double lo = Math.min(selectionDragAnchorBeat, snappedBeat);
+            double hi = Math.max(selectionDragAnchorBeat, snappedBeat);
+            if (lo < hi) {
+                applySelection(lo, hi);
+            }
+            host.refreshCanvas();
+            return;
+        }
+
         if (host.activeTool() != EditTool.POINTER || dragClip == null) {
             return;
         }
@@ -381,6 +491,35 @@ final class ClipInteractionController {
             updateCursor();
             return;
         }
+
+        // Complete selection handle drag
+        if (selectionHandleDrag != null) {
+            updateSelectionHandleDrag(event.getX());
+            selectionHandleDrag = null;
+            updateCursor();
+            return;
+        }
+
+        // Complete time selection drag
+        if (selectionDragging) {
+            double snappedBeat = snapBeat(beatAt(event.getX()));
+            double lo = Math.min(selectionDragAnchorBeat, snappedBeat);
+            double hi = Math.max(selectionDragAnchorBeat, snappedBeat);
+            if (lo < hi) {
+                applySelection(lo, hi);
+            } else if (!selectionDragShift) {
+                // Click without drag (non-shift) — clear selection and seek
+                clearTimeSelection();
+                host.seekToPosition(snappedBeat);
+            }
+            // When shift was held and lo == hi, the existing selection is
+            // preserved (no-op) rather than unexpectedly cleared.
+            selectionDragging = false;
+            selectionDragShift = false;
+            host.refreshCanvas();
+            return;
+        }
+
         if (host.activeTool() != EditTool.POINTER || dragClip == null) {
             return;
         }
@@ -425,6 +564,13 @@ final class ClipInteractionController {
                 canvas.setCursor(Cursor.H_RESIZE);
                 return;
             }
+
+            // Check selection handles
+            SelectionEdge handleHit = hitTestSelectionHandle(event.getX());
+            if (handleHit != null) {
+                canvas.setCursor(Cursor.H_RESIZE);
+                return;
+            }
         } else {
             Tooltip.uninstall(canvas, fadeTooltip);
         }
@@ -436,13 +582,75 @@ final class ClipInteractionController {
     private void handlePointerPress(Track track, double beat, MouseEvent event) {
         AudioClip clip = clipAt(track, beat);
         if (clip == null) {
-            host.seekToPosition(beat);
+            // Empty space in a track lane — begin time selection drag
+            beginTimeSelectionDrag(beat, event.isShiftDown());
             return;
         }
+        // Click on a clip — clear selection and start clip drag
+        clearTimeSelection();
         dragClip = clip;
         dragSourceTrack = track;
         dragStartBeat = beat;
         LOG.fine(() -> "Pointer: selected clip '" + clip.getName() + "' at beat " + beat);
+    }
+
+    /**
+     * Begins a time selection drag. If Shift is held and a selection exists,
+     * extends the existing selection to the new beat; otherwise starts a new
+     * selection from the clicked beat.
+     *
+     * <p>The playhead is also moved to the clicked position so that the user
+     * gets immediate feedback (consistent with the prior seek-on-click
+     * behavior).</p>
+     */
+    private void beginTimeSelectionDrag(double beat, boolean shiftDown) {
+        double snappedBeat = snapBeat(beat);
+        SelectionModel sm = host.selectionModel();
+        selectionDragShift = shiftDown && sm.hasSelection();
+        if (selectionDragShift) {
+            // Extend selection: anchor is the farther existing edge
+            double distToStart = Math.abs(snappedBeat - sm.getStartBeat());
+            double distToEnd = Math.abs(snappedBeat - sm.getEndBeat());
+            if (distToStart <= distToEnd) {
+                selectionDragAnchorBeat = sm.getEndBeat();
+            } else {
+                selectionDragAnchorBeat = sm.getStartBeat();
+            }
+            double lo = Math.min(selectionDragAnchorBeat, snappedBeat);
+            double hi = Math.max(selectionDragAnchorBeat, snappedBeat);
+            if (lo < hi) {
+                applySelection(lo, hi);
+            }
+        } else {
+            // Clear previous selection and start new drag
+            clearTimeSelection();
+            selectionDragAnchorBeat = snappedBeat;
+        }
+        selectionDragging = true;
+        // Seek immediately so the playhead moves to the click position
+        host.seekToPosition(snappedBeat);
+    }
+
+    /**
+     * Updates the selection boundary corresponding to the active handle drag.
+     */
+    private void updateSelectionHandleDrag(double x) {
+        double beat = snapBeat(beatAt(x));
+        SelectionModel sm = host.selectionModel();
+        double start = sm.getStartBeat();
+        double end = sm.getEndBeat();
+        if (selectionHandleDrag == SelectionEdge.LEFT) {
+            start = beat;
+        } else {
+            end = beat;
+        }
+        // Ensure start < end; if the handle crosses the opposite edge, swap
+        double lo = Math.min(start, end);
+        double hi = Math.max(start, end);
+        if (lo < hi) {
+            applySelection(lo, hi);
+        }
+        host.refreshCanvas();
     }
 
     private void handlePencilPress(Track track, double beat) {

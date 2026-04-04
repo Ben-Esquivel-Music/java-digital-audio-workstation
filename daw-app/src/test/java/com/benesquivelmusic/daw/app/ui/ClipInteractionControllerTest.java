@@ -35,6 +35,8 @@ class ClipInteractionControllerTest {
     private int refreshCount;
 
     private double seekedPosition;
+    private SelectionModel selectionModel;
+    private String lastStatusBarText;
 
     @BeforeEach
     void setUp() {
@@ -47,6 +49,8 @@ class ClipInteractionControllerTest {
         trackHeight = 80.0;
         refreshCount = 0;
         seekedPosition = -1.0;
+        selectionModel = new SelectionModel();
+        lastStatusBarText = null;
     }
 
     private ClipInteractionController.Host createHost() {
@@ -63,6 +67,8 @@ class ClipInteractionControllerTest {
             @Override public int beatsPerBar() { return 4; }
             @Override public void refreshCanvas() { refreshCount++; }
             @Override public void seekToPosition(double beat) { seekedPosition = beat; }
+            @Override public SelectionModel selectionModel() { return selectionModel; }
+            @Override public void updateStatusBar(String text) { lastStatusBarText = text; }
         };
     }
 
@@ -86,6 +92,27 @@ class ClipInteractionControllerTest {
                 x, y, x, y, MouseButton.PRIMARY, 1,
                 false, false, false, false,
                 false, false, false, false, false, false, null);
+    }
+
+    /**
+     * Creates a synthetic primary-button mouse-dragged event at the given
+     * local (x, y) coordinates.
+     */
+    private static MouseEvent mouseDragged(double x, double y) {
+        return new MouseEvent(MouseEvent.MOUSE_DRAGGED,
+                x, y, x, y, MouseButton.PRIMARY, 1,
+                false, false, false, false,
+                true, false, false, false, false, false, null);
+    }
+
+    /**
+     * Creates a synthetic primary-button mouse-pressed event with Shift held.
+     */
+    private static MouseEvent mousePressedShift(double x, double y) {
+        return new MouseEvent(MouseEvent.MOUSE_PRESSED,
+                x, y, x, y, MouseButton.PRIMARY, 1,
+                true, false, false, false,
+                true, false, false, false, false, false, null);
     }
 
     // ── Hit testing ──────────────────────────────────────────────────────────
@@ -459,5 +486,341 @@ class ClipInteractionControllerTest {
         assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
 
         assertThat(seekedPosition).isEqualTo(5.0);
+    }
+
+    // ── Time selection ──────────────────────────────────────────────────────
+
+    @Test
+    void dragOnEmptySpaceShouldCreateTimeSelection() throws Exception {
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Press at beat 2.0 (x=80), drag to beat 6.0 (x=240), release
+                canvas.fireEvent(mousePressed(80.0, 40.0));
+                canvas.fireEvent(mouseDragged(240.0, 40.0));
+                canvas.fireEvent(mouseReleased(240.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(selectionModel.hasSelection()).isTrue();
+        assertThat(selectionModel.getStartBeat()).isEqualTo(2.0);
+        assertThat(selectionModel.getEndBeat()).isEqualTo(6.0);
+    }
+
+    @Test
+    void clickWithoutDragShouldClearSelection() throws Exception {
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+        // Pre-set a selection
+        selectionModel.setSelection(1.0, 5.0);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Click on empty space and release immediately
+                canvas.fireEvent(mousePressed(120.0, 40.0));
+                canvas.fireEvent(mouseReleased(120.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(selectionModel.hasSelection()).isFalse();
+        // Should also have seeked to the position
+        assertThat(seekedPosition).isEqualTo(3.0);
+    }
+
+    @Test
+    void shiftClickShouldExtendSelection() throws Exception {
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+        // Pre-set a selection from 2.0 to 6.0
+        selectionModel.setSelection(2.0, 6.0);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                canvas.setSelectionRange(true, 2.0, 6.0);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Shift-click at beat 10.0 (x=400) to extend
+                canvas.fireEvent(mousePressedShift(400.0, 40.0));
+                canvas.fireEvent(mouseReleased(400.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(selectionModel.hasSelection()).isTrue();
+        assertThat(selectionModel.getStartBeat()).isEqualTo(2.0);
+        assertThat(selectionModel.getEndBeat()).isEqualTo(10.0);
+    }
+
+    @Test
+    void clickOnClipShouldClearSelection() throws Exception {
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("Vocal", 2.0, 4.0, null);
+        track.addClip(clip);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+        // Pre-set a selection
+        selectionModel.setSelection(0.0, 10.0);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Click on the clip at beat 3.0 (x=120)
+                canvas.fireEvent(mousePressed(120.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(selectionModel.hasSelection()).isFalse();
+    }
+
+    @Test
+    void selectionDragShouldUpdateStatusBar() throws Exception {
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Drag from beat 1.0 to beat 5.0
+                canvas.fireEvent(mousePressed(40.0, 40.0));
+                canvas.fireEvent(mouseDragged(200.0, 40.0));
+                canvas.fireEvent(mouseReleased(200.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(lastStatusBarText).isNotNull();
+        assertThat(lastStatusBarText).contains("Selection");
+    }
+
+    @Test
+    void hitTestSelectionHandleShouldDetectLeftEdge() throws Exception {
+
+        selectionModel.setSelection(4.0, 8.0);
+        // At 40px/beat, left edge is at x=160, right edge at x=320
+
+        AtomicReference<ClipInteractionController.SelectionEdge> ref = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+
+                // Test hit at left edge (x=160)
+                ref.set(controller.hitTestSelectionHandle(160.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(ref.get()).isEqualTo(ClipInteractionController.SelectionEdge.LEFT);
+    }
+
+    @Test
+    void hitTestSelectionHandleShouldDetectRightEdge() throws Exception {
+
+        selectionModel.setSelection(4.0, 8.0);
+
+        AtomicReference<ClipInteractionController.SelectionEdge> ref = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+
+                // Test hit at right edge (x=320)
+                ref.set(controller.hitTestSelectionHandle(320.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(ref.get()).isEqualTo(ClipInteractionController.SelectionEdge.RIGHT);
+    }
+
+    @Test
+    void hitTestSelectionHandleShouldReturnNullWhenNoSelection() throws Exception {
+
+        AtomicReference<ClipInteractionController.SelectionEdge> ref = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+
+                ref.set(controller.hitTestSelectionHandle(160.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(ref.get()).isNull();
+    }
+
+    @Test
+    void hitTestSelectionHandleShouldReturnNullWhenFarFromEdge() throws Exception {
+
+        selectionModel.setSelection(4.0, 8.0);
+
+        AtomicReference<ClipInteractionController.SelectionEdge> ref = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+
+                // Test hit far from either edge (x=240 = beat 6.0, middle of selection)
+                ref.set(controller.hitTestSelectionHandle(240.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(ref.get()).isNull();
+    }
+
+    @Test
+    void dragBelowTracksShouldCreateTimeSelection() throws Exception {
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Press below tracks (y=200, height 80 with 1 track)
+                canvas.fireEvent(mousePressed(80.0, 200.0));
+                canvas.fireEvent(mouseDragged(320.0, 200.0));
+                canvas.fireEvent(mouseReleased(320.0, 200.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(selectionModel.hasSelection()).isTrue();
+        assertThat(selectionModel.getStartBeat()).isEqualTo(2.0);
+        assertThat(selectionModel.getEndBeat()).isEqualTo(8.0);
+    }
+
+    @Test
+    void shiftClickOnSelectionEdgeShouldPreserveSelection() throws Exception {
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+        // Pre-set a selection from 2.0 to 6.0
+        selectionModel.setSelection(2.0, 6.0);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                canvas.setSelectionRange(true, 2.0, 6.0);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Shift-click exactly on the left edge (beat 2.0, x=80)
+                // lo == hi so selection should be preserved, not cleared
+                canvas.fireEvent(mousePressedShift(80.0, 40.0));
+                canvas.fireEvent(mouseReleased(80.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        // Selection should still be active (not cleared by the lo==hi branch)
+        assertThat(selectionModel.hasSelection()).isTrue();
+        assertThat(selectionModel.getStartBeat()).isEqualTo(2.0);
+        assertThat(selectionModel.getEndBeat()).isEqualTo(6.0);
+    }
+
+    @Test
+    void clearingSelectionShouldClearStatusBar() throws Exception {
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+        // Pre-set a selection so status bar would show "Selection: ..."
+        selectionModel.setSelection(1.0, 5.0);
+        lastStatusBarText = "Selection: 1.00 – 5.00 (4.00 beats)";
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Click on empty space and release — clears selection
+                canvas.fireEvent(mousePressed(120.0, 40.0));
+                canvas.fireEvent(mouseReleased(120.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(selectionModel.hasSelection()).isFalse();
+        // Status bar should have been cleared (no stale selection text)
+        assertThat(lastStatusBarText).isEmpty();
     }
 }
