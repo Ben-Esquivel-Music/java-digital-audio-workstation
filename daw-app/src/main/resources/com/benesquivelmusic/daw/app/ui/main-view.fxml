@@ -60,31 +60,30 @@
 
                 <Separator orientation="VERTICAL"/>
 
-                <!-- Group 2: Track controls (icons applied programmatically) -->
+                <!-- Group 2: Track controls (available via File menu) -->
                 <HBox fx:id="trackGroup" spacing="4" alignment="CENTER"
-                      styleClass="toolbar-button-group">
+                      styleClass="toolbar-button-group"
+                      visible="false" managed="false">
                     <Button fx:id="addAudioTrackButton" text="Audio Track" onAction="#onAddAudioTrack"
                             styleClass="transport-button"/>
                     <Button fx:id="addMidiTrackButton" text="MIDI Track" onAction="#onAddMidiTrack"
                             styleClass="transport-button"/>
                 </HBox>
 
-                <Separator orientation="VERTICAL"/>
-
-                <!-- Group 3: Undo / Redo (icons applied programmatically) -->
+                <!-- Group 3: Undo / Redo (available via Edit menu) -->
                 <HBox fx:id="undoRedoGroup" spacing="4" alignment="CENTER"
-                      styleClass="toolbar-button-group">
+                      styleClass="toolbar-button-group"
+                      visible="false" managed="false">
                     <Button fx:id="undoButton" text="Undo" onAction="#onUndo"
                             styleClass="transport-button"/>
                     <Button fx:id="redoButton" text="Redo" onAction="#onRedo"
                             styleClass="transport-button"/>
                 </HBox>
 
-                <Separator orientation="VERTICAL"/>
-
-                <!-- Group 4: Snap, Save, Plugins (icons applied programmatically) -->
+                <!-- Group 4: Snap, Save, Plugins (available via menus) -->
                 <HBox fx:id="utilityGroup" spacing="4" alignment="CENTER"
-                      styleClass="toolbar-button-group">
+                      styleClass="toolbar-button-group"
+                      visible="false" managed="false">
                     <Button fx:id="snapButton" text="Snap"
                             styleClass="transport-button"/>
                     <Button fx:id="saveButton" text="Save" onAction="#onSaveProject"
