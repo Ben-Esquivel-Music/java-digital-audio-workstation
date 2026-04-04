@@ -48,7 +48,7 @@ public final class DuplicateClipsAction implements UndoableAction {
         duplicatedEntries.clear();
 
         double earliestStartBeat = Double.MAX_VALUE;
-        double rightmostEndBeat = Double.MIN_VALUE;
+        double rightmostEndBeat = Double.NEGATIVE_INFINITY;
         for (Map.Entry<Track, AudioClip> entry : entries) {
             AudioClip original = entry.getValue();
             earliestStartBeat = Math.min(earliestStartBeat, original.getStartBeat());

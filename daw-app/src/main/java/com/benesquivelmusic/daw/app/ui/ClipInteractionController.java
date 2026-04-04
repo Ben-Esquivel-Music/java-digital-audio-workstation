@@ -617,6 +617,20 @@ final class ClipInteractionController {
                 }
                 host.undoManager().execute(new GroupMoveClipsAction(
                         entries, beatDelta, trackDelta, host.tracks()));
+                // After cross-track move, update the selection's track mapping
+                // so that subsequent operations reference the correct tracks.
+                if (trackDelta != 0) {
+                    host.selectionModel().clearClipSelection();
+                    for (Track t : host.tracks()) {
+                        for (AudioClip c : t.getClips()) {
+                            for (Map.Entry<Track, AudioClip> e : entries) {
+                                if (c == e.getValue()) {
+                                    host.selectionModel().toggleClipSelection(t, c);
+                                }
+                            }
+                        }
+                    }
+                }
                 host.refreshCanvas();
             } else {
                 // Click without drag on a multi-selected clip — collapse to single selection

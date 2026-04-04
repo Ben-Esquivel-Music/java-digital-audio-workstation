@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.undo.UndoableAction;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -43,7 +44,9 @@ public final class GroupMoveClipsAction implements UndoableAction {
      * @param trackDelta the track offset (positive = down, negative = up);
      *                   zero means same-track move
      * @param allTracks  the full ordered track list used to resolve cross-track
-     *                   destinations; required when {@code trackDelta != 0}
+     *                   destinations; may be {@code null} or empty, in which
+     *                   case cross-track movement is silently disabled even
+     *                   when {@code trackDelta != 0}
      * @throws NullPointerException     if {@code entries} is {@code null}
      * @throws IllegalArgumentException if {@code entries} is empty
      */
@@ -74,21 +77,36 @@ public final class GroupMoveClipsAction implements UndoableAction {
         previousTracks.clear();
         newTracks.clear();
 
+        // Clamp the beat delta once for the whole group so that the
+        // earliest clip does not go below beat 0 and relative spacing
+        // is preserved.
+        double minimumStartBeat = Double.POSITIVE_INFINITY;
+        for (Map.Entry<Track, AudioClip> entry : entries) {
+            minimumStartBeat = Math.min(minimumStartBeat, entry.getValue().getStartBeat());
+        }
+        double effectiveBeatDelta = Math.max(beatDelta, -minimumStartBeat);
+
+        // Precompute track-index map for O(1) cross-track lookups.
+        Map<Track, Integer> trackIndex = new HashMap<>(allTracks.size());
+        for (int i = 0; i < allTracks.size(); i++) {
+            trackIndex.put(allTracks.get(i), i);
+        }
+
         for (Map.Entry<Track, AudioClip> entry : entries) {
             Track sourceTrack = entry.getKey();
             AudioClip clip = entry.getValue();
             previousStartBeats.add(clip.getStartBeat());
             previousTracks.add(sourceTrack);
 
-            double newStart = Math.max(0.0, clip.getStartBeat() + beatDelta);
+            double newStart = clip.getStartBeat() + effectiveBeatDelta;
             Track targetTrack = sourceTrack;
 
             if (trackDelta != 0 && !allTracks.isEmpty()) {
-                int sourceIndex = allTracks.indexOf(sourceTrack);
-                if (sourceIndex >= 0) {
-                    int targetIndex = sourceIndex + trackDelta;
-                    if (targetIndex >= 0 && targetIndex < allTracks.size()) {
-                        targetTrack = allTracks.get(targetIndex);
+                Integer sourceIdx = trackIndex.get(sourceTrack);
+                if (sourceIdx != null) {
+                    int targetIdx = sourceIdx + trackDelta;
+                    if (targetIdx >= 0 && targetIdx < allTracks.size()) {
+                        targetTrack = allTracks.get(targetIdx);
                     }
                 }
             }

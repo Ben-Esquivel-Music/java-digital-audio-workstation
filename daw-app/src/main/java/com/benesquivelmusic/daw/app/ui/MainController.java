@@ -1669,6 +1669,10 @@ public final class MainController {
     }
 
     // ── Multi-clip group operations (keyboard shortcuts) ─────────────────────
+    //
+    // These handlers operate on audio clip selection only. MIDI clip selection
+    // is tracked separately in SelectionModel and is not included in
+    // copy/cut/paste/duplicate/delete shortcuts at this time.
 
     private void onCopyClips() {
         List<ClipboardEntry> selected = selectionModel.getSelectedClips();
@@ -1686,9 +1690,9 @@ public final class MainController {
             return;
         }
         clipboardManager.copyClips(selected);
-        List<java.util.Map.Entry<Track, AudioClip>> entries = new java.util.ArrayList<>();
+        List<Map.Entry<Track, AudioClip>> entries = new ArrayList<>();
         for (ClipboardEntry entry : selected) {
-            entries.add(java.util.Map.entry(entry.sourceTrack(), entry.clip()));
+            entries.add(Map.entry(entry.sourceTrack(), entry.clip()));
         }
         undoManager.execute(new CutClipsAction(entries));
         selectionModel.clearClipSelection();
@@ -1708,9 +1712,9 @@ public final class MainController {
             return;
         }
         double playhead = project.getTransport().getPositionInBeats();
-        List<java.util.Map.Entry<Track, AudioClip>> sourceEntries = new java.util.ArrayList<>();
+        List<Map.Entry<Track, AudioClip>> sourceEntries = new ArrayList<>();
         for (ClipboardEntry entry : entries) {
-            sourceEntries.add(java.util.Map.entry(entry.sourceTrack(), entry.clip()));
+            sourceEntries.add(Map.entry(entry.sourceTrack(), entry.clip()));
         }
         undoManager.execute(new PasteClipsAction(sourceEntries, null, playhead));
         refreshArrangementCanvas();
@@ -1725,9 +1729,9 @@ public final class MainController {
         if (selected.isEmpty()) {
             return;
         }
-        List<java.util.Map.Entry<Track, AudioClip>> entries = new java.util.ArrayList<>();
+        List<Map.Entry<Track, AudioClip>> entries = new ArrayList<>();
         for (ClipboardEntry entry : selected) {
-            entries.add(java.util.Map.entry(entry.sourceTrack(), entry.clip()));
+            entries.add(Map.entry(entry.sourceTrack(), entry.clip()));
         }
         undoManager.execute(new DuplicateClipsAction(entries));
         refreshArrangementCanvas();
@@ -1741,9 +1745,9 @@ public final class MainController {
         if (selected.isEmpty()) {
             return;
         }
-        List<java.util.Map.Entry<Track, AudioClip>> entries = new java.util.ArrayList<>();
+        List<Map.Entry<Track, AudioClip>> entries = new ArrayList<>();
         for (ClipboardEntry entry : selected) {
-            entries.add(java.util.Map.entry(entry.sourceTrack(), entry.clip()));
+            entries.add(Map.entry(entry.sourceTrack(), entry.clip()));
         }
         undoManager.execute(new CutClipsAction(entries));
         selectionModel.clearClipSelection();

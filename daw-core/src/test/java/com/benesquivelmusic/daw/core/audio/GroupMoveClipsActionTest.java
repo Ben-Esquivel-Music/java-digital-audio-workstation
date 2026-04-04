@@ -104,17 +104,22 @@ class GroupMoveClipsActionTest {
     }
 
     @Test
-    void shouldClampStartBeatToZero() {
+    void shouldClampGroupDeltaToPreserveRelativeSpacing() {
         Track track = new Track("Drums", TrackType.AUDIO);
-        AudioClip clip = new AudioClip("kick", 1.0, 4.0, null);
-        track.addClip(clip);
+        AudioClip clip1 = new AudioClip("kick", 1.0, 4.0, null);
+        AudioClip clip2 = new AudioClip("snare", 3.0, 4.0, null);
+        track.addClip(clip1);
+        track.addClip(clip2);
 
+        // Beat delta of -5 would push clip1 to -4 and clip2 to -2,
+        // but group clamping limits effective delta to -1 (min start = 1.0).
         GroupMoveClipsAction action = new GroupMoveClipsAction(
-                List.of(Map.entry(track, clip)),
+                List.of(Map.entry(track, clip1), Map.entry(track, clip2)),
                 -5.0, 0, List.of(track));
         action.execute();
 
-        assertThat(clip.getStartBeat()).isCloseTo(0.0, offset(0.001));
+        assertThat(clip1.getStartBeat()).isCloseTo(0.0, offset(0.001));
+        assertThat(clip2.getStartBeat()).isCloseTo(2.0, offset(0.001));
     }
 
     @Test
