@@ -398,7 +398,7 @@ final class TransportController {
         activeMidiRecorders.clear();
 
         if (totalNotes > 0) {
-            String msg = "MIDI recording stopped — " + totalNotes + " note"
+            String msg = "Recording stopped — " + totalNotes + " MIDI note"
                     + (totalNotes > 1 ? "s" : "") + " captured";
             if (statusBarLabel.getText() == null
                     || !statusBarLabel.getText().startsWith("Recording stopped")) {
