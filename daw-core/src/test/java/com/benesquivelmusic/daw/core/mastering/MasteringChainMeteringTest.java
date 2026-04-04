@@ -136,6 +136,7 @@ class MasteringChainMeteringTest {
                 new GainStagingProcessor(2, -12.0));
         chain.addStage(MasteringStageType.LIMITING, "Limiter",
                 new GainStagingProcessor(2, 0.0));
+        chain.allocateIntermediateBuffers(2, 1);
 
         // Bypass the first stage
         chain.getStages().get(0).setBypassed(true);
@@ -157,6 +158,7 @@ class MasteringChainMeteringTest {
                     config, 2, 44100.0);
             chain.addStage(config.stageType(), config.name(), processor);
         }
+        chain.allocateIntermediateBuffers(2, 256);
 
         // Process multiple blocks to let envelope followers settle
         float[][] input = new float[2][256];

@@ -58,9 +58,10 @@ class MasteringChainTest {
 
     @Test
     void shouldProcessThroughChain() {
-        MasteringChain chain = new MasteringChain();
+        MasteringChain chain = new MasteringChain(1);
         chain.addStage(MasteringStageType.GAIN_STAGING, "Gain", new GainProcessor(0.5f));
         chain.addStage(MasteringStageType.LIMITING, "Limiter", new GainProcessor(0.5f));
+        chain.allocateIntermediateBuffers(1, 2);
 
         float[][] input = {{1.0f, -1.0f}};
         float[][] output = {{0.0f, 0.0f}};
@@ -101,7 +102,7 @@ class MasteringChainTest {
 
     @Test
     void shouldBypassIndividualStage() {
-        MasteringChain chain = new MasteringChain();
+        MasteringChain chain = new MasteringChain(1);
         chain.addStage(MasteringStageType.GAIN_STAGING, "Gain", new GainProcessor(0.5f));
         chain.addStage(MasteringStageType.LIMITING, "Limiter", new GainProcessor(0.5f));
 
@@ -118,7 +119,7 @@ class MasteringChainTest {
 
     @Test
     void shouldSoloIndividualStage() {
-        MasteringChain chain = new MasteringChain();
+        MasteringChain chain = new MasteringChain(1);
         chain.addStage(MasteringStageType.GAIN_STAGING, "Gain", new GainProcessor(0.5f));
         chain.addStage(MasteringStageType.COMPRESSION, "Comp", new GainProcessor(0.25f));
         chain.addStage(MasteringStageType.LIMITING, "Limiter", new GainProcessor(0.1f));
@@ -160,7 +161,7 @@ class MasteringChainTest {
 
     @Test
     void shouldProcessWithPreAllocatedBuffers() {
-        MasteringChain chain = new MasteringChain();
+        MasteringChain chain = new MasteringChain(1);
         chain.addStage(MasteringStageType.GAIN_STAGING, "Gain", new GainProcessor(0.5f));
         chain.addStage(MasteringStageType.LIMITING, "Limiter", new GainProcessor(0.5f));
         chain.allocateIntermediateBuffers(1, 4);

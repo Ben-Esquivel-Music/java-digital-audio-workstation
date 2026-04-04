@@ -158,6 +158,7 @@ class MasteringProcessorFactoryTest {
                     stageConfig, CHANNELS, SAMPLE_RATE);
             chain.addStage(stageConfig.stageType(), stageConfig.name(), processor);
         }
+        chain.allocateIntermediateBuffers(CHANNELS, 4);
 
         float[][] input = {{0.5f, -0.3f, 0.1f, 0.0f}, {0.5f, -0.3f, 0.1f, 0.0f}};
         float[][] output = new float[2][4];

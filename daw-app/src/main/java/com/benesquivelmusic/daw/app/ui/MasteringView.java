@@ -424,6 +424,10 @@ public final class MasteringView extends VBox {
 
             @Override
             public void handle(long now) {
+                if (lastUpdate == 0L) {
+                    lastUpdate = now;
+                    return;
+                }
                 long elapsed = now - lastUpdate;
                 if (elapsed < METER_UPDATE_INTERVAL_NS) {
                     return;
