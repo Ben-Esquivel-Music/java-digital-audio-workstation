@@ -59,6 +59,43 @@ class AdaaWaveshaperTest {
                 .isInstanceOf(IndexOutOfBoundsException.class);
     }
 
+    @Test
+    void processBlockShouldRejectOutOfBoundsBufferRange() {
+        AdaaWaveshaper ws = new AdaaWaveshaper(AdaaWaveshaper.TANH, 1);
+        float[] buffer = new float[16];
+        assertThatThrownBy(() -> ws.processBlock(buffer, 10, 10, 0))
+                .isInstanceOf(IndexOutOfBoundsException.class);
+    }
+
+    @Test
+    void processBlockShouldRejectNegativeOffset() {
+        AdaaWaveshaper ws = new AdaaWaveshaper(AdaaWaveshaper.TANH, 1);
+        float[] buffer = new float[16];
+        assertThatThrownBy(() -> ws.processBlock(buffer, -1, 8, 0))
+                .isInstanceOf(IndexOutOfBoundsException.class);
+    }
+
+    // --- First-sample behavior ---
+
+    @Test
+    void firstSampleShouldReturnDirectEvaluation() {
+        // The very first sample after construction should return f(x) directly,
+        // not the ADAA formula against an implicit 0.0 previous input.
+        AdaaWaveshaper ws = new AdaaWaveshaper(AdaaWaveshaper.TANH, 1);
+        double result = ws.process(0.8, 0);
+        assertThat(result).isCloseTo(Math.tanh(0.8), TOLERANCE);
+    }
+
+    @Test
+    void firstSampleAfterResetShouldReturnDirectEvaluation() {
+        AdaaWaveshaper ws = new AdaaWaveshaper(AdaaWaveshaper.TANH, 1);
+        ws.process(0.5, 0);
+        ws.process(0.9, 0);
+        ws.reset();
+        double result = ws.process(0.8, 0);
+        assertThat(result).isCloseTo(Math.tanh(0.8), TOLERANCE);
+    }
+
     // --- TANH transfer function ---
 
     @Test

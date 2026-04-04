@@ -146,6 +146,7 @@ public final class AdaaWaveshaper {
     private final TransferFunction transferFunction;
     private final int channels;
     private final double[] previousInput;
+    private final boolean[] initialized;
 
     /**
      * Creates an ADAA waveshaper for the given transfer function and channel count.
@@ -163,6 +164,7 @@ public final class AdaaWaveshaper {
                 "transferFunction must not be null");
         this.channels = channels;
         this.previousInput = new double[channels];
+        this.initialized = new boolean[channels];
     }
 
     /**
@@ -170,7 +172,9 @@ public final class AdaaWaveshaper {
      *
      * <p>Computes the band-limited output using the antiderivative finite-difference
      * formula. Falls back to direct evaluation when the input difference is
-     * below the numerical threshold.</p>
+     * below the numerical threshold. The very first sample after construction
+     * or {@link #reset()} returns {@code f(x)} directly to avoid a transient
+     * from the zero-initialized state.</p>
      *
      * @param input   the current input sample
      * @param channel the channel index, must be in {@code [0, getChannels())}
@@ -179,6 +183,34 @@ public final class AdaaWaveshaper {
      */
     public double process(double input, int channel) {
         java.util.Objects.checkIndex(channel, channels);
+        return processUnchecked(input, channel);
+    }
+
+    /**
+     * Processes a block of audio in-place for the given channel using first-order ADAA.
+     *
+     * @param buffer    the audio buffer (modified in place)
+     * @param offset    start index within the buffer
+     * @param numFrames number of frames to process
+     * @param channel   the channel index, must be in {@code [0, getChannels())}
+     * @throws IndexOutOfBoundsException if channel is outside {@code [0, getChannels())}
+     *         or if the buffer range {@code [offset, offset + numFrames)} is out of bounds
+     */
+    public void processBlock(float[] buffer, int offset, int numFrames, int channel) {
+        java.util.Objects.checkIndex(channel, channels);
+        java.util.Objects.checkFromIndexSize(offset, numFrames, buffer.length);
+        for (int i = 0; i < numFrames; i++) {
+            buffer[offset + i] = (float) processUnchecked(buffer[offset + i], channel);
+        }
+    }
+
+    private double processUnchecked(double input, int channel) {
+        if (!initialized[channel]) {
+            initialized[channel] = true;
+            previousInput[channel] = input;
+            return transferFunction.apply(input);
+        }
+
         double xPrev = previousInput[channel];
         previousInput[channel] = input;
 
@@ -193,26 +225,11 @@ public final class AdaaWaveshaper {
     }
 
     /**
-     * Processes a block of audio in-place for the given channel using first-order ADAA.
-     *
-     * @param buffer    the audio buffer (modified in place)
-     * @param offset    start index within the buffer
-     * @param numFrames number of frames to process
-     * @param channel   the channel index, must be in {@code [0, getChannels())}
-     * @throws IndexOutOfBoundsException if channel is outside {@code [0, getChannels())}
-     */
-    public void processBlock(float[] buffer, int offset, int numFrames, int channel) {
-        java.util.Objects.checkIndex(channel, channels);
-        for (int i = 0; i < numFrames; i++) {
-            buffer[offset + i] = (float) process(buffer[offset + i], channel);
-        }
-    }
-
-    /**
      * Resets the internal state (previous input samples) to zero.
      */
     public void reset() {
         java.util.Arrays.fill(previousInput, 0.0);
+        java.util.Arrays.fill(initialized, false);
     }
 
     /**
