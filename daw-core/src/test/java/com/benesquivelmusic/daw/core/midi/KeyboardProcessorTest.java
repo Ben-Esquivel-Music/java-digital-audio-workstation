@@ -334,13 +334,11 @@ class KeyboardProcessorTest {
 
     @Test
     void advancePlaybackShouldTriggerNotesAtColumnZero() {
-        // Use a fake clock to make the test deterministic
-        long[] fakeTime = {1000L};
-        processor.setClock(() -> fakeTime[0]);
+        long[] clockTimeMs = useFakeClock(1000L);
 
         processor.getClip().addNote(MidiNoteData.of(60, 0, 2, 100));
         renderer.receivedEvents.clear();
-        processor.startPlayback(120.0);  // captures fakeTime[0] = 1000
+        processor.startPlayback(120.0);  // captures clockTimeMs[0] = 1000
         assertThat(processor.isPlaying()).isTrue();
 
         // advancePlayback with same time → column 0 (elapsed = 0)
@@ -354,8 +352,7 @@ class KeyboardProcessorTest {
 
     @Test
     void playbackShouldUpdateActiveNotes() {
-        long[] fakeTime = {1000L};
-        processor.setClock(() -> fakeTime[0]);
+        long[] clockTimeMs = useFakeClock(1000L);
 
         processor.getClip().addNote(MidiNoteData.of(60, 0, 2, 100));
         renderer.receivedEvents.clear();
@@ -368,7 +365,7 @@ class KeyboardProcessorTest {
 
         // Advance to column 2 (end of note) — note-off should deactivate
         // At 120 BPM: 1 column = 0.125s = 125ms, column 2 = 250ms
-        fakeTime[0] = 1250L;
+        clockTimeMs[0] = 1250L;
         processor.advancePlayback();
         assertThat(processor.isNoteActive(60)).isFalse();
         assertThat(processor.getActiveNoteCount()).isZero();
@@ -516,6 +513,21 @@ class KeyboardProcessorTest {
         assertThat(KeyboardProcessor.DEFAULT_CHANNEL).isZero();
         assertThat(KeyboardProcessor.NOTES_PER_OCTAVE).isEqualTo(12);
         assertThat(KeyboardProcessor.BEATS_PER_COLUMN).isEqualTo(0.25);
+    }
+
+    // ── Test Helpers ─────────────────────────────────────────────────────
+
+    /**
+     * Installs a fake clock on the processor and returns the mutable time holder.
+     * Advancing the returned array element simulates the passage of time.
+     *
+     * @param initialTimeMs the initial clock time in milliseconds
+     * @return a single-element array whose value is returned by the fake clock
+     */
+    private long[] useFakeClock(long initialTimeMs) {
+        long[] clockTimeMs = {initialTimeMs};
+        processor.setClock(() -> clockTimeMs[0]);
+        return clockTimeMs;
     }
 
     // ── Stub Renderer ──────────────────────────────────────────────────
