@@ -43,6 +43,16 @@ public enum DawAction {
             new KeyCodeCombination(KeyCode.O, KeyCombination.SHORTCUT_DOWN)),
     TOGGLE_SNAP("Toggle Snap", Category.EDITING,
             new KeyCodeCombination(KeyCode.S, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
+    COPY("Copy", Category.EDITING,
+            new KeyCodeCombination(KeyCode.C, KeyCombination.SHORTCUT_DOWN)),
+    CUT("Cut", Category.EDITING,
+            new KeyCodeCombination(KeyCode.X, KeyCombination.SHORTCUT_DOWN)),
+    PASTE("Paste", Category.EDITING,
+            new KeyCodeCombination(KeyCode.V, KeyCombination.SHORTCUT_DOWN)),
+    DUPLICATE("Duplicate", Category.EDITING,
+            new KeyCodeCombination(KeyCode.D, KeyCombination.SHORTCUT_DOWN)),
+    DELETE_SELECTION("Delete Selection", Category.EDITING,
+            new KeyCodeCombination(KeyCode.DELETE)),
 
     // ── Session interchange ─────────────────────────────────────────────────
     IMPORT_SESSION("Import Session", Category.EDITING,

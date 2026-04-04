@@ -27,7 +27,7 @@ class DuplicateClipsActionTest {
     }
 
     @Test
-    void shouldDuplicateClipImmediatelyAfterOriginal() {
+    void shouldDuplicateSingleClipImmediatelyAfterOriginal() {
         Track track = new Track("Drums", TrackType.AUDIO);
         AudioClip clip = new AudioClip("kick", 2.0, 4.0, null);
         track.addClip(clip);
@@ -57,11 +57,32 @@ class DuplicateClipsActionTest {
                 List.of(Map.entry(drums, kick), Map.entry(bass, bassLine)));
         action.execute();
 
+        // earliest start = 0.0, rightmost end = 8.0 => shift = 8.0
         assertThat(drums.getClips()).hasSize(2);
-        assertThat(drums.getClips().get(1).getStartBeat()).isCloseTo(4.0, offset(0.001));
+        assertThat(drums.getClips().get(1).getStartBeat()).isCloseTo(8.0, offset(0.001));
 
         assertThat(bass.getClips()).hasSize(2);
         assertThat(bass.getClips().get(1).getStartBeat()).isCloseTo(8.0, offset(0.001));
+    }
+
+    @Test
+    void shouldDuplicateGroupImmediatelyAfterRightmostOriginal() {
+        Track track = new Track("Drums", TrackType.AUDIO);
+        AudioClip first = new AudioClip("first", 2.0, 2.0, null); // ends at 4
+        AudioClip second = new AudioClip("second", 10.0, 1.0, null); // ends at 11 (rightmost)
+        track.addClip(first);
+        track.addClip(second);
+
+        DuplicateClipsAction action = new DuplicateClipsAction(
+                List.of(Map.entry(track, first), Map.entry(track, second)));
+        action.execute();
+
+        assertThat(track.getClips()).hasSize(4);
+        // earliest start = 2, rightmost end = 11 => shift = 9
+        assertThat(track.getClips().stream()
+                .filter(c -> !c.getId().equals(first.getId()) && !c.getId().equals(second.getId()))
+                .map(AudioClip::getStartBeat))
+                .containsExactlyInAnyOrder(11.0, 19.0);
     }
 
     @Test
