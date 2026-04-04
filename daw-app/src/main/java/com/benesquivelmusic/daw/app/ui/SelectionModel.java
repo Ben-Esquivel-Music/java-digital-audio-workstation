@@ -52,7 +52,8 @@ public final class SelectionModel {
     }
 
     /**
-     * Sets a listener that is invoked whenever the clip selection changes.
+     * Sets a listener that is invoked whenever the clip selection changes
+     * (both audio clip and MIDI clip selections).
      * Pass {@code null} to remove the listener.
      *
      * @param listener the selection change listener, or {@code null}

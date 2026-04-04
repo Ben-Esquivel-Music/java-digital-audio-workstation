@@ -58,9 +58,9 @@
                 <Button fx:id="metronomeButton" text="Metronome" onAction="#onToggleMetronome"
                         styleClass="transport-button, metronome-button"/>
 
-                <Separator orientation="VERTICAL"/>
+                <Separator orientation="VERTICAL" visible="false" managed="false"/>
 
-                <!-- Group 2: Track controls (available via File menu) -->
+                <!-- Group 2: Track controls (available via Edit menu shortcuts) -->
                 <HBox fx:id="trackGroup" spacing="4" alignment="CENTER"
                       styleClass="toolbar-button-group"
                       visible="false" managed="false">
