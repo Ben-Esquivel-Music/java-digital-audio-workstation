@@ -85,6 +85,7 @@ public final class MasteringChain implements AudioProcessor {
     private boolean chainBypassed;
     private double referenceGainDb;
     private float[][][] intermediateBuffers;
+    private int allocatedFrameSize;
     private volatile boolean intermediateBufferWarningLogged;
 
     // Per-stage metering data: snapshot-publish pattern with per-element atomicity.
@@ -125,6 +126,7 @@ public final class MasteringChain implements AudioProcessor {
     public void addStage(MasteringStageType type, String name, AudioProcessor processor) {
         stages.add(new Stage(type, name, processor));
         reallocateMeteringArrays();
+        resizeIntermediateBuffers();
     }
 
     /**
@@ -141,6 +143,7 @@ public final class MasteringChain implements AudioProcessor {
                             AudioProcessor processor) {
         stages.add(index, new Stage(type, name, processor));
         reallocateMeteringArrays();
+        resizeIntermediateBuffers();
     }
 
     /**
@@ -154,6 +157,7 @@ public final class MasteringChain implements AudioProcessor {
     public Stage removeStage(int index) {
         Stage removed = stages.remove(index);
         reallocateMeteringArrays();
+        resizeIntermediateBuffers();
         return removed;
     }
 
@@ -234,8 +238,24 @@ public final class MasteringChain implements AudioProcessor {
         if (frames <= 0) {
             throw new IllegalArgumentException("frames must be positive: " + frames);
         }
+        allocatedFrameSize = frames;
         int maxNeeded = Math.max(stages.size() - 1, 0);
         intermediateBuffers = new float[maxNeeded][channels][frames];
+    }
+
+    /**
+     * Resizes intermediate buffers to match the current stage count, if they
+     * have been previously allocated via {@link #allocateIntermediateBuffers(int, int)}.
+     *
+     * <p>Called from stage mutation methods (add/insert/remove) to keep the
+     * intermediate buffer array in sync with the stage count. If buffers have
+     * not yet been allocated, this is a no-op.</p>
+     */
+    private void resizeIntermediateBuffers() {
+        if (allocatedFrameSize > 0) {
+            int maxNeeded = Math.max(stages.size() - 1, 0);
+            intermediateBuffers = new float[maxNeeded][channels][allocatedFrameSize];
+        }
     }
 
     /**
@@ -308,17 +328,17 @@ public final class MasteringChain implements AudioProcessor {
                 currentOutput = intermediateBuffers[activeIndex];
                 clearBuffer(currentOutput, numFrames);
             } else {
-                // Intermediate buffers are required for non-final stages to avoid
-                // unsafe in-place processing with aliased input/output buffers.
+                // Intermediate buffers not available for non-final stage.
+                // Degrade gracefully: log once and bypass remaining stages.
                 if (!intermediateBufferWarningLogged) {
                     intermediateBufferWarningLogged = true;
                     LOG.warning("Intermediate buffers not pre-allocated for MasteringChain; "
-                            + "call allocateIntermediateBuffers() before processing");
+                            + "call allocateIntermediateBuffers() before processing. "
+                            + "Bypassing remaining stages.");
                 }
-                throw new IllegalStateException(
-                        "Intermediate buffers not pre-allocated for MasteringChain; "
-                                + "cannot process non-final stage without a distinct output buffer. "
-                                + "Call allocateIntermediateBuffers() before processing");
+                // Copy what we have so far to the output and stop processing
+                copyBuffer(currentInput, outputBuffer, numFrames);
+                return;
             }
 
             // Measure input peak level

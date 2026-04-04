@@ -188,10 +188,12 @@ public final class MasteringView extends VBox {
 
         getChildren().addAll(headerBar, new Separator(), stageScroll, meterSection, statusLabel);
 
-        // Stop the meter timer when the view is removed from the scene
+        // Keep the meter timer lifecycle symmetric with scene attachment
         sceneProperty().addListener((obs, oldScene, newScene) -> {
             if (newScene == null) {
                 stopMeterTimer();
+            } else if (!masteringChain.getStages().isEmpty()) {
+                startMeterTimer();
             }
         });
     }

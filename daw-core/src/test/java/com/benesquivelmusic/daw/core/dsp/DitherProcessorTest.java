@@ -25,7 +25,8 @@ class DitherProcessorTest {
 
     @Test
     void shouldProduceDifferentOutputWithDither() {
-        // Two passes with random seed should produce slightly different outputs
+        // Two passes with different seeds — both should produce valid output
+        // close to the input value under 8-bit quantization
         DitherProcessor proc1 = new DitherProcessor(1, 8, 1L);
         DitherProcessor proc2 = new DitherProcessor(1, 8, 2L);
 
@@ -36,9 +37,7 @@ class DitherProcessorTest {
         proc1.process(input, out1, 1);
         proc2.process(input, out2, 1);
 
-        // With different seeds and 8-bit quantization, results differ slightly
-        // (not guaranteed to be different for every value, but statistically likely)
-        // We mainly verify both produce valid output close to the input
+        // Both produce valid output close to the input
         assertThat((double) out1[0][0]).isCloseTo(0.333, offset(0.02));
         assertThat((double) out2[0][0]).isCloseTo(0.333, offset(0.02));
     }

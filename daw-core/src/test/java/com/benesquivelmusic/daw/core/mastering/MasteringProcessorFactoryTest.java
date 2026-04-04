@@ -165,13 +165,18 @@ class MasteringProcessorFactoryTest {
 
         chain.process(input, output, 4);
 
-        // Output should be different from input (chain applies processing)
-        // and should be finite (no NaN or infinity)
+        // Output should be finite (no NaN or infinity) and the chain
+        // should actually modify the signal
+        boolean changed = false;
         for (int ch = 0; ch < 2; ch++) {
             for (int i = 0; i < 4; i++) {
                 assertThat(Float.isFinite(output[ch][i])).isTrue();
+                if (output[ch][i] != input[ch][i]) {
+                    changed = true;
+                }
             }
         }
+        assertThat(changed).isTrue();
     }
 
     @Test

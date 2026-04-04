@@ -177,8 +177,8 @@ class MasteringChainMeteringTest {
             }
         }
 
-        // Metering should be available for all 7 stages
-        for (int i = 0; i < 7; i++) {
+        // Metering should be available for all stages in the preset
+        for (int i = 0; i < preset.stages().size(); i++) {
             assertThat(Double.isFinite(chain.getStageInputPeakDb(i))).isTrue();
             assertThat(Double.isFinite(chain.getStageOutputPeakDb(i))).isTrue();
             assertThat(Double.isFinite(chain.getStageGainReductionDb(i))).isTrue();
