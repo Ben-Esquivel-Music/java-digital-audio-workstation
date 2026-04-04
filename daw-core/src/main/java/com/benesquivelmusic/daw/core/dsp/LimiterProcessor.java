@@ -23,7 +23,7 @@ import java.util.Arrays;
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
-public final class LimiterProcessor implements AudioProcessor {
+public final class LimiterProcessor implements AudioProcessor, GainReductionProvider {
 
     private static final double MIN_LOOK_AHEAD_MS = 1.0;
     private static final double MAX_LOOK_AHEAD_MS = 5.0;

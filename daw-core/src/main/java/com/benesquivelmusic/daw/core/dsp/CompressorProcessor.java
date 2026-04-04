@@ -17,7 +17,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
  * <p>The envelope follower uses logarithmic-domain smoothing for musically
  * accurate behavior. This is a pure-Java implementation — no JNI required.</p>
  */
-public final class CompressorProcessor implements AudioProcessor {
+public final class CompressorProcessor implements AudioProcessor, GainReductionProvider {
 
     /** Detection mode for the compressor. */
     public enum DetectionMode { PEAK, RMS }

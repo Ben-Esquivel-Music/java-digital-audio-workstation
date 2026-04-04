@@ -6,10 +6,14 @@ import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 import com.benesquivelmusic.daw.core.mastering.MasteringChainPresets;
+import com.benesquivelmusic.daw.core.mastering.MasteringProcessorFactory;
+import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringChainPreset;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringStageConfig;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringStageType;
+import com.benesquivelmusic.daw.sdk.visualization.LevelData;
 
+import javafx.animation.AnimationTimer;
 import javafx.collections.FXCollections;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -54,6 +58,9 @@ public final class MasteringView extends VBox {
     private static final double METER_WIDTH = 10;
     private static final double METER_HEIGHT = 80;
     private static final double CONTROL_ICON_SIZE = 14;
+    private static final double DEFAULT_SAMPLE_RATE = 44100.0;
+    private static final int DEFAULT_CHANNELS = 2;
+    private static final long METER_UPDATE_INTERVAL_NS = 33_333_333L; // ~30 Hz
 
     private static final String ACTIVE_BYPASS_STYLE =
             "-fx-background-color: #ff9100; -fx-text-fill: #0d0d0d;";
@@ -65,12 +72,19 @@ public final class MasteringView extends VBox {
     private final LoudnessDisplay loudnessDisplay;
     private final Label statusLabel;
     private final List<MasteringChainPreset> availablePresets;
+    private final double sampleRate;
+    private final int channels;
+
+    // Per-stage meter references for real-time updates
+    private final List<Label> grLabels = new ArrayList<>();
+    private final List<LevelMeterDisplay> levelMeters = new ArrayList<>();
+    private AnimationTimer meterTimer;
 
     /**
      * Creates a new mastering view with an empty mastering chain.
      */
     public MasteringView() {
-        this(new MasteringChain());
+        this(new MasteringChain(), DEFAULT_SAMPLE_RATE, DEFAULT_CHANNELS);
     }
 
     /**
@@ -79,7 +93,21 @@ public final class MasteringView extends VBox {
      * @param masteringChain the mastering chain to visualize and control
      */
     public MasteringView(MasteringChain masteringChain) {
+        this(masteringChain, DEFAULT_SAMPLE_RATE, DEFAULT_CHANNELS);
+    }
+
+    /**
+     * Creates a new mastering view bound to the given mastering chain
+     * with the specified audio parameters for processor creation.
+     *
+     * @param masteringChain the mastering chain to visualize and control
+     * @param sampleRate     the sample rate in Hz for processor instantiation
+     * @param channels       the number of audio channels
+     */
+    public MasteringView(MasteringChain masteringChain, double sampleRate, int channels) {
         this.masteringChain = Objects.requireNonNull(masteringChain, "masteringChain must not be null");
+        this.sampleRate = sampleRate;
+        this.channels = channels;
         getStyleClass().add("content-area");
         setSpacing(0);
 
@@ -161,6 +189,8 @@ public final class MasteringView extends VBox {
      */
     public void refresh() {
         stageContainer.getChildren().clear();
+        grLabels.clear();
+        levelMeters.clear();
         List<MasteringChain.Stage> stages = masteringChain.getStages();
         for (int i = 0; i < stages.size(); i++) {
             MasteringChain.Stage stage = stages.get(i);
@@ -169,6 +199,7 @@ public final class MasteringView extends VBox {
                 stageContainer.getChildren().add(buildChainArrow());
             }
         }
+        startMeterTimer();
     }
 
     /**
@@ -245,8 +276,8 @@ public final class MasteringView extends VBox {
      * Loads a mastering chain preset into the chain and refreshes the view.
      *
      * <p>Clears the existing chain and rebuilds it from the preset's stage
-     * configurations. Since the view layer does not instantiate real audio
-     * processors, each stage is populated with a stub no-op processor.</p>
+     * configurations. Each stage is populated with the corresponding real
+     * DSP processor from {@link MasteringProcessorFactory}.</p>
      *
      * @param preset the preset to load
      */
@@ -255,9 +286,11 @@ public final class MasteringView extends VBox {
         while (!masteringChain.isEmpty()) {
             masteringChain.removeStage(0);
         }
-        // Add stages from preset
+        // Add stages from preset with real DSP processors
         for (MasteringStageConfig config : preset.stages()) {
-            masteringChain.addStage(config.stageType(), config.name(), new NoOpProcessor());
+            AudioProcessor processor = MasteringProcessorFactory.createProcessor(
+                    config, channels, sampleRate);
+            masteringChain.addStage(config.stageType(), config.name(), processor);
         }
         refresh();
         statusLabel.setText("Loaded preset: " + preset.name() + " (" + preset.genre() + ")");
@@ -292,9 +325,11 @@ public final class MasteringView extends VBox {
         levelMeter.setPrefHeight(METER_HEIGHT);
         levelMeter.setMinHeight(METER_HEIGHT);
 
-        // Gain reduction label (placeholder for real-time metering)
+        // Gain reduction label (updated in real time by meter timer)
         Label grLabel = new Label("GR: 0.0 dB");
         grLabel.setStyle("-fx-text-fill: #00e676; -fx-font-size: 10px;");
+        grLabels.add(grLabel);
+        levelMeters.add(levelMeter);
 
         // Bypass button
         Button bypassBtn = new Button("Bypass");
@@ -361,33 +396,56 @@ public final class MasteringView extends VBox {
     }
 
     /**
-     * No-op audio processor used as a placeholder in the mastering view.
-     *
-     * <p>The view layer does not process audio — it provides a visual
-     * representation of the mastering chain. Real processors are attached
-     * by the audio engine at playback time.</p>
+     * Starts the meter polling timer that updates GR labels and level meters
+     * at approximately 30 Hz. Stops any previously running timer.
      */
-    private static final class NoOpProcessor implements com.benesquivelmusic.daw.sdk.audio.AudioProcessor {
-        @Override
-        public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
-            for (int ch = 0; ch < inputBuffer.length; ch++) {
-                System.arraycopy(inputBuffer[ch], 0, outputBuffer[ch], 0, numFrames);
+    private void startMeterTimer() {
+        stopMeterTimer();
+        if (masteringChain.isEmpty()) {
+            return;
+        }
+        meterTimer = new AnimationTimer() {
+            private long lastUpdate;
+
+            @Override
+            public void handle(long now) {
+                if (now - lastUpdate < METER_UPDATE_INTERVAL_NS) {
+                    return;
+                }
+                lastUpdate = now;
+                updateMeters();
             }
-        }
+        };
+        meterTimer.start();
+    }
 
-        @Override
-        public void reset() {
-            // no state to reset
+    /**
+     * Stops the meter polling timer.
+     */
+    private void stopMeterTimer() {
+        if (meterTimer != null) {
+            meterTimer.stop();
+            meterTimer = null;
         }
+    }
 
-        @Override
-        public int getInputChannelCount() {
-            return 2;
-        }
+    /**
+     * Reads metering data from the mastering chain and updates UI labels
+     * and meters. Called from the JavaFX application thread by the
+     * animation timer.
+     */
+    private void updateMeters() {
+        int stageCount = masteringChain.size();
+        for (int i = 0; i < Math.min(stageCount, grLabels.size()); i++) {
+            double gr = masteringChain.getStageGainReductionDb(i);
+            grLabels.get(i).setText(String.format("GR: %.1f dB", gr));
 
-        @Override
-        public int getOutputChannelCount() {
-            return 2;
+            double outputDb = masteringChain.getStageOutputPeakDb(i);
+            double linear = (outputDb > -60.0)
+                    ? Math.pow(10.0, outputDb / 20.0)
+                    : 0.0;
+            LevelData levelData = new LevelData(linear, linear, outputDb, outputDb, outputDb > 0.0);
+            levelMeters.get(i).update(levelData, METER_UPDATE_INTERVAL_NS);
         }
     }
 }

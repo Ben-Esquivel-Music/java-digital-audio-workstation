@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.mastering;
 
+import com.benesquivelmusic.daw.core.dsp.GainReductionProvider;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringChainPreset;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringStageConfig;
@@ -31,7 +32,10 @@ import java.util.Objects;
  *   <li>Preset save/load — capture and restore full chain configuration</li>
  * </ul>
  */
-public final class MasteringChain {
+public final class MasteringChain implements AudioProcessor {
+
+    /** Default number of channels for stereo mastering. */
+    private static final int DEFAULT_CHANNELS = 2;
 
     /**
      * A single stage in the mastering chain.
@@ -73,9 +77,34 @@ public final class MasteringChain {
     }
 
     private final List<Stage> stages = new ArrayList<>();
+    private final int channels;
     private boolean chainBypassed;
     private double referenceGainDb;
     private float[][][] intermediateBuffers;
+
+    // Per-stage metering data (written on audio thread, read on UI thread)
+    private volatile double[] stageInputPeakDb;
+    private volatile double[] stageOutputPeakDb;
+    private volatile double[] stageGainReductionDb;
+
+    /**
+     * Creates a mastering chain with the default stereo channel count (2).
+     */
+    public MasteringChain() {
+        this(DEFAULT_CHANNELS);
+    }
+
+    /**
+     * Creates a mastering chain with the specified channel count.
+     *
+     * @param channels the number of audio channels
+     */
+    public MasteringChain(int channels) {
+        if (channels <= 0) {
+            throw new IllegalArgumentException("channels must be positive: " + channels);
+        }
+        this.channels = channels;
+    }
 
     /**
      * Adds a stage to the end of the mastering chain.
@@ -190,12 +219,15 @@ public final class MasteringChain {
     /**
      * Processes audio through the mastering chain.
      *
-     * <p>Respects chain bypass (A/B mode), per-stage bypass, and solo.</p>
+     * <p>Respects chain bypass (A/B mode), per-stage bypass, and solo.
+     * Updates per-stage metering data (input/output peak levels and
+     * gain reduction) after processing each active stage.</p>
      *
      * @param inputBuffer  input audio data {@code [channel][frame]}
      * @param outputBuffer output audio data {@code [channel][frame]}
      * @param numFrames    the number of frames to process
      */
+    @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         if (chainBypassed || stages.isEmpty()) {
             copyWithGain(inputBuffer, outputBuffer, numFrames, referenceGainDb);
@@ -219,8 +251,13 @@ public final class MasteringChain {
             return;
         }
 
+        ensureMeteringArrays();
+
         float[][] currentInput = inputBuffer;
         for (int i = 0; i < activeStages.size(); i++) {
+            Stage stage = activeStages.get(i);
+            int stageIndex = stages.indexOf(stage);
+
             float[][] currentOutput;
             if (i == activeStages.size() - 1) {
                 currentOutput = outputBuffer;
@@ -230,7 +267,18 @@ public final class MasteringChain {
             } else {
                 currentOutput = new float[outputBuffer.length][numFrames];
             }
-            activeStages.get(i).getProcessor().process(currentInput, currentOutput, numFrames);
+
+            // Measure input peak level
+            updateInputPeak(stageIndex, currentInput, numFrames);
+
+            stage.getProcessor().process(currentInput, currentOutput, numFrames);
+
+            // Measure output peak level
+            updateOutputPeak(stageIndex, currentOutput, numFrames);
+
+            // Read gain reduction from dynamics processors
+            updateGainReduction(stageIndex, stage.getProcessor());
+
             currentInput = currentOutput;
         }
     }
@@ -238,10 +286,61 @@ public final class MasteringChain {
     /**
      * Resets all processors in the chain.
      */
+    @Override
     public void reset() {
         for (Stage stage : stages) {
             stage.getProcessor().reset();
         }
+    }
+
+    @Override
+    public int getInputChannelCount() {
+        return channels;
+    }
+
+    @Override
+    public int getOutputChannelCount() {
+        return channels;
+    }
+
+    // --- Metering accessors (read from UI thread) ---
+
+    /**
+     * Returns the input peak level in dB for the specified stage.
+     *
+     * @param stageIndex the stage index
+     * @return the input peak level in dB, or {@code -120.0} if not available
+     */
+    public double getStageInputPeakDb(int stageIndex) {
+        double[] peaks = stageInputPeakDb;
+        return (peaks != null && stageIndex >= 0 && stageIndex < peaks.length)
+                ? peaks[stageIndex] : -120.0;
+    }
+
+    /**
+     * Returns the output peak level in dB for the specified stage.
+     *
+     * @param stageIndex the stage index
+     * @return the output peak level in dB, or {@code -120.0} if not available
+     */
+    public double getStageOutputPeakDb(int stageIndex) {
+        double[] peaks = stageOutputPeakDb;
+        return (peaks != null && stageIndex >= 0 && stageIndex < peaks.length)
+                ? peaks[stageIndex] : -120.0;
+    }
+
+    /**
+     * Returns the gain reduction in dB for the specified stage.
+     *
+     * <p>Returns {@code 0.0} for stages that do not perform dynamics processing.</p>
+     *
+     * @param stageIndex the stage index
+     * @return the gain reduction in dB (≤ 0), or {@code 0.0} if not applicable
+     */
+    public double getStageGainReductionDb(int stageIndex) {
+        double[] gr = stageGainReductionDb;
+        return (gr != null && stageIndex >= 0 && stageIndex < gr.length)
+                ? gr[stageIndex] : 0.0;
     }
 
     /**
@@ -323,5 +422,56 @@ public final class MasteringChain {
         for (float[] channel : buffer) {
             Arrays.fill(channel, 0, numFrames, 0.0f);
         }
+    }
+
+    // --- Metering helpers (called on audio thread) ---
+
+    private void ensureMeteringArrays() {
+        int n = stages.size();
+        if (stageInputPeakDb == null || stageInputPeakDb.length != n) {
+            stageInputPeakDb = new double[n];
+            stageOutputPeakDb = new double[n];
+            stageGainReductionDb = new double[n];
+            Arrays.fill(stageInputPeakDb, -120.0);
+            Arrays.fill(stageOutputPeakDb, -120.0);
+        }
+    }
+
+    private void updateInputPeak(int stageIndex, float[][] buffer, int numFrames) {
+        double[] peaks = stageInputPeakDb;
+        if (peaks != null && stageIndex < peaks.length) {
+            peaks[stageIndex] = measurePeakDb(buffer, numFrames);
+        }
+    }
+
+    private void updateOutputPeak(int stageIndex, float[][] buffer, int numFrames) {
+        double[] peaks = stageOutputPeakDb;
+        if (peaks != null && stageIndex < peaks.length) {
+            peaks[stageIndex] = measurePeakDb(buffer, numFrames);
+        }
+    }
+
+    private void updateGainReduction(int stageIndex, AudioProcessor processor) {
+        double[] gr = stageGainReductionDb;
+        if (gr != null && stageIndex < gr.length) {
+            if (processor instanceof GainReductionProvider provider) {
+                gr[stageIndex] = provider.getGainReductionDb();
+            } else {
+                gr[stageIndex] = 0.0;
+            }
+        }
+    }
+
+    private static double measurePeakDb(float[][] buffer, int numFrames) {
+        double peak = 0.0;
+        for (float[] channel : buffer) {
+            for (int i = 0; i < numFrames; i++) {
+                double abs = Math.abs(channel[i]);
+                if (abs > peak) {
+                    peak = abs;
+                }
+            }
+        }
+        return (peak > 0.0) ? 20.0 * Math.log10(peak) : -120.0;
     }
 }
