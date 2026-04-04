@@ -508,6 +508,22 @@ class SelectionModelTest {
     }
 
     @Test
+    void selectClipShouldClearPreviousMidiSelection() {
+        SelectionModel model = new SelectionModel();
+        Track midi = new Track("MIDI 1", TrackType.MIDI);
+        MidiClip midiClip = midi.getMidiClip();
+        midiClip.addNote(MidiNoteData.of(60, 0, 4, 100));
+        model.selectMidiClip(midi, midiClip);
+
+        Track audio = new Track("Audio 1", TrackType.AUDIO);
+        AudioClip audioClip = new AudioClip("kick", 0.0, 4.0, null);
+        model.selectClip(audio, audioClip);
+
+        assertThat(model.isMidiClipSelected(midiClip)).isFalse();
+        assertThat(model.isClipSelected(audioClip)).isTrue();
+    }
+
+    @Test
     void midiClipStartBeatShouldComputeFromMinColumn() {
         MidiClip midiClip = new MidiClip();
         midiClip.addNote(MidiNoteData.of(60, 8, 4, 100));
@@ -525,5 +541,19 @@ class SelectionModelTest {
 
         // Max end column is 4 + 8 = 12, so end beat is 12 * 0.25 = 3.0
         assertThat(SelectionModel.midiClipEndBeat(midiClip)).isCloseTo(3.0, offset(0.001));
+    }
+
+    @Test
+    void midiClipStartBeatShouldRejectEmptyClip() {
+        MidiClip midiClip = new MidiClip();
+        assertThatThrownBy(() -> SelectionModel.midiClipStartBeat(midiClip))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void midiClipEndBeatShouldRejectEmptyClip() {
+        MidiClip midiClip = new MidiClip();
+        assertThatThrownBy(() -> SelectionModel.midiClipEndBeat(midiClip))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }

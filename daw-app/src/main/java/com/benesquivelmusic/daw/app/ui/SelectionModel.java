@@ -34,10 +34,10 @@ public final class SelectionModel {
 
     /**
      * Beats per grid column — used to convert MIDI note column positions to
-     * beat positions for region overlap tests. Must match
-     * {@link EditorView#BEATS_PER_COLUMN}.
+     * beat positions for region overlap tests. Derived from
+     * {@link EditorView#BEATS_PER_COLUMN} to keep a single source of truth.
      */
-    static final double BEATS_PER_COLUMN = 0.25;
+    static final double BEATS_PER_COLUMN = EditorView.BEATS_PER_COLUMN;
 
     /**
      * Creates a selection model with no active selection.
@@ -125,6 +125,7 @@ public final class SelectionModel {
         Objects.requireNonNull(track, "track must not be null");
         Objects.requireNonNull(clip, "clip must not be null");
         selectedClips.clear();
+        selectedMidiClips.clear();
         selectedClips.put(clip, track);
     }
 
@@ -315,8 +316,12 @@ public final class SelectionModel {
      *
      * @param midiClip the MIDI clip (must not be empty)
      * @return the start beat
+     * @throws IllegalArgumentException if the clip is empty
      */
     static double midiClipStartBeat(MidiClip midiClip) {
+        if (midiClip.isEmpty()) {
+            throw new IllegalArgumentException("MIDI clip must not be empty");
+        }
         int minColumn = Integer.MAX_VALUE;
         for (MidiNoteData note : midiClip.getNotes()) {
             if (note.startColumn() < minColumn) {
@@ -332,8 +337,12 @@ public final class SelectionModel {
      *
      * @param midiClip the MIDI clip (must not be empty)
      * @return the end beat
+     * @throws IllegalArgumentException if the clip is empty
      */
     static double midiClipEndBeat(MidiClip midiClip) {
+        if (midiClip.isEmpty()) {
+            throw new IllegalArgumentException("MIDI clip must not be empty");
+        }
         int maxEndColumn = 0;
         for (MidiNoteData note : midiClip.getNotes()) {
             if (note.endColumn() > maxEndColumn) {
