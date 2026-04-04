@@ -173,10 +173,12 @@ public final class AdaaWaveshaper {
      * below the numerical threshold.</p>
      *
      * @param input   the current input sample
-     * @param channel the channel index
+     * @param channel the channel index, must be in {@code [0, getChannels())}
      * @return the antialiased output sample
+     * @throws IndexOutOfBoundsException if channel is outside {@code [0, getChannels())}
      */
     public double process(double input, int channel) {
+        java.util.Objects.checkIndex(channel, channels);
         double xPrev = previousInput[channel];
         previousInput[channel] = input;
 
@@ -196,9 +198,11 @@ public final class AdaaWaveshaper {
      * @param buffer    the audio buffer (modified in place)
      * @param offset    start index within the buffer
      * @param numFrames number of frames to process
-     * @param channel   the channel index
+     * @param channel   the channel index, must be in {@code [0, getChannels())}
+     * @throws IndexOutOfBoundsException if channel is outside {@code [0, getChannels())}
      */
     public void processBlock(float[] buffer, int offset, int numFrames, int channel) {
+        java.util.Objects.checkIndex(channel, channels);
         for (int i = 0; i < numFrames; i++) {
             buffer[offset + i] = (float) process(buffer[offset + i], channel);
         }

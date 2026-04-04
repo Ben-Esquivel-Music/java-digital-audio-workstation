@@ -37,6 +37,28 @@ class AdaaWaveshaperTest {
         assertThat(ws.getTransferFunction()).isSameAs(AdaaWaveshaper.TANH);
     }
 
+    @Test
+    void processShouldRejectNegativeChannel() {
+        AdaaWaveshaper ws = new AdaaWaveshaper(AdaaWaveshaper.TANH, 2);
+        assertThatThrownBy(() -> ws.process(0.5, -1))
+                .isInstanceOf(IndexOutOfBoundsException.class);
+    }
+
+    @Test
+    void processShouldRejectChannelAtOrAboveCount() {
+        AdaaWaveshaper ws = new AdaaWaveshaper(AdaaWaveshaper.TANH, 2);
+        assertThatThrownBy(() -> ws.process(0.5, 2))
+                .isInstanceOf(IndexOutOfBoundsException.class);
+    }
+
+    @Test
+    void processBlockShouldRejectOutOfRangeChannel() {
+        AdaaWaveshaper ws = new AdaaWaveshaper(AdaaWaveshaper.TANH, 1);
+        float[] buffer = new float[16];
+        assertThatThrownBy(() -> ws.processBlock(buffer, 0, 16, 1))
+                .isInstanceOf(IndexOutOfBoundsException.class);
+    }
+
     // --- TANH transfer function ---
 
     @Test
