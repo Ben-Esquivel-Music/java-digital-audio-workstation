@@ -641,4 +641,27 @@ class ArrangementCanvasTest {
         });
         assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
     }
+
+    @Test
+    void shouldRenderSelectedMidiClipHighlight() throws Exception {
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                Track midi = new Track("MIDI 1", TrackType.MIDI);
+                midi.getMidiClip().addNote(MidiNoteData.of(60, 0, 8, 100));
+                canvas.setTracks(List.of(midi));
+
+                SelectionModel sm = new SelectionModel();
+                sm.selectMidiClip(midi, midi.getMidiClip());
+                canvas.setSelectionModel(sm);
+
+                canvas.refresh();
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+    }
 }

@@ -15,7 +15,9 @@ import com.benesquivelmusic.daw.core.automation.AutomationParameter;
 import com.benesquivelmusic.daw.core.automation.AutomationPoint;
 import com.benesquivelmusic.daw.core.automation.MoveAutomationPointAction;
 import com.benesquivelmusic.daw.core.automation.RemoveAutomationPointAction;
+import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 
 import javafx.scene.Cursor;
@@ -192,6 +194,27 @@ final class ClipInteractionController {
             if (beat >= clip.getStartBeat() && beat < clip.getEndBeat()) {
                 return clip;
             }
+        }
+        return null;
+    }
+
+    /**
+     * Finds the MIDI clip at the given beat on the specified MIDI track,
+     * or {@code null} if the track is not a MIDI track or the beat is
+     * outside the MIDI clip's rendered bounds.
+     */
+    MidiClip midiClipAt(Track track, double beat) {
+        if (track.getType() != TrackType.MIDI) {
+            return null;
+        }
+        MidiClip midiClip = track.getMidiClip();
+        if (midiClip.isEmpty()) {
+            return null;
+        }
+        double startBeat = SelectionModel.midiClipStartBeat(midiClip);
+        double endBeat = SelectionModel.midiClipEndBeat(midiClip);
+        if (beat >= startBeat && beat < endBeat) {
+            return midiClip;
         }
         return null;
     }
@@ -627,27 +650,37 @@ final class ClipInteractionController {
 
     private void handlePointerPress(Track track, double beat, MouseEvent event) {
         AudioClip clip = clipAt(track, beat);
-        if (clip == null) {
-            // Empty space in a track lane — begin rubber-band clip selection
-            beginRubberBandDrag(event.getX(), event.getY(), event.isShiftDown());
+        if (clip != null) {
+            // Click on an audio clip
+            clearTimeSelection();
+            if (event.isShiftDown()) {
+                host.selectionModel().toggleClipSelection(track, clip);
+                host.refreshCanvas();
+            } else {
+                host.selectionModel().selectClip(track, clip);
+                host.refreshCanvas();
+                dragClip = clip;
+                dragSourceTrack = track;
+                dragStartBeat = beat;
+            }
+            LOG.fine(() -> "Pointer: selected clip '" + clip.getName() + "' at beat " + beat);
             return;
         }
-        // Click on a clip
-        clearTimeSelection();
-        if (event.isShiftDown()) {
-            // Shift-click toggles this clip in the selection
-            int trackIndex = trackIndexAt(event.getY());
-            host.selectionModel().toggleClipSelection(track, clip);
+        // Check for MIDI clip hit
+        MidiClip midiClip = midiClipAt(track, beat);
+        if (midiClip != null) {
+            clearTimeSelection();
+            if (event.isShiftDown()) {
+                host.selectionModel().toggleMidiClipSelection(track, midiClip);
+            } else {
+                host.selectionModel().selectMidiClip(track, midiClip);
+            }
             host.refreshCanvas();
-        } else {
-            // Normal click — select only this clip and start drag
-            host.selectionModel().selectClip(track, clip);
-            host.refreshCanvas();
-            dragClip = clip;
-            dragSourceTrack = track;
-            dragStartBeat = beat;
+            LOG.fine(() -> "Pointer: selected MIDI clip on track '" + track.getName() + "' at beat " + beat);
+            return;
         }
-        LOG.fine(() -> "Pointer: selected clip '" + clip.getName() + "' at beat " + beat);
+        // Empty space in a track lane — begin rubber-band clip selection
+        beginRubberBandDrag(event.getX(), event.getY(), event.isShiftDown());
     }
 
     /**

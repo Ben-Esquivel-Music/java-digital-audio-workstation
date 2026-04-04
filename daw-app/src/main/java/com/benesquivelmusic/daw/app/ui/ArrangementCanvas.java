@@ -1015,6 +1015,17 @@ public final class ArrangementCanvas extends Pane {
         gc.strokeRoundRect(clipX, clipY, clipWidth, clipHeight,
                 CLIP_CORNER_RADIUS, CLIP_CORNER_RADIUS);
 
+        // Selection highlight overlay for selected MIDI clips
+        if (selectionModel != null && selectionModel.isMidiClipSelected(midiClip)) {
+            gc.setFill(CLIP_SELECTED_OVERLAY_COLOR);
+            gc.fillRoundRect(clipX, clipY, clipWidth, clipHeight,
+                    CLIP_CORNER_RADIUS, CLIP_CORNER_RADIUS);
+            gc.setStroke(CLIP_SELECTED_BORDER_COLOR);
+            gc.setLineWidth(2.0);
+            gc.strokeRoundRect(clipX, clipY, clipWidth, clipHeight,
+                    CLIP_CORNER_RADIUS, CLIP_CORNER_RADIUS);
+        }
+
         // Draw mini piano-roll notes
         int noteRange = maxNote - minNote + 1;
         if (noteRange < 1) {
