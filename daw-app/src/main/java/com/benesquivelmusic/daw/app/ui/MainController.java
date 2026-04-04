@@ -11,6 +11,9 @@ import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioBackendFactory;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.audio.CutClipsAction;
+import com.benesquivelmusic.daw.core.audio.DuplicateClipsAction;
+import com.benesquivelmusic.daw.core.audio.PasteClipsAction;
 import com.benesquivelmusic.daw.core.audioimport.AudioFileImporter;
 import com.benesquivelmusic.daw.core.audioimport.AudioImportResult;
 import com.benesquivelmusic.daw.core.audioimport.SupportedAudioFormat;
@@ -991,6 +994,11 @@ public final class MainController {
         actionHandlers.put(DawAction.TOGGLE_VISUALIZATIONS, () -> vizPanelController.toggleRowVisibility());
         actionHandlers.put(DawAction.OPEN_SETTINGS, this::onOpenSettings);
         actionHandlers.put(DawAction.TOGGLE_TOOLBAR, this::onToggleToolbar);
+        actionHandlers.put(DawAction.COPY, this::onCopyClips);
+        actionHandlers.put(DawAction.CUT, this::onCutClips);
+        actionHandlers.put(DawAction.PASTE, this::onPasteClips);
+        actionHandlers.put(DawAction.DUPLICATE, this::onDuplicateClips);
+        actionHandlers.put(DawAction.DELETE_SELECTION, this::onDeleteSelection);
 
         // Register each action's current binding from the KeyBindingManager
         for (DawAction action : DawAction.values()) {
@@ -1658,6 +1666,91 @@ public final class MainController {
                 pluginRegistry.scanClapPlugins(paths);
             }
         }
+    }
+
+    // ── Multi-clip group operations (keyboard shortcuts) ─────────────────────
+
+    private void onCopyClips() {
+        List<ClipboardEntry> selected = selectionModel.getSelectedClips();
+        if (selected.isEmpty()) {
+            return;
+        }
+        clipboardManager.copyClips(selected);
+        statusBarLabel.setText("Copied " + selected.size() + " clip(s)");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.COPY, 12));
+    }
+
+    private void onCutClips() {
+        List<ClipboardEntry> selected = selectionModel.getSelectedClips();
+        if (selected.isEmpty()) {
+            return;
+        }
+        clipboardManager.copyClips(selected);
+        List<java.util.Map.Entry<Track, AudioClip>> entries = new java.util.ArrayList<>();
+        for (ClipboardEntry entry : selected) {
+            entries.add(java.util.Map.entry(entry.sourceTrack(), entry.clip()));
+        }
+        undoManager.execute(new CutClipsAction(entries));
+        selectionModel.clearClipSelection();
+        refreshArrangementCanvas();
+        updateUndoRedoState();
+        statusBarLabel.setText("Cut " + entries.size() + " clip(s)");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.CUT, 12));
+        projectDirty = true;
+    }
+
+    private void onPasteClips() {
+        if (!clipboardManager.hasContent()) {
+            return;
+        }
+        List<ClipboardEntry> entries = clipboardManager.getEntries();
+        if (entries.isEmpty()) {
+            return;
+        }
+        double playhead = project.getTransport().getPositionInBeats();
+        List<java.util.Map.Entry<Track, AudioClip>> sourceEntries = new java.util.ArrayList<>();
+        for (ClipboardEntry entry : entries) {
+            sourceEntries.add(java.util.Map.entry(entry.sourceTrack(), entry.clip()));
+        }
+        undoManager.execute(new PasteClipsAction(sourceEntries, null, playhead));
+        refreshArrangementCanvas();
+        updateUndoRedoState();
+        statusBarLabel.setText("Pasted " + entries.size() + " clip(s) at beat " + String.format("%.1f", playhead));
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.PASTE, 12));
+        projectDirty = true;
+    }
+
+    private void onDuplicateClips() {
+        List<ClipboardEntry> selected = selectionModel.getSelectedClips();
+        if (selected.isEmpty()) {
+            return;
+        }
+        List<java.util.Map.Entry<Track, AudioClip>> entries = new java.util.ArrayList<>();
+        for (ClipboardEntry entry : selected) {
+            entries.add(java.util.Map.entry(entry.sourceTrack(), entry.clip()));
+        }
+        undoManager.execute(new DuplicateClipsAction(entries));
+        refreshArrangementCanvas();
+        updateUndoRedoState();
+        statusBarLabel.setText("Duplicated " + entries.size() + " clip(s)");
+        projectDirty = true;
+    }
+
+    private void onDeleteSelection() {
+        List<ClipboardEntry> selected = selectionModel.getSelectedClips();
+        if (selected.isEmpty()) {
+            return;
+        }
+        List<java.util.Map.Entry<Track, AudioClip>> entries = new java.util.ArrayList<>();
+        for (ClipboardEntry entry : selected) {
+            entries.add(java.util.Map.entry(entry.sourceTrack(), entry.clip()));
+        }
+        undoManager.execute(new CutClipsAction(entries));
+        selectionModel.clearClipSelection();
+        refreshArrangementCanvas();
+        updateUndoRedoState();
+        statusBarLabel.setText("Deleted " + entries.size() + " clip(s)");
+        projectDirty = true;
     }
 
     @FXML

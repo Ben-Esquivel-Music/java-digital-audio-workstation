@@ -3,9 +3,11 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.core.audio.AddClipAction;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.CrossTrackMoveAction;
+import com.benesquivelmusic.daw.core.audio.CutClipsAction;
 import com.benesquivelmusic.daw.core.audio.FadeClipAction;
 import com.benesquivelmusic.daw.core.audio.FadeCurveType;
 import com.benesquivelmusic.daw.core.audio.GlueClipsAction;
+import com.benesquivelmusic.daw.core.audio.GroupMoveClipsAction;
 import com.benesquivelmusic.daw.core.audio.MoveClipAction;
 import com.benesquivelmusic.daw.core.audio.RemoveClipAction;
 import com.benesquivelmusic.daw.core.audio.SplitClipAction;
@@ -27,8 +29,10 @@ import javafx.scene.control.Tooltip;
 import javafx.scene.input.MouseButton;
 import javafx.scene.input.MouseEvent;
 
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.logging.Logger;
 
@@ -78,7 +82,9 @@ final class ClipInteractionController {
     // Drag state for pointer tool
     private AudioClip dragClip;
     private Track dragSourceTrack;
+    private int dragSourceTrackIndex = -1;
     private double dragStartBeat;
+    private boolean groupDrag;
 
     // Time selection drag state
     private boolean selectionDragging;
@@ -399,7 +405,7 @@ final class ClipInteractionController {
         Track track = host.tracks().get(trackIndex);
 
         switch (host.activeTool()) {
-            case POINTER -> handlePointerPress(track, beat, event);
+            case POINTER -> handlePointerPress(track, trackIndex, beat, event);
             case PENCIL -> handlePencilPress(track, beat);
             case ERASER -> handleEraserPress(track, beat);
             case SCISSORS -> handleScissorsPress(track, beat);
@@ -593,27 +599,50 @@ final class ClipInteractionController {
             return;
         }
         double beat = beatAt(event.getX());
-        double newStartBeat = Math.max(0.0, beat - (dragStartBeat - dragClip.getStartBeat()));
+        double snappedNewStart = snapBeat(
+                Math.max(0.0, beat - (dragStartBeat - dragClip.getStartBeat())));
+        double beatDelta = snappedNewStart - dragClip.getStartBeat();
 
         int targetTrackIndex = trackIndexAt(event.getY());
-        if (targetTrackIndex >= 0) {
+
+        if (groupDrag && targetTrackIndex >= 0) {
+            // Group move: move all selected clips by the same delta
+            int trackDelta = targetTrackIndex - dragSourceTrackIndex;
+            List<ClipboardEntry> selected = host.selectionModel().getSelectedClips();
+            if (!selected.isEmpty()
+                    && (Math.abs(beatDelta) > 0.001 || trackDelta != 0)) {
+                List<Map.Entry<Track, AudioClip>> entries = new ArrayList<>();
+                for (ClipboardEntry entry : selected) {
+                    entries.add(Map.entry(entry.sourceTrack(), entry.clip()));
+                }
+                host.undoManager().execute(new GroupMoveClipsAction(
+                        entries, beatDelta, trackDelta, host.tracks()));
+                host.refreshCanvas();
+            } else {
+                // Click without drag on a multi-selected clip — collapse to single selection
+                host.selectionModel().selectClip(dragSourceTrack, dragClip);
+                host.refreshCanvas();
+            }
+        } else if (targetTrackIndex >= 0) {
             Track targetTrack = host.tracks().get(targetTrackIndex);
             if (targetTrack == dragSourceTrack) {
                 // Same track — only move the beat position
-                if (Math.abs(newStartBeat - dragClip.getStartBeat()) > 0.001) {
-                    host.undoManager().execute(new MoveClipAction(dragClip, newStartBeat));
+                if (Math.abs(beatDelta) > 0.001) {
+                    host.undoManager().execute(new MoveClipAction(dragClip, snappedNewStart));
                     host.refreshCanvas();
                 }
             } else {
                 // Cross-track move: remove from source, update position, add to target
                 host.undoManager().execute(new CrossTrackMoveAction(
-                        dragSourceTrack, targetTrack, dragClip, newStartBeat));
+                        dragSourceTrack, targetTrack, dragClip, snappedNewStart));
                 host.refreshCanvas();
             }
         }
 
         dragClip = null;
         dragSourceTrack = null;
+        dragSourceTrackIndex = -1;
+        groupDrag = false;
     }
 
     private void onMouseMoved(MouseEvent event) {
@@ -648,7 +677,7 @@ final class ClipInteractionController {
 
     // ── Tool-specific handlers ───────────────────────────────────────────────
 
-    private void handlePointerPress(Track track, double beat, MouseEvent event) {
+    private void handlePointerPress(Track track, int trackIndex, double beat, MouseEvent event) {
         AudioClip clip = clipAt(track, beat);
         if (clip != null) {
             // Click on an audio clip
@@ -656,11 +685,22 @@ final class ClipInteractionController {
             if (event.isShiftDown()) {
                 host.selectionModel().toggleClipSelection(track, clip);
                 host.refreshCanvas();
+            } else if (host.selectionModel().isClipSelected(clip)
+                       && host.selectionModel().getSelectedClips().size() > 1) {
+                // Clip is already part of a multi-selection — start group drag
+                // without resetting the selection
+                groupDrag = true;
+                dragClip = clip;
+                dragSourceTrack = track;
+                dragSourceTrackIndex = trackIndex;
+                dragStartBeat = beat;
             } else {
                 host.selectionModel().selectClip(track, clip);
                 host.refreshCanvas();
+                groupDrag = false;
                 dragClip = clip;
                 dragSourceTrack = track;
+                dragSourceTrackIndex = trackIndex;
                 dragStartBeat = beat;
             }
             LOG.fine(() -> "Pointer: selected clip '" + clip.getName() + "' at beat " + beat);
@@ -797,9 +837,22 @@ final class ClipInteractionController {
         if (clip == null) {
             return;
         }
-        host.undoManager().execute(new RemoveClipAction(track, clip));
-        host.refreshCanvas();
-        LOG.fine(() -> "Eraser: removed clip '" + clip.getName() + "'");
+        SelectionModel sm = host.selectionModel();
+        if (sm.isClipSelected(clip) && sm.getSelectedClips().size() > 1) {
+            // Group delete: remove all selected clips as a single undoable action
+            List<Map.Entry<Track, AudioClip>> entries = new ArrayList<>();
+            for (ClipboardEntry entry : sm.getSelectedClips()) {
+                entries.add(Map.entry(entry.sourceTrack(), entry.clip()));
+            }
+            host.undoManager().execute(new CutClipsAction(entries));
+            sm.clearClipSelection();
+            host.refreshCanvas();
+            LOG.fine(() -> "Eraser: removed " + entries.size() + " selected clips");
+        } else {
+            host.undoManager().execute(new RemoveClipAction(track, clip));
+            host.refreshCanvas();
+            LOG.fine(() -> "Eraser: removed clip '" + clip.getName() + "'");
+        }
     }
 
     private void handleScissorsPress(Track track, double beat) {

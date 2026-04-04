@@ -1057,8 +1057,10 @@ class ClipInteractionControllerTest {
                 ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
                 controller.install();
 
-                // Click on clip2 at beat 5.0 (x=200) — should deselect clip1
+                // Click on clip2 at beat 5.0 (x=200) and release without drag
+                // — should deselect clip1 (selection collapses on release)
                 canvas.fireEvent(mousePressed(200.0, 40.0));
+                canvas.fireEvent(mouseReleased(200.0, 40.0));
             } finally {
                 latch.countDown();
             }
@@ -1242,5 +1244,218 @@ class ClipInteractionControllerTest {
 
         assertThat(selectionModel.isClipSelected(audioClip)).isTrue();
         assertThat(selectionModel.isMidiClipSelected(midiTrack.getMidiClip())).isTrue();
+    }
+
+    // ── Group move (drag multiple selected clips) ────────────────────────────
+
+    @Test
+    void groupDragShouldMoveAllSelectedClips() throws Exception {
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip1 = new AudioClip("Kick", 0.0, 4.0, null);
+        AudioClip clip2 = new AudioClip("Snare", 4.0, 4.0, null);
+        track.addClip(clip1);
+        track.addClip(clip2);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+        // Pre-select both clips
+        selectionModel.selectClip(track, clip1);
+        selectionModel.toggleClipSelection(track, clip2);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Click on clip1 at beat 2.0 (x=80, y=40) — already selected
+                canvas.fireEvent(mousePressed(80.0, 40.0));
+                // Release at beat 4.0 (x=160, y=40) — delta of 2.0 beats
+                canvas.fireEvent(mouseReleased(160.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        // Both clips should have moved by 2.0 beats
+        assertThat(clip1.getStartBeat()).isEqualTo(2.0);
+        assertThat(clip2.getStartBeat()).isEqualTo(6.0);
+    }
+
+    @Test
+    void groupDragShouldBeUndoableAsSingleAction() throws Exception {
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip1 = new AudioClip("Kick", 0.0, 4.0, null);
+        AudioClip clip2 = new AudioClip("Snare", 4.0, 4.0, null);
+        track.addClip(clip1);
+        track.addClip(clip2);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+        selectionModel.selectClip(track, clip1);
+        selectionModel.toggleClipSelection(track, clip2);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                canvas.fireEvent(mousePressed(80.0, 40.0));
+                canvas.fireEvent(mouseReleased(200.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        // Undo should restore both clips to original positions
+        undoManager.undo();
+        assertThat(clip1.getStartBeat()).isEqualTo(0.0);
+        assertThat(clip2.getStartBeat()).isEqualTo(4.0);
+    }
+
+    @Test
+    void groupDragShouldSupportCrossTrackMove() throws Exception {
+
+        Track track1 = new Track("Track 1", TrackType.AUDIO);
+        Track track2 = new Track("Track 2", TrackType.AUDIO);
+        AudioClip clip1 = new AudioClip("Kick", 0.0, 4.0, null);
+        AudioClip clip2 = new AudioClip("Snare", 4.0, 4.0, null);
+        track1.addClip(clip1);
+        track1.addClip(clip2);
+        tracks.add(track1);
+        tracks.add(track2);
+        activeTool = EditTool.POINTER;
+        selectionModel.selectClip(track1, clip1);
+        selectionModel.toggleClipSelection(track1, clip2);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Press on clip1 at track 0 (y=40), release on track 1 (y=120)
+                canvas.fireEvent(mousePressed(80.0, 40.0));
+                canvas.fireEvent(mouseReleased(80.0, 120.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        // Both clips should have moved to track2
+        assertThat(track1.getClips()).isEmpty();
+        assertThat(track2.getClips()).hasSize(2);
+    }
+
+    // ── Group eraser (delete all selected clips) ─────────────────────────────
+
+    @Test
+    void eraserShouldDeleteAllSelectedClips() throws Exception {
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip1 = new AudioClip("Kick", 0.0, 4.0, null);
+        AudioClip clip2 = new AudioClip("Snare", 4.0, 4.0, null);
+        track.addClip(clip1);
+        track.addClip(clip2);
+        tracks.add(track);
+        activeTool = EditTool.ERASER;
+        // Pre-select both clips
+        selectionModel.selectClip(track, clip1);
+        selectionModel.toggleClipSelection(track, clip2);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Click on clip1 with eraser — should delete both selected clips
+                canvas.fireEvent(mousePressed(80.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(track.getClips()).isEmpty();
+        assertThat(refreshCount).isEqualTo(1);
+    }
+
+    @Test
+    void eraserGroupDeleteShouldBeUndoableAsSingleAction() throws Exception {
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip1 = new AudioClip("Kick", 0.0, 4.0, null);
+        AudioClip clip2 = new AudioClip("Snare", 4.0, 4.0, null);
+        track.addClip(clip1);
+        track.addClip(clip2);
+        tracks.add(track);
+        activeTool = EditTool.ERASER;
+        selectionModel.selectClip(track, clip1);
+        selectionModel.toggleClipSelection(track, clip2);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                canvas.fireEvent(mousePressed(80.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        // Single undo should restore both clips
+        undoManager.undo();
+        assertThat(track.getClips()).hasSize(2);
+    }
+
+    @Test
+    void eraserOnUnselectedClipShouldDeleteOnlyThatClip() throws Exception {
+
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip1 = new AudioClip("Kick", 0.0, 4.0, null);
+        AudioClip clip2 = new AudioClip("Snare", 4.0, 4.0, null);
+        track.addClip(clip1);
+        track.addClip(clip2);
+        tracks.add(track);
+        activeTool = EditTool.ERASER;
+        // Only select clip2
+        selectionModel.selectClip(track, clip2);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Click on clip1 (not selected) — should only delete clip1
+                canvas.fireEvent(mousePressed(80.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(track.getClips()).hasSize(1);
+        assertThat(track.getClips().getFirst()).isSameAs(clip2);
     }
 }
