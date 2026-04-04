@@ -370,13 +370,20 @@ public final class AmbienceUpmixer implements AudioProcessor {
 
             if (!wroteOutput) {
                 int cIdx = targetLayout.indexOf(SpeakerLabel.C);
-                int fallbackIdx = (cIdx >= 0 && cIdx < outputBuffer.length) ? cIdx
-                        : (outputBuffer.length > 0 ? 0 : -1);
+                int fallbackIdx;
+                if (cIdx >= 0 && cIdx < outputBuffer.length) {
+                    fallbackIdx = cIdx;
+                } else if (outputBuffer.length > 0) {
+                    fallbackIdx = 0;
+                } else {
+                    fallbackIdx = -1;
+                }
 
                 if (fallbackIdx >= 0) {
                     float[] out = outputBuffer[fallbackIdx];
                     float[] inL = inputBuffer[0];
                     float[] inR = inputBuffer[1];
+                    // Downmix L+R to mono at −6 dB to prevent clipping
                     for (int i = 0; i < numFrames; i++) {
                         out[i] = 0.5f * (inL[i] + inR[i]);
                     }
