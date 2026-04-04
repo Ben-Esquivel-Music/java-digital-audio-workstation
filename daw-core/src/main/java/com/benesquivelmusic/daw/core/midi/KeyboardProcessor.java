@@ -5,7 +5,9 @@ import com.benesquivelmusic.daw.sdk.midi.SoundFontRenderer;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.LongSupplier;
@@ -90,6 +92,9 @@ public final class KeyboardProcessor {
     private volatile boolean playing;
     private long playbackStartTimeMs = -1;
     private int playbackPositionColumn;
+    private Map<Integer, List<MidiNoteData>> playbackNoteOnIndex;
+    private Map<Integer, List<MidiNoteData>> playbackNoteOffIndex;
+    private int playbackMaxEndColumn;
 
     /**
      * Creates a new keyboard processor.
@@ -267,20 +272,29 @@ public final class KeyboardProcessor {
 
     /**
      * Sends all-notes-off on the keyboard's channel, clearing all active notes.
+     *
+     * <p>Active note indices are snapshotted under the lock, then note-off
+     * events are sent outside the synchronized block to avoid holding the
+     * lock while calling into the renderer.</p>
      */
     public void allNotesOff() {
+        List<Integer> notesToTurnOff = new ArrayList<>();
         synchronized (activeNotes) {
             for (int i = 0; i < 128; i++) {
                 if (activeNotes[i]) {
                     activeNotes[i] = false;
-                    try {
-                        renderer.sendEvent(MidiEvent.noteOff(channel, i));
-                    } catch (Exception e) {
-                        LOG.log(Level.WARNING, "Failed to send all-notes-off", e);
-                    }
+                    notesToTurnOff.add(i);
                 }
             }
             activeNoteCount = 0;
+        }
+
+        for (int noteNumber : notesToTurnOff) {
+            try {
+                renderer.sendEvent(MidiEvent.noteOff(channel, noteNumber));
+            } catch (Exception e) {
+                LOG.log(Level.WARNING, "Failed to send all-notes-off", e);
+            }
         }
     }
 
@@ -362,10 +376,17 @@ public final class KeyboardProcessor {
     }
 
     private void finalizeHeldRecordingNotes() {
+        int endColumn;
+        if (recordingStartTimeMs >= 0) {
+            long now = clock.getAsLong();
+            endColumn = timestampToColumn(now - recordingStartTimeMs) + startColumnOffset;
+        } else {
+            endColumn = startColumnOffset;
+        }
         for (int noteNumber = 0; noteNumber < 128; noteNumber++) {
             if (noteOnColumns[noteNumber] >= 0) {
                 int startCol = noteOnColumns[noteNumber];
-                int duration = 1;
+                int duration = Math.max(1, endColumn - startCol);
                 MidiNoteData note = new MidiNoteData(noteNumber, startCol, duration,
                         noteOnVelocities[noteNumber], channel);
                 clip.addNote(note);
@@ -392,6 +413,7 @@ public final class KeyboardProcessor {
         this.tempo = tempo;
         this.playbackStartTimeMs = clock.getAsLong();
         this.playbackPositionColumn = -1;
+        buildPlaybackIndex();
         this.playing = true;
     }
 
@@ -405,7 +427,11 @@ public final class KeyboardProcessor {
         playing = false;
         playbackStartTimeMs = -1;
         allNotesOff();
-        renderer.allNotesOff();
+        try {
+            renderer.allNotesOff();
+        } catch (Exception e) {
+            LOG.log(Level.FINE, "Renderer not initialized while stopping playback", e);
+        }
     }
 
     /**
@@ -437,17 +463,10 @@ public final class KeyboardProcessor {
             return;
         }
 
-        List<MidiNoteData> notes = clip.getNotes();
-        int maxEndColumn = 0;
-        for (MidiNoteData note : notes) {
-            if (note.endColumn() > maxEndColumn) {
-                maxEndColumn = note.endColumn();
-            }
-        }
-
         for (int col = playbackPositionColumn + 1; col <= currentColumn; col++) {
-            for (MidiNoteData note : notes) {
-                if (note.startColumn() == col) {
+            List<MidiNoteData> noteOns = playbackNoteOnIndex.get(col);
+            if (noteOns != null) {
+                for (MidiNoteData note : noteOns) {
                     int noteNum = note.noteNumber();
                     synchronized (activeNotes) {
                         if (!activeNotes[noteNum]) {
@@ -464,7 +483,11 @@ public final class KeyboardProcessor {
                     }
                     notifyListeners(event);
                 }
-                if (note.endColumn() == col) {
+            }
+
+            List<MidiNoteData> noteOffs = playbackNoteOffIndex.get(col);
+            if (noteOffs != null) {
+                for (MidiNoteData note : noteOffs) {
                     int noteNum = note.noteNumber();
                     synchronized (activeNotes) {
                         if (activeNotes[noteNum]) {
@@ -486,12 +509,34 @@ public final class KeyboardProcessor {
         playbackPositionColumn = currentColumn;
 
         // Stop at end of clip
-        if (currentColumn >= maxEndColumn) {
+        if (currentColumn >= playbackMaxEndColumn) {
             stopPlayback();
         }
     }
 
     // ── Clip Access ────────────────────────────────────────────────────
+
+    /**
+     * Builds column-indexed lookup maps for playback note-on/off events
+     * and caches the maximum end column. Called once at the start of
+     * playback so that {@link #advancePlayback()} performs O(notesAtColumn)
+     * work per tick instead of O(totalNotes).
+     */
+    private void buildPlaybackIndex() {
+        Map<Integer, List<MidiNoteData>> onIndex = new HashMap<>();
+        Map<Integer, List<MidiNoteData>> offIndex = new HashMap<>();
+        int maxEnd = 0;
+        for (MidiNoteData note : clip.getNotes()) {
+            onIndex.computeIfAbsent(note.startColumn(), _ -> new ArrayList<>()).add(note);
+            offIndex.computeIfAbsent(note.endColumn(), _ -> new ArrayList<>()).add(note);
+            if (note.endColumn() > maxEnd) {
+                maxEnd = note.endColumn();
+            }
+        }
+        this.playbackNoteOnIndex = onIndex;
+        this.playbackNoteOffIndex = offIndex;
+        this.playbackMaxEndColumn = maxEnd;
+    }
 
     /**
      * Returns the MIDI clip used by this processor.

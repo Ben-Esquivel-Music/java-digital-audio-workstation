@@ -68,12 +68,6 @@ public final class KeyboardProcessorView extends VBox {
     /** Number of notes per octave. */
     static final int NOTES_PER_OCTAVE = 12;
 
-    /** White key note indices within an octave: C, D, E, F, G, A, B. */
-    private static final int[] WHITE_NOTE_INDICES = {0, 2, 4, 5, 7, 9, 11};
-
-    /** Black key note indices within an octave: C#, D#, F#, G#, A#. */
-    private static final int[] BLACK_NOTE_INDICES = {1, 3, 6, 8, 10};
-
     private static final Color WHITE_KEY_COLOR = Color.WHITE;
     private static final Color WHITE_KEY_PRESSED_COLOR = Color.rgb(120, 180, 255);
     private static final Color BLACK_KEY_COLOR = Color.rgb(30, 30, 30);
@@ -139,6 +133,12 @@ public final class KeyboardProcessorView extends VBox {
         velocitySlider.setMajorTickUnit(32);
         velocitySlider.setPrefWidth(150);
         velocitySlider.setTooltip(new Tooltip("Note velocity"));
+        velocitySlider.valueProperty().addListener((_, _, newValue) -> {
+            if (updatingControls) {
+                return;
+            }
+            processor.setPreset(processor.getPreset().withDefaultVelocity(newValue.intValue()));
+        });
 
         Label velLabel = new Label("Velocity:");
         velLabel.setStyle("-fx-text-fill: #ccc;");
@@ -202,7 +202,13 @@ public final class KeyboardProcessorView extends VBox {
         keyboardCanvas.setOnMouseReleased(this::onMouseReleased);
 
         // Register listener for visual feedback (stored for cleanup)
-        keyboardListener = event -> Platform.runLater(this::paintKeyboard);
+        keyboardListener = event -> {
+            if (Platform.isFxApplicationThread()) {
+                paintKeyboard();
+            } else {
+                Platform.runLater(this::paintKeyboard);
+            }
+        };
         processor.addListener(keyboardListener);
 
         // Animation timer to drive playback advancement

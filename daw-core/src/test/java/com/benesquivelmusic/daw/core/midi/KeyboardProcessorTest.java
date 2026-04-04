@@ -280,6 +280,22 @@ class KeyboardProcessorTest {
     }
 
     @Test
+    void shouldFinalizeHeldNotesWithCorrectDuration() {
+        long[] clockTimeMs = useFakeClock(1000L);
+
+        processor.startRecording(120.0, 0);
+        processor.noteOn(60, 100);  // starts at clock 1000 → column 0
+
+        // Advance 500ms → at 120 BPM that's 4 columns
+        clockTimeMs[0] = 1500L;
+        processor.stopRecording();
+
+        List<MidiNoteData> notes = processor.getRecordedNotes();
+        assertThat(notes).hasSize(1);
+        assertThat(notes.getFirst().durationColumns()).isEqualTo(4); // not hard-coded 1
+    }
+
+    @Test
     void shouldClearRecordedNotesOnNewRecording() {
         processor.startRecording(120.0, 0);
         processor.noteOn(60, 100);
