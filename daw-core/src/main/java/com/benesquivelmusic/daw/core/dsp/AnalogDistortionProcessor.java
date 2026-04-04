@@ -4,10 +4,10 @@ import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 /**
  * Virtual analog distortion processor that models non-ideal operational
- * amplifier behavior — including slew-rate limiting, input offset voltage,
- * and finite open-loop gain.
+ * amplifier behavior — including slew-rate limiting and finite open-loop
+ * gain — combined with asymmetric diode clipping.
  *
- * <p>These non-idealities produce the characteristic warmth and soft
+ * <p>These analog-inspired stages produce the characteristic warmth and soft
  * saturation of analog distortion circuits that pure mathematical
  * waveshaping cannot replicate.</p>
  *
@@ -19,7 +19,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
  *       op-amp's gain-bandwidth product limitation</li>
  *   <li><b>Slew-rate limiter</b> — clamps the sample-to-sample rate of
  *       change, emulating the maximum output voltage rate of real op-amps</li>
- *   <li><b>Diode clipper</b> — {@code sinh}-based approximation of the
+ *   <li><b>Diode clipper</b> — {@code arcsinh}-based approximation of the
  *       Shockley diode equation with configurable asymmetry</li>
  *   <li><b>Tone control</b> — post-distortion tilt EQ for tonal shaping</li>
  *   <li><b>Output level</b> — final gain stage (dB)</li>
@@ -52,11 +52,16 @@ public final class AnalogDistortionProcessor implements AudioProcessor {
     private static final double GBW = OPEN_LOOP_GAIN_DC * DOMINANT_POLE_HZ; // ~1 MHz
 
     // Diode clipper hardness — controls the transition from linear to
-    // saturated behavior in the sinh-based Shockley diode model.
+    // saturated behavior in the arcsinh-based Shockley diode model.
     // Derived from thermal voltage: 1/(2·Vt) ≈ 19, but we use a moderate
     // value that produces musically useful saturation in the normalised
     // [-1, 1] audio range.
     private static final double DIODE_HARDNESS = 5.0;
+
+    // Asymmetry scaling factor — maps the public asymmetry parameter [-1, 1]
+    // to the diode operating-point offset. A value of 0.2 produces subtle
+    // even-harmonic content at full asymmetry without excessive DC offset.
+    private static final double ASYMMETRY_SCALE = 0.2;
 
     private final int channels;
     private final double sampleRate;
@@ -74,8 +79,9 @@ public final class AnalogDistortionProcessor implements AudioProcessor {
     // Per-channel state for the open-loop gain first-order lowpass
     private double[] feedbackState;
 
-    // Per-channel tone control (biquad high-shelf)
-    private BiquadFilter[] toneFilters;
+    // Per-channel tone control (biquad high-shelf) — volatile for safe
+    // concurrent access between the audio thread and parameter-setting threads
+    private volatile BiquadFilter[] toneFilters;
 
     // Derived coefficients (recomputed when parameters change)
     private double driveLinear;
@@ -111,23 +117,21 @@ public final class AnalogDistortionProcessor implements AudioProcessor {
 
         this.slewState = new double[channels];
         this.feedbackState = new double[channels];
-        this.toneFilters = new BiquadFilter[channels];
-        for (int ch = 0; ch < channels; ch++) {
-            toneFilters[ch] = BiquadFilter.create(
-                    BiquadFilter.FilterType.HIGH_SHELF, sampleRate, 800.0, 0.707, 0.0);
-        }
 
         updateDerivedCoefficients();
     }
 
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
-        int activeCh = Math.min(channels, inputBuffer.length);
+        int activeCh = Math.min(channels, Math.min(inputBuffer.length, outputBuffer.length));
         double drive = driveLinear;
         double outGain = outputLinear;
         double maxSlew = maxSlewPerSample;
         double fbCoeff = feedbackCoeff;
         double asym = asymmetry;
+
+        // Snapshot volatile filter reference for safe concurrent access
+        BiquadFilter[] filters = toneFilters;
 
         for (int ch = 0; ch < activeCh; ch++) {
             double slew = slewState[ch];
@@ -150,12 +154,12 @@ public final class AnalogDistortionProcessor implements AudioProcessor {
                 }
                 slew = fb;
 
-                // 3. Diode clipper: sinh-based Shockley equation approximation
+                // 3. Diode clipper: arcsinh-based Shockley equation approximation
                 //    with configurable asymmetry
                 double clipped = diodeClip(fb, asym);
 
                 // 4. Tone control: high-shelf biquad tilt EQ
-                float toned = toneFilters[ch].processSample((float) clipped);
+                float toned = filters[ch].processSample((float) clipped);
 
                 // 5. Output level
                 outputBuffer[ch][i] = (float) (toned * outGain);
@@ -167,7 +171,7 @@ public final class AnalogDistortionProcessor implements AudioProcessor {
     }
 
     /**
-     * Diode-clipper nonlinearity using a {@code sinh}-based approximation
+     * Diode-clipper nonlinearity using an {@code arcsinh}-based approximation
      * of the Shockley diode equation.
      *
      * <p>Models a pair of anti-parallel diodes where the asymmetry parameter
@@ -184,7 +188,7 @@ public final class AnalogDistortionProcessor implements AudioProcessor {
     private static double diodeClip(double x, double asym) {
         // Asymmetry shifts the operating point of the forward/reverse diode
         // pair, introducing even-order harmonics.
-        double offset = asym * 0.2;
+        double offset = asym * ASYMMETRY_SCALE;
         double shifted = x + offset;
 
         // arcsinh(x·k)/k: unity gain at zero, smooth saturation for large |x|.
@@ -355,16 +359,19 @@ public final class AnalogDistortionProcessor implements AudioProcessor {
     }
 
     /**
-     * Recalculates per-channel tone control filters.
+     * Rebuilds per-channel tone control filters and publishes them via
+     * a volatile write.
      *
      * <p>Uses a high-shelf biquad centred at 800 Hz. The tone parameter
      * in [-1, 1] maps to a gain range of [-6, +6] dB.</p>
      */
     private void updateToneFilters() {
         double gainDb = tone * 6.0;
+        BiquadFilter[] newFilters = new BiquadFilter[channels];
         for (int ch = 0; ch < channels; ch++) {
-            toneFilters[ch].recalculate(
+            newFilters[ch] = BiquadFilter.create(
                     BiquadFilter.FilterType.HIGH_SHELF, sampleRate, 800.0, 0.707, gainDb);
         }
+        toneFilters = newFilters;
     }
 }
