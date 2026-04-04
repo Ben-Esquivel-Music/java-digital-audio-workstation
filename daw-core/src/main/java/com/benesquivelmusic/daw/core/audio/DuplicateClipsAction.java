@@ -10,13 +10,12 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * An undoable action that duplicates selected {@link AudioClip}s,
- * placing each copy immediately after the original on the same track.
+ * An undoable action that duplicates selected {@link AudioClip}s as a group.
  *
- * <p>Executing this action creates a duplicate of each clip and positions
- * it so that it starts where the original ends (i.e. at
- * {@code original.getStartBeat() + original.getDurationBeats()}).
- * Undoing removes the duplicated clips.</p>
+ * <p>Executing this action creates a duplicate of each selected clip and
+ * places the duplicated group immediately after the rightmost end beat of
+ * the original selection while preserving relative spacing and source-track
+ * assignments. Undoing removes the duplicated clips.</p>
  */
 public final class DuplicateClipsAction implements UndoableAction {
 
@@ -47,11 +46,21 @@ public final class DuplicateClipsAction implements UndoableAction {
     @Override
     public void execute() {
         duplicatedEntries.clear();
+
+        double earliestStartBeat = Double.MAX_VALUE;
+        double rightmostEndBeat = Double.MIN_VALUE;
+        for (Map.Entry<Track, AudioClip> entry : entries) {
+            AudioClip original = entry.getValue();
+            earliestStartBeat = Math.min(earliestStartBeat, original.getStartBeat());
+            rightmostEndBeat = Math.max(rightmostEndBeat, original.getEndBeat());
+        }
+        double groupShift = rightmostEndBeat - earliestStartBeat;
+
         for (Map.Entry<Track, AudioClip> entry : entries) {
             Track track = entry.getKey();
             AudioClip original = entry.getValue();
             AudioClip duplicate = original.duplicate();
-            duplicate.setStartBeat(original.getStartBeat() + original.getDurationBeats());
+            duplicate.setStartBeat(original.getStartBeat() + groupShift);
             track.addClip(duplicate);
             duplicatedEntries.add(Map.entry(track, duplicate));
         }
