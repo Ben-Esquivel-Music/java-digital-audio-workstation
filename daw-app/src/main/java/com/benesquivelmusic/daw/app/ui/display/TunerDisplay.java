@@ -229,8 +229,13 @@ public final class TunerDisplay extends Region {
         return OUT_OF_TUNE_COLOR;
     }
 
+    /**
+     * Approximates text width for octave label positioning.
+     * Uses a fixed ratio since {@link GraphicsContext} does not expose
+     * text measurement; the approximation is sufficient for the
+     * note-name + octave layout.
+     */
     private static double measureText(GraphicsContext gc, String text, double fontSize) {
-        // Approximate text width based on character count and font size
         return text.length() * fontSize * 0.6;
     }
 

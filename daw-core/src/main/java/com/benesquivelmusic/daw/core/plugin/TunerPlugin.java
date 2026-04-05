@@ -63,6 +63,7 @@ public final class TunerPlugin implements BuiltInDawPlugin {
             PluginType.ANALYZER
     );
 
+    /** Stored for potential future reconfiguration (e.g., changing buffer size). */
     private PluginContext context;
     private PitchDetector pitchDetector;
     private boolean active;
