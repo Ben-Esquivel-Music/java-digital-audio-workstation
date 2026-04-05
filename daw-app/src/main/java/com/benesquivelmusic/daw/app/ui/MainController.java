@@ -42,7 +42,6 @@ import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
-import javafx.scene.control.Separator;
 import javafx.scene.control.TextField;
 import javafx.scene.control.Tooltip;
 import javafx.scene.input.KeyCombination;
@@ -125,38 +124,11 @@ public final class MainController {
     @FXML private HBox utilityGroup;
     @FXML private VBox trackListPanel;
     @FXML private HBox vizTileRow;
-    @FXML private VBox sidebarToolbar;
-    @FXML private Button homeButton;
-    @FXML private Button arrangementViewButton;
-    @FXML private Button mixerViewButton;
-    @FXML private Button editorViewButton;
-    @FXML private Button telemetryViewButton;
-    @FXML private Button masteringViewButton;
-    @FXML private Button newProjectButton;
-    @FXML private Button openProjectButton;
-    @FXML private Button saveProjectButton;
-    @FXML private Button recentProjectsButton;
-    @FXML private Button importSessionButton;
-    @FXML private Button exportSessionButton;
-    @FXML private Button browserButton;
-    @FXML private Button searchButton;
-    @FXML private Button historyButton;
-    @FXML private Button pluginsSidebarButton;
-    @FXML private Button visualizationsButton;
-    @FXML private Button settingsButton;
-    @FXML private Button expandCollapseButton;
-    @FXML private Button helpButton;
-    @FXML private Button pointerToolButton;
-    @FXML private Button pencilToolButton;
-    @FXML private Button eraserToolButton;
-    @FXML private Button scissorsToolButton;
-    @FXML private Button glueToolButton;
-    @FXML private Button zoomInButton;
-    @FXML private Button zoomOutButton;
-    @FXML private Button zoomToFitButton;
-    @FXML private Separator toolsSectionSeparator;
-    @FXML private Separator toolsZoomSeparator;
-    @FXML private Separator zoomProjectSeparator;
+
+    /** Programmatic stand-in for the removed sidebar button (used by {@link BrowserPanelController}). */
+    private final Button browserButton = new Button("Library");
+    /** Programmatic stand-in for the removed sidebar button (used for undo-history toggle state). */
+    private final Button historyButton = new Button("History");
 
     private DawProject project;
     private PluginRegistry pluginRegistry;
@@ -222,18 +194,6 @@ public final class MainController {
     private NotificationHistoryPanel notificationHistoryPanel;
     /** Whether the notification history panel is currently visible. */
     private boolean notificationHistoryPanelVisible;
-
-    // ── Toolbar collapse controller ──────────────────────────────────────────
-    /** Controls the sidebar toolbar collapse/expand toggle and persistence. */
-    private ToolbarCollapseController toolbarCollapseController;
-
-    // ── Responsive toolbar controller ────────────────────────────────────────
-    /** Auto-collapses/expands the sidebar based on window width. */
-    private ResponsiveToolbarController responsiveToolbarController;
-
-    // ── Toolbar context menu controller ──────────────────────────────────────
-    /** Attaches right-click context menus to toolbar sections. */
-    private ToolbarContextMenuController toolbarContextMenuController;
 
     // ── Toolbar state persistence ────────────────────────────────────────────
     /** Persists toolbar state (view, tool, snap, grid, browser) across sessions. */
@@ -342,17 +302,12 @@ public final class MainController {
         viewNavigationController.initializeEditTools();
         viewNavigationController.initializeSnapControls();
         viewNavigationController.initializeZoomControls();
-        viewNavigationController.setOnViewChanged(this::updateSidebarForActiveView);
-        initializeToolbarCollapse(prefs);
-        initializeToolbarContextMenus();
-        initializeSidebarActions();
         createMenuBar();
         selectionModel.setSelectionChangeListener(() -> {
             if (menuBarController != null) {
                 menuBarController.syncMenuState();
             }
         });
-        updateSidebarForActiveView();
 
         // Register keyboard shortcuts after the scene is available
         playButton.sceneProperty().addListener((_, _, scene) -> {
@@ -392,19 +347,6 @@ public final class MainController {
                 new ToolbarAppearanceController.ToolbarButtons(
                         addAudioTrackButton, addMidiTrackButton, undoButton,
                         redoButton, snapButton, saveButton, pluginsButton),
-                new ToolbarAppearanceController.SidebarButtons(
-                        homeButton, arrangementViewButton, mixerViewButton,
-                        editorViewButton, telemetryViewButton, masteringViewButton,
-                        newProjectButton, openProjectButton, saveProjectButton,
-                        recentProjectsButton, importSessionButton, exportSessionButton,
-                        browserButton, searchButton, historyButton,
-                        pluginsSidebarButton, visualizationsButton, settingsButton,
-                        expandCollapseButton, helpButton),
-                new ToolbarAppearanceController.EditToolButtons(
-                        pointerToolButton, pencilToolButton, eraserToolButton,
-                        scissorsToolButton, glueToolButton),
-                new ToolbarAppearanceController.ZoomButtons(
-                        zoomInButton, zoomOutButton, zoomToFitButton),
                 new ToolbarAppearanceController.AppearanceLabels(
                         statusLabel, timeDisplay, tracksPanelHeader,
                         arrangementPanelHeader, arrangementPlaceholder,
@@ -684,7 +626,7 @@ public final class MainController {
     private void createProjectLifecycleController() {
         projectLifecycleController = new ProjectLifecycleController(
                 projectManager, sessionInterchangeController, notificationBar,
-                statusBarLabel, checkpointLabel, rootPane, recentProjectsButton,
+                statusBarLabel, checkpointLabel, rootPane,
                 trackListPanel,
                 new ProjectLifecycleController.Host() {
                     @Override public DawProject project() { return project; }
@@ -735,12 +677,7 @@ public final class MainController {
     private void createViewNavigationController() {
         viewNavigationController = new ViewNavigationController(
                 rootPane, statusBarLabel, toolbarStateStore,
-                arrangementViewButton, mixerViewButton, editorViewButton,
-                telemetryViewButton, masteringViewButton,
-                pointerToolButton, pencilToolButton, eraserToolButton,
-                scissorsToolButton, glueToolButton,
                 snapButton,
-                zoomInButton, zoomOutButton, zoomToFitButton,
                 activeView, activeEditTool, snapEnabled, gridResolution,
                 new ViewNavigationController.Host() {
                     @Override public DawProject project() { return project; }
@@ -750,80 +687,6 @@ public final class MainController {
                     @Override public void onEditorFadeOut() { MainController.this.onEditorFadeOut(); }
                     @Override public void markProjectDirty() { projectDirty = true; }
                 });
-    }
-
-    /**
-     * Toggles the sidebar toolbar between expanded and collapsed states.
-     * Delegates to {@link ToolbarCollapseController} for animation and persistence.
-     */
-    private void onToggleToolbar() {
-        toolbarCollapseController.toggle();
-        boolean collapsed = toolbarCollapseController.isCollapsed();
-        String state = collapsed ? "Toolbar collapsed" : "Toolbar expanded";
-        statusBarLabel.setText(state);
-        statusBarLabel.setGraphic(IconNode.of(
-                collapsed ? DawIcon.COLLAPSE : DawIcon.EXPAND, 12));
-        LOG.fine(state);
-    }
-
-    /**
-     * Initializes the toolbar collapse controller, wiring it to the sidebar
-     * and the expand/collapse button, and restoring persisted state.
-     * Also sets up the responsive toolbar controller that auto-collapses
-     * the sidebar at narrow window widths and expands it at wider sizes.
-     *
-     * @param prefs the preferences node used for state persistence
-     */
-    private void initializeToolbarCollapse(Preferences prefs) {
-        toolbarCollapseController = new ToolbarCollapseController(
-                sidebarToolbar, expandCollapseButton, prefs);
-        toolbarCollapseController.initialize();
-
-        responsiveToolbarController =
-                new ResponsiveToolbarController(toolbarCollapseController);
-        sidebarToolbar.sceneProperty().addListener((_, _, scene) -> {
-            if (scene != null) {
-                responsiveToolbarController.attach(scene);
-            }
-        });
-
-        LOG.fine("Toolbar collapse controller initialized");
-    }
-
-    /**
-     * Creates and wires the toolbar context menu controller, attaching
-     * right-click context menus to the Views, Project, and Tools sidebar
-     * sections.
-     */
-    private void initializeToolbarContextMenus() {
-        Button[] viewBtns = { arrangementViewButton, mixerViewButton, editorViewButton, telemetryViewButton, masteringViewButton };
-        Button[] projectBtns = { newProjectButton, openProjectButton, saveProjectButton, recentProjectsButton };
-        Button[] toolBtns = { pluginsSidebarButton, settingsButton };
-
-        toolbarContextMenuController = new ToolbarContextMenuController(
-                viewBtns,
-                projectBtns,
-                toolBtns,
-                projectManager,
-                text -> {
-                    statusBarLabel.setText(text);
-                    statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
-                },
-                this::resetViewLayout,
-                projectLifecycleController::loadProjectFromPath
-        );
-        toolbarContextMenuController.initialize();
-        LOG.fine("Toolbar context menus initialized");
-    }
-
-    /**
-     * Wires the Home, Search, and Help sidebar buttons to their action handlers.
-     */
-    private void initializeSidebarActions() {
-        homeButton.setOnAction(event -> onHome());
-        searchButton.setOnAction(event -> onSearch());
-        helpButton.setOnAction(event -> onHelp());
-        LOG.fine("Sidebar action buttons initialized");
     }
 
     /**
@@ -874,7 +737,6 @@ public final class MainController {
                     @Override public void onToggleVisualizations() {
                         vizPanelController.toggleRowVisibility();
                     }
-                    @Override public void onToggleToolbar() { MainController.this.onToggleToolbar(); }
                     @Override public void onHelp() { MainController.this.onHelp(); }
                 },
                 keyBindingManager);
@@ -888,53 +750,6 @@ public final class MainController {
         }
 
         LOG.fine("DAW menu bar created and added to top of window");
-    }
-
-    /**
-     * Updates the visibility of the sidebar TOOLS and ZOOM sections based on
-     * the currently active view. Edit tools and zoom controls are only shown
-     * for views where they are relevant (Arrangement and Editor).
-     */
-    private void updateSidebarForActiveView() {
-        DawView view = viewNavigationController != null
-                ? viewNavigationController.getActiveView() : activeView;
-        boolean showTools = (view == DawView.ARRANGEMENT || view == DawView.EDITOR);
-
-        // Edit tool buttons
-        setNodeVisible(pointerToolButton, showTools);
-        setNodeVisible(pencilToolButton, showTools);
-        setNodeVisible(eraserToolButton, showTools);
-        setNodeVisible(scissorsToolButton, showTools);
-        setNodeVisible(glueToolButton, showTools);
-
-        // Zoom buttons
-        setNodeVisible(zoomInButton, showTools);
-        setNodeVisible(zoomOutButton, showTools);
-        setNodeVisible(zoomToFitButton, showTools);
-
-        // Separators around the TOOLS and ZOOM sections
-        setNodeVisible(toolsSectionSeparator, showTools);
-        setNodeVisible(toolsZoomSeparator, showTools);
-        setNodeVisible(zoomProjectSeparator, showTools);
-
-        // Section labels for TOOLS and ZOOM
-        for (Node child : sidebarToolbar.getChildren()) {
-            if (child instanceof Label label
-                    && label.getStyleClass().contains("toolbar-section-label")) {
-                String text = label.getText();
-                if ("TOOLS".equals(text) || "ZOOM".equals(text)) {
-                    setNodeVisible(label, showTools);
-                }
-            }
-        }
-    }
-
-    /**
-     * Sets a node visible and managed (or hidden and unmanaged).
-     */
-    private static void setNodeVisible(Node node, boolean visible) {
-        node.setVisible(visible);
-        node.setManaged(visible);
     }
 
     /**
@@ -1120,7 +935,6 @@ public final class MainController {
         actionHandlers.put(DawAction.TOGGLE_NOTIFICATION_HISTORY, this::toggleNotificationHistoryPanel);
         actionHandlers.put(DawAction.TOGGLE_VISUALIZATIONS, () -> vizPanelController.toggleRowVisibility());
         actionHandlers.put(DawAction.OPEN_SETTINGS, this::onOpenSettings);
-        actionHandlers.put(DawAction.TOGGLE_TOOLBAR, this::onToggleToolbar);
         actionHandlers.put(DawAction.COPY, this::onCopyClips);
         actionHandlers.put(DawAction.CUT, this::onCutClips);
         actionHandlers.put(DawAction.PASTE, this::onPasteClips);
@@ -1251,7 +1065,7 @@ public final class MainController {
         Preferences vizPrefs = Preferences.userNodeForPackage(VisualizationPreferences.class);
         VisualizationPreferences vizPreferences = new VisualizationPreferences(vizPrefs);
         vizPanelController = new VisualizationPanelController(
-                vizTileRow, visualizationsButton, vizPreferences, tileLookup);
+                vizTileRow, vizPreferences, tileLookup);
         vizPanelController.initialize();
 
         LOG.fine("Built visualization tile row with 5 display tiles");

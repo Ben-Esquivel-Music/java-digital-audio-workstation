@@ -112,9 +112,7 @@ public enum DawAction {
 
     // ── Application ──────────────────────────────────────────────────────────
     OPEN_SETTINGS("Settings", Category.APPLICATION,
-            new KeyCodeCombination(KeyCode.COMMA, KeyCombination.SHORTCUT_DOWN)),
-    TOGGLE_TOOLBAR("Toggle Toolbar", Category.APPLICATION,
-            new KeyCodeCombination(KeyCode.T, KeyCombination.SHORTCUT_DOWN));
+            new KeyCodeCombination(KeyCode.COMMA, KeyCombination.SHORTCUT_DOWN));
 
     /**
      * Logical grouping for the settings UI.

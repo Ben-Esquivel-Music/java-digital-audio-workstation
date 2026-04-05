@@ -21,7 +21,6 @@ import javafx.scene.layout.VBox;
 import javafx.stage.DirectoryChooser;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
-import javafx.scene.control.Button;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -72,7 +71,6 @@ final class ProjectLifecycleController {
     private final Label statusBarLabel;
     private final Label checkpointLabel;
     private final BorderPane rootPane;
-    private final Button recentProjectsButton;
     private final VBox trackListPanel;
     private final Host host;
 
@@ -82,7 +80,6 @@ final class ProjectLifecycleController {
                                Label statusBarLabel,
                                Label checkpointLabel,
                                BorderPane rootPane,
-                               Button recentProjectsButton,
                                VBox trackListPanel,
                                Host host) {
         this.projectManager = Objects.requireNonNull(projectManager, "projectManager must not be null");
@@ -92,8 +89,6 @@ final class ProjectLifecycleController {
         this.statusBarLabel = Objects.requireNonNull(statusBarLabel, "statusBarLabel must not be null");
         this.checkpointLabel = Objects.requireNonNull(checkpointLabel, "checkpointLabel must not be null");
         this.rootPane = Objects.requireNonNull(rootPane, "rootPane must not be null");
-        this.recentProjectsButton = Objects.requireNonNull(recentProjectsButton,
-                "recentProjectsButton must not be null");
         this.trackListPanel = Objects.requireNonNull(trackListPanel, "trackListPanel must not be null");
         this.host = Objects.requireNonNull(host, "host must not be null");
     }
@@ -195,8 +190,7 @@ final class ProjectLifecycleController {
             });
             menu.getItems().add(clearItem);
         }
-        menu.show(recentProjectsButton,
-                javafx.geometry.Side.RIGHT, 0, 0);
+        menu.show(rootPane.getScene().getWindow());
     }
 
     // ── Session Import/Export ────────────────────────────────────────────────

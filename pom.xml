@@ -11,7 +11,7 @@
     <packaging>pom</packaging>
 
     <name>Digital Audio Workstation</name>
-    <description>A state-of-the-art Digital Audio Workstation built with JavaFX and Java 25</description>
+    <description>A state-of-the-art Digital Audio Workstation built with JavaFX and Java 26</description>
     <url>https://github.com/Ben-Esquivel-Music/java-digital-audio-workstation</url>
 
     <licenses>

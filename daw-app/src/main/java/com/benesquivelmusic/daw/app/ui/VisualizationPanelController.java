@@ -9,7 +9,6 @@ import javafx.animation.KeyValue;
 import javafx.animation.Timeline;
 import javafx.geometry.Side;
 import javafx.scene.Node;
-import javafx.scene.control.Button;
 import javafx.scene.control.CheckMenuItem;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.MenuItem;
@@ -18,16 +17,15 @@ import javafx.scene.layout.HBox;
 import javafx.util.Duration;
 
 import java.util.EnumMap;
-import java.util.List;
 import java.util.Map;
 import java.util.logging.Logger;
 
 /**
- * Manages the visualization panel toggle button and its context menu.
+ * Manages the visualization panel and its context menu.
  *
- * <p>Single-click on the toolbar button toggles the entire visualization row
- * visibility. Right-click opens a context menu for per-display show/hide
- * configuration, "Show All", "Hide All", and "Reset Layout" options.</p>
+ * <p>The visualization row can be toggled via the menu bar or keyboard shortcut.
+ * Right-clicking the visualization row opens a context menu for per-display
+ * show/hide configuration, "Show All", "Hide All", and "Reset Layout" options.</p>
  */
 public final class VisualizationPanelController {
 
@@ -36,7 +34,6 @@ public final class VisualizationPanelController {
     private static final double DEFAULT_ROW_HEIGHT = 120.0;
 
     private final HBox vizTileRow;
-    private final Button visualizationsButton;
     private final VisualizationPreferences preferences;
     private final Map<DisplayTile, Node> tileLookup;
     private ContextMenu contextMenu;
@@ -44,20 +41,15 @@ public final class VisualizationPanelController {
     /**
      * Creates a new controller wiring the given UI components with the given preferences.
      *
-     * @param vizTileRow           the row container holding visualization tiles
-     * @param visualizationsButton the toolbar button that toggles the row
-     * @param preferences          the preferences backing persistence
-     * @param tileLookup           maps each {@link DisplayTile} to its JavaFX node in the row
+     * @param vizTileRow  the row container holding visualization tiles
+     * @param preferences the preferences backing persistence
+     * @param tileLookup  maps each {@link DisplayTile} to its JavaFX node in the row
      */
     public VisualizationPanelController(HBox vizTileRow,
-                                        Button visualizationsButton,
                                         VisualizationPreferences preferences,
                                         Map<DisplayTile, Node> tileLookup) {
         if (vizTileRow == null) {
             throw new NullPointerException("vizTileRow must not be null");
-        }
-        if (visualizationsButton == null) {
-            throw new NullPointerException("visualizationsButton must not be null");
         }
         if (preferences == null) {
             throw new NullPointerException("preferences must not be null");
@@ -66,13 +58,12 @@ public final class VisualizationPanelController {
             throw new NullPointerException("tileLookup must not be null");
         }
         this.vizTileRow = vizTileRow;
-        this.visualizationsButton = visualizationsButton;
         this.preferences = preferences;
         this.tileLookup = new EnumMap<>(tileLookup);
     }
 
     /**
-     * Initializes button handlers and applies persisted visibility state.
+     * Initializes context-menu handler and applies persisted visibility state.
      * Must be called after the UI is fully constructed.
      */
     public void initialize() {
@@ -89,16 +80,12 @@ public final class VisualizationPanelController {
             }
         }
 
-        // Single click toggles row visibility
-        visualizationsButton.setOnAction(event -> toggleRowVisibility());
-
-        // Right-click opens context menu
-        visualizationsButton.setOnContextMenuRequested(event -> {
+        // Right-click on the visualization row opens context menu
+        vizTileRow.setOnContextMenuRequested(event -> {
             showContextMenu();
             event.consume();
         });
 
-        updateButtonActiveState();
         LOG.fine("Visualization panel controller initialized");
     }
 
@@ -109,7 +96,6 @@ public final class VisualizationPanelController {
         boolean nowVisible = !preferences.isRowVisible();
         preferences.setRowVisible(nowVisible);
         applyRowVisibility(nowVisible, true);
-        updateButtonActiveState();
         LOG.fine(() -> "Visualization row toggled: " + (nowVisible ? "visible" : "hidden"));
     }
 
@@ -121,7 +107,7 @@ public final class VisualizationPanelController {
             contextMenu.hide();
         }
         contextMenu = buildContextMenu();
-        contextMenu.show(visualizationsButton, Side.RIGHT, 0, 0);
+        contextMenu.show(vizTileRow, Side.BOTTOM, 0, 0);
     }
 
     /**
@@ -179,7 +165,6 @@ public final class VisualizationPanelController {
             if (!preferences.isRowVisible()) {
                 preferences.setRowVisible(true);
                 applyRowVisibility(true, true);
-                updateButtonActiveState();
             }
         });
         menu.getItems().add(showAllItem);
@@ -216,7 +201,6 @@ public final class VisualizationPanelController {
                 }
             }
             applyRowVisibility(true, true);
-            updateButtonActiveState();
         });
         menu.getItems().add(resetItem);
 
@@ -263,17 +247,6 @@ public final class VisualizationPanelController {
                 vizTileRow.setManaged(false);
             });
             timeline.play();
-        }
-    }
-
-    private void updateButtonActiveState() {
-        List<String> styles = visualizationsButton.getStyleClass();
-        if (preferences.isRowVisible()) {
-            if (!styles.contains("toolbar-button-active")) {
-                styles.add("toolbar-button-active");
-            }
-        } else {
-            styles.remove("toolbar-button-active");
         }
     }
 }

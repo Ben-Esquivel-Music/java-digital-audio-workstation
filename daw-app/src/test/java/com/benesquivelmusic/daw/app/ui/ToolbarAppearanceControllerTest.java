@@ -36,27 +36,6 @@ class ToolbarAppearanceControllerTest {
     }
 
     @Test
-    void shouldExposeSidebarButtonsRecord() {
-        Class<?> recordClass = ToolbarAppearanceController.SidebarButtons.class;
-        assertThat(recordClass).isNotNull();
-        assertThat(recordClass.isRecord()).isTrue();
-    }
-
-    @Test
-    void shouldExposeEditToolButtonsRecord() {
-        Class<?> recordClass = ToolbarAppearanceController.EditToolButtons.class;
-        assertThat(recordClass).isNotNull();
-        assertThat(recordClass.isRecord()).isTrue();
-    }
-
-    @Test
-    void shouldExposeZoomButtonsRecord() {
-        Class<?> recordClass = ToolbarAppearanceController.ZoomButtons.class;
-        assertThat(recordClass).isNotNull();
-        assertThat(recordClass.isRecord()).isTrue();
-    }
-
-    @Test
     void shouldExposeAppearanceLabelsRecord() {
         Class<?> recordClass = ToolbarAppearanceController.AppearanceLabels.class;
         assertThat(recordClass).isNotNull();
