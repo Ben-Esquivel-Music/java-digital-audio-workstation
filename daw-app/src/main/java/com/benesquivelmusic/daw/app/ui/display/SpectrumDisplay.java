@@ -393,11 +393,11 @@ public final class SpectrumDisplay extends Region {
         double barWidth = plotWidth / smoothedBins.length;
 
         for (int i = 0; i < smoothedBins.length; i++) {
-            double db = averageBins[i];
-            if (db <= MIN_DB) continue;
+            double avgDb = averageBins[i];
+            if (avgDb <= MIN_DB) continue;
 
             double x = plotLeft + (i + 0.5) * barWidth;
-            double y = dbToY(db, plotHeight);
+            double y = dbToY(avgDb, plotHeight);
             if (!started) {
                 gc.moveTo(x, y);
                 started = true;
