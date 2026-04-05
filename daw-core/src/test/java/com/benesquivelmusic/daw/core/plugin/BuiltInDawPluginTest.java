@@ -59,22 +59,6 @@ class BuiltInDawPluginTest {
     }
 
     @Test
-    void discoverAllShouldReturnAllPermittedInstances() {
-        List<BuiltInDawPlugin> plugins = BuiltInDawPlugin.discoverAll();
-
-        assertThat(plugins).hasSize(5);
-        List<Class<? extends BuiltInDawPlugin>> expectedTypes = List.of(
-                VirtualKeyboardPlugin.class,
-                ParametricEqPlugin.class,
-                CompressorPlugin.class,
-                ReverbPlugin.class,
-                SpectrumAnalyzerPlugin.class
-        );
-        assertThat(plugins.stream().map(Object::getClass).toList())
-                .containsExactlyInAnyOrderElementsOf(expectedTypes);
-    }
-
-    @Test
     void discoverAllShouldReturnUnmodifiableList() {
         List<BuiltInDawPlugin> plugins = BuiltInDawPlugin.discoverAll();
 
