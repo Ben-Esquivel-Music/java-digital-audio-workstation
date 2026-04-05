@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.display.LoudnessDisplay;
 import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplay;
 import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplayWindow;
+import com.benesquivelmusic.daw.app.ui.display.TunerDisplayWindow;
 import com.benesquivelmusic.daw.app.ui.display.WaveformDisplay;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
@@ -30,6 +31,7 @@ import com.benesquivelmusic.daw.core.plugin.ParametricEqPlugin;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.plugin.ReverbPlugin;
 import com.benesquivelmusic.daw.core.plugin.SpectrumAnalyzerPlugin;
+import com.benesquivelmusic.daw.core.plugin.TunerPlugin;
 import com.benesquivelmusic.daw.core.plugin.VirtualKeyboardPlugin;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -245,6 +247,8 @@ public final class MainController {
     private Stage virtualKeyboardStage;
     /** Floating spectrum analyzer window for the built-in plugin menu action. */
     private SpectrumDisplayWindow builtInSpectrumWindow;
+    /** Floating chromatic tuner window for the built-in plugin menu action. */
+    private TunerDisplayWindow tunerDisplayWindow;
     /** Cached and initialized built-in plugin instances, keyed by plugin class. */
     private final Map<Class<? extends BuiltInDawPlugin>, BuiltInDawPlugin> builtInPluginCache = new HashMap<>();
 
@@ -1613,6 +1617,7 @@ public final class MainController {
         switch (pluginId) {
             case VirtualKeyboardPlugin.PLUGIN_ID -> openVirtualKeyboardWindow((VirtualKeyboardPlugin) plugin);
             case SpectrumAnalyzerPlugin.PLUGIN_ID -> openSpectrumAnalyzerWindow((SpectrumAnalyzerPlugin) plugin);
+            case TunerPlugin.PLUGIN_ID -> openTunerWindow((TunerPlugin) plugin);
             case ParametricEqPlugin.PLUGIN_ID,
                  CompressorPlugin.PLUGIN_ID,
                  ReverbPlugin.PLUGIN_ID -> viewNavigationController.switchView(DawView.MASTERING);
@@ -1668,6 +1673,18 @@ public final class MainController {
         builtInSpectrumWindow.show();
     }
 
+    private void openTunerWindow(TunerPlugin plugin) {
+        if (tunerDisplayWindow == null) {
+            tunerDisplayWindow = new TunerDisplayWindow();
+            tunerDisplayWindow.setOnReferencePitchChanged(plugin::setReferencePitchHz);
+            tunerDisplayWindow.getStage().setOnHidden(_ -> {
+                plugin.deactivate();
+                tunerDisplayWindow = null;
+            });
+        }
+        tunerDisplayWindow.show();
+    }
+
     /**
      * Disposes all cached built-in plugins, closing any floating plugin
      * windows first. Called when the primary stage is hidden (application
@@ -1679,6 +1696,9 @@ public final class MainController {
         }
         if (builtInSpectrumWindow != null) {
             builtInSpectrumWindow.getStage().hide();
+        }
+        if (tunerDisplayWindow != null) {
+            tunerDisplayWindow.getStage().hide();
         }
         try {
             for (BuiltInDawPlugin plugin : builtInPluginCache.values()) {

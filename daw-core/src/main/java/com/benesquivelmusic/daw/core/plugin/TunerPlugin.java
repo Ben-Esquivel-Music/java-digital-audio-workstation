@@ -63,6 +63,7 @@ public final class TunerPlugin implements BuiltInDawPlugin {
             PluginType.ANALYZER
     );
 
+    private PluginContext context;
     private PitchDetector pitchDetector;
     private boolean active;
     private double referencePitchHz = DEFAULT_REFERENCE_PITCH_HZ;
@@ -116,6 +117,7 @@ public final class TunerPlugin implements BuiltInDawPlugin {
     @Override
     public void initialize(PluginContext context) {
         Objects.requireNonNull(context, "context must not be null");
+        this.context = context;
         pitchDetector = new PitchDetector(DEFAULT_BUFFER_SIZE, context.getSampleRate());
     }
 
@@ -134,6 +136,7 @@ public final class TunerPlugin implements BuiltInDawPlugin {
     public void dispose() {
         active = false;
         pitchDetector = null;
+        context = null;
         lastResult = null;
     }
 
