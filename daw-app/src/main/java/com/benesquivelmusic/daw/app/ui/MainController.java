@@ -325,10 +325,13 @@ public final class MainController {
             }
         });
 
-        // Register keyboard shortcuts after the scene is available
+        // Register keyboard shortcuts and plugin shutdown after the scene is available
         playButton.sceneProperty().addListener((_, _, scene) -> {
             if (scene != null) {
                 registerKeyboardShortcuts();
+                if (scene.getWindow() instanceof Stage primaryStage) {
+                    primaryStage.setOnHidden(_ -> disposeBuiltInPlugins());
+                }
             }
         });
 
@@ -1648,6 +1651,22 @@ public final class MainController {
             builtInSpectrumWindow.getStage().setOnHidden(_ -> builtInSpectrumWindow = null);
         }
         builtInSpectrumWindow.show();
+    }
+
+    /**
+     * Disposes all cached built-in plugins, closing any floating plugin
+     * windows first. Called when the primary stage is hidden (application
+     * shutdown) to ensure resources such as audio renderers are released.
+     */
+    private void disposeBuiltInPlugins() {
+        if (virtualKeyboardStage != null) {
+            virtualKeyboardStage.hide();
+        }
+        if (builtInSpectrumWindow != null) {
+            builtInSpectrumWindow.getStage().hide();
+        }
+        builtInPluginCache.values().forEach(BuiltInDawPlugin::dispose);
+        builtInPluginCache.clear();
     }
 
     @FXML
