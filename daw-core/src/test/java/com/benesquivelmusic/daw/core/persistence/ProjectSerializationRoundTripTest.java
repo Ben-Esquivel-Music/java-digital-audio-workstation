@@ -12,12 +12,7 @@ import com.benesquivelmusic.daw.core.dsp.ReverbProcessor;
 import com.benesquivelmusic.daw.core.marker.Marker;
 import com.benesquivelmusic.daw.core.marker.MarkerRange;
 import com.benesquivelmusic.daw.core.marker.MarkerType;
-import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
-import com.benesquivelmusic.daw.core.mixer.InsertEffectType;
-import com.benesquivelmusic.daw.core.mixer.InsertSlot;
-import com.benesquivelmusic.daw.core.mixer.MixerChannel;
-import com.benesquivelmusic.daw.core.mixer.Send;
-import com.benesquivelmusic.daw.core.mixer.SendMode;
+import com.benesquivelmusic.daw.core.mixer.*;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.ClickSound;
 import com.benesquivelmusic.daw.core.recording.Metronome;
@@ -27,7 +22,6 @@ import com.benesquivelmusic.daw.core.reference.ReferenceTrackManager;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.track.TrackType;
-
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;

@@ -5,18 +5,13 @@ import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin;
 import com.benesquivelmusic.daw.core.plugin.BuiltInPluginCategory;
 import com.benesquivelmusic.daw.core.project.DawProject;
-
 import javafx.scene.control.Menu;
 import javafx.scene.control.MenuBar;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.input.KeyCombination;
 
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
+import java.util.*;
 import java.util.logging.Logger;
 
 /**

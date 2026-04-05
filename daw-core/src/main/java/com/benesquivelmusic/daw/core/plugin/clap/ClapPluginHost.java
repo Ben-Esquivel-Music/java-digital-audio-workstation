@@ -1,19 +1,10 @@
 package com.benesquivelmusic.daw.core.plugin.clap;
 
 import com.benesquivelmusic.daw.core.audio.ringbuffer.LockFreeRingBuffer;
-import com.benesquivelmusic.daw.sdk.plugin.ExternalPluginFormat;
-import com.benesquivelmusic.daw.sdk.plugin.ExternalPluginHost;
-import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
-import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
-import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
-import com.benesquivelmusic.daw.sdk.plugin.PluginType;
+import com.benesquivelmusic.daw.sdk.plugin.*;
 
 import java.io.ByteArrayOutputStream;
-import java.lang.foreign.Arena;
-import java.lang.foreign.FunctionDescriptor;
-import java.lang.foreign.MemoryLayout;
-import java.lang.foreign.MemorySegment;
-import java.lang.foreign.ValueLayout;
+import java.lang.foreign.*;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.nio.file.Path;

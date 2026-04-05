@@ -1,6 +1,5 @@
 package com.benesquivelmusic.daw.acoustics.spatialiser.diffraction;
 
-import com.benesquivelmusic.daw.acoustics.common.Coefficients;
 import com.benesquivelmusic.daw.acoustics.common.Definitions;
 import com.benesquivelmusic.daw.acoustics.common.Vec3;
 import com.benesquivelmusic.daw.acoustics.spatialiser.Edge;

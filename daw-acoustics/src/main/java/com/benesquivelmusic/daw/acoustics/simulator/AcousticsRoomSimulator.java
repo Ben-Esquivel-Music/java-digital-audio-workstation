@@ -1,10 +1,6 @@
 package com.benesquivelmusic.daw.acoustics.simulator;
 
-import com.benesquivelmusic.daw.acoustics.common.Absorption;
-import com.benesquivelmusic.daw.acoustics.common.Coefficients;
-import com.benesquivelmusic.daw.acoustics.common.Definitions;
-import com.benesquivelmusic.daw.acoustics.common.Vec3;
-import com.benesquivelmusic.daw.acoustics.common.Vec4;
+import com.benesquivelmusic.daw.acoustics.common.*;
 import com.benesquivelmusic.daw.acoustics.dsp.Buffer;
 import com.benesquivelmusic.daw.acoustics.spatialiser.Config;
 import com.benesquivelmusic.daw.acoustics.spatialiser.Context;
@@ -18,12 +14,7 @@ import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
 import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**

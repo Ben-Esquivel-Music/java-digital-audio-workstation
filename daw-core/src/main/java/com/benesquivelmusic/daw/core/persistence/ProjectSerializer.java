@@ -9,12 +9,7 @@ import com.benesquivelmusic.daw.core.marker.Marker;
 import com.benesquivelmusic.daw.core.marker.MarkerManager;
 import com.benesquivelmusic.daw.core.marker.MarkerRange;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
-import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
-import com.benesquivelmusic.daw.core.mixer.InsertEffectType;
-import com.benesquivelmusic.daw.core.mixer.InsertSlot;
-import com.benesquivelmusic.daw.core.mixer.Mixer;
-import com.benesquivelmusic.daw.core.mixer.MixerChannel;
-import com.benesquivelmusic.daw.core.mixer.Send;
+import com.benesquivelmusic.daw.core.mixer.*;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
@@ -27,6 +22,8 @@ import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
 import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
 import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
 
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilder;
@@ -42,9 +39,6 @@ import java.io.IOException;
 import java.io.StringWriter;
 import java.util.List;
 import java.util.Map;
-
-import org.w3c.dom.Document;
-import org.w3c.dom.Element;
 
 /**
  * Serializes a {@link DawProject} into XML for persistence.

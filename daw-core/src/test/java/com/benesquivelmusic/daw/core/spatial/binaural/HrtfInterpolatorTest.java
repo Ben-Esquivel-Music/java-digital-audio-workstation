@@ -1,6 +1,5 @@
 package com.benesquivelmusic.daw.core.spatial.binaural;
 
-import com.benesquivelmusic.daw.core.spatial.binaural.HrtfInterpolator;
 import com.benesquivelmusic.daw.core.spatial.binaural.HrtfInterpolator.InterpolatedHrtf;
 import com.benesquivelmusic.daw.sdk.spatial.HrtfData;
 import com.benesquivelmusic.daw.sdk.spatial.SphericalCoordinate;
@@ -9,9 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.within;
+import static org.assertj.core.api.Assertions.*;
 
 class HrtfInterpolatorTest {
 

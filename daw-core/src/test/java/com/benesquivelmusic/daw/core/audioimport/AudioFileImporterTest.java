@@ -1,14 +1,12 @@
 package com.benesquivelmusic.daw.core.audioimport;
 
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
-import com.benesquivelmusic.daw.core.project.DawProject;
-import com.benesquivelmusic.daw.core.track.Track;
-import com.benesquivelmusic.daw.core.track.TrackType;
-import com.benesquivelmusic.daw.sdk.export.AudioMetadata;
-import com.benesquivelmusic.daw.sdk.export.DitherType;
 import com.benesquivelmusic.daw.core.export.FlacExporter;
 import com.benesquivelmusic.daw.core.export.WavExporter;
-
+import com.benesquivelmusic.daw.core.project.DawProject;
+import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.sdk.export.AudioMetadata;
+import com.benesquivelmusic.daw.sdk.export.DitherType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -18,9 +16,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.offset;
+import static org.assertj.core.api.Assertions.*;
 
 class AudioFileImporterTest {
 

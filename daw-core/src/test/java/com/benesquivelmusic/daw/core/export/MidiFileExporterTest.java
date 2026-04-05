@@ -7,7 +7,6 @@ import javax.sound.midi.MidiSystem;
 import javax.sound.midi.Sequence;
 import javax.sound.midi.ShortMessage;
 import javax.sound.midi.Track;
-import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 

@@ -1,13 +1,13 @@
 package com.benesquivelmusic.daw.core.audio.javasound;
 
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
-import java.util.List;
 import com.benesquivelmusic.daw.sdk.audio.BufferSize;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
-
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;

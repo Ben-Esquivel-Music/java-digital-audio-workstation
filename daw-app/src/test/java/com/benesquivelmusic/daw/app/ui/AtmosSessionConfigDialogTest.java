@@ -7,9 +7,7 @@ import com.benesquivelmusic.daw.core.spatial.objectbased.BedChannel;
 import com.benesquivelmusic.daw.sdk.spatial.ObjectMetadata;
 import com.benesquivelmusic.daw.sdk.spatial.SpeakerLabel;
 import com.benesquivelmusic.daw.sdk.spatial.SpeakerLayout;
-
 import javafx.application.Platform;
-
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
@@ -19,7 +17,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @ExtendWith(JavaFxToolkitExtension.class)
 class AtmosSessionConfigDialogTest {

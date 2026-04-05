@@ -1,13 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
-import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
-import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
-import com.benesquivelmusic.daw.sdk.telemetry.RoomPreset;
-import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
-import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
-
+import com.benesquivelmusic.daw.sdk.telemetry.*;
 import javafx.application.Platform;
-
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 

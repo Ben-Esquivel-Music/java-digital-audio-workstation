@@ -12,12 +12,7 @@ import com.benesquivelmusic.daw.core.marker.Marker;
 import com.benesquivelmusic.daw.core.marker.MarkerRange;
 import com.benesquivelmusic.daw.core.marker.MarkerType;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
-import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
-import com.benesquivelmusic.daw.core.mixer.InsertEffectType;
-import com.benesquivelmusic.daw.core.mixer.InsertSlot;
-import com.benesquivelmusic.daw.core.mixer.MixerChannel;
-import com.benesquivelmusic.daw.core.mixer.Send;
-import com.benesquivelmusic.daw.core.mixer.SendMode;
+import com.benesquivelmusic.daw.core.mixer.*;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.ClickSound;
 import com.benesquivelmusic.daw.core.recording.Metronome;
@@ -29,12 +24,11 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackColor;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
-import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
-import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
-import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
-import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
-import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
-import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
+import com.benesquivelmusic.daw.sdk.telemetry.*;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.NodeList;
+import org.xml.sax.SAXException;
 
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -50,11 +44,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.function.BiConsumer;
-
-import org.w3c.dom.Document;
-import org.w3c.dom.Element;
-import org.w3c.dom.NodeList;
-import org.xml.sax.SAXException;
 
 /**
  * Deserializes a {@link DawProject} from XML produced by {@link ProjectSerializer}.

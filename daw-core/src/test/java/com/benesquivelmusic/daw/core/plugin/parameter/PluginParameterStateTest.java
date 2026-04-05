@@ -1,7 +1,6 @@
 package com.benesquivelmusic.daw.core.plugin.parameter;
 
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
-
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -9,7 +8,6 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.data.Offset.offset;
 
 class PluginParameterStateTest {
 

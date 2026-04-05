@@ -3,7 +3,6 @@ package com.benesquivelmusic.daw.core.audio;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 import java.util.Arrays;
-import java.util.Objects;
 
 /**
  * A multi-channel audio buffer holding sample data.

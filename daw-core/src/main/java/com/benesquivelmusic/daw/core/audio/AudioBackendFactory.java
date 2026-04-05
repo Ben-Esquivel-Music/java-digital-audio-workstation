@@ -4,8 +4,6 @@ import com.benesquivelmusic.daw.core.audio.javasound.JavaSoundBackend;
 import com.benesquivelmusic.daw.core.audio.portaudio.PortAudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
 
-import java.util.Objects;
-
 /**
  * Factory for creating audio backends with automatic fallback.
  *

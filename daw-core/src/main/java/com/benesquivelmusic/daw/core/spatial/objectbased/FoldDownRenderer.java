@@ -1,7 +1,6 @@
 package com.benesquivelmusic.daw.core.spatial.objectbased;
 
 import com.benesquivelmusic.daw.sdk.spatial.FoldDownCoefficients;
-import com.benesquivelmusic.daw.sdk.spatial.SpeakerLabel;
 import com.benesquivelmusic.daw.sdk.spatial.SpeakerLayout;
 
 import java.util.Objects;

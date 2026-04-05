@@ -1,14 +1,6 @@
 package com.benesquivelmusic.daw.core.mixer;
 
-import com.benesquivelmusic.daw.core.dsp.ChorusProcessor;
-import com.benesquivelmusic.daw.core.dsp.CompressorProcessor;
-import com.benesquivelmusic.daw.core.dsp.DelayProcessor;
-import com.benesquivelmusic.daw.core.dsp.GraphicEqProcessor;
-import com.benesquivelmusic.daw.core.dsp.LimiterProcessor;
-import com.benesquivelmusic.daw.core.dsp.NoiseGateProcessor;
-import com.benesquivelmusic.daw.core.dsp.ParametricEqProcessor;
-import com.benesquivelmusic.daw.core.dsp.ReverbProcessor;
-import com.benesquivelmusic.daw.core.dsp.StereoImagerProcessor;
+import com.benesquivelmusic.daw.core.dsp.*;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 

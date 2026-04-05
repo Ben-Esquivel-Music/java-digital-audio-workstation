@@ -1,10 +1,6 @@
 package com.benesquivelmusic.daw.core.track;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Objects;
-import java.util.UUID;
+import java.util.*;
 
 /**
  * A group of tracks whose volume, mute, solo, and arm operations are linked.

@@ -2,11 +2,7 @@ package com.benesquivelmusic.daw.core.mixer;
 
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
 
 /**
  * The DAW mixer manages a collection of {@link MixerChannel}s and produces

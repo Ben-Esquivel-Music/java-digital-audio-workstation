@@ -1,16 +1,10 @@
 package com.benesquivelmusic.daw.core.export;
 
+import javax.sound.midi.*;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
-
-import javax.sound.midi.InvalidMidiDataException;
-import javax.sound.midi.MidiEvent;
-import javax.sound.midi.MidiSystem;
-import javax.sound.midi.Sequence;
-import javax.sound.midi.ShortMessage;
-import javax.sound.midi.Track;
 
 /**
  * Exports MIDI note data to a Standard MIDI File (.mid).

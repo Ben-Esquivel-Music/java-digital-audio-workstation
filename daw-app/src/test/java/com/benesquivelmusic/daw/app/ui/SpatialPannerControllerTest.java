@@ -3,19 +3,14 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.core.spatial.ambisonics.AmbisonicEncoder;
 import com.benesquivelmusic.daw.core.spatial.panner.VbapPanner;
 import com.benesquivelmusic.daw.sdk.spatial.AmbisonicOrder;
-import com.benesquivelmusic.daw.sdk.spatial.SpeakerLabel;
-import com.benesquivelmusic.daw.sdk.spatial.SpeakerLayout;
-import com.benesquivelmusic.daw.sdk.spatial.SpatialPanner;
 import com.benesquivelmusic.daw.sdk.spatial.SpatialPannerData;
 import com.benesquivelmusic.daw.sdk.spatial.SpatialPosition;
-
+import com.benesquivelmusic.daw.sdk.spatial.SpeakerLayout;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.within;
+import static org.assertj.core.api.Assertions.*;
 
 class SpatialPannerControllerTest {
 

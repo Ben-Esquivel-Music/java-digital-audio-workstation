@@ -1,7 +1,8 @@
 package com.benesquivelmusic.daw.acoustics.dsp;
 
-import com.benesquivelmusic.daw.acoustics.common.*;
+import com.benesquivelmusic.daw.acoustics.common.Coefficients;
 import com.benesquivelmusic.daw.acoustics.common.Definitions;
+import com.benesquivelmusic.daw.acoustics.common.Matrix;
 
 import java.util.ArrayList;
 import java.util.List;

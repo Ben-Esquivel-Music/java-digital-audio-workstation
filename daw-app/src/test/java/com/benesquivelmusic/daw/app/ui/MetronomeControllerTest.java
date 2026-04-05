@@ -4,15 +4,10 @@ import com.benesquivelmusic.daw.core.recording.ClickSound;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.recording.Subdivision;
-
-import javafx.application.Platform;
-
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 import java.util.prefs.Preferences;
 
 import static org.assertj.core.api.Assertions.assertThat;

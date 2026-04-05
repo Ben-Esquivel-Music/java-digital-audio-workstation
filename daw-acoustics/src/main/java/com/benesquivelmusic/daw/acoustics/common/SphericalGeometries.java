@@ -1,7 +1,6 @@
 package com.benesquivelmusic.daw.acoustics.common;
 
 import java.util.List;
-import java.util.ArrayList;
 
 /**
  * Generates vertices for various Platonic solids, projected onto a sphere.

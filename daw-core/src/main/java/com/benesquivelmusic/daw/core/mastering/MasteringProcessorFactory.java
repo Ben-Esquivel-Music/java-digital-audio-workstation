@@ -1,12 +1,6 @@
 package com.benesquivelmusic.daw.core.mastering;
 
-import com.benesquivelmusic.daw.core.dsp.BiquadFilter;
-import com.benesquivelmusic.daw.core.dsp.CompressorProcessor;
-import com.benesquivelmusic.daw.core.dsp.DitherProcessor;
-import com.benesquivelmusic.daw.core.dsp.GainStagingProcessor;
-import com.benesquivelmusic.daw.core.dsp.LimiterProcessor;
-import com.benesquivelmusic.daw.core.dsp.ParametricEqProcessor;
-import com.benesquivelmusic.daw.core.dsp.StereoImagerProcessor;
+import com.benesquivelmusic.daw.core.dsp.*;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringStageConfig;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringStageType;

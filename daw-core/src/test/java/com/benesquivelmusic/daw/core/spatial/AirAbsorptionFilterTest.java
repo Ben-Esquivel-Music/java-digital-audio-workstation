@@ -3,9 +3,7 @@ package com.benesquivelmusic.daw.core.spatial;
 import com.benesquivelmusic.daw.core.spatial.panner.InverseSquareAttenuation;
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.within;
+import static org.assertj.core.api.Assertions.*;
 
 class AirAbsorptionFilterTest {
 

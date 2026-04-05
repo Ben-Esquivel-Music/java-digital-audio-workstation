@@ -7,14 +7,7 @@ import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
 import com.benesquivelmusic.daw.core.track.Track;
-import com.benesquivelmusic.daw.core.track.TrackType;
-import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
-import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
-import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
-import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
-import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
-import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
-
+import com.benesquivelmusic.daw.sdk.telemetry.*;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;

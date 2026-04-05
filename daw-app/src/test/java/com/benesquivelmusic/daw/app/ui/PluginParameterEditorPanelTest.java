@@ -2,11 +2,8 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.plugin.parameter.ABComparison;
 import com.benesquivelmusic.daw.core.plugin.parameter.ParameterPreset;
-import com.benesquivelmusic.daw.core.plugin.parameter.PluginParameterState;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
-
 import javafx.application.Platform;
-
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 

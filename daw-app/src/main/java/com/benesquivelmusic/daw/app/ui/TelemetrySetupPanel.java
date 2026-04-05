@@ -1,31 +1,12 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.telemetry.RoomParameterController;
-import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
-import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
-import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
-import com.benesquivelmusic.daw.sdk.telemetry.RoomPreset;
-import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
-import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
-
+import com.benesquivelmusic.daw.sdk.telemetry.*;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.geometry.Insets;
-import javafx.scene.control.Button;
-import javafx.scene.control.ComboBox;
-import javafx.scene.control.Label;
-import javafx.scene.control.ListCell;
-import javafx.scene.control.ListView;
-import javafx.scene.control.ProgressBar;
-import javafx.scene.control.ScrollPane;
-import javafx.scene.control.Separator;
-import javafx.scene.control.Slider;
-import javafx.scene.control.TextField;
-import javafx.scene.layout.ColumnConstraints;
-import javafx.scene.layout.GridPane;
-import javafx.scene.layout.HBox;
-import javafx.scene.layout.Priority;
-import javafx.scene.layout.VBox;
+import javafx.scene.control.*;
+import javafx.scene.layout.*;
 
 /**
  * Setup panel for configuring room dimensions and wall material

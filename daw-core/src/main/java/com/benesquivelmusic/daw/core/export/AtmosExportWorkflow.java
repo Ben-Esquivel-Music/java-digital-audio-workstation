@@ -1,8 +1,6 @@
 package com.benesquivelmusic.daw.core.export;
 
 import com.benesquivelmusic.daw.core.spatial.objectbased.AtmosSessionConfig;
-import com.benesquivelmusic.daw.core.spatial.objectbased.AudioObject;
-import com.benesquivelmusic.daw.core.spatial.objectbased.BedChannel;
 import com.benesquivelmusic.daw.sdk.export.AudioMetadata;
 import com.benesquivelmusic.daw.sdk.spatial.SpeakerLayout;
 

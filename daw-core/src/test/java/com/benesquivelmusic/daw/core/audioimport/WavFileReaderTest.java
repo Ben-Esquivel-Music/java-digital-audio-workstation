@@ -1,9 +1,8 @@
 package com.benesquivelmusic.daw.core.audioimport;
 
+import com.benesquivelmusic.daw.core.export.WavExporter;
 import com.benesquivelmusic.daw.sdk.export.AudioMetadata;
 import com.benesquivelmusic.daw.sdk.export.DitherType;
-import com.benesquivelmusic.daw.core.export.WavExporter;
-
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -11,9 +10,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.offset;
+import static org.assertj.core.api.Assertions.*;
 
 class WavFileReaderTest {
 

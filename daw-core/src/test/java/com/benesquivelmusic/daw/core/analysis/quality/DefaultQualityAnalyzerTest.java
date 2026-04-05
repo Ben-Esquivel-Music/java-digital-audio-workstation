@@ -1,12 +1,6 @@
 package com.benesquivelmusic.daw.core.analysis.quality;
 
-import com.benesquivelmusic.daw.sdk.analysis.DynamicRangeMetrics;
-import com.benesquivelmusic.daw.sdk.analysis.QualityReport;
-import com.benesquivelmusic.daw.sdk.analysis.QualityThresholds;
-import com.benesquivelmusic.daw.sdk.analysis.SignalQualityMetrics;
-import com.benesquivelmusic.daw.sdk.analysis.SpectralQualityMetrics;
-import com.benesquivelmusic.daw.sdk.analysis.StereoQualityMetrics;
-
+import com.benesquivelmusic.daw.sdk.analysis.*;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

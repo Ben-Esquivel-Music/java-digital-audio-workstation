@@ -1,27 +1,11 @@
 package com.benesquivelmusic.daw.app.ui;
 
-import com.benesquivelmusic.daw.core.audio.AddClipAction;
-import com.benesquivelmusic.daw.core.audio.AudioClip;
-import com.benesquivelmusic.daw.core.audio.CrossTrackMoveAction;
-import com.benesquivelmusic.daw.core.audio.CutClipsAction;
-import com.benesquivelmusic.daw.core.audio.FadeClipAction;
-import com.benesquivelmusic.daw.core.audio.FadeCurveType;
-import com.benesquivelmusic.daw.core.audio.GlueClipsAction;
-import com.benesquivelmusic.daw.core.audio.GroupMoveClipsAction;
-import com.benesquivelmusic.daw.core.audio.MoveClipAction;
-import com.benesquivelmusic.daw.core.audio.RemoveClipAction;
-import com.benesquivelmusic.daw.core.audio.SplitClipAction;
-import com.benesquivelmusic.daw.core.automation.AddAutomationPointAction;
-import com.benesquivelmusic.daw.core.automation.AutomationLane;
-import com.benesquivelmusic.daw.core.automation.AutomationParameter;
-import com.benesquivelmusic.daw.core.automation.AutomationPoint;
-import com.benesquivelmusic.daw.core.automation.MoveAutomationPointAction;
-import com.benesquivelmusic.daw.core.automation.RemoveAutomationPointAction;
+import com.benesquivelmusic.daw.core.audio.*;
+import com.benesquivelmusic.daw.core.automation.*;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
-
 import javafx.scene.Cursor;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.MenuItem;
@@ -29,11 +13,7 @@ import javafx.scene.control.Tooltip;
 import javafx.scene.input.MouseButton;
 import javafx.scene.input.MouseEvent;
 
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 import java.util.logging.Logger;
 
 /**

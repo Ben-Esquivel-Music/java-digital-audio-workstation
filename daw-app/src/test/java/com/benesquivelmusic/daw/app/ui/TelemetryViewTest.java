@@ -4,16 +4,7 @@ import com.benesquivelmusic.daw.app.ui.display.RoomTelemetryDisplay;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
-import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
-import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
-import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
-import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
-import com.benesquivelmusic.daw.sdk.telemetry.RoomPreset;
-import com.benesquivelmusic.daw.sdk.telemetry.RoomTelemetryData;
-import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
-import com.benesquivelmusic.daw.sdk.telemetry.SoundWavePath;
-import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
-
+import com.benesquivelmusic.daw.sdk.telemetry.*;
 import javafx.application.Platform;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
@@ -21,7 +12,6 @@ import javafx.scene.control.Label;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
-
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 

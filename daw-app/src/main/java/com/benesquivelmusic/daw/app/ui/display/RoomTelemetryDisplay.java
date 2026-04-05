@@ -1,15 +1,6 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
-import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
-import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
-import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
-import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
-import com.benesquivelmusic.daw.sdk.telemetry.RoomTelemetryData;
-import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
-import com.benesquivelmusic.daw.sdk.telemetry.SoundWavePath;
-import com.benesquivelmusic.daw.sdk.telemetry.TelemetrySuggestion;
-import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
-
+import com.benesquivelmusic.daw.sdk.telemetry.*;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.input.MouseEvent;
@@ -21,11 +12,7 @@ import javafx.scene.paint.Stop;
 import javafx.scene.text.Font;
 import javafx.scene.text.TextAlignment;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.function.BiConsumer;
 
 /**

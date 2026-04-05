@@ -1,10 +1,6 @@
 package com.benesquivelmusic.daw.core.marker;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Objects;
-import java.util.Optional;
+import java.util.*;
 
 /**
  * Manages the collection of markers and marker ranges for a project.

@@ -1,8 +1,8 @@
 package com.benesquivelmusic.daw.core.plugin.clap;
 
-import java.lang.foreign.MemorySegment;
-
 import org.junit.jupiter.api.Test;
+
+import java.lang.foreign.MemorySegment;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

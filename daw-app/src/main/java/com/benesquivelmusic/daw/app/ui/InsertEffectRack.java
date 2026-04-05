@@ -1,27 +1,13 @@
 package com.benesquivelmusic.daw.app.ui;
 
-import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
-import com.benesquivelmusic.daw.core.mixer.InsertEffectType;
-import com.benesquivelmusic.daw.core.mixer.InsertSlot;
-import com.benesquivelmusic.daw.core.mixer.InsertEffectAction;
-import com.benesquivelmusic.daw.core.mixer.MixerChannel;
-import com.benesquivelmusic.daw.core.mixer.RemoveEffectAction;
-import com.benesquivelmusic.daw.core.mixer.ReorderEffectAction;
-import com.benesquivelmusic.daw.core.mixer.ToggleBypassAction;
+import com.benesquivelmusic.daw.core.mixer.*;
 import com.benesquivelmusic.daw.core.undo.UndoHistoryListener;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
-
 import javafx.application.Platform;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
-import javafx.scene.control.Button;
-import javafx.scene.control.ChoiceDialog;
-import javafx.scene.control.ContextMenu;
-import javafx.scene.control.Label;
-import javafx.scene.control.MenuItem;
-import javafx.scene.control.ToggleButton;
-import javafx.scene.control.Tooltip;
+import javafx.scene.control.*;
 import javafx.scene.input.ClipboardContent;
 import javafx.scene.input.DataFormat;
 import javafx.scene.input.Dragboard;

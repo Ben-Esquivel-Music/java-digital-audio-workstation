@@ -3,19 +3,18 @@ package com.benesquivelmusic.daw.core.session.dawproject;
 import com.benesquivelmusic.daw.sdk.session.SessionData;
 import com.benesquivelmusic.daw.sdk.session.SessionData.SessionClip;
 import com.benesquivelmusic.daw.sdk.session.SessionData.SessionTrack;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.NodeList;
+import org.xml.sax.SAXException;
 
+import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
-
-import org.w3c.dom.Document;
-import org.w3c.dom.Element;
-import org.w3c.dom.NodeList;
-import org.xml.sax.SAXException;
-import javax.xml.parsers.DocumentBuilder;
 
 /**
  * Parses DAWproject XML ({@code project.xml}) into a {@link SessionData} instance.

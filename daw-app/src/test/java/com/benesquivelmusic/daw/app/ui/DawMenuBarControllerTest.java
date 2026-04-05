@@ -2,15 +2,12 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin;
-import com.benesquivelmusic.daw.core.plugin.BuiltInPluginCategory;
 import com.benesquivelmusic.daw.core.project.DawProject;
-
 import javafx.application.Platform;
 import javafx.scene.control.Menu;
 import javafx.scene.control.MenuBar;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.SeparatorMenuItem;
-
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 

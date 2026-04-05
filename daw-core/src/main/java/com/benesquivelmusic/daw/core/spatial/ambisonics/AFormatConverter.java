@@ -2,8 +2,6 @@ package com.benesquivelmusic.daw.core.spatial.ambisonics;
 
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
-import java.util.Arrays;
-
 /**
  * Converts A-format (raw tetrahedral microphone) recordings to B-format
  * (Ambisonic First-Order).

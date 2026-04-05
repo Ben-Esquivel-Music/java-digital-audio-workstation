@@ -1,7 +1,5 @@
 package com.benesquivelmusic.daw.core.audio;
 
-import java.util.Objects;
-
 /**
  * Immutable description of an audio format used throughout the DAW.
  *

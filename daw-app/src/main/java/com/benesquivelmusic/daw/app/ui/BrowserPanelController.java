@@ -1,8 +1,5 @@
 package com.benesquivelmusic.daw.app.ui;
 
-import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
-import com.benesquivelmusic.daw.app.ui.icons.IconNode;
-
 import javafx.animation.KeyFrame;
 import javafx.animation.KeyValue;
 import javafx.animation.Timeline;

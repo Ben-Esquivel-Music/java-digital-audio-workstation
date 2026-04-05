@@ -1,8 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
-import org.junit.jupiter.api.Test;
-
 import javafx.scene.input.KeyCombination;
+import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

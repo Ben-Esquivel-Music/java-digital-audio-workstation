@@ -2,11 +2,7 @@ package com.benesquivelmusic.daw.core.comping;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Objects;
-import java.util.UUID;
+import java.util.*;
 
 /**
  * Represents a single take (lane) within a track's comping system.

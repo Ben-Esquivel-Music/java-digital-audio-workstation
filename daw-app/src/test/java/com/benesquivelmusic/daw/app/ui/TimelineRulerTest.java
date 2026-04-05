@@ -1,11 +1,8 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.transport.TimeDisplayMode;
-import com.benesquivelmusic.daw.core.transport.TimelineRulerModel;
 import com.benesquivelmusic.daw.core.transport.Transport;
-
 import javafx.application.Platform;
-
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
@@ -13,9 +10,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.within;
+import static org.assertj.core.api.Assertions.*;
 
 @ExtendWith(JavaFxToolkitExtension.class)
 class TimelineRulerTest {

@@ -1,21 +1,15 @@
 package com.benesquivelmusic.daw.core.plugin;
 
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
-import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
-import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
-import com.benesquivelmusic.daw.sdk.plugin.PluginType;
-
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
 
 class PluginRegistryTest {
 

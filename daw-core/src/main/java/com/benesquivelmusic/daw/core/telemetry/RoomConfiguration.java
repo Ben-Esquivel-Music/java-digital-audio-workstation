@@ -1,10 +1,6 @@
 package com.benesquivelmusic.daw.core.telemetry;
 
-import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
-import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
-import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
-import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
-import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
+import com.benesquivelmusic.daw.sdk.telemetry.*;
 
 import java.util.ArrayList;
 import java.util.Collections;

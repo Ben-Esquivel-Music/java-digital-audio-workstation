@@ -4,26 +4,14 @@ import com.benesquivelmusic.daw.core.plugin.parameter.ABComparison;
 import com.benesquivelmusic.daw.core.plugin.parameter.ParameterPreset;
 import com.benesquivelmusic.daw.core.plugin.parameter.PluginParameterState;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
-
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
-import javafx.scene.control.Button;
-import javafx.scene.control.ComboBox;
-import javafx.scene.control.Label;
-import javafx.scene.control.Separator;
-import javafx.scene.control.Slider;
-import javafx.scene.control.ToggleButton;
-import javafx.scene.control.Tooltip;
+import javafx.scene.control.*;
 import javafx.scene.layout.FlowPane;
 import javafx.scene.layout.HBox;
-import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 import java.util.function.BiConsumer;
 
 /**

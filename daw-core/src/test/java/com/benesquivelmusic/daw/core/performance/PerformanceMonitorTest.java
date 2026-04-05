@@ -1,16 +1,13 @@
 package com.benesquivelmusic.daw.core.performance;
 
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
-
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.within;
+import static org.assertj.core.api.Assertions.*;
 
 class PerformanceMonitorTest {
 

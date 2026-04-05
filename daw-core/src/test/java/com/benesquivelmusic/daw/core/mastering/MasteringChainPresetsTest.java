@@ -2,10 +2,10 @@ package com.benesquivelmusic.daw.core.mastering;
 
 import com.benesquivelmusic.daw.sdk.mastering.MasteringChainPreset;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringStageConfig;
-import java.util.List;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringStageType;
-
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

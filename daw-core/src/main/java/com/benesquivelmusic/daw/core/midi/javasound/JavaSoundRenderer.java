@@ -1,19 +1,9 @@
 package com.benesquivelmusic.daw.core.midi.javasound;
 
+import com.benesquivelmusic.daw.sdk.midi.*;
 import com.benesquivelmusic.daw.sdk.midi.MidiEvent;
-import com.benesquivelmusic.daw.sdk.midi.SoundFontInfo;
-import com.benesquivelmusic.daw.sdk.midi.SoundFontPreset;
-import com.benesquivelmusic.daw.sdk.midi.SoundFontRenderer;
-import com.benesquivelmusic.daw.sdk.midi.SoundFontRendererException;
 
-import javax.sound.midi.Instrument;
-import javax.sound.midi.InvalidMidiDataException;
-import javax.sound.midi.MidiChannel;
-import javax.sound.midi.MidiSystem;
-import javax.sound.midi.MidiUnavailableException;
-import javax.sound.midi.Patch;
-import javax.sound.midi.Soundbank;
-import javax.sound.midi.Synthesizer;
+import javax.sound.midi.*;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;

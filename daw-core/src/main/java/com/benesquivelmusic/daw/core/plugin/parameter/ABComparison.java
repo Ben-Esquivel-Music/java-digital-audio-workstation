@@ -1,8 +1,5 @@
 package com.benesquivelmusic.daw.core.plugin.parameter;
 
-import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
-
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 

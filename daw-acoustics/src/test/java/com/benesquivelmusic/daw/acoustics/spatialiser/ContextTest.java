@@ -1,6 +1,9 @@
 package com.benesquivelmusic.daw.acoustics.spatialiser;
 
-import com.benesquivelmusic.daw.acoustics.common.*;
+import com.benesquivelmusic.daw.acoustics.common.Absorption;
+import com.benesquivelmusic.daw.acoustics.common.Coefficients;
+import com.benesquivelmusic.daw.acoustics.common.Vec3;
+import com.benesquivelmusic.daw.acoustics.common.Vec4;
 import com.benesquivelmusic.daw.acoustics.dsp.Buffer;
 import org.junit.jupiter.api.Test;
 

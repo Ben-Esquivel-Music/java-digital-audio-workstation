@@ -1,9 +1,5 @@
 package com.benesquivelmusic.daw.acoustics.dsp;
 
-import com.benesquivelmusic.daw.acoustics.common.Coefficients;
-import com.benesquivelmusic.daw.acoustics.common.Definitions;
-
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**

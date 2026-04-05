@@ -1,11 +1,8 @@
 package com.benesquivelmusic.daw.core.session.dawproject;
 
+import com.benesquivelmusic.daw.sdk.session.SessionData;
 import org.junit.jupiter.api.Test;
 
-import com.benesquivelmusic.daw.sdk.session.SessionData;
-import com.benesquivelmusic.daw.sdk.session.SessionData.SessionClip;
-import com.benesquivelmusic.daw.sdk.session.SessionData.SessionTrack;
-import java.util.List;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;

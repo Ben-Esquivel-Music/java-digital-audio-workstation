@@ -1,12 +1,6 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
-import com.benesquivelmusic.daw.sdk.spatial.PositioningMode;
-import com.benesquivelmusic.daw.sdk.spatial.SpatialPannerData;
-import com.benesquivelmusic.daw.sdk.spatial.SpatialPosition;
-
 import org.junit.jupiter.api.Test;
-
-import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
