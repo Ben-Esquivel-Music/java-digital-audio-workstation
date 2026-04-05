@@ -48,6 +48,18 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 021 | [Waveform Zoom and Scroll with Minimap Navigation](021-waveform-zoom-and-minimap.md) | 🟡 Medium | Navigation |
 | 040 | [Multi-Take Comping Workflow](040-multi-take-comping.md) | 🟡 Medium | Recording |
 
+## Built-In Plugins
+
+| # | Story | Priority | Area |
+|---|-------|----------|------|
+| 078 | [BuiltInDawPlugin Sealed Interface for First-Party Plugin Capabilities](078-built-in-daw-plugin-sealed-interface.md) | 🟠 High | Plugins |
+| 079 | [Built-In Plugin Discovery and Plugins Menu Integration](079-built-in-plugin-discovery-and-menu-integration.md) | 🟠 High | Plugins |
+| 080 | [Virtual Keyboard Built-In Plugin (KeyboardProcessorView)](080-keyboard-processor-view-built-in-plugin.md) | 🟠 High | Plugins |
+| 081 | [Spectrum Analyzer Built-In Plugin](081-spectrum-analyzer-built-in-plugin.md) | 🟡 Medium | Plugins |
+| 082 | [Chromatic Tuner Built-In Plugin](082-tuner-built-in-plugin.md) | 🟡 Medium | Plugins |
+| 083 | [Signal Generator Built-In Plugin](083-signal-generator-built-in-plugin.md) | 🟡 Medium | Plugins |
+| 084 | [Metronome Built-In Plugin](084-metronome-built-in-plugin.md) | 🟡 Medium | Plugins |
+
 ## Mixer & Effects
 
 | # | Story | Priority | Area |
