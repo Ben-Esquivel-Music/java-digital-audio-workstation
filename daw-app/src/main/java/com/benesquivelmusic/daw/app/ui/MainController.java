@@ -131,8 +131,6 @@ public final class MainController {
     private final Button visualizationsButton = new Button("Visualizations");
     /** Programmatic stand-in for the removed sidebar button (used for undo-history toggle state). */
     private final Button historyButton = new Button("History");
-    /** Programmatic stand-in for the removed sidebar button (used by {@link ProjectLifecycleController} as context menu anchor). */
-    private final Button recentProjectsButton = new Button("Recent");
 
     private DawProject project;
     private PluginRegistry pluginRegistry;
@@ -630,7 +628,7 @@ public final class MainController {
     private void createProjectLifecycleController() {
         projectLifecycleController = new ProjectLifecycleController(
                 projectManager, sessionInterchangeController, notificationBar,
-                statusBarLabel, checkpointLabel, rootPane, recentProjectsButton,
+                statusBarLabel, checkpointLabel, rootPane,
                 trackListPanel,
                 new ProjectLifecycleController.Host() {
                     @Override public DawProject project() { return project; }
@@ -681,6 +679,7 @@ public final class MainController {
     private void createViewNavigationController() {
         viewNavigationController = new ViewNavigationController(
                 rootPane, statusBarLabel, toolbarStateStore,
+                snapButton,
                 activeView, activeEditTool, snapEnabled, gridResolution,
                 new ViewNavigationController.Host() {
                     @Override public DawProject project() { return project; }

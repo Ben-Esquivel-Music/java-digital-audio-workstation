@@ -6,7 +6,10 @@ import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 
 import javafx.scene.Node;
+import javafx.scene.control.Button;
+import javafx.scene.control.ContextMenu;
 import javafx.scene.control.Label;
+import javafx.scene.control.MenuItem;
 import javafx.scene.layout.BorderPane;
 
 import java.util.EnumMap;
@@ -46,6 +49,9 @@ final class ViewNavigationController {
     private final ToolbarStateStore toolbarStateStore;
     private final Host host;
 
+    // Snap button (top toolbar)
+    private final Button snapButton;
+
     // ── State ────────────────────────────────────────────────────────────────
 
     /** Caches each view's content node so switching back preserves state. */
@@ -81,6 +87,7 @@ final class ViewNavigationController {
     ViewNavigationController(BorderPane rootPane,
                              Label statusBarLabel,
                              ToolbarStateStore toolbarStateStore,
+                             Button snapButton,
                              DawView initialView,
                              EditTool initialEditTool,
                              boolean initialSnapEnabled,
@@ -89,6 +96,7 @@ final class ViewNavigationController {
         this.rootPane = Objects.requireNonNull(rootPane, "rootPane must not be null");
         this.statusBarLabel = Objects.requireNonNull(statusBarLabel, "statusBarLabel must not be null");
         this.toolbarStateStore = Objects.requireNonNull(toolbarStateStore, "toolbarStateStore must not be null");
+        this.snapButton = Objects.requireNonNull(snapButton, "snapButton must not be null");
         this.host = Objects.requireNonNull(host, "host must not be null");
 
         this.activeView = Objects.requireNonNull(initialView, "initialView must not be null");
@@ -241,8 +249,9 @@ final class ViewNavigationController {
      * shown on right-click.
      */
     void initializeSnapControls() {
-        // Snap is now accessible only via the menu bar and keyboard shortcuts.
-        // No sidebar snap button to wire.
+        snapButton.setOnAction(event -> onToggleSnap());
+        updateSnapButtonStyle();
+        buildGridResolutionContextMenu();
     }
 
     /**
@@ -251,11 +260,34 @@ final class ViewNavigationController {
     void onToggleSnap() {
         snapEnabled = !snapEnabled;
         toolbarStateStore.saveSnapEnabled(snapEnabled);
+        updateSnapButtonStyle();
         syncSnapStateToEditorView();
         String snapState = snapEnabled ? "Snap to grid enabled" : "Snap to grid disabled";
         statusBarLabel.setText(snapState);
         statusBarLabel.setGraphic(IconNode.of(DawIcon.SNAP, 12));
         LOG.fine(snapState);
+    }
+
+    /**
+     * Applies a highlight style to the snap button when snap is enabled.
+     */
+    void updateSnapButtonStyle() {
+        snapButton.setStyle(snapEnabled
+                ? "-fx-background-color: #b388ff; -fx-text-fill: #0d0d0d;" : "");
+    }
+
+    /**
+     * Builds a right-click context menu on the snap button that allows the user
+     * to select a grid resolution.
+     */
+    private void buildGridResolutionContextMenu() {
+        ContextMenu gridMenu = new ContextMenu();
+        for (GridResolution resolution : GridResolution.values()) {
+            MenuItem item = new MenuItem(resolution.displayName());
+            item.setOnAction(event -> selectGridResolution(resolution));
+            gridMenu.getItems().add(item);
+        }
+        snapButton.setContextMenu(gridMenu);
     }
 
     /**
