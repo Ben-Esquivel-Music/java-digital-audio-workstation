@@ -185,7 +185,12 @@ final class ViewNavigationController {
     // ── Edit tool selection ──────────────────────────────────────────────────
 
     /**
-     * Wires the edit tool buttons and sets the default active tool styling.
+     * Initializes edit-tool UI integration for this controller.
+     *
+     * <p>This method intentionally performs no work because edit tools are
+     * available only through menu actions and keyboard shortcuts; there are no
+     * dedicated toolbar or sidebar buttons to wire. It is retained to keep the
+     * controller initialization flow consistent with the other setup methods.</p>
      */
     void initializeEditTools() {
         // Edit tools are now accessible only via the menu bar and keyboard shortcuts.

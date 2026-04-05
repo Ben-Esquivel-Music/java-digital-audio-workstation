@@ -127,8 +127,6 @@ public final class MainController {
 
     /** Programmatic stand-in for the removed sidebar button (used by {@link BrowserPanelController}). */
     private final Button browserButton = new Button("Library");
-    /** Programmatic stand-in for the removed sidebar button (used by {@link VisualizationPanelController}). */
-    private final Button visualizationsButton = new Button("Visualizations");
     /** Programmatic stand-in for the removed sidebar button (used for undo-history toggle state). */
     private final Button historyButton = new Button("History");
 
@@ -1067,7 +1065,7 @@ public final class MainController {
         Preferences vizPrefs = Preferences.userNodeForPackage(VisualizationPreferences.class);
         VisualizationPreferences vizPreferences = new VisualizationPreferences(vizPrefs);
         vizPanelController = new VisualizationPanelController(
-                vizTileRow, visualizationsButton, vizPreferences, tileLookup);
+                vizTileRow, vizPreferences, tileLookup);
         vizPanelController.initialize();
 
         LOG.fine("Built visualization tile row with 5 display tiles");

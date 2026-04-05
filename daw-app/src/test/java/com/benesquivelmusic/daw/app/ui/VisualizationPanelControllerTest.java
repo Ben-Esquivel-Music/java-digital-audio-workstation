@@ -4,7 +4,6 @@ import com.benesquivelmusic.daw.app.ui.VisualizationPreferences.DisplayTile;
 
 import javafx.application.Platform;
 import javafx.scene.Node;
-import javafx.scene.control.Button;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 
@@ -69,14 +68,13 @@ class VisualizationPanelControllerTest {
     private VisualizationPanelController createController() throws Exception {
         return runOnFxThread(() -> {
             HBox vizTileRow = new HBox();
-            Button button = new Button("Visualizations");
             Map<DisplayTile, Node> tileLookup = new EnumMap<>(DisplayTile.class);
             for (DisplayTile tile : DisplayTile.values()) {
                 VBox tileNode = new VBox();
                 tileLookup.put(tile, tileNode);
             }
             VisualizationPanelController controller = new VisualizationPanelController(
-                    vizTileRow, button, vizPrefs, tileLookup);
+                    vizTileRow, vizPrefs, tileLookup);
             controller.initialize();
             return controller;
         });
@@ -86,16 +84,7 @@ class VisualizationPanelControllerTest {
     void shouldRejectNullVizTileRow() throws Exception {
         runOnFxThread(() -> {
             assertThatThrownBy(() -> new VisualizationPanelController(
-                    null, new Button(), vizPrefs, new EnumMap<>(DisplayTile.class)))
-                    .isInstanceOf(NullPointerException.class);
-        });
-    }
-
-    @Test
-    void shouldRejectNullButton() throws Exception {
-        runOnFxThread(() -> {
-            assertThatThrownBy(() -> new VisualizationPanelController(
-                    new HBox(), null, vizPrefs, new EnumMap<>(DisplayTile.class)))
+                    null, vizPrefs, new EnumMap<>(DisplayTile.class)))
                     .isInstanceOf(NullPointerException.class);
         });
     }
@@ -104,7 +93,7 @@ class VisualizationPanelControllerTest {
     void shouldRejectNullPreferences() throws Exception {
         runOnFxThread(() -> {
             assertThatThrownBy(() -> new VisualizationPanelController(
-                    new HBox(), new Button(), null, new EnumMap<>(DisplayTile.class)))
+                    new HBox(), null, new EnumMap<>(DisplayTile.class)))
                     .isInstanceOf(NullPointerException.class);
         });
     }
@@ -113,7 +102,7 @@ class VisualizationPanelControllerTest {
     void shouldRejectNullTileLookup() throws Exception {
         runOnFxThread(() -> {
             assertThatThrownBy(() -> new VisualizationPanelController(
-                    new HBox(), new Button(), vizPrefs, null))
+                    new HBox(), vizPrefs, null))
                     .isInstanceOf(NullPointerException.class);
         });
     }
@@ -122,13 +111,12 @@ class VisualizationPanelControllerTest {
     void shouldInitializeWithRowVisible() throws Exception {
         VisualizationPanelController controller = runOnFxThread(() -> {
             HBox vizTileRow = new HBox();
-            Button button = new Button("Visualizations");
             Map<DisplayTile, Node> tileLookup = new EnumMap<>(DisplayTile.class);
             for (DisplayTile tile : DisplayTile.values()) {
                 tileLookup.put(tile, new VBox());
             }
             VisualizationPanelController c = new VisualizationPanelController(
-                    vizTileRow, button, vizPrefs, tileLookup);
+                    vizTileRow, vizPrefs, tileLookup);
             c.initialize();
             assertThat(vizTileRow.isVisible()).isTrue();
             assertThat(vizTileRow.isManaged()).isTrue();
@@ -142,13 +130,12 @@ class VisualizationPanelControllerTest {
         vizPrefs.setRowVisible(false);
         runOnFxThread(() -> {
             HBox vizTileRow = new HBox();
-            Button button = new Button("Visualizations");
             Map<DisplayTile, Node> tileLookup = new EnumMap<>(DisplayTile.class);
             for (DisplayTile tile : DisplayTile.values()) {
                 tileLookup.put(tile, new VBox());
             }
             VisualizationPanelController c = new VisualizationPanelController(
-                    vizTileRow, button, vizPrefs, tileLookup);
+                    vizTileRow, vizPrefs, tileLookup);
             c.initialize();
             assertThat(vizTileRow.isVisible()).isFalse();
             assertThat(vizTileRow.isManaged()).isFalse();
@@ -159,13 +146,12 @@ class VisualizationPanelControllerTest {
     void shouldToggleRowVisibility() throws Exception {
         runOnFxThread(() -> {
             HBox vizTileRow = new HBox();
-            Button button = new Button("Visualizations");
             Map<DisplayTile, Node> tileLookup = new EnumMap<>(DisplayTile.class);
             for (DisplayTile tile : DisplayTile.values()) {
                 tileLookup.put(tile, new VBox());
             }
             VisualizationPanelController c = new VisualizationPanelController(
-                    vizTileRow, button, vizPrefs, tileLookup);
+                    vizTileRow, vizPrefs, tileLookup);
             c.initialize();
 
             // Toggle off
@@ -183,7 +169,6 @@ class VisualizationPanelControllerTest {
         vizPrefs.setTileVisible(DisplayTile.SPECTRUM, false);
         runOnFxThread(() -> {
             HBox vizTileRow = new HBox();
-            Button button = new Button("Visualizations");
             Map<DisplayTile, Node> tileLookup = new EnumMap<>(DisplayTile.class);
             VBox spectrumNode = new VBox();
             tileLookup.put(DisplayTile.SPECTRUM, spectrumNode);
@@ -193,7 +178,7 @@ class VisualizationPanelControllerTest {
                 }
             }
             VisualizationPanelController c = new VisualizationPanelController(
-                    vizTileRow, button, vizPrefs, tileLookup);
+                    vizTileRow, vizPrefs, tileLookup);
             c.initialize();
             assertThat(spectrumNode.isVisible()).isFalse();
             assertThat(spectrumNode.isManaged()).isFalse();
@@ -201,56 +186,22 @@ class VisualizationPanelControllerTest {
     }
 
     @Test
-    void shouldAddActiveStyleWhenRowVisible() throws Exception {
+    void shouldWireContextMenuToVizTileRow() throws Exception {
         runOnFxThread(() -> {
             HBox vizTileRow = new HBox();
-            Button button = new Button("Visualizations");
             Map<DisplayTile, Node> tileLookup = new EnumMap<>(DisplayTile.class);
             for (DisplayTile tile : DisplayTile.values()) {
                 tileLookup.put(tile, new VBox());
             }
             VisualizationPanelController c = new VisualizationPanelController(
-                    vizTileRow, button, vizPrefs, tileLookup);
-            c.initialize();
-            assertThat(button.getStyleClass()).contains("toolbar-button-active");
-        });
-    }
-
-    @Test
-    void shouldRemoveActiveStyleWhenRowHidden() throws Exception {
-        vizPrefs.setRowVisible(false);
-        runOnFxThread(() -> {
-            HBox vizTileRow = new HBox();
-            Button button = new Button("Visualizations");
-            Map<DisplayTile, Node> tileLookup = new EnumMap<>(DisplayTile.class);
-            for (DisplayTile tile : DisplayTile.values()) {
-                tileLookup.put(tile, new VBox());
-            }
-            VisualizationPanelController c = new VisualizationPanelController(
-                    vizTileRow, button, vizPrefs, tileLookup);
-            c.initialize();
-            assertThat(button.getStyleClass()).doesNotContain("toolbar-button-active");
-        });
-    }
-
-    @Test
-    void shouldBuildContextMenu() throws Exception {
-        runOnFxThread(() -> {
-            HBox vizTileRow = new HBox();
-            Button button = new Button("Visualizations");
-            Map<DisplayTile, Node> tileLookup = new EnumMap<>(DisplayTile.class);
-            for (DisplayTile tile : DisplayTile.values()) {
-                tileLookup.put(tile, new VBox());
-            }
-            VisualizationPanelController c = new VisualizationPanelController(
-                    vizTileRow, button, vizPrefs, tileLookup);
+                    vizTileRow, vizPrefs, tileLookup);
             c.initialize();
 
             // Verify the context menu getter returns null before the menu is opened
             assertThat(c.getContextMenu()).isNull();
 
-            // Verify button has onContextMenuRequested handler set (non-null)
-            assertThat(button.getOnContextMenuRequested()).isNotNull();
+            // Verify vizTileRow has onContextMenuRequested handler set (non-null)
+            assertThat(vizTileRow.getOnContextMenuRequested()).isNotNull();
         });
     }
 }
