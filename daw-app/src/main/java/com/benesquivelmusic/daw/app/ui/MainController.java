@@ -41,9 +41,6 @@ import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
-import com.benesquivelmusic.daw.core.midi.KeyboardPreset;
-import com.benesquivelmusic.daw.core.midi.KeyboardProcessor;
-import com.benesquivelmusic.daw.core.midi.javasound.JavaSoundRenderer;
 
 import javafx.animation.FadeTransition;
 import javafx.animation.Timeline;
@@ -328,10 +325,13 @@ public final class MainController {
             }
         });
 
-        // Register keyboard shortcuts after the scene is available
+        // Register keyboard shortcuts and plugin shutdown after the scene is available
         playButton.sceneProperty().addListener((_, _, scene) -> {
             if (scene != null) {
                 registerKeyboardShortcuts();
+                if (scene.getWindow() instanceof Stage primaryStage) {
+                    primaryStage.setOnHidden(_ -> disposeBuiltInPlugins());
+                }
             }
         });
 
@@ -1611,7 +1611,7 @@ public final class MainController {
     private void openBuiltInPluginView(BuiltInDawPlugin plugin) {
         String pluginId = plugin.getDescriptor().id();
         switch (pluginId) {
-            case VirtualKeyboardPlugin.PLUGIN_ID -> openVirtualKeyboardWindow();
+            case VirtualKeyboardPlugin.PLUGIN_ID -> openVirtualKeyboardWindow((VirtualKeyboardPlugin) plugin);
             case SpectrumAnalyzerPlugin.PLUGIN_ID -> openSpectrumAnalyzerWindow();
             case ParametricEqPlugin.PLUGIN_ID,
                  CompressorPlugin.PLUGIN_ID,
@@ -1620,17 +1620,14 @@ public final class MainController {
         }
     }
 
-    private void openVirtualKeyboardWindow() {
+    private void openVirtualKeyboardWindow(VirtualKeyboardPlugin plugin) {
         if (virtualKeyboardStage != null) {
             virtualKeyboardStage.show();
             virtualKeyboardStage.toFront();
             return;
         }
 
-        JavaSoundRenderer renderer = new JavaSoundRenderer();
-        renderer.initialize(project.getFormat().sampleRate(), project.getFormat().bufferSize());
-        KeyboardProcessor processor = new KeyboardProcessor(renderer, KeyboardPreset.grandPiano());
-        KeyboardProcessorView keyboardView = new KeyboardProcessorView(processor);
+        KeyboardProcessorView keyboardView = new KeyboardProcessorView(plugin.getProcessor());
 
         Stage stage = new Stage(StageStyle.UTILITY);
         stage.setTitle("Virtual Keyboard");
@@ -1640,7 +1637,7 @@ public final class MainController {
         stage.setMinHeight(280);
         stage.setOnHidden(_ -> {
             keyboardView.dispose();
-            renderer.close();
+            plugin.deactivate();
             virtualKeyboardStage = null;
         });
         stage.show();
@@ -1654,6 +1651,32 @@ public final class MainController {
             builtInSpectrumWindow.getStage().setOnHidden(_ -> builtInSpectrumWindow = null);
         }
         builtInSpectrumWindow.show();
+    }
+
+    /**
+     * Disposes all cached built-in plugins, closing any floating plugin
+     * windows first. Called when the primary stage is hidden (application
+     * shutdown) to ensure resources such as audio renderers are released.
+     */
+    private void disposeBuiltInPlugins() {
+        if (virtualKeyboardStage != null) {
+            virtualKeyboardStage.hide();
+        }
+        if (builtInSpectrumWindow != null) {
+            builtInSpectrumWindow.getStage().hide();
+        }
+        try {
+            for (BuiltInDawPlugin plugin : builtInPluginCache.values()) {
+                try {
+                    plugin.dispose();
+                } catch (Exception ex) {
+                    LOG.log(Level.WARNING,
+                            "Failed to dispose built-in plugin: " + plugin.getClass().getName(), ex);
+                }
+            }
+        } finally {
+            builtInPluginCache.clear();
+        }
     }
 
     @FXML
