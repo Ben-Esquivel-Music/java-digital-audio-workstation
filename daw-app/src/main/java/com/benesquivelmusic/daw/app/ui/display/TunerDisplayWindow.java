@@ -58,7 +58,12 @@ public final class TunerDisplayWindow {
         refPitchSpinner.setEditable(true);
         refPitchSpinner.valueProperty().addListener((_, _, newVal) -> {
             if (onReferencePitchChanged != null && newVal != null) {
-                onReferencePitchChanged.accept(newVal.doubleValue());
+                int clamped = Math.max(415, Math.min(466, newVal));
+                if (clamped != newVal) {
+                    refPitchSpinner.getValueFactory().setValue(clamped);
+                    return;
+                }
+                onReferencePitchChanged.accept((double) clamped);
             }
         });
 

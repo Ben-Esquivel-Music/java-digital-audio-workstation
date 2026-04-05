@@ -67,8 +67,8 @@ public final class TunerPlugin implements BuiltInDawPlugin {
     private PluginContext context;
     private PitchDetector pitchDetector;
     private boolean active;
-    private double referencePitchHz = DEFAULT_REFERENCE_PITCH_HZ;
-    private TuningResult lastResult;
+    private volatile double referencePitchHz = DEFAULT_REFERENCE_PITCH_HZ;
+    private volatile TuningResult lastResult;
 
     /**
      * Result of a tuning analysis.

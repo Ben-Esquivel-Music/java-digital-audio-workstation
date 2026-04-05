@@ -1691,6 +1691,8 @@ public final class MainController {
             });
         }
         tunerDisplayWindow.show();
+    }
+
     private void openSoundWaveTelemetryWindow(SoundWaveTelemetryPlugin plugin) {
         if (telemetryPluginStage != null) {
             telemetryPluginStage.show();
@@ -1734,6 +1736,7 @@ public final class MainController {
         }
         if (tunerDisplayWindow != null) {
             tunerDisplayWindow.getStage().hide();
+        }
         if (telemetryPluginStage != null) {
             telemetryPluginStage.hide();
         }

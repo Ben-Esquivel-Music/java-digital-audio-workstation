@@ -44,6 +44,8 @@ public final class TunerDisplay extends Region {
     private static final Color CENTER_LINE_COLOR = Color.web("#ffffff", 0.4);
     private static final Color NO_SIGNAL_COLOR = Color.web("#ffffff", 0.3);
 
+    private static final int[] TICK_CENTS = {-50, -25, 0, 25, 50};
+
     private static final double CLOSE_CENTS = 15.0;
     private static final double IN_TUNE_CENTS = 3.0;
 
@@ -126,7 +128,7 @@ public final class TunerDisplay extends Region {
         double octaveSize = noteSize * 0.35;
         gc.setFont(Font.font("System", FontWeight.NORMAL, octaveSize));
         gc.setFill(TEXT_COLOR);
-        double noteWidth = measureText(gc, currentResult.noteName(), noteSize);
+        double noteWidth = measureText(currentResult.noteName(), noteSize);
         gc.fillText(String.valueOf(currentResult.octave()),
                 w / 2 + noteWidth / 2 + octaveSize * 0.3, h * 0.38);
 
@@ -187,7 +189,7 @@ public final class TunerDisplay extends Region {
         // Tick marks at -50, -25, 0, +25, +50
         gc.setStroke(TICK_COLOR);
         gc.setLineWidth(1);
-        for (int tickCents : new int[]{-50, -25, 0, 25, 50}) {
+        for (int tickCents : TICK_CENTS) {
             double tickX = centerX + (tickCents / 50.0) * (meterWidth / 2);
             gc.strokeLine(tickX, meterY, tickX, meterY + meterHeight);
         }
@@ -235,7 +237,7 @@ public final class TunerDisplay extends Region {
      * text measurement; the approximation is sufficient for the
      * note-name + octave layout.
      */
-    private static double measureText(GraphicsContext gc, String text, double fontSize) {
+    private static double measureText(String text, double fontSize) {
         return text.length() * fontSize * 0.6;
     }
 
