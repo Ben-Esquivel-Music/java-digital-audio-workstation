@@ -1612,7 +1612,7 @@ public final class MainController {
         String pluginId = plugin.getDescriptor().id();
         switch (pluginId) {
             case VirtualKeyboardPlugin.PLUGIN_ID -> openVirtualKeyboardWindow((VirtualKeyboardPlugin) plugin);
-            case SpectrumAnalyzerPlugin.PLUGIN_ID -> openSpectrumAnalyzerWindow();
+            case SpectrumAnalyzerPlugin.PLUGIN_ID -> openSpectrumAnalyzerWindow((SpectrumAnalyzerPlugin) plugin);
             case ParametricEqPlugin.PLUGIN_ID,
                  CompressorPlugin.PLUGIN_ID,
                  ReverbPlugin.PLUGIN_ID -> viewNavigationController.switchView(DawView.MASTERING);
@@ -1645,10 +1645,25 @@ public final class MainController {
         virtualKeyboardStage = stage;
     }
 
-    private void openSpectrumAnalyzerWindow() {
+    private void openSpectrumAnalyzerWindow(SpectrumAnalyzerPlugin plugin) {
         if (builtInSpectrumWindow == null) {
             builtInSpectrumWindow = new SpectrumDisplayWindow();
-            builtInSpectrumWindow.getStage().setOnHidden(_ -> builtInSpectrumWindow = null);
+            builtInSpectrumWindow.setOnFftSizeChanged(fftSize -> {
+                var analyzer = plugin.getAnalyzer();
+                if (analyzer != null) {
+                    plugin.reconfigure(fftSize, analyzer.getWindowType());
+                }
+            });
+            builtInSpectrumWindow.setOnWindowTypeChanged(windowType -> {
+                var analyzer = plugin.getAnalyzer();
+                if (analyzer != null) {
+                    plugin.reconfigure(analyzer.getFftSize(), windowType);
+                }
+            });
+            builtInSpectrumWindow.getStage().setOnHidden(_ -> {
+                plugin.deactivate();
+                builtInSpectrumWindow = null;
+            });
         }
         builtInSpectrumWindow.show();
     }

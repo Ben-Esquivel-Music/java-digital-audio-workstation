@@ -41,10 +41,12 @@ public final class SpectrumDisplay extends Region {
     private static final Color TEXT_COLOR = Color.web("#ffffff", 0.4);
     private static final Color PEAK_HOLD_COLOR = Color.web("#ffffff", 0.7);
     private static final Color PRE_EQ_COLOR = Color.web("#ff9800", 0.4);
+    private static final Color AVG_TRACE_COLOR = Color.web("#42a5f5", 0.6);
     private static final double MIN_DB = -90.0;
     private static final double MAX_DB = 0.0;
-    private static final double AXIS_MARGIN_LEFT = 32.0;
-    private static final double AXIS_MARGIN_BOTTOM = 16.0;
+    private static final double AXIS_MARGIN_LEFT = 40.0;
+    private static final double AXIS_MARGIN_BOTTOM = 20.0;
+    private static final double AVG_SMOOTHING = 0.95;
 
     private static final Color SUB_BASS_COLOR = Color.web("#e040fb", 0.85);
     private static final Color BASS_COLOR = Color.web("#00e5ff", 0.85);
@@ -63,12 +65,15 @@ public final class SpectrumDisplay extends Region {
     private final Canvas canvas;
     private final float[] smoothedBins;
     private final float[] peakHoldBins;
+    private final float[] averageBins;
     private final LinearGradient barGradient;
 
     private SpectrumData data;
     private SpectrumData preEqData;
     private StereoMode stereoMode;
     private SpectrumData rightChannelData;
+    private boolean logarithmicScale = true;
+    private boolean averageTraceEnabled;
 
     /**
      * Creates a new spectrum display with the specified number of display bars.
@@ -90,6 +95,8 @@ public final class SpectrumDisplay extends Region {
         Arrays.fill(smoothedBins, (float) MIN_DB);
         peakHoldBins = new float[displayBars];
         Arrays.fill(peakHoldBins, (float) MIN_DB);
+        averageBins = new float[displayBars];
+        Arrays.fill(averageBins, (float) MIN_DB);
 
         barGradient = new LinearGradient(0, 1, 0, 0, true, CycleMethod.NO_CYCLE,
                 new Stop(0.0, Color.web("#00e5ff", 0.9)),
@@ -146,6 +153,10 @@ public final class SpectrumDisplay extends Region {
                 }
                 peakHoldBins[bar] = peakMax;
             }
+
+            // Update running average trace
+            averageBins[bar] = (float) (AVG_SMOOTHING * averageBins[bar]
+                    + (1.0 - AVG_SMOOTHING) * smoothedBins[bar]);
         }
 
         render();
@@ -188,6 +199,55 @@ public final class SpectrumDisplay extends Region {
     }
 
     /**
+     * Sets the frequency scale mode.
+     *
+     * <p>Only logarithmic scaling is currently supported for the complete
+     * spectrum rendering pipeline. Linear mode is rejected because
+     * bar aggregation and rendering are still logarithmic, which would
+     * make overlays and spectrum bars misaligned.</p>
+     *
+     * @param logarithmic {@code true} for logarithmic scale
+     * @throws UnsupportedOperationException if linear scale is requested
+     */
+    public void setLogarithmicScale(boolean logarithmic) {
+        if (!logarithmic) {
+            throw new UnsupportedOperationException(
+                    "Linear frequency scale is not supported for SpectrumDisplay because "
+                            + "bar aggregation and rendering are still logarithmic.");
+        }
+        this.logarithmicScale = true;
+        render();
+    }
+
+    /**
+     * Returns whether logarithmic frequency scale is active.
+     *
+     * @return {@code true} if logarithmic
+     */
+    public boolean isLogarithmicScale() {
+        return logarithmicScale;
+    }
+
+    /**
+     * Enables or disables the average spectrum trace overlay.
+     *
+     * @param enabled {@code true} to show the average trace
+     */
+    public void setAverageTraceEnabled(boolean enabled) {
+        this.averageTraceEnabled = enabled;
+        render();
+    }
+
+    /**
+     * Returns whether the average spectrum trace overlay is enabled.
+     *
+     * @return {@code true} if enabled
+     */
+    public boolean isAverageTraceEnabled() {
+        return averageTraceEnabled;
+    }
+
+    /**
      * Renders the spectrum to the canvas.
      */
     private void render() {
@@ -220,6 +280,10 @@ public final class SpectrumDisplay extends Region {
         } else {
             drawSpectrumBars(gc, plotLeft, plotWidth, plotHeight, plotBottom, true);
         }
+
+        if (averageTraceEnabled) {
+            drawAverageTrace(gc, plotLeft, plotWidth, plotHeight, plotBottom);
+        }
     }
 
     private void drawGrid(GraphicsContext gc, double plotLeft, double plotWidth,
@@ -245,7 +309,7 @@ public final class SpectrumDisplay extends Region {
         for (double db : DB_MARKERS) {
             double y = dbToY(db, plotHeight);
             if (y >= 0 && y <= plotBottom) {
-                String label = String.format("%.0f", db);
+                String label = String.format("%.0f dB", db);
                 gc.fillText(label, 2, y + 3);
             }
         }
@@ -259,8 +323,8 @@ public final class SpectrumDisplay extends Region {
             double x = plotLeft + frequencyToX(freq, plotWidth);
             if (x >= plotLeft && x <= plotLeft + plotWidth - 30) {
                 String label = (freq >= 1000)
-                        ? String.format("%.0fk", freq / 1000)
-                        : String.format("%.0f", freq);
+                        ? String.format("%.0f kHz", freq / 1000)
+                        : String.format("%.0f Hz", freq);
                 gc.fillText(label, x + 2, totalHeight - 2);
             }
         }
@@ -329,6 +393,30 @@ public final class SpectrumDisplay extends Region {
                 gc.strokeLine(x + 1, peakY, x + Math.max(barWidth - 2, 1), peakY);
             }
         }
+    }
+
+    private void drawAverageTrace(GraphicsContext gc, double plotLeft, double plotWidth,
+                                  double plotHeight, double plotBottom) {
+        gc.setStroke(AVG_TRACE_COLOR);
+        gc.setLineWidth(1.5);
+        gc.beginPath();
+        boolean started = false;
+        double barWidth = plotWidth / smoothedBins.length;
+
+        for (int i = 0; i < smoothedBins.length; i++) {
+            double avgDb = averageBins[i];
+            if (avgDb <= MIN_DB) continue;
+
+            double x = plotLeft + (i + 0.5) * barWidth;
+            double y = dbToY(avgDb, plotHeight);
+            if (!started) {
+                gc.moveTo(x, y);
+                started = true;
+            } else {
+                gc.lineTo(x, y);
+            }
+        }
+        gc.stroke();
     }
 
     private Color colorForRange(FrequencyRange range) {
