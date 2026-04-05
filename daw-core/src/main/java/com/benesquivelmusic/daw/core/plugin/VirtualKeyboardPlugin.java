@@ -78,10 +78,9 @@ public final class VirtualKeyboardPlugin implements BuiltInDawPlugin {
     public void initialize(PluginContext context) {
         Objects.requireNonNull(context, "context must not be null");
         if (renderer == null) {
-            var javaRenderer = new JavaSoundRenderer();
-            javaRenderer.initialize(context.getSampleRate(), context.getBufferSize());
-            renderer = javaRenderer;
+            renderer = new JavaSoundRenderer();
         }
+        renderer.initialize(context.getSampleRate(), context.getBufferSize());
         processor = new KeyboardProcessor(renderer, KeyboardPreset.grandPiano());
     }
 

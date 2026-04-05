@@ -1665,8 +1665,18 @@ public final class MainController {
         if (builtInSpectrumWindow != null) {
             builtInSpectrumWindow.getStage().hide();
         }
-        builtInPluginCache.values().forEach(BuiltInDawPlugin::dispose);
-        builtInPluginCache.clear();
+        try {
+            for (BuiltInDawPlugin plugin : builtInPluginCache.values()) {
+                try {
+                    plugin.dispose();
+                } catch (Exception ex) {
+                    LOG.log(Level.WARNING,
+                            "Failed to dispose built-in plugin: " + plugin.getClass().getName(), ex);
+                }
+            }
+        } finally {
+            builtInPluginCache.clear();
+        }
     }
 
     @FXML
