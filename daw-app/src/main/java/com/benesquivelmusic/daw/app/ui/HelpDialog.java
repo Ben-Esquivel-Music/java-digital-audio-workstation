@@ -138,7 +138,7 @@ public final class HelpDialog extends Dialog<Void> {
         navigationGrid.add(new Label("Ctrl+2"), 1, 6);
         navigationGrid.add(new Label("Editor View:"), 0, 7);
         navigationGrid.add(new Label("Ctrl+3"), 1, 7);
-        navigationGrid.add(new Label("Telemetry View:"), 0, 8);
+        navigationGrid.add(new Label("Mastering View:"), 0, 8);
         navigationGrid.add(new Label("Ctrl+4"), 1, 8);
         navigationGrid.add(new Label("Toggle Browser:"), 0, 9);
         navigationGrid.add(new Label("Ctrl+B"), 1, 9);
@@ -173,7 +173,7 @@ public final class HelpDialog extends Dialog<Void> {
         intro.setWrapText(true);
 
         Label tip1 = new Label("\u2022 Use the sidebar to switch between "
-                + "Arrangement, Mixer, Editor, and Telemetry views.");
+                + "Arrangement, Mixer, Editor, and Mastering views.");
         tip1.setWrapText(true);
 
         Label tip2 = new Label("\u2022 Add audio or MIDI tracks using the "
