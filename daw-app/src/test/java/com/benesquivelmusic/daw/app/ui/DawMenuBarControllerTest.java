@@ -77,7 +77,6 @@ class DawMenuBarControllerTest {
         int toggleHistoryCalls;
         int toggleNotificationsCalls;
         int toggleVisualizationsCalls;
-        int toggleToolbarCalls;
         int helpCalls;
 
         @Override public DawProject project() { return project; }
@@ -110,7 +109,6 @@ class DawMenuBarControllerTest {
         @Override public void onToggleHistory() { toggleHistoryCalls++; }
         @Override public void onToggleNotificationHistory() { toggleNotificationsCalls++; }
         @Override public void onToggleVisualizations() { toggleVisualizationsCalls++; }
-        @Override public void onToggleToolbar() { toggleToolbarCalls++; }
         @Override public void onHelp() { helpCalls++; }
     }
 
@@ -238,8 +236,7 @@ class DawMenuBarControllerTest {
             assertThat(itemTexts).contains(
                     "Arrangement", "Mixer", "Editor",
                     "Telemetry", "Mastering",
-                    "Toggle Browser", "Toggle Undo History",
-                    "Toggle Toolbar");
+                    "Toggle Browser", "Toggle Undo History");
         });
     }
 

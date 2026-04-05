@@ -74,7 +74,6 @@ public final class DawMenuBarController {
         void onToggleHistory();
         void onToggleNotificationHistory();
         void onToggleVisualizations();
-        void onToggleToolbar();
 
         // Help actions
         void onHelp();
@@ -282,15 +281,11 @@ public final class DawMenuBarController {
                 DawAction.TOGGLE_NOTIFICATION_HISTORY, host::onToggleNotificationHistory);
         MenuItem toggleViz = menuItem("Toggle Visualizations", DawIcon.SPECTRUM,
                 DawAction.TOGGLE_VISUALIZATIONS, host::onToggleVisualizations);
-        MenuItem toggleToolbar = menuItem("Toggle Toolbar", DawIcon.COLLAPSE,
-                DawAction.TOGGLE_TOOLBAR, host::onToggleToolbar);
 
         windowMenu.getItems().addAll(
                 arrangement, mixer, editor, telemetry, mastering,
                 new SeparatorMenuItem(),
-                toggleBrowser, toggleHistory, toggleNotifications, toggleViz,
-                new SeparatorMenuItem(),
-                toggleToolbar
+                toggleBrowser, toggleHistory, toggleNotifications, toggleViz
         );
 
         return windowMenu;

@@ -52,25 +52,6 @@ final class ToolbarAppearanceController {
                           Button undo, Button redo, Button snap,
                           Button save, Button plugins) {}
 
-    /** Sidebar navigation and utility buttons. */
-    record SidebarButtons(Button home, Button arrangementView, Button mixerView,
-                          Button editorView, Button telemetryView,
-                          Button masteringView, Button newProject,
-                          Button openProject, Button saveProject,
-                          Button recentProjects, Button importSession,
-                          Button exportSession, Button browser,
-                          Button search, Button history,
-                          Button pluginsSidebar, Button visualizations,
-                          Button settings, Button expandCollapse,
-                          Button help) {}
-
-    /** Edit-tool palette buttons. */
-    record EditToolButtons(Button pointer, Button pencil, Button eraser,
-                           Button scissors, Button glue) {}
-
-    /** Zoom control buttons. */
-    record ZoomButtons(Button zoomIn, Button zoomOut, Button zoomToFit) {}
-
     /** Labels whose icons and tooltips are managed by this controller. */
     record AppearanceLabels(Label status, Label timeDisplay,
                             Label tracksPanelHeader, Label arrangementPanelHeader,
@@ -86,9 +67,6 @@ final class ToolbarAppearanceController {
 
     private final TransportButtons transportButtons;
     private final ToolbarButtons toolbarButtons;
-    private final SidebarButtons sidebarButtons;
-    private final EditToolButtons editToolButtons;
-    private final ZoomButtons zoomButtons;
     private final AppearanceLabels labels;
     private final OverflowGroups overflowGroups;
     private final BorderPane rootPane;
@@ -96,18 +74,12 @@ final class ToolbarAppearanceController {
 
     ToolbarAppearanceController(TransportButtons transportButtons,
                                 ToolbarButtons toolbarButtons,
-                                SidebarButtons sidebarButtons,
-                                EditToolButtons editToolButtons,
-                                ZoomButtons zoomButtons,
                                 AppearanceLabels labels,
                                 OverflowGroups overflowGroups,
                                 BorderPane rootPane,
                                 KeyBindingManager keyBindingManager) {
         this.transportButtons = Objects.requireNonNull(transportButtons, "transportButtons must not be null");
         this.toolbarButtons = Objects.requireNonNull(toolbarButtons, "toolbarButtons must not be null");
-        this.sidebarButtons = Objects.requireNonNull(sidebarButtons, "sidebarButtons must not be null");
-        this.editToolButtons = Objects.requireNonNull(editToolButtons, "editToolButtons must not be null");
-        this.zoomButtons = Objects.requireNonNull(zoomButtons, "zoomButtons must not be null");
         this.labels = Objects.requireNonNull(labels, "labels must not be null");
         this.overflowGroups = Objects.requireNonNull(overflowGroups, "overflowGroups must not be null");
         this.rootPane = Objects.requireNonNull(rootPane, "rootPane must not be null");
@@ -173,40 +145,6 @@ final class ToolbarAppearanceController {
         labels.ioRoutingLabel.setGraphic(IconNode.of(DawIcon.USB, 12));
         labels.recIndicator.setGraphic(IconNode.of(DawIcon.RECORD, 14));
 
-        // ── Sidebar toolbar buttons ─────────────────────────────────────────
-        sidebarButtons.home.setGraphic(IconNode.of(DawIcon.HOME, TOOLBAR_ICON_SIZE));
-        sidebarButtons.arrangementView.setGraphic(IconNode.of(DawIcon.TIMELINE, TOOLBAR_ICON_SIZE));
-        sidebarButtons.mixerView.setGraphic(IconNode.of(DawIcon.MIXER, TOOLBAR_ICON_SIZE));
-        sidebarButtons.editorView.setGraphic(IconNode.of(DawIcon.WAVEFORM, TOOLBAR_ICON_SIZE));
-        sidebarButtons.telemetryView.setGraphic(IconNode.of(DawIcon.SURROUND, TOOLBAR_ICON_SIZE));
-        sidebarButtons.masteringView.setGraphic(IconNode.of(DawIcon.LIMITER, TOOLBAR_ICON_SIZE));
-        sidebarButtons.newProject.setGraphic(IconNode.of(DawIcon.FOLDER, TOOLBAR_ICON_SIZE));
-        sidebarButtons.openProject.setGraphic(IconNode.of(DawIcon.FOLDER, TOOLBAR_ICON_SIZE));
-        sidebarButtons.saveProject.setGraphic(IconNode.of(DawIcon.DOWNLOAD, TOOLBAR_ICON_SIZE));
-        sidebarButtons.recentProjects.setGraphic(IconNode.of(DawIcon.HISTORY, TOOLBAR_ICON_SIZE));
-        sidebarButtons.importSession.setGraphic(IconNode.of(DawIcon.DOWNLOAD, TOOLBAR_ICON_SIZE));
-        sidebarButtons.exportSession.setGraphic(IconNode.of(DawIcon.UPLOAD, TOOLBAR_ICON_SIZE));
-        sidebarButtons.browser.setGraphic(IconNode.of(DawIcon.LIBRARY, TOOLBAR_ICON_SIZE));
-        sidebarButtons.search.setGraphic(IconNode.of(DawIcon.SEARCH, TOOLBAR_ICON_SIZE));
-        sidebarButtons.history.setGraphic(IconNode.of(DawIcon.HISTORY, TOOLBAR_ICON_SIZE));
-        sidebarButtons.pluginsSidebar.setGraphic(IconNode.of(DawIcon.EQUALIZER, TOOLBAR_ICON_SIZE));
-        sidebarButtons.visualizations.setGraphic(IconNode.of(DawIcon.SPECTRUM, TOOLBAR_ICON_SIZE));
-        sidebarButtons.settings.setGraphic(IconNode.of(DawIcon.SETTINGS, TOOLBAR_ICON_SIZE));
-        sidebarButtons.expandCollapse.setGraphic(IconNode.of(DawIcon.EXPAND, TOOLBAR_ICON_SIZE));
-        sidebarButtons.help.setGraphic(IconNode.of(DawIcon.INFO, TOOLBAR_ICON_SIZE));
-
-        // ── Edit tool buttons (Editing category) ───────────────────────────
-        editToolButtons.pointer.setGraphic(IconNode.of(DawIcon.MOVE, TOOLBAR_ICON_SIZE));
-        editToolButtons.pencil.setGraphic(IconNode.of(DawIcon.MARKER, TOOLBAR_ICON_SIZE));
-        editToolButtons.eraser.setGraphic(IconNode.of(DawIcon.DELETE, TOOLBAR_ICON_SIZE));
-        editToolButtons.scissors.setGraphic(IconNode.of(DawIcon.SPLIT, TOOLBAR_ICON_SIZE));
-        editToolButtons.glue.setGraphic(IconNode.of(DawIcon.CROSSFADE, TOOLBAR_ICON_SIZE));
-
-        // ── Zoom buttons (Editing + Navigation categories) ─────────────────
-        zoomButtons.zoomIn.setGraphic(IconNode.of(DawIcon.ZOOM_IN, TOOLBAR_ICON_SIZE));
-        zoomButtons.zoomOut.setGraphic(IconNode.of(DawIcon.ZOOM_OUT, TOOLBAR_ICON_SIZE));
-        zoomButtons.zoomToFit.setGraphic(IconNode.of(DawIcon.FULLSCREEN, TOOLBAR_ICON_SIZE));
-
         LOG.fine("Applied SVG icons from DAW icon pack");
     }
 
@@ -243,55 +181,6 @@ final class ToolbarAppearanceController {
         toolbarButtons.save.setTooltip(styledTooltip(tooltipFor("Save Project", DawAction.SAVE)));
         toolbarButtons.plugins.setTooltip(styledTooltip(
                 "Manage Plugins \u2014 Add, remove, and configure audio plugins"));
-
-        // ── Sidebar view buttons ────────────────────────────────────────────
-        sidebarButtons.home.setTooltip(styledTooltip(
-                "Home \u2014 Return to the default view"));
-        sidebarButtons.arrangementView.setTooltip(styledTooltip(tooltipFor("Arrangement View", DawAction.VIEW_ARRANGEMENT)));
-        sidebarButtons.mixerView.setTooltip(styledTooltip(tooltipFor("Mixer View", DawAction.VIEW_MIXER)));
-        sidebarButtons.editorView.setTooltip(styledTooltip(tooltipFor("Editor View", DawAction.VIEW_EDITOR)));
-        sidebarButtons.telemetryView.setTooltip(styledTooltip(tooltipFor("Sound Wave Telemetry View", DawAction.VIEW_TELEMETRY)));
-        sidebarButtons.masteringView.setTooltip(styledTooltip(tooltipFor("Mastering View", DawAction.VIEW_MASTERING)));
-        sidebarButtons.newProject.setTooltip(styledTooltip(tooltipFor("New Project", DawAction.NEW_PROJECT)));
-        sidebarButtons.openProject.setTooltip(styledTooltip(tooltipFor("Open Project", DawAction.OPEN_PROJECT)));
-        sidebarButtons.saveProject.setTooltip(styledTooltip(tooltipFor("Save Project", DawAction.SAVE)));
-        sidebarButtons.recentProjects.setTooltip(styledTooltip(
-                "Recent Projects \u2014 Open a recently saved project"));
-        sidebarButtons.importSession.setTooltip(styledTooltip(
-                tooltipFor("Import Session \u2014 Import a DAWproject (.dawproject) file",
-                        DawAction.IMPORT_SESSION)));
-        sidebarButtons.exportSession.setTooltip(styledTooltip(
-                tooltipFor("Export Session \u2014 Export to DAWproject (.dawproject) format",
-                        DawAction.EXPORT_SESSION)));
-        sidebarButtons.browser.setTooltip(styledTooltip(
-                "Browser \u2014 Browse samples, presets, and project files"
-                        + shortcutSuffix(DawAction.TOGGLE_BROWSER)));
-        sidebarButtons.search.setTooltip(styledTooltip(
-                "Search \u2014 Find tracks, clips, and project items"));
-        sidebarButtons.history.setTooltip(styledTooltip(
-                "Undo History \u2014 Browse and navigate undo history"
-                        + shortcutSuffix(DawAction.TOGGLE_HISTORY)));
-        sidebarButtons.pluginsSidebar.setTooltip(styledTooltip(
-                "Plugins \u2014 Browse and manage audio plugins"));
-        sidebarButtons.visualizations.setTooltip(styledTooltip(
-                "Visualizations \u2014 Toggle audio visualization panels"
-                        + shortcutSuffix(DawAction.TOGGLE_VISUALIZATIONS)));
-        sidebarButtons.settings.setTooltip(styledTooltip(tooltipFor("Settings", DawAction.OPEN_SETTINGS)));
-        sidebarButtons.expandCollapse.setTooltip(styledTooltip(tooltipFor("Collapse/Expand Toolbar", DawAction.TOGGLE_TOOLBAR)));
-        sidebarButtons.help.setTooltip(styledTooltip(
-                "Help \u2014 View documentation and keyboard shortcuts"));
-
-        // ── Edit tool buttons ───────────────────────────────────────────────
-        editToolButtons.pointer.setTooltip(styledTooltip(tooltipFor("Pointer Tool", DawAction.TOOL_POINTER)));
-        editToolButtons.pencil.setTooltip(styledTooltip(tooltipFor("Pencil Tool", DawAction.TOOL_PENCIL)));
-        editToolButtons.eraser.setTooltip(styledTooltip(tooltipFor("Eraser Tool", DawAction.TOOL_ERASER)));
-        editToolButtons.scissors.setTooltip(styledTooltip(tooltipFor("Scissors Tool", DawAction.TOOL_SCISSORS)));
-        editToolButtons.glue.setTooltip(styledTooltip(tooltipFor("Glue Tool", DawAction.TOOL_GLUE)));
-
-        // ── Zoom buttons ────────────────────────────────────────────────────
-        zoomButtons.zoomIn.setTooltip(styledTooltip(tooltipFor("Zoom In", DawAction.ZOOM_IN)));
-        zoomButtons.zoomOut.setTooltip(styledTooltip(tooltipFor("Zoom Out", DawAction.ZOOM_OUT)));
-        zoomButtons.zoomToFit.setTooltip(styledTooltip(tooltipFor("Zoom to Fit", DawAction.ZOOM_TO_FIT)));
     }
 
     /**
@@ -304,18 +193,6 @@ final class ToolbarAppearanceController {
             return label;
         }
         return label + " (" + shortcut + ")";
-    }
-
-    /**
-     * Returns a suffix string like {@code " (shortcut)"} or an empty string
-     * if the action has no binding. Useful for appending to longer tooltip text.
-     */
-    private String shortcutSuffix(DawAction action) {
-        String shortcut = keyBindingManager.getDisplayText(action);
-        if (shortcut.isEmpty()) {
-            return "";
-        }
-        return " (" + shortcut + ")";
     }
 
     /**

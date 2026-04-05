@@ -6,10 +6,7 @@ import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 
 import javafx.scene.Node;
-import javafx.scene.control.Button;
-import javafx.scene.control.ContextMenu;
 import javafx.scene.control.Label;
-import javafx.scene.control.MenuItem;
 import javafx.scene.layout.BorderPane;
 
 import java.util.EnumMap;
@@ -49,28 +46,6 @@ final class ViewNavigationController {
     private final ToolbarStateStore toolbarStateStore;
     private final Host host;
 
-    // View buttons
-    private final Button arrangementViewButton;
-    private final Button mixerViewButton;
-    private final Button editorViewButton;
-    private final Button telemetryViewButton;
-    private final Button masteringViewButton;
-
-    // Edit tool buttons
-    private final Button pointerToolButton;
-    private final Button pencilToolButton;
-    private final Button eraserToolButton;
-    private final Button scissorsToolButton;
-    private final Button glueToolButton;
-
-    // Snap button
-    private final Button snapButton;
-
-    // Zoom buttons
-    private final Button zoomInButton;
-    private final Button zoomOutButton;
-    private final Button zoomToFitButton;
-
     // ── State ────────────────────────────────────────────────────────────────
 
     /** Caches each view's content node so switching back preserves state. */
@@ -106,20 +81,6 @@ final class ViewNavigationController {
     ViewNavigationController(BorderPane rootPane,
                              Label statusBarLabel,
                              ToolbarStateStore toolbarStateStore,
-                             Button arrangementViewButton,
-                             Button mixerViewButton,
-                             Button editorViewButton,
-                             Button telemetryViewButton,
-                             Button masteringViewButton,
-                             Button pointerToolButton,
-                             Button pencilToolButton,
-                             Button eraserToolButton,
-                             Button scissorsToolButton,
-                             Button glueToolButton,
-                             Button snapButton,
-                             Button zoomInButton,
-                             Button zoomOutButton,
-                             Button zoomToFitButton,
                              DawView initialView,
                              EditTool initialEditTool,
                              boolean initialSnapEnabled,
@@ -128,20 +89,6 @@ final class ViewNavigationController {
         this.rootPane = Objects.requireNonNull(rootPane, "rootPane must not be null");
         this.statusBarLabel = Objects.requireNonNull(statusBarLabel, "statusBarLabel must not be null");
         this.toolbarStateStore = Objects.requireNonNull(toolbarStateStore, "toolbarStateStore must not be null");
-        this.arrangementViewButton = Objects.requireNonNull(arrangementViewButton, "arrangementViewButton must not be null");
-        this.mixerViewButton = Objects.requireNonNull(mixerViewButton, "mixerViewButton must not be null");
-        this.editorViewButton = Objects.requireNonNull(editorViewButton, "editorViewButton must not be null");
-        this.telemetryViewButton = Objects.requireNonNull(telemetryViewButton, "telemetryViewButton must not be null");
-        this.masteringViewButton = Objects.requireNonNull(masteringViewButton, "masteringViewButton must not be null");
-        this.pointerToolButton = Objects.requireNonNull(pointerToolButton, "pointerToolButton must not be null");
-        this.pencilToolButton = Objects.requireNonNull(pencilToolButton, "pencilToolButton must not be null");
-        this.eraserToolButton = Objects.requireNonNull(eraserToolButton, "eraserToolButton must not be null");
-        this.scissorsToolButton = Objects.requireNonNull(scissorsToolButton, "scissorsToolButton must not be null");
-        this.glueToolButton = Objects.requireNonNull(glueToolButton, "glueToolButton must not be null");
-        this.snapButton = Objects.requireNonNull(snapButton, "snapButton must not be null");
-        this.zoomInButton = Objects.requireNonNull(zoomInButton, "zoomInButton must not be null");
-        this.zoomOutButton = Objects.requireNonNull(zoomOutButton, "zoomOutButton must not be null");
-        this.zoomToFitButton = Objects.requireNonNull(zoomToFitButton, "zoomToFitButton must not be null");
         this.host = Objects.requireNonNull(host, "host must not be null");
 
         this.activeView = Objects.requireNonNull(initialView, "initialView must not be null");
@@ -185,13 +132,6 @@ final class ViewNavigationController {
         masteringView = new MasteringView();
         viewCache.put(DawView.MASTERING, masteringView);
 
-        // Wire sidebar view buttons
-        arrangementViewButton.setOnAction(event -> switchView(DawView.ARRANGEMENT));
-        mixerViewButton.setOnAction(event -> switchView(DawView.MIXER));
-        editorViewButton.setOnAction(event -> switchView(DawView.EDITOR));
-        telemetryViewButton.setOnAction(event -> switchView(DawView.TELEMETRY));
-        masteringViewButton.setOnAction(event -> switchView(DawView.MASTERING));
-
         // Restore persisted active view (activeView was set in the constructor)
         if (activeView != DawView.ARRANGEMENT) {
             rootPane.setCenter(viewCache.get(activeView));
@@ -200,9 +140,6 @@ final class ViewNavigationController {
         if (activeView == DawView.TELEMETRY) {
             telemetryView.startAnimation();
         }
-
-        // Set the active view styling
-        updateToolbarActiveState();
     }
 
     /**
@@ -224,7 +161,6 @@ final class ViewNavigationController {
         activeView = view;
         toolbarStateStore.saveActiveView(view);
         rootPane.setCenter(viewCache.get(view));
-        updateToolbarActiveState();
         // Start telemetry animation when entering telemetry view
         if (view == DawView.TELEMETRY && telemetryView != null) {
             telemetryView.startAnimation();
@@ -238,65 +174,14 @@ final class ViewNavigationController {
         LOG.fine(() -> "Switched to view: " + view);
     }
 
-    /**
-     * Applies the {@code .toolbar-button-active} CSS class to the sidebar button
-     * corresponding to the active view and removes it from all others.
-     */
-    private void updateToolbarActiveState() {
-        Button[] viewButtons = {
-                arrangementViewButton,
-                mixerViewButton,
-                editorViewButton,
-                telemetryViewButton,
-                masteringViewButton
-        };
-
-        Button activeButton;
-        switch (activeView) {
-            case ARRANGEMENT:
-                activeButton = arrangementViewButton;
-                break;
-            case MIXER:
-                activeButton = mixerViewButton;
-                break;
-            case EDITOR:
-                activeButton = editorViewButton;
-                break;
-            case TELEMETRY:
-                activeButton = telemetryViewButton;
-                break;
-            case MASTERING:
-                activeButton = masteringViewButton;
-                break;
-            default:
-                activeButton = null;
-                break;
-        }
-
-        for (Button button : viewButtons) {
-            if (button == activeButton) {
-                if (!button.getStyleClass().contains("toolbar-button-active")) {
-                    button.getStyleClass().add("toolbar-button-active");
-                }
-            } else {
-                button.getStyleClass().remove("toolbar-button-active");
-            }
-        }
-    }
-
     // ── Edit tool selection ──────────────────────────────────────────────────
 
     /**
      * Wires the edit tool buttons and sets the default active tool styling.
      */
     void initializeEditTools() {
-        pointerToolButton.setOnAction(event -> selectEditTool(EditTool.POINTER));
-        pencilToolButton.setOnAction(event -> selectEditTool(EditTool.PENCIL));
-        eraserToolButton.setOnAction(event -> selectEditTool(EditTool.ERASER));
-        scissorsToolButton.setOnAction(event -> selectEditTool(EditTool.SCISSORS));
-        glueToolButton.setOnAction(event -> selectEditTool(EditTool.GLUE));
-
-        updateEditToolActiveState();
+        // Edit tools are now accessible only via the menu bar and keyboard shortcuts.
+        // No sidebar buttons to wire.
     }
 
     /**
@@ -310,7 +195,6 @@ final class ViewNavigationController {
         }
         activeEditTool = tool;
         toolbarStateStore.saveEditTool(tool);
-        updateEditToolActiveState();
         if (editorView != null) {
             editorView.setActiveEditTool(tool);
         }
@@ -350,37 +234,6 @@ final class ViewNavigationController {
         return activeEditTool;
     }
 
-    /**
-     * Applies the {@code .toolbar-button-active} CSS class to the edit tool button
-     * corresponding to the active tool and removes it from all others.
-     */
-    private void updateEditToolActiveState() {
-        // Explicit mapping from each EditTool to its corresponding button to avoid
-        // relying on the ordering of EditTool.values().
-        Map<EditTool, Button> toolButtonMap = new EnumMap<>(EditTool.class);
-        toolButtonMap.put(EditTool.POINTER, pointerToolButton);
-        toolButtonMap.put(EditTool.PENCIL, pencilToolButton);
-        toolButtonMap.put(EditTool.ERASER, eraserToolButton);
-        toolButtonMap.put(EditTool.SCISSORS, scissorsToolButton);
-        toolButtonMap.put(EditTool.GLUE, glueToolButton);
-
-        for (EditTool tool : EditTool.values()) {
-            Button button = toolButtonMap.get(tool);
-            if (button == null) {
-                // No associated UI button for this tool (e.g., a newly added enum constant).
-                continue;
-            }
-
-            if (tool == activeEditTool) {
-                if (!button.getStyleClass().contains("toolbar-button-active")) {
-                    button.getStyleClass().add("toolbar-button-active");
-                }
-            } else {
-                button.getStyleClass().remove("toolbar-button-active");
-            }
-        }
-    }
-
     // ── Snap / grid controls ─────────────────────────────────────────────────
 
     /**
@@ -388,9 +241,8 @@ final class ViewNavigationController {
      * shown on right-click.
      */
     void initializeSnapControls() {
-        snapButton.setOnAction(event -> onToggleSnap());
-        updateSnapButtonStyle();
-        buildGridResolutionContextMenu();
+        // Snap is now accessible only via the menu bar and keyboard shortcuts.
+        // No sidebar snap button to wire.
     }
 
     /**
@@ -399,34 +251,11 @@ final class ViewNavigationController {
     void onToggleSnap() {
         snapEnabled = !snapEnabled;
         toolbarStateStore.saveSnapEnabled(snapEnabled);
-        updateSnapButtonStyle();
         syncSnapStateToEditorView();
         String snapState = snapEnabled ? "Snap to grid enabled" : "Snap to grid disabled";
         statusBarLabel.setText(snapState);
         statusBarLabel.setGraphic(IconNode.of(DawIcon.SNAP, 12));
         LOG.fine(snapState);
-    }
-
-    /**
-     * Applies a highlight style to the snap button when snap is enabled.
-     */
-    void updateSnapButtonStyle() {
-        snapButton.setStyle(snapEnabled
-                ? "-fx-background-color: #b388ff; -fx-text-fill: #0d0d0d;" : "");
-    }
-
-    /**
-     * Builds a right-click context menu on the snap button that allows the user
-     * to select a grid resolution.
-     */
-    private void buildGridResolutionContextMenu() {
-        ContextMenu gridMenu = new ContextMenu();
-        for (GridResolution resolution : GridResolution.values()) {
-            MenuItem item = new MenuItem(resolution.displayName());
-            item.setOnAction(event -> selectGridResolution(resolution));
-            gridMenu.getItems().add(item);
-        }
-        snapButton.setContextMenu(gridMenu);
     }
 
     /**
@@ -483,10 +312,6 @@ final class ViewNavigationController {
         for (DawView view : DawView.values()) {
             viewZoomLevels.put(view, new ZoomLevel());
         }
-
-        zoomInButton.setOnAction(event -> onZoomIn());
-        zoomOutButton.setOnAction(event -> onZoomOut());
-        zoomToFitButton.setOnAction(event -> onZoomToFit());
 
         // Wire Ctrl+Scroll zoom on the center content area
         rootPane.centerProperty().addListener((_, _, newCenter) -> {
