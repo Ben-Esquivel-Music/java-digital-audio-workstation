@@ -1648,6 +1648,18 @@ public final class MainController {
     private void openSpectrumAnalyzerWindow(SpectrumAnalyzerPlugin plugin) {
         if (builtInSpectrumWindow == null) {
             builtInSpectrumWindow = new SpectrumDisplayWindow();
+            builtInSpectrumWindow.setOnFftSizeChanged(fftSize -> {
+                var analyzer = plugin.getAnalyzer();
+                if (analyzer != null) {
+                    plugin.reconfigure(fftSize, analyzer.getWindowType());
+                }
+            });
+            builtInSpectrumWindow.setOnWindowTypeChanged(windowType -> {
+                var analyzer = plugin.getAnalyzer();
+                if (analyzer != null) {
+                    plugin.reconfigure(analyzer.getFftSize(), windowType);
+                }
+            });
             builtInSpectrumWindow.getStage().setOnHidden(_ -> {
                 plugin.deactivate();
                 builtInSpectrumWindow = null;

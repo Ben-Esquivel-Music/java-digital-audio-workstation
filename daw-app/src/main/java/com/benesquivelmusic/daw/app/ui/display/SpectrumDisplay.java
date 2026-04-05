@@ -201,10 +201,21 @@ public final class SpectrumDisplay extends Region {
     /**
      * Sets the frequency scale mode.
      *
-     * @param logarithmic {@code true} for logarithmic scale, {@code false} for linear
+     * <p>Only logarithmic scaling is currently supported for the complete
+     * spectrum rendering pipeline. Linear mode is rejected because
+     * bar aggregation and rendering are still logarithmic, which would
+     * make overlays and spectrum bars misaligned.</p>
+     *
+     * @param logarithmic {@code true} for logarithmic scale
+     * @throws UnsupportedOperationException if linear scale is requested
      */
     public void setLogarithmicScale(boolean logarithmic) {
-        this.logarithmicScale = logarithmic;
+        if (!logarithmic) {
+            throw new UnsupportedOperationException(
+                    "Linear frequency scale is not supported for SpectrumDisplay because "
+                            + "bar aggregation and rendering are still logarithmic.");
+        }
+        this.logarithmicScale = true;
         render();
     }
 
@@ -419,14 +430,10 @@ public final class SpectrumDisplay extends Region {
     }
 
     private double frequencyToX(double freq, double width) {
-        if (logarithmicScale) {
-            double minLog = Math.log10(20);
-            double maxLog = Math.log10(20000);
-            double freqLog = Math.log10(Math.max(freq, 20));
-            return (freqLog - minLog) / (maxLog - minLog) * width;
-        } else {
-            return (Math.max(freq, 20) - 20) / (20000 - 20) * width;
-        }
+        double minLog = Math.log10(20);
+        double maxLog = Math.log10(20000);
+        double freqLog = Math.log10(Math.max(freq, 20));
+        return (freqLog - minLog) / (maxLog - minLog) * width;
     }
 
     private double dbToY(double db, double height) {

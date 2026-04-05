@@ -43,6 +43,7 @@ public final class SpectrumAnalyzerPlugin implements BuiltInDawPlugin {
             PluginType.ANALYZER
     );
 
+    private PluginContext context;
     private SpectrumAnalyzer analyzer;
     private boolean active;
 
@@ -72,6 +73,7 @@ public final class SpectrumAnalyzerPlugin implements BuiltInDawPlugin {
     @Override
     public void initialize(PluginContext context) {
         Objects.requireNonNull(context, "context must not be null");
+        this.context = context;
         analyzer = new SpectrumAnalyzer(
                 DEFAULT_FFT_SIZE,
                 context.getSampleRate(),
@@ -99,6 +101,34 @@ public final class SpectrumAnalyzerPlugin implements BuiltInDawPlugin {
     public void dispose() {
         active = false;
         analyzer = null;
+        context = null;
+    }
+
+    /**
+     * Reconfigures the analyzer with a new FFT size and/or window type.
+     *
+     * <p>Because {@link SpectrumAnalyzer} is immutable, this method creates a
+     * new instance with the given parameters and the sample rate from the
+     * original {@link #initialize(PluginContext)} call. Must be called after
+     * {@code initialize()} and before {@code dispose()}.</p>
+     *
+     * @param fftSize    new FFT size (must be a power of two)
+     * @param windowType new window function
+     * @throws IllegalStateException if the plugin has not been initialized
+     */
+    public void reconfigure(int fftSize, WindowType windowType) {
+        if (context == null) {
+            throw new IllegalStateException("Plugin has not been initialized");
+        }
+        Objects.requireNonNull(windowType, "windowType must not be null");
+        analyzer = new SpectrumAnalyzer(
+                fftSize,
+                context.getSampleRate(),
+                DEFAULT_SMOOTHING,
+                windowType,
+                true,
+                DEFAULT_PEAK_DECAY_DB
+        );
     }
 
     /**

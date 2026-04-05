@@ -16,6 +16,7 @@ import javafx.scene.layout.HBox;
 import javafx.scene.paint.Color;
 import javafx.stage.Stage;
 import javafx.stage.StageStyle;
+import javafx.util.StringConverter;
 
 import java.util.function.Consumer;
 
@@ -45,8 +46,7 @@ public final class SpectrumDisplayWindow {
     private final Stage stage;
     private final SpectrumDisplay display;
     private final ComboBox<String> fftSizeCombo;
-    private final ComboBox<String> windowTypeCombo;
-    private final ComboBox<String> scaleCombo;
+    private final ComboBox<WindowType> windowTypeCombo;
     private final CheckBox avgTraceCheck;
 
     private Consumer<Integer> onFftSizeChanged;
@@ -71,29 +71,29 @@ public final class SpectrumDisplayWindow {
             }
         });
 
-        // Window function selector
+        // Window function selector — type-safe combo with StringConverter
         windowTypeCombo = new ComboBox<>();
-        for (WindowType wt : WindowType.values()) {
-            windowTypeCombo.getItems().add(wt.displayName());
-        }
-        windowTypeCombo.setValue(WindowType.HANN.displayName());
-        windowTypeCombo.setOnAction(_ -> {
-            if (onWindowTypeChanged != null) {
+        windowTypeCombo.getItems().addAll(WindowType.values());
+        windowTypeCombo.setValue(WindowType.HANN);
+        windowTypeCombo.setConverter(new StringConverter<>() {
+            @Override
+            public String toString(WindowType type) {
+                return type == null ? "" : type.displayName();
+            }
+
+            @Override
+            public WindowType fromString(String string) {
                 for (WindowType wt : WindowType.values()) {
-                    if (wt.displayName().equals(windowTypeCombo.getValue())) {
-                        onWindowTypeChanged.accept(wt);
-                        break;
-                    }
+                    if (wt.displayName().equals(string)) return wt;
                 }
+                return WindowType.HANN;
             }
         });
-
-        // Frequency scale selector
-        scaleCombo = new ComboBox<>();
-        scaleCombo.getItems().addAll("Logarithmic", "Linear");
-        scaleCombo.setValue("Logarithmic");
-        scaleCombo.setOnAction(_ -> display.setLogarithmicScale(
-                "Logarithmic".equals(scaleCombo.getValue())));
+        windowTypeCombo.setOnAction(_ -> {
+            if (onWindowTypeChanged != null) {
+                onWindowTypeChanged.accept(windowTypeCombo.getValue());
+            }
+        });
 
         // Average trace checkbox
         avgTraceCheck = new CheckBox("Avg Trace");
@@ -102,12 +102,10 @@ public final class SpectrumDisplayWindow {
 
         Label fftLabel = createToolbarLabel("FFT:");
         Label windowLabel = createToolbarLabel("Window:");
-        Label scaleLabel = createToolbarLabel("Scale:");
 
         HBox toolbar = new HBox(6,
                 fftLabel, fftSizeCombo,
                 windowLabel, windowTypeCombo,
-                scaleLabel, scaleCombo,
                 avgTraceCheck);
         toolbar.setAlignment(Pos.CENTER_LEFT);
         toolbar.setPadding(new Insets(4, 8, 4, 8));

@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.plugin;
 
+import com.benesquivelmusic.daw.sdk.analysis.WindowType;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
@@ -148,6 +149,42 @@ class SpectrumAnalyzerPluginTest {
         plugin.activate();
         plugin.deactivate();
         plugin.dispose();
+    }
+
+    // ── Reconfigure ────────────────────────────────────────────────────
+
+    @Test
+    void reconfigureShouldChangeFftSize() {
+        plugin.initialize(stubContext());
+        plugin.reconfigure(2048, WindowType.HANN);
+        assertThat(plugin.getAnalyzer().getFftSize()).isEqualTo(2048);
+    }
+
+    @Test
+    void reconfigureShouldChangeWindowType() {
+        plugin.initialize(stubContext());
+        plugin.reconfigure(4096, WindowType.BLACKMAN_HARRIS);
+        assertThat(plugin.getAnalyzer().getWindowType()).isEqualTo(WindowType.BLACKMAN_HARRIS);
+    }
+
+    @Test
+    void reconfigureShouldPreserveSampleRate() {
+        plugin.initialize(stubContext());
+        plugin.reconfigure(8192, WindowType.HAMMING);
+        assertThat(plugin.getAnalyzer().getSampleRate()).isEqualTo(44100.0);
+    }
+
+    @Test
+    void reconfigureBeforeInitializeShouldThrow() {
+        assertThatThrownBy(() -> plugin.reconfigure(2048, WindowType.HANN))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void reconfigureShouldRejectNullWindowType() {
+        plugin.initialize(stubContext());
+        assertThatThrownBy(() -> plugin.reconfigure(4096, null))
+                .isInstanceOf(NullPointerException.class);
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────
