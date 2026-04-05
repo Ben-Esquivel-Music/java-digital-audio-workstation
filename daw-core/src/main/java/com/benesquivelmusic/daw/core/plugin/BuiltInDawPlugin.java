@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Function;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -85,34 +86,16 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
      * @return an unmodifiable list of menu entries for all built-in plugins
      */
     static List<MenuEntry> menuEntries() {
-        Logger log = Logger.getLogger(BuiltInDawPlugin.class.getName());
-        Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
-        if (permitted == null) {
-            return List.of();
-        }
-        var entries = new ArrayList<MenuEntry>(permitted.length);
-        for (Class<?> clazz : permitted) {
-            try {
-                BuiltInDawPlugin instance = (BuiltInDawPlugin) clazz.getConstructor().newInstance();
-                @SuppressWarnings("unchecked")
-                Class<? extends BuiltInDawPlugin> pluginClass = (Class<? extends BuiltInDawPlugin>) clazz;
-                entries.add(new MenuEntry(
-                        pluginClass,
-                        instance.getMenuLabel(),
-                        instance.getMenuIcon(),
-                        instance.getCategory()));
-            } catch (NoSuchMethodException e) {
-                log.log(Level.WARNING,
-                        "Skipping built-in plugin %s: missing public no-arg constructor".formatted(clazz.getName()), e);
-            } catch (InvocationTargetException e) {
-                log.log(Level.WARNING,
-                        "Skipping built-in plugin %s: constructor threw an exception".formatted(clazz.getName()), e);
-            } catch (InstantiationException | IllegalAccessException e) {
-                log.log(Level.WARNING,
-                        "Skipping built-in plugin %s: cannot instantiate".formatted(clazz.getName()), e);
-            }
-        }
-        return List.copyOf(entries);
+        return discoverWith(instance -> {
+            @SuppressWarnings("unchecked")
+            Class<? extends BuiltInDawPlugin> pluginClass =
+                    (Class<? extends BuiltInDawPlugin>) instance.getClass();
+            return new MenuEntry(
+                    pluginClass,
+                    instance.getMenuLabel(),
+                    instance.getMenuIcon(),
+                    instance.getCategory());
+        });
     }
 
     /**
@@ -131,26 +114,40 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
      * @return an unmodifiable list of all successfully instantiated built-in plugin instances
      */
     static List<BuiltInDawPlugin> discoverAll() {
+        return discoverWith(Function.identity());
+    }
+
+    /**
+     * Shared helper that iterates all permitted subclasses, instantiates
+     * each via its public no-arg constructor, applies {@code mapper} to
+     * the instance, and collects the results.
+     */
+    private static <T> List<T> discoverWith(Function<BuiltInDawPlugin, T> mapper) {
         Logger log = Logger.getLogger(BuiltInDawPlugin.class.getName());
         Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
         if (permitted == null) {
             return List.of();
         }
-        var plugins = new ArrayList<BuiltInDawPlugin>(permitted.length);
+        var results = new ArrayList<T>(permitted.length);
         for (Class<?> clazz : permitted) {
             try {
-                plugins.add((BuiltInDawPlugin) clazz.getConstructor().newInstance());
+                BuiltInDawPlugin instance =
+                        (BuiltInDawPlugin) clazz.getConstructor().newInstance();
+                results.add(mapper.apply(instance));
             } catch (NoSuchMethodException e) {
                 log.log(Level.WARNING,
-                        "Skipping built-in plugin %s: missing public no-arg constructor".formatted(clazz.getName()), e);
+                        "Skipping built-in plugin %s: missing public no-arg constructor"
+                                .formatted(clazz.getName()), e);
             } catch (InvocationTargetException e) {
                 log.log(Level.WARNING,
-                        "Skipping built-in plugin %s: constructor threw an exception".formatted(clazz.getName()), e);
+                        "Skipping built-in plugin %s: constructor threw an exception"
+                                .formatted(clazz.getName()), e);
             } catch (InstantiationException | IllegalAccessException e) {
                 log.log(Level.WARNING,
-                        "Skipping built-in plugin %s: cannot instantiate".formatted(clazz.getName()), e);
+                        "Skipping built-in plugin %s: cannot instantiate"
+                                .formatted(clazz.getName()), e);
             }
         }
-        return List.copyOf(plugins);
+        return List.copyOf(results);
     }
 }

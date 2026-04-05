@@ -5,7 +5,9 @@ import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Constructor;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -159,10 +161,17 @@ class BuiltInDawPluginTest {
         List<BuiltInDawPlugin.MenuEntry> entries = BuiltInDawPlugin.menuEntries();
 
         assertThat(entries).hasSameSizeAs(plugins);
-        for (int i = 0; i < plugins.size(); i++) {
-            BuiltInDawPlugin plugin = plugins.get(i);
-            BuiltInDawPlugin.MenuEntry entry = entries.get(i);
-            assertThat(entry.pluginClass()).isEqualTo(plugin.getClass());
+
+        Map<Class<?>, BuiltInDawPlugin> pluginsByClass = new HashMap<>();
+        for (BuiltInDawPlugin plugin : plugins) {
+            pluginsByClass.put(plugin.getClass(), plugin);
+        }
+
+        for (BuiltInDawPlugin.MenuEntry entry : entries) {
+            BuiltInDawPlugin plugin = pluginsByClass.get(entry.pluginClass());
+            assertThat(plugin)
+                    .as("Plugin for class %s", entry.pluginClass().getSimpleName())
+                    .isNotNull();
             assertThat(entry.label()).isEqualTo(plugin.getMenuLabel());
             assertThat(entry.icon()).isEqualTo(plugin.getMenuIcon());
             assertThat(entry.category()).isEqualTo(plugin.getCategory());
