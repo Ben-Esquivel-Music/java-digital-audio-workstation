@@ -34,7 +34,7 @@ class SpectrumAnalyzerPluginTest {
         var descriptor = new SpectrumAnalyzerPlugin().getDescriptor();
         assertThat(descriptor.type()).isEqualTo(PluginType.ANALYZER);
         assertThat(descriptor.name()).isEqualTo("Spectrum Analyzer");
-        assertThat(descriptor.id()).isNotBlank();
+        assertThat(descriptor.id()).isEqualTo("com.benesquivelmusic.daw.spectrum-analyzer");
         assertThat(descriptor.vendor()).isEqualTo("DAW Built-in");
     }
 

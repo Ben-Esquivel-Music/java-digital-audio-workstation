@@ -13,7 +13,7 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 public final class SpectrumAnalyzerPlugin implements BuiltInDawPlugin {
 
     /** Stable plugin identifier — used by the host to map plugins to views. */
-    public static final String PLUGIN_ID = "com.benesquivelmusic.daw.builtin.spectrum-analyzer";
+    public static final String PLUGIN_ID = "com.benesquivelmusic.daw.spectrum-analyzer";
 
     private static final PluginDescriptor DESCRIPTOR = new PluginDescriptor(
             PLUGIN_ID,
