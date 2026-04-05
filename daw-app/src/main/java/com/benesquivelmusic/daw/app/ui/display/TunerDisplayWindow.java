@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
 import com.benesquivelmusic.daw.app.ui.DarkThemeHelper;
+import com.benesquivelmusic.daw.core.plugin.TunerPlugin;
 import com.benesquivelmusic.daw.core.plugin.TunerPlugin.TuningResult;
 
 import javafx.geometry.Insets;
@@ -40,6 +41,7 @@ public final class TunerDisplayWindow {
 
     private final Stage stage;
     private final TunerDisplay display;
+    private final Spinner<Integer> refPitchSpinner;
 
     private Consumer<Double> onReferencePitchChanged;
 
@@ -49,16 +51,20 @@ public final class TunerDisplayWindow {
     public TunerDisplayWindow() {
         display = new TunerDisplay();
 
-        // Reference pitch spinner (415–466 Hz, default 440, step 1)
-        Spinner<Integer> refPitchSpinner = new Spinner<>();
+        int minPitch = (int) TunerPlugin.MIN_REFERENCE_PITCH_HZ;
+        int maxPitch = (int) TunerPlugin.MAX_REFERENCE_PITCH_HZ;
+        int defaultPitch = (int) TunerPlugin.DEFAULT_REFERENCE_PITCH_HZ;
+
+        // Reference pitch spinner
+        refPitchSpinner = new Spinner<>();
         SpinnerValueFactory.IntegerSpinnerValueFactory factory =
-                new SpinnerValueFactory.IntegerSpinnerValueFactory(415, 466, 440);
+                new SpinnerValueFactory.IntegerSpinnerValueFactory(minPitch, maxPitch, defaultPitch);
         refPitchSpinner.setValueFactory(factory);
         refPitchSpinner.setPrefWidth(80);
         refPitchSpinner.setEditable(true);
         refPitchSpinner.valueProperty().addListener((_, _, newVal) -> {
             if (onReferencePitchChanged != null && newVal != null) {
-                int clamped = Math.max(415, Math.min(466, newVal));
+                int clamped = Math.max(minPitch, Math.min(maxPitch, newVal));
                 if (clamped != newVal) {
                     refPitchSpinner.getValueFactory().setValue(clamped);
                     return;
@@ -97,6 +103,19 @@ public final class TunerDisplayWindow {
      */
     public void setOnReferencePitchChanged(Consumer<Double> listener) {
         this.onReferencePitchChanged = listener;
+    }
+
+    /**
+     * Sets the reference pitch displayed by the spinner.
+     *
+     * <p>This does <b>not</b> fire the {@link #setOnReferencePitchChanged}
+     * callback; it only updates the spinner value so it reflects the plugin's
+     * current state (e.g., when re-opening the window).</p>
+     *
+     * @param hz the reference pitch in Hz (will be rounded to the nearest integer)
+     */
+    public void setReferencePitchHz(double hz) {
+        refPitchSpinner.getValueFactory().setValue((int) Math.round(hz));
     }
 
     /**

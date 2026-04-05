@@ -36,7 +36,7 @@ class TunerPluginTest {
 
     @Test
     void shouldReturnMenuIcon() {
-        assertThat(plugin.getMenuIcon()).isEqualTo("tuner");
+        assertThat(plugin.getMenuIcon()).isEqualTo("spectrum");
     }
 
     @Test

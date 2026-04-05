@@ -1690,6 +1690,7 @@ public final class MainController {
                 tunerDisplayWindow = null;
             });
         }
+        tunerDisplayWindow.setReferencePitchHz(plugin.getReferencePitchHz());
         tunerDisplayWindow.show();
     }
 

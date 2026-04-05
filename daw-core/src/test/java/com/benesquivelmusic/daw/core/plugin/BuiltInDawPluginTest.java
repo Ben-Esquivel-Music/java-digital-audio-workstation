@@ -24,7 +24,7 @@ class BuiltInDawPluginTest {
     }
 
     @Test
-    void shouldPermitExactlySixSubclasses() {
+    void shouldPermitExactlySevenSubclasses() {
         Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
         assertThat(permitted).hasSize(7);
     }

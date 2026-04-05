@@ -36,13 +36,13 @@ public final class TunerPlugin implements BuiltInDawPlugin {
     public static final String PLUGIN_ID = "com.benesquivelmusic.daw.tuner";
 
     /** Default reference pitch for A4 in Hz. */
-    static final double DEFAULT_REFERENCE_PITCH_HZ = 440.0;
+    public static final double DEFAULT_REFERENCE_PITCH_HZ = 440.0;
 
     /** Minimum allowed reference pitch for A4 in Hz. */
-    static final double MIN_REFERENCE_PITCH_HZ = 415.0;
+    public static final double MIN_REFERENCE_PITCH_HZ = 415.0;
 
     /** Maximum allowed reference pitch for A4 in Hz. */
-    static final double MAX_REFERENCE_PITCH_HZ = 466.0;
+    public static final double MAX_REFERENCE_PITCH_HZ = 466.0;
 
     /** Default pitch detection buffer size in samples. */
     static final int DEFAULT_BUFFER_SIZE = 4096;
@@ -102,7 +102,7 @@ public final class TunerPlugin implements BuiltInDawPlugin {
 
     @Override
     public String getMenuIcon() {
-        return "tuner";
+        return "spectrum";
     }
 
     @Override
@@ -173,14 +173,22 @@ public final class TunerPlugin implements BuiltInDawPlugin {
      * pitched signal (i.e., the input is silent or too noisy).</p>
      *
      * @param samples mono audio samples; length must be ≥ the detector's buffer size
+     *                ({@value #DEFAULT_BUFFER_SIZE})
      * @return the tuning result, or {@code null} if no pitched signal is detected
-     * @throws IllegalStateException if the plugin has not been initialized
-     * @throws NullPointerException  if {@code samples} is {@code null}
+     * @throws IllegalStateException    if the plugin has not been initialized
+     * @throws NullPointerException     if {@code samples} is {@code null}
+     * @throws IllegalArgumentException if {@code samples.length} is less than
+     *                                  the detector's buffer size
      */
     public TuningResult process(float[] samples) {
         Objects.requireNonNull(samples, "samples must not be null");
         if (pitchDetector == null) {
             throw new IllegalStateException("Plugin has not been initialized");
+        }
+        if (samples.length < DEFAULT_BUFFER_SIZE) {
+            throw new IllegalArgumentException(
+                    "samples length (%d) must be >= buffer size (%d)"
+                            .formatted(samples.length, DEFAULT_BUFFER_SIZE));
         }
 
         PitchDetector.PitchResult pitchResult = pitchDetector.detect(samples);
