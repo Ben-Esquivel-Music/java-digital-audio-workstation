@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.display.LoudnessDisplay;
 import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplay;
 import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplayWindow;
+import com.benesquivelmusic.daw.app.ui.display.TunerDisplayWindow;
 import com.benesquivelmusic.daw.app.ui.display.WaveformDisplay;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
@@ -31,6 +32,7 @@ import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.plugin.ReverbPlugin;
 import com.benesquivelmusic.daw.core.plugin.SoundWaveTelemetryPlugin;
 import com.benesquivelmusic.daw.core.plugin.SpectrumAnalyzerPlugin;
+import com.benesquivelmusic.daw.core.plugin.TunerPlugin;
 import com.benesquivelmusic.daw.core.plugin.VirtualKeyboardPlugin;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -246,6 +248,8 @@ public final class MainController {
     private Stage virtualKeyboardStage;
     /** Floating spectrum analyzer window for the built-in plugin menu action. */
     private SpectrumDisplayWindow builtInSpectrumWindow;
+    /** Floating chromatic tuner window for the built-in plugin menu action. */
+    private TunerDisplayWindow tunerDisplayWindow;
     /** Floating sound wave telemetry window for the built-in plugin menu action. */
     private Stage telemetryPluginStage;
     /** The telemetry view inside the floating plugin window, rebound on project change. */
@@ -1620,6 +1624,7 @@ public final class MainController {
         switch (pluginId) {
             case VirtualKeyboardPlugin.PLUGIN_ID -> openVirtualKeyboardWindow((VirtualKeyboardPlugin) plugin);
             case SpectrumAnalyzerPlugin.PLUGIN_ID -> openSpectrumAnalyzerWindow((SpectrumAnalyzerPlugin) plugin);
+            case TunerPlugin.PLUGIN_ID -> openTunerWindow((TunerPlugin) plugin);
             case SoundWaveTelemetryPlugin.PLUGIN_ID -> openSoundWaveTelemetryWindow((SoundWaveTelemetryPlugin) plugin);
             case ParametricEqPlugin.PLUGIN_ID,
                  CompressorPlugin.PLUGIN_ID,
@@ -1676,6 +1681,19 @@ public final class MainController {
         builtInSpectrumWindow.show();
     }
 
+    private void openTunerWindow(TunerPlugin plugin) {
+        if (tunerDisplayWindow == null) {
+            tunerDisplayWindow = new TunerDisplayWindow();
+            tunerDisplayWindow.setOnReferencePitchChanged(plugin::setReferencePitchHz);
+            tunerDisplayWindow.getStage().setOnHidden(_ -> {
+                plugin.deactivate();
+                tunerDisplayWindow = null;
+            });
+        }
+        tunerDisplayWindow.setReferencePitchHz(plugin.getReferencePitchHz());
+        tunerDisplayWindow.show();
+    }
+
     private void openSoundWaveTelemetryWindow(SoundWaveTelemetryPlugin plugin) {
         if (telemetryPluginStage != null) {
             telemetryPluginStage.show();
@@ -1716,6 +1734,9 @@ public final class MainController {
         }
         if (builtInSpectrumWindow != null) {
             builtInSpectrumWindow.getStage().hide();
+        }
+        if (tunerDisplayWindow != null) {
+            tunerDisplayWindow.getStage().hide();
         }
         if (telemetryPluginStage != null) {
             telemetryPluginStage.hide();

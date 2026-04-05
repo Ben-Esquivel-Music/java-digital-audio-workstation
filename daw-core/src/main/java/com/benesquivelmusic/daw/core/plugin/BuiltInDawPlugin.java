@@ -29,6 +29,7 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
                 CompressorPlugin,
                 ReverbPlugin,
                 SpectrumAnalyzerPlugin,
+                TunerPlugin,
                 SoundWaveTelemetryPlugin {
 
     /**
