@@ -17,7 +17,7 @@ The Sound Wave Telemetry view (`TelemetryView`) is currently one of the five mai
 
 4. **Plugin discovery model**: New users searching for "room analysis" or "acoustic telemetry" would naturally look in the Plugins menu under Analyzers, not in the View navigation. Moving telemetry to a built-in plugin aligns its discovery path with user expectations.
 
-The existing `BuiltInDawPlugin` sealed interface, plugin lifecycle (`initialize` → `activate` → `deactivate` → `dispose`), and Plugins menu infrastructure (story 078, 079) already support this migration. The `TelemetryView` UI — including its two-state setup/display flow, `RoomTelemetryDisplay` canvas, drag-and-drop repositioning, debounced recomputation, animation timer, and project integration — can be reused as the plugin's floating window content with minimal modification.
+The existing `BuiltInDawPlugin` sealed interface, plugin lifecycle (`initialize` → `activate` → `deactivate` → `dispose`), and Plugins menu infrastructure (stories 078 and 079) already support this migration. The `TelemetryView` UI — including its two-state setup/display flow, `RoomTelemetryDisplay` canvas, drag-and-drop repositioning, debounced recomputation, animation timer, and project integration — can be reused as the plugin's floating window content with minimal modification.
 
 ## Goals
 
@@ -27,13 +27,13 @@ The existing `BuiltInDawPlugin` sealed interface, plugin lifecycle (`initialize`
 - `getMenuLabel()` returns `"Sound Wave Telemetry"`
 - `getMenuIcon()` returns `"surround"` (reusing the existing `DawIcon.SURROUND` identifier)
 - `getCategory()` returns `BuiltInPluginCategory.ANALYZER`
-- `activate()` opens the existing `TelemetryView` in a floating plugin window, wired to the current `DawProject` for room configuration persistence
+- `activate()` sets the plugin to active state; the plugin itself does not create or manage JavaFX windows — window creation, showing, and hiding is the responsibility of the `daw-app` UI layer (e.g., `MainController.openBuiltInPluginView`)
+- The `daw-app` host layer creates a floating window containing the existing `TelemetryView`, binds it to the current `DawProject` for room configuration persistence, and manages the animation timer lifecycle (start on show, stop on hide)
 - The floating window preserves the two-state setup/display flow: users configure room dimensions, wall material, sound sources, and microphones in the setup panel, then generate telemetry to see the animated room visualization
 - Drag-and-drop repositioning of sources and microphones continues to work with debounced recomputation
-- The animation timer runs only while the plugin window is visible
 - Project integration is preserved: room configuration is saved to and loaded from `DawProject` so that re-opening the plugin restores the last configuration
-- `deactivate()` stops the animation timer and hides the floating window
-- `dispose()` releases animation resources and clears the project reference
+- `deactivate()` marks the plugin as inactive; the host is responsible for stopping the animation timer and hiding the floating window
+- `dispose()` releases any telemetry-specific resources held by the plugin
 - Add `SoundWaveTelemetryPlugin` to the `BuiltInDawPlugin` sealed `permits` clause so it is automatically discovered
 - Remove `DawView.TELEMETRY` from the `DawView` enum
 - Remove `DawAction.VIEW_TELEMETRY` from the `DawAction` enum and its `Cmd+4` keyboard shortcut
