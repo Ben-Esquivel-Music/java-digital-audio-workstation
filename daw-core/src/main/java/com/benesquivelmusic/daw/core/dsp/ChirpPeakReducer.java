@@ -84,6 +84,10 @@ public final class ChirpPeakReducer implements AudioProcessor {
     // Per-channel envelope state for attack/release peak detection
     private volatile double[] envelopeState;
 
+    // Envelope follower coefficients (depend only on sampleRate, which is final)
+    private final double envelopeAttackCoeff;
+    private final double envelopeReleaseCoeff;
+
     /**
      * Creates a chirp peak reducer with default settings.
      *
@@ -107,6 +111,10 @@ public final class ChirpPeakReducer implements AudioProcessor {
         this.chirpBandwidthHz = 8000.0;
         this.mix = 1.0;
 
+        // Precompute envelope follower coefficients: ~0.1 ms attack, ~5 ms release
+        this.envelopeAttackCoeff = Math.exp(-1.0 / (sampleRate * 0.0001));
+        this.envelopeReleaseCoeff = Math.exp(-1.0 / (sampleRate * 0.005));
+
         rebuildKernel();
     }
 
@@ -129,9 +137,8 @@ public final class ChirpPeakReducer implements AudioProcessor {
         float[][] overlap = overlapBuffers;
         double[] envelope = envelopeState;
 
-        // Envelope follower coefficients: ~0.1 ms attack, ~5 ms release at current sample rate
-        double attackCoeff = Math.exp(-1.0 / (sampleRate * 0.0001));
-        double releaseCoeff = Math.exp(-1.0 / (sampleRate * 0.005));
+        double attackCoeff = envelopeAttackCoeff;
+        double releaseCoeff = envelopeReleaseCoeff;
 
         // Ensure overlap buffers are large enough for the current block size.
         // If the host passes a numFrames larger than what was allocated, grow
