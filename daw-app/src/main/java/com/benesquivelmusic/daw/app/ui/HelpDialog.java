@@ -221,7 +221,7 @@ public final class HelpDialog extends Dialog<Void> {
 
         Label description = new Label(
                 "A state-of-the-art Digital Audio Workstation built with "
-                + "JavaFX and Java 25. Features multi-track recording, MIDI "
+                + "JavaFX and Java 26. Features multi-track recording, MIDI "
                 + "editing, audio processing, and real-time visualization.");
         description.setWrapText(true);
 

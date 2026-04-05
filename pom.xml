@@ -11,7 +11,7 @@
     <packaging>pom</packaging>
 
     <name>Digital Audio Workstation</name>
-    <description>A state-of-the-art Digital Audio Workstation built with JavaFX and Java 25</description>
+    <description>A state-of-the-art Digital Audio Workstation built with JavaFX and Java 26</description>
     <url>https://github.com/Ben-Esquivel-Music/java-digital-audio-workstation</url>
 
     <licenses>
@@ -38,7 +38,7 @@
 
     <properties>
         <!-- Java version -->
-        <java.version>25</java.version>
+        <java.version>26</java.version>
         <maven.compiler.release>${java.version}</maven.compiler.release>
 
         <!-- Encoding -->
@@ -46,7 +46,7 @@
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
         <!-- JavaFX version -->
-        <javafx.version>25</javafx.version>
+        <javafx.version>26</javafx.version>
 
         <!-- Plugin versions -->
         <maven-compiler-plugin.version>3.14.0</maven-compiler-plugin.version>
