@@ -29,8 +29,21 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
                 ReverbPlugin,
                 SpectrumAnalyzerPlugin {
 
-    /** Logger for discovery warnings. */
-    Logger LOG = Logger.getLogger(BuiltInDawPlugin.class.getName());
+    /**
+     * Lightweight metadata record used by the menu layer to populate plugin
+     * entries without retaining live plugin instances.
+     *
+     * @param pluginClass the concrete plugin class
+     * @param label       the human-readable label for the menu item
+     * @param icon        the icon identifier for the menu item
+     * @param category    the category used to group the plugin in the menu
+     */
+    record MenuEntry(
+            Class<? extends BuiltInDawPlugin> pluginClass,
+            String label,
+            String icon,
+            BuiltInPluginCategory category
+    ) {}
 
     /**
      * Returns the human-readable label to display in the Plugins menu.
@@ -57,6 +70,52 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
     BuiltInPluginCategory getCategory();
 
     /**
+     * Returns lightweight metadata entries for all discovered built-in
+     * plugins, suitable for constructing menu items without retaining
+     * live plugin instances.
+     *
+     * <p>Plugin instances are created briefly to extract metadata and
+     * then discarded.  The host manages its own plugin lifecycle
+     * independently via the class references in the returned entries.</p>
+     *
+     * <p>If a permitted subclass cannot be instantiated (e.g., missing no-arg
+     * constructor or access error), a warning is logged and that plugin is
+     * skipped rather than crashing the application.</p>
+     *
+     * @return an unmodifiable list of menu entries for all built-in plugins
+     */
+    static List<MenuEntry> menuEntries() {
+        Logger log = Logger.getLogger(BuiltInDawPlugin.class.getName());
+        Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
+        if (permitted == null) {
+            return List.of();
+        }
+        var entries = new ArrayList<MenuEntry>(permitted.length);
+        for (Class<?> clazz : permitted) {
+            try {
+                BuiltInDawPlugin instance = (BuiltInDawPlugin) clazz.getConstructor().newInstance();
+                @SuppressWarnings("unchecked")
+                Class<? extends BuiltInDawPlugin> pluginClass = (Class<? extends BuiltInDawPlugin>) clazz;
+                entries.add(new MenuEntry(
+                        pluginClass,
+                        instance.getMenuLabel(),
+                        instance.getMenuIcon(),
+                        instance.getCategory()));
+            } catch (NoSuchMethodException e) {
+                log.log(Level.WARNING,
+                        "Skipping built-in plugin %s: missing public no-arg constructor".formatted(clazz.getName()), e);
+            } catch (InvocationTargetException e) {
+                log.log(Level.WARNING,
+                        "Skipping built-in plugin %s: constructor threw an exception".formatted(clazz.getName()), e);
+            } catch (InstantiationException | IllegalAccessException e) {
+                log.log(Level.WARNING,
+                        "Skipping built-in plugin %s: cannot instantiate".formatted(clazz.getName()), e);
+            }
+        }
+        return List.copyOf(entries);
+    }
+
+    /**
      * Discovers all permitted subclasses of {@code BuiltInDawPlugin},
      * instantiates each via its public no-arg constructor, and returns
      * the list of built-in plugin instances.
@@ -72,6 +131,7 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
      * @return an unmodifiable list of all successfully instantiated built-in plugin instances
      */
     static List<BuiltInDawPlugin> discoverAll() {
+        Logger log = Logger.getLogger(BuiltInDawPlugin.class.getName());
         Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
         if (permitted == null) {
             return List.of();
@@ -81,13 +141,13 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
             try {
                 plugins.add((BuiltInDawPlugin) clazz.getConstructor().newInstance());
             } catch (NoSuchMethodException e) {
-                LOG.log(Level.WARNING,
+                log.log(Level.WARNING,
                         "Skipping built-in plugin %s: missing public no-arg constructor".formatted(clazz.getName()), e);
             } catch (InvocationTargetException e) {
-                LOG.log(Level.WARNING,
+                log.log(Level.WARNING,
                         "Skipping built-in plugin %s: constructor threw an exception".formatted(clazz.getName()), e);
             } catch (InstantiationException | IllegalAccessException e) {
-                LOG.log(Level.WARNING,
+                log.log(Level.WARNING,
                         "Skipping built-in plugin %s: cannot instantiate".formatted(clazz.getName()), e);
             }
         }

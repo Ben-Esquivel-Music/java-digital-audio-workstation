@@ -352,9 +352,9 @@ class DawMenuBarControllerTest {
                     .count();
 
             // Count expected groups (categories with at least one plugin)
-            List<BuiltInDawPlugin> plugins = BuiltInDawPlugin.discoverAll();
-            long categoryCount = plugins.stream()
-                    .map(BuiltInDawPlugin::getCategory)
+            List<BuiltInDawPlugin.MenuEntry> entries = BuiltInDawPlugin.menuEntries();
+            long categoryCount = entries.stream()
+                    .map(BuiltInDawPlugin.MenuEntry::category)
                     .distinct()
                     .count();
 
@@ -373,11 +373,11 @@ class DawMenuBarControllerTest {
 
             Menu pluginsMenu = controller.getMenuBar().getMenus().get(2);
             // Find the first built-in plugin menu item (not Plugin Manager)
-            List<BuiltInDawPlugin> plugins = BuiltInDawPlugin.discoverAll();
-            assertThat(plugins)
-                    .as("discoverAll() must find at least one built-in plugin")
+            List<BuiltInDawPlugin.MenuEntry> entries = BuiltInDawPlugin.menuEntries();
+            assertThat(entries)
+                    .as("menuEntries() must find at least one built-in plugin")
                     .isNotEmpty();
-            String firstLabel = plugins.getFirst().getMenuLabel();
+            String firstLabel = entries.getFirst().label();
 
             MenuItem pluginItem = pluginsMenu.getItems().stream()
                     .filter(item -> !(item instanceof SeparatorMenuItem))

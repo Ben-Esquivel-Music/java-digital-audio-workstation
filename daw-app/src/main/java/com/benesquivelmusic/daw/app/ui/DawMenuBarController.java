@@ -257,12 +257,12 @@ public final class DawMenuBarController {
         Menu pluginsMenu = new Menu("Plugins");
         pluginsMenu.getStyleClass().add("daw-menu");
 
-        // Discover built-in plugins and group by category (preserving enum order)
-        List<BuiltInDawPlugin> plugins = BuiltInDawPlugin.discoverAll();
-        Map<BuiltInPluginCategory, List<BuiltInDawPlugin>> grouped = new LinkedHashMap<>();
+        // Discover built-in plugin metadata and group by category (preserving enum order)
+        List<BuiltInDawPlugin.MenuEntry> entries = BuiltInDawPlugin.menuEntries();
+        Map<BuiltInPluginCategory, List<BuiltInDawPlugin.MenuEntry>> grouped = new LinkedHashMap<>();
         for (BuiltInPluginCategory cat : BuiltInPluginCategory.values()) {
-            List<BuiltInDawPlugin> inCategory = plugins.stream()
-                    .filter(p -> p.getCategory() == cat)
+            List<BuiltInDawPlugin.MenuEntry> inCategory = entries.stream()
+                    .filter(e -> e.category() == cat)
                     .toList();
             if (!inCategory.isEmpty()) {
                 grouped.put(cat, inCategory);
@@ -275,16 +275,15 @@ public final class DawMenuBarController {
                 pluginsMenu.getItems().add(new SeparatorMenuItem());
             }
             firstGroup = false;
-            for (BuiltInDawPlugin plugin : entry.getValue()) {
-                DawIcon icon = DawIcon.fromFileName(plugin.getMenuIcon()).orElse(null);
-                Class<? extends BuiltInDawPlugin> pluginClass = plugin.getClass();
-                MenuItem item = menuItem(plugin.getMenuLabel(), icon,
-                        null, () -> host.onActivateBuiltInPlugin(pluginClass));
+            for (BuiltInDawPlugin.MenuEntry menuEntry : entry.getValue()) {
+                DawIcon icon = DawIcon.fromFileName(menuEntry.icon()).orElse(null);
+                MenuItem item = menuItem(menuEntry.label(), icon,
+                        null, () -> host.onActivateBuiltInPlugin(menuEntry.pluginClass()));
                 pluginsMenu.getItems().add(item);
             }
         }
 
-        if (!plugins.isEmpty()) {
+        if (!entries.isEmpty()) {
             pluginsMenu.getItems().add(new SeparatorMenuItem());
         }
 

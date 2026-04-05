@@ -120,4 +120,52 @@ class BuiltInDawPluginTest {
 
         assertThat(ids).doesNotHaveDuplicates();
     }
+
+    // ── menuEntries() ────────────────────────────────────────────────────────
+
+    @Test
+    void menuEntriesShouldReturnOneEntryPerPermittedSubclass() {
+        Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
+        List<BuiltInDawPlugin.MenuEntry> entries = BuiltInDawPlugin.menuEntries();
+
+        assertThat(entries).hasSize(permitted.length);
+    }
+
+    @Test
+    void menuEntriesShouldReturnUnmodifiableList() {
+        List<BuiltInDawPlugin.MenuEntry> entries = BuiltInDawPlugin.menuEntries();
+
+        assertThat(entries).isUnmodifiable();
+    }
+
+    @Test
+    void menuEntriesShouldHaveNonBlankLabelsAndIcons() {
+        for (BuiltInDawPlugin.MenuEntry entry : BuiltInDawPlugin.menuEntries()) {
+            assertThat(entry.label())
+                    .as("label for %s", entry.pluginClass().getSimpleName())
+                    .isNotBlank();
+            assertThat(entry.icon())
+                    .as("icon for %s", entry.pluginClass().getSimpleName())
+                    .isNotBlank();
+            assertThat(entry.category())
+                    .as("category for %s", entry.pluginClass().getSimpleName())
+                    .isNotNull();
+        }
+    }
+
+    @Test
+    void menuEntriesShouldMatchDiscoverAllMetadata() {
+        List<BuiltInDawPlugin> plugins = BuiltInDawPlugin.discoverAll();
+        List<BuiltInDawPlugin.MenuEntry> entries = BuiltInDawPlugin.menuEntries();
+
+        assertThat(entries).hasSameSizeAs(plugins);
+        for (int i = 0; i < plugins.size(); i++) {
+            BuiltInDawPlugin plugin = plugins.get(i);
+            BuiltInDawPlugin.MenuEntry entry = entries.get(i);
+            assertThat(entry.pluginClass()).isEqualTo(plugin.getClass());
+            assertThat(entry.label()).isEqualTo(plugin.getMenuLabel());
+            assertThat(entry.icon()).isEqualTo(plugin.getMenuIcon());
+            assertThat(entry.category()).isEqualTo(plugin.getCategory());
+        }
+    }
 }
