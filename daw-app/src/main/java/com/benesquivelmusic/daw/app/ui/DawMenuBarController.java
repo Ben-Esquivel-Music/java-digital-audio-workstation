@@ -306,8 +306,6 @@ public final class DawMenuBarController {
                 DawAction.VIEW_MIXER, () -> host.onSwitchView(DawView.MIXER));
         MenuItem editor = menuItem("Editor", DawIcon.WAVEFORM,
                 DawAction.VIEW_EDITOR, () -> host.onSwitchView(DawView.EDITOR));
-        MenuItem telemetry = menuItem("Telemetry", DawIcon.SURROUND,
-                DawAction.VIEW_TELEMETRY, () -> host.onSwitchView(DawView.TELEMETRY));
         MenuItem mastering = menuItem("Mastering", DawIcon.LIMITER,
                 DawAction.VIEW_MASTERING, () -> host.onSwitchView(DawView.MASTERING));
 
@@ -321,7 +319,7 @@ public final class DawMenuBarController {
                 DawAction.TOGGLE_VISUALIZATIONS, host::onToggleVisualizations);
 
         windowMenu.getItems().addAll(
-                arrangement, mixer, editor, telemetry, mastering,
+                arrangement, mixer, editor, mastering,
                 new SeparatorMenuItem(),
                 toggleBrowser, toggleHistory, toggleNotifications, toggleViz
         );

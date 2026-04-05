@@ -17,9 +17,6 @@ public enum DawView {
     /** Audio/MIDI clip editor view. */
     EDITOR,
 
-    /** Sound wave telemetry — top-down room visualizer. */
-    TELEMETRY,
-
     /** Mastering chain view — signal chain with presets and A/B comparison. */
     MASTERING
 }
