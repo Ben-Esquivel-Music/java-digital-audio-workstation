@@ -63,8 +63,7 @@ class BuiltInDawPluginTest {
         List<BuiltInDawPlugin> plugins = BuiltInDawPlugin.discoverAll();
 
         assertThat(plugins).hasSize(5);
-        assertThat(plugins)
-                .extracting(Object::getClass)
+        assertThat(plugins.stream().map(Object::getClass).toList())
                 .containsExactlyInAnyOrder(
                         VirtualKeyboardPlugin.class,
                         ParametricEqPlugin.class,
