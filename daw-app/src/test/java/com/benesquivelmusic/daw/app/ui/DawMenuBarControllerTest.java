@@ -425,7 +425,7 @@ class DawMenuBarControllerTest {
 
             assertThat(itemTexts).contains(
                     "Arrangement", "Mixer", "Editor",
-                    "Telemetry", "Mastering",
+                    "Mastering",
                     "Toggle Browser", "Toggle Undo History");
         });
     }

@@ -30,6 +30,7 @@ import com.benesquivelmusic.daw.core.plugin.CompressorPlugin;
 import com.benesquivelmusic.daw.core.plugin.ParametricEqPlugin;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.plugin.ReverbPlugin;
+import com.benesquivelmusic.daw.core.plugin.SoundWaveTelemetryPlugin;
 import com.benesquivelmusic.daw.core.plugin.SpectrumAnalyzerPlugin;
 import com.benesquivelmusic.daw.core.plugin.TunerPlugin;
 import com.benesquivelmusic.daw.core.plugin.VirtualKeyboardPlugin;
@@ -249,6 +250,10 @@ public final class MainController {
     private SpectrumDisplayWindow builtInSpectrumWindow;
     /** Floating chromatic tuner window for the built-in plugin menu action. */
     private TunerDisplayWindow tunerDisplayWindow;
+    /** Floating sound wave telemetry window for the built-in plugin menu action. */
+    private Stage telemetryPluginStage;
+    /** The telemetry view inside the floating plugin window, rebound on project change. */
+    private TelemetryView telemetryPluginView;
     /** Cached and initialized built-in plugin instances, keyed by plugin class. */
     private final Map<Class<? extends BuiltInDawPlugin>, BuiltInDawPlugin> builtInPluginCache = new HashMap<>();
 
@@ -668,6 +673,9 @@ public final class MainController {
                     @Override public void onProjectUIRebuild(MixerView newMixerView) {
                         viewNavigationController.setMixerView(newMixerView);
                         viewNavigationController.onProjectChanged();
+                        if (telemetryPluginView != null) {
+                            telemetryPluginView.setProject(project);
+                        }
                         metronome = new Metronome(
                                 project.getFormat().sampleRate(),
                                 project.getFormat().channels());
@@ -950,7 +958,6 @@ public final class MainController {
         actionHandlers.put(DawAction.VIEW_ARRANGEMENT, () -> viewNavigationController.switchView(DawView.ARRANGEMENT));
         actionHandlers.put(DawAction.VIEW_MIXER, () -> viewNavigationController.switchView(DawView.MIXER));
         actionHandlers.put(DawAction.VIEW_EDITOR, () -> viewNavigationController.switchView(DawView.EDITOR));
-        actionHandlers.put(DawAction.VIEW_TELEMETRY, () -> viewNavigationController.switchView(DawView.TELEMETRY));
         actionHandlers.put(DawAction.VIEW_MASTERING, () -> viewNavigationController.switchView(DawView.MASTERING));
         actionHandlers.put(DawAction.TOGGLE_BROWSER, () -> {
             if (historyPanelVisible) {
@@ -1618,6 +1625,7 @@ public final class MainController {
             case VirtualKeyboardPlugin.PLUGIN_ID -> openVirtualKeyboardWindow((VirtualKeyboardPlugin) plugin);
             case SpectrumAnalyzerPlugin.PLUGIN_ID -> openSpectrumAnalyzerWindow((SpectrumAnalyzerPlugin) plugin);
             case TunerPlugin.PLUGIN_ID -> openTunerWindow((TunerPlugin) plugin);
+            case SoundWaveTelemetryPlugin.PLUGIN_ID -> openSoundWaveTelemetryWindow((SoundWaveTelemetryPlugin) plugin);
             case ParametricEqPlugin.PLUGIN_ID,
                  CompressorPlugin.PLUGIN_ID,
                  ReverbPlugin.PLUGIN_ID -> viewNavigationController.switchView(DawView.MASTERING);
@@ -1683,6 +1691,33 @@ public final class MainController {
             });
         }
         tunerDisplayWindow.show();
+    private void openSoundWaveTelemetryWindow(SoundWaveTelemetryPlugin plugin) {
+        if (telemetryPluginStage != null) {
+            telemetryPluginStage.show();
+            telemetryPluginStage.toFront();
+            return;
+        }
+
+        telemetryPluginView = new TelemetryView();
+        telemetryPluginView.setProject(project);
+        telemetryPluginView.setOnDirtyChanged(() -> projectDirty = true);
+
+        Stage stage = new Stage(StageStyle.UTILITY);
+        stage.setTitle("Sound Wave Telemetry");
+        stage.setScene(new Scene(telemetryPluginView));
+        DarkThemeHelper.applyTo(stage.getScene());
+        stage.setMinWidth(800);
+        stage.setMinHeight(600);
+        stage.setOnShown(_ -> telemetryPluginView.startAnimation());
+        stage.setOnHidden(_ -> {
+            telemetryPluginView.stopAnimation();
+            plugin.deactivate();
+            telemetryPluginStage = null;
+            telemetryPluginView = null;
+        });
+        stage.show();
+        stage.toFront();
+        telemetryPluginStage = stage;
     }
 
     /**
@@ -1699,6 +1734,8 @@ public final class MainController {
         }
         if (tunerDisplayWindow != null) {
             tunerDisplayWindow.getStage().hide();
+        if (telemetryPluginStage != null) {
+            telemetryPluginStage.hide();
         }
         try {
             for (BuiltInDawPlugin plugin : builtInPluginCache.values()) {

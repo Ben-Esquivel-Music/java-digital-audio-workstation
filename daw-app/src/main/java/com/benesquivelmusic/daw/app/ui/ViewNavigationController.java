@@ -62,8 +62,6 @@ final class ViewNavigationController {
     private MixerView mixerView;
     /** The editor view panel — shows MIDI piano roll or audio waveform. */
     private EditorView editorView;
-    /** The telemetry view panel — sound wave telemetry room visualizer. */
-    private TelemetryView telemetryView;
     /** The mastering view panel — mastering chain with presets and A/B comparison. */
     private MasteringView masteringView;
 
@@ -130,12 +128,6 @@ final class ViewNavigationController {
                 host.project().getTransport().getTimeSignatureNumerator());
         viewCache.put(DawView.EDITOR, editorView);
 
-        // Telemetry view — sound wave telemetry room visualizer
-        telemetryView = new TelemetryView();
-        telemetryView.setProject(host.project());
-        telemetryView.setOnDirtyChanged(host::markProjectDirty);
-        viewCache.put(DawView.TELEMETRY, telemetryView);
-
         // Mastering view — mastering chain with presets and A/B comparison
         masteringView = new MasteringView();
         viewCache.put(DawView.MASTERING, masteringView);
@@ -143,10 +135,6 @@ final class ViewNavigationController {
         // Restore persisted active view (activeView was set in the constructor)
         if (activeView != DawView.ARRANGEMENT) {
             rootPane.setCenter(viewCache.get(activeView));
-        }
-        // Start telemetry animation if telemetry view is active on startup
-        if (activeView == DawView.TELEMETRY) {
-            telemetryView.startAnimation();
         }
     }
 
@@ -162,17 +150,9 @@ final class ViewNavigationController {
         if (view == activeView) {
             return;
         }
-        // Stop telemetry animation when leaving telemetry view
-        if (activeView == DawView.TELEMETRY && telemetryView != null) {
-            telemetryView.stopAnimation();
-        }
         activeView = view;
         toolbarStateStore.saveActiveView(view);
         rootPane.setCenter(viewCache.get(view));
-        // Start telemetry animation when entering telemetry view
-        if (view == DawView.TELEMETRY && telemetryView != null) {
-            telemetryView.startAnimation();
-        }
         statusBarLabel.setText("Switched to " + view.name().charAt(0)
                 + view.name().substring(1).toLowerCase() + " view");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
@@ -471,12 +451,10 @@ final class ViewNavigationController {
     /**
      * Rebinds project-scoped views to the current project. Must be called
      * after the host's project reference is replaced (e.g. on new/open).
-     * Currently rebinds the telemetry view; other views that hold a project
-     * reference should be added here as needed.
+     * Views that hold a project reference should be added here as needed.
      */
     void onProjectChanged() {
-        if (telemetryView != null) {
-            telemetryView.setProject(host.project());
-        }
+        // Project-scoped view rebinding (e.g. mixer) is handled elsewhere;
+        // telemetry is now a floating plugin window managed by MainController.
     }
 }

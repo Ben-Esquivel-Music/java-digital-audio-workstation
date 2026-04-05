@@ -29,7 +29,8 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
                 CompressorPlugin,
                 ReverbPlugin,
                 SpectrumAnalyzerPlugin,
-                TunerPlugin {
+                TunerPlugin,
+                SoundWaveTelemetryPlugin {
 
     /**
      * Lightweight metadata record used by the menu layer to populate plugin

@@ -38,7 +38,8 @@ class BuiltInDawPluginTest {
                 CompressorPlugin.class,
                 ReverbPlugin.class,
                 SpectrumAnalyzerPlugin.class,
-                TunerPlugin.class
+                TunerPlugin.class,
+                SoundWaveTelemetryPlugin.class
         );
     }
 

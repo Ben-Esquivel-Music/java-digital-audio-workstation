@@ -9,14 +9,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 class DawViewTest {
 
     @Test
-    void shouldHaveFiveViews() {
-        assertThat(DawView.values()).hasSize(5);
+    void shouldHaveFourViews() {
+        assertThat(DawView.values()).hasSize(4);
     }
 
     @Test
-    void shouldContainArrangementMixerEditorTelemetryAndMastering() {
+    void shouldContainArrangementMixerEditorAndMastering() {
         assertThat(DawView.values())
-                .containsExactly(DawView.ARRANGEMENT, DawView.MIXER, DawView.EDITOR, DawView.TELEMETRY, DawView.MASTERING);
+                .containsExactly(DawView.ARRANGEMENT, DawView.MIXER, DawView.EDITOR, DawView.MASTERING);
     }
 
     @ParameterizedTest
