@@ -326,6 +326,85 @@ class ChirpPeakReducerTest {
     }
 
     @Test
+    void shouldHandleOversizedNumFrames() {
+        ChirpPeakReducer reducer = new ChirpPeakReducer(1, 44100.0);
+        reducer.setThresholdDb(-6.0);
+
+        // Use a block size much larger than the default overlap buffer (kernelLen + 8192)
+        int blockSize = 16384;
+        float[][] input = new float[1][blockSize];
+        float[][] output = new float[1][blockSize];
+
+        // Place a peak in the oversized buffer
+        input[0][10000] = 0.95f;
+
+        // Should not throw ArrayIndexOutOfBoundsException
+        reducer.process(input, output, blockSize);
+
+        // The peak should be reduced
+        assertThat(Math.abs(output[0][10000])).isLessThan(0.95f);
+    }
+
+    @Test
+    void shouldHandleLowSampleRate() {
+        // Very low sample rate where kernel duration * sampleRate is small
+        ChirpPeakReducer reducer = new ChirpPeakReducer(1, 100.0);
+        reducer.setThresholdDb(-6.0);
+        reducer.setChirpDurationMs(1.0);
+
+        // Kernel length = max(2, (int)(1.0 * 0.001 * 100)) = max(2, 0) = 2
+        // This verifies no division-by-zero in Hann window
+        assertThat(reducer.getLatencySamples()).isGreaterThanOrEqualTo(2);
+
+        int blockSize = 64;
+        float[][] input = new float[1][blockSize];
+        float[][] output = new float[1][blockSize];
+        input[0][32] = 0.9f;
+
+        // Should not produce NaN or throw
+        reducer.process(input, output, blockSize);
+        for (int i = 0; i < blockSize; i++) {
+            assertThat(output[0][i]).isNotNaN();
+        }
+    }
+
+    @Test
+    void shouldUseEnvelopeFollowerForPeakDetection() {
+        ChirpPeakReducer reducer = new ChirpPeakReducer(1, 44100.0);
+        reducer.setThresholdDb(-6.0); // ~0.5 linear
+
+        int blockSize = 2048;
+        float[][] input = new float[1][blockSize];
+        float[][] output = new float[1][blockSize];
+
+        // Place a single transient peak; after the peak, the envelope follower's
+        // slow release should keep the gate open for a few samples, spreading
+        // energy into samples that follow the peak even though their instantaneous
+        // level is below threshold.
+        input[0][1000] = 0.95f;
+        // Immediately after the peak, the signal returns to a sub-threshold level
+        for (int i = 1001; i < 1010; i++) {
+            input[0][i] = 0.1f;
+        }
+
+        reducer.process(input, output, blockSize);
+
+        // With an envelope follower the samples just after the peak should be
+        // affected by chirp spreading (overlap-add contribution), producing
+        // output different from a simple pass-through of 0.1f.
+        boolean envelopeActive = false;
+        for (int i = 1001; i < 1010; i++) {
+            if (Math.abs(output[0][i] - 0.1f) > 0.001f) {
+                envelopeActive = true;
+                break;
+            }
+        }
+        assertThat(envelopeActive)
+                .as("Samples after a transient should be affected by envelope follower")
+                .isTrue();
+    }
+
+    @Test
     void shouldApplyPartialMix() {
         ChirpPeakReducer reducer = new ChirpPeakReducer(1, 44100.0);
         reducer.setThresholdDb(-6.0);

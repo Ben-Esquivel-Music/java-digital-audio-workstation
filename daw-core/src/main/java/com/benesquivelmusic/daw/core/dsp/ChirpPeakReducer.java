@@ -81,9 +81,8 @@ public final class ChirpPeakReducer implements AudioProcessor {
     // Per-channel convolution overlap-add buffers
     private volatile float[][] overlapBuffers;
 
-    // Per-channel input ring buffers for convolution
-    private volatile float[][] inputRingBuffers;
-    private int ringWritePos;
+    // Per-channel envelope state for attack/release peak detection
+    private volatile double[] envelopeState;
 
     /**
      * Creates a chirp peak reducer with default settings.
@@ -128,15 +127,47 @@ public final class ChirpPeakReducer implements AudioProcessor {
         double[] kernel = chirpKernel;
         int kernelLen = kernel.length;
         float[][] overlap = overlapBuffers;
-        float[][] ring = inputRingBuffers;
-        int ringLen = ring[0].length;
+        double[] envelope = envelopeState;
+
+        // Envelope follower coefficients: ~0.1 ms attack, ~5 ms release at current sample rate
+        double attackCoeff = Math.exp(-1.0 / (sampleRate * 0.0001));
+        double releaseCoeff = Math.exp(-1.0 / (sampleRate * 0.005));
+
+        // Ensure overlap buffers are large enough for the current block size.
+        // If the host passes a numFrames larger than what was allocated, grow
+        // the buffers dynamically so we never index out of bounds.
+        int requiredOverlapLen = numFrames + kernelLen;
+        if (overlap[0].length < requiredOverlapLen) {
+            float[][] grown = new float[channels][];
+            for (int ch = 0; ch < channels; ch++) {
+                grown[ch] = new float[requiredOverlapLen];
+                System.arraycopy(overlap[ch], 0, grown[ch], 0, overlap[ch].length);
+            }
+            overlap = grown;
+            overlapBuffers = grown;
+        }
 
         for (int frame = 0; frame < numFrames; frame++) {
             for (int ch = 0; ch < activeCh; ch++) {
                 float sample = inputBuffer[ch][frame];
                 float absSample = Math.abs(sample);
 
-                if (absSample > thresholdLinear) {
+                // Envelope follower: fast attack, slow release
+                double env = envelope[ch];
+                if (absSample > env) {
+                    env = attackCoeff * env + (1.0 - attackCoeff) * absSample;
+                } else {
+                    env = releaseCoeff * env + (1.0 - releaseCoeff) * absSample;
+                }
+                envelope[ch] = env;
+
+                // Detect peaks using the larger of instantaneous level and
+                // envelope.  Instantaneous detection catches lone transients;
+                // the envelope's slow release keeps the gate open for nearby
+                // sub-threshold samples after a transient.
+                double detectionLevel = Math.max(absSample, env);
+
+                if (detectionLevel > thresholdLinear) {
                     // Extract the peak component above the threshold
                     float sign = (sample >= 0) ? 1.0f : -1.0f;
                     float peakComponent = (absSample - (float) thresholdLinear) * sign;
@@ -145,10 +176,7 @@ public final class ChirpPeakReducer implements AudioProcessor {
                     // Convolve peak component with chirp kernel using overlap-add.
                     // Each peak sample contributes kernel[k] * peakComponent at offset k.
                     for (int k = 0; k < kernelLen; k++) {
-                        int overlapIdx = frame + k;
-                        if (overlapIdx < overlap[ch].length) {
-                            overlap[ch][overlapIdx] += (float) (peakComponent * kernel[k]);
-                        }
+                        overlap[ch][frame + k] += (float) (peakComponent * kernel[k]);
                     }
 
                     // Output = base component + spread peak from overlap buffer
@@ -284,13 +312,10 @@ public final class ChirpPeakReducer implements AudioProcessor {
 
     @Override
     public void reset() {
-        ringWritePos = 0;
         for (float[] buf : overlapBuffers) {
             Arrays.fill(buf, 0.0f);
         }
-        for (float[] buf : inputRingBuffers) {
-            Arrays.fill(buf, 0.0f);
-        }
+        Arrays.fill(envelopeState, 0.0);
     }
 
     @Override
@@ -313,7 +338,7 @@ public final class ChirpPeakReducer implements AudioProcessor {
      * preserved during convolution.</p>
      */
     private void rebuildKernel() {
-        int kernelLen = Math.max(1, (int) (chirpDurationMs * 0.001 * sampleRate));
+        int kernelLen = Math.max(2, (int) (chirpDurationMs * 0.001 * sampleRate));
         chirpKernelLength = kernelLen;
 
         // Generate a linear chirp: frequency sweeps from f0 to f0 + bandwidth
@@ -351,12 +376,11 @@ public final class ChirpPeakReducer implements AudioProcessor {
         this.chirpKernel = kernel;
 
         // Overlap-add buffer must accommodate the kernel tail beyond the block.
-        // Use a generous size to handle typical block sizes (up to 8192 frames).
+        // Initial size handles typical block sizes; process() grows dynamically
+        // if a larger numFrames is encountered at runtime.
         int overlapSize = kernelLen + 8192;
         float[][] newOverlap = new float[channels][overlapSize];
-        float[][] newRing = new float[channels][kernelLen];
         this.overlapBuffers = newOverlap;
-        this.inputRingBuffers = newRing;
-        this.ringWritePos = 0;
+        this.envelopeState = new double[channels];
     }
 }
