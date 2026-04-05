@@ -12,8 +12,11 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginType;
  */
 public final class ParametricEqPlugin implements BuiltInDawPlugin {
 
+    /** Stable plugin identifier — used by the host to map plugins to views. */
+    public static final String PLUGIN_ID = "com.benesquivelmusic.daw.builtin.parametric-eq";
+
     private static final PluginDescriptor DESCRIPTOR = new PluginDescriptor(
-            "com.benesquivelmusic.daw.builtin.parametric-eq",
+            PLUGIN_ID,
             "Parametric EQ",
             "1.0.0",
             "DAW Built-in",

@@ -12,8 +12,11 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginType;
  */
 public final class VirtualKeyboardPlugin implements BuiltInDawPlugin {
 
+    /** Stable plugin identifier — used by the host to map plugins to views. */
+    public static final String PLUGIN_ID = "com.benesquivelmusic.daw.builtin.virtual-keyboard";
+
     private static final PluginDescriptor DESCRIPTOR = new PluginDescriptor(
-            "com.benesquivelmusic.daw.builtin.virtual-keyboard",
+            PLUGIN_ID,
             "Virtual Keyboard",
             "1.0.0",
             "DAW Built-in",

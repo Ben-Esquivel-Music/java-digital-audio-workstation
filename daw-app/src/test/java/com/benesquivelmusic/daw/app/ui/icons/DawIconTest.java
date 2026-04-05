@@ -53,4 +53,21 @@ class DawIconTest {
     void shouldHave210Icons() {
         assertThat(DawIcon.values()).hasSize(210);
     }
+
+    @Test
+    void fromFileNameShouldFindExistingIcons() {
+        assertThat(DawIcon.fromFileName("keyboard")).contains(DawIcon.KEYBOARD);
+        assertThat(DawIcon.fromFileName("eq")).contains(DawIcon.EQ);
+        assertThat(DawIcon.fromFileName("spectrum")).contains(DawIcon.SPECTRUM);
+    }
+
+    @Test
+    void fromFileNameShouldReturnEmptyForUnknown() {
+        assertThat(DawIcon.fromFileName("nonexistent")).isEmpty();
+    }
+
+    @Test
+    void fromFileNameShouldReturnEmptyForNull() {
+        assertThat(DawIcon.fromFileName(null)).isEmpty();
+    }
 }

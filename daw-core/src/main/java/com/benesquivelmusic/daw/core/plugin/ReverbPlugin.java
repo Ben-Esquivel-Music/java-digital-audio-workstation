@@ -12,8 +12,11 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginType;
  */
 public final class ReverbPlugin implements BuiltInDawPlugin {
 
+    /** Stable plugin identifier — used by the host to map plugins to views. */
+    public static final String PLUGIN_ID = "com.benesquivelmusic.daw.builtin.reverb";
+
     private static final PluginDescriptor DESCRIPTOR = new PluginDescriptor(
-            "com.benesquivelmusic.daw.builtin.reverb",
+            PLUGIN_ID,
             "Reverb",
             "1.0.0",
             "DAW Built-in",

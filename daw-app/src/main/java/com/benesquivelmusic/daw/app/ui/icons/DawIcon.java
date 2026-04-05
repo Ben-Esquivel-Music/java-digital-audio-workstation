@@ -1,5 +1,10 @@
 package com.benesquivelmusic.daw.app.ui.icons;
 
+import java.util.Map;
+import java.util.Optional;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
 /**
  * Every icon available in the DAW icon pack.
  *
@@ -276,5 +281,21 @@ public enum DawIcon {
     public String resourcePath() {
         return "/com/benesquivelmusic/daw/app/icons/"
                 + category.directoryName() + "/" + fileName + ".svg";
+    }
+
+    private static final Map<String, DawIcon> BY_FILE_NAME =
+            Stream.of(values()).collect(Collectors.toUnmodifiableMap(DawIcon::fileName, icon -> icon));
+
+    /**
+     * Looks up a {@code DawIcon} by its file name.
+     *
+     * @param fileName the base file name (without extension), e.g. "keyboard", "eq"
+     * @return an {@link Optional} containing the matching icon, or empty if no match
+     */
+    public static Optional<DawIcon> fromFileName(String fileName) {
+        if (fileName == null) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(BY_FILE_NAME.get(fileName));
     }
 }

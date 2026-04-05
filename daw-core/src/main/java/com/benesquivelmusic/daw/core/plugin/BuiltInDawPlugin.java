@@ -5,6 +5,9 @@ import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Function;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Sealed interface for first-party built-in plugins that ship with the DAW.
@@ -26,6 +29,22 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
                 CompressorPlugin,
                 ReverbPlugin,
                 SpectrumAnalyzerPlugin {
+
+    /**
+     * Lightweight metadata record used by the menu layer to populate plugin
+     * entries without retaining live plugin instances.
+     *
+     * @param pluginClass the concrete plugin class
+     * @param label       the human-readable label for the menu item
+     * @param icon        the icon identifier for the menu item
+     * @param category    the category used to group the plugin in the menu
+     */
+    record MenuEntry(
+            Class<? extends BuiltInDawPlugin> pluginClass,
+            String label,
+            String icon,
+            BuiltInPluginCategory category
+    ) {}
 
     /**
      * Returns the human-readable label to display in the Plugins menu.
@@ -52,6 +71,34 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
     BuiltInPluginCategory getCategory();
 
     /**
+     * Returns lightweight metadata entries for all discovered built-in
+     * plugins, suitable for constructing menu items without retaining
+     * live plugin instances.
+     *
+     * <p>Plugin instances are created briefly to extract metadata and
+     * then discarded.  The host manages its own plugin lifecycle
+     * independently via the class references in the returned entries.</p>
+     *
+     * <p>If a permitted subclass cannot be instantiated (e.g., missing no-arg
+     * constructor or access error), a warning is logged and that plugin is
+     * skipped rather than crashing the application.</p>
+     *
+     * @return an unmodifiable list of menu entries for all built-in plugins
+     */
+    static List<MenuEntry> menuEntries() {
+        return discoverWith(instance -> {
+            @SuppressWarnings("unchecked")
+            Class<? extends BuiltInDawPlugin> pluginClass =
+                    (Class<? extends BuiltInDawPlugin>) instance.getClass();
+            return new MenuEntry(
+                    pluginClass,
+                    instance.getMenuLabel(),
+                    instance.getMenuIcon(),
+                    instance.getCategory());
+        });
+    }
+
+    /**
      * Discovers all permitted subclasses of {@code BuiltInDawPlugin},
      * instantiates each via its public no-arg constructor, and returns
      * the list of built-in plugin instances.
@@ -60,30 +107,47 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
      * the permitted implementations, so no manual registration, service-loader
      * files, or classpath scanning is required.</p>
      *
-     * @return an unmodifiable list of all built-in plugin instances
-     * @throws IllegalStateException if a permitted subclass cannot be
-     *         instantiated (e.g., missing no-arg constructor or access error)
+     * <p>If a permitted subclass cannot be instantiated (e.g., missing no-arg
+     * constructor or access error), a warning is logged and that plugin is
+     * skipped rather than crashing the application.</p>
+     *
+     * @return an unmodifiable list of all successfully instantiated built-in plugin instances
      */
     static List<BuiltInDawPlugin> discoverAll() {
+        return discoverWith(Function.identity());
+    }
+
+    /**
+     * Shared helper that iterates all permitted subclasses, instantiates
+     * each via its public no-arg constructor, applies {@code mapper} to
+     * the instance, and collects the results.
+     */
+    private static <T> List<T> discoverWith(Function<BuiltInDawPlugin, T> mapper) {
+        Logger log = Logger.getLogger(BuiltInDawPlugin.class.getName());
         Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
         if (permitted == null) {
             return List.of();
         }
-        var plugins = new ArrayList<BuiltInDawPlugin>(permitted.length);
+        var results = new ArrayList<T>(permitted.length);
         for (Class<?> clazz : permitted) {
             try {
-                plugins.add((BuiltInDawPlugin) clazz.getConstructor().newInstance());
+                BuiltInDawPlugin instance =
+                        (BuiltInDawPlugin) clazz.getConstructor().newInstance();
+                results.add(mapper.apply(instance));
             } catch (NoSuchMethodException e) {
-                throw new IllegalStateException(
-                        "Built-in plugin %s must have a public no-arg constructor".formatted(clazz.getName()), e);
+                log.log(Level.WARNING,
+                        "Skipping built-in plugin %s: missing public no-arg constructor"
+                                .formatted(clazz.getName()), e);
             } catch (InvocationTargetException e) {
-                throw new IllegalStateException(
-                        "Failed to instantiate built-in plugin %s".formatted(clazz.getName()), e);
+                log.log(Level.WARNING,
+                        "Skipping built-in plugin %s: constructor threw an exception"
+                                .formatted(clazz.getName()), e);
             } catch (InstantiationException | IllegalAccessException e) {
-                throw new IllegalStateException(
-                        "Cannot instantiate built-in plugin %s".formatted(clazz.getName()), e);
+                log.log(Level.WARNING,
+                        "Skipping built-in plugin %s: cannot instantiate"
+                                .formatted(clazz.getName()), e);
             }
         }
-        return List.copyOf(plugins);
+        return List.copyOf(results);
     }
 }
