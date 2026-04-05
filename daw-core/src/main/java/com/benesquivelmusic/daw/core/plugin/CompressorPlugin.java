@@ -12,8 +12,11 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginType;
  */
 public final class CompressorPlugin implements BuiltInDawPlugin {
 
+    /** Stable plugin identifier — used by the host to map plugins to views. */
+    public static final String PLUGIN_ID = "com.benesquivelmusic.daw.builtin.compressor";
+
     private static final PluginDescriptor DESCRIPTOR = new PluginDescriptor(
-            "com.benesquivelmusic.daw.builtin.compressor",
+            PLUGIN_ID,
             "Compressor",
             "1.0.0",
             "DAW Built-in",

@@ -72,7 +72,7 @@ public final class DawMenuBarController {
         // Plugin actions
         void onManagePlugins();
         void onOpenSettings();
-        void onActivateBuiltInPlugin(BuiltInDawPlugin plugin);
+        void onActivateBuiltInPlugin(Class<? extends BuiltInDawPlugin> pluginClass);
 
         // Window actions
         void onSwitchView(DawView view);
@@ -277,8 +277,9 @@ public final class DawMenuBarController {
             firstGroup = false;
             for (BuiltInDawPlugin plugin : entry.getValue()) {
                 DawIcon icon = DawIcon.fromFileName(plugin.getMenuIcon()).orElse(null);
+                Class<? extends BuiltInDawPlugin> pluginClass = plugin.getClass();
                 MenuItem item = menuItem(plugin.getMenuLabel(), icon,
-                        null, () -> host.onActivateBuiltInPlugin(plugin));
+                        null, () -> host.onActivateBuiltInPlugin(pluginClass));
                 pluginsMenu.getItems().add(item);
             }
         }

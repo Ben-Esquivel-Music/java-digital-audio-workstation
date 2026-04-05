@@ -75,7 +75,7 @@ class DawMenuBarControllerTest {
         int managePluginsCalls;
         int settingsCalls;
         int activateBuiltInPluginCalls;
-        BuiltInDawPlugin lastActivatedPlugin;
+        Class<? extends BuiltInDawPlugin> lastActivatedPluginClass;
         int switchViewCalls;
         int toggleBrowserCalls;
         int toggleHistoryCalls;
@@ -108,9 +108,9 @@ class DawMenuBarControllerTest {
         @Override public void onToggleSnap() { toggleSnapCalls++; }
         @Override public void onManagePlugins() { managePluginsCalls++; }
         @Override public void onOpenSettings() { settingsCalls++; }
-        @Override public void onActivateBuiltInPlugin(BuiltInDawPlugin plugin) {
+        @Override public void onActivateBuiltInPlugin(Class<? extends BuiltInDawPlugin> pluginClass) {
             activateBuiltInPluginCalls++;
-            lastActivatedPlugin = plugin;
+            lastActivatedPluginClass = pluginClass;
         }
         @Override public void onSwitchView(DawView v) { switchViewCalls++; }
         @Override public void onToggleBrowser() { toggleBrowserCalls++; }
@@ -374,6 +374,9 @@ class DawMenuBarControllerTest {
             Menu pluginsMenu = controller.getMenuBar().getMenus().get(2);
             // Find the first built-in plugin menu item (not Plugin Manager)
             List<BuiltInDawPlugin> plugins = BuiltInDawPlugin.discoverAll();
+            assertThat(plugins)
+                    .as("discoverAll() must find at least one built-in plugin")
+                    .isNotEmpty();
             String firstLabel = plugins.getFirst().getMenuLabel();
 
             MenuItem pluginItem = pluginsMenu.getItems().stream()

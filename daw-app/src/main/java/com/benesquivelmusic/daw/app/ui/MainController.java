@@ -25,7 +25,12 @@ import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
 import com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin;
+import com.benesquivelmusic.daw.core.plugin.CompressorPlugin;
+import com.benesquivelmusic.daw.core.plugin.ParametricEqPlugin;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
+import com.benesquivelmusic.daw.core.plugin.ReverbPlugin;
+import com.benesquivelmusic.daw.core.plugin.SpectrumAnalyzerPlugin;
+import com.benesquivelmusic.daw.core.plugin.VirtualKeyboardPlugin;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -62,6 +67,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -242,6 +248,8 @@ public final class MainController {
     private Stage virtualKeyboardStage;
     /** Floating spectrum analyzer window for the built-in plugin menu action. */
     private SpectrumDisplayWindow builtInSpectrumWindow;
+    /** Cached and initialized built-in plugin instances, keyed by plugin class. */
+    private final Map<Class<? extends BuiltInDawPlugin>, BuiltInDawPlugin> builtInPluginCache = new HashMap<>();
 
     @FXML
     private void initialize() {
@@ -735,8 +743,8 @@ public final class MainController {
                     @Override public void onManagePlugins() { MainController.this.onManagePlugins(); }
                     @Override public void onOpenSettings() { MainController.this.onOpenSettings(); }
                     @Override public void onActivateBuiltInPlugin(
-                            com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin plugin) {
-                        MainController.this.onActivateBuiltInPlugin(plugin);
+                            Class<? extends BuiltInDawPlugin> pluginClass) {
+                        MainController.this.onActivateBuiltInPlugin(pluginClass);
                     }
                     @Override public void onSwitchView(DawView view) {
                         viewNavigationController.switchView(view);
@@ -1571,35 +1579,43 @@ public final class MainController {
         statusBarLabel.setGraphic(IconNode.of(DawIcon.SETTINGS, 12));
     }
 
-    private void onActivateBuiltInPlugin(BuiltInDawPlugin plugin) {
-        statusBarLabel.setText("Activating " + plugin.getMenuLabel() + "...");
-        PluginContext pluginContext = new PluginContext() {
-            @Override public double getSampleRate() { return project.getFormat().sampleRate(); }
-            @Override public int getBufferSize() { return project.getFormat().bufferSize(); }
-            @Override public void log(String message) { LOG.info(message); }
-        };
+    private void onActivateBuiltInPlugin(Class<? extends BuiltInDawPlugin> pluginClass) {
         try {
-            plugin.initialize(pluginContext);
+            BuiltInDawPlugin plugin = builtInPluginCache.computeIfAbsent(pluginClass, cls -> {
+                try {
+                    BuiltInDawPlugin instance = cls.getConstructor().newInstance();
+                    PluginContext pluginContext = new PluginContext() {
+                        @Override public double getSampleRate() { return project.getFormat().sampleRate(); }
+                        @Override public int getBufferSize() { return project.getFormat().bufferSize(); }
+                        @Override public void log(String message) { LOG.info(message); }
+                    };
+                    instance.initialize(pluginContext);
+                    return instance;
+                } catch (ReflectiveOperationException e) {
+                    throw new RuntimeException("Failed to instantiate built-in plugin: " + cls.getName(), e);
+                }
+            });
+            statusBarLabel.setText("Activating " + plugin.getMenuLabel() + "...");
             plugin.activate();
             openBuiltInPluginView(plugin);
             statusBarLabel.setText(plugin.getMenuLabel() + " activated");
             LOG.fine("Activated built-in plugin: " + plugin.getMenuLabel());
         } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "Failed to activate built-in plugin: " + plugin.getMenuLabel(), e);
-            statusBarLabel.setText("Failed to activate " + plugin.getMenuLabel());
+            LOG.log(Level.WARNING, "Failed to activate built-in plugin: " + pluginClass.getName(), e);
+            statusBarLabel.setText("Failed to activate " + pluginClass.getSimpleName());
             notificationBar.show(NotificationLevel.ERROR,
-                    "Failed to activate " + plugin.getMenuLabel() + ": " + e.getMessage());
+                    "Failed to activate " + pluginClass.getSimpleName() + ": " + e.getMessage());
         }
     }
 
     private void openBuiltInPluginView(BuiltInDawPlugin plugin) {
         String pluginId = plugin.getDescriptor().id();
         switch (pluginId) {
-            case "com.benesquivelmusic.daw.builtin.virtual-keyboard" -> openVirtualKeyboardWindow();
-            case "com.benesquivelmusic.daw.builtin.spectrum-analyzer" -> openSpectrumAnalyzerWindow();
-            case "com.benesquivelmusic.daw.builtin.parametric-eq",
-                 "com.benesquivelmusic.daw.builtin.compressor",
-                 "com.benesquivelmusic.daw.builtin.reverb" -> viewNavigationController.switchView(DawView.MASTERING);
+            case VirtualKeyboardPlugin.PLUGIN_ID -> openVirtualKeyboardWindow();
+            case SpectrumAnalyzerPlugin.PLUGIN_ID -> openSpectrumAnalyzerWindow();
+            case ParametricEqPlugin.PLUGIN_ID,
+                 CompressorPlugin.PLUGIN_ID,
+                 ReverbPlugin.PLUGIN_ID -> viewNavigationController.switchView(DawView.MASTERING);
             default -> LOG.fine("No associated built-in view mapping for plugin id: " + pluginId);
         }
     }
