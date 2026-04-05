@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.app.ui.display.CorrelationDisplay;
 import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.display.LoudnessDisplay;
 import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplay;
+import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplayWindow;
 import com.benesquivelmusic.daw.app.ui.display.WaveformDisplay;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
@@ -23,6 +24,7 @@ import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
+import com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -33,6 +35,10 @@ import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
+import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
+import com.benesquivelmusic.daw.core.midi.KeyboardPreset;
+import com.benesquivelmusic.daw.core.midi.KeyboardProcessor;
+import com.benesquivelmusic.daw.core.midi.javasound.JavaSoundRenderer;
 
 import javafx.animation.FadeTransition;
 import javafx.animation.Timeline;
@@ -71,6 +77,7 @@ import javafx.scene.layout.StackPane;
 import javafx.scene.transform.Scale;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
+import javafx.stage.StageStyle;
 import javafx.collections.ObservableMap;
 
 /**
@@ -231,6 +238,10 @@ public final class MainController {
     private SpectrumDisplay spectrumDisplay;
     /** Reference kept for the idle demo animation. */
     private LevelMeterDisplay levelMeterDisplay;
+    /** Floating virtual keyboard window for the built-in plugin menu action. */
+    private Stage virtualKeyboardStage;
+    /** Floating spectrum analyzer window for the built-in plugin menu action. */
+    private SpectrumDisplayWindow builtInSpectrumWindow;
 
     @FXML
     private void initialize() {
@@ -1560,17 +1571,73 @@ public final class MainController {
         statusBarLabel.setGraphic(IconNode.of(DawIcon.SETTINGS, 12));
     }
 
-    private void onActivateBuiltInPlugin(
-            com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin plugin) {
+    private void onActivateBuiltInPlugin(BuiltInDawPlugin plugin) {
         statusBarLabel.setText("Activating " + plugin.getMenuLabel() + "...");
-        plugin.initialize(new com.benesquivelmusic.daw.sdk.plugin.PluginContext() {
+        PluginContext pluginContext = new PluginContext() {
             @Override public double getSampleRate() { return project.getFormat().sampleRate(); }
             @Override public int getBufferSize() { return project.getFormat().bufferSize(); }
             @Override public void log(String message) { LOG.info(message); }
+        };
+        try {
+            plugin.initialize(pluginContext);
+            plugin.activate();
+            openBuiltInPluginView(plugin);
+            statusBarLabel.setText(plugin.getMenuLabel() + " activated");
+            LOG.fine("Activated built-in plugin: " + plugin.getMenuLabel());
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Failed to activate built-in plugin: " + plugin.getMenuLabel(), e);
+            statusBarLabel.setText("Failed to activate " + plugin.getMenuLabel());
+            notificationBar.show(NotificationLevel.ERROR,
+                    "Failed to activate " + plugin.getMenuLabel() + ": " + e.getMessage());
+        }
+    }
+
+    private void openBuiltInPluginView(BuiltInDawPlugin plugin) {
+        String pluginId = plugin.getDescriptor().id();
+        switch (pluginId) {
+            case "com.benesquivelmusic.daw.builtin.virtual-keyboard" -> openVirtualKeyboardWindow();
+            case "com.benesquivelmusic.daw.builtin.spectrum-analyzer" -> openSpectrumAnalyzerWindow();
+            case "com.benesquivelmusic.daw.builtin.parametric-eq",
+                 "com.benesquivelmusic.daw.builtin.compressor",
+                 "com.benesquivelmusic.daw.builtin.reverb" -> viewNavigationController.switchView(DawView.MASTERING);
+            default -> LOG.fine("No associated built-in view mapping for plugin id: " + pluginId);
+        }
+    }
+
+    private void openVirtualKeyboardWindow() {
+        if (virtualKeyboardStage != null) {
+            virtualKeyboardStage.show();
+            virtualKeyboardStage.toFront();
+            return;
+        }
+
+        JavaSoundRenderer renderer = new JavaSoundRenderer();
+        renderer.initialize(project.getFormat().sampleRate(), project.getFormat().bufferSize());
+        KeyboardProcessor processor = new KeyboardProcessor(renderer, KeyboardPreset.grandPiano());
+        KeyboardProcessorView keyboardView = new KeyboardProcessorView(processor);
+
+        Stage stage = new Stage(StageStyle.UTILITY);
+        stage.setTitle("Virtual Keyboard");
+        stage.setScene(new Scene(keyboardView));
+        DarkThemeHelper.applyTo(stage.getScene());
+        stage.setMinWidth(720);
+        stage.setMinHeight(280);
+        stage.setOnHidden(_ -> {
+            keyboardView.dispose();
+            renderer.close();
+            virtualKeyboardStage = null;
         });
-        plugin.activate();
-        statusBarLabel.setText(plugin.getMenuLabel() + " activated");
-        LOG.fine("Activated built-in plugin: " + plugin.getMenuLabel());
+        stage.show();
+        stage.toFront();
+        virtualKeyboardStage = stage;
+    }
+
+    private void openSpectrumAnalyzerWindow() {
+        if (builtInSpectrumWindow == null) {
+            builtInSpectrumWindow = new SpectrumDisplayWindow();
+            builtInSpectrumWindow.getStage().setOnHidden(_ -> builtInSpectrumWindow = null);
+        }
+        builtInSpectrumWindow.show();
     }
 
     @FXML
