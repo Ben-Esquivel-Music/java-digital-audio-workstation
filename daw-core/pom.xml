@@ -30,7 +30,7 @@
 
     <properties>
         <!-- Native library build directory (output of CMake) -->
-        <native.libs.dir>${project.basedir}/../lib/build/native</native.libs.dir>
+        <native.libs.dir>${project.basedir}/../target/build/native</native.libs.dir>
         <!-- Set -DskipNativeBuild to skip CMake compilation (pure-Java workflow) -->
         <skipNativeBuild>false</skipNativeBuild>
     </properties>
@@ -51,11 +51,11 @@
                         <configuration>
                             <skip>${skipNativeBuild}</skip>
                             <executable>cmake</executable>
-                            <workingDirectory>${project.basedir}/../lib/build</workingDirectory>
+                            <workingDirectory>${project.basedir}/../target/build</workingDirectory>
                             <arguments>
                                 <argument>-DCMAKE_BUILD_TYPE=Release</argument>
                                 <argument>-DBUILD_SHARED_LIBS=ON</argument>
-                                <argument>..</argument>
+                                <argument>../../lib</argument>
                             </arguments>
                         </configuration>
                     </execution>
@@ -67,7 +67,7 @@
                         <configuration>
                             <skip>${skipNativeBuild}</skip>
                             <executable>cmake</executable>
-                            <workingDirectory>${project.basedir}/../lib/build</workingDirectory>
+                            <workingDirectory>${project.basedir}/../target/build</workingDirectory>
                             <arguments>
                                 <argument>--build</argument>
                                 <argument>.</argument>
@@ -80,7 +80,7 @@
                 </executions>
             </plugin>
 
-            <!-- Ensure the lib/build directory exists before CMake runs -->
+            <!-- Ensure the target/build directory exists before CMake runs -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-antrun-plugin</artifactId>
@@ -93,7 +93,7 @@
                         <configuration>
                             <skip>${skipNativeBuild}</skip>
                             <target>
-                                <mkdir dir="${project.basedir}/../lib/build"/>
+                                <mkdir dir="${project.basedir}/../target/build"/>
                             </target>
                         </configuration>
                     </execution>
