@@ -723,6 +723,10 @@ public final class MainController {
                     @Override public void onToggleSnap() { viewNavigationController.onToggleSnap(); }
                     @Override public void onManagePlugins() { MainController.this.onManagePlugins(); }
                     @Override public void onOpenSettings() { MainController.this.onOpenSettings(); }
+                    @Override public void onActivateBuiltInPlugin(
+                            com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin plugin) {
+                        MainController.this.onActivateBuiltInPlugin(plugin);
+                    }
                     @Override public void onSwitchView(DawView view) {
                         viewNavigationController.switchView(view);
                     }
@@ -1554,6 +1558,19 @@ public final class MainController {
         dialog.showAndWait();
         statusBarLabel.setText("Plugin manager closed");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.SETTINGS, 12));
+    }
+
+    private void onActivateBuiltInPlugin(
+            com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin plugin) {
+        statusBarLabel.setText("Activating " + plugin.getMenuLabel() + "...");
+        plugin.initialize(new com.benesquivelmusic.daw.sdk.plugin.PluginContext() {
+            @Override public double getSampleRate() { return project.getFormat().sampleRate(); }
+            @Override public int getBufferSize() { return project.getFormat().bufferSize(); }
+            @Override public void log(String message) { LOG.info(message); }
+        });
+        plugin.activate();
+        statusBarLabel.setText(plugin.getMenuLabel() + " activated");
+        LOG.fine("Activated built-in plugin: " + plugin.getMenuLabel());
     }
 
     @FXML

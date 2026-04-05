@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin;
+import com.benesquivelmusic.daw.core.plugin.BuiltInPluginCategory;
 import com.benesquivelmusic.daw.core.project.DawProject;
 
 import javafx.application.Platform;
@@ -72,6 +74,8 @@ class DawMenuBarControllerTest {
         int toggleSnapCalls;
         int managePluginsCalls;
         int settingsCalls;
+        int activateBuiltInPluginCalls;
+        BuiltInDawPlugin lastActivatedPlugin;
         int switchViewCalls;
         int toggleBrowserCalls;
         int toggleHistoryCalls;
@@ -104,6 +108,10 @@ class DawMenuBarControllerTest {
         @Override public void onToggleSnap() { toggleSnapCalls++; }
         @Override public void onManagePlugins() { managePluginsCalls++; }
         @Override public void onOpenSettings() { settingsCalls++; }
+        @Override public void onActivateBuiltInPlugin(BuiltInDawPlugin plugin) {
+            activateBuiltInPluginCalls++;
+            lastActivatedPlugin = plugin;
+        }
         @Override public void onSwitchView(DawView v) { switchViewCalls++; }
         @Override public void onToggleBrowser() { toggleBrowserCalls++; }
         @Override public void onToggleHistory() { toggleHistoryCalls++; }
@@ -214,6 +222,185 @@ class DawMenuBarControllerTest {
             assertThat(itemTexts).contains(
                     "Undo", "Redo", "Copy", "Cut", "Paste",
                     "Duplicate", "Delete Selection", "Toggle Snap");
+        });
+    }
+
+    @Test
+    void editMenuShouldContainSettingsItem() throws Exception {
+        runOnFxThread(() -> {
+            StubHost host = new StubHost();
+            DawMenuBarController controller =
+                    new DawMenuBarController(host, freshKeyBindingManager());
+            controller.build();
+
+            Menu editMenu = controller.getMenuBar().getMenus().get(1);
+            List<String> itemTexts = editMenu.getItems().stream()
+                    .filter(item -> !(item instanceof SeparatorMenuItem))
+                    .map(MenuItem::getText)
+                    .toList();
+
+            assertThat(itemTexts).contains("Settings\u2026");
+        });
+    }
+
+    @Test
+    void editMenuSettingsShouldDelegateToHost() throws Exception {
+        runOnFxThread(() -> {
+            StubHost host = new StubHost();
+            DawMenuBarController controller =
+                    new DawMenuBarController(host, freshKeyBindingManager());
+            controller.build();
+
+            Menu editMenu = controller.getMenuBar().getMenus().get(1);
+            MenuItem settings = editMenu.getItems().stream()
+                    .filter(item -> "Settings\u2026".equals(item.getText()))
+                    .findFirst().orElseThrow();
+            settings.fire();
+
+            assertThat(host.settingsCalls).isEqualTo(1);
+        });
+    }
+
+    // ── Plugins menu ───────────────────────────────────────────────────────
+
+    @Test
+    void pluginsMenuShouldContainBuiltInPluginLabels() throws Exception {
+        runOnFxThread(() -> {
+            StubHost host = new StubHost();
+            DawMenuBarController controller =
+                    new DawMenuBarController(host, freshKeyBindingManager());
+            controller.build();
+
+            Menu pluginsMenu = controller.getMenuBar().getMenus().get(2);
+            List<String> itemTexts = pluginsMenu.getItems().stream()
+                    .filter(item -> !(item instanceof SeparatorMenuItem))
+                    .map(MenuItem::getText)
+                    .toList();
+
+            List<String> expectedLabels = BuiltInDawPlugin.discoverAll().stream()
+                    .map(BuiltInDawPlugin::getMenuLabel)
+                    .toList();
+
+            assertThat(itemTexts).containsAll(expectedLabels);
+        });
+    }
+
+    @Test
+    void pluginsMenuShouldContainPluginManagerItem() throws Exception {
+        runOnFxThread(() -> {
+            StubHost host = new StubHost();
+            DawMenuBarController controller =
+                    new DawMenuBarController(host, freshKeyBindingManager());
+            controller.build();
+
+            Menu pluginsMenu = controller.getMenuBar().getMenus().get(2);
+            List<String> itemTexts = pluginsMenu.getItems().stream()
+                    .filter(item -> !(item instanceof SeparatorMenuItem))
+                    .map(MenuItem::getText)
+                    .toList();
+
+            assertThat(itemTexts).contains("Plugin Manager\u2026");
+        });
+    }
+
+    @Test
+    void pluginsMenuShouldNotContainSettingsItem() throws Exception {
+        runOnFxThread(() -> {
+            StubHost host = new StubHost();
+            DawMenuBarController controller =
+                    new DawMenuBarController(host, freshKeyBindingManager());
+            controller.build();
+
+            Menu pluginsMenu = controller.getMenuBar().getMenus().get(2);
+            List<String> itemTexts = pluginsMenu.getItems().stream()
+                    .filter(item -> !(item instanceof SeparatorMenuItem))
+                    .map(MenuItem::getText)
+                    .toList();
+
+            assertThat(itemTexts).doesNotContain("Settings\u2026");
+        });
+    }
+
+    @Test
+    void pluginsMenuShouldHavePluginManagerAsLastNonSeparator() throws Exception {
+        runOnFxThread(() -> {
+            StubHost host = new StubHost();
+            DawMenuBarController controller =
+                    new DawMenuBarController(host, freshKeyBindingManager());
+            controller.build();
+
+            Menu pluginsMenu = controller.getMenuBar().getMenus().get(2);
+            List<MenuItem> nonSeparators = pluginsMenu.getItems().stream()
+                    .filter(item -> !(item instanceof SeparatorMenuItem))
+                    .toList();
+
+            assertThat(nonSeparators.getLast().getText()).isEqualTo("Plugin Manager\u2026");
+        });
+    }
+
+    @Test
+    void pluginsMenuShouldGroupPluginsByCategoryWithSeparators() throws Exception {
+        runOnFxThread(() -> {
+            StubHost host = new StubHost();
+            DawMenuBarController controller =
+                    new DawMenuBarController(host, freshKeyBindingManager());
+            controller.build();
+
+            Menu pluginsMenu = controller.getMenuBar().getMenus().get(2);
+            long separatorCount = pluginsMenu.getItems().stream()
+                    .filter(item -> item instanceof SeparatorMenuItem)
+                    .count();
+
+            // Count expected groups (categories with at least one plugin)
+            List<BuiltInDawPlugin> plugins = BuiltInDawPlugin.discoverAll();
+            long categoryCount = plugins.stream()
+                    .map(BuiltInDawPlugin::getCategory)
+                    .distinct()
+                    .count();
+
+            // Separators: (categoryCount - 1) between groups + 1 before Plugin Manager
+            assertThat(separatorCount).isEqualTo(categoryCount);
+        });
+    }
+
+    @Test
+    void pluginsMenuBuiltInPluginShouldDelegateToHost() throws Exception {
+        runOnFxThread(() -> {
+            StubHost host = new StubHost();
+            DawMenuBarController controller =
+                    new DawMenuBarController(host, freshKeyBindingManager());
+            controller.build();
+
+            Menu pluginsMenu = controller.getMenuBar().getMenus().get(2);
+            // Find the first built-in plugin menu item (not Plugin Manager)
+            List<BuiltInDawPlugin> plugins = BuiltInDawPlugin.discoverAll();
+            String firstLabel = plugins.getFirst().getMenuLabel();
+
+            MenuItem pluginItem = pluginsMenu.getItems().stream()
+                    .filter(item -> !(item instanceof SeparatorMenuItem))
+                    .filter(item -> firstLabel.equals(item.getText()))
+                    .findFirst().orElseThrow();
+            pluginItem.fire();
+
+            assertThat(host.activateBuiltInPluginCalls).isEqualTo(1);
+        });
+    }
+
+    @Test
+    void pluginsMenuPluginManagerShouldDelegateToHost() throws Exception {
+        runOnFxThread(() -> {
+            StubHost host = new StubHost();
+            DawMenuBarController controller =
+                    new DawMenuBarController(host, freshKeyBindingManager());
+            controller.build();
+
+            Menu pluginsMenu = controller.getMenuBar().getMenus().get(2);
+            MenuItem managePlugins = pluginsMenu.getItems().stream()
+                    .filter(item -> "Plugin Manager\u2026".equals(item.getText()))
+                    .findFirst().orElseThrow();
+            managePlugins.fire();
+
+            assertThat(host.managePluginsCalls).isEqualTo(1);
         });
     }
 

@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin;
+import com.benesquivelmusic.daw.core.plugin.BuiltInPluginCategory;
 import com.benesquivelmusic.daw.core.project.DawProject;
 
 import javafx.scene.control.Menu;
@@ -10,6 +12,9 @@ import javafx.scene.control.MenuItem;
 import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.input.KeyCombination;
 
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.logging.Logger;
@@ -67,6 +72,7 @@ public final class DawMenuBarController {
         // Plugin actions
         void onManagePlugins();
         void onOpenSettings();
+        void onActivateBuiltInPlugin(BuiltInDawPlugin plugin);
 
         // Window actions
         void onSwitchView(DawView view);
@@ -227,6 +233,9 @@ public final class DawMenuBarController {
         MenuItem toggleSnap = menuItem("Toggle Snap", DawIcon.SNAP,
                 DawAction.TOGGLE_SNAP, host::onToggleSnap);
 
+        MenuItem settings = menuItem("Settings\u2026", DawIcon.SETTINGS,
+                DawAction.OPEN_SETTINGS, host::onOpenSettings);
+
         editMenu.getItems().addAll(
                 undoItem, redoItem,
                 new SeparatorMenuItem(),
@@ -234,7 +243,9 @@ public final class DawMenuBarController {
                 new SeparatorMenuItem(),
                 deleteItem,
                 new SeparatorMenuItem(),
-                toggleSnap
+                toggleSnap,
+                new SeparatorMenuItem(),
+                settings
         );
 
         return editMenu;
@@ -246,12 +257,39 @@ public final class DawMenuBarController {
         Menu pluginsMenu = new Menu("Plugins");
         pluginsMenu.getStyleClass().add("daw-menu");
 
+        // Discover built-in plugins and group by category (preserving enum order)
+        List<BuiltInDawPlugin> plugins = BuiltInDawPlugin.discoverAll();
+        Map<BuiltInPluginCategory, List<BuiltInDawPlugin>> grouped = new LinkedHashMap<>();
+        for (BuiltInPluginCategory cat : BuiltInPluginCategory.values()) {
+            List<BuiltInDawPlugin> inCategory = plugins.stream()
+                    .filter(p -> p.getCategory() == cat)
+                    .toList();
+            if (!inCategory.isEmpty()) {
+                grouped.put(cat, inCategory);
+            }
+        }
+
+        boolean firstGroup = true;
+        for (var entry : grouped.entrySet()) {
+            if (!firstGroup) {
+                pluginsMenu.getItems().add(new SeparatorMenuItem());
+            }
+            firstGroup = false;
+            for (BuiltInDawPlugin plugin : entry.getValue()) {
+                DawIcon icon = DawIcon.fromFileName(plugin.getMenuIcon()).orElse(null);
+                MenuItem item = menuItem(plugin.getMenuLabel(), icon,
+                        null, () -> host.onActivateBuiltInPlugin(plugin));
+                pluginsMenu.getItems().add(item);
+            }
+        }
+
+        if (!plugins.isEmpty()) {
+            pluginsMenu.getItems().add(new SeparatorMenuItem());
+        }
+
         MenuItem managePlugins = menuItem("Plugin Manager\u2026", DawIcon.EQ,
                 null, host::onManagePlugins);
-        MenuItem settings = menuItem("Settings\u2026", DawIcon.SETTINGS,
-                DawAction.OPEN_SETTINGS, host::onOpenSettings);
-
-        pluginsMenu.getItems().addAll(managePlugins, new SeparatorMenuItem(), settings);
+        pluginsMenu.getItems().add(managePlugins);
 
         return pluginsMenu;
     }

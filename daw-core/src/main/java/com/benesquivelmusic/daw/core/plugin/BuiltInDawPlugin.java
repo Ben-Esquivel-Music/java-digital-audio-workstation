@@ -5,6 +5,8 @@ import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Sealed interface for first-party built-in plugins that ship with the DAW.
@@ -26,6 +28,9 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
                 CompressorPlugin,
                 ReverbPlugin,
                 SpectrumAnalyzerPlugin {
+
+    /** Logger for discovery warnings. */
+    Logger LOG = Logger.getLogger(BuiltInDawPlugin.class.getName());
 
     /**
      * Returns the human-readable label to display in the Plugins menu.
@@ -60,9 +65,11 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
      * the permitted implementations, so no manual registration, service-loader
      * files, or classpath scanning is required.</p>
      *
-     * @return an unmodifiable list of all built-in plugin instances
-     * @throws IllegalStateException if a permitted subclass cannot be
-     *         instantiated (e.g., missing no-arg constructor or access error)
+     * <p>If a permitted subclass cannot be instantiated (e.g., missing no-arg
+     * constructor or access error), a warning is logged and that plugin is
+     * skipped rather than crashing the application.</p>
+     *
+     * @return an unmodifiable list of all successfully instantiated built-in plugin instances
      */
     static List<BuiltInDawPlugin> discoverAll() {
         Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
@@ -74,14 +81,14 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
             try {
                 plugins.add((BuiltInDawPlugin) clazz.getConstructor().newInstance());
             } catch (NoSuchMethodException e) {
-                throw new IllegalStateException(
-                        "Built-in plugin %s must have a public no-arg constructor".formatted(clazz.getName()), e);
+                LOG.log(Level.WARNING,
+                        "Skipping built-in plugin %s: missing public no-arg constructor".formatted(clazz.getName()), e);
             } catch (InvocationTargetException e) {
-                throw new IllegalStateException(
-                        "Failed to instantiate built-in plugin %s".formatted(clazz.getName()), e);
+                LOG.log(Level.WARNING,
+                        "Skipping built-in plugin %s: constructor threw an exception".formatted(clazz.getName()), e);
             } catch (InstantiationException | IllegalAccessException e) {
-                throw new IllegalStateException(
-                        "Cannot instantiate built-in plugin %s".formatted(clazz.getName()), e);
+                LOG.log(Level.WARNING,
+                        "Skipping built-in plugin %s: cannot instantiate".formatted(clazz.getName()), e);
             }
         }
         return List.copyOf(plugins);
