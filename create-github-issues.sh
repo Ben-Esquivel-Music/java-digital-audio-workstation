@@ -87,6 +87,9 @@ LABEL_COLORS=(
     ["browser"]="76d7c4"
     ["telemetry"]="2ec4b6"
     ["mixing"]="e99695"
+    ["architecture"]="0366d6"
+    ["refactor"]="d4c5f9"
+    ["analyzer"]="cfd3d7"
 )
 
 # ── Label descriptions ──────────────────────────────────────────────────────
@@ -128,6 +131,9 @@ LABEL_DESCRIPTIONS=(
     ["browser"]="File/sample browser panel"
     ["telemetry"]="Sound wave telemetry and room simulation"
     ["mixing"]="Mixing workflow and tools"
+    ["architecture"]="Architecture and design patterns"
+    ["refactor"]="Code refactoring and cleanup"
+    ["analyzer"]="Audio analysis and visualization"
 )
 
 # ── Helper functions ────────────────────────────────────────────────────────

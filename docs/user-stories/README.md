@@ -19,6 +19,9 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 063 | [Complete Project Serialization Including Clips, Mixer, and Automation](063-project-serialization-full-state.md) | 🔴 Critical | Persistence |
 | 067 | [MIDI Track Playback via SoundFont Synthesis in Audio Engine](067-midi-playback-soundfont-synthesis.md) | 🔴 Critical | Audio Engine |
 | 074 | [Wire MIDI Recording Pipeline into Transport and Arrangement View](074-midi-recording-pipeline-integration.md) | 🔴 Critical | Recording |
+| 086 | [Apply Mixer Channel Insert Effects During Live Audio Playback](086-insert-effects-live-playback.md) | 🔴 Critical | Audio Engine |
+| 087 | [Apply Automation Lane Values to Mixer Parameters During Audio Playback](087-automation-playback-engine.md) | 🔴 Critical | Automation |
+| 102 | [Playback-Export Parity: Unified Render Pipeline](102-playback-export-parity.md) | 🔴 Critical | Audio Engine |
 
 ## Arrangement View & Editing
 
@@ -47,6 +50,8 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 032 | [Markers and Locators for Session Navigation](032-markers-and-locators.md) | 🟡 Medium | Navigation |
 | 021 | [Waveform Zoom and Scroll with Minimap Navigation](021-waveform-zoom-and-minimap.md) | 🟡 Medium | Navigation |
 | 040 | [Multi-Take Comping Workflow](040-multi-take-comping.md) | 🟡 Medium | Recording |
+| 101 | [Plugin Parameter Automation with Write/Latch/Touch Modes](101-plugin-parameter-automation.md) | 🟠 High | Automation |
+| 104 | [Render-in-Place for Tracks with Insert Effects and Virtual Instruments](104-render-in-place.md) | 🟠 High | Editing |
 
 ## Built-In Plugins
 
@@ -59,6 +64,10 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 082 | [Chromatic Tuner Built-In Plugin](082-tuner-built-in-plugin.md) | 🟡 Medium | Plugins |
 | 083 | [Signal Generator Built-In Plugin](083-signal-generator-built-in-plugin.md) | 🟡 Medium | Plugins |
 | 084 | [Metronome Built-In Plugin](084-metronome-built-in-plugin.md) | 🟡 Medium | Plugins |
+| 088 | [Bridge Built-In Effect Plugins to Their DSP Processors](088-built-in-effect-plugin-dsp-bridge.md) | 🔴 Critical | Plugins |
+| 089 | [DawPlugin Audio Processing Contract for Real-Time Effect Chains](089-plugin-audio-processing-contract.md) | 🟠 High | Plugins |
+| 099 | [Graphic Equalizer Built-In Plugin (Octave/Third-Octave)](099-graphic-equalizer-built-in-plugin.md) | 🟡 Medium | Plugins |
+| 106 | [Waveshaper and Saturation Built-In Plugin with Oversampling](106-waveshaper-saturation-built-in-plugin.md) | 🟡 Medium | Plugins |
 
 ## Mixer & Effects
 
@@ -69,6 +78,11 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 030 | [Plugin Parameter UI with Knobs, Sliders, and Preset Management](030-plugin-parameter-ui.md) | 🟠 High | Plugins |
 | 062 | [Wire Mixer Channel Insert Effects Slots to DSP Processors](062-mixer-insert-effects-ui-wiring.md) | 🟠 High | Mixer |
 | 065 | [Wire Mixer Send/Return Bus Routing in Mixer View](065-mixer-send-return-ui-wiring.md) | 🟠 High | Mixer |
+| 090 | [Plugin Delay Compensation for Insert Effects](090-plugin-delay-compensation.md) | 🟠 High | Audio Engine |
+| 091 | [Sidechain Input Routing for Compressor and Dynamics](091-sidechain-input-routing.md) | 🟠 High | Mixer |
+| 092 | [Input/Output Audio Device Routing per Track](092-audio-io-routing-per-track.md) | 🟠 High | Mixer |
+| 103 | [Mixer Scene Snapshots and A/B Recall](103-mixer-scene-snapshots.md) | 🟡 Medium | Mixing |
+| 100 | [Track Templates and Channel Strip Presets](100-track-templates-channel-presets.md) | 🟡 Medium | Mixer |
 | 034 | [CLAP Plugin Hosting Integration in Mixer](034-clap-plugin-hosting.md) | 🟡 Medium | Plugins |
 
 ## MIDI
@@ -77,6 +91,7 @@ Stories are organized by priority and functional area. Use the [issue creation s
 |---|-------|----------|------|
 | 013 | [MIDI Recording and Piano Roll Note Editing](013-midi-recording-and-editing.md) | 🟠 High | MIDI |
 | 043 | [SoundFont Browser and MIDI Instrument Assignment](043-soundfont-browser.md) | 🟡 Medium | MIDI |
+| 096 | [Graceful MIDI Playback Degradation with User Notification](096-midi-playback-fallback-notification.md) | 🟠 High | MIDI |
 
 ## Metering & Analysis
 
@@ -106,6 +121,7 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 029 | [Track Stem Export (Bounce Individual Tracks)](029-track-stem-export.md) | 🟡 Medium | Export |
 | 020 | [DAWproject Format Import/Export for Session Interoperability](020-dawproject-import-export.md) | 🟡 Medium | Interop |
 | 026 | [ADM BWF Export for Dolby Atmos Deliverables](026-adm-bwf-atmos-export.md) | 🟢 Low | Immersive |
+| 097 | [Native Library Availability Detection and Export Format Validation](097-native-library-detection-export-validation.md) | 🟠 High | Export |
 
 ## Spatial / Immersive Audio
 
@@ -116,6 +132,7 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 039 | [Fold-Down Monitoring Preview (Immersive to Stereo to Mono)](039-folddown-monitoring.md) | 🟡 Medium | Monitoring |
 | 045 | [Room Acoustic Simulation Parameter Controls in Telemetry View](045-room-simulation-controls.md) | 🟡 Medium | Spatial |
 | 066 | [Sound Wave Telemetry Visualization Enhancements](066-telemetry-visualization-enhancements.md) | 🟡 Medium | Telemetry |
+| 105 | [Integrate daw-acoustics Module into Core Audio Pipeline](105-daw-acoustics-integration.md) | 🟡 Medium | Spatial |
 
 ## UI / UX & Usability
 
@@ -128,6 +145,15 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 033 | [Dark Theme Polish and UI Consistency Pass](033-dark-theme-polish.md) | 🟡 Medium | Design |
 | 027 | [Browser Panel Sample Preview and Waveform Thumbnails](027-browser-sample-preview.md) | 🟡 Medium | Browser |
 | 044 | [Notification System with Contextual Feedback](044-notification-system.md) | 🟡 Medium | Usability |
+| 098 | [Audio Engine Configuration UI (Buffer Size, Sample Rate, Backend)](098-audio-engine-configuration-ui.md) | 🟠 High | Usability |
+
+## Code Quality & Refactoring
+
+| # | Story | Priority | Area |
+|---|-------|----------|------|
+| 093 | [Extract Remaining Responsibilities from MainController](093-extract-remaining-main-controller.md) | 🟠 High | Refactoring |
+| 094 | [Split EditorView into MIDI and Audio Editor Components](094-split-editor-view.md) | 🟠 High | Refactoring |
+| 095 | [Extract Clip and Waveform Rendering from ArrangementCanvas](095-extract-arrangement-canvas-renderers.md) | 🟡 Medium | Refactoring |
 
 ## Audio Processing
 
