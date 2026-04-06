@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.plugin;
 
+import com.benesquivelmusic.daw.core.dsp.ReverbProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
@@ -57,6 +58,20 @@ class ReverbPluginTest {
     }
 
     @Test
+    void shouldReturnProcessorOfCorrectType() {
+        var plugin = new ReverbPlugin();
+        plugin.initialize(stubContext());
+        assertThat(plugin.getProcessor()).isInstanceOf(ReverbProcessor.class);
+    }
+
+    @Test
+    void asAudioProcessorShouldReturnSameInstanceAsGetProcessor() {
+        var plugin = new ReverbPlugin();
+        plugin.initialize(stubContext());
+        assertThat(plugin.asAudioProcessor().orElseThrow()).isSameAs(plugin.getProcessor());
+    }
+
+    @Test
     void shouldReturnEmptyProcessorBeforeInitialize() {
         var plugin = new ReverbPlugin();
         assertThat(plugin.asAudioProcessor()).isEmpty();
@@ -68,6 +83,25 @@ class ReverbPluginTest {
         plugin.initialize(stubContext());
         plugin.dispose();
         assertThat(plugin.asAudioProcessor()).isEmpty();
+    }
+
+    @Test
+    void shouldHaveReasonableDefaultParameters() {
+        var plugin = new ReverbPlugin();
+        plugin.initialize(stubContext());
+        ReverbProcessor p = plugin.getProcessor();
+        assertThat(p.getRoomSize()).isBetween(0.0, 1.0);
+        assertThat(p.getDecay()).isBetween(0.0, 1.0);
+        assertThat(p.getDamping()).isBetween(0.0, 1.0);
+        assertThat(p.getMix()).isBetween(0.0, 1.0);
+    }
+
+    @Test
+    void shouldExposeParameterDescriptors() {
+        var plugin = new ReverbPlugin();
+        assertThat(plugin.getParameters()).isNotNull().hasSize(4);
+        assertThat(plugin.getParameters().stream().map(p -> p.name()))
+                .contains("Room Size", "Decay", "Damping", "Mix");
     }
 
     private static PluginContext stubContext() {

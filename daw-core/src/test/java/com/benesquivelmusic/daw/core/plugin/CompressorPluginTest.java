@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.plugin;
 
+import com.benesquivelmusic.daw.core.dsp.CompressorProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
@@ -57,6 +58,20 @@ class CompressorPluginTest {
     }
 
     @Test
+    void shouldReturnProcessorOfCorrectType() {
+        var plugin = new CompressorPlugin();
+        plugin.initialize(stubContext());
+        assertThat(plugin.getProcessor()).isInstanceOf(CompressorProcessor.class);
+    }
+
+    @Test
+    void asAudioProcessorShouldReturnSameInstanceAsGetProcessor() {
+        var plugin = new CompressorPlugin();
+        plugin.initialize(stubContext());
+        assertThat(plugin.asAudioProcessor().orElseThrow()).isSameAs(plugin.getProcessor());
+    }
+
+    @Test
     void shouldReturnEmptyProcessorBeforeInitialize() {
         var plugin = new CompressorPlugin();
         assertThat(plugin.asAudioProcessor()).isEmpty();
@@ -68,6 +83,25 @@ class CompressorPluginTest {
         plugin.initialize(stubContext());
         plugin.dispose();
         assertThat(plugin.asAudioProcessor()).isEmpty();
+    }
+
+    @Test
+    void shouldHaveReasonableDefaultParameters() {
+        var plugin = new CompressorPlugin();
+        plugin.initialize(stubContext());
+        CompressorProcessor p = plugin.getProcessor();
+        assertThat(p.getThresholdDb()).isEqualTo(-20.0);
+        assertThat(p.getRatio()).isEqualTo(4.0);
+        assertThat(p.getAttackMs()).isEqualTo(10.0);
+        assertThat(p.getReleaseMs()).isEqualTo(100.0);
+    }
+
+    @Test
+    void shouldExposeParameterDescriptors() {
+        var plugin = new CompressorPlugin();
+        assertThat(plugin.getParameters()).isNotNull().hasSize(6);
+        assertThat(plugin.getParameters().stream().map(p -> p.name()))
+                .contains("Threshold (dB)", "Ratio", "Attack (ms)", "Release (ms)");
     }
 
     private static PluginContext stubContext() {

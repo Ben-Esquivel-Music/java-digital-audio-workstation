@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.plugin;
 
+import com.benesquivelmusic.daw.core.dsp.ParametricEqProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
@@ -57,6 +58,20 @@ class ParametricEqPluginTest {
     }
 
     @Test
+    void shouldReturnProcessorOfCorrectType() {
+        var plugin = new ParametricEqPlugin();
+        plugin.initialize(stubContext());
+        assertThat(plugin.getProcessor()).isInstanceOf(ParametricEqProcessor.class);
+    }
+
+    @Test
+    void asAudioProcessorShouldReturnSameInstanceAsGetProcessor() {
+        var plugin = new ParametricEqPlugin();
+        plugin.initialize(stubContext());
+        assertThat(plugin.asAudioProcessor().orElseThrow()).isSameAs(plugin.getProcessor());
+    }
+
+    @Test
     void shouldReturnEmptyProcessorBeforeInitialize() {
         var plugin = new ParametricEqPlugin();
         assertThat(plugin.asAudioProcessor()).isEmpty();
@@ -68,6 +83,21 @@ class ParametricEqPluginTest {
         plugin.initialize(stubContext());
         plugin.dispose();
         assertThat(plugin.asAudioProcessor()).isEmpty();
+    }
+
+    @Test
+    void shouldDefaultToFlatResponse() {
+        var plugin = new ParametricEqPlugin();
+        plugin.initialize(stubContext());
+        // Flat response means no EQ bands have been added
+        assertThat(plugin.getProcessor().getBands()).isEmpty();
+    }
+
+    @Test
+    void shouldExposeEmptyParameterDescriptors() {
+        var plugin = new ParametricEqPlugin();
+        // EQ band parameters are dynamic; no fixed parameter descriptors
+        assertThat(plugin.getParameters()).isNotNull().isEmpty();
     }
 
     private static PluginContext stubContext() {
