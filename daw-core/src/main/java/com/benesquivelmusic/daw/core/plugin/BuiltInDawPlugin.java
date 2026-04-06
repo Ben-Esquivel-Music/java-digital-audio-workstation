@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.plugin;
 
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
+import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
@@ -73,6 +74,20 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
      * @return the plugin category, never {@code null}
      */
     BuiltInPluginCategory getCategory();
+
+    /**
+     * Returns the parameters exposed by this plugin for the generic
+     * parameter-editor UI ({@code PluginParameterEditorPanel}).
+     *
+     * <p>Effect plugins override this to return descriptors for the
+     * underlying DSP processor's parameters.  Non-processing plugins
+     * (analyzers, utilities) inherit the default empty list.</p>
+     *
+     * @return an unmodifiable list of parameter descriptors, never {@code null}
+     */
+    default List<PluginParameter> getParameters() {
+        return List.of();
+    }
 
     /**
      * Returns lightweight metadata entries for all discovered built-in

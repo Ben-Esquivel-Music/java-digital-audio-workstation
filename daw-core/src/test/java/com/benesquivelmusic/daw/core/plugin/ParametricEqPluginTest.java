@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.plugin;
 
+import com.benesquivelmusic.daw.core.dsp.ParametricEqProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
@@ -57,6 +58,14 @@ class ParametricEqPluginTest {
     }
 
     @Test
+    void shouldReturnCorrectProcessorType() {
+        var plugin = new ParametricEqPlugin();
+        plugin.initialize(stubContext());
+        assertThat(plugin.getProcessor()).isInstanceOf(ParametricEqProcessor.class);
+        assertThat(plugin.asAudioProcessor().get()).isInstanceOf(ParametricEqProcessor.class);
+    }
+
+    @Test
     void shouldReturnEmptyProcessorBeforeInitialize() {
         var plugin = new ParametricEqPlugin();
         assertThat(plugin.asAudioProcessor()).isEmpty();
@@ -68,6 +77,14 @@ class ParametricEqPluginTest {
         plugin.initialize(stubContext());
         plugin.dispose();
         assertThat(plugin.asAudioProcessor()).isEmpty();
+    }
+
+    @Test
+    void shouldHaveFlatResponseByDefault() {
+        var plugin = new ParametricEqPlugin();
+        plugin.initialize(stubContext());
+        var processor = plugin.getProcessor();
+        assertThat(processor.getBands()).isEmpty();
     }
 
     private static PluginContext stubContext() {
