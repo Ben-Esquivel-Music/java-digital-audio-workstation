@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.plugin;
 
+import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
 import org.junit.jupiter.api.Test;
@@ -41,9 +42,39 @@ class CompressorPluginTest {
     @Test
     void shouldImplementDawPluginLifecycle() {
         var plugin = new CompressorPlugin();
-        plugin.initialize(null);
+        plugin.initialize(stubContext());
         plugin.activate();
         plugin.deactivate();
         plugin.dispose();
+    }
+
+    @Test
+    void shouldReturnProcessorAfterInitialize() {
+        var plugin = new CompressorPlugin();
+        plugin.initialize(stubContext());
+        assertThat(plugin.getProcessor()).isNotNull();
+        assertThat(plugin.asAudioProcessor()).isPresent();
+    }
+
+    @Test
+    void shouldReturnEmptyProcessorBeforeInitialize() {
+        var plugin = new CompressorPlugin();
+        assertThat(plugin.asAudioProcessor()).isEmpty();
+    }
+
+    @Test
+    void shouldClearProcessorOnDispose() {
+        var plugin = new CompressorPlugin();
+        plugin.initialize(stubContext());
+        plugin.dispose();
+        assertThat(plugin.asAudioProcessor()).isEmpty();
+    }
+
+    private static PluginContext stubContext() {
+        return new PluginContext() {
+            @Override public double getSampleRate() { return 44100; }
+            @Override public int getBufferSize() { return 512; }
+            @Override public void log(String message) {}
+        };
     }
 }

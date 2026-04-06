@@ -23,6 +23,18 @@ public interface PluginContext {
     int getBufferSize();
 
     /**
+     * Returns the number of audio channels (e.g., 2 for stereo).
+     *
+     * <p>Plugins that create audio processors use this to configure their
+     * channel count. The default is 2 (stereo).</p>
+     *
+     * @return the number of audio channels
+     */
+    default int getAudioChannels() {
+        return 2;
+    }
+
+    /**
      * Logs an informational message on behalf of the plugin.
      *
      * @param message the message to log

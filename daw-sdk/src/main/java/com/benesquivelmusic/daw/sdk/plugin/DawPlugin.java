@@ -1,5 +1,9 @@
 package com.benesquivelmusic.daw.sdk.plugin;
 
+import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+
+import java.util.Optional;
+
 /**
  * Service provider interface for DAW plugins.
  *
@@ -16,6 +20,13 @@ package com.benesquivelmusic.daw.sdk.plugin;
  *   <li>{@link #activate()} / {@link #deactivate()} — called when the plugin is enabled/disabled</li>
  *   <li>{@link #dispose()} — called once when the plugin is unloaded</li>
  * </ol>
+ *
+ * <h2>Audio Processing</h2>
+ * <p>Plugins that process audio (effects, instruments) override
+ * {@link #asAudioProcessor()} to return their {@link AudioProcessor}.
+ * The host uses this method to wire the plugin into the mixer's insert
+ * effect chain. Non-processing plugins (analyzers, utilities) inherit the
+ * default implementation which returns {@link Optional#empty()}.</p>
  */
 public interface DawPlugin {
 
@@ -47,4 +58,21 @@ public interface DawPlugin {
      * Disposes of all resources held by this plugin. Called once during shutdown.
      */
     void dispose();
+
+    /**
+     * Returns this plugin's audio processor, if it processes audio.
+     *
+     * <p>Effect and instrument plugins override this method to return their
+     * {@link AudioProcessor}. The host calls this after {@link #initialize(PluginContext)}
+     * to wire the plugin into the mixer's insert effect chain.</p>
+     *
+     * <p>Analysis-only plugins and utilities that do not process audio should
+     * keep the default implementation, which returns {@link Optional#empty()}.</p>
+     *
+     * @return an {@link Optional} containing the audio processor, or empty
+     *         if this plugin does not process audio
+     */
+    default Optional<AudioProcessor> asAudioProcessor() {
+        return Optional.empty();
+    }
 }

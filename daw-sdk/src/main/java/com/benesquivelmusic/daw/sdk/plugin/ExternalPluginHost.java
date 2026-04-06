@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.sdk.plugin;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Host interface for external native audio plugins (CLAP, LV2).
@@ -35,6 +36,17 @@ import java.util.List;
  * values and internal configuration) for session persistence.</p>
  */
 public interface ExternalPluginHost extends DawPlugin, AudioProcessor {
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>External plugin hosts always process audio, so this returns the
+     * host itself (which implements {@link AudioProcessor}).</p>
+     */
+    @Override
+    default Optional<AudioProcessor> asAudioProcessor() {
+        return Optional.of(this);
+    }
 
     /**
      * Returns the external plugin format (e.g., CLAP, LV2).
