@@ -19,6 +19,7 @@ import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.recording.Subdivision;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrackManager;
+import com.benesquivelmusic.daw.core.track.AutomationMode;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -640,5 +641,21 @@ class ProjectSerializationRoundTripTest {
 
         assertThat(restored.getReferenceTrackManager().getReferenceTrackCount()).isZero();
         assertThat(restored.getReferenceTrackManager().isReferenceActive()).isFalse();
+    }
+
+    @Test
+    void shouldRoundTripAutomationMode() throws IOException {
+        DawProject original = new DawProject("Automation Mode Test", AudioFormat.CD_QUALITY);
+        original.createAudioTrack("Track READ");
+        Track trackOff = original.createAudioTrack("Track OFF");
+        trackOff.setAutomationMode(AutomationMode.OFF);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        List<Track> tracks = restored.getTracks();
+        assertThat(tracks).hasSize(2);
+        assertThat(tracks.get(0).getAutomationMode()).isEqualTo(AutomationMode.READ);
+        assertThat(tracks.get(1).getAutomationMode()).isEqualTo(AutomationMode.OFF);
     }
 }

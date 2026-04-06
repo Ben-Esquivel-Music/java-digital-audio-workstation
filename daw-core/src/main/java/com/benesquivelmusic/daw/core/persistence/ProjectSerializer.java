@@ -163,6 +163,7 @@ public final class ProjectSerializer {
         elem.setAttribute("color", track.getColor().getHexColor());
         elem.setAttribute("input-device", String.valueOf(track.getInputDeviceIndex()));
         elem.setAttribute("collapsed", String.valueOf(track.isCollapsed()));
+        elem.setAttribute("automation-mode", track.getAutomationMode().name());
 
         String midiInputDeviceName = track.getMidiInputDeviceName();
         if (midiInputDeviceName != null) {
