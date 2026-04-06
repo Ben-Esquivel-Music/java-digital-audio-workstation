@@ -24,9 +24,9 @@ class BuiltInDawPluginTest {
     }
 
     @Test
-    void shouldPermitExactlyEightSubclasses() {
+    void shouldPermitExactlyNineSubclasses() {
         Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
-        assertThat(permitted).hasSize(8);
+        assertThat(permitted).hasSize(9);
     }
 
     @Test
@@ -40,7 +40,8 @@ class BuiltInDawPluginTest {
                 SpectrumAnalyzerPlugin.class,
                 TunerPlugin.class,
                 SoundWaveTelemetryPlugin.class,
-                SignalGeneratorPlugin.class
+                SignalGeneratorPlugin.class,
+                MetronomePlugin.class
         );
     }
 
