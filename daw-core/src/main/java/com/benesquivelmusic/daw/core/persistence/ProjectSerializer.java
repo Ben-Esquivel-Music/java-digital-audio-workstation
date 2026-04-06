@@ -15,7 +15,6 @@ import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrackManager;
 import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
-import com.benesquivelmusic.daw.core.track.AutomationMode;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.transport.Transport;
