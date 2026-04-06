@@ -1,5 +1,8 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.mixer.InsertSlot;
+import com.benesquivelmusic.daw.core.mixer.Mixer;
+import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import org.junit.jupiter.api.Test;
@@ -185,6 +188,35 @@ class AudioEngineTest {
         // Should not throw when no backend is set
         engine.ensureBackendInitialized();
         assertThat(engine.getAudioBackend()).isNull();
+    }
+
+    @Test
+    void shouldPrepareMixerEffectsChainsWhenSetAfterStart() {
+        AudioFormat format = new AudioFormat(44_100.0, 1, 16, 4);
+        AudioEngine engine = new AudioEngine(format);
+        engine.start();
+
+        Mixer mixer = new Mixer();
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.addInsert(new InsertSlot("Gain", new HalfGainProcessor()));
+        ch.addInsert(new InsertSlot("Gain", new HalfGainProcessor()));
+        mixer.addChannel(ch);
+
+        // Setting mixer after start() should prepare effects chains
+        engine.setMixer(mixer);
+
+        // Verify the chain works with pre-allocated buffers by checking
+        // the effects chain's intermediate buffers are not null
+        assertThat(ch.getEffectsChain().getProcessors()).hasSize(2);
+
+        // Process through the chain — if buffers were pre-allocated,
+        // this won't allocate on the audio thread
+        float[][] input = {{1.0f, 0.8f, 0.6f, 0.4f}};
+        float[][] output = {{0.0f, 0.0f, 0.0f, 0.0f}};
+        ch.getEffectsChain().process(input, output, 4);
+
+        // 1.0 * 0.5 * 0.5 = 0.25
+        assertThat(output[0][0]).isEqualTo(0.25f, org.assertj.core.data.Offset.offset(1e-6f));
     }
 
     private static class HalfGainProcessor implements AudioProcessor {

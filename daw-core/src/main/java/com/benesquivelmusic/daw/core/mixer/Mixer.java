@@ -181,12 +181,38 @@ public final class Mixer {
     }
 
     /**
+     * Pre-allocates intermediate buffers for every channel's effects chain so
+     * that {@link #mixDown} remains zero-allocation on the audio thread.
+     *
+     * <p>Call this method when the audio engine starts or when the buffer size
+     * changes. It also stores the dimensions on each channel so that adding or
+     * removing insert effects automatically re-allocates.</p>
+     *
+     * @param audioChannels the number of audio channels (e.g., 2 for stereo)
+     * @param blockSize     the number of sample frames per processing block
+     */
+    public void prepareForPlayback(int audioChannels, int blockSize) {
+        for (MixerChannel channel : channels) {
+            channel.prepareEffectsChain(audioChannels, blockSize);
+        }
+        for (MixerChannel returnBus : returnBuses) {
+            returnBus.prepareEffectsChain(audioChannels, blockSize);
+        }
+        masterChannel.prepareEffectsChain(audioChannels, blockSize);
+    }
+
+    /**
      * Sums all channel audio into the output buffer, applying per-channel
-     * volume, mute, and solo. This method is allocation-free and lock-free.
+     * insert effects, volume, mute, and solo. This method is allocation-free
+     * and lock-free when intermediate buffers have been pre-allocated via
+     * {@link #prepareForPlayback(int, int)}.
      *
      * <p>The {@code channelBuffers} array must have one entry per mixer channel
      * (in the same order as {@link #getChannels()}), each sized
      * {@code [audioChannels][frames]}.</p>
+     *
+     * <p><strong>Note:</strong> Insert effects are applied in-place, so the
+     * contents of {@code channelBuffers} will be modified after this call.</p>
      *
      * @param channelBuffers per-channel audio data {@code [mixerChannel][audioChannel][frame]}
      * @param outputBuffer   the destination output buffer {@code [audioChannel][frame]}
@@ -217,8 +243,13 @@ public final class Mixer {
                 continue;
             }
 
-            float volume = (float) channel.getVolume();
             float[][] src = channelBuffers[i];
+
+            if (!channel.getEffectsChain().isEmpty()) {
+                channel.getEffectsChain().process(src, src, numFrames);
+            }
+
+            float volume = (float) channel.getVolume();
             int audioChannels = Math.min(src.length, outputBuffer.length);
 
             // Apply constant-power pan law for stereo output
@@ -276,13 +307,14 @@ public final class Mixer {
 
     /**
      * Sums all channel audio into the output buffer and routes send audio
-     * into the auxiliary output buffer, applying per-channel volume, mute,
-     * solo, and send level. This method is allocation-free and lock-free.
+     * into the auxiliary output buffer, applying per-channel insert effects,
+     * volume, mute, solo, and send level. This method is allocation-free
+     * and lock-free when intermediate buffers have been pre-allocated.
      *
-     * <p>For each non-muted channel with a non-zero send level, a copy of
-     * the channel's pre-fader audio is scaled by the send level and summed
-     * into {@code auxOutputBuffer}. The aux bus volume is applied to the
-     * final aux output.</p>
+     * <p>For each non-muted channel with a non-zero send level, the channel's
+     * post-insert audio is scaled by the send level and summed into
+     * {@code auxOutputBuffer}. The aux bus volume is applied to the final
+     * aux output.</p>
      *
      * @param channelBuffers  per-channel audio data {@code [mixerChannel][audioChannel][frame]}
      * @param outputBuffer    the destination main output buffer {@code [audioChannel][frame]}
@@ -351,14 +383,17 @@ public final class Mixer {
     }
 
     /**
-     * Performs a full mix-down with multi-bus send routing. Channel audio is
-     * summed into {@code outputBuffer}. Each return bus receives send contributions
-     * from channels that have {@link Send} objects targeting it. Return bus outputs
-     * are written to {@code returnBuffers} and also summed into the main output
-     * (before master volume).
+     * Performs a full mix-down with multi-bus send routing. Each channel's
+     * insert effects are applied in-place before volume, pan, and send
+     * routing. Channel audio is summed into {@code outputBuffer}. Each
+     * return bus receives send contributions from channels that have
+     * {@link Send} objects targeting it. Return bus outputs are written to
+     * {@code returnBuffers} and also summed into the main output (before
+     * master volume).
      *
-     * <p>Pre-fader sends tap the raw channel audio (independent of channel volume).
-     * Post-fader sends tap the audio after applying the channel volume.</p>
+     * <p>Pre-fader sends tap the post-insert channel audio (independent of
+     * channel volume). Post-fader sends tap the audio after applying the
+     * channel volume.</p>
      *
      * @param channelBuffers per-channel audio data {@code [mixerChannel][audioChannel][frame]}
      * @param outputBuffer   the destination main output buffer {@code [audioChannel][frame]}
@@ -399,8 +434,13 @@ public final class Mixer {
                 continue;
             }
 
-            float volume = (float) channel.getVolume();
             float[][] src = channelBuffers[i];
+
+            if (!channel.getEffectsChain().isEmpty()) {
+                channel.getEffectsChain().process(src, src, numFrames);
+            }
+
+            float volume = (float) channel.getVolume();
             int audioChannels = Math.min(src.length, outputBuffer.length);
 
             // Mix channel into main output with volume and pan

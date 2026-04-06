@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.mixer;
 
+import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -637,5 +639,188 @@ class MixerTest {
 
         assertThatThrownBy(() -> mixer.moveChannel(0, 1))
                 .isInstanceOf(IndexOutOfBoundsException.class);
+    }
+
+    // ── Insert effects during live playback tests ──────────────────────────
+
+    @Test
+    void shouldApplyInsertEffectsDuringMixDown() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.addInsert(new InsertSlot("Gain", new GainProcessor(0.5f)));
+        mixer.addChannel(ch);
+
+        float[][][] channelBuffers = {{{1.0f, -1.0f}}};
+        float[][] output = {{0.0f, 0.0f}};
+
+        mixer.mixDown(channelBuffers, output, 2);
+
+        // Insert halves the signal, then volume (1.0) and master volume (1.0) preserve it
+        assertThat(output[0][0]).isEqualTo(0.5f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(output[0][1]).isEqualTo(-0.5f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
+
+    @Test
+    void shouldBypassInsertEffectPassingAudioUnchanged() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.addInsert(new InsertSlot("Gain", new GainProcessor(0.0f)));
+        ch.setInsertBypassed(0, true);
+        mixer.addChannel(ch);
+
+        float[][][] channelBuffers = {{{1.0f, 0.5f}}};
+        float[][] output = {{0.0f, 0.0f}};
+
+        mixer.mixDown(channelBuffers, output, 2);
+
+        // Bypassed: zero-gain processor is skipped, audio passes through unchanged
+        assertThat(output[0][0]).isEqualTo(1.0f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(output[0][1]).isEqualTo(0.5f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
+
+    @Test
+    void shouldApplyMultipleInsertsInSeriesOrder() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch = new MixerChannel("Ch1");
+        // First insert: halve the signal (1.0 -> 0.5)
+        ch.addInsert(new InsertSlot("Gain 0.5", new GainProcessor(0.5f)));
+        // Second insert: halve again (0.5 -> 0.25)
+        ch.addInsert(new InsertSlot("Gain 0.5", new GainProcessor(0.5f)));
+        ch.prepareEffectsChain(1, 2);
+        mixer.addChannel(ch);
+
+        float[][][] channelBuffers = {{{1.0f, 0.8f}}};
+        float[][] output = {{0.0f, 0.0f}};
+
+        mixer.mixDown(channelBuffers, output, 2);
+
+        // Two 0.5x gains in series: 1.0 * 0.5 * 0.5 = 0.25
+        assertThat(output[0][0]).isEqualTo(0.25f, org.assertj.core.data.Offset.offset(1e-6f));
+        // 0.8 * 0.5 * 0.5 = 0.2
+        assertThat(output[0][1]).isEqualTo(0.2f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
+
+    @Test
+    void shouldApplyInsertEffectsInMultiBusMixDown() {
+        Mixer mixer = new Mixer();
+        MixerChannel reverbBus = mixer.getAuxBus();
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.addInsert(new InsertSlot("Gain", new GainProcessor(0.5f)));
+        ch.addSend(new Send(reverbBus, 1.0, SendMode.PRE_FADER));
+        mixer.addChannel(ch);
+
+        float[][][] channelBuffers = {{{1.0f}}};
+        float[][] output = {{0.0f}};
+        float[][][] returnBuffers = {{{0.0f}}};
+
+        mixer.mixDown(channelBuffers, output, returnBuffers, 1);
+
+        // Insert halves the signal; pre-fader send taps post-effects audio
+        assertThat(returnBuffers[0][0][0]).isEqualTo(0.5f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
+
+    @Test
+    void shouldApplyInsertEffectsInAuxSendMixDown() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.addInsert(new InsertSlot("Gain", new GainProcessor(0.5f)));
+        ch.setSendLevel(1.0);
+        mixer.addChannel(ch);
+
+        float[][][] channelBuffers = {{{1.0f, -1.0f}}};
+        float[][] output = {{0.0f, 0.0f}};
+        float[][] auxOutput = {{0.0f, 0.0f}};
+
+        mixer.mixDown(channelBuffers, output, auxOutput, 2);
+
+        // Insert halves the signal; aux send taps post-insert audio
+        assertThat(auxOutput[0][0]).isEqualTo(0.5f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(auxOutput[0][1]).isEqualTo(-0.5f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
+
+    @Test
+    void shouldApplyInsertEffectsOnStereoChannelBuffers() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.addInsert(new InsertSlot("Gain", new GainProcessor(0.5f)));
+        mixer.addChannel(ch);
+
+        // Stereo source into stereo output
+        float[][][] channelBuffers = {{{1.0f}, {0.8f}}};
+        float[][] output = {{0.0f}, {0.0f}};
+
+        mixer.mixDown(channelBuffers, output, 1);
+
+        // Center pan (default): constant-power cos(π/4) ≈ 0.707
+        float expected = (float) Math.cos(Math.PI / 4.0);
+        // Left channel: 1.0 * 0.5 (insert) * 0.707 (pan)
+        assertThat(output[0][0]).isCloseTo(0.5f * expected, org.assertj.core.data.Offset.offset(1e-5f));
+        // Right channel: 0.8 * 0.5 (insert) * 0.707 (pan)
+        assertThat(output[1][0]).isCloseTo(0.4f * expected, org.assertj.core.data.Offset.offset(1e-5f));
+    }
+
+    @Test
+    void shouldApplyInsertEffectsCombinedWithChannelVolume() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.addInsert(new InsertSlot("Gain", new GainProcessor(0.5f)));
+        ch.setVolume(0.5);
+        mixer.addChannel(ch);
+
+        // Mono source into mono output
+        float[][][] channelBuffers = {{{1.0f, -1.0f}}};
+        float[][] output = {{0.0f, 0.0f}};
+
+        mixer.mixDown(channelBuffers, output, 2);
+
+        // 1.0 * 0.5 (insert) * 0.5 (volume) = 0.25
+        assertThat(output[0][0]).isEqualTo(0.25f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(output[0][1]).isEqualTo(-0.25f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
+
+    @Test
+    void shouldPrepareForPlaybackAllocatingIntermediateBuffers() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.addInsert(new InsertSlot("Gain 0.5", new GainProcessor(0.5f)));
+        ch.addInsert(new InsertSlot("Gain 0.5", new GainProcessor(0.5f)));
+        mixer.addChannel(ch);
+
+        mixer.prepareForPlayback(1, 4);
+
+        float[][][] channelBuffers = {{{1.0f, 0.8f, 0.6f, 0.4f}}};
+        float[][] output = {{0.0f, 0.0f, 0.0f, 0.0f}};
+
+        mixer.mixDown(channelBuffers, output, 4);
+
+        assertThat(output[0][0]).isEqualTo(0.25f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(output[0][2]).isEqualTo(0.15f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
+
+    // --- Test processor ---
+
+    private record GainProcessor(float gain) implements AudioProcessor {
+        @Override
+        public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
+            for (int ch = 0; ch < inputBuffer.length; ch++) {
+                for (int i = 0; i < numFrames; i++) {
+                    outputBuffer[ch][i] = inputBuffer[ch][i] * gain;
+                }
+            }
+        }
+
+        @Override
+        public void reset() {
+        }
+
+        @Override
+        public int getInputChannelCount() {
+            return 1;
+        }
+
+        @Override
+        public int getOutputChannelCount() {
+            return 1;
+        }
     }
 }

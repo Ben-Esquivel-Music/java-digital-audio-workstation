@@ -122,6 +122,12 @@ public final class AudioEngine {
         // Pre-allocate intermediate buffers in the master effects chain
         masterChain.allocateIntermediateBuffers(channels, frames);
 
+        // Pre-allocate intermediate buffers for mixer channel insert effects
+        Mixer currentMixer = this.mixer;
+        if (currentMixer != null) {
+            currentMixer.prepareForPlayback(channels, frames);
+        }
+
         // Pre-allocate MIDI track renderer for SoundFont synthesis
         midiTrackRenderer = new MidiTrackRenderer(format.sampleRate(), frames);
 
@@ -446,12 +452,17 @@ public final class AudioEngine {
      * Sets the mixer used to sum track outputs into the master bus.
      *
      * <p>This reference is read from the audio thread on every
-     * {@link #processBlock(float[][], float[][], int)} call.</p>
+     * {@link #processBlock(float[][], float[][], int)} call. If the engine
+     * is already running, the mixer's channel effects chains are pre-allocated
+     * immediately so that the audio thread remains allocation-free.</p>
      *
      * @param mixer the mixer, or {@code null} to disable playback rendering
      */
     public void setMixer(Mixer mixer) {
         this.mixer = mixer;
+        if (mixer != null && running.get()) {
+            mixer.prepareForPlayback(format.channels(), format.bufferSize());
+        }
     }
 
     /**

@@ -38,6 +38,8 @@ public final class MixerChannel {
     private final List<Send> sends = new ArrayList<>();
     private final List<InsertSlot> insertSlots = new ArrayList<>();
     private final EffectsChain effectsChain = new EffectsChain();
+    private int allocatedChannels;
+    private int allocatedBlockSize;
 
     /**
      * Creates a new mixer channel with the specified name.
@@ -192,6 +194,25 @@ public final class MixerChannel {
         return null;
     }
 
+    /**
+     * Pre-allocates intermediate buffers for this channel's effects chain so
+     * that real-time processing remains zero-allocation.
+     *
+     * <p>Call this when the audio engine starts or when the buffer size changes.
+     * The dimensions are remembered so that {@link #rebuildEffectsChain()} can
+     * re-allocate automatically when inserts are added or removed.</p>
+     *
+     * @param audioChannels the number of audio channels (e.g., 2 for stereo)
+     * @param blockSize     the number of sample frames per processing block
+     */
+    public void prepareEffectsChain(int audioChannels, int blockSize) {
+        this.allocatedChannels = audioChannels;
+        this.allocatedBlockSize = blockSize;
+        if (!effectsChain.isEmpty()) {
+            effectsChain.allocateIntermediateBuffers(audioChannels, blockSize);
+        }
+    }
+
     // ── Insert effect slot management ───────────────────────────────────────
 
     /**
@@ -341,6 +362,9 @@ public final class MixerChannel {
             if (!slot.isBypassed()) {
                 effectsChain.addProcessor(slot.getProcessor());
             }
+        }
+        if (allocatedChannels > 0 && allocatedBlockSize > 0 && !effectsChain.isEmpty()) {
+            effectsChain.allocateIntermediateBuffers(allocatedChannels, allocatedBlockSize);
         }
     }
 }
