@@ -46,6 +46,7 @@ public final class Track {
     private final TakeComping takeComping = new TakeComping();
     private SoundFontAssignment soundFontAssignment;
     private String midiInputDeviceName;
+    private AutomationMode automationMode = AutomationMode.READ;
 
     /**
      * Creates a new track with the given name and type.
@@ -339,6 +340,32 @@ public final class Track {
         this.midiInputDeviceName = midiInputDeviceName;
     }
 
+    // ── Automation mode support ──────────────────────────────────────────────
+
+    /**
+     * Returns the automation mode for this track.
+     *
+     * <p>When set to {@link AutomationMode#READ}, the audio engine applies
+     * automation lane values to the corresponding mixer channel parameters
+     * during playback. When set to {@link AutomationMode#OFF}, automation
+     * data is preserved but not applied.</p>
+     *
+     * @return the automation mode (never {@code null})
+     */
+    public AutomationMode getAutomationMode() {
+        return automationMode;
+    }
+
+    /**
+     * Sets the automation mode for this track.
+     *
+     * @param automationMode the automation mode (must not be {@code null})
+     */
+    public void setAutomationMode(AutomationMode automationMode) {
+        this.automationMode = Objects.requireNonNull(automationMode,
+                "automationMode must not be null");
+    }
+
     // ── Folder track support ────────────────────────────────────────────────
 
     /**
@@ -519,6 +546,7 @@ public final class Track {
         copy.setColor(color);
         copy.setSoundFontAssignment(soundFontAssignment);
         copy.setMidiInputDeviceName(midiInputDeviceName);
+        copy.setAutomationMode(automationMode);
         for (AudioClip clip : clips) {
             copy.addClip(clip.duplicate());
         }

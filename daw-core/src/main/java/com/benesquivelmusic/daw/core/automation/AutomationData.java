@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.automation;
 
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
+
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.Map;
@@ -63,6 +65,19 @@ public final class AutomationData {
     }
 
     /**
+     * Returns whether the given parameter has an active automation lane with
+     * at least one point. A lane with zero points is not considered active.
+     *
+     * @param parameter the parameter to check
+     * @return {@code true} if automation data exists for this parameter
+     */
+    @RealTimeSafe
+    public boolean hasActiveAutomation(AutomationParameter parameter) {
+        AutomationLane lane = lanes.get(parameter);
+        return lane != null && lane.getPointCount() > 0;
+    }
+
+    /**
      * Returns the automated value for the given parameter at the specified
      * time. If no lane exists for the parameter, the parameter's default
      * value is returned.
@@ -71,6 +86,7 @@ public final class AutomationData {
      * @param timeInBeats the time position in beats
      * @return the automation value
      */
+    @RealTimeSafe
     public double getValueAtTime(AutomationParameter parameter, double timeInBeats) {
         AutomationLane lane = lanes.get(parameter);
         if (lane == null) {

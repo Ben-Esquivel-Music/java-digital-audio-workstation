@@ -1,7 +1,11 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.automation.AutomationData;
+import com.benesquivelmusic.daw.core.automation.AutomationParameter;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
+import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
+import com.benesquivelmusic.daw.core.track.AutomationMode;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
@@ -547,6 +551,9 @@ public final class AudioEngine {
      * <ol>
      *   <li>Reads audio data from each track's clips at the current
      *       transport position into pre-allocated per-track buffers</li>
+     *   <li>Applies automation lane values to mixer channel parameters
+     *       (volume, pan, mute, send level) for tracks with
+     *       {@link AutomationMode#READ} enabled</li>
      *   <li>Sums all track outputs through the {@link Mixer} (applying
      *       per-channel volume, pan, mute, and solo)</li>
      *   <li>Processes the mixed result through the master effects chain</li>
@@ -604,6 +611,12 @@ public final class AudioEngine {
             renderTracks(currentTracks, trackCount, currentTransport,
                          currentMidiRenderer, numFrames);
 
+            // Apply automation lane values to mixer channel parameters.
+            // Snapshot the channel list once to avoid the unmodifiableList
+            // wrapper allocation on each call to getChannels().
+            List<MixerChannel> mixerChannels = currentMixer.getChannels();
+            applyAutomation(currentTracks, trackCount, mixerChannels, currentTransport);
+
             // Warn once if the mixer has more return buses than pre-allocated buffers
             if (!returnBusCapWarningLogged
                     && currentMixer.getReturnBusCount() > Mixer.MAX_RETURN_BUSES) {
@@ -644,6 +657,65 @@ public final class AudioEngine {
         if (monitor != null) {
             long elapsedNanos = System.nanoTime() - startNanos;
             monitor.recordProcessingTime(elapsedNanos);
+        }
+    }
+
+    /**
+     * Applies automation lane values to the corresponding mixer channel
+     * parameters for each track that has automation read enabled.
+     *
+     * <p>For each track with {@link AutomationMode#READ}, the current
+     * transport position is used to look up the automation value for
+     * volume, pan, mute, and send level. These values are applied to the
+     * corresponding {@link MixerChannel} before {@link Mixer#mixDown}
+     * processes the block. Only parameters that have automation lanes
+     * with at least one point are applied — parameters without automation
+     * data retain their static fader values.</p>
+     *
+     * @param tracks     the list of tracks
+     * @param trackCount the number of tracks to process
+     * @param channels   the mixer channels corresponding to tracks by index
+     * @param transport  the transport providing the current beat position
+     */
+    @RealTimeSafe
+    private void applyAutomation(List<Track> tracks, int trackCount,
+                                 List<MixerChannel> channels, Transport transport) {
+        int channelCount = channels.size();
+        double currentBeat = transport.getPositionInBeats();
+
+        for (int t = 0; t < trackCount && t < channelCount; t++) {
+            Track track = tracks.get(t);
+            if (track.getAutomationMode() != AutomationMode.READ) {
+                continue;
+            }
+
+            AutomationData automation = track.getAutomationData();
+            MixerChannel channel = channels.get(t);
+
+            // Values are clamped to valid ranges to prevent IllegalArgumentException
+            // on the audio thread if automation data is in an inconsistent state.
+            if (automation.hasActiveAutomation(AutomationParameter.VOLUME)) {
+                channel.setVolume(Math.clamp(
+                        automation.getValueAtTime(AutomationParameter.VOLUME, currentBeat),
+                        0.0, 1.0));
+            }
+
+            if (automation.hasActiveAutomation(AutomationParameter.PAN)) {
+                channel.setPan(Math.clamp(
+                        automation.getValueAtTime(AutomationParameter.PAN, currentBeat),
+                        -1.0, 1.0));
+            }
+
+            if (automation.hasActiveAutomation(AutomationParameter.MUTE)) {
+                channel.setMuted(
+                        automation.getValueAtTime(AutomationParameter.MUTE, currentBeat) > 0.5);
+            }
+
+            if (automation.hasActiveAutomation(AutomationParameter.SEND_LEVEL)) {
+                channel.setSendLevel(Math.clamp(
+                        automation.getValueAtTime(AutomationParameter.SEND_LEVEL, currentBeat),
+                        0.0, 1.0));
+            }
         }
     }
 

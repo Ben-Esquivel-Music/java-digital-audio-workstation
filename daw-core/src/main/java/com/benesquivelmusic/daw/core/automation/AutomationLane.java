@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.automation;
 
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -116,6 +118,7 @@ public final class AutomationLane {
      * @param timeInBeats the time position to evaluate
      * @return the interpolated parameter value
      */
+    @RealTimeSafe
     public double getValueAtTime(double timeInBeats) {
         if (points.isEmpty()) {
             return parameter.getDefaultValue();
