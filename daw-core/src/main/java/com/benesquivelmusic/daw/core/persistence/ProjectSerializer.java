@@ -15,6 +15,7 @@ import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrackManager;
 import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
+import com.benesquivelmusic.daw.core.track.AutomationMode;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.transport.Transport;
@@ -163,6 +164,7 @@ public final class ProjectSerializer {
         elem.setAttribute("color", track.getColor().getHexColor());
         elem.setAttribute("input-device", String.valueOf(track.getInputDeviceIndex()));
         elem.setAttribute("collapsed", String.valueOf(track.isCollapsed()));
+        elem.setAttribute("automation-mode", track.getAutomationMode().name());
 
         String midiInputDeviceName = track.getMidiInputDeviceName();
         if (midiInputDeviceName != null) {

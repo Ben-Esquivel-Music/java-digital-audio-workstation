@@ -20,6 +20,7 @@ import com.benesquivelmusic.daw.core.recording.Subdivision;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrackManager;
 import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
+import com.benesquivelmusic.daw.core.track.AutomationMode;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackColor;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -240,6 +241,15 @@ public final class ProjectDeserializer {
         track.setArmed(parseBooleanAttr(elem, "armed"));
         track.setPhaseInverted(parseBooleanAttr(elem, "phase-inverted"));
         track.setCollapsed(parseBooleanAttr(elem, "collapsed"));
+
+        String automationModeStr = elem.getAttribute("automation-mode");
+        if (!automationModeStr.isEmpty()) {
+            try {
+                track.setAutomationMode(AutomationMode.valueOf(automationModeStr));
+            } catch (IllegalArgumentException ignored) {
+                // keep default mode on invalid value
+            }
+        }
 
         int inputDevice = parseIntAttr(elem, "input-device", Track.NO_INPUT_DEVICE);
         if (inputDevice >= Track.NO_INPUT_DEVICE) {
