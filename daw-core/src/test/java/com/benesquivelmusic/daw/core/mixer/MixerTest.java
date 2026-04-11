@@ -992,4 +992,52 @@ class MixerTest {
         assertThat(mixer.getSystemLatencySamples()).isEqualTo(128);
         assertThat(mixer.getDelayCompensation().getChannelCompensationSamples(0)).isEqualTo(128);
     }
+
+    @Test
+    void auxMixDownShouldApplyReturnBusInsertEffects() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.setSendLevel(1.0);
+        mixer.addChannel(ch);
+
+        // Add a gain processor to the aux bus
+        mixer.getAuxBus().addInsert(new InsertSlot("Gain", new GainProcessor(0.5f)));
+        mixer.prepareForPlayback(1, 4);
+
+        float[][][] channelBuffers = {{{1.0f, 1.0f, 1.0f, 1.0f}}};
+        float[][] output = {{0.0f, 0.0f, 0.0f, 0.0f}};
+        float[][] auxOutput = {{0.0f, 0.0f, 0.0f, 0.0f}};
+
+        mixer.mixDown(channelBuffers, output, auxOutput, 4);
+
+        // Aux bus has a 0.5 gain processor applied before volume (1.0)
+        // Send taps 1.0 * 1.0 (send level) → gain processor halves → 0.5
+        assertThat(auxOutput[0][0]).isEqualTo(0.5f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(auxOutput[0][3]).isEqualTo(0.5f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
+
+    @Test
+    void auxMixDownShouldApplyReturnBusCompensationDelay() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch = new MixerChannel("Ch1");
+        ch.setSendLevel(1.0);
+        // Channel has 2-sample latency insert
+        ch.addInsert(new InsertSlot("Latent", new LatencyProcessor(2)));
+        mixer.addChannel(ch);
+        mixer.prepareForPlayback(1, 4);
+
+        // Channel has 2 samples latency, aux bus has 0 → aux bus gets 2-sample compensation
+        float[][][] channelBuffers = {{{1.0f, 2.0f, 3.0f, 4.0f}}};
+        float[][] output = {{0.0f, 0.0f, 0.0f, 0.0f}};
+        float[][] auxOutput = {{0.0f, 0.0f, 0.0f, 0.0f}};
+
+        mixer.mixDown(channelBuffers, output, auxOutput, 4);
+
+        // The aux bus gets 2-sample compensation delay, so first 2 samples should be 0
+        assertThat(auxOutput[0][0]).isEqualTo(0.0f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(auxOutput[0][1]).isEqualTo(0.0f, org.assertj.core.data.Offset.offset(1e-6f));
+        // Then delayed audio appears (1.0 and 2.0 from input)
+        assertThat(auxOutput[0][2]).isEqualTo(1.0f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(auxOutput[0][3]).isEqualTo(2.0f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
 }

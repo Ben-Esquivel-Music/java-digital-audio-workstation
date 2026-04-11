@@ -623,9 +623,18 @@ public final class AudioEngine {
         if (playbackActive) {
             int trackCount = Math.min(currentTracks.size(), MAX_TRACKS);
 
+            // Compute the render offset so that PDC delays align output with
+            // the displayed transport position. We render audio slightly ahead
+            // of the transport cursor; the compensation delays then push the
+            // audio back, so beat-1 arrives at the output exactly on time.
+            int systemLatency = currentMixer.getSystemLatencySamples();
+            double samplesPerBeatForOffset = format.sampleRate() * 60.0
+                    / currentTransport.getTempo();
+            double renderOffsetBeats = systemLatency / samplesPerBeatForOffset;
+
             // Render clip audio for each track into pre-allocated per-track buffers
             renderTracks(currentTracks, trackCount, currentTransport,
-                         currentMidiRenderer, numFrames);
+                         renderOffsetBeats, currentMidiRenderer, numFrames);
 
             // Apply automation lane values to mixer channel parameters.
             // Snapshot the channel list once to avoid the unmodifiableList
@@ -740,15 +749,19 @@ public final class AudioEngine {
      * {@link #trackBuffers} array. Handles loop-boundary crossing by
      * splitting the block into contiguous segments.
      *
-     * @param tracks       the list of tracks to render
-     * @param trackCount   the number of tracks to process (capped at {@link #MAX_TRACKS})
-     * @param transport    the transport providing position and loop state
-     * @param midiRenderer the snapshotted MIDI track renderer (may be {@code null})
-     * @param numFrames    the total number of frames in this block
+     * @param tracks            the list of tracks to render
+     * @param trackCount        the number of tracks to process (capped at {@link #MAX_TRACKS})
+     * @param transport         the transport providing position and loop state
+     * @param renderOffsetBeats the PDC render offset in beats — added to the transport
+     *                          position so that after compensation delays the output
+     *                          aligns with the displayed transport cursor
+     * @param midiRenderer      the snapshotted MIDI track renderer (may be {@code null})
+     * @param numFrames         the total number of frames in this block
      */
     @RealTimeSafe
     private void renderTracks(List<Track> tracks, int trackCount, Transport transport,
-                              MidiTrackRenderer midiRenderer, int numFrames) {
+                              double renderOffsetBeats, MidiTrackRenderer midiRenderer,
+                              int numFrames) {
         // Clear per-track buffers
         int audioChannels = format.channels();
         for (int t = 0; t < trackCount; t++) {
@@ -760,7 +773,9 @@ public final class AudioEngine {
         double tempo = transport.getTempo();
         double sampleRate = format.sampleRate();
         double samplesPerBeat = sampleRate * 60.0 / tempo;
-        double currentBeat = transport.getPositionInBeats();
+        // Offset the render position ahead by the PDC system latency so that
+        // after compensation delays, the output aligns with the transport cursor
+        double currentBeat = transport.getPositionInBeats() + renderOffsetBeats;
         boolean loopEnabled = transport.isLoopEnabled();
         double loopStart = transport.getLoopStartInBeats();
         double loopEnd = transport.getLoopEndInBeats();

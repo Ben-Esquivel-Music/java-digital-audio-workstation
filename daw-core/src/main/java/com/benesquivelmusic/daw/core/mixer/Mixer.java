@@ -390,6 +390,14 @@ public final class Mixer {
             }
         }
 
+        // Apply aux bus insert effects
+        if (!auxBus.getEffectsChain().isEmpty()) {
+            auxBus.getEffectsChain().process(auxOutputBuffer, auxOutputBuffer, numFrames);
+        }
+
+        // Apply delay compensation for the aux bus (return bus index 0)
+        delayCompensation.applyToReturnBus(0, auxOutputBuffer, numFrames);
+
         // Apply aux bus volume
         float auxVolume = (float) auxBus.getVolume();
         if (!auxBus.isMuted()) {
