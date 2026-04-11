@@ -15,6 +15,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${NATIVE_LIBS_OUTPUT_DIR}")
 # ── Build options ───────────────────────────────────────────────────
 option(BUILD_PORTAUDIO      "Build PortAudio shared library"      ON)
 option(BUILD_FLUIDSYNTH     "Build FluidSynth shared library"     ON)
+option(BUILD_LIBMP3LAME     "Build libmp3lame shared library"     ON)
 
 # ── 1. PortAudio ───────────────────────────────────────────────────
 if(BUILD_PORTAUDIO)
@@ -75,6 +76,16 @@ if(BUILD_FLUIDSYNTH)
     endif()
 endif()
 
+# ── 3. libmp3lame ─────────────────────────────────────────────────
+if(BUILD_LIBMP3LAME)
+    message(STATUS "── Configuring libmp3lame ──")
+    add_subdirectory(libmp3lame EXCLUDE_FROM_ALL)
+    set_target_properties(mp3lame PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY "${NATIVE_LIBS_OUTPUT_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY "${NATIVE_LIBS_OUTPUT_DIR}"
+    )
+endif()
+
 # ── Aggregate target ───────────────────────────────────────────────
 # Since sub-projects are added with EXCLUDE_FROM_ALL (to suppress
 # their install/uninstall targets), we create an explicit aggregate
@@ -86,9 +97,12 @@ endif()
 if(TARGET libfluidsynth AND BUILD_FLUIDSYNTH)
     list(APPEND DAW_NATIVE_TARGETS libfluidsynth)
 endif()
+if(TARGET mp3lame AND BUILD_LIBMP3LAME)
+    list(APPEND DAW_NATIVE_TARGETS mp3lame)
+endif()
 add_custom_target(daw-native-libs ALL DEPENDS ${DAW_NATIVE_TARGETS})
 
-# ── 3. CLAP ───────────────────────────────────────────────────────
+# ── 4. CLAP ───────────────────────────────────────────────────────
 # CLAP is a header-only interface library; no shared library to build.
 # The headers are available at lib/Clap-1.2.7/include/clap/ for any
 # future native plugin host code that needs them.
