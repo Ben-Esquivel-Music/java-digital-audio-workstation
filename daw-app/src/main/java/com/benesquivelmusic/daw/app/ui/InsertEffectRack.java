@@ -23,6 +23,7 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -287,8 +288,8 @@ public final class InsertEffectRack extends VBox {
                 .toList();
 
         // Collect registered external plugins that process audio (EFFECT type)
-        List<ExternalPluginEntry> pluginEntries = new java.util.ArrayList<>();
-        List<String> pluginNames = new java.util.ArrayList<>();
+        List<ExternalPluginEntry> pluginEntries = new ArrayList<>();
+        List<String> pluginNames = new ArrayList<>();
         if (pluginRegistry != null) {
             for (var mapEntry : pluginRegistry.getLoadedPlugins().entrySet()) {
                 DawPlugin plugin = mapEntry.getValue();
@@ -300,7 +301,7 @@ public final class InsertEffectRack extends VBox {
         }
 
         // Combine built-in and external plugin names
-        List<String> allNames = new java.util.ArrayList<>(builtInNames);
+        List<String> allNames = new ArrayList<>(builtInNames);
         allNames.addAll(pluginNames);
 
         if (allNames.isEmpty()) {
