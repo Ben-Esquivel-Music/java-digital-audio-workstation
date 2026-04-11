@@ -45,4 +45,22 @@ public interface AudioProcessor {
      * @return number of output channels
      */
     int getOutputChannelCount();
+
+    /**
+     * Returns the processing latency introduced by this processor, in samples.
+     *
+     * <p>Processors that buffer samples internally (e.g., linear-phase EQs,
+     * look-ahead compressors, oversampled effects, convolution reverbs) should
+     * override this method to report their latency so that the DAW can apply
+     * plugin delay compensation (PDC) to keep all mixer channels aligned at
+     * the summing bus.</p>
+     *
+     * <p>The default implementation returns {@code 0}, indicating no additional
+     * latency — suitable for most processors that produce output immediately.</p>
+     *
+     * @return latency in sample frames, always &ge; 0
+     */
+    default int getLatencySamples() {
+        return 0;
+    }
 }

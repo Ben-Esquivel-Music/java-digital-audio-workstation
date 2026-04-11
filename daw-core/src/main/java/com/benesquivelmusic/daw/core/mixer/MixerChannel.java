@@ -40,6 +40,7 @@ public final class MixerChannel {
     private final EffectsChain effectsChain = new EffectsChain();
     private int allocatedChannels;
     private int allocatedBlockSize;
+    private Runnable onEffectsChainChanged;
 
     /**
      * Creates a new mixer channel with the specified name.
@@ -213,6 +214,19 @@ public final class MixerChannel {
         }
     }
 
+    /**
+     * Sets a callback that is invoked whenever the effects chain is rebuilt
+     * (e.g., when inserts are added, removed, reordered, or bypassed).
+     *
+     * <p>The {@link com.benesquivelmusic.daw.core.mixer.Mixer Mixer} uses this
+     * to trigger delay compensation recalculation.</p>
+     *
+     * @param callback the callback to invoke, or {@code null} to clear
+     */
+    public void setOnEffectsChainChanged(Runnable callback) {
+        this.onEffectsChainChanged = callback;
+    }
+
     // ── Insert effect slot management ───────────────────────────────────────
 
     /**
@@ -365,6 +379,10 @@ public final class MixerChannel {
         }
         if (allocatedChannels > 0 && allocatedBlockSize > 0 && !effectsChain.isEmpty()) {
             effectsChain.allocateIntermediateBuffers(allocatedChannels, allocatedBlockSize);
+        }
+        Runnable callback = onEffectsChainChanged;
+        if (callback != null) {
+            callback.run();
         }
     }
 }
