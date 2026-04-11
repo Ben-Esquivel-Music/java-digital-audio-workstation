@@ -83,6 +83,9 @@ public final class ClapPluginHost implements ExternalPluginHost {
     // Cached parameter info
     private List<PluginParameter> cachedParameters;
 
+    // Cached audio processor wrapper (created lazily, reused across calls)
+    private ClapInsertEffect cachedAudioProcessor;
+
     // Pre-allocated native buffers for audio processing
     private MemorySegment processStruct;
     private MemorySegment inputAudioBuffer;
@@ -160,7 +163,10 @@ public final class ClapPluginHost implements ExternalPluginHost {
      */
     @Override
     public Optional<AudioProcessor> asAudioProcessor() {
-        return Optional.of(new ClapInsertEffect(this));
+        if (cachedAudioProcessor == null) {
+            cachedAudioProcessor = new ClapInsertEffect(this);
+        }
+        return Optional.of(cachedAudioProcessor);
     }
 
     @Override
@@ -274,6 +280,7 @@ public final class ClapPluginHost implements ExternalPluginHost {
             activated = false;
             processing = false;
             cachedParameters = null;
+            cachedAudioProcessor = null;
             stateSave = null;
             stateLoad = null;
             preallocEventSegments = null;

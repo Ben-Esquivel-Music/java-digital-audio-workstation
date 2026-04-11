@@ -285,6 +285,61 @@ class InsertEffectFactoryTest {
     }
 
     @Test
+    void shouldPreserveEffectTypeForBuiltInCompressorPlugin() {
+        var plugin = new com.benesquivelmusic.daw.core.plugin.CompressorPlugin();
+        plugin.initialize(stubContext());
+
+        InsertSlot slot = InsertEffectFactory.createSlotFromPlugin(plugin).orElseThrow();
+        assertThat(slot.getEffectType()).isEqualTo(InsertEffectType.COMPRESSOR);
+    }
+
+    @Test
+    void shouldPreserveEffectTypeForBuiltInReverbPlugin() {
+        var plugin = new com.benesquivelmusic.daw.core.plugin.ReverbPlugin();
+        plugin.initialize(stubContext());
+
+        InsertSlot slot = InsertEffectFactory.createSlotFromPlugin(plugin).orElseThrow();
+        assertThat(slot.getEffectType()).isEqualTo(InsertEffectType.REVERB);
+    }
+
+    @Test
+    void shouldPreserveEffectTypeForBuiltInParametricEqPlugin() {
+        var plugin = new com.benesquivelmusic.daw.core.plugin.ParametricEqPlugin();
+        plugin.initialize(stubContext());
+
+        InsertSlot slot = InsertEffectFactory.createSlotFromPlugin(plugin).orElseThrow();
+        assertThat(slot.getEffectType()).isEqualTo(InsertEffectType.PARAMETRIC_EQ);
+    }
+
+    @Test
+    void shouldReturnNullEffectTypeForExternalPlugin() {
+        DawPlugin externalPlugin = new DawPlugin() {
+            @Override public PluginDescriptor getDescriptor() {
+                return new PluginDescriptor("ext-fx", "External FX", "1.0", "Test", PluginType.EFFECT);
+            }
+            @Override public void initialize(PluginContext context) {}
+            @Override public void activate() {}
+            @Override public void deactivate() {}
+            @Override public void dispose() {}
+            @Override public Optional<AudioProcessor> asAudioProcessor() {
+                return Optional.of(new AudioProcessor() {
+                    @Override public int getInputChannelCount() { return 2; }
+                    @Override public int getOutputChannelCount() { return 2; }
+                    @Override public void process(float[][] in, float[][] out, int frames) {
+                        for (int ch = 0; ch < in.length; ch++) {
+                            System.arraycopy(in[ch], 0, out[ch], 0, frames);
+                        }
+                    }
+                    @Override public void reset() {}
+                });
+            }
+        };
+
+        InsertSlot slot = InsertEffectFactory.createSlotFromPlugin(externalPlugin).orElseThrow();
+        assertThat(slot.getEffectType()).isNull();
+    }
+
+    @Test
     void shouldCreateSlotFromReverbPlugin() {
         var plugin = new com.benesquivelmusic.daw.core.plugin.ReverbPlugin();
         plugin.initialize(stubContext());

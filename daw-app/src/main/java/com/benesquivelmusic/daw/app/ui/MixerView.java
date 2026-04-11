@@ -426,7 +426,8 @@ public final class MixerView extends VBox {
         // Insert effects rack
         int channels = project.getFormat().channels();
         double sr = project.getFormat().sampleRate();
-        InsertEffectRack insertRack = new InsertEffectRack(mixerChannel, channels, sr, undoManager);
+        int bs = project.getFormat().bufferSize();
+        InsertEffectRack insertRack = new InsertEffectRack(mixerChannel, channels, sr, bs, undoManager);
         insertRack.setPluginRegistry(pluginRegistry);
         activeInsertRacks.add(insertRack);
 
@@ -526,7 +527,8 @@ public final class MixerView extends VBox {
         // Insert effects rack for return bus
         int channels = project.getFormat().channels();
         double sr = project.getFormat().sampleRate();
-        InsertEffectRack insertRack = new InsertEffectRack(returnBus, channels, sr, undoManager);
+        int bs = project.getFormat().bufferSize();
+        InsertEffectRack insertRack = new InsertEffectRack(returnBus, channels, sr, bs, undoManager);
         insertRack.setPluginRegistry(pluginRegistry);
         activeInsertRacks.add(insertRack);
 

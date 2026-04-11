@@ -88,9 +88,57 @@ public final class InsertEffectFactory {
     public static Optional<InsertSlot> createSlotFromPlugin(DawPlugin plugin) {
         Objects.requireNonNull(plugin, "plugin must not be null");
         return plugin.asAudioProcessor()
-                .map(processor -> new InsertSlot(
-                        plugin.getDescriptor().name(),
-                        processor));
+                .map(processor -> {
+                    InsertEffectType effectType = inferBuiltInEffectType(processor);
+                    if (effectType != null) {
+                        return new InsertSlot(
+                                plugin.getDescriptor().name(),
+                                processor,
+                                effectType);
+                    }
+                    return new InsertSlot(
+                            plugin.getDescriptor().name(),
+                            processor);
+                });
+    }
+
+    /**
+     * Infers the {@link InsertEffectType} for a given {@link AudioProcessor}
+     * by checking if it is an instance of a known built-in DSP processor type.
+     *
+     * @param processor the audio processor to check
+     * @return the matching effect type, or {@code null} if the processor is
+     *         not a recognized built-in type
+     */
+    static InsertEffectType inferBuiltInEffectType(AudioProcessor processor) {
+        if (processor instanceof CompressorProcessor) {
+            return InsertEffectType.COMPRESSOR;
+        }
+        if (processor instanceof LimiterProcessor) {
+            return InsertEffectType.LIMITER;
+        }
+        if (processor instanceof ReverbProcessor) {
+            return InsertEffectType.REVERB;
+        }
+        if (processor instanceof DelayProcessor) {
+            return InsertEffectType.DELAY;
+        }
+        if (processor instanceof ChorusProcessor) {
+            return InsertEffectType.CHORUS;
+        }
+        if (processor instanceof NoiseGateProcessor) {
+            return InsertEffectType.NOISE_GATE;
+        }
+        if (processor instanceof StereoImagerProcessor) {
+            return InsertEffectType.STEREO_IMAGER;
+        }
+        if (processor instanceof ParametricEqProcessor) {
+            return InsertEffectType.PARAMETRIC_EQ;
+        }
+        if (processor instanceof GraphicEqProcessor) {
+            return InsertEffectType.GRAPHIC_EQ;
+        }
+        return null;
     }
 
     /**
