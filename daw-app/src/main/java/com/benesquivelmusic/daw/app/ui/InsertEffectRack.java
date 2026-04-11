@@ -159,11 +159,7 @@ public final class InsertEffectRack extends VBox {
         }
         // Dispose all tracked external-plugin resources
         for (ExternalPluginResources res : externalResources.values()) {
-            try {
-                res.plugin().dispose();
-            } finally {
-                ExternalPluginLoader.closeQuietly(res.classLoader());
-            }
+            disposeExternalResources(res.plugin(), res.classLoader());
         }
         externalResources.clear();
     }
@@ -392,11 +388,7 @@ public final class InsertEffectRack extends VBox {
             });
             Optional<InsertSlot> optSlot = InsertEffectFactory.createSlotFromPlugin(freshPlugin);
             if (optSlot.isEmpty()) {
-                try {
-                    freshPlugin.dispose();
-                } finally {
-                    ExternalPluginLoader.closeQuietly(classLoader);
-                }
+                disposeExternalResources(freshPlugin, classLoader);
                 showPickerError("Plugin \"" + freshPlugin.getDescriptor().name()
                         + "\" does not support audio processing.");
                 return;
@@ -405,11 +397,7 @@ public final class InsertEffectRack extends VBox {
             externalResources.put(slot, new ExternalPluginResources(freshPlugin, classLoader));
             addEffect(slotIndex, slot);
         } catch (Exception e) {
-            try {
-                freshPlugin.dispose();
-            } finally {
-                ExternalPluginLoader.closeQuietly(classLoader);
-            }
+            disposeExternalResources(freshPlugin, classLoader);
             showPickerError("Failed to initialize plugin: " + e.getMessage());
         }
     }
@@ -485,6 +473,18 @@ public final class InsertEffectRack extends VBox {
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
+
+    /**
+     * Best-effort disposal of an external plugin and its classloader.
+     * The classloader is always closed even if {@code plugin.dispose()} throws.
+     */
+    private static void disposeExternalResources(DawPlugin plugin, URLClassLoader classLoader) {
+        try {
+            plugin.dispose();
+        } finally {
+            ExternalPluginLoader.closeQuietly(classLoader);
+        }
+    }
 
     private static String bypassButtonStyle(boolean active) {
         return active
