@@ -23,7 +23,7 @@ public final class ExternalPluginLoader {
      * Holds the loaded plugin together with the classloader that loaded it,
      * so the classloader can be closed when the plugin is unloaded.
      */
-    record LoadResult(DawPlugin plugin, URLClassLoader classLoader) {}
+    public record LoadResult(DawPlugin plugin, URLClassLoader classLoader) {}
 
     private ExternalPluginLoader() {
         // utility class
@@ -39,7 +39,7 @@ public final class ExternalPluginLoader {
      * @return a result containing the plugin instance and its classloader
      * @throws PluginLoadException if the plugin cannot be loaded or instantiated
      */
-    static LoadResult loadWithClassLoader(ExternalPluginEntry entry) throws PluginLoadException {
+    public static LoadResult loadWithClassLoader(ExternalPluginEntry entry) throws PluginLoadException {
         Objects.requireNonNull(entry, "entry must not be null");
         return loadWithClassLoader(entry.jarPath(), entry.className());
     }
@@ -84,7 +84,7 @@ public final class ExternalPluginLoader {
      * @return a result containing the plugin instance and its classloader
      * @throws PluginLoadException if the plugin cannot be loaded or instantiated
      */
-    static LoadResult loadWithClassLoader(Path jarPath, String className) throws PluginLoadException {
+    public static LoadResult loadWithClassLoader(Path jarPath, String className) throws PluginLoadException {
         Objects.requireNonNull(jarPath, "jarPath must not be null");
         Objects.requireNonNull(className, "className must not be null");
 
@@ -133,7 +133,7 @@ public final class ExternalPluginLoader {
         }
     }
 
-    static void closeQuietly(URLClassLoader classLoader) {
+    public static void closeQuietly(URLClassLoader classLoader) {
         if (classLoader != null) {
             try {
                 classLoader.close();

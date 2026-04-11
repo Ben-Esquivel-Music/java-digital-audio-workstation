@@ -27,7 +27,7 @@ class InsertEffectRackTest {
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
             try {
-                ref.set(new InsertEffectRack(channel, 2, 44100.0, undoManager));
+                ref.set(new InsertEffectRack(channel, 2, 44100.0, 512, undoManager));
             } finally {
                 latch.countDown();
             }
@@ -50,7 +50,7 @@ class InsertEffectRackTest {
 
     @Test
     void shouldRejectNullChannel() {
-        assertThatThrownBy(() -> new InsertEffectRack(null, 2, 44100.0, null))
+        assertThatThrownBy(() -> new InsertEffectRack(null, 2, 44100.0, 512, null))
                 .isInstanceOf(NullPointerException.class);
     }
 

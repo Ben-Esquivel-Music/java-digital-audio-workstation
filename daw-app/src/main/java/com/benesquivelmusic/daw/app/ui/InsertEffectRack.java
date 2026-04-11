@@ -1,9 +1,16 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.mixer.*;
+import com.benesquivelmusic.daw.core.plugin.ExternalPluginEntry;
+import com.benesquivelmusic.daw.core.plugin.ExternalPluginLoader;
+import com.benesquivelmusic.daw.core.plugin.PluginLoadException;
+import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.undo.UndoHistoryListener;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
+import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
+import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
+import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 import javafx.application.Platform;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
@@ -16,11 +23,15 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 
+import java.net.URLClassLoader;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.BiConsumer;
+import java.util.logging.Logger;
 
 /**
  * A mixer channel insert-effects rack component showing up to
@@ -41,14 +52,26 @@ import java.util.function.BiConsumer;
  */
 public final class InsertEffectRack extends VBox {
 
+    private static final Logger LOG = Logger.getLogger(InsertEffectRack.class.getName());
     private static final double RACK_WIDTH = 70;
     private static final DataFormat SLOT_INDEX_FORMAT = new DataFormat("application/x-insert-slot-index");
 
     private final MixerChannel channel;
     private final int audioChannels;
     private final double sampleRate;
+    private final int bufferSize;
     private final UndoManager undoManager;
     private final UndoHistoryListener historyListener;
+    private PluginRegistry pluginRegistry;
+
+    /**
+     * Resources associated with an externally-loaded plugin that must be
+     * released when the rack is disposed.
+     */
+    private record ExternalPluginResources(DawPlugin plugin, URLClassLoader classLoader) {}
+
+    /** Tracks external-plugin resources keyed by the InsertSlot they belong to. */
+    private final Map<InsertSlot, ExternalPluginResources> externalResources = new HashMap<>();
 
     /**
      * Creates a new insert-effects rack for the given mixer channel.
@@ -56,13 +79,15 @@ public final class InsertEffectRack extends VBox {
      * @param channel       the mixer channel to manage inserts for
      * @param audioChannels the number of audio channels (e.g., 2 for stereo)
      * @param sampleRate    the project sample rate in Hz
+     * @param bufferSize    the project buffer size in sample frames
      * @param undoManager   the undo manager (may be {@code null})
      */
     public InsertEffectRack(MixerChannel channel, int audioChannels, double sampleRate,
-                            UndoManager undoManager) {
+                            int bufferSize, UndoManager undoManager) {
         this.channel = Objects.requireNonNull(channel, "channel must not be null");
         this.audioChannels = audioChannels;
         this.sampleRate = sampleRate;
+        this.bufferSize = bufferSize;
         this.undoManager = undoManager;
 
         setSpacing(2);
@@ -103,6 +128,20 @@ public final class InsertEffectRack extends VBox {
         }
 
         List<InsertSlot> slots = channel.getInsertSlots();
+
+        // Reconcile external-plugin resources: dispose any entries whose
+        // InsertSlot is no longer present on the channel (removed via
+        // undo/redo, reorder, or direct removal).
+        var iter = externalResources.entrySet().iterator();
+        while (iter.hasNext()) {
+            var mapEntry = iter.next();
+            if (!slots.contains(mapEntry.getKey())) {
+                disposeExternalResources(mapEntry.getValue().plugin(),
+                        mapEntry.getValue().classLoader());
+                iter.remove();
+            }
+        }
+
         for (int i = 0; i < slots.size(); i++) {
             getChildren().add(buildPopulatedSlot(i, slots.get(i)));
         }
@@ -134,6 +173,47 @@ public final class InsertEffectRack extends VBox {
         if (undoManager != null && historyListener != null) {
             undoManager.removeHistoryListener(historyListener);
         }
+        // Dispose all tracked external-plugin resources
+        for (ExternalPluginResources res : externalResources.values()) {
+            disposeExternalResources(res.plugin(), res.classLoader());
+        }
+        externalResources.clear();
+    }
+
+    /**
+     * Sets the plugin registry for this rack. When set, the effect picker
+     * dialog also offers registered external plugins (those with
+     * {@link PluginType#EFFECT} type) as additional insert options.
+     *
+     * @param registry the plugin registry, or {@code null} to disable
+     */
+    public void setPluginRegistry(PluginRegistry registry) {
+        this.pluginRegistry = registry;
+    }
+
+    /**
+     * Inserts a {@link DawPlugin} into the mixer channel at the given slot
+     * index using the unified {@link DawPlugin#asAudioProcessor()} contract.
+     *
+     * <p>The plugin must already be initialized before calling this method.
+     * If the plugin provides an audio processor (via {@code asAudioProcessor()}),
+     * an {@link InsertSlot} is created and added to the channel's effects chain.
+     * If the plugin does not process audio (returns empty), this method returns
+     * {@code false} and the channel is unchanged.</p>
+     *
+     * @param slotIndex the slot index at which to insert the plugin
+     * @param plugin    the initialized plugin to insert
+     * @return {@code true} if the plugin was inserted, {@code false} if it
+     *         does not support audio processing
+     */
+    public boolean insertPlugin(int slotIndex, DawPlugin plugin) {
+        Objects.requireNonNull(plugin, "plugin must not be null");
+        Optional<InsertSlot> optSlot = InsertEffectFactory.createSlotFromPlugin(plugin);
+        if (optSlot.isEmpty()) {
+            return false;
+        }
+        addEffect(slotIndex, optSlot.get());
+        return true;
     }
 
     // ── Empty slot ──────────────────────────────────────────────────────────
@@ -234,25 +314,116 @@ public final class InsertEffectRack extends VBox {
 
     // ── Effect picker ───────────────────────────────────────────────────────
 
-    private void showEffectPicker(int slotIndex) {
-        List<InsertEffectType> types = InsertEffectFactory.availableTypes().stream()
-                .filter(t -> t != InsertEffectType.STEREO_IMAGER || audioChannels == 2)
-                .toList();
-        List<String> names = types.stream()
-                .map(InsertEffectType::getDisplayName)
-                .toList();
+    /**
+     * A choice in the effect picker dialog — either a built-in effect type or
+     * an external plugin entry. Using a sealed interface avoids reliance on
+     * string-based {@code indexOf} matching, which breaks on duplicate names.
+     */
+    private sealed interface EffectChoice {
+        String displayName();
+    }
 
-        ChoiceDialog<String> dialog = new ChoiceDialog<>(names.getFirst(), names);
+    private record BuiltInChoice(InsertEffectType type) implements EffectChoice {
+        @Override public String displayName() { return type.getDisplayName(); }
+        @Override public String toString() { return displayName(); }
+    }
+
+    private record ExternalChoice(ExternalPluginEntry entry, String name) implements EffectChoice {
+        @Override public String displayName() { return "[ext] " + name; }
+        @Override public String toString() { return displayName(); }
+    }
+
+    private void showEffectPicker(int slotIndex) {
+        List<EffectChoice> choices = new ArrayList<>();
+
+        // Built-in effects
+        InsertEffectFactory.availableTypes().stream()
+                .filter(t -> t != InsertEffectType.STEREO_IMAGER || audioChannels == 2)
+                .forEach(t -> choices.add(new BuiltInChoice(t)));
+
+        // Registered external plugins that process audio (EFFECT type)
+        if (pluginRegistry != null) {
+            for (var mapEntry : pluginRegistry.getLoadedPlugins().entrySet()) {
+                DawPlugin plugin = mapEntry.getValue();
+                if (plugin.getDescriptor().type() == PluginType.EFFECT) {
+                    choices.add(new ExternalChoice(
+                            mapEntry.getKey(), plugin.getDescriptor().name()));
+                }
+            }
+        }
+
+        if (choices.isEmpty()) {
+            return;
+        }
+
+        ChoiceDialog<EffectChoice> dialog = new ChoiceDialog<>(choices.getFirst(), choices);
         dialog.setTitle("Add Insert Effect");
         dialog.setHeaderText("Select an effect for slot " + (slotIndex + 1));
         dialog.setContentText("Effect:");
 
-        Optional<String> result = dialog.showAndWait();
+        Optional<EffectChoice> result = dialog.showAndWait();
         result.ifPresent(selected -> {
-            InsertEffectType type = types.get(names.indexOf(selected));
-            InsertSlot slot = InsertEffectFactory.createSlot(type, audioChannels, sampleRate);
-            addEffect(slotIndex, slot);
+            switch (selected) {
+                case BuiltInChoice b -> {
+                    InsertSlot slot = InsertEffectFactory.createSlot(
+                            b.type(), audioChannels, sampleRate);
+                    addEffect(slotIndex, slot);
+                }
+                case ExternalChoice ext ->
+                        loadAndInsertExternalPlugin(slotIndex, ext.entry());
+            }
         });
+    }
+
+    /**
+     * Loads a fresh instance of an external plugin from its JAR entry,
+     * initializes it, and inserts it via the unified
+     * {@link DawPlugin#asAudioProcessor()} contract.
+     *
+     * <p>Uses {@link ExternalPluginLoader#loadWithClassLoader(ExternalPluginEntry)}
+     * to keep the classloader open for the lifetime of the plugin (lazy class
+     * loading remains available). The classloader is closed if insertion fails.</p>
+     */
+    private void loadAndInsertExternalPlugin(int slotIndex, ExternalPluginEntry entry) {
+        ExternalPluginLoader.LoadResult result;
+        try {
+            result = ExternalPluginLoader.loadWithClassLoader(entry);
+        } catch (PluginLoadException e) {
+            showPickerError("Failed to load plugin: " + e.getMessage());
+            return;
+        }
+
+        DawPlugin freshPlugin = result.plugin();
+        URLClassLoader classLoader = result.classLoader();
+
+        try {
+            freshPlugin.initialize(new PluginContext() {
+                @Override public double getSampleRate() { return sampleRate; }
+                @Override public int getBufferSize() { return bufferSize; }
+                @Override public void log(String message) { LOG.info(message); }
+            });
+            Optional<InsertSlot> optSlot = InsertEffectFactory.createSlotFromPlugin(freshPlugin);
+            if (optSlot.isEmpty()) {
+                disposeExternalResources(freshPlugin, classLoader);
+                showPickerError("Plugin \"" + freshPlugin.getDescriptor().name()
+                        + "\" does not support audio processing.");
+                return;
+            }
+            InsertSlot slot = optSlot.get();
+            externalResources.put(slot, new ExternalPluginResources(freshPlugin, classLoader));
+            addEffect(slotIndex, slot);
+        } catch (Exception e) {
+            disposeExternalResources(freshPlugin, classLoader);
+            showPickerError("Failed to initialize plugin: " + e.getMessage());
+        }
+    }
+
+    private void showPickerError(String message) {
+        Alert alert = new Alert(Alert.AlertType.ERROR);
+        alert.setTitle("Insert Effect Error");
+        alert.setHeaderText(null);
+        alert.setContentText(message);
+        alert.showAndWait();
     }
 
     // ── Undo-aware operations ───────────────────────────────────────────────
@@ -318,6 +489,18 @@ public final class InsertEffectRack extends VBox {
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
+
+    /**
+     * Best-effort disposal of an external plugin and its classloader.
+     * The classloader is always closed even if {@code plugin.dispose()} throws.
+     */
+    private static void disposeExternalResources(DawPlugin plugin, URLClassLoader classLoader) {
+        try {
+            plugin.dispose();
+        } finally {
+            ExternalPluginLoader.closeQuietly(classLoader);
+        }
+    }
 
     private static String bypassButtonStyle(boolean active) {
         return active

@@ -281,6 +281,7 @@ public final class MainController {
         animationController.start();
         createViewNavigationController();
         viewNavigationController.initializeViewNavigation();
+        viewNavigationController.getMixerView().setPluginRegistry(pluginRegistry);
         createTrackStripController();
         createArrangementCanvas();
         viewNavigationController.setOnEditToolChanged(() -> {
@@ -635,6 +636,7 @@ public final class MainController {
                         MainController.this.rebuildHistoryPanel();
                     }
                     @Override public void onProjectUIRebuild(MixerView newMixerView) {
+                        newMixerView.setPluginRegistry(pluginRegistry);
                         viewNavigationController.setMixerView(newMixerView);
                         viewNavigationController.onProjectChanged();
                         if (telemetryPluginView != null) {

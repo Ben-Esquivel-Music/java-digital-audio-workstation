@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.mixer.*;
+import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -64,6 +65,7 @@ public final class MixerView extends VBox {
     private final HBox returnBusStrips;
     private final VBox masterStrip;
     private final List<InsertEffectRack> activeInsertRacks = new ArrayList<>();
+    private PluginRegistry pluginRegistry;
 
     /**
      * Creates a new mixer view bound to the given project.
@@ -119,6 +121,20 @@ public final class MixerView extends VBox {
         setPadding(new Insets(8));
 
         refresh();
+    }
+
+    /**
+     * Sets the plugin registry for this mixer view. When set, all insert
+     * effect racks will offer registered external plugins as additional
+     * insert options.
+     *
+     * @param registry the plugin registry, or {@code null} to disable
+     */
+    public void setPluginRegistry(PluginRegistry registry) {
+        this.pluginRegistry = registry;
+        for (InsertEffectRack rack : activeInsertRacks) {
+            rack.setPluginRegistry(registry);
+        }
     }
 
     /**
@@ -410,7 +426,9 @@ public final class MixerView extends VBox {
         // Insert effects rack
         int channels = project.getFormat().channels();
         double sr = project.getFormat().sampleRate();
-        InsertEffectRack insertRack = new InsertEffectRack(mixerChannel, channels, sr, undoManager);
+        int bs = project.getFormat().bufferSize();
+        InsertEffectRack insertRack = new InsertEffectRack(mixerChannel, channels, sr, bs, undoManager);
+        insertRack.setPluginRegistry(pluginRegistry);
         activeInsertRacks.add(insertRack);
 
         strip.getChildren().addAll(
@@ -509,7 +527,9 @@ public final class MixerView extends VBox {
         // Insert effects rack for return bus
         int channels = project.getFormat().channels();
         double sr = project.getFormat().sampleRate();
-        InsertEffectRack insertRack = new InsertEffectRack(returnBus, channels, sr, undoManager);
+        int bs = project.getFormat().bufferSize();
+        InsertEffectRack insertRack = new InsertEffectRack(returnBus, channels, sr, bs, undoManager);
+        insertRack.setPluginRegistry(pluginRegistry);
         activeInsertRacks.add(insertRack);
 
         Node busIcon = IconNode.of(DawIcon.MIXER, CONTROL_ICON_SIZE);
