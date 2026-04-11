@@ -31,6 +31,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.BiConsumer;
+import java.util.logging.Logger;
 
 /**
  * A mixer channel insert-effects rack component showing up to
@@ -51,6 +52,7 @@ import java.util.function.BiConsumer;
  */
 public final class InsertEffectRack extends VBox {
 
+    private static final Logger LOG = Logger.getLogger(InsertEffectRack.class.getName());
     private static final double RACK_WIDTH = 70;
     private static final DataFormat SLOT_INDEX_FORMAT = new DataFormat("application/x-insert-slot-index");
 
@@ -126,6 +128,20 @@ public final class InsertEffectRack extends VBox {
         }
 
         List<InsertSlot> slots = channel.getInsertSlots();
+
+        // Reconcile external-plugin resources: dispose any entries whose
+        // InsertSlot is no longer present on the channel (removed via
+        // undo/redo, reorder, or direct removal).
+        var iter = externalResources.entrySet().iterator();
+        while (iter.hasNext()) {
+            var mapEntry = iter.next();
+            if (!slots.contains(mapEntry.getKey())) {
+                disposeExternalResources(mapEntry.getValue().plugin(),
+                        mapEntry.getValue().classLoader());
+                iter.remove();
+            }
+        }
+
         for (int i = 0; i < slots.size(); i++) {
             getChildren().add(buildPopulatedSlot(i, slots.get(i)));
         }
@@ -384,7 +400,7 @@ public final class InsertEffectRack extends VBox {
             freshPlugin.initialize(new PluginContext() {
                 @Override public double getSampleRate() { return sampleRate; }
                 @Override public int getBufferSize() { return bufferSize; }
-                @Override public void log(String message) {}
+                @Override public void log(String message) { LOG.info(message); }
             });
             Optional<InsertSlot> optSlot = InsertEffectFactory.createSlotFromPlugin(freshPlugin);
             if (optSlot.isEmpty()) {
