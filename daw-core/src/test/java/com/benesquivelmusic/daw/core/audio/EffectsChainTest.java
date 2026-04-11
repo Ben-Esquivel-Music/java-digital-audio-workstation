@@ -170,6 +170,40 @@ class EffectsChainTest {
         assertThat(output[0][1]).isEqualTo(-0.125f);
     }
 
+    @Test
+    void shouldReturnZeroLatencyWhenEmpty() {
+        EffectsChain chain = new EffectsChain();
+        assertThat(chain.getTotalLatencySamples()).isZero();
+    }
+
+    @Test
+    void shouldReturnZeroLatencyWhenBypassed() {
+        EffectsChain chain = new EffectsChain();
+        chain.addProcessor(new LatencyProcessor(100));
+        chain.setBypassed(true);
+
+        assertThat(chain.getTotalLatencySamples()).isZero();
+    }
+
+    @Test
+    void shouldSumLatencyAcrossProcessors() {
+        EffectsChain chain = new EffectsChain();
+        chain.addProcessor(new LatencyProcessor(50));
+        chain.addProcessor(new LatencyProcessor(100));
+        chain.addProcessor(new PassthroughProcessor()); // 0 latency
+
+        assertThat(chain.getTotalLatencySamples()).isEqualTo(150);
+    }
+
+    @Test
+    void shouldReturnZeroLatencyForProcessorsWithoutLatency() {
+        EffectsChain chain = new EffectsChain();
+        chain.addProcessor(new PassthroughProcessor());
+        chain.addProcessor(new GainProcessor(0.5f));
+
+        assertThat(chain.getTotalLatencySamples()).isZero();
+    }
+
     // --- Test processors ---
 
     private static class PassthroughProcessor implements AudioProcessor {
@@ -220,6 +254,24 @@ class EffectsChainTest {
         @Override
         public int getOutputChannelCount() {
             return 1;
+        }
+    }
+
+    private record LatencyProcessor(int latency) implements AudioProcessor {
+        @Override
+        public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
+            for (int ch = 0; ch < inputBuffer.length; ch++) {
+                System.arraycopy(inputBuffer[ch], 0, outputBuffer[ch], 0, numFrames);
+            }
+        }
+
+        @Override public void reset() {}
+        @Override public int getInputChannelCount() { return 1; }
+        @Override public int getOutputChannelCount() { return 1; }
+
+        @Override
+        public int getLatencySamples() {
+            return latency;
         }
     }
 }

@@ -823,4 +823,173 @@ class MixerTest {
             return 1;
         }
     }
+
+    /**
+     * A processor that reports latency but passes audio through unmodified.
+     * Used for testing plugin delay compensation.
+     */
+    private record LatencyProcessor(int latency) implements AudioProcessor {
+        @Override
+        public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
+            for (int ch = 0; ch < inputBuffer.length; ch++) {
+                System.arraycopy(inputBuffer[ch], 0, outputBuffer[ch], 0, numFrames);
+            }
+        }
+
+        @Override public void reset() {}
+        @Override public int getInputChannelCount() { return 1; }
+        @Override public int getOutputChannelCount() { return 1; }
+
+        @Override
+        public int getLatencySamples() {
+            return latency;
+        }
+    }
+
+    // --- Plugin Delay Compensation tests ---
+
+    @Test
+    void shouldReportZeroSystemLatencyWithNoInserts() {
+        Mixer mixer = new Mixer();
+        mixer.addChannel(new MixerChannel("Ch1"));
+        mixer.addChannel(new MixerChannel("Ch2"));
+
+        assertThat(mixer.getSystemLatencySamples()).isZero();
+    }
+
+    @Test
+    void shouldReportCorrectSystemLatency() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch1 = new MixerChannel("Ch1");
+        MixerChannel ch2 = new MixerChannel("Ch2");
+        ch2.addInsert(new InsertSlot("Latent", new LatencyProcessor(256)));
+        mixer.addChannel(ch1);
+        mixer.addChannel(ch2);
+
+        assertThat(mixer.getSystemLatencySamples()).isEqualTo(256);
+    }
+
+    @Test
+    void channelWithNoInsertsShouldGetMaximumCompensation() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch1 = new MixerChannel("NoInserts");
+        MixerChannel ch2 = new MixerChannel("WithInserts");
+        ch2.addInsert(new InsertSlot("Latent", new LatencyProcessor(100)));
+        mixer.addChannel(ch1);
+        mixer.addChannel(ch2);
+
+        var pdc = mixer.getDelayCompensation();
+        assertThat(pdc.getChannelCompensationSamples(0)).isEqualTo(100);
+        assertThat(pdc.getChannelCompensationSamples(1)).isZero();
+    }
+
+    @Test
+    void channelWithHighestLatencyShouldGetZeroCompensation() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch1 = new MixerChannel("Low");
+        MixerChannel ch2 = new MixerChannel("High");
+        ch1.addInsert(new InsertSlot("Low", new LatencyProcessor(50)));
+        ch2.addInsert(new InsertSlot("High", new LatencyProcessor(300)));
+        mixer.addChannel(ch1);
+        mixer.addChannel(ch2);
+
+        var pdc = mixer.getDelayCompensation();
+        assertThat(pdc.getChannelCompensationSamples(1)).isZero();
+        assertThat(pdc.getChannelCompensationSamples(0)).isEqualTo(250);
+    }
+
+    @Test
+    void compensationShouldUpdateWhenInsertsAreAdded() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch1 = new MixerChannel("Ch1");
+        MixerChannel ch2 = new MixerChannel("Ch2");
+        mixer.addChannel(ch1);
+        mixer.addChannel(ch2);
+
+        assertThat(mixer.getSystemLatencySamples()).isZero();
+
+        // Adding an insert should trigger recalculation
+        ch1.addInsert(new InsertSlot("Latent", new LatencyProcessor(512)));
+
+        assertThat(mixer.getSystemLatencySamples()).isEqualTo(512);
+        assertThat(mixer.getDelayCompensation().getChannelCompensationSamples(0)).isZero();
+        assertThat(mixer.getDelayCompensation().getChannelCompensationSamples(1)).isEqualTo(512);
+    }
+
+    @Test
+    void compensationShouldUpdateWhenInsertsAreRemoved() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch1 = new MixerChannel("Ch1");
+        MixerChannel ch2 = new MixerChannel("Ch2");
+        ch1.addInsert(new InsertSlot("Latent", new LatencyProcessor(100)));
+        ch2.addInsert(new InsertSlot("Latent", new LatencyProcessor(200)));
+        mixer.addChannel(ch1);
+        mixer.addChannel(ch2);
+
+        assertThat(mixer.getSystemLatencySamples()).isEqualTo(200);
+
+        // Remove ch2's insert
+        ch2.removeInsert(0);
+
+        assertThat(mixer.getSystemLatencySamples()).isEqualTo(100);
+    }
+
+    @Test
+    void compensationShouldUpdateWhenInsertIsBypassed() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch1 = new MixerChannel("Ch1");
+        MixerChannel ch2 = new MixerChannel("Ch2");
+        ch2.addInsert(new InsertSlot("Latent", new LatencyProcessor(256)));
+        mixer.addChannel(ch1);
+        mixer.addChannel(ch2);
+
+        assertThat(mixer.getSystemLatencySamples()).isEqualTo(256);
+
+        // Bypass ch2's insert should remove its latency
+        ch2.setInsertBypassed(0, true);
+
+        assertThat(mixer.getSystemLatencySamples()).isZero();
+    }
+
+    @Test
+    void compensationShouldDelayChannelAudioDuringMixDown() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch1 = new MixerChannel("NoInserts");
+        MixerChannel ch2 = new MixerChannel("WithInserts");
+        ch2.addInsert(new InsertSlot("Latent", new LatencyProcessor(2)));
+        mixer.addChannel(ch1);
+        mixer.addChannel(ch2);
+        mixer.prepareForPlayback(1, 4);
+
+        // Ch1 has no inserts → gets 2-sample compensation delay
+        // Ch2 has 2-sample latency → gets 0-sample compensation
+        float[][][] channelBuffers = {
+                {{1.0f, 2.0f, 3.0f, 4.0f}},  // ch1: will be delayed
+                {{5.0f, 6.0f, 7.0f, 8.0f}}   // ch2: no delay
+        };
+        float[][] output = {{0.0f, 0.0f, 0.0f, 0.0f}};
+
+        mixer.mixDown(channelBuffers, output, 4);
+
+        // Ch1 audio is delayed by 2 samples: [0, 0, 1, 2]
+        // Ch2 audio passes through: [5, 6, 7, 8]
+        // Sum: [5, 6, 8, 10]
+        assertThat(output[0][0]).isEqualTo(5.0f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(output[0][1]).isEqualTo(6.0f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(output[0][2]).isEqualTo(8.0f, org.assertj.core.data.Offset.offset(1e-6f));
+        assertThat(output[0][3]).isEqualTo(10.0f, org.assertj.core.data.Offset.offset(1e-6f));
+    }
+
+    @Test
+    void compensationShouldIncludeReturnBusLatency() {
+        Mixer mixer = new Mixer();
+        MixerChannel ch = new MixerChannel("Ch1");
+        mixer.addChannel(ch);
+
+        // Add latency to the default return bus
+        mixer.getAuxBus().addInsert(new InsertSlot("Reverb", new LatencyProcessor(128)));
+
+        assertThat(mixer.getSystemLatencySamples()).isEqualTo(128);
+        assertThat(mixer.getDelayCompensation().getChannelCompensationSamples(0)).isEqualTo(128);
+    }
 }

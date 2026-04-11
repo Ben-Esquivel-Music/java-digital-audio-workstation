@@ -479,6 +479,22 @@ public final class AudioEngine {
     }
 
     /**
+     * Returns the total system latency introduced by plugin delay
+     * compensation, in samples.
+     *
+     * <p>This is the maximum insert-chain latency across all mixer channels
+     * and return buses. The transport can use this value to offset the
+     * playback start position so that the first audible sample aligns
+     * with beat 1.</p>
+     *
+     * @return the system latency in sample frames, or 0 if no mixer is configured
+     */
+    public int getSystemLatencySamples() {
+        Mixer currentMixer = this.mixer;
+        return currentMixer != null ? currentMixer.getSystemLatencySamples() : 0;
+    }
+
+    /**
      * Sets the list of tracks whose clips are rendered during playback.
      *
      * <p>The list reference is captured once per

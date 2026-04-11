@@ -431,8 +431,22 @@ public final class MixerView extends VBox {
         insertRack.setPluginRegistry(pluginRegistry);
         activeInsertRacks.add(insertRack);
 
+        // Per-channel latency label for plugin delay compensation (PDC)
+        int latencySamples = mixerChannel.getEffectsChain().getTotalLatencySamples();
+        double latencyMs = latencySamples / sr * 1000.0;
+        String latencyText = latencySamples > 0
+                ? String.format("%.1f ms", latencyMs)
+                : "";
+        Label latencyLabel = new Label(latencyText);
+        latencyLabel.getStyleClass().add("mixer-channel-name");
+        latencyLabel.setMaxWidth(CHANNEL_WIDTH - 12);
+        latencyLabel.setStyle("-fx-font-size: 9px; -fx-text-fill: #888888;");
+        latencyLabel.setTooltip(latencySamples > 0
+                ? new Tooltip(latencySamples + " samples latency")
+                : null);
+
         strip.getChildren().addAll(
-                nameLabel, typeIcon, insertRack, levelMeter, volumeFader,
+                nameLabel, typeIcon, insertRack, latencyLabel, levelMeter, volumeFader,
                 panLabel, panSlider, buttonRow, pannerBtn,
                 sendBox, sendLabel, sendSlider);
 
@@ -532,10 +546,24 @@ public final class MixerView extends VBox {
         insertRack.setPluginRegistry(pluginRegistry);
         activeInsertRacks.add(insertRack);
 
+        // Per-bus latency label for plugin delay compensation (PDC)
+        int latencySamples = returnBus.getEffectsChain().getTotalLatencySamples();
+        double latencyMs = latencySamples / sr * 1000.0;
+        String latencyText = latencySamples > 0
+                ? String.format("%.1f ms", latencyMs)
+                : "";
+        Label latencyLabel = new Label(latencyText);
+        latencyLabel.getStyleClass().add("mixer-channel-name");
+        latencyLabel.setMaxWidth(CHANNEL_WIDTH - 12);
+        latencyLabel.setStyle("-fx-font-size: 9px; -fx-text-fill: #888888;");
+        latencyLabel.setTooltip(latencySamples > 0
+                ? new Tooltip(latencySamples + " samples latency")
+                : null);
+
         Node busIcon = IconNode.of(DawIcon.MIXER, CONTROL_ICON_SIZE);
 
         strip.getChildren().addAll(
-                nameLabel, busIcon, insertRack, levelMeter, volumeFader,
+                nameLabel, busIcon, insertRack, latencyLabel, levelMeter, volumeFader,
                 panLabel, panSlider, buttonRow);
 
         return strip;
