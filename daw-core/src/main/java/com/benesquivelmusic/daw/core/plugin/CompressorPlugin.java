@@ -4,8 +4,10 @@ import com.benesquivelmusic.daw.core.dsp.CompressorProcessor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
+import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -92,5 +94,24 @@ public final class CompressorPlugin implements BuiltInDawPlugin {
      */
     public CompressorProcessor getProcessor() {
         return processor;
+    }
+
+    /**
+     * Returns the parameter descriptors for this compressor plugin.
+     *
+     * <p>Parameter ids correspond to: 0=threshold (dB), 1=ratio, 2=attack (ms),
+     * 3=release (ms), 4=knee (dB), 5=makeup gain (dB).</p>
+     *
+     * @return an unmodifiable list of compressor parameter descriptors
+     */
+    @Override
+    public List<PluginParameter> getParameters() {
+        return List.of(
+                new PluginParameter(0, "Threshold (dB)", -60.0, 0.0, -20.0),
+                new PluginParameter(1, "Ratio",           1.0, 20.0,   4.0),
+                new PluginParameter(2, "Attack (ms)",   0.01, 100.0,  10.0),
+                new PluginParameter(3, "Release (ms)",  10.0, 1000.0, 100.0),
+                new PluginParameter(4, "Knee (dB)",      0.0,  24.0,   6.0),
+                new PluginParameter(5, "Makeup Gain (dB)", 0.0, 30.0,  0.0));
     }
 }

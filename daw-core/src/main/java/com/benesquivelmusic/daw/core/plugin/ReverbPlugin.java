@@ -4,8 +4,10 @@ import com.benesquivelmusic.daw.core.dsp.ReverbProcessor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
+import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -92,5 +94,21 @@ public final class ReverbPlugin implements BuiltInDawPlugin {
      */
     public ReverbProcessor getProcessor() {
         return processor;
+    }
+
+    /**
+     * Returns the parameter descriptors for this reverb plugin.
+     *
+     * <p>Parameter ids correspond to: 0=room size, 1=decay, 2=damping, 3=mix.</p>
+     *
+     * @return an unmodifiable list of reverb parameter descriptors
+     */
+    @Override
+    public List<PluginParameter> getParameters() {
+        return List.of(
+                new PluginParameter(0, "Room Size", 0.0, 1.0, 0.5),
+                new PluginParameter(1, "Decay",     0.0, 1.0, 0.5),
+                new PluginParameter(2, "Damping",   0.0, 1.0, 0.3),
+                new PluginParameter(3, "Mix",       0.0, 1.0, 0.3));
     }
 }

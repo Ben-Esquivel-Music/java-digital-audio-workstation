@@ -1,10 +1,14 @@
 package com.benesquivelmusic.daw.core.plugin;
 
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.midi.MidiEvent;
+import com.benesquivelmusic.daw.sdk.midi.SoundFontInfo;
+import com.benesquivelmusic.daw.sdk.midi.SoundFontRenderer;
 import com.benesquivelmusic.daw.sdk.plugin.*;
 
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
 
@@ -182,6 +186,7 @@ class DawPluginAudioProcessingContractTest {
         int checked = 0;
         for (BuiltInDawPlugin plugin : BuiltInDawPlugin.discoverAll()) {
             if (plugin.getDescriptor().type() != PluginType.EFFECT) {
+                injectStubRendererIfNeeded(plugin);
                 plugin.initialize(stubContext());
                 assertThat(plugin.asAudioProcessor())
                         .as("%s (non-EFFECT type) should return empty",
@@ -230,6 +235,40 @@ class DawPluginAudioProcessingContractTest {
             @Override public int getBufferSize() { return BUFFER_SIZE; }
             @Override public void log(String message) {}
         };
+    }
+
+    /**
+     * Injects a no-op {@link SoundFontRenderer} into {@link VirtualKeyboardPlugin}
+     * instances so that {@code initialize()} does not attempt to open the
+     * platform's Java Sound synthesizer — which is unavailable in headless CI.
+     */
+    private static void injectStubRendererIfNeeded(BuiltInDawPlugin plugin) {
+        if (plugin instanceof VirtualKeyboardPlugin vk) {
+            vk.setRenderer(new NoOpSoundFontRenderer());
+        }
+    }
+
+    /**
+     * Minimal no-op {@link SoundFontRenderer} used to satisfy
+     * {@link VirtualKeyboardPlugin#initialize(PluginContext)} without
+     * requiring real audio hardware.
+     */
+    private static final class NoOpSoundFontRenderer implements SoundFontRenderer {
+        @Override public void initialize(double sampleRate, int bufferSize) {}
+        @Override public SoundFontInfo loadSoundFont(Path path) { return new SoundFontInfo(0, path, List.of()); }
+        @Override public void unloadSoundFont(int soundFontId) {}
+        @Override public List<SoundFontInfo> getLoadedSoundFonts() { return List.of(); }
+        @Override public void selectPreset(int channel, int bank, int program) {}
+        @Override public void sendEvent(MidiEvent event) {}
+        @Override public void render(float[][] outputBuffer, int numFrames) {}
+        @Override public float[][] bounce(List<MidiEvent> events, int totalFrames) { return new float[2][totalFrames]; }
+        @Override public void setReverbEnabled(boolean enabled) {}
+        @Override public void setChorusEnabled(boolean enabled) {}
+        @Override public void setGain(float gain) {}
+        @Override public boolean isAvailable() { return true; }
+        @Override public String getRendererName() { return "NoOp"; }
+        @Override public void allNotesOff() {}
+        @Override public void close() {}
     }
 
     /**

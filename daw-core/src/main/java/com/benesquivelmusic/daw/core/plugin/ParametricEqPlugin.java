@@ -4,8 +4,10 @@ import com.benesquivelmusic.daw.core.dsp.ParametricEqProcessor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
+import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -92,5 +94,19 @@ public final class ParametricEqPlugin implements BuiltInDawPlugin {
      */
     public ParametricEqProcessor getProcessor() {
         return processor;
+    }
+
+    /**
+     * Returns the parameter descriptors for this parametric EQ plugin.
+     *
+     * <p>The EQ's bands are added dynamically via the processor's band API
+     * ({@link ParametricEqProcessor#addBand}), so this plugin has no
+     * fixed automatable parameters at the plugin level. Returns an empty list.</p>
+     *
+     * @return an empty unmodifiable list
+     */
+    @Override
+    public List<PluginParameter> getParameters() {
+        return List.of();
     }
 }

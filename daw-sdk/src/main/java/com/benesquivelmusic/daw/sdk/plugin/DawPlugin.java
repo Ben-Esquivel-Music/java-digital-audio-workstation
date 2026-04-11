@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.sdk.plugin;
 
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -74,5 +75,23 @@ public interface DawPlugin {
      */
     default Optional<AudioProcessor> asAudioProcessor() {
         return Optional.empty();
+    }
+
+    /**
+     * Returns the parameter descriptors exposed by this plugin.
+     *
+     * <p>Effect plugins override this method to return descriptors for all
+     * controllable parameters (e.g., threshold, ratio, attack for a compressor).
+     * The host passes this list to a {@code PluginParameterEditorPanel} to
+     * generate a generic parameter editor UI.</p>
+     *
+     * <p>Plugins that have no automatable parameters (analyzers, utilities,
+     * or plugins with custom UIs) keep the default implementation, which
+     * returns an empty list.</p>
+     *
+     * @return an unmodifiable list of parameter descriptors, never {@code null}
+     */
+    default List<PluginParameter> getParameters() {
+        return List.of();
     }
 }
