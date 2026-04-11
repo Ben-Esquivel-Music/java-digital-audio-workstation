@@ -1,5 +1,8 @@
 package com.benesquivelmusic.daw.core.plugin;
 
+import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
+import com.benesquivelmusic.daw.core.mixer.InsertSlot;
+import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.midi.MidiEvent;
 import com.benesquivelmusic.daw.sdk.midi.SoundFontInfo;
@@ -214,6 +217,93 @@ class DawPluginAudioProcessingContractTest {
         };
 
         assertThat(minimal.asAudioProcessor()).isEmpty();
+    }
+
+    // ── Unified mixer wiring via createSlotFromPlugin ─────────────────────
+
+    @Test
+    void builtInEffectPluginShouldWireIntoMixerChannel() {
+        var plugin = new CompressorPlugin();
+        plugin.initialize(stubContext());
+
+        InsertSlot slot = InsertEffectFactory.createSlotFromPlugin(plugin).orElseThrow();
+        MixerChannel channel = new MixerChannel("Test");
+        channel.addInsert(slot);
+
+        assertThat(channel.getEffectsChain().getProcessors()).hasSize(1);
+        assertThat(channel.getEffectsChain().getProcessors().getFirst())
+                .isSameAs(plugin.asAudioProcessor().orElseThrow());
+    }
+
+    @Test
+    void mockExternalPluginShouldWireIntoMixerChannel() {
+        var mockHost = new MockExternalPluginHost();
+
+        InsertSlot slot = InsertEffectFactory.createSlotFromPlugin(mockHost).orElseThrow();
+        MixerChannel channel = new MixerChannel("Test");
+        channel.addInsert(slot);
+
+        assertThat(channel.getEffectsChain().getProcessors()).hasSize(1);
+        assertThat(channel.getEffectsChain().getProcessors().getFirst())
+                .isSameAs(mockHost);
+    }
+
+    @Test
+    void mixerChannelShouldProcessAudioThroughPluginInsert() {
+        var plugin = new ReverbPlugin();
+        plugin.initialize(stubContext());
+
+        InsertSlot slot = InsertEffectFactory.createSlotFromPlugin(plugin).orElseThrow();
+        MixerChannel channel = new MixerChannel("Test");
+        channel.addInsert(slot);
+        channel.prepareEffectsChain(2, BUFFER_SIZE);
+
+        float[][] input = new float[2][BUFFER_SIZE];
+        float[][] output = new float[2][BUFFER_SIZE];
+        for (int i = 0; i < BUFFER_SIZE; i++) {
+            input[0][i] = 0.5f;
+            input[1][i] = 0.5f;
+        }
+
+        channel.getEffectsChain().process(input, output, BUFFER_SIZE);
+
+        boolean hasOutput = false;
+        for (int i = 0; i < BUFFER_SIZE; i++) {
+            if (output[0][i] != 0.0f) {
+                hasOutput = true;
+                break;
+            }
+        }
+        assertThat(hasOutput).isTrue();
+    }
+
+    @Test
+    void nonProcessingPluginShouldNotWireIntoMixerChannel() {
+        var plugin = new SpectrumAnalyzerPlugin();
+        plugin.initialize(stubContext());
+
+        assertThat(InsertEffectFactory.createSlotFromPlugin(plugin)).isEmpty();
+    }
+
+    @Test
+    void multiplePluginsShouldChainInMixerChannel() {
+        var compressor = new CompressorPlugin();
+        compressor.initialize(stubContext());
+        var reverb = new ReverbPlugin();
+        reverb.initialize(stubContext());
+
+        MixerChannel channel = new MixerChannel("Test");
+        InsertEffectFactory.createSlotFromPlugin(compressor)
+                .ifPresent(channel::addInsert);
+        InsertEffectFactory.createSlotFromPlugin(reverb)
+                .ifPresent(channel::addInsert);
+
+        assertThat(channel.getInsertCount()).isEqualTo(2);
+        assertThat(channel.getEffectsChain().getProcessors()).hasSize(2);
+        assertThat(channel.getEffectsChain().getProcessors().get(0))
+                .isSameAs(compressor.asAudioProcessor().orElseThrow());
+        assertThat(channel.getEffectsChain().getProcessors().get(1))
+                .isSameAs(reverb.asAudioProcessor().orElseThrow());
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────

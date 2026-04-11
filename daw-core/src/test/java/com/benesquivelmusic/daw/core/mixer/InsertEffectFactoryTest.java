@@ -2,13 +2,18 @@ package com.benesquivelmusic.daw.core.mixer;
 
 import com.benesquivelmusic.daw.core.dsp.*;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
+import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
+import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
+import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.BiConsumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -261,5 +266,103 @@ class InsertEffectFactoryTest {
         assertThatThrownBy(() ->
                 InsertEffectFactory.getParameterValues(InsertEffectType.COMPRESSOR, wrongProcessor))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    // ── createSlotFromPlugin tests ──────────────────────────────────────────
+
+    @Test
+    void shouldCreateSlotFromEffectPlugin() {
+        var plugin = new com.benesquivelmusic.daw.core.plugin.CompressorPlugin();
+        plugin.initialize(stubContext());
+
+        Optional<InsertSlot> optSlot = InsertEffectFactory.createSlotFromPlugin(plugin);
+
+        assertThat(optSlot).isPresent();
+        InsertSlot slot = optSlot.get();
+        assertThat(slot.getName()).isEqualTo("Compressor");
+        assertThat(slot.getProcessor()).isInstanceOf(CompressorProcessor.class);
+        assertThat(slot.getProcessor()).isSameAs(plugin.getProcessor());
+    }
+
+    @Test
+    void shouldCreateSlotFromReverbPlugin() {
+        var plugin = new com.benesquivelmusic.daw.core.plugin.ReverbPlugin();
+        plugin.initialize(stubContext());
+
+        Optional<InsertSlot> optSlot = InsertEffectFactory.createSlotFromPlugin(plugin);
+
+        assertThat(optSlot).isPresent();
+        assertThat(optSlot.get().getName()).isEqualTo("Reverb");
+        assertThat(optSlot.get().getProcessor()).isInstanceOf(ReverbProcessor.class);
+    }
+
+    @Test
+    void shouldCreateSlotFromParametricEqPlugin() {
+        var plugin = new com.benesquivelmusic.daw.core.plugin.ParametricEqPlugin();
+        plugin.initialize(stubContext());
+
+        Optional<InsertSlot> optSlot = InsertEffectFactory.createSlotFromPlugin(plugin);
+
+        assertThat(optSlot).isPresent();
+        assertThat(optSlot.get().getName()).isEqualTo("Parametric EQ");
+        assertThat(optSlot.get().getProcessor()).isInstanceOf(ParametricEqProcessor.class);
+    }
+
+    @Test
+    void shouldReturnEmptyForNonProcessingPlugin() {
+        DawPlugin analyzerPlugin = new DawPlugin() {
+            @Override public PluginDescriptor getDescriptor() {
+                return new PluginDescriptor("test-analyzer", "Test Analyzer", "1.0", "Test", PluginType.ANALYZER);
+            }
+            @Override public void initialize(PluginContext context) {}
+            @Override public void activate() {}
+            @Override public void deactivate() {}
+            @Override public void dispose() {}
+        };
+
+        Optional<InsertSlot> optSlot = InsertEffectFactory.createSlotFromPlugin(analyzerPlugin);
+
+        assertThat(optSlot).isEmpty();
+    }
+
+    @Test
+    void shouldReturnEmptyForDisposedPlugin() {
+        var plugin = new com.benesquivelmusic.daw.core.plugin.CompressorPlugin();
+        plugin.initialize(stubContext());
+        plugin.dispose();
+
+        Optional<InsertSlot> optSlot = InsertEffectFactory.createSlotFromPlugin(plugin);
+
+        assertThat(optSlot).isEmpty();
+    }
+
+    @Test
+    void shouldRejectNullPluginForCreateSlot() {
+        assertThatThrownBy(() -> InsertEffectFactory.createSlotFromPlugin(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("plugin");
+    }
+
+    @Test
+    void shouldCreateSlotFromPluginThatCanBeAddedToMixerChannel() {
+        var plugin = new com.benesquivelmusic.daw.core.plugin.CompressorPlugin();
+        plugin.initialize(stubContext());
+
+        InsertSlot slot = InsertEffectFactory.createSlotFromPlugin(plugin).orElseThrow();
+        MixerChannel channel = new MixerChannel("Test");
+        channel.addInsert(slot);
+
+        assertThat(channel.getInsertCount()).isEqualTo(1);
+        assertThat(channel.getEffectsChain().getProcessors()).hasSize(1);
+        assertThat(channel.getEffectsChain().getProcessors().getFirst())
+                .isSameAs(plugin.getProcessor());
+    }
+
+    private static PluginContext stubContext() {
+        return new PluginContext() {
+            @Override public double getSampleRate() { return SAMPLE_RATE; }
+            @Override public int getBufferSize() { return 512; }
+            @Override public void log(String message) {}
+        };
     }
 }

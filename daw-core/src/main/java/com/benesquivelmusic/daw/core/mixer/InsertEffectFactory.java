@@ -2,12 +2,10 @@ package com.benesquivelmusic.daw.core.mixer;
 
 import com.benesquivelmusic.daw.core.dsp.*;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 import java.util.function.BiConsumer;
 
 /**
@@ -68,6 +66,31 @@ public final class InsertEffectFactory {
         Objects.requireNonNull(type, "type must not be null");
         AudioProcessor processor = createProcessor(type, channels, sampleRate);
         return new InsertSlot(type.getDisplayName(), processor, type);
+    }
+
+    /**
+     * Creates an {@link InsertSlot} from any {@link DawPlugin} using the unified
+     * {@link DawPlugin#asAudioProcessor()} contract.
+     *
+     * <p>If the plugin returns a non-empty {@link Optional} from
+     * {@code asAudioProcessor()}, an insert slot is created using the plugin's
+     * descriptor name and its audio processor. If the plugin does not process
+     * audio (analyzers, utilities), an empty {@link Optional} is returned.</p>
+     *
+     * <p>This method enables the mixer to treat built-in effect plugins,
+     * external JAR plugins, and CLAP plugins uniformly — each is wired into the
+     * channel's effects chain through the same contract.</p>
+     *
+     * @param plugin the plugin to create an insert slot from
+     * @return an insert slot wrapping the plugin's audio processor, or empty
+     *         if the plugin does not process audio
+     */
+    public static Optional<InsertSlot> createSlotFromPlugin(DawPlugin plugin) {
+        Objects.requireNonNull(plugin, "plugin must not be null");
+        return plugin.asAudioProcessor()
+                .map(processor -> new InsertSlot(
+                        plugin.getDescriptor().name(),
+                        processor));
     }
 
     /**

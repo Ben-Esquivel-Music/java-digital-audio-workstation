@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.core.mixer.*;
 import com.benesquivelmusic.daw.core.undo.UndoHistoryListener;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
+import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 import javafx.application.Platform;
 import javafx.geometry.Pos;
@@ -134,6 +135,31 @@ public final class InsertEffectRack extends VBox {
         if (undoManager != null && historyListener != null) {
             undoManager.removeHistoryListener(historyListener);
         }
+    }
+
+    /**
+     * Inserts a {@link DawPlugin} into the mixer channel at the given slot
+     * index using the unified {@link DawPlugin#asAudioProcessor()} contract.
+     *
+     * <p>The plugin must already be initialized before calling this method.
+     * If the plugin provides an audio processor (via {@code asAudioProcessor()}),
+     * an {@link InsertSlot} is created and added to the channel's effects chain.
+     * If the plugin does not process audio (returns empty), this method returns
+     * {@code false} and the channel is unchanged.</p>
+     *
+     * @param slotIndex the slot index at which to insert the plugin
+     * @param plugin    the initialized plugin to insert
+     * @return {@code true} if the plugin was inserted, {@code false} if it
+     *         does not support audio processing
+     */
+    public boolean insertPlugin(int slotIndex, DawPlugin plugin) {
+        Objects.requireNonNull(plugin, "plugin must not be null");
+        Optional<InsertSlot> optSlot = InsertEffectFactory.createSlotFromPlugin(plugin);
+        if (optSlot.isEmpty()) {
+            return false;
+        }
+        addEffect(slotIndex, optSlot.get());
+        return true;
     }
 
     // ── Empty slot ──────────────────────────────────────────────────────────
