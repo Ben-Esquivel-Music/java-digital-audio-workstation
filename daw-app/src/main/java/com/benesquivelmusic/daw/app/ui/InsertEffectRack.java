@@ -25,6 +25,7 @@ import javafx.stage.Stage;
 
 import java.net.URLClassLoader;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -60,6 +61,15 @@ public final class InsertEffectRack extends VBox {
     private final UndoManager undoManager;
     private final UndoHistoryListener historyListener;
     private PluginRegistry pluginRegistry;
+
+    /**
+     * Resources associated with an externally-loaded plugin that must be
+     * released when the rack is disposed.
+     */
+    private record ExternalPluginResources(DawPlugin plugin, URLClassLoader classLoader) {}
+
+    /** Tracks external-plugin resources keyed by the InsertSlot they belong to. */
+    private final Map<InsertSlot, ExternalPluginResources> externalResources = new HashMap<>();
 
     /**
      * Creates a new insert-effects rack for the given mixer channel.
@@ -147,6 +157,15 @@ public final class InsertEffectRack extends VBox {
         if (undoManager != null && historyListener != null) {
             undoManager.removeHistoryListener(historyListener);
         }
+        // Dispose all tracked external-plugin resources
+        for (ExternalPluginResources res : externalResources.values()) {
+            try {
+                res.plugin().dispose();
+            } finally {
+                ExternalPluginLoader.closeQuietly(res.classLoader());
+            }
+        }
+        externalResources.clear();
     }
 
     /**
@@ -371,15 +390,26 @@ public final class InsertEffectRack extends VBox {
                 @Override public int getBufferSize() { return bufferSize; }
                 @Override public void log(String message) {}
             });
-            if (!insertPlugin(slotIndex, freshPlugin)) {
-                freshPlugin.dispose();
-                ExternalPluginLoader.closeQuietly(classLoader);
+            Optional<InsertSlot> optSlot = InsertEffectFactory.createSlotFromPlugin(freshPlugin);
+            if (optSlot.isEmpty()) {
+                try {
+                    freshPlugin.dispose();
+                } finally {
+                    ExternalPluginLoader.closeQuietly(classLoader);
+                }
                 showPickerError("Plugin \"" + freshPlugin.getDescriptor().name()
                         + "\" does not support audio processing.");
+                return;
             }
+            InsertSlot slot = optSlot.get();
+            externalResources.put(slot, new ExternalPluginResources(freshPlugin, classLoader));
+            addEffect(slotIndex, slot);
         } catch (Exception e) {
-            freshPlugin.dispose();
-            ExternalPluginLoader.closeQuietly(classLoader);
+            try {
+                freshPlugin.dispose();
+            } finally {
+                ExternalPluginLoader.closeQuietly(classLoader);
+            }
             showPickerError("Failed to initialize plugin: " + e.getMessage());
         }
     }
