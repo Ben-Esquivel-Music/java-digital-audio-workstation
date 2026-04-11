@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.plugin;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.plugin.testjar.ExternalEffectPlugin;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.midi.MidiEvent;
 import com.benesquivelmusic.daw.sdk.midi.SoundFontInfo;
@@ -10,9 +11,16 @@ import com.benesquivelmusic.daw.sdk.midi.SoundFontRenderer;
 import com.benesquivelmusic.daw.sdk.plugin.*;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.net.URI;
+import java.nio.file.FileSystem;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -30,6 +38,9 @@ class DawPluginAudioProcessingContractTest {
 
     private static final double SAMPLE_RATE = 44100.0;
     private static final int BUFFER_SIZE = 512;
+
+    @TempDir
+    Path tempDir;
 
     // ── Built-in effect plugins return a processor ─────────────────────────
 
@@ -304,6 +315,112 @@ class DawPluginAudioProcessingContractTest {
                 .isSameAs(compressor.asAudioProcessor().orElseThrow());
         assertThat(channel.getEffectsChain().getProcessors().get(1))
                 .isSameAs(reverb.asAudioProcessor().orElseThrow());
+    }
+
+    // ── External JAR plugin satisfies the contract ──────────────────────────
+
+    @Test
+    void externalJarPluginShouldLoadAndSatisfyContract() throws Exception {
+        Path jarPath = buildExternalPluginJar();
+        String className = ExternalEffectPlugin.class.getName();
+
+        DawPlugin plugin = ExternalPluginLoader.load(jarPath, className);
+        plugin.initialize(stubContext());
+
+        assertThat(plugin.getDescriptor().type()).isEqualTo(PluginType.EFFECT);
+        assertEffectPluginContract(plugin);
+    }
+
+    @Test
+    void externalJarPluginShouldWireIntoMixerChannel() throws Exception {
+        Path jarPath = buildExternalPluginJar();
+        String className = ExternalEffectPlugin.class.getName();
+
+        DawPlugin plugin = ExternalPluginLoader.load(jarPath, className);
+        plugin.initialize(stubContext());
+
+        InsertSlot slot = InsertEffectFactory.createSlotFromPlugin(plugin).orElseThrow();
+        MixerChannel channel = new MixerChannel("ExtTest");
+        channel.addInsert(slot);
+
+        assertThat(channel.getInsertCount()).isEqualTo(1);
+        assertThat(channel.getEffectsChain().getProcessors()).hasSize(1);
+    }
+
+    @Test
+    void externalJarPluginShouldProcessAudioThroughMixerChannel() throws Exception {
+        Path jarPath = buildExternalPluginJar();
+        String className = ExternalEffectPlugin.class.getName();
+
+        DawPlugin plugin = ExternalPluginLoader.load(jarPath, className);
+        plugin.initialize(stubContext());
+
+        InsertSlot slot = InsertEffectFactory.createSlotFromPlugin(plugin).orElseThrow();
+        MixerChannel channel = new MixerChannel("ExtTest");
+        channel.addInsert(slot);
+        channel.prepareEffectsChain(2, BUFFER_SIZE);
+
+        float[][] input = new float[2][BUFFER_SIZE];
+        float[][] output = new float[2][BUFFER_SIZE];
+        for (int i = 0; i < BUFFER_SIZE; i++) {
+            input[0][i] = 0.7f;
+            input[1][i] = -0.3f;
+        }
+
+        channel.getEffectsChain().process(input, output, BUFFER_SIZE);
+
+        // Pass-through processor copies input to output
+        assertThat(output[0][0]).isEqualTo(0.7f);
+        assertThat(output[1][0]).isEqualTo(-0.3f);
+    }
+
+    @Test
+    void externalJarPluginShouldReturnEmptyBeforeInitialize() throws Exception {
+        Path jarPath = buildExternalPluginJar();
+        String className = ExternalEffectPlugin.class.getName();
+
+        DawPlugin plugin = ExternalPluginLoader.load(jarPath, className);
+        // NOT initialized — should return empty
+        assertThat(plugin.asAudioProcessor()).isEmpty();
+    }
+
+    /**
+     * Builds a JAR file containing the compiled {@link ExternalEffectPlugin}
+     * class and its inner classes from the test classpath.
+     */
+    private Path buildExternalPluginJar() throws IOException {
+        Path jarPath = tempDir.resolve("test-external-plugin.jar");
+        URI jarUri = URI.create("jar:" + jarPath.toUri());
+
+        try (FileSystem jarFs = FileSystems.newFileSystem(jarUri, Map.of("create", "true"))) {
+            // Copy ExternalEffectPlugin and inner classes from test classpath
+            String baseName = ExternalEffectPlugin.class.getName().replace('.', '/');
+            String classResource = baseName + ".class";
+            copyClassToJar(jarFs, classResource);
+
+            // Copy inner classes (e.g., PassThroughProcessor)
+            for (Class<?> inner : ExternalEffectPlugin.class.getDeclaredClasses()) {
+                String innerResource = inner.getName().replace('.', '/') + ".class";
+                copyClassToJar(jarFs, innerResource);
+            }
+        }
+
+        return jarPath;
+    }
+
+    private static void copyClassToJar(FileSystem jarFs, String resourcePath) throws IOException {
+        try (var is = DawPluginAudioProcessingContractTest.class.getClassLoader()
+                .getResourceAsStream(resourcePath)) {
+            if (is == null) {
+                throw new IOException("Class resource not found on classpath: " + resourcePath);
+            }
+            Path entryPath = jarFs.getPath(resourcePath);
+            Path parent = entryPath.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            Files.copy(is, entryPath);
+        }
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────

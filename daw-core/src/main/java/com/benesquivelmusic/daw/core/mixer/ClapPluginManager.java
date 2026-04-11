@@ -117,9 +117,13 @@ public final class ClapPluginManager {
             throw new ClapException("Failed to load CLAP plugin: " + e.getMessage(), e);
         }
 
-        PluginDescriptor descriptor = host.getDescriptor();
-        ClapInsertEffect effect = new ClapInsertEffect(host);
-        return new InsertSlot(descriptor.name(), effect);
+        return InsertEffectFactory.createSlotFromPlugin(host)
+                .orElseThrow(() -> {
+                    safeDispose(host);
+                    return new ClapException(
+                            "CLAP plugin does not provide an AudioProcessor: "
+                                    + host.getDescriptor().name());
+                });
     }
 
     /**

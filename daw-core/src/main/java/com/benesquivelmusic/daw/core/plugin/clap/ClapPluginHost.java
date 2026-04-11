@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.core.plugin.clap;
 
 import com.benesquivelmusic.daw.core.audio.ringbuffer.LockFreeRingBuffer;
+import com.benesquivelmusic.daw.core.mixer.ClapInsertEffect;
+import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.*;
 
 import java.io.ByteArrayOutputStream;
@@ -12,6 +14,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * CLAP plugin host implementation using the Foreign Function &amp; Memory
@@ -145,6 +148,19 @@ public final class ClapPluginHost implements ExternalPluginHost {
     @Override
     public ExternalPluginFormat getFormat() {
         return ExternalPluginFormat.CLAP;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Overrides the default {@link ExternalPluginHost} implementation to
+     * return a crash-resilient {@link ClapInsertEffect} wrapper around this
+     * host. If the plugin throws during audio processing, the wrapper falls
+     * back to pass-through instead of crashing the DAW.</p>
+     */
+    @Override
+    public Optional<AudioProcessor> asAudioProcessor() {
+        return Optional.of(new ClapInsertEffect(this));
     }
 
     @Override

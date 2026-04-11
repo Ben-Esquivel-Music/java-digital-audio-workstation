@@ -1,10 +1,16 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.mixer.*;
+import com.benesquivelmusic.daw.core.plugin.ExternalPluginEntry;
+import com.benesquivelmusic.daw.core.plugin.PluginLoadException;
+import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
+import com.benesquivelmusic.daw.core.plugin.ExternalPluginLoader;
 import com.benesquivelmusic.daw.core.undo.UndoHistoryListener;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
+import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
+import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 import javafx.application.Platform;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
@@ -50,6 +56,7 @@ public final class InsertEffectRack extends VBox {
     private final double sampleRate;
     private final UndoManager undoManager;
     private final UndoHistoryListener historyListener;
+    private PluginRegistry pluginRegistry;
 
     /**
      * Creates a new insert-effects rack for the given mixer channel.
@@ -135,6 +142,17 @@ public final class InsertEffectRack extends VBox {
         if (undoManager != null && historyListener != null) {
             undoManager.removeHistoryListener(historyListener);
         }
+    }
+
+    /**
+     * Sets the plugin registry for this rack. When set, the effect picker
+     * dialog also offers registered external plugins (those with
+     * {@link PluginType#EFFECT} type) as additional insert options.
+     *
+     * @param registry the plugin registry, or {@code null} to disable
+     */
+    public void setPluginRegistry(PluginRegistry registry) {
+        this.pluginRegistry = registry;
     }
 
     /**
@@ -264,21 +282,81 @@ public final class InsertEffectRack extends VBox {
         List<InsertEffectType> types = InsertEffectFactory.availableTypes().stream()
                 .filter(t -> t != InsertEffectType.STEREO_IMAGER || audioChannels == 2)
                 .toList();
-        List<String> names = types.stream()
+        List<String> builtInNames = types.stream()
                 .map(InsertEffectType::getDisplayName)
                 .toList();
 
-        ChoiceDialog<String> dialog = new ChoiceDialog<>(names.getFirst(), names);
+        // Collect registered external plugins that process audio (EFFECT type)
+        List<ExternalPluginEntry> pluginEntries = new java.util.ArrayList<>();
+        List<String> pluginNames = new java.util.ArrayList<>();
+        if (pluginRegistry != null) {
+            for (var mapEntry : pluginRegistry.getLoadedPlugins().entrySet()) {
+                DawPlugin plugin = mapEntry.getValue();
+                if (plugin.getDescriptor().type() == PluginType.EFFECT) {
+                    pluginEntries.add(mapEntry.getKey());
+                    pluginNames.add("[ext] " + plugin.getDescriptor().name());
+                }
+            }
+        }
+
+        // Combine built-in and external plugin names
+        List<String> allNames = new java.util.ArrayList<>(builtInNames);
+        allNames.addAll(pluginNames);
+
+        if (allNames.isEmpty()) {
+            return;
+        }
+
+        ChoiceDialog<String> dialog = new ChoiceDialog<>(allNames.getFirst(), allNames);
         dialog.setTitle("Add Insert Effect");
         dialog.setHeaderText("Select an effect for slot " + (slotIndex + 1));
         dialog.setContentText("Effect:");
 
         Optional<String> result = dialog.showAndWait();
         result.ifPresent(selected -> {
-            InsertEffectType type = types.get(names.indexOf(selected));
-            InsertSlot slot = InsertEffectFactory.createSlot(type, audioChannels, sampleRate);
-            addEffect(slotIndex, slot);
+            int idx = allNames.indexOf(selected);
+            if (idx < builtInNames.size()) {
+                // Built-in effect via InsertEffectType path
+                InsertEffectType type = types.get(idx);
+                InsertSlot slot = InsertEffectFactory.createSlot(type, audioChannels, sampleRate);
+                addEffect(slotIndex, slot);
+            } else {
+                // External plugin via unified DawPlugin contract
+                int pluginIdx = idx - builtInNames.size();
+                ExternalPluginEntry entry = pluginEntries.get(pluginIdx);
+                loadAndInsertExternalPlugin(slotIndex, entry);
+            }
         });
+    }
+
+    /**
+     * Loads a fresh instance of an external plugin from its JAR entry,
+     * initializes it, and inserts it via the unified
+     * {@link DawPlugin#asAudioProcessor()} contract.
+     */
+    private void loadAndInsertExternalPlugin(int slotIndex, ExternalPluginEntry entry) {
+        try {
+            DawPlugin freshPlugin = ExternalPluginLoader.load(entry);
+            freshPlugin.initialize(new PluginContext() {
+                @Override public double getSampleRate() { return sampleRate; }
+                @Override public int getBufferSize() { return 512; }
+                @Override public void log(String message) {}
+            });
+            if (!insertPlugin(slotIndex, freshPlugin)) {
+                showPickerError("Plugin \"" + freshPlugin.getDescriptor().name()
+                        + "\" does not support audio processing.");
+            }
+        } catch (PluginLoadException e) {
+            showPickerError("Failed to load plugin: " + e.getMessage());
+        }
+    }
+
+    private void showPickerError(String message) {
+        Alert alert = new Alert(Alert.AlertType.ERROR);
+        alert.setTitle("Insert Effect Error");
+        alert.setHeaderText(null);
+        alert.setContentText(message);
+        alert.showAndWait();
     }
 
     // ── Undo-aware operations ───────────────────────────────────────────────
