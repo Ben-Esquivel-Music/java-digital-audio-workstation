@@ -108,7 +108,7 @@ public final class ReverbPlugin implements BuiltInDawPlugin {
         return List.of(
                 new PluginParameter(0, "Room Size", 0.0, 1.0, 0.5),
                 new PluginParameter(1, "Decay",     0.0, 1.0, 0.5),
-                new PluginParameter(2, "Damping",   0.0, 1.0, 0.5),
+                new PluginParameter(2, "Damping",   0.0, 1.0, 0.3),
                 new PluginParameter(3, "Mix",       0.0, 1.0, 0.3));
     }
 }
