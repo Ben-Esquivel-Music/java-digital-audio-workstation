@@ -276,7 +276,7 @@ public final class Mixer {
 
             if (!channel.getEffectsChain().isEmpty()) {
                 if (hasSidechainRouting(channel)) {
-                    processInsertsWithSidechain(channel, src, channelBuffers, numFrames);
+                    processInsertsWithSidechain(channel, src, channelBuffers, null, numFrames);
                 } else {
                     channel.getEffectsChain().process(src, src, numFrames);
                 }
@@ -483,7 +483,7 @@ public final class Mixer {
 
             if (!channel.getEffectsChain().isEmpty()) {
                 if (hasSidechainRouting(channel)) {
-                    processInsertsWithSidechain(channel, src, channelBuffers, numFrames);
+                    processInsertsWithSidechain(channel, src, channelBuffers, returnBuffers, numFrames);
                 } else {
                     channel.getEffectsChain().process(src, src, numFrames);
                 }
@@ -644,8 +644,8 @@ public final class Mixer {
      * <ul>
      *   <li>If the slot has a sidechain source and the processor is a
      *       {@link SidechainAwareProcessor}, look up the source channel's
-     *       buffer from {@code channelBuffers} and call
-     *       {@code processSidechain()}.</li>
+     *       buffer from {@code channelBuffers} (or {@code returnBuffers} for
+     *       return bus sources) and call {@code processSidechain()}.</li>
      *   <li>Otherwise, call the standard {@code process()} method.</li>
      * </ul>
      *
@@ -658,7 +658,9 @@ public final class Mixer {
      */
     @RealTimeSafe
     private void processInsertsWithSidechain(MixerChannel channel, float[][] src,
-                                             float[][][] channelBuffers, int numFrames) {
+                                             float[][][] channelBuffers,
+                                             float[][][] returnBuffers,
+                                             int numFrames) {
         List<InsertSlot> slots = channel.getInsertSlots();
 
         // Count active (non-bypassed) slots
@@ -708,7 +710,7 @@ public final class Mixer {
 
             MixerChannel scSource = slot.getSidechainSource();
             if (scSource != null && slot.getProcessor() instanceof SidechainAwareProcessor sap) {
-                float[][] scBuffer = findChannelBuffer(scSource, channelBuffers);
+                float[][] scBuffer = findChannelBuffer(scSource, channelBuffers, returnBuffers);
                 if (scBuffer != null) {
                     sap.processSidechain(currentInput, scBuffer, currentOutput, numFrames);
                 } else {
@@ -724,14 +726,29 @@ public final class Mixer {
 
     /**
      * Finds the audio buffer for the given mixer channel from the channel buffers
-     * array. Returns {@code null} if the channel is not found.
+     * array, or from the return buffers if the target is a return bus. Returns
+     * {@code null} if the channel is not found in either set.
+     *
+     * @param target         the mixer channel to look up
+     * @param channelBuffers per-channel audio buffers (regular channels)
+     * @param returnBuffers  per-return-bus audio buffers, or {@code null} if unavailable
+     * @return the audio buffer for the target, or {@code null}
      */
     @RealTimeSafe
-    private float[][] findChannelBuffer(MixerChannel target, float[][][] channelBuffers) {
+    private float[][] findChannelBuffer(MixerChannel target, float[][][] channelBuffers,
+                                        float[][][] returnBuffers) {
         int count = Math.min(channels.size(), channelBuffers.length);
         for (int i = 0; i < count; i++) {
             if (channels.get(i) == target) {
                 return channelBuffers[i];
+            }
+        }
+        if (returnBuffers != null) {
+            int rbCount = Math.min(returnBuses.size(), returnBuffers.length);
+            for (int i = 0; i < rbCount; i++) {
+                if (returnBuses.get(i) == target) {
+                    return returnBuffers[i];
+                }
             }
         }
         return null;
