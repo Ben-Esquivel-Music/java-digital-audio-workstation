@@ -118,7 +118,6 @@ final class MidiEditorView extends VBox {
 
         getChildren().addAll(midiLabel, scrollPane, velocityLabel, velocityCanvas);
         setSpacing(4);
-        VBox.setVgrow(this, Priority.ALWAYS);
     }
 
     // ── Canvas accessors (for testing) ──────────────────────────────────────
