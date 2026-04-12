@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.mixer;
 
+import com.benesquivelmusic.daw.core.audio.PluginDelayCompensation;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 import java.util.*;
@@ -25,11 +26,14 @@ public final class Mixer {
     private final List<MixerChannel> channels = new ArrayList<>();
     private final List<MixerChannel> returnBuses = new ArrayList<>();
     private final MixerChannel masterChannel;
+    private final PluginDelayCompensation delayCompensation = new PluginDelayCompensation();
+    private int preparedAudioChannels;
 
     /** Creates a new mixer with an empty channel list, a default master channel, and a reverb return aux bus. */
     public Mixer() {
         this.masterChannel = new MixerChannel("Master");
         MixerChannel defaultReturn = new MixerChannel("Reverb Return");
+        defaultReturn.setOnEffectsChainChanged(this::recalculateDelayCompensation);
         returnBuses.add(defaultReturn);
     }
 
@@ -40,7 +44,9 @@ public final class Mixer {
      */
     public void addChannel(MixerChannel channel) {
         Objects.requireNonNull(channel, "channel must not be null");
+        channel.setOnEffectsChainChanged(this::recalculateDelayCompensation);
         channels.add(channel);
+        recalculateDelayCompensation();
     }
 
     /**
@@ -50,7 +56,12 @@ public final class Mixer {
      * @return {@code true} if the channel was removed
      */
     public boolean removeChannel(MixerChannel channel) {
-        return channels.remove(channel);
+        boolean removed = channels.remove(channel);
+        if (removed) {
+            channel.setOnEffectsChainChanged(null);
+            recalculateDelayCompensation();
+        }
+        return removed;
     }
 
     /**
@@ -104,7 +115,9 @@ public final class Mixer {
                     "cannot exceed " + MAX_RETURN_BUSES + " return buses");
         }
         MixerChannel returnBus = new MixerChannel(name);
+        returnBus.setOnEffectsChainChanged(this::recalculateDelayCompensation);
         returnBuses.add(returnBus);
+        recalculateDelayCompensation();
         return returnBus;
     }
 
@@ -117,7 +130,9 @@ public final class Mixer {
     public void addReturnBus(MixerChannel returnBus) {
         Objects.requireNonNull(returnBus, "returnBus must not be null");
         if (!returnBuses.contains(returnBus)) {
+            returnBus.setOnEffectsChainChanged(this::recalculateDelayCompensation);
             returnBuses.add(returnBus);
+            recalculateDelayCompensation();
         }
     }
 
@@ -131,12 +146,14 @@ public final class Mixer {
     public boolean removeReturnBus(MixerChannel returnBus) {
         boolean removed = returnBuses.remove(returnBus);
         if (removed) {
+            returnBus.setOnEffectsChainChanged(null);
             for (MixerChannel channel : channels) {
                 Send send = channel.getSendForTarget(returnBus);
                 if (send != null) {
                     channel.removeSend(send);
                 }
             }
+            recalculateDelayCompensation();
         }
         return removed;
     }
@@ -192,6 +209,7 @@ public final class Mixer {
      * @param blockSize     the number of sample frames per processing block
      */
     public void prepareForPlayback(int audioChannels, int blockSize) {
+        this.preparedAudioChannels = audioChannels;
         for (MixerChannel channel : channels) {
             channel.prepareEffectsChain(audioChannels, blockSize);
         }
@@ -199,6 +217,7 @@ public final class Mixer {
             returnBus.prepareEffectsChain(audioChannels, blockSize);
         }
         masterChannel.prepareEffectsChain(audioChannels, blockSize);
+        recalculateDelayCompensation();
     }
 
     /**
@@ -248,6 +267,10 @@ public final class Mixer {
             if (!channel.getEffectsChain().isEmpty()) {
                 channel.getEffectsChain().process(src, src, numFrames);
             }
+
+            // Apply plugin delay compensation to align this channel with
+            // the highest-latency channel at the summing bus
+            delayCompensation.applyToChannel(i, src, numFrames);
 
             float volume = (float) channel.getVolume();
             int audioChannels = Math.min(src.length, outputBuffer.length);
@@ -367,6 +390,14 @@ public final class Mixer {
             }
         }
 
+        // Apply aux bus insert effects
+        if (!auxBus.getEffectsChain().isEmpty()) {
+            auxBus.getEffectsChain().process(auxOutputBuffer, auxOutputBuffer, numFrames);
+        }
+
+        // Apply delay compensation for the aux bus (return bus index 0)
+        delayCompensation.applyToReturnBus(0, auxOutputBuffer, numFrames);
+
         // Apply aux bus volume
         float auxVolume = (float) auxBus.getVolume();
         if (!auxBus.isMuted()) {
@@ -441,6 +472,54 @@ public final class Mixer {
             }
 
             float volume = (float) channel.getVolume();
+
+            // Route sends to return buses BEFORE applying delay compensation
+            // so that return bus paths are compensated independently
+            List<Send> sends = channel.getSends();
+            for (int s = 0; s < sends.size(); s++) {
+                Send send = sends.get(s);
+                float sendLevel = (float) send.getLevel();
+                if (sendLevel <= 0.0f) {
+                    continue;
+                }
+
+                // Find the return bus index via identity comparison to avoid
+                // the O(n) equals()-based indexOf call per send per block
+                MixerChannel target = send.getTarget();
+                int returnIndex = -1;
+                for (int r = 0; r < returnBusCount; r++) {
+                    if (returnBuses.get(r) == target) {
+                        returnIndex = r;
+                        break;
+                    }
+                }
+                if (returnIndex < 0) {
+                    continue;
+                }
+
+                float[][] returnBuf = returnBuffers[returnIndex];
+                int returnAudioChannels = Math.min(src.length, returnBuf.length);
+
+                if (send.getMode() == SendMode.PRE_FADER) {
+                    for (int ch = 0; ch < returnAudioChannels; ch++) {
+                        for (int f = 0; f < numFrames; f++) {
+                            returnBuf[ch][f] += src[ch][f] * sendLevel;
+                        }
+                    }
+                } else {
+                    // Post-fader: apply channel volume to send
+                    for (int ch = 0; ch < returnAudioChannels; ch++) {
+                        for (int f = 0; f < numFrames; f++) {
+                            returnBuf[ch][f] += src[ch][f] * volume * sendLevel;
+                        }
+                    }
+                }
+            }
+
+            // Apply plugin delay compensation AFTER sends are tapped so
+            // that the direct path is aligned at the summing bus
+            delayCompensation.applyToChannel(i, src, numFrames);
+
             int audioChannels = Math.min(src.length, outputBuffer.length);
 
             // Mix channel into main output with volume and pan
@@ -474,45 +553,21 @@ public final class Mixer {
                     }
                 }
             }
-
-            // Route sends to return buses
-            List<Send> sends = channel.getSends();
-            for (int s = 0; s < sends.size(); s++) {
-                Send send = sends.get(s);
-                float sendLevel = (float) send.getLevel();
-                if (sendLevel <= 0.0f) {
-                    continue;
-                }
-
-                int returnIndex = returnBuses.indexOf(send.getTarget());
-                if (returnIndex < 0 || returnIndex >= returnBusCount) {
-                    continue;
-                }
-
-                float[][] returnBuf = returnBuffers[returnIndex];
-                int returnAudioChannels = Math.min(src.length, returnBuf.length);
-
-                if (send.getMode() == SendMode.PRE_FADER) {
-                    for (int ch = 0; ch < returnAudioChannels; ch++) {
-                        for (int f = 0; f < numFrames; f++) {
-                            returnBuf[ch][f] += src[ch][f] * sendLevel;
-                        }
-                    }
-                } else {
-                    // Post-fader: apply channel volume to send
-                    for (int ch = 0; ch < returnAudioChannels; ch++) {
-                        for (int f = 0; f < numFrames; f++) {
-                            returnBuf[ch][f] += src[ch][f] * volume * sendLevel;
-                        }
-                    }
-                }
-            }
         }
 
-        // Apply return bus volume and sum into main output
+        // Process return bus effects, apply compensation, and sum into main output
         for (int r = 0; r < returnBusCount; r++) {
             MixerChannel returnBus = returnBuses.get(r);
             float[][] returnBuf = returnBuffers[r];
+
+            // Apply return bus insert effects
+            if (!returnBus.getEffectsChain().isEmpty()) {
+                returnBus.getEffectsChain().process(returnBuf, returnBuf, numFrames);
+            }
+
+            // Apply delay compensation for the return bus
+            delayCompensation.applyToReturnBus(r, returnBuf, numFrames);
+
             float returnVolume = (float) returnBus.getVolume();
             int returnAudioChannels = Math.min(returnBuf.length, outputBuffer.length);
 
@@ -543,5 +598,46 @@ public final class Mixer {
                 Arrays.fill(ch, 0, numFrames, 0.0f);
             }
         }
+    }
+
+    // ── Plugin Delay Compensation ──────────────────────────────────────────
+
+    /**
+     * Returns the {@link PluginDelayCompensation} instance managing per-channel
+     * delay compensation for this mixer.
+     *
+     * @return the delay compensation manager
+     */
+    public PluginDelayCompensation getDelayCompensation() {
+        return delayCompensation;
+    }
+
+    /**
+     * Returns the total system latency in samples — the maximum insert chain
+     * latency across all channels and return buses.
+     *
+     * <p>The transport can use this value to offset the playback start position
+     * so that the first audible sample aligns with beat 1.</p>
+     *
+     * @return the system latency in sample frames
+     */
+    public int getSystemLatencySamples() {
+        return delayCompensation.getMaxLatencySamples();
+    }
+
+    /**
+     * Recalculates delay compensation for all channels and return buses.
+     *
+     * <p>Called automatically when insert effects are added, removed, reordered,
+     * or bypassed on any channel managed by this mixer, and when
+     * {@link #prepareForPlayback(int, int)} is called.</p>
+     */
+    private void recalculateDelayCompensation() {
+        int audioChannels = preparedAudioChannels;
+        if (audioChannels <= 0) {
+            // Not yet prepared — use a safe default for latency calculation only
+            audioChannels = 2;
+        }
+        delayCompensation.recalculate(channels, returnBuses, audioChannels);
     }
 }

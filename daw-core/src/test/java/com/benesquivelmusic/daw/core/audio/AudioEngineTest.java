@@ -3,9 +3,14 @@ package com.benesquivelmusic.daw.core.audio;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackType;
+import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -237,5 +242,80 @@ class AudioEngineTest {
 
         @Override
         public int getOutputChannelCount() { return 1; }
+    }
+
+    /**
+     * A processor that reports latency but passes audio through unmodified.
+     */
+    private record LatencyProcessor(int latency) implements AudioProcessor {
+        @Override
+        public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
+            for (int ch = 0; ch < inputBuffer.length; ch++) {
+                System.arraycopy(inputBuffer[ch], 0, outputBuffer[ch], 0, numFrames);
+            }
+        }
+        @Override public void reset() {}
+        @Override public int getInputChannelCount() { return 1; }
+        @Override public int getOutputChannelCount() { return 1; }
+        @Override public int getLatencySamples() { return latency; }
+    }
+
+    @Test
+    void shouldOffsetRenderPositionBySystemLatency() {
+        // Set up a mono, 8-sample-buffer engine at 120 BPM, 44100 Hz
+        // At 120 BPM, 44100 Hz: samplesPerBeat = 44100 * 60 / 120 = 22050
+        // A 4-sample latency → renderOffsetBeats = 4 / 22050 ≈ 0.000181 beats
+        AudioFormat format = new AudioFormat(44_100.0, 1, 16, 8);
+        AudioEngine engine = new AudioEngine(format);
+        engine.start();
+
+        Transport transport = new Transport();
+        transport.setPositionInBeats(0.0);
+        transport.play();
+
+        Mixer mixer = new Mixer();
+        MixerChannel ch1 = new MixerChannel("Ch1");
+        // Add a 4-sample latency insert — this sets systemLatency = 4
+        ch1.addInsert(new InsertSlot("Latent", new LatencyProcessor(4)));
+        mixer.addChannel(ch1);
+
+        // Create a track with a ramp clip starting at beat 0 so we can
+        // verify which sample index the engine reads from.
+        Track track = new Track("Track1", TrackType.AUDIO);
+        float[][] clipAudio = new float[1][22050];
+        for (int i = 0; i < clipAudio[0].length; i++) {
+            clipAudio[0][i] = (float) (i + 1);   // ramp: 1, 2, 3, 4, 5, 6, ...
+        }
+        AudioClip clip = new AudioClip("Clip1", 0.0, 1.0, "test.wav");
+        clip.setAudioData(clipAudio);
+        track.addClip(clip);
+
+        engine.setTransport(transport);
+        engine.setMixer(mixer);
+        engine.setTracks(List.of(track));
+
+        // Verify getSystemLatencySamples() reports the expected latency
+        assertThat(engine.getSystemLatencySamples()).isEqualTo(4);
+
+        // Process one block. With a 4-sample render offset the engine reads
+        // clip data starting at sample index 4 (ramp values 5, 6, 7, 8, ...)
+        // instead of index 0 (ramp values 1, 2, 3, 4, ...).
+        float[][] input = new float[1][8];
+        float[][] output = new float[1][8];
+        engine.processBlock(input, output, 8);
+
+        // The output should start at the offset position in the ramp.
+        // With only one channel at max latency, PDC compensation = 0 for this
+        // channel, so the render offset determines which samples appear.
+        // Ramp uses (i+1) to distinguish valid audio from silence (0.0f).
+        // Ramp index 4 has value 5.0f, index 5 → 6.0f, etc.
+        assertThat(output[0][0]).isEqualTo(5.0f);
+        assertThat(output[0][1]).isEqualTo(6.0f);
+        assertThat(output[0][2]).isEqualTo(7.0f);
+        assertThat(output[0][3]).isEqualTo(8.0f);
+        assertThat(output[0][4]).isEqualTo(9.0f);
+        assertThat(output[0][5]).isEqualTo(10.0f);
+        assertThat(output[0][6]).isEqualTo(11.0f);
+        assertThat(output[0][7]).isEqualTo(12.0f);
     }
 }

@@ -63,6 +63,7 @@ public final class InsertEffectRack extends VBox {
     private final UndoManager undoManager;
     private final UndoHistoryListener historyListener;
     private PluginRegistry pluginRegistry;
+    private Runnable onSlotsChanged;
 
     /**
      * Resources associated with an externally-loaded plugin that must be
@@ -155,6 +156,12 @@ public final class InsertEffectRack extends VBox {
             }
             getChildren().add(emptyBtn);
         }
+
+        // Notify listener (e.g., MixerView latency label) that slots changed
+        Runnable cb = onSlotsChanged;
+        if (cb != null) {
+            cb.run();
+        }
     }
 
     /**
@@ -162,6 +169,17 @@ public final class InsertEffectRack extends VBox {
      */
     MixerChannel getChannel() {
         return channel;
+    }
+
+    /**
+     * Sets a callback invoked after the slot UI is rebuilt (e.g., when
+     * inserts are added, removed, reordered, or bypassed). The
+     * {@link MixerView} uses this to refresh latency labels.
+     *
+     * @param callback the callback to invoke, or {@code null} to clear
+     */
+    void setOnSlotsChanged(Runnable callback) {
+        this.onSlotsChanged = callback;
     }
 
     /**

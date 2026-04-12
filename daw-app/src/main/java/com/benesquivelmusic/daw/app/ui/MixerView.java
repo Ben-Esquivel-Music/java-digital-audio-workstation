@@ -431,8 +431,18 @@ public final class MixerView extends VBox {
         insertRack.setPluginRegistry(pluginRegistry);
         activeInsertRacks.add(insertRack);
 
+        // Per-channel latency label for plugin delay compensation (PDC)
+        Label latencyLabel = new Label();
+        latencyLabel.getStyleClass().add("mixer-channel-name");
+        latencyLabel.setMaxWidth(CHANNEL_WIDTH - 12);
+        latencyLabel.setStyle("-fx-font-size: 9px; -fx-text-fill: #888888;");
+        updateLatencyLabel(latencyLabel, mixerChannel, sr);
+
+        // Update the latency label whenever inserts are added/removed/reordered/bypassed
+        insertRack.setOnSlotsChanged(() -> updateLatencyLabel(latencyLabel, mixerChannel, sr));
+
         strip.getChildren().addAll(
-                nameLabel, typeIcon, insertRack, levelMeter, volumeFader,
+                nameLabel, typeIcon, insertRack, latencyLabel, levelMeter, volumeFader,
                 panLabel, panSlider, buttonRow, pannerBtn,
                 sendBox, sendLabel, sendSlider);
 
@@ -532,10 +542,20 @@ public final class MixerView extends VBox {
         insertRack.setPluginRegistry(pluginRegistry);
         activeInsertRacks.add(insertRack);
 
+        // Per-bus latency label for plugin delay compensation (PDC)
+        Label latencyLabel = new Label();
+        latencyLabel.getStyleClass().add("mixer-channel-name");
+        latencyLabel.setMaxWidth(CHANNEL_WIDTH - 12);
+        latencyLabel.setStyle("-fx-font-size: 9px; -fx-text-fill: #888888;");
+        updateLatencyLabel(latencyLabel, returnBus, sr);
+
+        // Update the latency label whenever inserts are added/removed/reordered/bypassed
+        insertRack.setOnSlotsChanged(() -> updateLatencyLabel(latencyLabel, returnBus, sr));
+
         Node busIcon = IconNode.of(DawIcon.MIXER, CONTROL_ICON_SIZE);
 
         strip.getChildren().addAll(
-                nameLabel, busIcon, insertRack, levelMeter, volumeFader,
+                nameLabel, busIcon, insertRack, latencyLabel, levelMeter, volumeFader,
                 panLabel, panSlider, buttonRow);
 
         return strip;
@@ -617,5 +637,22 @@ public final class MixerView extends VBox {
             case AUDIO_OBJECT -> IconNode.of(DawIcon.PAN, CONTROL_ICON_SIZE);
             case REFERENCE    -> IconNode.of(DawIcon.HEADPHONES, CONTROL_ICON_SIZE);
         };
+    }
+
+    /**
+     * Updates a latency label to reflect the current insert-chain latency of
+     * the given mixer channel. Called once during strip construction and again
+     * each time the {@link InsertEffectRack} rebuilds its slots.
+     */
+    private static void updateLatencyLabel(Label label, MixerChannel channel, double sampleRate) {
+        int latencySamples = channel.getEffectsChain().getTotalLatencySamples();
+        if (latencySamples > 0) {
+            double latencyMs = latencySamples / sampleRate * 1000.0;
+            label.setText(String.format("%.1f ms", latencyMs));
+            label.setTooltip(new Tooltip(latencySamples + " samples latency"));
+        } else {
+            label.setText("");
+            label.setTooltip(null);
+        }
     }
 }

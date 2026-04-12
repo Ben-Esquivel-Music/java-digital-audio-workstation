@@ -151,6 +151,26 @@ public final class EffectsChain {
     }
 
     /**
+     * Returns the total processing latency of this chain, in samples.
+     *
+     * <p>The total latency is the sum of {@link AudioProcessor#getLatencySamples()}
+     * across all processors currently in the chain. If the chain is
+     * {@linkplain #isBypassed() bypassed} or empty, the latency is zero.</p>
+     *
+     * @return total latency in sample frames, always &ge; 0
+     */
+    public int getTotalLatencySamples() {
+        if (bypassed || processors.isEmpty()) {
+            return 0;
+        }
+        int total = 0;
+        for (AudioProcessor processor : processors) {
+            total += processor.getLatencySamples();
+        }
+        return total;
+    }
+
+    /**
      * Resets all processors in the chain.
      */
     public void reset() {
