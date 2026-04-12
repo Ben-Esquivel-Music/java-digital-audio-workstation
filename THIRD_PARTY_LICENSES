@@ -1,0 +1,42 @@
+Third-Party Libraries
+=====================
+
+This project bundles or links to the following third-party native
+libraries at runtime. Each library retains its own license, included
+in its directory under lib/.
+
+
+1. LAME (libmp3lame) — MP3 Encoder
+   Version : 3.99.5
+   License : GNU Library General Public License (LGPL), version 2
+   Website : https://lame.sourceforge.io
+   Files   : lib/libmp3lame/
+   Notice  : Full license text in lib/libmp3lame/COPYING
+
+2. PortAudio — Portable Real-Time Audio I/O
+   Version : v19.7+
+   License : MIT License
+   Website : http://www.portaudio.com
+   Files   : lib/portaudio/
+   Notice  : Full license text in lib/portaudio/LICENSE.txt
+
+3. FluidSynth — Software SoundFont Synthesizer
+   Version : 2.5.3
+   License : GNU Lesser General Public License (LGPL), version 2.1
+   Website : https://www.fluidsynth.org
+   Files   : lib/fluidsynth-2.5.3/
+   Notice  : Full license text in lib/fluidsynth-2.5.3/fluidsynth-2.5.3/LICENSE
+
+4. CLAP — CLever Audio Plugin API
+   Version : 1.2.7
+   License : MIT License
+   Website : https://cleveraudio.org
+   Files   : lib/Clap-1.2.7/
+   Notice  : Full license text in lib/Clap-1.2.7/LICENSE
+
+5. RoomAcoustiCpp — Room Acoustics Library
+   Version : 1.0.1
+   License : GNU General Public License (GPL), version 3
+   Website : https://github.com/audiolabs/RoomAcoustiCpp
+   Files   : lib/RoomAcoustiCpp-1.0.1/
+   Notice  : Full license text in lib/RoomAcoustiCpp-1.0.1/RoomAcoustiCpp-1.0.1/LICENSE
