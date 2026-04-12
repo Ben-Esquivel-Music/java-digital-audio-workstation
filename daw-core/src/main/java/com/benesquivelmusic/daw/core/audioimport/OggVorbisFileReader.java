@@ -5,6 +5,8 @@ import com.benesquivelmusic.daw.core.audio.NativeLibraryLoader;
 import java.io.IOException;
 import java.lang.foreign.*;
 import java.lang.invoke.MethodHandle;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Objects;
@@ -116,8 +118,14 @@ public final class OggVorbisFileReader {
             // Allocate OggVorbis_File struct
             MemorySegment vf = arena.allocate(SIZEOF_OGG_VORBIS_FILE);
 
-            // Open the file — ov_fopen takes a C string path
-            MemorySegment nativePath = arena.allocateFrom(path.toAbsolutePath().toString());
+            // Open the file — ov_fopen takes a C string path.
+            // On Unix/macOS the filesystem encoding is UTF-8.
+            // On Windows, fopen() expects the process ANSI codepage, so we
+            // use the JVM's "native.encoding" property (JDK 17+) which
+            // reflects the OS native charset rather than Java's default UTF-8.
+            String pathStr = path.toAbsolutePath().toString();
+            Charset pathCharset = resolveNativePathCharset();
+            MemorySegment nativePath = arena.allocateFrom(pathStr, pathCharset);
             int openResult = (int) lib.ovFopen.invoke(nativePath, vf);
             if (openResult != 0) {
                 throw new IOException("OGG Vorbis open failed: " + errorMessage(openResult));
@@ -138,9 +146,13 @@ public final class OggVorbisFileReader {
                 } else {
                     rate = viPtr.get(ValueLayout.JAVA_INT, VI_RATE_OFFSET);
                 }
+                if (rate <= 0 || rate > Integer.MAX_VALUE) {
+                    throw new IOException("OGG Vorbis decode failed: invalid stream info "
+                            + "(channels=" + channels + ", sampleRate=" + rate + ")");
+                }
                 int sampleRate = (int) rate;
 
-                if (channels <= 0 || sampleRate <= 0) {
+                if (channels <= 0) {
                     throw new IOException("OGG Vorbis decode failed: invalid stream info "
                             + "(channels=" + channels + ", sampleRate=" + sampleRate + ")");
                 }
@@ -197,10 +209,11 @@ public final class OggVorbisFileReader {
                         channelBuf = channelBuf.reinterpret(
                                 (long) decodedFrames * Float.BYTES);
 
-                        for (int i = 0; i < decodedFrames; i++) {
-                            audioData[ch][framesRead + i] =
-                                    channelBuf.getAtIndex(ValueLayout.JAVA_FLOAT, i);
-                        }
+                        // Bulk copy native float buffer → Java array
+                        MemorySegment destination = MemorySegment.ofArray(audioData[ch])
+                                .asSlice((long) framesRead * Float.BYTES,
+                                        (long) decodedFrames * Float.BYTES);
+                        destination.copyFrom(channelBuf);
                     }
 
                     framesRead += decodedFrames;
@@ -249,6 +262,26 @@ public final class OggVorbisFileReader {
             case OV_ENOSEEK -> "OV_ENOSEEK: stream is not seekable";
             default -> "unknown error code " + code;
         };
+    }
+
+    /**
+     * Returns the charset that the platform's C runtime {@code fopen()} expects
+     * for file paths. On Unix/macOS this is UTF-8; on Windows it is typically
+     * the ANSI codepage (e.g., windows-1252). Since JDK 18+ defaults Java's
+     * {@code Charset.defaultCharset()} to UTF-8 regardless of platform, we
+     * instead read the {@code native.encoding} system property (JDK 17+) which
+     * reports the actual OS native encoding.
+     */
+    private static Charset resolveNativePathCharset() {
+        String nativeEncoding = System.getProperty("native.encoding");
+        if (nativeEncoding != null) {
+            try {
+                return Charset.forName(nativeEncoding);
+            } catch (IllegalArgumentException _) {
+                // unsupported charset name — fall through to UTF-8
+            }
+        }
+        return StandardCharsets.UTF_8;
     }
 
     // ── Struct size computation ────────────────────────────────────────

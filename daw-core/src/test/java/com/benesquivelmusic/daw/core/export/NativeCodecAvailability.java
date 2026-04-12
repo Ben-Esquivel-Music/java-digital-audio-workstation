@@ -47,17 +47,26 @@ public final class NativeCodecAvailability {
         }
     }
 
-    /** Returns {@code true} if libvorbisfile (and its dependencies libogg/libvorbis) are available. */
+    /**
+     * Returns {@code true} if libvorbisfile and its runtime dependencies
+     * (libogg + libvorbis) are available on this system.
+     *
+     * <p>Unlike {@link #isVorbisAvailable()}, this does <strong>not</strong>
+     * require libvorbisenc — decoding only needs ogg + vorbis + vorbisfile.</p>
+     */
     public static boolean isVorbisFileAvailable() {
         String os = System.getProperty("os.name", "").toLowerCase();
         if (os.contains("win")) {
-            return isVorbisAvailable()
+            return isAnyLibraryAvailable("ogg", "libogg")
+                    && isAnyLibraryAvailable("vorbis", "libvorbis")
                     && isAnyLibraryAvailable("vorbisfile", "libvorbisfile");
         } else if (os.contains("mac")) {
-            return isVorbisAvailable()
+            return isAnyLibraryAvailable("libogg.dylib", "libogg.0.dylib")
+                    && isAnyLibraryAvailable("libvorbis.dylib", "libvorbis.0.dylib")
                     && isAnyLibraryAvailable("libvorbisfile.dylib", "libvorbisfile.3.dylib");
         } else {
-            return isVorbisAvailable()
+            return isAnyLibraryAvailable("libogg.so.0", "libogg.so")
+                    && isAnyLibraryAvailable("libvorbis.so.0", "libvorbis.so")
                     && isAnyLibraryAvailable("libvorbisfile.so.3", "libvorbisfile.so");
         }
     }
