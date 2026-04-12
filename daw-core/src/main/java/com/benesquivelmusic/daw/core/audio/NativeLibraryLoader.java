@@ -108,8 +108,19 @@ public final class NativeLibraryLoader {
 
     // ── Internal helpers ───────────────────────────────────────────────
 
-    private static String[] platformLibraryNames(String os, String baseName,
-                                                  int soVersion) {
+    /**
+     * Returns platform-specific library file names for the given base name
+     * and SOVERSION. This is the single source of truth for platform name
+     * resolution, shared by both {@link NativeLibraryLoader} and
+     * {@link NativeLibraryDetector}.
+     *
+     * @param os        lowercase OS name from {@code os.name}
+     * @param baseName  the library base name (e.g. "vorbis")
+     * @param soVersion the SONAME version number
+     * @return candidate file names in priority order
+     */
+    static String[] platformLibraryNames(String os, String baseName,
+                                          int soVersion) {
         if (os.contains("win")) {
             return new String[]{baseName + ".dll", "lib" + baseName + ".dll"};
         } else if (os.contains("mac")) {

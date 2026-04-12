@@ -65,7 +65,11 @@
                  directory under target/dist/native/<os-arch>/. The set of
                  files is not hardcoded — everything in the native output
                  directory is copied, so additions to DAW_NATIVE_TARGETS in
-                 lib/CMakeLists.txt are picked up automatically. -->
+                 lib/CMakeLists.txt are picked up automatically.
+
+                 failonerror is true so an incomplete distribution (missing
+                 native libs or license notices) cannot be produced silently.
+                 Use -DskipNativeBuild=true if you do not need native libs. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-antrun-plugin</artifactId>
@@ -91,9 +95,9 @@
                                 <property name="arch.id" value="x64"/>
                                 <property name="dist.native.dir"
                                           value="${project.build.directory}/dist/native/${os.id}-${arch.id}"/>
-                                <!-- Copy native libs (if the source dir exists) -->
+                                <!-- Copy native libs -->
                                 <mkdir dir="${dist.native.dir}"/>
-                                <copy todir="${dist.native.dir}" failonerror="false">
+                                <copy todir="${dist.native.dir}" failonerror="true">
                                     <fileset dir="${native.libs.dir}"
                                              includes="*.so,*.so.*,*.dylib,*.dll"
                                              erroronmissingdir="false"/>
@@ -101,7 +105,7 @@
                                 <!-- Copy THIRD_PARTY_NOTICES.md to dist root -->
                                 <copy file="${maven.multiModuleProjectDirectory}/THIRD_PARTY_NOTICES.md"
                                       todir="${project.build.directory}/dist"
-                                      failonerror="false"/>
+                                      failonerror="true"/>
                             </target>
                         </configuration>
                     </execution>

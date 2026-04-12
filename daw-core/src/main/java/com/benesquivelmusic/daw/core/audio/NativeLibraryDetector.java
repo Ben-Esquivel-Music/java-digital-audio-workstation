@@ -70,7 +70,7 @@ public final class NativeLibraryDetector {
     static NativeLibraryStatus detect(String os, String displayName,
                                       String baseName, int soVersion,
                                       String requiredFor) {
-        String[] names = platformLibraryNames(os, baseName, soVersion);
+        String[] names = NativeLibraryLoader.platformLibraryNames(os, baseName, soVersion);
 
         // 1. Search bundled libraries in java.library.path
         String bundledPath = searchLibraryPath(names);
@@ -85,7 +85,7 @@ public final class NativeLibraryDetector {
                 // Library is loadable — try to resolve its absolute path
                 String resolved = resolveSystemLibraryPath(os, name);
                 return NativeLibraryStatus.found(displayName, requiredFor, resolved);
-            } catch (IllegalArgumentException _) {
+            } catch (IllegalArgumentException | UnsatisfiedLinkError _) {
                 // try next candidate
             }
         }
@@ -119,7 +119,7 @@ public final class NativeLibraryDetector {
                         try (Arena arena = Arena.ofConfined()) {
                             SymbolLookup.libraryLookup(candidate, arena);
                             return candidate.toString();
-                        } catch (IllegalArgumentException _) {
+                        } catch (IllegalArgumentException | UnsatisfiedLinkError _) {
                             // file exists but not loadable — try next
                         }
                     }
@@ -174,20 +174,5 @@ public final class NativeLibraryDetector {
             }
         }
         return "(system: " + fileName + ")";
-    }
-
-    private static String[] platformLibraryNames(String os, String baseName,
-                                                  int soVersion) {
-        if (os.contains("win")) {
-            return new String[]{baseName + ".dll", "lib" + baseName + ".dll"};
-        } else if (os.contains("mac")) {
-            return new String[]{
-                    "lib" + baseName + "." + soVersion + ".dylib",
-                    "lib" + baseName + ".dylib"};
-        } else {
-            return new String[]{
-                    "lib" + baseName + ".so." + soVersion,
-                    "lib" + baseName + ".so"};
-        }
     }
 }

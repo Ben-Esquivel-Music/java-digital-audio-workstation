@@ -10,8 +10,14 @@ import java.util.Objects;
  * @param requiredFor  a description of what this library is needed for
  *                     (e.g. "OGG Vorbis import and export")
  * @param available    {@code true} if the library was found and is loadable
- * @param detectedPath the resolved absolute path from which the library was
- *                     loaded, or an empty string if not found
+ * @param detectedPath the resolved path from which the library was loaded.
+ *                     This is an absolute filesystem path when the library was
+ *                     found in a bundled directory or resolved from a well-known
+ *                     system location. On platforms where the system loader does
+ *                     not expose the on-disk path (Windows, macOS), this may be
+ *                     a system-loader indicator string of the form
+ *                     {@code "(system: <filename>)"}. Empty string if the
+ *                     library was not found.
  */
 public record NativeLibraryStatus(
         String libraryName,

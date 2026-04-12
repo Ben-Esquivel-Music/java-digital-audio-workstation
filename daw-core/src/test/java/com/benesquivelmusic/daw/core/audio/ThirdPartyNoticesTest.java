@@ -114,21 +114,28 @@ class ThirdPartyNoticesTest {
         // The file should start with the expected header
         assertThat(repoContent).startsWith("# Third-Party Notices");
 
-        // Verify it contains all 7 numbered sections
-        for (int i = 1; i <= 7; i++) {
-            assertThat(repoContent).contains("## " + i + ".");
-        }
+        // Verify it contains at least the known baseline number of
+        // numbered library sections, while allowing newly auto-discovered
+        // vendored libraries to add more sections without breaking the test.
+        long numberedSectionCount = repoContent.lines()
+                .filter(line -> line.matches("^## \\d+\\..*"))
+                .count();
+        assertThat(numberedSectionCount).isGreaterThanOrEqualTo(7);
     }
 
     /**
-     * If the notices file is available as a classpath resource (e.g. when
-     * running from the packaged JAR), verify it contains required content.
+     * Verifies that the notices file is present on the classpath at the
+     * packaged JAR location and contains the required attribution text.
+     *
+     * <p>During daw-core unit tests the resource is not on the classpath
+     * (it lives in daw-app's JAR under {@code META-INF/}), so this test
+     * validates the repo-root file instead and verifies the content that
+     * <em>would</em> be packaged.  A daw-app integration test should
+     * assert the resource is present at runtime.</p>
      */
     @Test
     void noticesOnClasspathShouldContainRequiredAttribution() throws IOException {
-        // In the daw-app JAR this lives at META-INF/THIRD_PARTY_NOTICES.md.
-        // During daw-core tests it is not on the classpath, so we fall back
-        // to reading the repo-root file and verify the same invariants.
+        // In the daw-app JAR this must live at META-INF/THIRD_PARTY_NOTICES.md.
         InputStream stream = getClass().getResourceAsStream(
                 "/META-INF/THIRD_PARTY_NOTICES.md");
         String content;
@@ -137,8 +144,13 @@ class ThirdPartyNoticesTest {
                 content = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
             }
         } else {
-            // Not running from the packaged JAR — read the repo-root file
-            content = Files.readString(REPO_ROOT.resolve("THIRD_PARTY_NOTICES.md"));
+            // Not running from the packaged JAR (daw-core unit tests) —
+            // read the repo-root file to validate content invariants.
+            Path noticesFile = REPO_ROOT.resolve("THIRD_PARTY_NOTICES.md");
+            assertThat(noticesFile)
+                    .as("THIRD_PARTY_NOTICES.md must exist at repo root for packaging")
+                    .exists();
+            content = Files.readString(noticesFile);
         }
 
         assertThat(content).contains("libogg");

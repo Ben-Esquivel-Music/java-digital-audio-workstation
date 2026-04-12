@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.audio.NativeLibraryDetector;
 import com.benesquivelmusic.daw.core.audio.NativeLibraryStatus;
+import javafx.concurrent.Task;
 import javafx.geometry.Insets;
 import javafx.scene.Node;
 import javafx.scene.control.*;
@@ -268,27 +269,52 @@ public final class HelpDialog extends Dialog<Void> {
         grid.add(statusHeader, 1, 0);
         grid.add(pathHeader, 2, 0);
 
-        List<NativeLibraryStatus> statuses = NativeLibraryDetector.detectAll();
-        int row = 1;
-        for (NativeLibraryStatus status : statuses) {
-            grid.add(new Label(status.libraryName()), 0, row);
+        // Show a "Detecting..." placeholder while scanning runs off-thread
+        Label loadingLabel = new Label("Detecting native libraries...");
+        loadingLabel.setStyle("-fx-text-fill: #808080; -fx-font-style: italic;");
+        grid.add(loadingLabel, 0, 1);
+        GridPane.setColumnSpan(loadingLabel, 3);
 
-            Label statusLabel = new Label(status.available() ? "\u2705 Available" : "\u274c Missing");
-            statusLabel.setStyle(status.available()
-                    ? "-fx-text-fill: #4caf50;"
-                    : "-fx-text-fill: #f44336;");
-            grid.add(statusLabel, 1, row);
+        // Run detection off the UI thread to avoid blocking
+        Task<List<NativeLibraryStatus>> detectionTask = new Task<>() {
+            @Override
+            protected List<NativeLibraryStatus> call() {
+                return NativeLibraryDetector.detectAll();
+            }
+        };
+        detectionTask.setOnSucceeded(_ -> {
+            grid.getChildren().remove(loadingLabel);
+            List<NativeLibraryStatus> statuses = detectionTask.getValue();
+            int row = 1;
+            for (NativeLibraryStatus status : statuses) {
+                grid.add(new Label(status.libraryName()), 0, row);
 
-            String detail = status.available()
-                    ? status.detectedPath()
-                    : status.requiredFor();
-            Label detailLabel = new Label(detail);
-            detailLabel.setWrapText(true);
-            detailLabel.setMaxWidth(280);
-            detailLabel.setStyle("-fx-text-fill: #b0b0b0; -fx-font-size: 10px;");
-            grid.add(detailLabel, 2, row);
-            row++;
-        }
+                Label statusLabel = new Label(status.available() ? "Available" : "Missing");
+                statusLabel.setGraphic(IconNode.of(
+                        status.available() ? DawIcon.SUCCESS : DawIcon.ERROR, 12));
+                statusLabel.setStyle(status.available()
+                        ? "-fx-text-fill: #4caf50;"
+                        : "-fx-text-fill: #f44336;");
+                grid.add(statusLabel, 1, row);
+
+                String detail = status.available()
+                        ? status.detectedPath()
+                        : status.requiredFor();
+                Label detailLabel = new Label(detail);
+                detailLabel.setWrapText(true);
+                detailLabel.setMaxWidth(280);
+                detailLabel.setStyle("-fx-text-fill: #b0b0b0; -fx-font-size: 10px;");
+                grid.add(detailLabel, 2, row);
+                row++;
+            }
+        });
+        detectionTask.setOnFailed(_ -> {
+            loadingLabel.setText("Detection failed.");
+            loadingLabel.setStyle("-fx-text-fill: #f44336;");
+        });
+        Thread detectionThread = new Thread(detectionTask, "native-lib-detector");
+        detectionThread.setDaemon(true);
+        detectionThread.start();
 
         vbox.getChildren().addAll(header, new Separator(), description, grid);
         return vbox;
