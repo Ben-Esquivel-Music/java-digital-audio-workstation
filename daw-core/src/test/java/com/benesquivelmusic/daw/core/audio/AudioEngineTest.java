@@ -307,10 +307,15 @@ class AudioEngineTest {
         // The output should start at the offset position in the ramp.
         // With only one channel at max latency, PDC compensation = 0 for this
         // channel, so the render offset determines which samples appear.
+        // Ramp uses (i+1) to distinguish valid audio from silence (0.0f).
         // Ramp index 4 has value 5.0f, index 5 → 6.0f, etc.
         assertThat(output[0][0]).isEqualTo(5.0f);
         assertThat(output[0][1]).isEqualTo(6.0f);
         assertThat(output[0][2]).isEqualTo(7.0f);
         assertThat(output[0][3]).isEqualTo(8.0f);
+        assertThat(output[0][4]).isEqualTo(9.0f);
+        assertThat(output[0][5]).isEqualTo(10.0f);
+        assertThat(output[0][6]).isEqualTo(11.0f);
+        assertThat(output[0][7]).isEqualTo(12.0f);
     }
 }
