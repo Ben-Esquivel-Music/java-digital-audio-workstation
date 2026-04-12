@@ -77,6 +77,19 @@
                             </arguments>
                         </configuration>
                     </execution>
+                    <!-- Generate THIRD_PARTY_NOTICES.md from vendored license files -->
+                    <execution>
+                        <id>generate-third-party-notices</id>
+                        <phase>generate-resources</phase>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <executable>bash</executable>
+                            <workingDirectory>${maven.multiModuleProjectDirectory}</workingDirectory>
+                            <arguments>
+                                <argument>generate-third-party-notices.sh</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
 

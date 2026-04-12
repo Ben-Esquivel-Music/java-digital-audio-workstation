@@ -116,6 +116,18 @@ Contributions are welcome! Here's how to get started:
 
 For larger changes, please open an issue first to discuss your proposal before investing time in implementation.
 
+### Adding a New Vendored C Library
+
+When adding a new native C/C++ library to the project:
+
+1. **Place the library source** under `lib/<name>-<version>/` and wire it into `lib/CMakeLists.txt` as a new build section (follow the existing patterns for PortAudio, libogg, etc.).
+2. **Add the CMake target** to the `DAW_NATIVE_TARGETS` list at the bottom of `lib/CMakeLists.txt` — this ensures it is built as part of the aggregate `daw-native-libs` target and automatically picked up by the Maven packaging step.
+3. **Include the license file** (`LICENSE`, `COPYING`, or equivalent) in the library's source directory under `lib/`. The `generate-third-party-notices.sh` script reads these files to produce `THIRD_PARTY_NOTICES.md` — add a new entry to the `LIBRARIES` array in that script for your library.
+4. **Run `./generate-third-party-notices.sh`** to regenerate `THIRD_PARTY_NOTICES.md` and verify the license text appears correctly.
+5. **Update `THIRD_PARTY_LICENSES`** with a summary entry for the new library.
+
+The Maven build automatically runs `generate-third-party-notices.sh` during the `generate-resources` phase, so the notices file stays in sync with vendored license files on every build.
+
 ## Releasing
 
 Releases are automated via GitHub Actions. Push a version tag to trigger a release build:
