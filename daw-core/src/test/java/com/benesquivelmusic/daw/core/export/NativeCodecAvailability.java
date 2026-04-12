@@ -11,14 +11,14 @@ import java.nio.file.Path;
  * Used with JUnit {@link org.junit.jupiter.api.Assumptions} to skip
  * tests that require native libraries not installed on the system.
  */
-final class NativeCodecAvailability {
+public final class NativeCodecAvailability {
 
     private NativeCodecAvailability() {
         // utility class
     }
 
     /** Returns {@code true} if libmp3lame is available on this system. */
-    static boolean isLameAvailable() {
+    public static boolean isLameAvailable() {
         String os = System.getProperty("os.name", "").toLowerCase();
         if (os.contains("win")) {
             return isAnyLibraryAvailable("libmp3lame", "mp3lame", "lame");
@@ -30,7 +30,7 @@ final class NativeCodecAvailability {
     }
 
     /** Returns {@code true} if libvorbisenc and libogg are available on this system. */
-    static boolean isVorbisAvailable() {
+    public static boolean isVorbisAvailable() {
         String os = System.getProperty("os.name", "").toLowerCase();
         if (os.contains("win")) {
             return isAnyLibraryAvailable("vorbis", "libvorbis")
@@ -48,7 +48,7 @@ final class NativeCodecAvailability {
     }
 
     /** Returns {@code true} if libvorbisfile (and its dependencies libogg/libvorbis) are available. */
-    static boolean isVorbisFileAvailable() {
+    public static boolean isVorbisFileAvailable() {
         String os = System.getProperty("os.name", "").toLowerCase();
         if (os.contains("win")) {
             return isVorbisAvailable()
@@ -63,7 +63,7 @@ final class NativeCodecAvailability {
     }
 
     /** Returns {@code true} if libfdk-aac is available on this system. */
-    static boolean isFdkAacAvailable() {
+    public static boolean isFdkAacAvailable() {
         String os = System.getProperty("os.name", "").toLowerCase();
         if (os.contains("win")) {
             return isAnyLibraryAvailable("fdk-aac", "libfdk-aac");

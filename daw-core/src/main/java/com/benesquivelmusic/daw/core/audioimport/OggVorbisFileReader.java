@@ -1,13 +1,13 @@
 package com.benesquivelmusic.daw.core.audioimport;
 
+import com.benesquivelmusic.daw.core.audio.NativeLibraryLoader;
+
 import java.io.IOException;
 import java.lang.foreign.*;
 import java.lang.invoke.MethodHandle;
 import java.nio.file.Files;
-import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.Objects;
-import java.util.Optional;
 
 /**
  * Reads OGG Vorbis audio files and decodes them into normalized
@@ -380,7 +380,8 @@ public final class OggVorbisFileReader {
         final MethodHandle ovClear;
 
         LibVorbisFileBindings(Arena arena) {
-            SymbolLookup vorbisFileLib = loadLibrary(arena, "vorbisfile", 3);
+            SymbolLookup vorbisFileLib = NativeLibraryLoader.loadLibrary(
+                    arena, "vorbisfile", 3);
             Linker linker = Linker.nativeLinker();
 
             // int ov_fopen(const char *path, OggVorbis_File *vf)
@@ -413,99 +414,6 @@ public final class OggVorbisFileReader {
             ovClear = linker.downcallHandle(
                     vorbisFileLib.find("ov_clear").orElseThrow(),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS));
-        }
-
-        /**
-         * Loads a native library in an OS-aware way, preferring bundled
-         * libraries in {@code java.library.path} over system-installed ones.
-         * Reuses the same resolution strategy as the OGG Vorbis exporter
-         * (user story 116).
-         */
-        private static SymbolLookup loadLibrary(Arena arena, String baseName,
-                                                 int soVersion) {
-            String os = System.getProperty("os.name", "").toLowerCase();
-            String[] names;
-            if (os.contains("win")) {
-                names = new String[]{baseName + ".dll", "lib" + baseName + ".dll"};
-            } else if (os.contains("mac")) {
-                names = new String[]{
-                        "lib" + baseName + "." + soVersion + ".dylib",
-                        "lib" + baseName + ".dylib"};
-            } else {
-                names = new String[]{
-                        "lib" + baseName + ".so." + soVersion,
-                        "lib" + baseName + ".so"};
-            }
-
-            // 1. Prefer bundled libraries in java.library.path
-            Optional<SymbolLookup> bundled = searchLibraryPath(arena, names);
-            if (bundled.isPresent()) {
-                return bundled.get();
-            }
-
-            // 2. Fall back to OS-level library loader (system-installed)
-            for (String name : names) {
-                try {
-                    return SymbolLookup.libraryLookup(name, arena);
-                } catch (IllegalArgumentException _) {
-                    // try next candidate
-                }
-            }
-
-            // Platform-aware error message
-            String installHint;
-            if (os.contains("win")) {
-                installHint = "build with CMake and ensure " + baseName
-                        + ".dll is in the application directory or PATH";
-            } else if (os.contains("mac")) {
-                installHint = "'brew install libvorbis' on macOS";
-            } else {
-                installHint = "'apt install libvorbis0a' on Debian/Ubuntu";
-            }
-            String searchedNames = String.join(", ", names);
-            String libraryPath = System.getProperty("java.library.path", "");
-            throw new UnsupportedOperationException(
-                    "Could not load lib" + baseName + " from bundled native directory "
-                            + (libraryPath.isEmpty() ? "(none configured)" : libraryPath)
-                            + " or system libraries (tried: " + searchedNames + "). "
-                            + "Install lib" + baseName + " (e.g., " + installHint + ").");
-        }
-
-        /**
-         * Searches {@code java.library.path} directories for any of the given
-         * library filenames.
-         */
-        private static Optional<SymbolLookup> searchLibraryPath(Arena arena,
-                                                                 String... fileNames) {
-            String libraryPath = System.getProperty("java.library.path", "");
-            if (libraryPath.isEmpty()) {
-                return Optional.empty();
-            }
-            for (String dir : libraryPath.split(java.io.File.pathSeparator)) {
-                if (dir.isBlank()) {
-                    continue;
-                }
-                try {
-                    Path dirPath = Path.of(dir).normalize();
-                    if (dirPath.toString().isEmpty()) {
-                        continue;
-                    }
-                    for (String fileName : fileNames) {
-                        Path candidate = dirPath.resolve(fileName).toAbsolutePath();
-                        if (Files.isRegularFile(candidate)) {
-                            try {
-                                return Optional.of(
-                                        SymbolLookup.libraryLookup(candidate, arena));
-                            } catch (IllegalArgumentException _) {
-                                // file exists but not loadable — try next
-                            }
-                        }
-                    }
-                } catch (InvalidPathException _) {
-                    // malformed path segment — skip
-                }
-            }
-            return Optional.empty();
         }
     }
 }

@@ -2,15 +2,13 @@ package com.benesquivelmusic.daw.core.audioimport;
 
 import com.benesquivelmusic.daw.sdk.export.AudioMetadata;
 import com.benesquivelmusic.daw.sdk.export.DitherType;
+import com.benesquivelmusic.daw.core.export.NativeCodecAvailability;
 import com.benesquivelmusic.daw.core.export.OggVorbisExporter;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.io.File;
 import java.io.IOException;
-import java.lang.foreign.Arena;
-import java.lang.foreign.SymbolLookup;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -40,7 +38,7 @@ class OggVorbisFileReaderTest {
 
     @Test
     void shouldRejectInvalidFile() throws IOException {
-        assumeTrue(isVorbisFileAvailable(),
+        assumeTrue(NativeCodecAvailability.isVorbisFileAvailable(),
                 "libvorbisfile not available — skipping");
         Path textFile = tempDir.resolve("not_ogg.ogg");
         Files.writeString(textFile, "This is not an OGG file");
@@ -53,7 +51,7 @@ class OggVorbisFileReaderTest {
 
     @Test
     void shouldIncludeFormatNameInError() throws IOException {
-        assumeTrue(isVorbisFileAvailable(),
+        assumeTrue(NativeCodecAvailability.isVorbisFileAvailable(),
                 "libvorbisfile not available — skipping");
         Path fakeFile = tempDir.resolve("fake.ogg");
         Files.writeString(fakeFile, "not ogg data");
@@ -65,9 +63,9 @@ class OggVorbisFileReaderTest {
 
     @Test
     void shouldRoundTripStereoAudio() throws IOException {
-        assumeTrue(isVorbisFileAvailable(),
+        assumeTrue(NativeCodecAvailability.isVorbisFileAvailable(),
                 "libvorbisfile not available — skipping");
-        assumeTrue(isVorbisEncAvailable(),
+        assumeTrue(NativeCodecAvailability.isVorbisAvailable(),
                 "libvorbisenc not available — skipping round-trip test");
 
         int sampleRate = 44100;
@@ -101,9 +99,9 @@ class OggVorbisFileReaderTest {
 
     @Test
     void shouldRoundTripMonoAudio() throws IOException {
-        assumeTrue(isVorbisFileAvailable(),
+        assumeTrue(NativeCodecAvailability.isVorbisFileAvailable(),
                 "libvorbisfile not available — skipping");
-        assumeTrue(isVorbisEncAvailable(),
+        assumeTrue(NativeCodecAvailability.isVorbisAvailable(),
                 "libvorbisenc not available — skipping round-trip test");
 
         int sampleRate = 48000;
@@ -125,70 +123,5 @@ class OggVorbisFileReaderTest {
         assertThat(result.numFrames()).isGreaterThan(0);
         // Lossy bitDepth is reported as 0
         assertThat(result.bitDepth()).isEqualTo(0);
-    }
-
-    /**
-     * Checks if libvorbisfile is available on this system.
-     * Uses the same strategy as NativeCodecAvailability in the export package.
-     */
-    private static boolean isVorbisFileAvailable() {
-        String os = System.getProperty("os.name", "").toLowerCase();
-        String[] names;
-        if (os.contains("win")) {
-            names = new String[]{"vorbisfile.dll", "libvorbisfile.dll"};
-        } else if (os.contains("mac")) {
-            names = new String[]{"libvorbisfile.3.dylib", "libvorbisfile.dylib"};
-        } else {
-            names = new String[]{"libvorbisfile.so.3", "libvorbisfile.so"};
-        }
-        return isAnyLibraryAvailable(names);
-    }
-
-    /**
-     * Checks if libvorbisenc is available (needed for encoding in round-trip tests).
-     */
-    private static boolean isVorbisEncAvailable() {
-        String os = System.getProperty("os.name", "").toLowerCase();
-        String[] names;
-        if (os.contains("win")) {
-            names = new String[]{"vorbisenc.dll", "libvorbisenc.dll"};
-        } else if (os.contains("mac")) {
-            names = new String[]{"libvorbisenc.2.dylib", "libvorbisenc.dylib"};
-        } else {
-            names = new String[]{"libvorbisenc.so.2", "libvorbisenc.so"};
-        }
-        return isAnyLibraryAvailable(names);
-    }
-
-    private static boolean isAnyLibraryAvailable(String[] names) {
-        // 1. Try OS-level loader
-        for (String name : names) {
-            try (Arena arena = Arena.ofConfined()) {
-                SymbolLookup.libraryLookup(name, arena);
-                return true;
-            } catch (IllegalArgumentException _) {
-                // try next
-            }
-        }
-
-        // 2. Search java.library.path
-        String libraryPath = System.getProperty("java.library.path", "");
-        if (!libraryPath.isEmpty()) {
-            for (String dir : libraryPath.split(File.pathSeparator)) {
-                if (dir.isBlank()) continue;
-                for (String name : names) {
-                    Path candidate = Path.of(dir, name);
-                    if (Files.isRegularFile(candidate)) {
-                        try (Arena arena = Arena.ofConfined()) {
-                            SymbolLookup.libraryLookup(candidate, arena);
-                            return true;
-                        } catch (IllegalArgumentException _) {
-                            // not loadable
-                        }
-                    }
-                }
-            }
-        }
-        return false;
     }
 }
