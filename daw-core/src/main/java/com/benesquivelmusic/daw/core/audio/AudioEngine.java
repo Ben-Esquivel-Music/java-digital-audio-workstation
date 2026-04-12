@@ -652,7 +652,9 @@ public final class AudioEngine {
             }
 
             // Mix all track buffers through the mixer into the mix buffer,
-            // routing sends to return buses which are summed into the main output
+            // routing sends to return buses which are summed into the main output.
+            // Channels with non-master output routing are skipped by mixDown and
+            // their post-insert audio remains in trackBuffers for direct output.
             currentMixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames);
         } else {
             // Fallback: copy input into the mix buffer (original passthrough behavior)
@@ -670,6 +672,13 @@ public final class AudioEngine {
 
         // Process through the master effects chain
         masterChain.process(mixBuffer, outputBuffer, numFrames);
+
+        // Write non-master channels to their assigned hardware output channels.
+        // This runs AFTER the master chain so that its overwrite of outputBuffer
+        // (channels 0..N) does not clobber direct output data on higher channels.
+        if (playbackActive) {
+            currentMixer.renderDirectOutputs(trackBuffers, outputBuffer, numFrames);
+        }
 
         // Advance the transport position
         if (playbackActive) {

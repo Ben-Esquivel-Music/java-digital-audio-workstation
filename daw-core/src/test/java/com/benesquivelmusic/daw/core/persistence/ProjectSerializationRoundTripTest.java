@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.persistence;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.audio.InputRouting;
 import com.benesquivelmusic.daw.core.audio.StretchQuality;
 import com.benesquivelmusic.daw.core.automation.AutomationLane;
 import com.benesquivelmusic.daw.core.automation.AutomationParameter;
@@ -734,5 +735,62 @@ class ProjectSerializationRoundTripTest {
         InsertSlot restoredSlot = restoredChannel.getInsertSlots().get(0);
         // Invalid source index should result in null (no sidechain)
         assertThat(restoredSlot.getSidechainSource()).isNull();
+    }
+
+    @Test
+    void shouldRoundTripInputRouting() throws IOException {
+        DawProject original = new DawProject("Input Routing Test", AudioFormat.CD_QUALITY);
+        Track track = original.createAudioTrack("Guitar");
+        track.setInputRouting(new InputRouting(2, 2)); // Input 3-4
+
+        String xml = serializer.serialize(original);
+        assertThat(xml).contains("input-routing-channel=\"2\"");
+        assertThat(xml).contains("input-routing-count=\"2\"");
+
+        DawProject restored = deserializer.deserialize(xml);
+        Track restoredTrack = restored.getTracks().get(0);
+        assertThat(restoredTrack.getInputRouting()).isEqualTo(new InputRouting(2, 2));
+    }
+
+    @Test
+    void shouldRoundTripOutputRouting() throws IOException {
+        DawProject original = new DawProject("Output Routing Test", AudioFormat.CD_QUALITY);
+        Track track = original.createAudioTrack("Drums");
+        MixerChannel channel = original.getMixerChannelForTrack(track);
+        channel.setOutputRouting(new OutputRouting(4, 2)); // Output 5-6
+
+        String xml = serializer.serialize(original);
+        assertThat(xml).contains("output-routing-channel=\"4\"");
+        assertThat(xml).contains("output-routing-count=\"2\"");
+
+        DawProject restored = deserializer.deserialize(xml);
+        MixerChannel restoredChannel = restored.getMixer().getChannels().get(0);
+        assertThat(restoredChannel.getOutputRouting()).isEqualTo(new OutputRouting(4, 2));
+    }
+
+    @Test
+    void shouldDefaultToMasterOutputWhenNoRoutingInXml() throws IOException {
+        DawProject original = new DawProject("Default Routing Test", AudioFormat.CD_QUALITY);
+        original.createAudioTrack("Vocals");
+
+        String xml = serializer.serialize(original);
+        // No output-routing attributes for master-routed channels
+        assertThat(xml).doesNotContain("output-routing-channel");
+
+        DawProject restored = deserializer.deserialize(xml);
+        MixerChannel restoredChannel = restored.getMixer().getChannels().get(0);
+        assertThat(restoredChannel.getOutputRouting()).isEqualTo(OutputRouting.MASTER);
+    }
+
+    @Test
+    void shouldDefaultToStereoInputWhenNoRoutingInXml() throws IOException {
+        DawProject original = new DawProject("Default Input Test", AudioFormat.CD_QUALITY);
+        original.createAudioTrack("Vocals");
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+        Track restoredTrack = restored.getTracks().get(0);
+        // Default input routing attributes are present, should restore to DEFAULT_STEREO
+        assertThat(restoredTrack.getInputRouting()).isEqualTo(InputRouting.DEFAULT_STEREO);
     }
 }

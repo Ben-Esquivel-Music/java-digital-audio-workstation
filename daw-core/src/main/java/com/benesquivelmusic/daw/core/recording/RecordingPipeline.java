@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.recording;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.audio.InputRouting;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
 
@@ -46,6 +47,7 @@ public final class RecordingPipeline {
     private final PunchRange punchRange;
     private final Map<Track, RecordingSession> sessions = new LinkedHashMap<>();
     private final Map<Track, AudioClip> recordedClips = new LinkedHashMap<>();
+    private final Map<Track, float[][]> routedInputBuffers = new LinkedHashMap<>();
     private boolean active;
     private double recordingStartBeat;
 
@@ -120,12 +122,18 @@ public final class RecordingPipeline {
             track.setRecording(true);
         }
 
-        // Create and start a recording session per armed track
+        // Create and start a recording session per armed track, and
+        // pre-allocate per-track routed input buffers for extraction
+        int bufferFrames = format.bufferSize();
         for (Track track : armedTracks) {
             Path trackDir = outputDirectory.resolve(track.getId());
             RecordingSession session = new RecordingSession(format, trackDir);
             session.start();
             sessions.put(track, session);
+
+            InputRouting routing = track.getInputRouting();
+            int routedChannels = routing.isNone() ? format.channels() : routing.channelCount();
+            routedInputBuffers.put(track, new float[routedChannels][bufferFrames]);
         }
 
         // Wire the recording callback on the audio engine
@@ -198,6 +206,7 @@ public final class RecordingPipeline {
         }
 
         sessions.clear();
+        routedInputBuffers.clear();
         return Collections.unmodifiableList(clips);
     }
 
@@ -337,8 +346,29 @@ public final class RecordingPipeline {
             }
         }
 
-        for (RecordingSession session : sessions.values()) {
-            session.recordAudioData(inputBuffer, numFrames);
+        for (Track track : armedTracks) {
+            RecordingSession session = sessions.get(track);
+            if (session == null) {
+                continue;
+            }
+
+            InputRouting routing = track.getInputRouting();
+            if (routing.isNone()) {
+                // No input assigned — skip recording for this track
+                continue;
+            } else {
+                // Extract only the assigned input channels for this track
+                float[][] routed = routedInputBuffers.get(track);
+                int firstCh = routing.firstChannel();
+                int chCount = routing.channelCount();
+                for (int ch = 0; ch < chCount; ch++) {
+                    int srcCh = firstCh + ch;
+                    if (srcCh < inputBuffer.length && ch < routed.length) {
+                        System.arraycopy(inputBuffer[srcCh], 0, routed[ch], 0, numFrames);
+                    }
+                }
+                session.recordAudioData(routed, numFrames);
+            }
         }
     }
 }

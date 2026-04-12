@@ -162,6 +162,8 @@ public final class ProjectSerializer {
         elem.setAttribute("phase-inverted", String.valueOf(track.isPhaseInverted()));
         elem.setAttribute("color", track.getColor().getHexColor());
         elem.setAttribute("input-device", String.valueOf(track.getInputDeviceIndex()));
+        elem.setAttribute("input-routing-channel", String.valueOf(track.getInputRouting().firstChannel()));
+        elem.setAttribute("input-routing-count", String.valueOf(track.getInputRouting().channelCount()));
         elem.setAttribute("collapsed", String.valueOf(track.isCollapsed()));
         elem.setAttribute("automation-mode", track.getAutomationMode().name());
 
@@ -245,6 +247,12 @@ public final class ProjectSerializer {
         elem.setAttribute("solo", String.valueOf(channel.isSolo()));
         elem.setAttribute("send-level", String.valueOf(channel.getSendLevel()));
         elem.setAttribute("phase-inverted", String.valueOf(channel.isPhaseInverted()));
+        if (!channel.getOutputRouting().isMaster()) {
+            elem.setAttribute("output-routing-channel",
+                    String.valueOf(channel.getOutputRouting().firstChannel()));
+            elem.setAttribute("output-routing-count",
+                    String.valueOf(channel.getOutputRouting().channelCount()));
+        }
 
         // Serialize insert effect slots
         List<InsertSlot> insertSlots = channel.getInsertSlots();

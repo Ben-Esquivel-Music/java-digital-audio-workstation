@@ -35,6 +35,7 @@ public final class MixerChannel {
     private double sendLevel;
     private boolean phaseInverted;
     private TrackColor color;
+    private OutputRouting outputRouting = OutputRouting.MASTER;
     private final List<Send> sends = new ArrayList<>();
     private final List<InsertSlot> insertSlots = new ArrayList<>();
     private final EffectsChain effectsChain = new EffectsChain();
@@ -129,6 +130,30 @@ public final class MixerChannel {
     /** Sets the phase-inverted state. */
     public void setPhaseInverted(boolean phaseInverted) {
         this.phaseInverted = phaseInverted;
+    }
+
+    /**
+     * Returns the output routing for this channel.
+     *
+     * <p>Determines where this channel's audio is sent after mixing.
+     * The default is {@link OutputRouting#MASTER}, which sums into the
+     * master bus. Alternative routings send audio to specific hardware
+     * output channels, bypassing the master bus.</p>
+     *
+     * @return the output routing (never {@code null})
+     */
+    public OutputRouting getOutputRouting() {
+        return outputRouting;
+    }
+
+    /**
+     * Sets the output routing for this channel.
+     *
+     * @param outputRouting the output routing
+     */
+    public void setOutputRouting(OutputRouting outputRouting) {
+        this.outputRouting = Objects.requireNonNull(outputRouting,
+                "outputRouting must not be null");
     }
 
     /**

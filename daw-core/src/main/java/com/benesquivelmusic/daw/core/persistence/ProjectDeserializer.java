@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.persistence;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.audio.InputRouting;
 import com.benesquivelmusic.daw.core.audio.FadeCurveType;
 import com.benesquivelmusic.daw.core.audio.StretchQuality;
 import com.benesquivelmusic.daw.core.automation.AutomationLane;
@@ -12,6 +13,7 @@ import com.benesquivelmusic.daw.core.marker.Marker;
 import com.benesquivelmusic.daw.core.marker.MarkerRange;
 import com.benesquivelmusic.daw.core.marker.MarkerType;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
+import com.benesquivelmusic.daw.core.mixer.OutputRouting;
 import com.benesquivelmusic.daw.core.mixer.*;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.ClickSound;
@@ -256,6 +258,13 @@ public final class ProjectDeserializer {
             track.setInputDeviceIndex(inputDevice);
         }
 
+        // Restore per-track input channel routing
+        int irChannel = parseIntAttr(elem, "input-routing-channel", Integer.MIN_VALUE);
+        if (irChannel != Integer.MIN_VALUE) {
+            int irCount = parseIntAttr(elem, "input-routing-count", 2);
+            track.setInputRouting(new InputRouting(irChannel, irCount));
+        }
+
         String midiInputDevice = elem.getAttribute("midi-input-device");
         if (!midiInputDevice.isEmpty()) {
             track.setMidiInputDeviceName(midiInputDevice);
@@ -419,6 +428,13 @@ public final class ProjectDeserializer {
         channel.setSendLevel(sendLevel);
 
         channel.setPhaseInverted(parseBooleanAttr(elem, "phase-inverted"));
+
+        // Restore output routing (defaults to MASTER if not present)
+        int orChannel = parseIntAttr(elem, "output-routing-channel", Integer.MIN_VALUE);
+        if (orChannel != Integer.MIN_VALUE) {
+            int orCount = parseIntAttr(elem, "output-routing-count", 2);
+            channel.setOutputRouting(new OutputRouting(orChannel, orCount));
+        }
 
         // Parse insert effect slots
         List<Element> insertsContainers = getDirectChildElements(elem, "inserts");

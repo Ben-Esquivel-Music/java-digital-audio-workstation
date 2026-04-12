@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.core.audio.InputRouting;
 import com.benesquivelmusic.daw.core.mixer.*;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.project.DawProject;
@@ -423,6 +424,12 @@ public final class MixerView extends VBox {
         // Track type icon
         Node typeIcon = trackTypeIcon(track.getType());
 
+        // Input routing selector
+        ComboBox<String> inputRoutingCombo = buildInputRoutingSelector(track);
+
+        // Output routing selector
+        ComboBox<String> outputRoutingCombo = buildOutputRoutingSelector(mixerChannel);
+
         // Insert effects rack
         int channels = project.getFormat().channels();
         double sr = project.getFormat().sampleRate();
@@ -443,7 +450,9 @@ public final class MixerView extends VBox {
         insertRack.setOnSlotsChanged(() -> updateLatencyLabel(latencyLabel, mixerChannel, sr));
 
         strip.getChildren().addAll(
-                nameLabel, typeIcon, insertRack, latencyLabel, levelMeter, volumeFader,
+                nameLabel, typeIcon,
+                inputRoutingCombo, outputRoutingCombo,
+                insertRack, latencyLabel, levelMeter, volumeFader,
                 panLabel, panSlider, buttonRow, pannerBtn,
                 sendBox, sendLabel, sendSlider);
 
@@ -639,6 +648,92 @@ public final class MixerView extends VBox {
             case AUDIO_OBJECT -> IconNode.of(DawIcon.PAN, CONTROL_ICON_SIZE);
             case REFERENCE    -> IconNode.of(DawIcon.HEADPHONES, CONTROL_ICON_SIZE);
         };
+    }
+
+    // ── I/O routing selectors ──────────────────────────────────────────────
+
+    private static final int MAX_IO_CHANNELS = 16;
+
+    private ComboBox<String> buildInputRoutingSelector(Track track) {
+        ComboBox<String> combo = new ComboBox<>();
+        combo.setMaxWidth(CHANNEL_WIDTH - 8);
+        combo.setMaxHeight(18);
+        combo.setStyle("-fx-font-size: 8px;");
+        combo.setTooltip(new Tooltip("Input routing"));
+
+        List<InputRouting> options = new ArrayList<>();
+        options.add(InputRouting.NONE);
+        // Mono inputs
+        for (int ch = 0; ch < MAX_IO_CHANNELS; ch++) {
+            options.add(new InputRouting(ch, 1));
+        }
+        // Stereo pairs
+        for (int ch = 0; ch < MAX_IO_CHANNELS; ch += 2) {
+            options.add(new InputRouting(ch, 2));
+        }
+
+        for (InputRouting opt : options) {
+            combo.getItems().add(opt.displayName());
+        }
+
+        // Select current
+        InputRouting current = track.getInputRouting();
+        int selectedIndex = 0;
+        for (int i = 0; i < options.size(); i++) {
+            if (options.get(i).equals(current)) {
+                selectedIndex = i;
+                break;
+            }
+        }
+        combo.getSelectionModel().select(selectedIndex);
+
+        combo.setOnAction(_ -> {
+            int idx = combo.getSelectionModel().getSelectedIndex();
+            if (idx >= 0 && idx < options.size()) {
+                track.setInputRouting(options.get(idx));
+            }
+        });
+
+        return combo;
+    }
+
+    private ComboBox<String> buildOutputRoutingSelector(MixerChannel channel) {
+        ComboBox<String> combo = new ComboBox<>();
+        combo.setMaxWidth(CHANNEL_WIDTH - 8);
+        combo.setMaxHeight(18);
+        combo.setStyle("-fx-font-size: 8px;");
+        combo.setTooltip(new Tooltip("Output routing"));
+
+        List<OutputRouting> options = new ArrayList<>();
+        options.add(OutputRouting.MASTER);
+        // Stereo output pairs
+        for (int ch = 0; ch < MAX_IO_CHANNELS; ch += 2) {
+            options.add(new OutputRouting(ch, 2));
+        }
+
+        for (OutputRouting opt : options) {
+            combo.getItems().add(opt.displayName());
+        }
+
+        // Select current
+        OutputRouting current = channel.getOutputRouting();
+        int selectedIndex = 0;
+        for (int i = 0; i < options.size(); i++) {
+            if (options.get(i).equals(current)) {
+                selectedIndex = i;
+                break;
+            }
+        }
+        combo.getSelectionModel().select(selectedIndex);
+
+        combo.setOnAction(_ -> {
+            int idx = combo.getSelectionModel().getSelectedIndex();
+            if (idx >= 0 && idx < options.size()) {
+                channel.setOutputRouting(options.get(idx));
+            }
+        });
+
+        return combo;
     }
 
     /**

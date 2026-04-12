@@ -286,45 +286,14 @@ public final class Mixer {
             // the highest-latency channel at the summing bus
             delayCompensation.applyToChannel(i, src, numFrames);
 
-            float volume = (float) channel.getVolume();
-            int audioChannels = Math.min(src.length, outputBuffer.length);
-
-            // Apply constant-power pan law for stereo output
-            if (outputBuffer.length >= 2 && audioChannels >= 1) {
-                double pan = channel.getPan();
-                // pan: -1.0 = full left, 0.0 = center, 1.0 = full right
-                double angle = (pan + 1.0) * 0.25 * Math.PI; // [0, π/2]
-                float leftGain = (float) (Math.cos(angle) * volume);
-                float rightGain = (float) (Math.sin(angle) * volume);
-
-                // Mix mono source or first channel into stereo output
-                for (int f = 0; f < numFrames; f++) {
-                    outputBuffer[0][f] += src[0][f] * leftGain;
-                }
-                if (audioChannels >= 2) {
-                    for (int f = 0; f < numFrames; f++) {
-                        outputBuffer[1][f] += src[1][f] * rightGain;
-                    }
-                } else {
-                    // Mono source panned into stereo
-                    for (int f = 0; f < numFrames; f++) {
-                        outputBuffer[1][f] += src[0][f] * rightGain;
-                    }
-                }
-                // Copy remaining channels (surround) without pan
-                for (int ch = 2; ch < audioChannels; ch++) {
-                    for (int f = 0; f < numFrames; f++) {
-                        outputBuffer[ch][f] += src[ch][f] * volume;
-                    }
-                }
-            } else {
-                // Non-stereo output: apply volume only (no pan)
-                for (int ch = 0; ch < audioChannels; ch++) {
-                    for (int f = 0; f < numFrames; f++) {
-                        outputBuffer[ch][f] += src[ch][f] * volume;
-                    }
-                }
+            // Skip channels routed to direct hardware outputs — their
+            // processed audio remains in channelBuffers[i] for the
+            // AudioEngine to write to the assigned output channels
+            if (!channel.getOutputRouting().isMaster()) {
+                continue;
             }
+
+            sumChannelToOutput(channel, src, outputBuffer, numFrames);
         }
 
         // Apply master volume
@@ -538,39 +507,12 @@ public final class Mixer {
             // that the direct path is aligned at the summing bus
             delayCompensation.applyToChannel(i, src, numFrames);
 
-            int audioChannels = Math.min(src.length, outputBuffer.length);
-
-            // Mix channel into main output with volume and pan
-            if (outputBuffer.length >= 2 && audioChannels >= 1) {
-                double pan = channel.getPan();
-                double angle = (pan + 1.0) * 0.25 * Math.PI;
-                float leftGain = (float) (Math.cos(angle) * volume);
-                float rightGain = (float) (Math.sin(angle) * volume);
-
-                for (int f = 0; f < numFrames; f++) {
-                    outputBuffer[0][f] += src[0][f] * leftGain;
-                }
-                if (audioChannels >= 2) {
-                    for (int f = 0; f < numFrames; f++) {
-                        outputBuffer[1][f] += src[1][f] * rightGain;
-                    }
-                } else {
-                    for (int f = 0; f < numFrames; f++) {
-                        outputBuffer[1][f] += src[0][f] * rightGain;
-                    }
-                }
-                for (int ch = 2; ch < audioChannels; ch++) {
-                    for (int f = 0; f < numFrames; f++) {
-                        outputBuffer[ch][f] += src[ch][f] * volume;
-                    }
-                }
-            } else {
-                for (int ch = 0; ch < audioChannels; ch++) {
-                    for (int f = 0; f < numFrames; f++) {
-                        outputBuffer[ch][f] += src[ch][f] * volume;
-                    }
-                }
+            // Skip channels routed to direct hardware outputs
+            if (!channel.getOutputRouting().isMaster()) {
+                continue;
             }
+
+            sumChannelToOutput(channel, src, outputBuffer, numFrames);
         }
 
         // Process return bus effects, apply compensation, and sum into main output
@@ -614,6 +556,149 @@ public final class Mixer {
         } else {
             for (float[] ch : outputBuffer) {
                 Arrays.fill(ch, 0, numFrames, 0.0f);
+            }
+        }
+    }
+
+    // ── Channel → output summing ─────────────────────────────────────────
+
+    /**
+     * Sums a single channel's post-insert audio into the given output buffer,
+     * applying the channel's volume and constant-power pan law.
+     */
+    @RealTimeSafe
+    private static void sumChannelToOutput(MixerChannel channel, float[][] src,
+                                           float[][] outputBuffer, int numFrames) {
+        float volume = (float) channel.getVolume();
+        int audioChannels = Math.min(src.length, outputBuffer.length);
+
+        if (outputBuffer.length >= 2 && audioChannels >= 1) {
+            double pan = channel.getPan();
+            double angle = (pan + 1.0) * 0.25 * Math.PI;
+            float leftGain = (float) (Math.cos(angle) * volume);
+            float rightGain = (float) (Math.sin(angle) * volume);
+
+            for (int f = 0; f < numFrames; f++) {
+                outputBuffer[0][f] += src[0][f] * leftGain;
+            }
+            if (audioChannels >= 2) {
+                for (int f = 0; f < numFrames; f++) {
+                    outputBuffer[1][f] += src[1][f] * rightGain;
+                }
+            } else {
+                for (int f = 0; f < numFrames; f++) {
+                    outputBuffer[1][f] += src[0][f] * rightGain;
+                }
+            }
+            for (int ch = 2; ch < audioChannels; ch++) {
+                for (int f = 0; f < numFrames; f++) {
+                    outputBuffer[ch][f] += src[ch][f] * volume;
+                }
+            }
+        } else {
+            for (int ch = 0; ch < audioChannels; ch++) {
+                for (int f = 0; f < numFrames; f++) {
+                    outputBuffer[ch][f] += src[ch][f] * volume;
+                }
+            }
+        }
+    }
+
+    // ── Direct output rendering ───────────────────────────────────────────
+
+    /**
+     * Writes audio from channels with non-master output routing into the
+     * given hardware output buffer. Insert effects and delay compensation
+     * have already been applied to {@code channelBuffers} by a prior
+     * {@link #mixDown} call. This method applies volume and pan before
+     * writing to the assigned output channels.
+     *
+     * <p>For each channel whose {@link MixerChannel#getOutputRouting()} is
+     * not master, its post-processed audio is summed into the appropriate
+     * region of {@code hwOutputBuffer} based on the routing's first-channel
+     * index. The buffer must be large enough to hold the highest configured
+     * output channel.</p>
+     *
+     * @param channelBuffers per-channel audio data (post-insert, post-PDC)
+     *                       {@code [mixerChannel][audioChannel][frame]}
+     * @param hwOutputBuffer the hardware output buffer {@code [outputChannel][frame]}
+     * @param numFrames      the number of sample frames
+     */
+    @RealTimeSafe
+    public void renderDirectOutputs(float[][][] channelBuffers, float[][] hwOutputBuffer,
+                                    int numFrames) {
+        boolean anySolo = false;
+        for (MixerChannel channel : channels) {
+            if (channel.isSolo()) {
+                anySolo = true;
+                break;
+            }
+        }
+
+        int channelCount = Math.min(channels.size(), channelBuffers.length);
+        for (int i = 0; i < channelCount; i++) {
+            MixerChannel channel = channels.get(i);
+            OutputRouting routing = channel.getOutputRouting();
+            if (routing.isMaster()) {
+                continue;
+            }
+            if (channel.isMuted()) {
+                continue;
+            }
+            if (anySolo && !channel.isSolo()) {
+                continue;
+            }
+
+            float[][] src = channelBuffers[i];
+            float volume = (float) channel.getVolume();
+            int firstOut = routing.firstChannel();
+            int outChannels = routing.channelCount();
+
+            // Apply constant-power pan law for stereo direct outputs
+            if (outChannels >= 2 && src.length >= 1) {
+                double pan = channel.getPan();
+                double angle = (pan + 1.0) * 0.25 * Math.PI;
+                float leftGain = (float) (Math.cos(angle) * volume);
+                float rightGain = (float) (Math.sin(angle) * volume);
+
+                int leftDest = firstOut;
+                int rightDest = firstOut + 1;
+                if (leftDest < hwOutputBuffer.length) {
+                    for (int f = 0; f < numFrames; f++) {
+                        hwOutputBuffer[leftDest][f] += src[0][f] * leftGain;
+                    }
+                }
+                if (rightDest < hwOutputBuffer.length) {
+                    if (src.length >= 2) {
+                        for (int f = 0; f < numFrames; f++) {
+                            hwOutputBuffer[rightDest][f] += src[1][f] * rightGain;
+                        }
+                    } else {
+                        // Mono source panned into stereo output pair
+                        for (int f = 0; f < numFrames; f++) {
+                            hwOutputBuffer[rightDest][f] += src[0][f] * rightGain;
+                        }
+                    }
+                }
+                // Extra channels beyond the stereo pair (surround)
+                for (int ch = 2; ch < Math.min(outChannels, src.length); ch++) {
+                    int destCh = firstOut + ch;
+                    if (destCh < hwOutputBuffer.length) {
+                        for (int f = 0; f < numFrames; f++) {
+                            hwOutputBuffer[destCh][f] += src[ch][f] * volume;
+                        }
+                    }
+                }
+            } else {
+                // Mono direct output: volume only, no pan
+                for (int ch = 0; ch < Math.min(outChannels, src.length); ch++) {
+                    int destCh = firstOut + ch;
+                    if (destCh < hwOutputBuffer.length) {
+                        for (int f = 0; f < numFrames; f++) {
+                            hwOutputBuffer[destCh][f] += src[ch][f] * volume;
+                        }
+                    }
+                }
             }
         }
     }

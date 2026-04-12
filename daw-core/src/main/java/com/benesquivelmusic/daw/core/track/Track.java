@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.track;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.audio.InputRouting;
 import com.benesquivelmusic.daw.core.automation.AutomationData;
 import com.benesquivelmusic.daw.core.comping.TakeComping;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
@@ -34,6 +35,7 @@ public final class Track {
     private boolean recording;
     private InputMonitoringMode inputMonitoringMode = InputMonitoringMode.OFF;
     private int inputDeviceIndex = NO_INPUT_DEVICE;
+    private InputRouting inputRouting = InputRouting.DEFAULT_STEREO;
     private final List<AudioClip> clips = new ArrayList<>();
     private final AutomationData automationData = new AutomationData();
     private final MidiClip midiClip = new MidiClip();
@@ -243,6 +245,29 @@ public final class Track {
                     "inputDeviceIndex must be >= -1: " + inputDeviceIndex);
         }
         this.inputDeviceIndex = inputDeviceIndex;
+    }
+
+    /**
+     * Returns the input channel routing for this track.
+     *
+     * <p>Specifies which hardware input channels this track records from
+     * (e.g., "Input 1-2" for stereo, "Input 3" for mono). Defaults to
+     * {@link InputRouting#DEFAULT_STEREO}.</p>
+     *
+     * @return the input routing (never {@code null})
+     */
+    public InputRouting getInputRouting() {
+        return inputRouting;
+    }
+
+    /**
+     * Sets the input channel routing for this track.
+     *
+     * @param inputRouting the input routing
+     */
+    public void setInputRouting(InputRouting inputRouting) {
+        this.inputRouting = Objects.requireNonNull(inputRouting,
+                "inputRouting must not be null");
     }
 
     /**
@@ -543,6 +568,7 @@ public final class Track {
         copy.setPhaseInverted(phaseInverted);
         copy.setInputMonitoringMode(inputMonitoringMode);
         copy.setInputDeviceIndex(inputDeviceIndex);
+        copy.setInputRouting(inputRouting);
         copy.setColor(color);
         copy.setSoundFontAssignment(soundFontAssignment);
         copy.setMidiInputDeviceName(midiInputDeviceName);
