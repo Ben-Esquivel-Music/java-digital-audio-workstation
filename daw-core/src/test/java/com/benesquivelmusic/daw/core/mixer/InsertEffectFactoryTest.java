@@ -2,11 +2,7 @@ package com.benesquivelmusic.daw.core.mixer;
 
 import com.benesquivelmusic.daw.core.dsp.*;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
-import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
-import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
-import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
-import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
-import com.benesquivelmusic.daw.sdk.plugin.PluginType;
+import com.benesquivelmusic.daw.sdk.plugin.*;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;

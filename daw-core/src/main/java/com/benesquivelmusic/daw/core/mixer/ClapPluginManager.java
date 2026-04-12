@@ -5,7 +5,6 @@ import com.benesquivelmusic.daw.core.plugin.clap.ClapPluginHost;
 import com.benesquivelmusic.daw.core.plugin.clap.ClapPluginScanner;
 import com.benesquivelmusic.daw.sdk.plugin.ExternalPluginHost;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
-import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 
 import java.nio.file.Path;
 import java.util.Collections;
