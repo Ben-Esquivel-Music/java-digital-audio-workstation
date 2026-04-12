@@ -148,19 +148,17 @@ if(BUILD_LIBOGG)
     endforeach()
 endif()
 
-# ── 5. libvorbis / libvorbisenc ────────────────────────────────────
-# Dependency order: libogg → libvorbis → libvorbisenc.
+# ── 5. libvorbis / libvorbisenc / libvorbisfile ────────────────────
+# Dependency order: libogg → libvorbis → libvorbisenc / libvorbisfile.
 # libvorbis's CMake calls find_package(Ogg REQUIRED), which invokes its
 # bundled cmake/FindOgg.cmake.  We pre-populate the OGG_INCLUDE_DIR and
 # OGG_LIBRARY cache variables so FindOgg succeeds against the in-tree
-# libogg target (Ogg::ogg alias) built in the previous step.  Only the
-# core vorbis and vorbisenc libraries are needed — vorbisfile (decoder)
-# is covered separately.
+# libogg target (Ogg::ogg alias) built in the previous step.
 if(BUILD_LIBVORBIS)
     if(NOT BUILD_LIBOGG OR NOT TARGET ogg)
         message(FATAL_ERROR "BUILD_LIBVORBIS requires BUILD_LIBOGG=ON (libogg must be built first)")
     endif()
-    message(STATUS "── Configuring libvorbis / libvorbisenc ──")
+    message(STATUS "── Configuring libvorbis / libvorbisenc / libvorbisfile ──")
     set(BUILD_SHARED_LIBS ON CACHE BOOL "Build libvorbis as shared library" FORCE)
     # Force the framework build off — the framework path in vorbis's
     # CMakeLists.txt links via ${OGG_LIBRARIES} (a plain string) instead
@@ -195,8 +193,13 @@ if(BUILD_LIBVORBIS)
     if(TARGET vorbisenc)
         set_target_properties(vorbisenc PROPERTIES SOVERSION 2 VERSION 2.0.12)
     endif()
-    # Force vorbis and vorbisenc output into the common native directory
-    foreach(_target IN ITEMS vorbis vorbisenc)
+    #   vorbisfile: VF_LIB_CURRENT=6, VF_LIB_AGE=3, VF_LIB_REVISION=8
+    #             → SOVERSION=3 (6-3), VERSION=3.3.8
+    if(TARGET vorbisfile)
+        set_target_properties(vorbisfile PROPERTIES SOVERSION 3 VERSION 3.3.8)
+    endif()
+    # Force vorbis, vorbisenc, and vorbisfile output into the common native directory
+    foreach(_target IN ITEMS vorbis vorbisenc vorbisfile)
         if(TARGET ${_target})
             set_target_properties(${_target} PROPERTIES
                 LIBRARY_OUTPUT_DIRECTORY "${NATIVE_LIBS_OUTPUT_DIR}"
@@ -235,6 +238,9 @@ if(TARGET vorbis AND BUILD_LIBVORBIS)
 endif()
 if(TARGET vorbisenc AND BUILD_LIBVORBIS)
     list(APPEND DAW_NATIVE_TARGETS vorbisenc)
+endif()
+if(TARGET vorbisfile AND BUILD_LIBVORBIS)
+    list(APPEND DAW_NATIVE_TARGETS vorbisfile)
 endif()
 add_custom_target(daw-native-libs ALL DEPENDS ${DAW_NATIVE_TARGETS})
 

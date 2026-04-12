@@ -11,14 +11,14 @@ import java.nio.file.Path;
  * Used with JUnit {@link org.junit.jupiter.api.Assumptions} to skip
  * tests that require native libraries not installed on the system.
  */
-final class NativeCodecAvailability {
+public final class NativeCodecAvailability {
 
     private NativeCodecAvailability() {
         // utility class
     }
 
     /** Returns {@code true} if libmp3lame is available on this system. */
-    static boolean isLameAvailable() {
+    public static boolean isLameAvailable() {
         String os = System.getProperty("os.name", "").toLowerCase();
         if (os.contains("win")) {
             return isAnyLibraryAvailable("libmp3lame", "mp3lame", "lame");
@@ -30,7 +30,7 @@ final class NativeCodecAvailability {
     }
 
     /** Returns {@code true} if libvorbisenc and libogg are available on this system. */
-    static boolean isVorbisAvailable() {
+    public static boolean isVorbisAvailable() {
         String os = System.getProperty("os.name", "").toLowerCase();
         if (os.contains("win")) {
             return isAnyLibraryAvailable("vorbis", "libvorbis")
@@ -47,8 +47,32 @@ final class NativeCodecAvailability {
         }
     }
 
+    /**
+     * Returns {@code true} if libvorbisfile and its runtime dependencies
+     * (libogg + libvorbis) are available on this system.
+     *
+     * <p>Unlike {@link #isVorbisAvailable()}, this does <strong>not</strong>
+     * require libvorbisenc — decoding only needs ogg + vorbis + vorbisfile.</p>
+     */
+    public static boolean isVorbisFileAvailable() {
+        String os = System.getProperty("os.name", "").toLowerCase();
+        if (os.contains("win")) {
+            return isAnyLibraryAvailable("ogg", "libogg")
+                    && isAnyLibraryAvailable("vorbis", "libvorbis")
+                    && isAnyLibraryAvailable("vorbisfile", "libvorbisfile");
+        } else if (os.contains("mac")) {
+            return isAnyLibraryAvailable("libogg.dylib", "libogg.0.dylib")
+                    && isAnyLibraryAvailable("libvorbis.dylib", "libvorbis.0.dylib")
+                    && isAnyLibraryAvailable("libvorbisfile.dylib", "libvorbisfile.3.dylib");
+        } else {
+            return isAnyLibraryAvailable("libogg.so.0", "libogg.so")
+                    && isAnyLibraryAvailable("libvorbis.so.0", "libvorbis.so")
+                    && isAnyLibraryAvailable("libvorbisfile.so.3", "libvorbisfile.so");
+        }
+    }
+
     /** Returns {@code true} if libfdk-aac is available on this system. */
-    static boolean isFdkAacAvailable() {
+    public static boolean isFdkAacAvailable() {
         String os = System.getProperty("os.name", "").toLowerCase();
         if (os.contains("win")) {
             return isAnyLibraryAvailable("fdk-aac", "libfdk-aac");

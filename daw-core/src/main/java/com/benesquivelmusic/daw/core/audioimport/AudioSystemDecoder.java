@@ -15,8 +15,8 @@ import java.nio.file.Path;
  * to decode audio files into raw PCM, then converts to normalized
  * {@code float[][]} arrays.
  *
- * <p>This is used by {@link Mp3FileReader} and {@link OggVorbisFileReader}
- * for formats that require SPI-based decoders.</p>
+ * <p>This is used by {@link Mp3FileReader} for formats that require
+ * SPI-based decoders.</p>
  */
 final class AudioSystemDecoder {
 
