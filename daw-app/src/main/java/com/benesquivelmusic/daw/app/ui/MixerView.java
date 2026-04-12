@@ -429,6 +429,7 @@ public final class MixerView extends VBox {
         int bs = project.getFormat().bufferSize();
         InsertEffectRack insertRack = new InsertEffectRack(mixerChannel, channels, sr, bs, undoManager);
         insertRack.setPluginRegistry(pluginRegistry);
+        insertRack.setMixer(project.getMixer());
         activeInsertRacks.add(insertRack);
 
         // Per-channel latency label for plugin delay compensation (PDC)
@@ -540,6 +541,7 @@ public final class MixerView extends VBox {
         int bs = project.getFormat().bufferSize();
         InsertEffectRack insertRack = new InsertEffectRack(returnBus, channels, sr, bs, undoManager);
         insertRack.setPluginRegistry(pluginRegistry);
+        insertRack.setMixer(project.getMixer());
         activeInsertRacks.add(insertRack);
 
         // Per-bus latency label for plugin delay compensation (PDC)

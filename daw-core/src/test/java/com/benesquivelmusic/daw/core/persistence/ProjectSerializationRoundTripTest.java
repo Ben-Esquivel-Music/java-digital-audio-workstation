@@ -658,4 +658,81 @@ class ProjectSerializationRoundTripTest {
         assertThat(tracks.get(0).getAutomationMode()).isEqualTo(AutomationMode.READ);
         assertThat(tracks.get(1).getAutomationMode()).isEqualTo(AutomationMode.OFF);
     }
+
+    @Test
+    void shouldRoundTripSidechainSource() throws IOException {
+        DawProject original = new DawProject("Sidechain Test", AudioFormat.CD_QUALITY);
+        Track kick = original.createAudioTrack("Kick");
+        Track bass = original.createAudioTrack("Bass");
+
+        MixerChannel kickChannel = original.getMixerChannelForTrack(kick);
+        MixerChannel bassChannel = original.getMixerChannelForTrack(bass);
+
+        InsertSlot compressor = InsertEffectFactory.createSlot(
+                InsertEffectType.COMPRESSOR, 2, 44100.0);
+        compressor.setSidechainSource(kickChannel);
+        bassChannel.addInsert(compressor);
+
+        String xml = serializer.serialize(original);
+        assertThat(xml).contains("sidechain-source=\"channel:0\"");
+
+        DawProject restored = deserializer.deserialize(xml);
+
+        MixerChannel restoredBass = restored.getMixer().getChannels().get(1);
+        assertThat(restoredBass.getInsertSlots()).hasSize(1);
+        InsertSlot restoredSlot = restoredBass.getInsertSlots().get(0);
+        assertThat(restoredSlot.getSidechainSource()).isNotNull();
+        assertThat(restoredSlot.getSidechainSource().getName()).isEqualTo("Kick");
+        // Verify it's the actual channel object from the restored mixer
+        assertThat(restoredSlot.getSidechainSource())
+                .isSameAs(restored.getMixer().getChannels().get(0));
+    }
+
+    @Test
+    void shouldRoundTripSidechainSourceFromReturnBus() throws IOException {
+        DawProject original = new DawProject("Sidechain Return Test", AudioFormat.CD_QUALITY);
+        Track track = original.createAudioTrack("Vocals");
+
+        MixerChannel vocalsChannel = original.getMixerChannelForTrack(track);
+        MixerChannel reverbReturn = original.getMixer().getAuxBus();
+
+        InsertSlot gate = InsertEffectFactory.createSlot(
+                InsertEffectType.NOISE_GATE, 2, 44100.0);
+        gate.setSidechainSource(reverbReturn);
+        vocalsChannel.addInsert(gate);
+
+        String xml = serializer.serialize(original);
+        assertThat(xml).contains("sidechain-source=\"return:0\"");
+
+        DawProject restored = deserializer.deserialize(xml);
+
+        MixerChannel restoredVocals = restored.getMixer().getChannels().get(0);
+        InsertSlot restoredSlot = restoredVocals.getInsertSlots().get(0);
+        assertThat(restoredSlot.getSidechainSource()).isNotNull();
+        assertThat(restoredSlot.getSidechainSource())
+                .isSameAs(restored.getMixer().getReturnBuses().get(0));
+    }
+
+    @Test
+    void shouldHandleMissingSidechainSourceGracefully() throws IOException {
+        // Manually craft XML with an invalid sidechain source index
+        DawProject original = new DawProject("Invalid SC Test", AudioFormat.CD_QUALITY);
+        Track track = original.createAudioTrack("Track");
+        MixerChannel channel = original.getMixerChannelForTrack(track);
+        InsertSlot comp = InsertEffectFactory.createSlot(
+                InsertEffectType.COMPRESSOR, 2, 44100.0);
+        channel.addInsert(comp);
+
+        String xml = serializer.serialize(original);
+        // Inject an invalid sidechain source reference
+        xml = xml.replace("effect-type=\"COMPRESSOR\"",
+                "effect-type=\"COMPRESSOR\" sidechain-source=\"channel:99\"");
+
+        DawProject restored = deserializer.deserialize(xml);
+
+        MixerChannel restoredChannel = restored.getMixer().getChannels().get(0);
+        InsertSlot restoredSlot = restoredChannel.getInsertSlots().get(0);
+        // Invalid source index should result in null (no sidechain)
+        assertThat(restoredSlot.getSidechainSource()).isNull();
+    }
 }

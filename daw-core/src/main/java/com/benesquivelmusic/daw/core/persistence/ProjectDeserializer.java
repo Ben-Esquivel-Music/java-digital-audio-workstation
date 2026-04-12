@@ -471,9 +471,43 @@ public final class ProjectDeserializer {
                 }
             }
 
+            // Restore sidechain source reference
+            String scSourceStr = elem.getAttribute("sidechain-source");
+            if (!scSourceStr.isEmpty()) {
+                MixerChannel scSource = resolveSidechainSource(scSourceStr, project.getMixer());
+                if (scSource != null) {
+                    slot.setSidechainSource(scSource);
+                }
+            }
+
             channel.addInsert(slot);
         } catch (IllegalArgumentException ignored) {
             // skip unknown effect types
+        }
+    }
+
+    private MixerChannel resolveSidechainSource(String ref, Mixer mixer) {
+        if (ref.startsWith("channel:")) {
+            int index = parseIndex(ref.substring("channel:".length()));
+            List<MixerChannel> channels = mixer.getChannels();
+            if (index >= 0 && index < channels.size()) {
+                return channels.get(index);
+            }
+        } else if (ref.startsWith("return:")) {
+            int index = parseIndex(ref.substring("return:".length()));
+            List<MixerChannel> returnBuses = mixer.getReturnBuses();
+            if (index >= 0 && index < returnBuses.size()) {
+                return returnBuses.get(index);
+            }
+        }
+        return null;
+    }
+
+    private static int parseIndex(String value) {
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            return -1;
         }
     }
 

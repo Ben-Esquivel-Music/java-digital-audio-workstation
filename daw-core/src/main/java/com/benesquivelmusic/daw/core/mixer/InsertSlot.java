@@ -10,6 +10,11 @@ import java.util.Objects;
  * <p>Each slot holds a reference to an {@link AudioProcessor}, a display name
  * identifying the loaded effect, and an independent bypass flag. When bypassed,
  * the slot's processor is excluded from the channel's processing chain.</p>
+ *
+ * <p>For dynamics processors that implement
+ * {@link com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor}, a
+ * sidechain source can be configured to route another mixer channel's audio
+ * as the detection input.</p>
  */
 public final class InsertSlot {
 
@@ -17,6 +22,7 @@ public final class InsertSlot {
     private final AudioProcessor processor;
     private final InsertEffectType effectType;
     private boolean bypassed;
+    private MixerChannel sidechainSource;
 
     /**
      * Creates a new insert slot with the specified name and processor.
@@ -91,5 +97,32 @@ public final class InsertSlot {
      */
     public void setBypassed(boolean bypassed) {
         this.bypassed = bypassed;
+    }
+
+    /**
+     * Returns the mixer channel configured as the sidechain source for this
+     * insert, or {@code null} if no sidechain source is set (internal
+     * detection).
+     *
+     * <p>Only meaningful when the slot's processor implements
+     * {@link com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor}.</p>
+     *
+     * @return the sidechain source channel, or {@code null}
+     */
+    public MixerChannel getSidechainSource() {
+        return sidechainSource;
+    }
+
+    /**
+     * Sets the mixer channel to use as the sidechain detection source.
+     *
+     * <p>Pass {@code null} to clear the sidechain source and revert to
+     * internal detection. The change takes effect on the next audio
+     * processing block.</p>
+     *
+     * @param source the sidechain source channel, or {@code null} to clear
+     */
+    public void setSidechainSource(MixerChannel source) {
+        this.sidechainSource = source;
     }
 }

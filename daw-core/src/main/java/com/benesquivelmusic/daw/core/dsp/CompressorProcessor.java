@@ -1,6 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
-import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor;
 
 /**
  * Dynamic range compressor with standard professional controls.
@@ -12,12 +12,18 @@ import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
  *   <li>Makeup gain with auto-gain option</li>
  *   <li>Peak or RMS detection modes</li>
  *   <li>Gain reduction metering output</li>
+ *   <li>External sidechain input for keyed compression</li>
  * </ul>
  *
  * <p>The envelope follower uses logarithmic-domain smoothing for musically
  * accurate behavior. This is a pure-Java implementation — no JNI required.</p>
+ *
+ * <p>When used with a sidechain source, the external signal drives the
+ * envelope detector while gain reduction is applied to the main input.
+ * This enables classic sidechain compression techniques such as kick-driven
+ * bass ducking and dialogue ducking.</p>
  */
-public final class CompressorProcessor implements AudioProcessor, GainReductionProvider {
+public final class CompressorProcessor implements SidechainAwareProcessor, GainReductionProvider {
 
     /** Detection mode for the compressor. */
     public enum DetectionMode { PEAK, RMS }
@@ -65,13 +71,26 @@ public final class CompressorProcessor implements AudioProcessor, GainReductionP
 
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
+        processInternal(inputBuffer, inputBuffer, outputBuffer, numFrames);
+    }
+
+    @Override
+    public void processSidechain(float[][] inputBuffer, float[][] sidechainBuffer,
+                                 float[][] outputBuffer, int numFrames) {
+        processInternal(inputBuffer, sidechainBuffer, outputBuffer, numFrames);
+    }
+
+    private void processInternal(float[][] inputBuffer, float[][] detectionBuffer,
+                                 float[][] outputBuffer, int numFrames) {
         double makeupLinear = Math.pow(10.0, makeupGainDb / 20.0);
+        int detectionChannels = Math.min(channels, detectionBuffer.length);
+        int outputChannels = Math.min(channels, inputBuffer.length);
 
         for (int frame = 0; frame < numFrames; frame++) {
-            // Detect level across all channels
+            // Detect level from detection source (sidechain or main input)
             double level = 0.0;
-            for (int ch = 0; ch < Math.min(channels, inputBuffer.length); ch++) {
-                double s = Math.abs(inputBuffer[ch][frame]);
+            for (int ch = 0; ch < detectionChannels; ch++) {
+                double s = Math.abs(detectionBuffer[ch][frame]);
                 if (detectionMode == DetectionMode.RMS) {
                     level += s * s;
                 } else {
@@ -93,9 +112,9 @@ public final class CompressorProcessor implements AudioProcessor, GainReductionP
             double gainReductionDb = computeGainReduction(envelopeDb);
             currentGainReductionDb = gainReductionDb;
 
-            // Apply gain
+            // Apply gain to main input
             double gainLinear = Math.pow(10.0, gainReductionDb / 20.0) * makeupLinear;
-            for (int ch = 0; ch < Math.min(channels, inputBuffer.length); ch++) {
+            for (int ch = 0; ch < outputChannels; ch++) {
                 outputBuffer[ch][frame] = (float) (inputBuffer[ch][frame] * gainLinear);
             }
         }

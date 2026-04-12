@@ -1,6 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
-import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor;
 
 /**
  * Noise gate processor with threshold, attack, hold, and release controls.
@@ -15,11 +15,17 @@ import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
  *   <li>Adjustable threshold (open/close)</li>
  *   <li>Configurable attack, hold, and release times</li>
  *   <li>Adjustable range (attenuation depth) from 0 dB to full cutoff</li>
+ *   <li>External sidechain input for keyed gating</li>
  * </ul>
+ *
+ * <p>When used with a sidechain source, the external signal drives the
+ * gate trigger while gating is applied to the main input. This enables
+ * techniques such as keyed gating (e.g., triggering a snare gate from a
+ * dedicated trigger track).</p>
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
-public final class NoiseGateProcessor implements AudioProcessor {
+public final class NoiseGateProcessor implements SidechainAwareProcessor {
 
     /** Gate state. */
     private enum GateState { CLOSED, ATTACK, OPEN, HOLD, RELEASE }
@@ -66,14 +72,27 @@ public final class NoiseGateProcessor implements AudioProcessor {
 
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
+        processInternal(inputBuffer, inputBuffer, outputBuffer, numFrames);
+    }
+
+    @Override
+    public void processSidechain(float[][] inputBuffer, float[][] sidechainBuffer,
+                                 float[][] outputBuffer, int numFrames) {
+        processInternal(inputBuffer, sidechainBuffer, outputBuffer, numFrames);
+    }
+
+    private void processInternal(float[][] inputBuffer, float[][] detectionBuffer,
+                                 float[][] outputBuffer, int numFrames) {
         double thresholdLinear = Math.pow(10.0, thresholdDb / 20.0);
         double rangeLinear = Math.pow(10.0, rangeDb / 20.0);
+        int detectionChannels = Math.min(channels, detectionBuffer.length);
+        int outputChannels = Math.min(channels, inputBuffer.length);
 
         for (int frame = 0; frame < numFrames; frame++) {
-            // Detect peak across channels
+            // Detect peak from detection source (sidechain or main input)
             double peak = 0.0;
-            for (int ch = 0; ch < Math.min(channels, inputBuffer.length); ch++) {
-                double abs = Math.abs(inputBuffer[ch][frame]);
+            for (int ch = 0; ch < detectionChannels; ch++) {
+                double abs = Math.abs(detectionBuffer[ch][frame]);
                 if (abs > peak) peak = abs;
             }
 
@@ -120,9 +139,9 @@ public final class NoiseGateProcessor implements AudioProcessor {
                 }
             }
 
-            // Apply gate envelope
+            // Apply gate envelope to main input
             double gain = rangeLinear + envelope * (1.0 - rangeLinear);
-            for (int ch = 0; ch < Math.min(channels, inputBuffer.length); ch++) {
+            for (int ch = 0; ch < outputChannels; ch++) {
                 outputBuffer[ch][frame] = (float) (inputBuffer[ch][frame] * gain);
             }
         }

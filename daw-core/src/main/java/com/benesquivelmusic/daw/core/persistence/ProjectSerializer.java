@@ -267,6 +267,19 @@ public final class ProjectSerializer {
                         slotElem.appendChild(paramElem);
                     }
                 }
+                // Serialize sidechain source reference
+                MixerChannel scSource = slot.getSidechainSource();
+                if (scSource != null) {
+                    int scIndex = mixer.getChannels().indexOf(scSource);
+                    if (scIndex >= 0) {
+                        slotElem.setAttribute("sidechain-source", "channel:" + scIndex);
+                    } else {
+                        int rbIndex = mixer.getReturnBuses().indexOf(scSource);
+                        if (rbIndex >= 0) {
+                            slotElem.setAttribute("sidechain-source", "return:" + rbIndex);
+                        }
+                    }
+                }
                 insertsElem.appendChild(slotElem);
             }
         }

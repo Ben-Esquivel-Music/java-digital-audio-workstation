@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.mixer;
 
 import com.benesquivelmusic.daw.core.audio.PluginDelayCompensation;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
+import com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor;
 
 import java.util.*;
 
@@ -13,6 +14,11 @@ import java.util.*;
  * have {@link Send} objects that route audio to any return bus with independent
  * level and pre/post-fader mode. Return bus outputs are summed into the master
  * bus during mix-down.</p>
+ *
+ * <p>The mixer supports sidechain routing: when an insert slot on a channel
+ * has a {@linkplain InsertSlot#getSidechainSource() sidechain source} configured
+ * and the processor implements {@link SidechainAwareProcessor}, the source
+ * channel's audio is passed as the detection input to that processor.</p>
  *
  * <p>The {@link #mixDown(float[][][], float[][], int)} method sums all channel
  * contributions into a single output buffer without allocations or locks —
@@ -28,6 +34,8 @@ public final class Mixer {
     private final MixerChannel masterChannel;
     private final PluginDelayCompensation delayCompensation = new PluginDelayCompensation();
     private int preparedAudioChannels;
+    private float[][] scratchBufferA;
+    private float[][] scratchBufferB;
 
     /** Creates a new mixer with an empty channel list, a default master channel, and a reverb return aux bus. */
     public Mixer() {
@@ -210,6 +218,8 @@ public final class Mixer {
      */
     public void prepareForPlayback(int audioChannels, int blockSize) {
         this.preparedAudioChannels = audioChannels;
+        this.scratchBufferA = new float[audioChannels][blockSize];
+        this.scratchBufferB = new float[audioChannels][blockSize];
         for (MixerChannel channel : channels) {
             channel.prepareEffectsChain(audioChannels, blockSize);
         }
@@ -265,7 +275,11 @@ public final class Mixer {
             float[][] src = channelBuffers[i];
 
             if (!channel.getEffectsChain().isEmpty()) {
-                channel.getEffectsChain().process(src, src, numFrames);
+                if (hasSidechainRouting(channel)) {
+                    processInsertsWithSidechain(channel, src, channelBuffers, numFrames);
+                } else {
+                    channel.getEffectsChain().process(src, src, numFrames);
+                }
             }
 
             // Apply plugin delay compensation to align this channel with
@@ -468,7 +482,11 @@ public final class Mixer {
             float[][] src = channelBuffers[i];
 
             if (!channel.getEffectsChain().isEmpty()) {
-                channel.getEffectsChain().process(src, src, numFrames);
+                if (hasSidechainRouting(channel)) {
+                    processInsertsWithSidechain(channel, src, channelBuffers, numFrames);
+                } else {
+                    channel.getEffectsChain().process(src, src, numFrames);
+                }
             }
 
             float volume = (float) channel.getVolume();
@@ -598,6 +616,125 @@ public final class Mixer {
                 Arrays.fill(ch, 0, numFrames, 0.0f);
             }
         }
+    }
+
+    // ── Sidechain routing ──────────────────────────────────────────────────
+
+    /**
+     * Returns {@code true} if any non-bypassed insert slot on the channel has
+     * a sidechain source configured with a {@link SidechainAwareProcessor}.
+     */
+    private static boolean hasSidechainRouting(MixerChannel channel) {
+        for (InsertSlot slot : channel.getInsertSlots()) {
+            if (!slot.isBypassed()
+                    && slot.getSidechainSource() != null
+                    && slot.getProcessor() instanceof SidechainAwareProcessor) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Processes a channel's insert effects, routing sidechain buffers where
+     * configured. This replaces the standard {@code EffectsChain.process()}
+     * call when at least one insert slot has a sidechain source.
+     *
+     * <p>For each non-bypassed insert slot:
+     * <ul>
+     *   <li>If the slot has a sidechain source and the processor is a
+     *       {@link SidechainAwareProcessor}, look up the source channel's
+     *       buffer from {@code channelBuffers} and call
+     *       {@code processSidechain()}.</li>
+     *   <li>Otherwise, call the standard {@code process()} method.</li>
+     * </ul>
+     *
+     * <p>Uses {@code src} as both the initial input and the final output
+     * destination. Two pre-allocated scratch buffers ({@link #scratchBufferA}
+     * and {@link #scratchBufferB}) are used for intermediate results,
+     * ping-ponging between them to avoid buffer aliasing when multiple
+     * non-bypassed inserts are present. The last active processor always
+     * writes directly to {@code src}.</p>
+     */
+    @RealTimeSafe
+    private void processInsertsWithSidechain(MixerChannel channel, float[][] src,
+                                             float[][][] channelBuffers, int numFrames) {
+        List<InsertSlot> slots = channel.getInsertSlots();
+
+        // Count active (non-bypassed) slots
+        int activeCount = 0;
+        for (int s = 0; s < slots.size(); s++) {
+            if (!slots.get(s).isBypassed()) {
+                activeCount++;
+            }
+        }
+        if (activeCount == 0) {
+            return;
+        }
+
+        // Process each active slot, ping-ponging between scratchBufferA and
+        // scratchBufferB for intermediates. The last active slot writes
+        // directly to src.
+        //
+        // For a single active slot: process(src, src) — in-place, matching
+        // the existing EffectsChain behavior for single-processor chains.
+        //
+        // For 2+ active slots, intermediates use scratch buffers so that
+        // currentInput and currentOutput are always distinct arrays:
+        //   Slot 1: read src,      write scratchA  → currentInput = scratchA
+        //   Slot 2: read scratchA, write scratchB  → currentInput = scratchB
+        //   Slot 3: read scratchB, write scratchA  → currentInput = scratchA
+        //   ...
+        //   Last:   read scratchX, write src       → no aliasing (scratchX ≠ src)
+        float[][] currentInput = src;
+        int processed = 0;
+        boolean usePingA = true;
+
+        for (int s = 0; s < slots.size(); s++) {
+            InsertSlot slot = slots.get(s);
+            if (slot.isBypassed()) {
+                continue;
+            }
+            processed++;
+            boolean isLast = (processed == activeCount);
+
+            float[][] currentOutput;
+            if (isLast) {
+                currentOutput = src;
+            } else {
+                currentOutput = usePingA ? scratchBufferA : scratchBufferB;
+                usePingA = !usePingA;
+            }
+
+            MixerChannel scSource = slot.getSidechainSource();
+            if (scSource != null && slot.getProcessor() instanceof SidechainAwareProcessor sap) {
+                float[][] scBuffer = findChannelBuffer(scSource, channelBuffers);
+                if (scBuffer != null) {
+                    sap.processSidechain(currentInput, scBuffer, currentOutput, numFrames);
+                } else {
+                    slot.getProcessor().process(currentInput, currentOutput, numFrames);
+                }
+            } else {
+                slot.getProcessor().process(currentInput, currentOutput, numFrames);
+            }
+
+            currentInput = currentOutput;
+        }
+    }
+
+    /**
+     * Finds the audio buffer for the given mixer channel from the channel buffers
+     * array. Returns {@code null} if the channel is not found.
+     */
+    @RealTimeSafe
+    private float[][] findChannelBuffer(MixerChannel target, float[][][] channelBuffers) {
+        int count = Math.min(channels.size(), channelBuffers.length);
+        for (int i = 0; i < count; i++) {
+            if (channels.get(i) == target) {
+                return channelBuffers[i];
+            }
+        }
+        return null;
     }
 
     // ── Plugin Delay Compensation ──────────────────────────────────────────

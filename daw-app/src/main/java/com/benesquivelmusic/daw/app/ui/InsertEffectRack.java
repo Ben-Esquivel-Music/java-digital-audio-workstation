@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.plugin.PluginLoadException;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.undo.UndoHistoryListener;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
+import com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
@@ -63,6 +64,7 @@ public final class InsertEffectRack extends VBox {
     private final UndoManager undoManager;
     private final UndoHistoryListener historyListener;
     private PluginRegistry pluginRegistry;
+    private Mixer mixer;
     private Runnable onSlotsChanged;
 
     /**
@@ -210,6 +212,17 @@ public final class InsertEffectRack extends VBox {
     }
 
     /**
+     * Sets the mixer reference used to populate sidechain source dropdowns.
+     * When set, insert slots containing a {@link SidechainAwareProcessor}
+     * show a sidechain source selector listing available channels and buses.
+     *
+     * @param mixer the mixer, or {@code null} to disable sidechain UI
+     */
+    public void setMixer(Mixer mixer) {
+        this.mixer = mixer;
+    }
+
+    /**
      * Inserts a {@link DawPlugin} into the mixer channel at the given slot
      * index using the unified {@link DawPlugin#asAudioProcessor()} contract.
      *
@@ -249,7 +262,7 @@ public final class InsertEffectRack extends VBox {
 
     // ── Populated slot ──────────────────────────────────────────────────────
 
-    private HBox buildPopulatedSlot(int slotIndex, InsertSlot slot) {
+    private javafx.scene.Node buildPopulatedSlot(int slotIndex, InsertSlot slot) {
         HBox row = new HBox(2);
         row.setAlignment(Pos.CENTER_LEFT);
         row.getStyleClass().add("insert-slot-populated");
@@ -327,6 +340,14 @@ public final class InsertEffectRack extends VBox {
         });
 
         row.getChildren().addAll(bypassBtn, nameLabel);
+
+        // Add sidechain source selector for SidechainAwareProcessor inserts
+        if (mixer != null && slot.getProcessor() instanceof SidechainAwareProcessor) {
+            VBox wrapper = new VBox(1);
+            wrapper.getChildren().addAll(row, buildSidechainSelector(slot));
+            return wrapper;
+        }
+
         return row;
     }
 
@@ -504,6 +525,66 @@ public final class InsertEffectRack extends VBox {
         stage.setTitle(slot.getName() + " — Parameters");
         stage.setScene(new Scene(editor, 420, 320));
         stage.show();
+    }
+
+    // ── Sidechain selector ───────────────────────────────────────────────────
+
+    /**
+     * Builds a small ComboBox that lets the user select which mixer channel
+     * provides the sidechain detection signal for this insert slot. The
+     * first entry is "None" (internal detection). All mixer channels and
+     * return buses are listed, except the channel that owns this rack
+     * (self-sidechain would be meaningless).
+     */
+    private ComboBox<String> buildSidechainSelector(InsertSlot slot) {
+        List<MixerChannel> allChannels = mixer.getChannels();
+        List<MixerChannel> allReturnBuses = mixer.getReturnBuses();
+
+        List<String> names = new ArrayList<>();
+        List<MixerChannel> sources = new ArrayList<>();
+        names.add("None");
+        sources.add(null);
+
+        for (MixerChannel ch : allChannels) {
+            if (ch != channel) {
+                names.add(ch.getName());
+                sources.add(ch);
+            }
+        }
+        for (MixerChannel rb : allReturnBuses) {
+            if (rb != channel) {
+                names.add("[Ret] " + rb.getName());
+                sources.add(rb);
+            }
+        }
+
+        ComboBox<String> combo = new ComboBox<>();
+        combo.getItems().addAll(names);
+        combo.setMaxWidth(RACK_WIDTH - 4);
+        combo.setMaxHeight(16);
+        combo.setStyle("-fx-font-size: 8px; -fx-padding: 0 1 0 1;");
+        combo.setTooltip(new Tooltip("Sidechain source"));
+
+        // Select current source
+        MixerChannel current = slot.getSidechainSource();
+        int selectedIndex = 0;
+        if (current != null) {
+            for (int i = 1; i < sources.size(); i++) {
+                if (sources.get(i) == current) {
+                    selectedIndex = i;
+                    break;
+                }
+            }
+        }
+        combo.getSelectionModel().select(selectedIndex);
+
+        combo.setOnAction(_ -> {
+            int idx = combo.getSelectionModel().getSelectedIndex();
+            MixerChannel source = (idx >= 0 && idx < sources.size()) ? sources.get(idx) : null;
+            slot.setSidechainSource(source);
+        });
+
+        return combo;
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
