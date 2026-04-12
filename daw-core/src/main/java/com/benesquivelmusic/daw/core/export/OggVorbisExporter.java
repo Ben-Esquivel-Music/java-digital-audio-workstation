@@ -40,8 +40,21 @@ public final class OggVorbisExporter {
     // Platform-aware C ABI type for 'long' — 8 bytes on Linux/macOS x86_64,
     // 4 bytes on Windows x86_64 (LLP64 model). Obtained from the native
     // linker's canonical layout map (JEP 454).
-    static final ValueLayout C_LONG =
-            (ValueLayout) Linker.nativeLinker().canonicalLayouts().get("long");
+    static final ValueLayout C_LONG = resolveCLongLayout();
+
+    private static ValueLayout resolveCLongLayout() {
+        MemoryLayout longLayout = Linker.nativeLinker().canonicalLayouts().get("long");
+        if (longLayout == null) {
+            throw new UnsupportedOperationException(
+                    "Native C ABI layout for 'long' is not available from the platform linker");
+        }
+        if (!(longLayout instanceof ValueLayout valueLayout)) {
+            throw new UnsupportedOperationException(
+                    "Native C ABI layout for 'long' is not a ValueLayout: "
+                            + longLayout.getClass().getName());
+        }
+        return valueLayout;
+    }
 
     // Struct sizes computed from C struct declarations in ogg/ogg.h and
     // vorbis/codec.h using platform-correct C ABI types (C_INT, C_LONG,
@@ -598,8 +611,8 @@ public final class OggVorbisExporter {
                 }
                 try {
                     Path dirPath = Path.of(dir).normalize();
-                    if (dirPath.toString().isEmpty() || dirPath.equals(Path.of("."))) {
-                        continue; // skip CWD entries to avoid unintended loading locations
+                    if (dirPath.toString().isEmpty()) {
+                        continue; // skip empty normalized entries
                     }
                     for (String fileName : fileNames) {
                         Path candidate = dirPath.resolve(fileName).toAbsolutePath();
