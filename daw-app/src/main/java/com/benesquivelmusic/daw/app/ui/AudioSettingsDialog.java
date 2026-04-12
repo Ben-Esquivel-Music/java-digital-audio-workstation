@@ -513,7 +513,7 @@ public final class AudioSettingsDialog extends Dialog<Void> {
 
     /** Test hook — fires the test-tone button action. */
     void fireTestTone() {
-        onTestTone();
+        testToneButton.fire();
     }
 
     /** Test hook — read-only snapshot of the filtered sample rate options. */
