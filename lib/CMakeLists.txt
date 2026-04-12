@@ -122,7 +122,10 @@ endif()
 # libogg is the Ogg bitstream container library (BSD 3-clause).
 # It must be configured before libvorbis because libvorbis depends on
 # libogg at both compile time (headers) and link time (shared library).
-# Added with EXCLUDE_FROM_ALL to suppress install/uninstall targets.
+# Added with EXCLUDE_FROM_ALL so ogg targets are not part of the default
+# ALL build (they are pulled in via the daw-native-libs aggregate target
+# instead).  Install/docs/pkg-config targets are suppressed by the
+# INSTALL_* cache variables set below.
 if(BUILD_LIBOGG)
     message(STATUS "── Configuring libogg ──")
     set(BUILD_SHARED_LIBS ON CACHE BOOL "Build libogg as shared library" FORCE)
@@ -159,6 +162,12 @@ if(BUILD_LIBVORBIS)
     endif()
     message(STATUS "── Configuring libvorbis / libvorbisenc ──")
     set(BUILD_SHARED_LIBS ON CACHE BOOL "Build libvorbis as shared library" FORCE)
+    # Force the framework build off — the framework path in vorbis's
+    # CMakeLists.txt links via ${OGG_LIBRARIES} (a plain string) instead
+    # of the Ogg::ogg target, which would fail with our in-tree target.
+    if(APPLE)
+        set(BUILD_FRAMEWORK OFF CACHE BOOL "Disable macOS framework build for vorbis" FORCE)
+    endif()
     # Pre-populate cache variables so libvorbis's FindOgg.cmake finds the
     # in-tree libogg instead of searching the system.  The Ogg::ogg alias
     # target already exists from the ogg-1.3.6 subdirectory above, so the
@@ -167,7 +176,7 @@ if(BUILD_LIBVORBIS)
     set(OGG_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ogg-1.3.6/include" CACHE PATH
         "Path to libogg headers (in-tree)" FORCE)
     set(OGG_LIBRARY "ogg" CACHE FILEPATH
-        "libogg library (in-tree target)" FORCE)
+        "libogg library (in-tree target name; satisfies FindOgg.cmake's check)" FORCE)
     # Skip optional sub-projects that would slow or fail the build
     set(INSTALL_CMAKE_PACKAGE_MODULE OFF CACHE BOOL "" FORCE)
     add_subdirectory(vorbis-1.3.7 EXCLUDE_FROM_ALL)
@@ -205,8 +214,8 @@ if(BUILD_LIBVORBIS)
 endif()
 
 # ── Aggregate target ───────────────────────────────────────────────
-# Since sub-projects are added with EXCLUDE_FROM_ALL (to suppress
-# their install/uninstall targets), we create an explicit aggregate
+# Since sub-projects are added with EXCLUDE_FROM_ALL (so their targets
+# are not part of the default ALL build), we create an explicit aggregate
 # target so 'cmake --build .' compiles everything.
 set(DAW_NATIVE_TARGETS "")
 if(TARGET portaudio AND BUILD_PORTAUDIO)
@@ -249,8 +258,9 @@ int main(void) {
     add_executable(test_vorbis_smoke EXCLUDE_FROM_ALL
         "${CMAKE_CURRENT_BINARY_DIR}/test_vorbis_smoke.c")
     target_link_libraries(test_vorbis_smoke PRIVATE vorbis)
-    # Place the test executable next to the shared libraries so it can
-    # find them at runtime without extra LD_LIBRARY_PATH on Linux.
+    # Place the test executable next to the shared libraries; the test
+    # environment below adds LD_LIBRARY_PATH / DYLD_LIBRARY_PATH so the
+    # dynamic linker can resolve the in-tree shared libraries at runtime.
     set_target_properties(test_vorbis_smoke PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${NATIVE_LIBS_OUTPUT_DIR}"
     )
