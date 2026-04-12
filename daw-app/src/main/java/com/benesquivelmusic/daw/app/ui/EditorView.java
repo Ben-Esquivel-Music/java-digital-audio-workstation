@@ -133,8 +133,8 @@ public final class EditorView extends VBox {
         if (track == null) {
             switchMode(Mode.EMPTY);
         } else if (track.getType() == TrackType.MIDI) {
-            midiEditorView.loadFromMidiClip(track.getMidiClip());
             switchMode(Mode.MIDI);
+            midiEditorView.loadFromMidiClip(track.getMidiClip());
         } else {
             switchMode(Mode.AUDIO);
         }
@@ -478,10 +478,7 @@ public final class EditorView extends VBox {
         this.currentMode = mode;
         contentArea.getChildren().clear();
         switch (mode) {
-            case MIDI -> {
-                contentArea.getChildren().add(midiEditorView);
-                midiEditorView.renderPianoRoll();
-            }
+            case MIDI -> contentArea.getChildren().add(midiEditorView);
             case AUDIO -> contentArea.getChildren().add(audioEditorView);
             case EMPTY -> contentArea.getChildren().add(placeholderLabel);
         }
@@ -579,6 +576,6 @@ public final class EditorView extends VBox {
     }
 
     private void applyZoom() {
-        midiEditorView.applyZoom(zoomLevel.getLevel());
+        midiEditorView.applyZoom(zoomLevel.getLevel(), currentMode == Mode.MIDI);
     }
 }

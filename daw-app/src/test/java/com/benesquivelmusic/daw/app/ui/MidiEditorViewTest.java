@@ -22,10 +22,13 @@ class MidiEditorViewTest {
 
     private MidiEditorView createOnFxThread() throws Exception {
         AtomicReference<MidiEditorView> ref = new AtomicReference<>();
+        AtomicReference<Throwable> error = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
             try {
                 ref.set(new MidiEditorView());
+            } catch (Throwable t) {
+                error.set(t);
             } finally {
                 latch.countDown();
             }
@@ -33,14 +36,20 @@ class MidiEditorViewTest {
         assertThat(latch.await(5, TimeUnit.SECONDS))
                 .as("FX thread timed out creating MidiEditorView")
                 .isTrue();
+        if (error.get() != null) {
+            throw new AssertionError("Exception on FX thread", error.get());
+        }
         return ref.get();
     }
 
     private void runOnFxThread(Runnable action) throws Exception {
+        AtomicReference<Throwable> error = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
             try {
                 action.run();
+            } catch (Throwable t) {
+                error.set(t);
             } finally {
                 latch.countDown();
             }
@@ -48,6 +57,9 @@ class MidiEditorViewTest {
         assertThat(latch.await(5, TimeUnit.SECONDS))
                 .as("FX thread timed out running action")
                 .isTrue();
+        if (error.get() != null) {
+            throw new AssertionError("Exception on FX thread", error.get());
+        }
     }
 
     // ── Canvas tests ─────────────────────────────────────────────────────────
@@ -349,7 +361,7 @@ class MidiEditorViewTest {
 
         double initialWidth = view.getPianoRollCanvas().getWidth();
 
-        runOnFxThread(() -> view.applyZoom(2.0));
+        runOnFxThread(() -> view.applyZoom(2.0, true));
 
         assertThat(view.getPianoRollCanvas().getWidth()).isGreaterThan(initialWidth);
     }

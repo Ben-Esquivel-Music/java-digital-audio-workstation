@@ -18,8 +18,9 @@ import javafx.scene.control.Label;
 /**
  * Audio waveform editor view for clip-level audio editing.
  *
- * <p>Provides a {@link WaveformDisplay} component with selection, trim,
- * and fade handles, and zoom controls for time and amplitude.</p>
+ * <p>Provides a {@link WaveformDisplay} component with trim and
+ * fade-in/fade-out handle buttons. Zoom controls live in the parent
+ * {@link EditorView} toolbar and currently only affect the MIDI sub-view.</p>
  */
 final class AudioEditorView extends VBox {
 

@@ -22,10 +22,13 @@ class AudioEditorViewTest {
 
     private AudioEditorView createOnFxThread() throws Exception {
         AtomicReference<AudioEditorView> ref = new AtomicReference<>();
+        AtomicReference<Throwable> error = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
             try {
                 ref.set(new AudioEditorView());
+            } catch (Throwable t) {
+                error.set(t);
             } finally {
                 latch.countDown();
             }
@@ -33,14 +36,20 @@ class AudioEditorViewTest {
         assertThat(latch.await(5, TimeUnit.SECONDS))
                 .as("FX thread timed out creating AudioEditorView")
                 .isTrue();
+        if (error.get() != null) {
+            throw new AssertionError("Exception on FX thread", error.get());
+        }
         return ref.get();
     }
 
     private void runOnFxThread(Runnable action) throws Exception {
+        AtomicReference<Throwable> error = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
             try {
                 action.run();
+            } catch (Throwable t) {
+                error.set(t);
             } finally {
                 latch.countDown();
             }
@@ -48,6 +57,9 @@ class AudioEditorViewTest {
         assertThat(latch.await(5, TimeUnit.SECONDS))
                 .as("FX thread timed out running action")
                 .isTrue();
+        if (error.get() != null) {
+            throw new AssertionError("Exception on FX thread", error.get());
+        }
     }
 
     // ── Component tests ─────────────────────────────────────────────────────

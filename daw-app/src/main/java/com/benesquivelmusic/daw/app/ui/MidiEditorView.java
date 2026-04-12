@@ -291,13 +291,15 @@ final class MidiEditorView extends VBox {
 
     // ── Zoom ────────────────────────────────────────────────────────────────
 
-    void applyZoom(double zoomFactor) {
+    void applyZoom(double zoomFactor, boolean render) {
         double scaledColWidth = BASE_COL_WIDTH * zoomFactor;
         double newWidth = PIANO_KEY_WIDTH + GRID_COLUMNS * scaledColWidth;
         pianoRollCanvas.setWidth(newWidth);
         velocityCanvas.setWidth(newWidth);
-        renderPianoRoll();
-        renderVelocityLane();
+        if (render) {
+            renderPianoRoll();
+            renderVelocityLane();
+        }
     }
 
     // ── Piano roll rendering ────────────────────────────────────────────────
