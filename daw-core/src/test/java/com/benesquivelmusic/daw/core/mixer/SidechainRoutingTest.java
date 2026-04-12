@@ -318,6 +318,52 @@ class SidechainRoutingTest {
     }
 
     @Test
+    void mixerMultiBusMixDownShouldRouteSidechainFromReturnBus() {
+        // Sidechain source is a return bus — the compressor should use the
+        // return bus buffer for detection when available in the multi-bus
+        // mixDown path. The return bus is populated by a send from an earlier
+        // channel before the sidechain-consuming channel is processed.
+        Mixer mixer = new Mixer();
+
+        MixerChannel vocalsChannel = new MixerChannel("Vocals");
+        mixer.addChannel(vocalsChannel);
+
+        MixerChannel bassChannel = new MixerChannel("Bass");
+        mixer.addChannel(bassChannel);
+
+        MixerChannel returnBus = mixer.getReturnBuses().get(0);
+
+        // Vocals sends a loud signal to the return bus (pre-fader, full level)
+        vocalsChannel.addSend(new Send(returnBus, 1.0, SendMode.PRE_FADER));
+
+        CompressorProcessor comp = new CompressorProcessor(1, SAMPLE_RATE);
+        comp.setThresholdDb(-20.0);
+        comp.setRatio(10.0);
+        comp.setAttackMs(0.01);
+        comp.setKneeDb(0.0);
+        InsertSlot slot = new InsertSlot("Compressor", comp, InsertEffectType.COMPRESSOR);
+        slot.setSidechainSource(returnBus);
+        bassChannel.addInsert(slot);
+
+        mixer.prepareForPlayback(1, 4096);
+
+        // Vocals: loud signal that will be sent to the return bus
+        float[][][] channelBuffers = new float[2][1][4096];
+        Arrays.fill(channelBuffers[0][0], 0.9f);  // vocals — loud
+        Arrays.fill(channelBuffers[1][0], 0.05f);  // bass — quiet
+
+        float[][] output = new float[1][4096];
+        float[][][] returnBuffers = new float[1][1][4096];
+
+        mixer.mixDown(channelBuffers, output, returnBuffers, 4096);
+
+        // The vocals' send fills the return bus with a loud signal.
+        // The bass compressor sidechains from that return bus, so it should
+        // detect above-threshold levels and apply gain reduction.
+        assertThat(comp.getGainReductionDb()).isLessThan(0.0);
+    }
+
+    @Test
     void mixerShouldHandleThreeActiveInsertsWithSidechain() {
         // Regression test: 3+ active non-bypassed inserts require proper
         // ping-pong between two scratch buffers to avoid aliasing.
