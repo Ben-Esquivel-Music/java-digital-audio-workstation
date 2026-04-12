@@ -12,6 +12,15 @@ file(MAKE_DIRECTORY "${NATIVE_LIBS_OUTPUT_DIR}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${NATIVE_LIBS_OUTPUT_DIR}")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${NATIVE_LIBS_OUTPUT_DIR}")
 
+# Multi-config generators (MSVC, Xcode) append a per-config subdirectory
+# (e.g. native/Release/) by default. Override per-config output directories
+# so all DLLs land directly in native/ regardless of build configuration.
+foreach(CFG IN ITEMS DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+    string(TOUPPER "${CFG}" CFG_UPPER)
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_${CFG_UPPER} "${NATIVE_LIBS_OUTPUT_DIR}")
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${CFG_UPPER} "${NATIVE_LIBS_OUTPUT_DIR}")
+endforeach()
+
 # ── Build options ───────────────────────────────────────────────────
 option(BUILD_PORTAUDIO      "Build PortAudio shared library"      ON)
 option(BUILD_FLUIDSYNTH     "Build FluidSynth shared library"     ON)
@@ -26,11 +35,18 @@ if(BUILD_PORTAUDIO)
     set(PA_BUILD_TESTS     OFF CACHE BOOL "" FORCE)
     set(PA_DISABLE_INSTALL ON  CACHE BOOL "Disable install/uninstall targets" FORCE)
     add_subdirectory(portaudio EXCLUDE_FROM_ALL)
-    # Force output into the common native directory
+    # Force output into the common native directory (all configurations)
     set_target_properties(portaudio PROPERTIES
         LIBRARY_OUTPUT_DIRECTORY "${NATIVE_LIBS_OUTPUT_DIR}"
         RUNTIME_OUTPUT_DIRECTORY "${NATIVE_LIBS_OUTPUT_DIR}"
     )
+    foreach(CFG IN ITEMS DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+        string(TOUPPER "${CFG}" CFG_UPPER)
+        set_target_properties(portaudio PROPERTIES
+            LIBRARY_OUTPUT_DIRECTORY_${CFG_UPPER} "${NATIVE_LIBS_OUTPUT_DIR}"
+            RUNTIME_OUTPUT_DIRECTORY_${CFG_UPPER} "${NATIVE_LIBS_OUTPUT_DIR}"
+        )
+    endforeach()
 endif()
 
 # ── 2. FluidSynth ─────────────────────────────────────────────────
@@ -66,12 +82,19 @@ if(BUILD_FLUIDSYNTH)
         set(enable-readline     OFF CACHE BOOL "" FORCE)
         set(enable-systemd      OFF CACHE BOOL "" FORCE)
         add_subdirectory(fluidsynth-2.5.3/fluidsynth-2.5.3 EXCLUDE_FROM_ALL)
-        # Force output into the common native directory
+        # Force output into the common native directory (all configurations)
         if(TARGET libfluidsynth)
             set_target_properties(libfluidsynth PROPERTIES
                 LIBRARY_OUTPUT_DIRECTORY "${NATIVE_LIBS_OUTPUT_DIR}"
                 RUNTIME_OUTPUT_DIRECTORY "${NATIVE_LIBS_OUTPUT_DIR}"
             )
+            foreach(CFG IN ITEMS DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+                string(TOUPPER "${CFG}" CFG_UPPER)
+                set_target_properties(libfluidsynth PROPERTIES
+                    LIBRARY_OUTPUT_DIRECTORY_${CFG_UPPER} "${NATIVE_LIBS_OUTPUT_DIR}"
+                    RUNTIME_OUTPUT_DIRECTORY_${CFG_UPPER} "${NATIVE_LIBS_OUTPUT_DIR}"
+                )
+            endforeach()
         endif()
     endif()
 endif()
@@ -84,6 +107,13 @@ if(BUILD_LIBMP3LAME)
         LIBRARY_OUTPUT_DIRECTORY "${NATIVE_LIBS_OUTPUT_DIR}"
         RUNTIME_OUTPUT_DIRECTORY "${NATIVE_LIBS_OUTPUT_DIR}"
     )
+    foreach(CFG IN ITEMS DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+        string(TOUPPER "${CFG}" CFG_UPPER)
+        set_target_properties(mp3lame PROPERTIES
+            LIBRARY_OUTPUT_DIRECTORY_${CFG_UPPER} "${NATIVE_LIBS_OUTPUT_DIR}"
+            RUNTIME_OUTPUT_DIRECTORY_${CFG_UPPER} "${NATIVE_LIBS_OUTPUT_DIR}"
+        )
+    endforeach()
 endif()
 
 # ── Aggregate target ───────────────────────────────────────────────

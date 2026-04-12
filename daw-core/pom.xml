@@ -104,12 +104,11 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
-                    <!-- Enable native access for FFM (JEP 454) bindings -->
-                    <argLine>--enable-native-access=ALL-UNNAMED</argLine>
-                    <!-- Make compiled native libraries discoverable during tests -->
-                    <systemPropertyVariables>
-                        <java.library.path>${native.libs.dir}</java.library.path>
-                    </systemPropertyVariables>
+                    <!-- Enable native access for FFM (JEP 454) bindings and
+                         set java.library.path so SymbolLookup finds compiled
+                         native libraries (must be in argLine, not systemPropertyVariables,
+                         because java.library.path is read at JVM bootstrap). -->
+                    <argLine>--enable-native-access=ALL-UNNAMED -Djava.library.path=${native.libs.dir}</argLine>
                 </configuration>
             </plugin>
 
