@@ -8,8 +8,10 @@ import java.io.OutputStream;
 import java.lang.foreign.*;
 import java.lang.invoke.MethodHandle;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Exports audio data to OGG Vorbis format using FFM API (JEP 454)
@@ -35,20 +37,53 @@ import java.util.Objects;
  */
 public final class OggVorbisExporter {
 
-    // Struct sizes for x86_64 Linux (determined at build time)
-    private static final long SIZEOF_VORBIS_INFO = 56;
-    private static final long SIZEOF_VORBIS_COMMENT = 32;
-    private static final long SIZEOF_VORBIS_DSP_STATE = 144;
-    private static final long SIZEOF_VORBIS_BLOCK = 192;
-    private static final long SIZEOF_OGG_STREAM_STATE = 408;
-    private static final long SIZEOF_OGG_PAGE = 32;
-    private static final long SIZEOF_OGG_PACKET = 48;
+    // Platform-aware C ABI type for 'long' — 8 bytes on Linux/macOS x86_64,
+    // 4 bytes on Windows x86_64 (LLP64 model). Obtained from the native
+    // linker's canonical layout map (JEP 454).
+    static final ValueLayout C_LONG = resolveCLongLayout();
 
-    // ogg_page field offsets (x86_64)
-    private static final long OGG_PAGE_HEADER = 0;
-    private static final long OGG_PAGE_HEADER_LEN = 8;
-    private static final long OGG_PAGE_BODY = 16;
-    private static final long OGG_PAGE_BODY_LEN = 24;
+    private static ValueLayout resolveCLongLayout() {
+        MemoryLayout longLayout = Linker.nativeLinker().canonicalLayouts().get("long");
+        if (longLayout == null) {
+            throw new UnsupportedOperationException(
+                    "Native C ABI layout for 'long' is not available from the platform linker");
+        }
+        if (!(longLayout instanceof ValueLayout valueLayout)) {
+            throw new UnsupportedOperationException(
+                    "Native C ABI layout for 'long' is not a ValueLayout: "
+                            + longLayout.getClass().getName());
+        }
+        return valueLayout;
+    }
+
+    // Struct sizes computed from C struct declarations in ogg/ogg.h and
+    // vorbis/codec.h using platform-correct C ABI types (C_INT, C_LONG,
+    // C_POINTER) rather than hardcoded byte counts.
+    static final long SIZEOF_VORBIS_INFO = computeStructSize(
+            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,       // version, channels
+            C_LONG, C_LONG, C_LONG, C_LONG, C_LONG,           // rate, bitrate_*
+            ValueLayout.ADDRESS);                              // codec_setup
+    static final long SIZEOF_VORBIS_COMMENT = computeStructSize(
+            ValueLayout.ADDRESS, ValueLayout.ADDRESS,          // user_comments, comment_lengths
+            ValueLayout.JAVA_INT,                              // comments
+            ValueLayout.ADDRESS);                              // vendor
+    static final long SIZEOF_VORBIS_DSP_STATE = computeVorbisDspStateSize();
+    static final long SIZEOF_VORBIS_BLOCK = computeVorbisBlockSize();
+    static final long SIZEOF_OGG_STREAM_STATE = computeOggStreamStateSize();
+    static final long SIZEOF_OGG_PAGE = computeStructSize(
+            ValueLayout.ADDRESS, C_LONG, ValueLayout.ADDRESS, C_LONG);
+    static final long SIZEOF_OGG_PACKET = computeStructSize(
+            ValueLayout.ADDRESS, C_LONG, C_LONG, C_LONG,
+            ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG);
+
+    // ogg_page field offsets — computed from struct layout for portability
+    // across platforms where C 'long' and pointer sizes differ.
+    static final long[] OGG_PAGE_OFFSETS = computeFieldOffsets(
+            ValueLayout.ADDRESS, C_LONG, ValueLayout.ADDRESS, C_LONG);
+    private static final long OGG_PAGE_HEADER = OGG_PAGE_OFFSETS[0];
+    private static final long OGG_PAGE_HEADER_LEN = OGG_PAGE_OFFSETS[1];
+    private static final long OGG_PAGE_BODY = OGG_PAGE_OFFSETS[2];
+    private static final long OGG_PAGE_BODY_LEN = OGG_PAGE_OFFSETS[3];
 
     /** Number of samples to feed to the Vorbis encoder per chunk. */
     private static final int ENCODE_CHUNK_FRAMES = 4096;
@@ -225,9 +260,9 @@ public final class OggVorbisExporter {
      */
     private static void writeOggPage(OutputStream out, MemorySegment og) throws IOException {
         MemorySegment headerPtr = og.get(ValueLayout.ADDRESS, OGG_PAGE_HEADER);
-        long headerLen = og.get(ValueLayout.JAVA_LONG, OGG_PAGE_HEADER_LEN);
+        long headerLen = readCLong(og, OGG_PAGE_HEADER_LEN);
         MemorySegment bodyPtr = og.get(ValueLayout.ADDRESS, OGG_PAGE_BODY);
-        long bodyLen = og.get(ValueLayout.JAVA_LONG, OGG_PAGE_BODY_LEN);
+        long bodyLen = readCLong(og, OGG_PAGE_BODY_LEN);
 
         if (headerLen > 0) {
             byte[] headerBytes = headerPtr.reinterpret(headerLen)
@@ -249,6 +284,119 @@ public final class OggVorbisExporter {
             MemorySegment nativeValue = arena.allocateFrom(value);
             lib.vorbisCommentAddTag.invoke(vc, nativeTag, nativeValue);
         }
+    }
+
+    /**
+     * Reads a C {@code long} field from a memory segment at the given byte offset.
+     * C {@code long} is 8 bytes on Linux/macOS x86_64 but 4 bytes on Windows x86_64.
+     */
+    private static long readCLong(MemorySegment segment, long offset) {
+        if (C_LONG.byteSize() == 8) {
+            return segment.get(ValueLayout.JAVA_LONG, offset);
+        } else {
+            return segment.get(ValueLayout.JAVA_INT, offset);
+        }
+    }
+
+    /**
+     * Computes C struct size following standard ABI padding/alignment rules.
+     * Each field is placed at the next offset that satisfies its alignment,
+     * and the total size is rounded up to the struct's overall alignment
+     * (the maximum alignment of any field).
+     */
+    static long computeStructSize(MemoryLayout... fields) {
+        long offset = 0;
+        long maxAlign = 1;
+        for (MemoryLayout field : fields) {
+            long align = field.byteAlignment();
+            offset = (offset + align - 1) & ~(align - 1);
+            offset += field.byteSize();
+            maxAlign = Math.max(maxAlign, align);
+        }
+        return (offset + maxAlign - 1) & ~(maxAlign - 1);
+    }
+
+    /**
+     * Computes byte offsets for each field in a C struct following standard
+     * ABI padding/alignment rules.
+     */
+    static long[] computeFieldOffsets(MemoryLayout... fields) {
+        long[] offsets = new long[fields.length];
+        long offset = 0;
+        for (int i = 0; i < fields.length; i++) {
+            long align = fields[i].byteAlignment();
+            offset = (offset + align - 1) & ~(align - 1);
+            offsets[i] = offset;
+            offset += fields[i].byteSize();
+        }
+        return offsets;
+    }
+
+    /**
+     * Creates a {@link MemoryLayout} representing a nested C struct with the
+     * correct size and alignment, for use as a field in a parent struct.
+     */
+    private static MemoryLayout asNestedStruct(MemoryLayout... fields) {
+        long size = computeStructSize(fields);
+        long maxAlign = 1;
+        for (MemoryLayout field : fields) {
+            maxAlign = Math.max(maxAlign, field.byteAlignment());
+        }
+        return MemoryLayout.sequenceLayout(size, ValueLayout.JAVA_BYTE)
+                .withByteAlignment(maxAlign);
+    }
+
+    // vorbis_dsp_state: see vorbis/codec.h
+    private static long computeVorbisDspStateSize() {
+        return computeStructSize(
+                ValueLayout.JAVA_INT,                          // analysisp
+                ValueLayout.ADDRESS,                           // vi
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS,      // pcm, pcmret
+                ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,    // pcm_storage, pcm_current
+                ValueLayout.JAVA_INT,                          // pcm_returned
+                ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,    // preextrapolate, eofflag
+                C_LONG, C_LONG, C_LONG, C_LONG,                // lW, W, nW, centerW
+                ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG,  // granulepos, sequence
+                ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG,  // glue_bits, time_bits
+                ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG,  // floor_bits, res_bits
+                ValueLayout.ADDRESS);                          // backend_state
+    }
+
+    // vorbis_block: see vorbis/codec.h (contains nested oggpack_buffer)
+    private static long computeVorbisBlockSize() {
+        // oggpack_buffer: { long endbyte; int endbit; uchar *buffer; uchar *ptr; long storage; }
+        MemoryLayout oggpackBuffer = asNestedStruct(
+                C_LONG, ValueLayout.JAVA_INT,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, C_LONG);
+
+        return computeStructSize(
+                ValueLayout.ADDRESS,                           // pcm (float **)
+                oggpackBuffer,                                 // opb
+                C_LONG, C_LONG, C_LONG,                        // lW, W, nW
+                ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,    // pcmend, mode
+                ValueLayout.JAVA_INT,                          // eofflag
+                ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG,  // granulepos, sequence
+                ValueLayout.ADDRESS,                           // vd (vorbis_dsp_state *)
+                ValueLayout.ADDRESS,                           // localstore
+                C_LONG, C_LONG, C_LONG,                        // localtop, localalloc, totaluse
+                ValueLayout.ADDRESS,                           // reap (alloc_chain *)
+                C_LONG, C_LONG, C_LONG, C_LONG,                // glue_bits, time_bits, floor_bits, res_bits
+                ValueLayout.ADDRESS);                          // internal
+    }
+
+    // ogg_stream_state: see ogg/ogg.h
+    private static long computeOggStreamStateSize() {
+        return computeStructSize(
+                ValueLayout.ADDRESS,                           // body_data
+                C_LONG, C_LONG, C_LONG,                        // body_storage, body_fill, body_returned
+                ValueLayout.ADDRESS,                           // lacing_vals
+                ValueLayout.ADDRESS,                           // granule_vals
+                C_LONG, C_LONG, C_LONG, C_LONG,                // lacing_storage, lacing_fill, lacing_packet, lacing_returned
+                MemoryLayout.sequenceLayout(282, ValueLayout.JAVA_BYTE), // header[282]
+                ValueLayout.JAVA_INT,                          // header_fill
+                ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,    // e_o_s, b_o_s
+                C_LONG, C_LONG,                                // serialno, pageno
+                ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG); // packetno, granulepos
     }
 
     /**
@@ -280,9 +428,9 @@ public final class OggVorbisExporter {
         final MethodHandle oggStreamFlush;
 
         LibVorbis(Arena arena) {
-            SymbolLookup vorbisLib = loadLibrary(arena, "libvorbis.so.0", "libvorbis.so");
-            SymbolLookup vorbisEncLib = loadLibrary(arena, "libvorbisenc.so.2", "libvorbisenc.so");
-            SymbolLookup oggLib = loadLibrary(arena, "libogg.so.0", "libogg.so");
+            SymbolLookup vorbisLib = loadLibrary(arena, "vorbis", 0);
+            SymbolLookup vorbisEncLib = loadLibrary(arena, "vorbisenc", 2);
+            SymbolLookup oggLib = loadLibrary(arena, "ogg", 0);
 
             Linker linker = Linker.nativeLinker();
 
@@ -306,12 +454,12 @@ public final class OggVorbisExporter {
                     FunctionDescriptor.ofVoid(ValueLayout.ADDRESS,
                             ValueLayout.ADDRESS, ValueLayout.ADDRESS));
 
-            // vorbis_encode functions
+            // vorbis_encode functions — channels and rate are C 'long'
             vorbisEncodeInitVbr = linker.downcallHandle(
                     vorbisEncLib.find("vorbis_encode_init_vbr").orElseThrow(),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT,
-                            ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
-                            ValueLayout.JAVA_LONG, ValueLayout.JAVA_FLOAT));
+                            ValueLayout.ADDRESS, C_LONG,
+                            C_LONG, ValueLayout.JAVA_FLOAT));
 
             // vorbis_analysis functions
             vorbisAnalysisInit = linker.downcallHandle(
@@ -380,20 +528,108 @@ public final class OggVorbisExporter {
                             ValueLayout.ADDRESS, ValueLayout.ADDRESS));
         }
 
-        private static SymbolLookup loadLibrary(Arena arena, String soName,
-                                                 String fallbackName) {
-            try {
-                return SymbolLookup.libraryLookup(soName, arena);
-            } catch (IllegalArgumentException e1) {
+        /**
+         * Loads a native library in an OS-aware way, preferring bundled
+         * libraries in {@code java.library.path} over system-installed ones.
+         *
+         * @param arena     the arena for the library lifetime
+         * @param baseName  the library base name (e.g. "vorbis", "vorbisenc", "ogg")
+         * @param soVersion the SONAME version number (e.g. 0 for libvorbis.so.0)
+         * @return a {@link SymbolLookup} for the loaded library
+         * @throws UnsupportedOperationException if the library cannot be found
+         */
+        private static SymbolLookup loadLibrary(Arena arena, String baseName,
+                                                 int soVersion) {
+            String os = System.getProperty("os.name", "").toLowerCase();
+            String[] names;
+            if (os.contains("win")) {
+                names = new String[]{baseName + ".dll", "lib" + baseName + ".dll"};
+            } else if (os.contains("mac")) {
+                names = new String[]{
+                        "lib" + baseName + "." + soVersion + ".dylib",
+                        "lib" + baseName + ".dylib"};
+            } else {
+                names = new String[]{
+                        "lib" + baseName + ".so." + soVersion,
+                        "lib" + baseName + ".so"};
+            }
+
+            // 1. Prefer bundled libraries in java.library.path
+            Optional<SymbolLookup> bundled = searchLibraryPath(arena, names);
+            if (bundled.isPresent()) {
+                return bundled.get();
+            }
+
+            // 2. Fall back to OS-level library loader (system-installed)
+            for (String name : names) {
                 try {
-                    return SymbolLookup.libraryLookup(fallbackName, arena);
-                } catch (IllegalArgumentException e2) {
-                    throw new UnsupportedOperationException(
-                            "OGG Vorbis export requires " + soName + ". "
-                                    + "Install libogg and libvorbis "
-                                    + "(e.g., 'apt install libvorbisenc2 libogg0' on Debian/Ubuntu).");
+                    return SymbolLookup.libraryLookup(name, arena);
+                } catch (IllegalArgumentException _) {
+                    // try next candidate
                 }
             }
+
+            // Platform-aware, library-specific error message
+            String installHint;
+            if (os.contains("win")) {
+                installHint = "build with CMake and ensure " + baseName
+                        + ".dll is in the application directory or PATH";
+            } else if (os.contains("mac")) {
+                installHint = "'brew install " + (baseName.equals("ogg") ? "libogg" : "libvorbis")
+                        + "' on macOS";
+            } else {
+                String debPkg = switch (baseName) {
+                    case "ogg" -> "libogg0";
+                    case "vorbis" -> "libvorbis0a";
+                    case "vorbisenc" -> "libvorbisenc2";
+                    default -> "lib" + baseName + "0";
+                };
+                installHint = "'apt install " + debPkg + "' on Debian/Ubuntu";
+            }
+            String searchedNames = String.join(", ", names);
+            String libraryPath = System.getProperty("java.library.path", "");
+            throw new UnsupportedOperationException(
+                    "Could not load lib" + baseName + " from bundled native directory "
+                            + (libraryPath.isEmpty() ? "(none configured)" : libraryPath)
+                            + " or system libraries (tried: " + searchedNames + "). "
+                            + "Install lib" + baseName + " (e.g., " + installHint + ").");
+        }
+
+        /**
+         * Searches {@code java.library.path} directories for any of the given
+         * library filenames, loading via {@link SymbolLookup#libraryLookup(Path, Arena)}.
+         */
+        private static Optional<SymbolLookup> searchLibraryPath(Arena arena,
+                                                                 String... fileNames) {
+            String libraryPath = System.getProperty("java.library.path", "");
+            if (libraryPath.isEmpty()) {
+                return Optional.empty();
+            }
+            for (String dir : libraryPath.split(java.io.File.pathSeparator)) {
+                if (dir.isBlank()) {
+                    continue; // skip empty entries
+                }
+                try {
+                    Path dirPath = Path.of(dir).normalize();
+                    if (dirPath.toString().isEmpty()) {
+                        continue; // skip empty normalized entries
+                    }
+                    for (String fileName : fileNames) {
+                        Path candidate = dirPath.resolve(fileName).toAbsolutePath();
+                        if (Files.isRegularFile(candidate)) {
+                            try {
+                                return Optional.of(
+                                        SymbolLookup.libraryLookup(candidate, arena));
+                            } catch (IllegalArgumentException _) {
+                                // file exists but not loadable — try next
+                            }
+                        }
+                    }
+                } catch (InvalidPathException _) {
+                    // malformed path segment — skip
+                }
+            }
+            return Optional.empty();
         }
     }
 }
