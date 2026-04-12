@@ -6,7 +6,7 @@
 # discovering each vendored library's LICENSE/COPYING file under lib/.
 #
 # The script walks lib/ and collects every COPYING, LICENSE, or
-# LICENSE.txt file (up to 4 levels deep).  Known libraries have
+# LICENSE.txt file (see FIND_MAX_DEPTH below).  Known libraries have
 # display-name, version, license-type, and website metadata defined
 # below; newly added libraries that have not yet been annotated are
 # still included with best-effort metadata derived from their
@@ -30,6 +30,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}" && pwd)"
 OUTPUT="${1:-${REPO_ROOT}/THIRD_PARTY_NOTICES.md}"
+
+# Maximum depth when searching for license files under lib/.
+FIND_MAX_DEPTH=4
 
 # ── Known-library metadata ──────────────────────────────────────────
 # Stored as parallel indexed arrays for Bash 3.2 compatibility (no
@@ -64,9 +67,10 @@ lookup_known() {
 
 # ── Auto-discover license files ─────────────────────────────────────
 # Collect COPYING, LICENSE, and LICENSE.txt files under lib/ (up to
-# depth 4 to cover nested vendor trees like fluidsynth-X.Y/fluidsynth-X.Y/).
+# FIND_MAX_DEPTH levels deep to cover nested vendor trees like
+# fluidsynth-X.Y/fluidsynth-X.Y/).
 mapfile -t DISCOVERED < <(
-    find "${REPO_ROOT}/lib" -maxdepth 4 \
+    find "${REPO_ROOT}/lib" -maxdepth "${FIND_MAX_DEPTH}" \
         \( -name "COPYING" -o -name "LICENSE" -o -name "LICENSE.txt" \) \
         -type f | sort
 )
