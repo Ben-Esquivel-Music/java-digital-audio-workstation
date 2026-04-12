@@ -793,4 +793,36 @@ class ProjectSerializationRoundTripTest {
         // Default input routing attributes are present, should restore to DEFAULT_STEREO
         assertThat(restoredTrack.getInputRouting()).isEqualTo(InputRouting.DEFAULT_STEREO);
     }
+
+    @Test
+    void shouldKeepDefaultInputRoutingOnInvalidXmlValues() throws IOException {
+        DawProject original = new DawProject("Bad Input Routing", AudioFormat.CD_QUALITY);
+        original.createAudioTrack("Track");
+
+        String xml = serializer.serialize(original);
+        // Inject invalid input routing: firstChannel = -5 (below -1 minimum)
+        xml = xml.replace("input-routing-channel=\"0\"", "input-routing-channel=\"-5\"");
+
+        DawProject restored = deserializer.deserialize(xml);
+        Track restoredTrack = restored.getTracks().get(0);
+        // Invalid values should be ignored, keeping the default
+        assertThat(restoredTrack.getInputRouting()).isEqualTo(InputRouting.DEFAULT_STEREO);
+    }
+
+    @Test
+    void shouldKeepDefaultOutputRoutingOnInvalidXmlValues() throws IOException {
+        DawProject original = new DawProject("Bad Output Routing", AudioFormat.CD_QUALITY);
+        Track track = original.createAudioTrack("Track");
+        MixerChannel channel = original.getMixerChannelForTrack(track);
+        channel.setOutputRouting(new OutputRouting(2, 2));
+
+        String xml = serializer.serialize(original);
+        // Inject invalid output routing: negative channel count
+        xml = xml.replace("output-routing-count=\"2\"", "output-routing-count=\"-3\"");
+
+        DawProject restored = deserializer.deserialize(xml);
+        MixerChannel restoredChannel = restored.getMixer().getChannels().get(0);
+        // Invalid values should be ignored, keeping the default (MASTER)
+        assertThat(restoredChannel.getOutputRouting()).isEqualTo(OutputRouting.MASTER);
+    }
 }
