@@ -122,7 +122,7 @@ public final class PluginDelayCompensation {
     @RealTimeSafe
     public void applyToChannel(int channelIndex, float[][] buffer, int numFrames) {
         CompensationState s = state;
-        if (channelIndex < s.channelDelays.length) {
+        if (channelIndex >= 0 && channelIndex < s.channelDelays.length) {
             s.channelDelays[channelIndex].process(buffer, numFrames);
         }
     }
@@ -137,7 +137,7 @@ public final class PluginDelayCompensation {
     @RealTimeSafe
     public void applyToReturnBus(int returnBusIndex, float[][] buffer, int numFrames) {
         CompensationState s = state;
-        if (returnBusIndex < s.returnBusDelays.length) {
+        if (returnBusIndex >= 0 && returnBusIndex < s.returnBusDelays.length) {
             s.returnBusDelays[returnBusIndex].process(buffer, numFrames);
         }
     }

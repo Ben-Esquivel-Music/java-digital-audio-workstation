@@ -262,9 +262,10 @@ class AudioEngineTest {
 
     @Test
     void shouldOffsetRenderPositionBySystemLatency() {
-        // Set up a mono, 4-sample-buffer engine at 120 BPM, 44100 Hz
+        // Set up a mono, 8-sample-buffer engine at 120 BPM, 44100 Hz
         // At 120 BPM, 44100 Hz: samplesPerBeat = 44100 * 60 / 120 = 22050
-        AudioFormat format = new AudioFormat(44_100.0, 1, 16, 4);
+        // A 4-sample latency → renderOffsetBeats = 4 / 22050 ≈ 0.000181 beats
+        AudioFormat format = new AudioFormat(44_100.0, 1, 16, 8);
         AudioEngine engine = new AudioEngine(format);
         engine.start();
 
@@ -278,12 +279,12 @@ class AudioEngineTest {
         ch1.addInsert(new InsertSlot("Latent", new LatencyProcessor(4)));
         mixer.addChannel(ch1);
 
-        // Create a track with a clip starting at beat 0 with 1 beat of audio
+        // Create a track with a ramp clip starting at beat 0 so we can
+        // verify which sample index the engine reads from.
         Track track = new Track("Track1", TrackType.AUDIO);
-        // At 120 BPM: 1 beat = 22050 samples. Use enough audio data.
         float[][] clipAudio = new float[1][22050];
         for (int i = 0; i < clipAudio[0].length; i++) {
-            clipAudio[0][i] = 0.5f;
+            clipAudio[0][i] = (float) (i + 1);   // ramp: 1, 2, 3, 4, 5, 6, ...
         }
         AudioClip clip = new AudioClip("Clip1", 0.0, 1.0, "test.wav");
         clip.setAudioData(clipAudio);
@@ -293,23 +294,23 @@ class AudioEngineTest {
         engine.setMixer(mixer);
         engine.setTracks(List.of(track));
 
-        // Process one block — with PDC render offset, the engine should render
-        // from an offset position (4 samples ahead of beat 0). This means the
-        // clip data is read from slightly into the clip, not from the very start.
-        float[][] input = {{0.0f, 0.0f, 0.0f, 0.0f}};
-        float[][] output = new float[1][4];
-        engine.processBlock(input, output, 4);
-
-        // The key assertion: getSystemLatencySamples() should return 4
+        // Verify getSystemLatencySamples() reports the expected latency
         assertThat(engine.getSystemLatencySamples()).isEqualTo(4);
 
-        // Verify that the engine renders audio (non-zero output) — this confirms
-        // the render offset is applied and clip data is being read.
-        // Without the offset, output would still be non-zero since beat 0 is inside
-        // the clip, but with the offset it renders from 4 samples ahead.
-        // The main point is that processBlock doesn't crash with the new parameter.
-        // Detailed sample-level verification of the offset is covered by
-        // checking that getSystemLatencySamples() is correctly reported.
-        assertThat(engine.getSystemLatencySamples()).isEqualTo(4);
+        // Process one block. With a 4-sample render offset the engine reads
+        // clip data starting at sample index 4 (ramp values 5, 6, 7, 8, ...)
+        // instead of index 0 (ramp values 1, 2, 3, 4, ...).
+        float[][] input = new float[1][8];
+        float[][] output = new float[1][8];
+        engine.processBlock(input, output, 8);
+
+        // The output should start at the offset position in the ramp.
+        // With only one channel at max latency, PDC compensation = 0 for this
+        // channel, so the render offset determines which samples appear.
+        // Ramp index 4 has value 5.0f, index 5 → 6.0f, etc.
+        assertThat(output[0][0]).isEqualTo(5.0f);
+        assertThat(output[0][1]).isEqualTo(6.0f);
+        assertThat(output[0][2]).isEqualTo(7.0f);
+        assertThat(output[0][3]).isEqualTo(8.0f);
     }
 }

@@ -483,8 +483,17 @@ public final class Mixer {
                     continue;
                 }
 
-                int returnIndex = returnBuses.indexOf(send.getTarget());
-                if (returnIndex < 0 || returnIndex >= returnBusCount) {
+                // Find the return bus index via identity comparison to avoid
+                // the O(n) equals()-based indexOf call per send per block
+                MixerChannel target = send.getTarget();
+                int returnIndex = -1;
+                for (int r = 0; r < returnBusCount; r++) {
+                    if (returnBuses.get(r) == target) {
+                        returnIndex = r;
+                        break;
+                    }
+                }
+                if (returnIndex < 0) {
                     continue;
                 }
 

@@ -72,7 +72,10 @@ final class CompensationDelay {
                 ringBuffer[ch][writePos] = buffer[ch][f];
                 buffer[ch][f] = delayed;
             }
-            writePos = (writePos + 1) % delaySamples;
+            writePos++;
+            if (writePos == delaySamples) {
+                writePos = 0;
+            }
         }
     }
 
