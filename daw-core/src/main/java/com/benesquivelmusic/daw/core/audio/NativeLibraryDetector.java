@@ -82,8 +82,9 @@ public final class NativeLibraryDetector {
         for (String name : names) {
             try (Arena arena = Arena.ofConfined()) {
                 SymbolLookup.libraryLookup(name, arena);
-                return NativeLibraryStatus.found(displayName, requiredFor,
-                        "(system: " + name + ")");
+                // Library is loadable — try to resolve its absolute path
+                String resolved = resolveSystemLibraryPath(os, name);
+                return NativeLibraryStatus.found(displayName, requiredFor, resolved);
             } catch (IllegalArgumentException _) {
                 // try next candidate
             }
@@ -128,6 +129,51 @@ public final class NativeLibraryDetector {
             }
         }
         return null;
+    }
+
+    /**
+     * Well-known system library directories to probe when a library was loaded
+     * by name (system fallback) and we want the resolved absolute path.
+     */
+    private static final String[] SYSTEM_LIB_DIRS = {
+            "/usr/lib",
+            "/usr/lib64",
+            "/usr/lib/x86_64-linux-gnu",
+            "/usr/lib/aarch64-linux-gnu",
+            "/usr/local/lib",
+            "/usr/local/lib64",
+            "/lib",
+            "/lib64",
+            "/lib/x86_64-linux-gnu",
+            "/lib/aarch64-linux-gnu",
+    };
+
+    /**
+     * Attempts to resolve the absolute path of a system-loaded library by
+     * searching well-known system directories.  Falls back to the bare name
+     * wrapped in a {@code (system: ...)} marker if no file is found on disk.
+     */
+    private static String resolveSystemLibraryPath(String os, String fileName) {
+        if (os.contains("win") || os.contains("mac")) {
+            // On Windows/macOS the system loader doesn't use /usr/lib paths;
+            // fall back to the bare name indicator.
+            return "(system: " + fileName + ")";
+        }
+        for (String dir : SYSTEM_LIB_DIRS) {
+            try {
+                Path candidate = Path.of(dir, fileName).toAbsolutePath();
+                if (Files.isRegularFile(candidate)) {
+                    return candidate.toString();
+                }
+                // Also check for symlinks pointing to versioned names
+                if (Files.exists(candidate)) {
+                    return candidate.toRealPath().toString();
+                }
+            } catch (InvalidPathException | java.io.IOException _) {
+                // skip unresolvable directory
+            }
+        }
+        return "(system: " + fileName + ")";
     }
 
     private static String[] platformLibraryNames(String os, String baseName,

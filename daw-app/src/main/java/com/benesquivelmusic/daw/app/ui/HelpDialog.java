@@ -2,22 +2,28 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.core.audio.NativeLibraryDetector;
+import com.benesquivelmusic.daw.core.audio.NativeLibraryStatus;
 import javafx.geometry.Insets;
 import javafx.scene.Node;
 import javafx.scene.control.*;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.VBox;
 
+import java.util.List;
+
 /**
  * Modal dialog that displays keyboard shortcuts, a getting-started guide,
- * and application information.
+ * application information, and native library status.
  *
- * <p>Provides three tabbed sections:</p>
+ * <p>Provides four tabbed sections:</p>
  * <ul>
  *   <li><b>Keyboard Shortcuts</b> — lists key bindings for transport, editing,
  *       navigation, and project actions</li>
  *   <li><b>Getting Started</b> — a brief feature guide for new users</li>
  *   <li><b>About</b> — application version and credits</li>
+ *   <li><b>System Capabilities</b> — native library detection status and
+ *       resolved paths, powered by {@link NativeLibraryDetector}</li>
  * </ul>
  *
  * <p>Uses the {@link DawIcon} icon pack for all tab and header graphics.</p>
@@ -50,8 +56,14 @@ public final class HelpDialog extends Dialog<Void> {
         aboutTab.setGraphic(IconNode.of(DawIcon.HOME, TAB_ICON_SIZE));
         aboutTab.setClosable(false);
 
+        // ── System Capabilities tab ──────────────────────────────────────────
+        Tab capabilitiesTab = new Tab("System Capabilities", buildCapabilitiesPane());
+        capabilitiesTab.setGraphic(IconNode.of(DawIcon.SETTINGS, TAB_ICON_SIZE));
+        capabilitiesTab.setClosable(false);
+
         // ── Assemble ─────────────────────────────────────────────────────────
-        TabPane tabPane = new TabPane(shortcutsTab, gettingStartedTab, aboutTab);
+        TabPane tabPane = new TabPane(shortcutsTab, gettingStartedTab, aboutTab,
+                capabilitiesTab);
         tabPane.setPrefWidth(520);
         tabPane.setPrefHeight(400);
 
@@ -224,6 +236,61 @@ public final class HelpDialog extends Dialog<Void> {
 
         vbox.getChildren().addAll(header, new Separator(),
                 appName, version, description, license);
+        return vbox;
+    }
+
+    private Node buildCapabilitiesPane() {
+        VBox vbox = new VBox(8);
+        vbox.setPadding(new Insets(16));
+
+        Label header = new Label("Native Library Status");
+        header.setGraphic(IconNode.of(DawIcon.SETTINGS, HEADER_ICON_SIZE));
+        header.setStyle("-fx-font-weight: bold;");
+
+        Label description = new Label(
+                "Shows the availability and resolved path of each native "
+                + "library required by the audio engine.");
+        description.setWrapText(true);
+        description.setStyle("-fx-text-fill: #808080; -fx-font-size: 11px;");
+
+        GridPane grid = createGrid();
+        grid.setHgap(16);
+        grid.setVgap(6);
+
+        // Column headers
+        Label nameHeader = new Label("Library");
+        nameHeader.setStyle("-fx-font-weight: bold; -fx-text-fill: #b388ff;");
+        Label statusHeader = new Label("Status");
+        statusHeader.setStyle("-fx-font-weight: bold; -fx-text-fill: #b388ff;");
+        Label pathHeader = new Label("Path / Required For");
+        pathHeader.setStyle("-fx-font-weight: bold; -fx-text-fill: #b388ff;");
+        grid.add(nameHeader, 0, 0);
+        grid.add(statusHeader, 1, 0);
+        grid.add(pathHeader, 2, 0);
+
+        List<NativeLibraryStatus> statuses = NativeLibraryDetector.detectAll();
+        int row = 1;
+        for (NativeLibraryStatus status : statuses) {
+            grid.add(new Label(status.libraryName()), 0, row);
+
+            Label statusLabel = new Label(status.available() ? "\u2705 Available" : "\u274c Missing");
+            statusLabel.setStyle(status.available()
+                    ? "-fx-text-fill: #4caf50;"
+                    : "-fx-text-fill: #f44336;");
+            grid.add(statusLabel, 1, row);
+
+            String detail = status.available()
+                    ? status.detectedPath()
+                    : status.requiredFor();
+            Label detailLabel = new Label(detail);
+            detailLabel.setWrapText(true);
+            detailLabel.setMaxWidth(280);
+            detailLabel.setStyle("-fx-text-fill: #b0b0b0; -fx-font-size: 10px;");
+            grid.add(detailLabel, 2, row);
+            row++;
+        }
+
+        vbox.getChildren().addAll(header, new Separator(), description, grid);
         return vbox;
     }
 
