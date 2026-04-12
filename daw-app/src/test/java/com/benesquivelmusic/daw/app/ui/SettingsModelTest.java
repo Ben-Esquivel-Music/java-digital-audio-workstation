@@ -291,4 +291,63 @@ class SettingsModelTest {
         assertThat(manager.getBinding(DawAction.SAVE)).isPresent();
         assertThat(manager.getBinding(DawAction.UNDO)).isPresent();
     }
+
+    // ── Audio backend & devices ─────────────────────────────────────────────
+
+    @Test
+    void shouldDefaultAudioBackendToEmpty() {
+        assertThat(model.getAudioBackend()).isEmpty();
+    }
+
+    @Test
+    void shouldDefaultAudioDevicesToEmpty() {
+        assertThat(model.getAudioInputDevice()).isEmpty();
+        assertThat(model.getAudioOutputDevice()).isEmpty();
+    }
+
+    @Test
+    void shouldPersistAudioBackend() {
+        model.setAudioBackend("PortAudio");
+        SettingsModel reloaded = new SettingsModel(prefs);
+        assertThat(reloaded.getAudioBackend()).isEqualTo("PortAudio");
+    }
+
+    @Test
+    void shouldPersistAudioInputDevice() {
+        model.setAudioInputDevice("USB Mic");
+        SettingsModel reloaded = new SettingsModel(prefs);
+        assertThat(reloaded.getAudioInputDevice()).isEqualTo("USB Mic");
+    }
+
+    @Test
+    void shouldPersistAudioOutputDevice() {
+        model.setAudioOutputDevice("Main Out");
+        SettingsModel reloaded = new SettingsModel(prefs);
+        assertThat(reloaded.getAudioOutputDevice()).isEqualTo("Main Out");
+    }
+
+    @Test
+    void shouldRejectNullBackend() {
+        assertThatThrownBy(() -> model.setAudioBackend(null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void shouldRejectNullDeviceNames() {
+        assertThatThrownBy(() -> model.setAudioInputDevice(null))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> model.setAudioOutputDevice(null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void resetToDefaultsShouldClearAudioPersistence() {
+        model.setAudioBackend("PortAudio");
+        model.setAudioInputDevice("Mic");
+        model.setAudioOutputDevice("Speakers");
+        model.resetToDefaults();
+        assertThat(model.getAudioBackend()).isEmpty();
+        assertThat(model.getAudioInputDevice()).isEmpty();
+        assertThat(model.getAudioOutputDevice()).isEmpty();
+    }
 }

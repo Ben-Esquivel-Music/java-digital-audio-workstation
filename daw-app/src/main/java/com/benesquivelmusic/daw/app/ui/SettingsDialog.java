@@ -56,6 +56,8 @@ public final class SettingsDialog extends Dialog<Void> {
 
     // ── Callback ─────────────────────────────────────────────────────────────
     private SettingsChangeListener settingsChangeListener;
+    private AudioEngineController audioEngineController;
+    private Button openAudioDeviceDialogButton;
 
     // ── Audio tab controls ───────────────────────────────────────────────────
     private final ComboBox<String> sampleRateCombo;
@@ -172,6 +174,20 @@ public final class SettingsDialog extends Dialog<Void> {
         this.settingsChangeListener = listener;
     }
 
+    /**
+     * Attaches an {@link AudioEngineController} used by the "Audio Device
+     * Settings" button to open the dedicated {@link AudioSettingsDialog}.
+     * When {@code null} the button is disabled.
+     *
+     * @param controller the controller, or {@code null} to detach
+     */
+    public void setAudioEngineController(AudioEngineController controller) {
+        this.audioEngineController = controller;
+        if (openAudioDeviceDialogButton != null) {
+            openAudioDeviceDialogButton.setDisable(controller == null);
+        }
+    }
+
     // ── Tab builders ─────────────────────────────────────────────────────────
 
     private Node buildAudioPane() {
@@ -190,12 +206,32 @@ public final class SettingsDialog extends Dialog<Void> {
         grid.add(new Label("Buffer Size (frames):"), 0, 4);
         grid.add(bufferSizeCombo, 1, 4);
 
+        openAudioDeviceDialogButton = new Button("Audio Device Settings\u2026");
+        openAudioDeviceDialogButton.setGraphic(IconNode.of(DawIcon.HEADPHONES, 12));
+        openAudioDeviceDialogButton.setDisable(audioEngineController == null);
+        openAudioDeviceDialogButton.setOnAction(_ -> openAudioDeviceDialog());
+        grid.add(openAudioDeviceDialogButton, 0, 5, 2, 1);
+
         Label restartHint = new Label("Changes to audio settings may require a restart.");
         restartHint.setGraphic(IconNode.of(DawIcon.WARNING, 14));
         restartHint.setStyle("-fx-text-fill: #ff9100; -fx-font-size: 10px;");
         grid.add(restartHint, 0, 6, 2, 1);
 
         return grid;
+    }
+
+    private void openAudioDeviceDialog() {
+        if (audioEngineController == null) {
+            return;
+        }
+        AudioSettingsDialog dialog = new AudioSettingsDialog(model, audioEngineController);
+        dialog.initOwner(getDialogPane().getScene() != null
+                ? getDialogPane().getScene().getWindow() : null);
+        dialog.showAndWait();
+        // Refresh combo values in case the audio dialog persisted new defaults
+        sampleRateCombo.setValue(String.valueOf((int) model.getSampleRate()));
+        bitDepthCombo.setValue(String.valueOf(model.getBitDepth()));
+        bufferSizeCombo.setValue(String.valueOf(model.getBufferSize()));
     }
 
     private Node buildProjectPane() {

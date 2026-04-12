@@ -93,6 +93,7 @@ public final class MainController {
     private UndoManager undoManager;
     private boolean projectDirty;
     private AudioEngine audioEngine;
+    private DefaultAudioEngineController audioEngineController;
     private NotificationBar notificationBar;
     private Metronome metronome;
 
@@ -158,6 +159,7 @@ public final class MainController {
         } catch (RuntimeException e) {
             LOG.log(Level.WARNING, "Failed to create audio backend; playback will use UI timer only", e);
         }
+        audioEngineController = new DefaultAudioEngineController(audioEngine, this::updateProjectInfo);
 
         CheckpointManager checkpointManager = new CheckpointManager(AutoSaveConfig.DEFAULT);
         Preferences prefs = Preferences.userNodeForPackage(MainController.class);
@@ -597,6 +599,7 @@ public final class MainController {
                     @Override public void onToggleSnap() { viewNavigationController.onToggleSnap(); }
                     @Override public void onManagePlugins() { pluginViewController.onManagePlugins(pluginRegistry); }
                     @Override public void onOpenSettings() { MainController.this.onOpenSettings(); }
+                    @Override public void onOpenAudioSettings() { MainController.this.onOpenAudioSettings(); }
                     @Override public void onActivateBuiltInPlugin(Class<? extends BuiltInDawPlugin> pluginClass) {
                         pluginViewController.onActivateBuiltInPlugin(pluginClass);
                     }
@@ -674,9 +677,18 @@ public final class MainController {
         SettingsModel settingsModel = new SettingsModel(Preferences.userNodeForPackage(SettingsModel.class));
         String previousPluginPaths = settingsModel.getPluginScanPaths();
         SettingsDialog dialog = new SettingsDialog(settingsModel);
+        dialog.setAudioEngineController(audioEngineController);
         dialog.setSettingsChangeListener(model -> applyLiveSettings(model, previousPluginPaths));
         dialog.showAndWait();
         status("Settings closed", DawIcon.STATUS);
+    }
+
+    void onOpenAudioSettings() {
+        status("Opening audio settings...", DawIcon.HEADPHONES);
+        SettingsModel settingsModel = new SettingsModel(Preferences.userNodeForPackage(SettingsModel.class));
+        AudioSettingsDialog dialog = new AudioSettingsDialog(settingsModel, audioEngineController);
+        dialog.showAndWait();
+        status("Audio settings closed", DawIcon.STATUS);
     }
 
     void onHome() {

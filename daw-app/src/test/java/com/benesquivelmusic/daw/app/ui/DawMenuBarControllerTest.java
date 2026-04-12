@@ -105,6 +105,8 @@ class DawMenuBarControllerTest {
         @Override public void onToggleSnap() { toggleSnapCalls++; }
         @Override public void onManagePlugins() { managePluginsCalls++; }
         @Override public void onOpenSettings() { settingsCalls++; }
+        int audioSettingsCalls;
+        @Override public void onOpenAudioSettings() { audioSettingsCalls++; }
         @Override public void onActivateBuiltInPlugin(Class<? extends BuiltInDawPlugin> pluginClass) {
             activateBuiltInPluginCalls++;
             lastActivatedPluginClass = pluginClass;

@@ -67,6 +67,7 @@ public final class DawMenuBarController {
         // Plugin actions
         void onManagePlugins();
         void onOpenSettings();
+        void onOpenAudioSettings();
         void onActivateBuiltInPlugin(Class<? extends BuiltInDawPlugin> pluginClass);
 
         // Window actions
@@ -230,6 +231,8 @@ public final class DawMenuBarController {
 
         MenuItem settings = menuItem("Settings\u2026", DawIcon.SETTINGS,
                 DawAction.OPEN_SETTINGS, host::onOpenSettings);
+        MenuItem audioSettings = menuItem("Audio Settings\u2026", DawIcon.HEADPHONES,
+                null, host::onOpenAudioSettings);
 
         editMenu.getItems().addAll(
                 undoItem, redoItem,
@@ -240,7 +243,8 @@ public final class DawMenuBarController {
                 new SeparatorMenuItem(),
                 toggleSnap,
                 new SeparatorMenuItem(),
-                settings
+                settings,
+                audioSettings
         );
 
         return editMenu;

@@ -48,7 +48,7 @@ public final class AudioEngine {
     /** Maximum number of tracks supported for pre-allocated buffers. */
     static final int MAX_TRACKS = 64;
 
-    private final AudioFormat format;
+    private AudioFormat format;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     private final EffectsChain masterChain;
@@ -173,6 +173,21 @@ public final class AudioEngine {
     }
 
     /**
+     * Replaces the audio format. Must only be called while the engine is
+     * stopped; a subsequent {@link #start()} will re-allocate buffers to
+     * match the new format's channel count and buffer size.
+     *
+     * @param format the new audio format (must not be {@code null})
+     * @throws IllegalStateException if the engine is currently running
+     */
+    public void setFormat(AudioFormat format) {
+        if (running.get()) {
+            throw new IllegalStateException("Cannot change format while engine is running");
+        }
+        this.format = Objects.requireNonNull(format, "format must not be null");
+    }
+
+    /**
      * Returns the master effects chain applied to the final mix output.
      *
      * @return the master effects chain
@@ -269,6 +284,18 @@ public final class AudioEngine {
      * @throws AudioBackendException if the stream cannot be opened or started
      */
     public void startAudioOutput() {
+        startAudioOutput(0);
+    }
+
+    /**
+     * Starts audio output on the specified output device index. Use
+     * {@code 0} to select the backend's default output device.
+     *
+     * @param outputDeviceIndex the output device index reported by
+     *                          {@link NativeAudioBackend#getAvailableDevices()}
+     * @throws AudioBackendException if the stream cannot be opened or started
+     */
+    public void startAudioOutput(int outputDeviceIndex) {
         if (streamOpen && streamPaused) {
             resumeAudioOutput();
             return;
@@ -294,7 +321,7 @@ public final class AudioEngine {
 
         AudioStreamConfig config = new AudioStreamConfig(
                 -1,                  // no input device
-                0,                   // default output device
+                outputDeviceIndex,
                 0,                   // no input channels
                 format.channels(),
                 SampleRate.fromHz((int) format.sampleRate()),
@@ -311,7 +338,8 @@ public final class AudioEngine {
         streamOpen = true;
         streamPaused = false;
 
-        LOG.info("Audio output started via " + backend.getBackendName());
+        LOG.info("Audio output started via " + backend.getBackendName()
+                + " (output device: " + outputDeviceIndex + ")");
     }
 
     /**

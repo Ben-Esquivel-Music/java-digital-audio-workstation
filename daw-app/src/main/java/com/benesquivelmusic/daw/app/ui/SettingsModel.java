@@ -16,6 +16,9 @@ public final class SettingsModel {
     private static final String KEY_SAMPLE_RATE = "audio.sampleRate";
     private static final String KEY_BIT_DEPTH = "audio.bitDepth";
     private static final String KEY_BUFFER_SIZE = "audio.bufferSize";
+    private static final String KEY_AUDIO_BACKEND = "audio.backend";
+    private static final String KEY_AUDIO_INPUT_DEVICE = "audio.inputDevice";
+    private static final String KEY_AUDIO_OUTPUT_DEVICE = "audio.outputDevice";
 
     // ── Project keys ─────────────────────────────────────────────────────────
     private static final String KEY_AUTO_SAVE_INTERVAL_SECONDS = "project.autoSaveIntervalSeconds";
@@ -35,6 +38,10 @@ public final class SettingsModel {
     static final double DEFAULT_TEMPO = 120.0;
     static final double DEFAULT_UI_SCALE = 1.0;
     static final String DEFAULT_PLUGIN_SCAN_PATHS = "";
+    /** Empty backend name means "auto-select best available". */
+    static final String DEFAULT_AUDIO_BACKEND = "";
+    /** Empty device name means "use default device". */
+    static final String DEFAULT_AUDIO_DEVICE = "";
 
     private final Preferences prefs;
 
@@ -45,6 +52,9 @@ public final class SettingsModel {
     private double defaultTempo;
     private double uiScale;
     private String pluginScanPaths;
+    private String audioBackend;
+    private String audioInputDevice;
+    private String audioOutputDevice;
     private KeyBindingManager keyBindingManager;
 
     /**
@@ -66,6 +76,9 @@ public final class SettingsModel {
         defaultTempo = prefs.getDouble(KEY_DEFAULT_TEMPO, DEFAULT_TEMPO);
         uiScale = prefs.getDouble(KEY_UI_SCALE, DEFAULT_UI_SCALE);
         pluginScanPaths = prefs.get(KEY_PLUGIN_SCAN_PATHS, DEFAULT_PLUGIN_SCAN_PATHS);
+        audioBackend = prefs.get(KEY_AUDIO_BACKEND, DEFAULT_AUDIO_BACKEND);
+        audioInputDevice = prefs.get(KEY_AUDIO_INPUT_DEVICE, DEFAULT_AUDIO_DEVICE);
+        audioOutputDevice = prefs.get(KEY_AUDIO_OUTPUT_DEVICE, DEFAULT_AUDIO_DEVICE);
     }
 
     // ── Audio ────────────────────────────────────────────────────────────────
@@ -122,6 +135,51 @@ public final class SettingsModel {
         }
         this.bufferSize = bufferSize;
         prefs.putInt(KEY_BUFFER_SIZE, bufferSize);
+    }
+
+    /**
+     * Returns the preferred audio backend name, or an empty string to let
+     * {@code AudioBackendFactory} pick the best available one.
+     */
+    public String getAudioBackend() {
+        return audioBackend;
+    }
+
+    /** Sets the preferred audio backend name and persists the change. */
+    public void setAudioBackend(String backend) {
+        Objects.requireNonNull(backend, "backend must not be null");
+        this.audioBackend = backend;
+        prefs.put(KEY_AUDIO_BACKEND, backend);
+    }
+
+    /**
+     * Returns the preferred audio input device name, or an empty string to
+     * use the backend default.
+     */
+    public String getAudioInputDevice() {
+        return audioInputDevice;
+    }
+
+    /** Sets the preferred audio input device name and persists the change. */
+    public void setAudioInputDevice(String deviceName) {
+        Objects.requireNonNull(deviceName, "deviceName must not be null");
+        this.audioInputDevice = deviceName;
+        prefs.put(KEY_AUDIO_INPUT_DEVICE, deviceName);
+    }
+
+    /**
+     * Returns the preferred audio output device name, or an empty string to
+     * use the backend default.
+     */
+    public String getAudioOutputDevice() {
+        return audioOutputDevice;
+    }
+
+    /** Sets the preferred audio output device name and persists the change. */
+    public void setAudioOutputDevice(String deviceName) {
+        Objects.requireNonNull(deviceName, "deviceName must not be null");
+        this.audioOutputDevice = deviceName;
+        prefs.put(KEY_AUDIO_OUTPUT_DEVICE, deviceName);
     }
 
     // ── Project ──────────────────────────────────────────────────────────────
@@ -232,5 +290,8 @@ public final class SettingsModel {
         setDefaultTempo(DEFAULT_TEMPO);
         setUiScale(DEFAULT_UI_SCALE);
         setPluginScanPaths(DEFAULT_PLUGIN_SCAN_PATHS);
+        setAudioBackend(DEFAULT_AUDIO_BACKEND);
+        setAudioInputDevice(DEFAULT_AUDIO_DEVICE);
+        setAudioOutputDevice(DEFAULT_AUDIO_DEVICE);
     }
 }
