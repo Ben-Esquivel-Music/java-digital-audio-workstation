@@ -2,8 +2,6 @@ package com.benesquivelmusic.daw.core.export;
 
 import org.junit.jupiter.api.Test;
 
-import java.lang.foreign.Linker;
-import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.ValueLayout;
 
 import static org.assertj.core.api.Assertions.assertThat;

@@ -8,6 +8,7 @@ import java.io.OutputStream;
 import java.lang.foreign.*;
 import java.lang.invoke.MethodHandle;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.Objects;
 import java.util.Optional;
@@ -592,16 +593,27 @@ public final class OggVorbisExporter {
                 return Optional.empty();
             }
             for (String dir : libraryPath.split(java.io.File.pathSeparator)) {
-                for (String fileName : fileNames) {
-                    Path candidate = Path.of(dir, fileName).toAbsolutePath();
-                    if (Files.isRegularFile(candidate)) {
-                        try {
-                            return Optional.of(
-                                    SymbolLookup.libraryLookup(candidate, arena));
-                        } catch (IllegalArgumentException _) {
-                            // file exists but not loadable — try next
+                if (dir.isBlank()) {
+                    continue; // skip empty entries
+                }
+                try {
+                    Path dirPath = Path.of(dir).normalize();
+                    if (dirPath.toString().isEmpty() || dirPath.equals(Path.of("."))) {
+                        continue; // skip CWD entries to avoid unintended loading locations
+                    }
+                    for (String fileName : fileNames) {
+                        Path candidate = dirPath.resolve(fileName).toAbsolutePath();
+                        if (Files.isRegularFile(candidate)) {
+                            try {
+                                return Optional.of(
+                                        SymbolLookup.libraryLookup(candidate, arena));
+                            } catch (IllegalArgumentException _) {
+                                // file exists but not loadable — try next
+                            }
                         }
                     }
+                } catch (InvalidPathException _) {
+                    // malformed path segment — skip
                 }
             }
             return Optional.empty();
