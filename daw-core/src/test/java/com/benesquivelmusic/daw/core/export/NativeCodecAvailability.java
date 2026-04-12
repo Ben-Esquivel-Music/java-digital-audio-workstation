@@ -47,6 +47,21 @@ final class NativeCodecAvailability {
         }
     }
 
+    /** Returns {@code true} if libvorbisfile (and its dependencies libogg/libvorbis) are available. */
+    static boolean isVorbisFileAvailable() {
+        String os = System.getProperty("os.name", "").toLowerCase();
+        if (os.contains("win")) {
+            return isVorbisAvailable()
+                    && isAnyLibraryAvailable("vorbisfile", "libvorbisfile");
+        } else if (os.contains("mac")) {
+            return isVorbisAvailable()
+                    && isAnyLibraryAvailable("libvorbisfile.dylib", "libvorbisfile.3.dylib");
+        } else {
+            return isVorbisAvailable()
+                    && isAnyLibraryAvailable("libvorbisfile.so.3", "libvorbisfile.so");
+        }
+    }
+
     /** Returns {@code true} if libfdk-aac is available on this system. */
     static boolean isFdkAacAvailable() {
         String os = System.getProperty("os.name", "").toLowerCase();
