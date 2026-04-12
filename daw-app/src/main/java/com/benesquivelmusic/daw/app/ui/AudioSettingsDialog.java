@@ -511,6 +511,11 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         applyAndReconfigure();
     }
 
+    /** Test hook — fires the test-tone button action. */
+    void fireTestTone() {
+        onTestTone();
+    }
+
     /** Test hook — read-only snapshot of the filtered sample rate options. */
     List<Integer> getFilteredSampleRates() {
         return Collections.unmodifiableList(sampleRateCombo.getItems());

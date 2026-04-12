@@ -260,6 +260,42 @@ class DawMenuBarControllerTest {
         });
     }
 
+    @Test
+    void editMenuShouldContainAudioSettingsItem() throws Exception {
+        runOnFxThread(() -> {
+            StubHost host = new StubHost();
+            DawMenuBarController controller =
+                    new DawMenuBarController(host, freshKeyBindingManager());
+            controller.build();
+
+            Menu editMenu = controller.getMenuBar().getMenus().get(1);
+            List<String> itemTexts = editMenu.getItems().stream()
+                    .filter(item -> !(item instanceof SeparatorMenuItem))
+                    .map(MenuItem::getText)
+                    .toList();
+
+            assertThat(itemTexts).contains("Audio Settings\u2026");
+        });
+    }
+
+    @Test
+    void editMenuAudioSettingsShouldDelegateToHost() throws Exception {
+        runOnFxThread(() -> {
+            StubHost host = new StubHost();
+            DawMenuBarController controller =
+                    new DawMenuBarController(host, freshKeyBindingManager());
+            controller.build();
+
+            Menu editMenu = controller.getMenuBar().getMenus().get(1);
+            MenuItem audioSettings = editMenu.getItems().stream()
+                    .filter(item -> "Audio Settings\u2026".equals(item.getText()))
+                    .findFirst().orElseThrow();
+            audioSettings.fire();
+
+            assertThat(host.audioSettingsCalls).isEqualTo(1);
+        });
+    }
+
     // ── Plugins menu ───────────────────────────────────────────────────────
 
     @Test
