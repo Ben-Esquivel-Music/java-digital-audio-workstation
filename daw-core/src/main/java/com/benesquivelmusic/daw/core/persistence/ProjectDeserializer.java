@@ -262,7 +262,11 @@ public final class ProjectDeserializer {
         int irChannel = parseIntAttr(elem, "input-routing-channel", Integer.MIN_VALUE);
         if (irChannel != Integer.MIN_VALUE) {
             int irCount = parseIntAttr(elem, "input-routing-count", 2);
-            track.setInputRouting(new InputRouting(irChannel, irCount));
+            try {
+                track.setInputRouting(new InputRouting(irChannel, irCount));
+            } catch (IllegalArgumentException ignored) {
+                // keep default routing on invalid values
+            }
         }
 
         String midiInputDevice = elem.getAttribute("midi-input-device");
@@ -433,7 +437,11 @@ public final class ProjectDeserializer {
         int orChannel = parseIntAttr(elem, "output-routing-channel", Integer.MIN_VALUE);
         if (orChannel != Integer.MIN_VALUE) {
             int orCount = parseIntAttr(elem, "output-routing-count", 2);
-            channel.setOutputRouting(new OutputRouting(orChannel, orCount));
+            try {
+                channel.setOutputRouting(new OutputRouting(orChannel, orCount));
+            } catch (IllegalArgumentException ignored) {
+                // keep default routing on invalid values
+            }
         }
 
         // Parse insert effect slots
