@@ -13,31 +13,23 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@link OggVorbisExporter} produces correct sizes and offsets
  * on the current platform.
  *
- * <p>These tests verify the ABI-aware struct size computation
- * that replaced the previously hardcoded x86_64 Linux constants.</p>
+ * <p>These tests assert on the exporter's actual computed constants
+ * (package-private) rather than duplicating the layout math, so any
+ * drift in the exporter's struct definitions is caught immediately.</p>
  */
 class OggVorbisPortableBindingsTest {
 
-    /**
-     * The canonical C 'long' type from the native linker — platform-dependent.
-     */
-    private static final ValueLayout C_LONG =
-            (ValueLayout) Linker.nativeLinker().canonicalLayouts().get("long");
-
     @Test
     void cLongShouldHaveValidSize() {
-        long size = C_LONG.byteSize();
+        long size = OggVorbisExporter.C_LONG.byteSize();
         // C 'long' is either 4 bytes (Windows LLP64) or 8 bytes (Linux/macOS LP64)
         assertThat(size).isIn(4L, 8L);
     }
 
     @Test
     void oggPageLayoutShouldBeConsistent() {
-        // ogg_page: { unsigned char *header; long header_len; unsigned char *body; long body_len; }
-        long[] offsets = computeFieldOffsets(
-                ValueLayout.ADDRESS, C_LONG, ValueLayout.ADDRESS, C_LONG);
-        long size = computeStructSize(
-                ValueLayout.ADDRESS, C_LONG, ValueLayout.ADDRESS, C_LONG);
+        long[] offsets = OggVorbisExporter.OGG_PAGE_OFFSETS;
+        long size = OggVorbisExporter.SIZEOF_OGG_PAGE;
 
         // header starts at offset 0
         assertThat(offsets[0]).isEqualTo(0);
@@ -48,167 +40,88 @@ class OggVorbisPortableBindingsTest {
         // body_len follows body
         assertThat(offsets[3]).isGreaterThan(offsets[2]);
         // struct size covers all fields
-        assertThat(size).isGreaterThanOrEqualTo(offsets[3] + C_LONG.byteSize());
+        assertThat(size).isGreaterThanOrEqualTo(
+                offsets[3] + OggVorbisExporter.C_LONG.byteSize());
     }
 
     @Test
     void structSizesOnCurrentPlatformShouldBePositive() {
         // All struct sizes must be positive (they're used for allocation)
-        assertThat(computeVorbisInfoSize()).isPositive();
-        assertThat(computeVorbisCommentSize()).isPositive();
-        assertThat(computeVorbisDspStateSize()).isPositive();
-        assertThat(computeVorbisBlockSize()).isPositive();
-        assertThat(computeOggStreamStateSize()).isPositive();
-        assertThat(computeOggPageSize()).isPositive();
-        assertThat(computeOggPacketSize()).isPositive();
+        assertThat(OggVorbisExporter.SIZEOF_VORBIS_INFO).isPositive();
+        assertThat(OggVorbisExporter.SIZEOF_VORBIS_COMMENT).isPositive();
+        assertThat(OggVorbisExporter.SIZEOF_VORBIS_DSP_STATE).isPositive();
+        assertThat(OggVorbisExporter.SIZEOF_VORBIS_BLOCK).isPositive();
+        assertThat(OggVorbisExporter.SIZEOF_OGG_STREAM_STATE).isPositive();
+        assertThat(OggVorbisExporter.SIZEOF_OGG_PAGE).isPositive();
+        assertThat(OggVorbisExporter.SIZEOF_OGG_PACKET).isPositive();
     }
 
     @Test
     void structSizesShouldBeAlignedToPointerSize() {
         // All struct sizes should be a multiple of the pointer size (natural alignment)
         long ptrSize = ValueLayout.ADDRESS.byteSize();
-        assertThat(computeVorbisInfoSize() % ptrSize).isZero();
-        assertThat(computeVorbisDspStateSize() % ptrSize).isZero();
-        assertThat(computeVorbisBlockSize() % ptrSize).isZero();
-        assertThat(computeOggStreamStateSize() % ptrSize).isZero();
-        assertThat(computeOggPageSize() % ptrSize).isZero();
-        assertThat(computeOggPacketSize() % ptrSize).isZero();
+        assertThat(OggVorbisExporter.SIZEOF_VORBIS_INFO % ptrSize).isZero();
+        assertThat(OggVorbisExporter.SIZEOF_VORBIS_DSP_STATE % ptrSize).isZero();
+        assertThat(OggVorbisExporter.SIZEOF_VORBIS_BLOCK % ptrSize).isZero();
+        assertThat(OggVorbisExporter.SIZEOF_OGG_STREAM_STATE % ptrSize).isZero();
+        assertThat(OggVorbisExporter.SIZEOF_OGG_PAGE % ptrSize).isZero();
+        assertThat(OggVorbisExporter.SIZEOF_OGG_PACKET % ptrSize).isZero();
     }
 
     @Test
     void oggPacketShouldBeLargeEnoughForAllFields() {
-        // ogg_packet has: pointer, 3 longs, 2 int64s
-        long minSize = ValueLayout.ADDRESS.byteSize() + 3 * C_LONG.byteSize()
+        // ogg_packet has: pointer, 3 C longs, 2 int64s
+        ValueLayout cLong = OggVorbisExporter.C_LONG;
+        long minSize = ValueLayout.ADDRESS.byteSize() + 3 * cLong.byteSize()
                 + 2 * ValueLayout.JAVA_LONG.byteSize();
-        assertThat(computeOggPacketSize()).isGreaterThanOrEqualTo(minSize);
+        assertThat(OggVorbisExporter.SIZEOF_OGG_PACKET).isGreaterThanOrEqualTo(minSize);
     }
 
     @Test
     void vorbisInfoShouldBeLargeEnoughForAllFields() {
-        // vorbis_info: 2 ints, 5 longs, 1 pointer
-        long minSize = 2 * ValueLayout.JAVA_INT.byteSize() + 5 * C_LONG.byteSize()
+        // vorbis_info: 2 ints, 5 C longs, 1 pointer
+        ValueLayout cLong = OggVorbisExporter.C_LONG;
+        long minSize = 2 * ValueLayout.JAVA_INT.byteSize() + 5 * cLong.byteSize()
                 + ValueLayout.ADDRESS.byteSize();
-        assertThat(computeVorbisInfoSize()).isGreaterThanOrEqualTo(minSize);
+        assertThat(OggVorbisExporter.SIZEOF_VORBIS_INFO).isGreaterThanOrEqualTo(minSize);
     }
 
     @Test
     void readCLongShouldReadCorrectFieldWidth() {
         // Verify that C_LONG.byteSize() determines the read width
-        if (C_LONG.byteSize() == 8) {
+        ValueLayout cLong = OggVorbisExporter.C_LONG;
+        if (cLong.byteSize() == 8) {
             // On LP64 (Linux/macOS): C long = Java long
-            assertThat(C_LONG.byteSize()).isEqualTo(ValueLayout.JAVA_LONG.byteSize());
+            assertThat(cLong.byteSize()).isEqualTo(ValueLayout.JAVA_LONG.byteSize());
         } else {
             // On LLP64 (Windows): C long = Java int
-            assertThat(C_LONG.byteSize()).isEqualTo(ValueLayout.JAVA_INT.byteSize());
+            assertThat(cLong.byteSize()).isEqualTo(ValueLayout.JAVA_INT.byteSize());
         }
     }
 
-    // --- Helper methods matching OggVorbisExporter's layout computation ---
-
-    private static long computeStructSize(MemoryLayout... fields) {
-        long offset = 0;
-        long maxAlign = 1;
-        for (MemoryLayout field : fields) {
-            long align = field.byteAlignment();
-            offset = (offset + align - 1) & ~(align - 1);
-            offset += field.byteSize();
-            maxAlign = Math.max(maxAlign, align);
-        }
-        return (offset + maxAlign - 1) & ~(maxAlign - 1);
+    @Test
+    void computeStructSizeShouldApplyPaddingAndAlignment() {
+        // Verify the helper directly: a struct with {int, pointer} should
+        // have padding between the int and the pointer on 64-bit platforms
+        long size = OggVorbisExporter.computeStructSize(
+                ValueLayout.JAVA_INT, ValueLayout.ADDRESS);
+        long ptrSize = ValueLayout.ADDRESS.byteSize();
+        // On 64-bit: 4 (int) + 4 (padding) + 8 (pointer) = 16
+        // Minimum is int + pointer with alignment
+        assertThat(size).isGreaterThanOrEqualTo(
+                ValueLayout.JAVA_INT.byteSize() + ptrSize);
+        assertThat(size % ptrSize).isZero();
     }
 
-    private static long[] computeFieldOffsets(MemoryLayout... fields) {
-        long[] offsets = new long[fields.length];
-        long offset = 0;
-        for (int i = 0; i < fields.length; i++) {
-            long align = fields[i].byteAlignment();
-            offset = (offset + align - 1) & ~(align - 1);
-            offsets[i] = offset;
-            offset += fields[i].byteSize();
-        }
-        return offsets;
-    }
-
-    private static MemoryLayout asNestedStruct(MemoryLayout... fields) {
-        long size = computeStructSize(fields);
-        long maxAlign = 1;
-        for (MemoryLayout field : fields) {
-            maxAlign = Math.max(maxAlign, field.byteAlignment());
-        }
-        return MemoryLayout.sequenceLayout(size, ValueLayout.JAVA_BYTE)
-                .withByteAlignment(maxAlign);
-    }
-
-    private static long computeVorbisInfoSize() {
-        return computeStructSize(
-                ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
-                C_LONG, C_LONG, C_LONG, C_LONG, C_LONG,
-                ValueLayout.ADDRESS);
-    }
-
-    private static long computeVorbisCommentSize() {
-        return computeStructSize(
-                ValueLayout.ADDRESS, ValueLayout.ADDRESS,
-                ValueLayout.JAVA_INT,
-                ValueLayout.ADDRESS);
-    }
-
-    private static long computeVorbisDspStateSize() {
-        return computeStructSize(
-                ValueLayout.JAVA_INT,
-                ValueLayout.ADDRESS,
-                ValueLayout.ADDRESS, ValueLayout.ADDRESS,
-                ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
-                ValueLayout.JAVA_INT,
-                ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
-                C_LONG, C_LONG, C_LONG, C_LONG,
-                ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG,
-                ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG,
-                ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG,
-                ValueLayout.ADDRESS);
-    }
-
-    private static long computeVorbisBlockSize() {
-        MemoryLayout oggpackBuffer = asNestedStruct(
-                C_LONG, ValueLayout.JAVA_INT,
-                ValueLayout.ADDRESS, ValueLayout.ADDRESS, C_LONG);
-        return computeStructSize(
-                ValueLayout.ADDRESS,
-                oggpackBuffer,
-                C_LONG, C_LONG, C_LONG,
-                ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
-                ValueLayout.JAVA_INT,
-                ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG,
-                ValueLayout.ADDRESS,
-                ValueLayout.ADDRESS,
-                C_LONG, C_LONG, C_LONG,
-                ValueLayout.ADDRESS,
-                C_LONG, C_LONG, C_LONG, C_LONG,
-                ValueLayout.ADDRESS);
-    }
-
-    private static long computeOggStreamStateSize() {
-        return computeStructSize(
-                ValueLayout.ADDRESS,
-                C_LONG, C_LONG, C_LONG,
-                ValueLayout.ADDRESS,
-                ValueLayout.ADDRESS,
-                C_LONG, C_LONG, C_LONG, C_LONG,
-                MemoryLayout.sequenceLayout(282, ValueLayout.JAVA_BYTE),
-                ValueLayout.JAVA_INT,
-                ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
-                C_LONG, C_LONG,
-                ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG);
-    }
-
-    private static long computeOggPageSize() {
-        return computeStructSize(
-                ValueLayout.ADDRESS, C_LONG, ValueLayout.ADDRESS, C_LONG);
-    }
-
-    private static long computeOggPacketSize() {
-        return computeStructSize(
-                ValueLayout.ADDRESS, C_LONG, C_LONG, C_LONG,
-                ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG);
+    @Test
+    void computeFieldOffsetsShouldRespectAlignment() {
+        // Verify offsets: {int, pointer} should have pointer at offset ptrSize
+        long[] offsets = OggVorbisExporter.computeFieldOffsets(
+                ValueLayout.JAVA_INT, ValueLayout.ADDRESS);
+        long ptrSize = ValueLayout.ADDRESS.byteSize();
+        assertThat(offsets[0]).isEqualTo(0);
+        // pointer field must be aligned to its own alignment
+        assertThat(offsets[1] % ptrSize).isZero();
+        assertThat(offsets[1]).isGreaterThanOrEqualTo(ValueLayout.JAVA_INT.byteSize());
     }
 }

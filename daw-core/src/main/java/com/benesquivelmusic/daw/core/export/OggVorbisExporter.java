@@ -39,32 +39,32 @@ public final class OggVorbisExporter {
     // Platform-aware C ABI type for 'long' — 8 bytes on Linux/macOS x86_64,
     // 4 bytes on Windows x86_64 (LLP64 model). Obtained from the native
     // linker's canonical layout map (JEP 454).
-    private static final ValueLayout C_LONG =
+    static final ValueLayout C_LONG =
             (ValueLayout) Linker.nativeLinker().canonicalLayouts().get("long");
 
     // Struct sizes computed from C struct declarations in ogg/ogg.h and
     // vorbis/codec.h using platform-correct C ABI types (C_INT, C_LONG,
     // C_POINTER) rather than hardcoded byte counts.
-    private static final long SIZEOF_VORBIS_INFO = computeStructSize(
+    static final long SIZEOF_VORBIS_INFO = computeStructSize(
             ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,       // version, channels
             C_LONG, C_LONG, C_LONG, C_LONG, C_LONG,           // rate, bitrate_*
             ValueLayout.ADDRESS);                              // codec_setup
-    private static final long SIZEOF_VORBIS_COMMENT = computeStructSize(
+    static final long SIZEOF_VORBIS_COMMENT = computeStructSize(
             ValueLayout.ADDRESS, ValueLayout.ADDRESS,          // user_comments, comment_lengths
             ValueLayout.JAVA_INT,                              // comments
             ValueLayout.ADDRESS);                              // vendor
-    private static final long SIZEOF_VORBIS_DSP_STATE = computeVorbisDspStateSize();
-    private static final long SIZEOF_VORBIS_BLOCK = computeVorbisBlockSize();
-    private static final long SIZEOF_OGG_STREAM_STATE = computeOggStreamStateSize();
-    private static final long SIZEOF_OGG_PAGE = computeStructSize(
+    static final long SIZEOF_VORBIS_DSP_STATE = computeVorbisDspStateSize();
+    static final long SIZEOF_VORBIS_BLOCK = computeVorbisBlockSize();
+    static final long SIZEOF_OGG_STREAM_STATE = computeOggStreamStateSize();
+    static final long SIZEOF_OGG_PAGE = computeStructSize(
             ValueLayout.ADDRESS, C_LONG, ValueLayout.ADDRESS, C_LONG);
-    private static final long SIZEOF_OGG_PACKET = computeStructSize(
+    static final long SIZEOF_OGG_PACKET = computeStructSize(
             ValueLayout.ADDRESS, C_LONG, C_LONG, C_LONG,
             ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG);
 
     // ogg_page field offsets — computed from struct layout for portability
     // across platforms where C 'long' and pointer sizes differ.
-    private static final long[] OGG_PAGE_OFFSETS = computeFieldOffsets(
+    static final long[] OGG_PAGE_OFFSETS = computeFieldOffsets(
             ValueLayout.ADDRESS, C_LONG, ValueLayout.ADDRESS, C_LONG);
     private static final long OGG_PAGE_HEADER = OGG_PAGE_OFFSETS[0];
     private static final long OGG_PAGE_HEADER_LEN = OGG_PAGE_OFFSETS[1];
@@ -290,7 +290,7 @@ public final class OggVorbisExporter {
      * and the total size is rounded up to the struct's overall alignment
      * (the maximum alignment of any field).
      */
-    private static long computeStructSize(MemoryLayout... fields) {
+    static long computeStructSize(MemoryLayout... fields) {
         long offset = 0;
         long maxAlign = 1;
         for (MemoryLayout field : fields) {
@@ -306,7 +306,7 @@ public final class OggVorbisExporter {
      * Computes byte offsets for each field in a C struct following standard
      * ABI padding/alignment rules.
      */
-    private static long[] computeFieldOffsets(MemoryLayout... fields) {
+    static long[] computeFieldOffsets(MemoryLayout... fields) {
         long[] offsets = new long[fields.length];
         long offset = 0;
         for (int i = 0; i < fields.length; i++) {
@@ -555,15 +555,22 @@ public final class OggVorbisExporter {
                 }
             }
 
-            // Platform-aware error message
+            // Platform-aware, library-specific error message
             String installHint;
             if (os.contains("win")) {
                 installHint = "build with CMake and ensure " + baseName
                         + ".dll is in the application directory or PATH";
             } else if (os.contains("mac")) {
-                installHint = "'brew install libvorbis libogg' on macOS";
+                installHint = "'brew install " + (baseName.equals("ogg") ? "libogg" : "libvorbis")
+                        + "' on macOS";
             } else {
-                installHint = "'apt install libvorbisenc2 libogg0' on Debian/Ubuntu";
+                String debPkg = switch (baseName) {
+                    case "ogg" -> "libogg0";
+                    case "vorbis" -> "libvorbis0a";
+                    case "vorbisenc" -> "libvorbisenc2";
+                    default -> "lib" + baseName + "0";
+                };
+                installHint = "'apt install " + debPkg + "' on Debian/Ubuntu";
             }
             String searchedNames = String.join(", ", names);
             String libraryPath = System.getProperty("java.library.path", "");
@@ -571,7 +578,7 @@ public final class OggVorbisExporter {
                     "Could not load lib" + baseName + " from bundled native directory "
                             + (libraryPath.isEmpty() ? "(none configured)" : libraryPath)
                             + " or system libraries (tried: " + searchedNames + "). "
-                            + "Install libogg and libvorbis (e.g., " + installHint + ").");
+                            + "Install lib" + baseName + " (e.g., " + installHint + ").");
         }
 
         /**
@@ -586,7 +593,7 @@ public final class OggVorbisExporter {
             }
             for (String dir : libraryPath.split(java.io.File.pathSeparator)) {
                 for (String fileName : fileNames) {
-                    Path candidate = Path.of(dir, fileName);
+                    Path candidate = Path.of(dir, fileName).toAbsolutePath();
                     if (Files.isRegularFile(candidate)) {
                         try {
                             return Optional.of(
