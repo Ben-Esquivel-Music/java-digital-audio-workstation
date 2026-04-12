@@ -12,7 +12,6 @@ import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.logging.Logger;
 
 /**
  * Handles clip clipboard operations (copy, cut, paste, duplicate, delete)
@@ -22,8 +21,6 @@ import java.util.logging.Logger;
  * from the main coordinator.</p>
  */
 final class ClipEditController {
-
-    private static final Logger LOG = Logger.getLogger(ClipEditController.class.getName());
 
     interface Host {
         com.benesquivelmusic.daw.core.project.DawProject project();

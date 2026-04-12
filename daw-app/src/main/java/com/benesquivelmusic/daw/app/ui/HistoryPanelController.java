@@ -136,6 +136,7 @@ final class HistoryPanelController {
 
     void setHistoryPanelVisible(boolean visible) {
         this.historyPanelVisible = visible;
+        updateHistoryButtonActiveState();
     }
 
     void setNotificationHistoryPanelVisible(boolean visible) {
