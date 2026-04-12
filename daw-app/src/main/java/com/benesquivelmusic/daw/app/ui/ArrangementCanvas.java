@@ -1,12 +1,10 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
-import com.benesquivelmusic.daw.core.audio.FadeCurveType;
 import com.benesquivelmusic.daw.core.automation.AutomationData;
 import com.benesquivelmusic.daw.core.automation.AutomationLane;
 import com.benesquivelmusic.daw.core.automation.AutomationParameter;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
-import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 
@@ -14,8 +12,6 @@ import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.layout.Pane;
 import javafx.scene.paint.Color;
-import javafx.scene.text.Font;
-import javafx.scene.text.TextAlignment;
 
 import java.util.HashMap;
 import java.util.List;
@@ -25,64 +21,38 @@ import java.util.Map;
  * Renders horizontal track lanes with audio and MIDI clip rectangles
  * for the arrangement view.
  *
- * <p>Each track occupies a horizontal lane whose height is determined by
- * the current {@link TrackHeightZoom}. Audio clips are rendered as
- * colored rectangles positioned at their {@code startBeat} with width
- * proportional to {@code durationBeats}. A miniature waveform overview
- * is drawn inside each audio clip using the clip's {@code audioData}
- * buffer. MIDI clips are rendered with a simplified piano-roll note
- * preview. Clip names appear as overlay labels.</p>
+ * <p>Drawing is delegated to focused renderer utilities
+ * ({@link TrackLaneRenderer}, {@link ClipOverlayRenderer},
+ * {@link ClipWaveformRenderer}, {@link ClipMidiPreviewRenderer},
+ * {@link AutomationLaneRenderer}, {@link TransportOverlayRenderer}) so
+ * this class is limited to state management, layout math, hit-testing,
+ * and orchestration.</p>
  *
- * <p>Horizontal and vertical scrolling are controlled via the canvas's
- * scroll and zoom parameters and can be coordinated with higher-level
- * navigation components by the caller as needed.</p>
+ * <p>Each track occupies a horizontal lane whose height is determined by
+ * the current {@link TrackHeightZoom}. Horizontal and vertical scrolling
+ * are controlled via the canvas's scroll and zoom parameters and can be
+ * coordinated with higher-level navigation components by the caller.</p>
  */
 public final class ArrangementCanvas extends Pane {
 
-    static final Color LANE_COLOR_EVEN = Color.web("#1c1c2e");
-    static final Color LANE_COLOR_ODD = Color.web("#22223a");
-    static final Color LANE_SEPARATOR_COLOR = Color.web("#333355", 0.5);
-    static final Color CLIP_BORDER_COLOR = Color.web("#ffffff", 0.3);
-    static final Color CLIP_LABEL_COLOR = Color.web("#ffffff", 0.9);
-    static final Color WAVEFORM_COLOR = Color.web("#ffffff", 0.5);
-    static final Color MIDI_NOTE_COLOR = Color.web("#ffffff", 0.7);
-    static final Color PLAYHEAD_COLOR = Color.web("#ff5555");
-    static final Color TRIM_PREVIEW_COLOR = Color.web("#00E5FF", 0.8);
-    static final Color FADE_HANDLE_COLOR = Color.web("#ffffff", 0.85);
-    static final Color FADE_HANDLE_FILL_COLOR = Color.web("#ffffff", 0.3);
-    static final Color LOOP_HIGHLIGHT_COLOR = Color.web("#b388ff", 0.08);
-    static final Color SELECTION_HIGHLIGHT_COLOR = Color.web("#42A5F5", 0.18);
-    static final Color SELECTION_BORDER_COLOR = Color.web("#42A5F5", 0.6);
-    static final Color SELECTION_HANDLE_COLOR = Color.web("#42A5F5", 0.9);
-    static final Color SELECTION_HANDLE_FILL_COLOR = Color.web("#42A5F5", 0.4);
-    static final Color RUBBER_BAND_FILL_COLOR = Color.web("#42A5F5", 0.15);
-    static final Color RUBBER_BAND_BORDER_COLOR = Color.web("#42A5F5", 0.7);
-    static final Color CLIP_SELECTED_BORDER_COLOR = Color.web("#42A5F5", 0.9);
-    static final Color CLIP_SELECTED_OVERLAY_COLOR = Color.web("#42A5F5", 0.25);
+    // ── Color constants (retained for existing test references) ───────────
+    static final Color LOOP_HIGHLIGHT_COLOR = TransportOverlayRenderer.LOOP_HIGHLIGHT_COLOR;
+    static final Color SELECTION_HIGHLIGHT_COLOR = TransportOverlayRenderer.SELECTION_HIGHLIGHT_COLOR;
+    static final Color SELECTION_BORDER_COLOR = TransportOverlayRenderer.SELECTION_BORDER_COLOR;
+    static final Color SELECTION_HANDLE_COLOR = TransportOverlayRenderer.SELECTION_HANDLE_COLOR;
+    static final Color RUBBER_BAND_FILL_COLOR = TransportOverlayRenderer.RUBBER_BAND_FILL_COLOR;
+    static final Color RUBBER_BAND_BORDER_COLOR = TransportOverlayRenderer.RUBBER_BAND_BORDER_COLOR;
+    static final Color CLIP_SELECTED_BORDER_COLOR = ClipOverlayRenderer.CLIP_SELECTED_BORDER_COLOR;
+    static final Color CLIP_SELECTED_OVERLAY_COLOR = ClipOverlayRenderer.CLIP_SELECTED_OVERLAY_COLOR;
 
-    private static final double SELECTION_BORDER_WIDTH = 1.0;
     /** Width of the draggable handle zones at each selection edge, in pixels. */
     static final double SELECTION_HANDLE_WIDTH = 6.0;
-    private static final double SELECTION_HANDLE_VISUAL_WIDTH = 4.0;
-
-    private static final Font CLIP_LABEL_FONT = Font.font("SansSerif", 10);
-    private static final double CLIP_CORNER_RADIUS = 4.0;
-    private static final double CLIP_INSET = 2.0;
-    private static final double CLIP_LABEL_PADDING = 4.0;
-    private static final double CLIP_OPACITY = 0.75;
-    private static final double FADE_OVERLAY_OPACITY = 0.3;
-    private static final double FADE_HANDLE_SIZE = ClipFadeHandler.HANDLE_SIZE_PIXELS;
-    private static final int FADE_CURVE_SEGMENTS = 20;
-    private static final int WAVEFORM_MIN_WIDTH = 4;
-    private static final double MIDI_NOTE_HEIGHT_FRACTION = 0.08;
 
     /**
      * Beats per grid column — MIDI note columns are 1/16 notes (0.25 beats)
      * at 4/4. Shared with {@link EditorView#BEATS_PER_COLUMN}.
      */
     static final double BEATS_PER_COLUMN = EditorView.BEATS_PER_COLUMN;
-    private static final double PLAYHEAD_WIDTH = 2.0;
-    private static final double TRIM_PREVIEW_LINE_WIDTH = 2.0;
 
     private final Canvas canvas;
 
@@ -122,18 +92,15 @@ public final class ArrangementCanvas extends Pane {
      */
     private final Map<String, AutomationParameter> automationLaneVisibility = new HashMap<>();
 
-    /**
-     * Cached per-track cumulative Y offsets (in canvas space, accounting for
-     * scroll). Recomputed once per {@link #redraw()} call to avoid O(n²)
-     * lookups. Index {@code i} holds the Y offset of track {@code i}.
-     */
+    /** Per-track top-Y offsets in canvas space (scroll applied). */
     private double[] laneYCache = new double[0];
 
+    /** Parallel to {@link #laneYCache}: per-track track + automation height. */
+    private double[] effectiveHeightCache = new double[0];
+
     /**
-     * Cached per-track cumulative slot-bottom boundaries (absolute Y, no
-     * scroll). Index {@code i} holds the bottom edge of track slot {@code i}
-     * (including its automation lane if expanded). Used by
-     * {@link #trackIndexAtY(double)} for O(log n) binary-search hit-testing.
+     * Per-track cumulative slot-bottom boundaries (absolute Y, no scroll),
+     * used by {@link #trackIndexAtY(double)} for binary-search hit-testing.
      */
     private double[] slotBottomCache = new double[0];
 
@@ -161,7 +128,6 @@ public final class ArrangementCanvas extends Pane {
      */
     public void setTracks(List<Track> tracks) {
         this.tracks = tracks == null ? List.of() : tracks;
-        // Prune stale automation lane visibility entries for removed tracks
         if (!automationLaneVisibility.isEmpty()) {
             var validIds = this.tracks.stream()
                     .map(Track::getId)
@@ -171,11 +137,7 @@ public final class ArrangementCanvas extends Pane {
         redraw();
     }
 
-    /**
-     * Sets the horizontal scale (pixels per beat) and redraws.
-     *
-     * @param pixelsPerBeat pixels per beat at the current zoom level
-     */
+    /** Sets the horizontal scale (pixels per beat) and redraws. */
     public void setPixelsPerBeat(double pixelsPerBeat) {
         if (pixelsPerBeat <= 0) {
             return;
@@ -184,41 +146,25 @@ public final class ArrangementCanvas extends Pane {
         redraw();
     }
 
-    /**
-     * Sets the horizontal scroll offset in beats and redraws.
-     *
-     * @param scrollXBeats the horizontal scroll offset
-     */
+    /** Sets the horizontal scroll offset in beats and redraws. */
     public void setScrollXBeats(double scrollXBeats) {
         this.scrollXBeats = Math.max(0.0, scrollXBeats);
         redraw();
     }
 
-    /**
-     * Sets the vertical scroll offset in pixels and redraws.
-     *
-     * @param scrollYPixels the vertical scroll offset
-     */
+    /** Sets the vertical scroll offset in pixels and redraws. */
     public void setScrollYPixels(double scrollYPixels) {
         this.scrollYPixels = Math.max(0.0, scrollYPixels);
         redraw();
     }
 
-    /**
-     * Sets the track lane height in pixels and redraws.
-     *
-     * @param trackHeight the track lane height
-     */
+    /** Sets the track lane height in pixels and redraws. */
     public void setTrackHeight(double trackHeight) {
         this.trackHeight = Math.max(TrackHeightZoom.MIN_TRACK_HEIGHT, trackHeight);
         redraw();
     }
 
-    /**
-     * Sets the playhead position in beats and redraws.
-     *
-     * @param beat the playhead position, or a negative value to hide it
-     */
+    /** Sets the playhead position in beats (negative hides it) and redraws. */
     public void setPlayheadBeat(double beat) {
         if (Double.compare(this.playheadBeat, beat) == 0) {
             return;
@@ -230,30 +176,17 @@ public final class ArrangementCanvas extends Pane {
         redraw();
     }
 
-    /**
-     * Enables or disables automatic horizontal scrolling to keep the
-     * playhead visible during playback.
-     *
-     * @param autoScroll {@code true} to enable auto-scroll
-     */
+    /** Enables/disables auto horizontal scrolling to keep the playhead visible. */
     public void setAutoScroll(boolean autoScroll) {
         this.autoScroll = autoScroll;
     }
 
-    /**
-     * Forces a full redraw of the arrangement canvas.
-     */
+    /** Forces a full redraw of the arrangement canvas. */
     public void refresh() {
         redraw();
     }
 
-    /**
-     * Updates the loop region overlay state and redraws.
-     *
-     * @param enabled   whether the loop region should be displayed
-     * @param startBeat the loop start position in beats
-     * @param endBeat   the loop end position in beats
-     */
+    /** Updates the loop region overlay state and redraws. */
     public void setLoopRegion(boolean enabled, double startBeat, double endBeat) {
         this.loopEnabled = enabled;
         this.loopStartBeat = startBeat;
@@ -278,18 +211,7 @@ public final class ArrangementCanvas extends Pane {
 
     // ── Time selection overlay ─────────────────────────────────────────────
 
-    /**
-     * Updates the time selection overlay state and redraws.
-     *
-     * <p>When {@code active} is {@code true}, a semi-transparent highlighted
-     * region is rendered from {@code startBeat} to {@code endBeat} spanning
-     * all visible track lanes, with draggable handles at the left and right
-     * edges.</p>
-     *
-     * @param active    whether the selection overlay should be displayed
-     * @param startBeat the selection start position in beats
-     * @param endBeat   the selection end position in beats
-     */
+    /** Updates the time selection overlay state and redraws. */
     public void setSelectionRange(boolean active, double startBeat, double endBeat) {
         this.selectionActive = active;
         this.selectionStartBeat = startBeat;
@@ -312,13 +234,7 @@ public final class ArrangementCanvas extends Pane {
         return selectionEndBeat;
     }
 
-    /**
-     * Sets the trim preview position for rendering a ghost line during
-     * clip edge trimming. Pass a negative beat to hide the preview.
-     *
-     * @param beat       the preview beat position, or negative to hide
-     * @param trackIndex the track lane index to render the preview in
-     */
+    /** Sets the trim preview ghost-line position (negative hides it). */
     void setTrimPreview(double beat, int trackIndex) {
         this.trimPreviewBeat = beat;
         this.trimPreviewTrackIndex = trackIndex;
@@ -326,16 +242,7 @@ public final class ArrangementCanvas extends Pane {
 
     // ── Rubber-band selection overlay ──────────────────────────────────────
 
-    /**
-     * Sets the rubber-band selection rectangle state for rendering during
-     * a drag gesture. The coordinates are in canvas pixel space.
-     *
-     * @param active whether the rubber-band rectangle should be displayed
-     * @param x1     the X of the anchor corner
-     * @param y1     the Y of the anchor corner
-     * @param x2     the X of the current drag position
-     * @param y2     the Y of the current drag position
-     */
+    /** Sets the rubber-band rectangle state (pixel coords) and redraws. */
     void setRubberBand(boolean active, double x1, double y1, double x2, double y2) {
         this.rubberBandActive = active;
         this.rubberBandX1 = x1;
@@ -350,14 +257,7 @@ public final class ArrangementCanvas extends Pane {
         return rubberBandActive;
     }
 
-    /**
-     * Sets the {@link SelectionModel} used to determine which clips are
-     * currently selected, so that selected clips can be highlighted during
-     * rendering.
-     *
-     * @param selectionModel the selection model, or {@code null} to disable
-     *                       clip selection highlighting
-     */
+    /** Sets the selection model used for clip highlighting. */
     void setSelectionModel(SelectionModel selectionModel) {
         this.selectionModel = selectionModel;
     }
@@ -367,8 +267,6 @@ public final class ArrangementCanvas extends Pane {
     /**
      * Toggles the visibility of the automation lane for the given track.
      * When shown, the lane defaults to {@link AutomationParameter#VOLUME}.
-     *
-     * @param track the track whose automation lane to toggle
      */
     void toggleAutomationLane(Track track) {
         String id = track.getId();
@@ -380,22 +278,12 @@ public final class ArrangementCanvas extends Pane {
         redraw();
     }
 
-    /**
-     * Returns whether the automation lane is visible for the given track.
-     *
-     * @param track the track to check
-     * @return {@code true} if the automation lane is expanded
-     */
+    /** Returns whether the automation lane is visible for the given track. */
     boolean isAutomationLaneVisible(Track track) {
         return automationLaneVisibility.containsKey(track.getId());
     }
 
-    /**
-     * Sets the automation parameter displayed in the given track's lane.
-     *
-     * @param track     the track
-     * @param parameter the parameter to display
-     */
+    /** Sets the automation parameter displayed in the given track's lane. */
     void setAutomationParameter(Track track, AutomationParameter parameter) {
         if (automationLaneVisibility.containsKey(track.getId())) {
             automationLaneVisibility.put(track.getId(), parameter);
@@ -406,9 +294,6 @@ public final class ArrangementCanvas extends Pane {
     /**
      * Returns the currently selected automation parameter for the given
      * track's lane, or {@code null} if the lane is not visible.
-     *
-     * @param track the track to query
-     * @return the selected parameter, or {@code null}
      */
     AutomationParameter getAutomationParameter(Track track) {
         return automationLaneVisibility.get(track.getId());
@@ -463,7 +348,6 @@ public final class ArrangementCanvas extends Pane {
         if (n == 0) {
             return -1;
         }
-        // Binary search: find the first slot whose bottom > adjustedY
         int lo = 0;
         int hi = n - 1;
         int result = -1;
@@ -483,9 +367,6 @@ public final class ArrangementCanvas extends Pane {
      * Returns {@code true} if the given Y coordinate falls within an
      * automation sub-lane (below the track lane proper) rather than in
      * the clip area of a track.
-     *
-     * @param y the Y pixel coordinate (in canvas space)
-     * @return {@code true} if the coordinate is inside an automation lane
      */
     boolean isYInAutomationLane(double y) {
         int trackIndex = trackIndexAtY(y);
@@ -503,9 +384,6 @@ public final class ArrangementCanvas extends Pane {
     /**
      * Returns the Y pixel coordinate of the automation sub-lane top for
      * the given track index (in canvas space, accounting for scroll).
-     *
-     * @param trackIndex the track index
-     * @return the Y coordinate, or {@code -1} if no automation lane is visible
      */
     double automationLaneY(int trackIndex) {
         if (trackIndex < 0 || trackIndex >= tracks.size()) {
@@ -520,34 +398,28 @@ public final class ArrangementCanvas extends Pane {
     // ── Rendering ──────────────────────────────────────────────────────────
 
     /**
-     * Builds the cumulative lane-Y cache and slot-bottom cache for all
-     * tracks. Must be called at the start of each {@link #redraw()}
-     * invocation to keep both the rendering cache and the hit-testing
-     * binary-search array in sync.
+     * Builds the cumulative lane-Y cache, effective-height cache, and
+     * slot-bottom cache for all tracks. Called at the start of each
+     * {@link #redraw()} invocation.
      */
     private void rebuildLaneYCache() {
         int n = tracks.size();
         if (laneYCache.length != n) {
             laneYCache = new double[n];
+            effectiveHeightCache = new double[n];
             slotBottomCache = new double[n];
         }
         double cumulative = 0;
         for (int i = 0; i < n; i++) {
             laneYCache[i] = cumulative - scrollYPixels;
-            cumulative += trackHeight;
+            double effective = trackHeight;
             if (automationLaneVisibility.containsKey(tracks.get(i).getId())) {
-                cumulative += AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
+                effective += AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
             }
+            effectiveHeightCache[i] = effective;
+            cumulative += effective;
             slotBottomCache[i] = cumulative;
         }
-    }
-
-    /**
-     * Returns the cached Y pixel offset for the given track index.
-     * The cache must have been populated by {@link #rebuildLaneYCache()}.
-     */
-    private double cachedLaneY(int trackIndex) {
-        return laneYCache[trackIndex];
     }
 
     /**
@@ -565,20 +437,6 @@ public final class ArrangementCanvas extends Pane {
         return y - scrollYPixels;
     }
 
-    /**
-     * Computes the total content height including automation lanes.
-     */
-    private double computeTotalContentHeight() {
-        double total = 0;
-        for (int i = 0; i < tracks.size(); i++) {
-            total += trackHeight;
-            if (automationLaneVisibility.containsKey(tracks.get(i).getId())) {
-                total += AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
-            }
-        }
-        return total;
-    }
-
     private void redraw() {
         double w = canvas.getWidth();
         double h = canvas.getHeight();
@@ -591,65 +449,49 @@ public final class ArrangementCanvas extends Pane {
         GraphicsContext gc = canvas.getGraphicsContext2D();
         gc.clearRect(0, 0, w, h);
 
-        drawTrackLanes(gc, w, h);
-        drawLoopHighlight(gc, w, h);
+        int n = tracks.size();
+        double contentBottomY = (n == 0 ? 0 : slotBottomCache[n - 1]) - scrollYPixels;
+        TrackLaneRenderer.draw(gc, n, laneYCache, trackHeight,
+                effectiveHeightCache, w, h, contentBottomY);
+
+        TransportOverlayRenderer.drawLoopHighlight(gc, loopEnabled,
+                loopStartBeat, loopEndBeat, scrollXBeats, pixelsPerBeat, w, h);
+
         drawClips(gc, w, h);
         drawAutomationLanes(gc, w, h);
-        drawSelectionHighlight(gc, w, h);
-        drawRubberBand(gc, w, h);
-        drawTrimPreview(gc, w, h);
-        drawPlayhead(gc, w, h);
-    }
 
-    private void drawTrackLanes(GraphicsContext gc, double canvasWidth, double canvasHeight) {
-        for (int i = 0; i < tracks.size(); i++) {
-            double y = cachedLaneY(i);
-            double effectiveHeight = trackHeight;
-            if (automationLaneVisibility.containsKey(tracks.get(i).getId())) {
-                effectiveHeight += AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
-            }
-            if (y + effectiveHeight < 0) {
-                continue;
-            }
-            if (y > canvasHeight) {
-                break;
-            }
+        TransportOverlayRenderer.drawSelectionHighlight(gc, selectionActive,
+                selectionStartBeat, selectionEndBeat, scrollXBeats, pixelsPerBeat, w, h);
+        TransportOverlayRenderer.drawRubberBand(gc, rubberBandActive,
+                rubberBandX1, rubberBandY1, rubberBandX2, rubberBandY2, w, h);
 
-            gc.setFill(i % 2 == 0 ? LANE_COLOR_EVEN : LANE_COLOR_ODD);
-            gc.fillRect(0, y, canvasWidth, trackHeight);
+        drawTrimPreviewIfVisible(gc, w, h);
 
-            gc.setStroke(LANE_SEPARATOR_COLOR);
-            gc.setLineWidth(1.0);
-            gc.strokeLine(0, y + trackHeight, canvasWidth, y + trackHeight);
-        }
-
-        // Fill remaining area below tracks
-        double totalContentHeight = computeTotalContentHeight() - scrollYPixels;
-        if (totalContentHeight < canvasHeight) {
-            gc.setFill(LANE_COLOR_EVEN);
-            gc.fillRect(0, totalContentHeight, canvasWidth, canvasHeight - totalContentHeight);
-        }
+        TransportOverlayRenderer.drawPlayhead(gc, playheadBeat,
+                scrollXBeats, pixelsPerBeat, w, h);
     }
 
     private void drawClips(GraphicsContext gc, double canvasWidth, double canvasHeight) {
         for (int i = 0; i < tracks.size(); i++) {
             Track track = tracks.get(i);
-            double laneY = cachedLaneY(i);
+            double laneY = laneYCache[i];
             if (laneY + trackHeight < 0 || laneY > canvasHeight) {
                 continue;
             }
 
             Color trackColor = parseTrackColor(track);
 
-            // Draw audio clips
             for (AudioClip clip : track.getClips()) {
-                drawAudioClip(gc, clip, trackColor, laneY, canvasWidth, canvasHeight);
+                ClipOverlayRenderer.drawAudioClip(gc, clip, trackColor,
+                        laneY, trackHeight, pixelsPerBeat, scrollXBeats,
+                        canvasWidth, canvasHeight, selectionModel);
             }
 
-            // Draw MIDI clip if the track has MIDI notes
             MidiClip midiClip = track.getMidiClip();
-            if (!midiClip.isEmpty() && (track.getType() == TrackType.MIDI)) {
-                drawMidiClip(gc, track, midiClip, trackColor, laneY, canvasWidth, canvasHeight);
+            if (!midiClip.isEmpty() && track.getType() == TrackType.MIDI) {
+                ClipOverlayRenderer.drawMidiClip(gc, track, midiClip, trackColor,
+                        laneY, trackHeight, pixelsPerBeat, scrollXBeats,
+                        canvasWidth, canvasHeight, selectionModel);
             }
         }
     }
@@ -662,7 +504,7 @@ public final class ArrangementCanvas extends Pane {
                 continue;
             }
 
-            double autoLaneY = cachedLaneY(i) + trackHeight;
+            double autoLaneY = laneYCache[i] + trackHeight;
             double autoLaneHeight = AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
             if (autoLaneY + autoLaneHeight < 0 || autoLaneY > canvasHeight) {
                 continue;
@@ -678,524 +520,15 @@ public final class ArrangementCanvas extends Pane {
         }
     }
 
-    private void drawAudioClip(GraphicsContext gc, AudioClip clip, Color trackColor,
-                                double laneY, double canvasWidth, double canvasHeight) {
-        double clipX = (clip.getStartBeat() - scrollXBeats) * pixelsPerBeat;
-        double clipWidth = clip.getDurationBeats() * pixelsPerBeat;
-
-        // Cull clips entirely outside the viewport
-        if (clipX + clipWidth < 0 || clipX > canvasWidth) {
-            return;
-        }
-
-        double clipY = laneY + CLIP_INSET;
-        double clipHeight = trackHeight - 2 * CLIP_INSET;
-
-        // Clip body
-        Color fillColor = trackColor.deriveColor(0, 1.0, 1.0, CLIP_OPACITY);
-        gc.setFill(fillColor);
-        gc.fillRoundRect(clipX, clipY, clipWidth, clipHeight,
-                CLIP_CORNER_RADIUS, CLIP_CORNER_RADIUS);
-
-        // Clip border
-        gc.setStroke(CLIP_BORDER_COLOR);
-        gc.setLineWidth(1.0);
-        gc.strokeRoundRect(clipX, clipY, clipWidth, clipHeight,
-                CLIP_CORNER_RADIUS, CLIP_CORNER_RADIUS);
-
-        // Selection highlight overlay for selected clips
-        if (selectionModel != null && selectionModel.isClipSelected(clip)) {
-            gc.setFill(CLIP_SELECTED_OVERLAY_COLOR);
-            gc.fillRoundRect(clipX, clipY, clipWidth, clipHeight,
-                    CLIP_CORNER_RADIUS, CLIP_CORNER_RADIUS);
-            gc.setStroke(CLIP_SELECTED_BORDER_COLOR);
-            gc.setLineWidth(2.0);
-            gc.strokeRoundRect(clipX, clipY, clipWidth, clipHeight,
-                    CLIP_CORNER_RADIUS, CLIP_CORNER_RADIUS);
-        }
-
-        // Fade-in overlay (curve shape)
-        if (clip.getFadeInBeats() > 0) {
-            double fadeWidth = clip.getFadeInBeats() * pixelsPerBeat;
-            fadeWidth = Math.max(0.0, Math.min(fadeWidth, clipWidth));
-            if (fadeWidth > 0.0) {
-                drawFadeInOverlay(gc, clip.getFadeInCurveType(),
-                        clipX, clipY, fadeWidth, clipHeight);
-            }
-        }
-
-        // Fade-out overlay (curve shape)
-        if (clip.getFadeOutBeats() > 0) {
-            double fadeWidth = clip.getFadeOutBeats() * pixelsPerBeat;
-            fadeWidth = Math.max(0.0, Math.min(fadeWidth, clipWidth));
-            if (fadeWidth > 0.0) {
-                double fadeX = clipX + clipWidth - fadeWidth;
-                drawFadeOutOverlay(gc, clip.getFadeOutCurveType(),
-                        fadeX, clipY, fadeWidth, clipHeight);
-            }
-        }
-
-        // Waveform overview
-        drawWaveform(gc, clip, clipX, clipY, clipWidth, clipHeight);
-
-        // Fade handle indicators
-        drawFadeHandles(gc, clip, clipX, clipY, clipWidth, clipHeight);
-
-        // Clip name label
-        drawClipLabel(gc, clip.getName(), clipX, clipY, clipWidth, clipHeight);
-    }
-
-    /**
-     * Draws a fade-in overlay with the given curve type. The overlay is a
-     * semi-transparent filled shape from the bottom-left corner through the
-     * curve to the top-right of the fade region.
-     */
-    private void drawFadeInOverlay(GraphicsContext gc, FadeCurveType curveType,
-                                    double fadeX, double clipY,
-                                    double fadeWidth, double clipHeight) {
-        gc.setFill(Color.web("#000000", FADE_OVERLAY_OPACITY));
-        int n = FADE_CURVE_SEGMENTS;
-        // Build polygon: curve from top-left to top-right, then down to bottom-left
-        double[] xs = new double[n + 3];
-        double[] ys = new double[n + 3];
-        for (int i = 0; i <= n; i++) {
-            double t = (double) i / n;
-            double gain = fadeCurveGain(curveType, t);
-            xs[i] = fadeX + t * fadeWidth;
-            // gain=0 at t=0 → full height (bottom), gain=1 at t=1 → top
-            ys[i] = clipY + clipHeight * (1.0 - gain);
-        }
-        // Close the polygon along the bottom
-        xs[n + 1] = fadeX;
-        ys[n + 1] = clipY + clipHeight;
-        xs[n + 2] = fadeX;
-        ys[n + 2] = clipY + clipHeight;
-        gc.fillPolygon(xs, ys, n + 3);
-
-        // Draw the curve line
-        gc.setStroke(FADE_HANDLE_COLOR);
-        gc.setLineWidth(1.5);
-        gc.beginPath();
-        gc.moveTo(fadeX, clipY + clipHeight);
-        for (int i = 1; i <= n; i++) {
-            double t = (double) i / n;
-            double gain = fadeCurveGain(curveType, t);
-            gc.lineTo(fadeX + t * fadeWidth, clipY + clipHeight * (1.0 - gain));
-        }
-        gc.stroke();
-    }
-
-    /**
-     * Draws a fade-out overlay with the given curve type. The overlay is a
-     * semi-transparent filled shape from the top-left of the fade region
-     * through the curve to the bottom-right corner.
-     */
-    private void drawFadeOutOverlay(GraphicsContext gc, FadeCurveType curveType,
-                                     double fadeX, double clipY,
-                                     double fadeWidth, double clipHeight) {
-        gc.setFill(Color.web("#000000", FADE_OVERLAY_OPACITY));
-        int n = FADE_CURVE_SEGMENTS;
-        // Build polygon: curve from top-left to bottom-right, then up to top-right
-        double[] xs = new double[n + 3];
-        double[] ys = new double[n + 3];
-        for (int i = 0; i <= n; i++) {
-            double t = (double) i / n;
-            // fade-out: gain goes from 1 at t=0 to 0 at t=1
-            double gain = fadeCurveGain(curveType, 1.0 - t);
-            xs[i] = fadeX + t * fadeWidth;
-            ys[i] = clipY + clipHeight * (1.0 - gain);
-        }
-        // Close the polygon along the top-right corner
-        xs[n + 1] = fadeX + fadeWidth;
-        ys[n + 1] = clipY;
-        xs[n + 2] = fadeX + fadeWidth;
-        ys[n + 2] = clipY;
-        gc.fillPolygon(xs, ys, n + 3);
-
-        // Draw the curve line
-        gc.setStroke(FADE_HANDLE_COLOR);
-        gc.setLineWidth(1.5);
-        gc.beginPath();
-        gc.moveTo(fadeX, clipY);
-        for (int i = 1; i <= n; i++) {
-            double t = (double) i / n;
-            double gain = fadeCurveGain(curveType, 1.0 - t);
-            gc.lineTo(fadeX + t * fadeWidth, clipY + clipHeight * (1.0 - gain));
-        }
-        gc.stroke();
-    }
-
-    /**
-     * Computes the gain value at position {@code t} (0..1) for the given
-     * curve type, where 0 = silence and 1 = full volume.
-     */
-    private static double fadeCurveGain(FadeCurveType curveType, double t) {
-        return switch (curveType) {
-            case LINEAR -> t;
-            case EQUAL_POWER -> Math.sin(t * Math.PI / 2.0);
-            case S_CURVE -> t * t * (3.0 - 2.0 * t);
-        };
-    }
-
-    /**
-     * Draws small triangular fade handle indicators at the fade-in and
-     * fade-out positions of the clip.
-     */
-    private void drawFadeHandles(GraphicsContext gc, AudioClip clip,
-                                  double clipX, double clipY,
-                                  double clipWidth, double clipHeight) {
-        double handleH = FADE_HANDLE_SIZE;
-        double handleW = FADE_HANDLE_SIZE;
-
-        // Fade-in handle at top of clip, positioned at the fade-in boundary
-        double fadeInWidth = clip.getFadeInBeats() * pixelsPerBeat;
-        fadeInWidth = Math.min(fadeInWidth, clipWidth);
-        double fadeInHandleX = clipX + fadeInWidth;
-        gc.setFill(FADE_HANDLE_FILL_COLOR);
-        gc.fillPolygon(
-                new double[]{fadeInHandleX, fadeInHandleX - handleW / 2.0, fadeInHandleX + handleW / 2.0},
-                new double[]{clipY + handleH, clipY, clipY},
-                3);
-        gc.setStroke(FADE_HANDLE_COLOR);
-        gc.setLineWidth(1.0);
-        gc.strokePolygon(
-                new double[]{fadeInHandleX, fadeInHandleX - handleW / 2.0, fadeInHandleX + handleW / 2.0},
-                new double[]{clipY + handleH, clipY, clipY},
-                3);
-
-        // Fade-out handle at top of clip, positioned at the fade-out boundary
-        double fadeOutWidth = clip.getFadeOutBeats() * pixelsPerBeat;
-        fadeOutWidth = Math.min(fadeOutWidth, clipWidth);
-        double fadeOutHandleX = clipX + clipWidth - fadeOutWidth;
-        gc.setFill(FADE_HANDLE_FILL_COLOR);
-        gc.fillPolygon(
-                new double[]{fadeOutHandleX, fadeOutHandleX - handleW / 2.0, fadeOutHandleX + handleW / 2.0},
-                new double[]{clipY + handleH, clipY, clipY},
-                3);
-        gc.setStroke(FADE_HANDLE_COLOR);
-        gc.setLineWidth(1.0);
-        gc.strokePolygon(
-                new double[]{fadeOutHandleX, fadeOutHandleX - handleW / 2.0, fadeOutHandleX + handleW / 2.0},
-                new double[]{clipY + handleH, clipY, clipY},
-                3);
-    }
-
-    private void drawWaveform(GraphicsContext gc, AudioClip clip,
-                               double clipX, double clipY,
-                               double clipWidth, double clipHeight) {
-        float[][] audioData = clip.getAudioData();
-        if (audioData == null || audioData.length == 0 || audioData[0].length == 0) {
-            return;
-        }
-        // Compute total pixel width using long/double math to avoid overflow,
-        // then clamp to the int range for iteration.
-        long totalPixelWidthLong = (long) Math.floor(clipWidth);
-        if (totalPixelWidthLong < WAVEFORM_MIN_WIDTH) {
-            return;
-        }
-        if (totalPixelWidthLong > Integer.MAX_VALUE) {
-            totalPixelWidthLong = Integer.MAX_VALUE;
-        }
-        int totalPixelWidth = (int) totalPixelWidthLong;
-
-        // Clamp rendering to the visible portion of the clip
-        double canvasWidth = canvas.getWidth();
-        double rawVisibleStart = -clipX;
-        double rawVisibleEnd = canvasWidth - clipX;
-
-        long visibleStartLong = (long) Math.floor(rawVisibleStart);
-        long visibleEndLong = (long) Math.floor(rawVisibleEnd);
-
-        if (visibleEndLong <= 0) {
-            return;
-        }
-
-        // Clamp visible range to [0, totalPixelWidthLong]
-        if (visibleStartLong < 0) {
-            visibleStartLong = 0;
-        }
-        if (visibleEndLong > totalPixelWidthLong) {
-            visibleEndLong = totalPixelWidthLong;
-        }
-        if (visibleStartLong >= visibleEndLong) {
-            return;
-        }
-
-        // Finally, clamp to int range
-        int visibleStart = (int) Math.min(visibleStartLong, (long) Integer.MAX_VALUE);
-        int visibleEnd = (int) Math.min(visibleEndLong, (long) Integer.MAX_VALUE);
-        float[] channel = audioData[0];
-        int totalSamples = channel.length;
-        double centerY = clipY + clipHeight / 2.0;
-        double halfHeight = (clipHeight - 8.0) / 2.0;
-
-        gc.setStroke(WAVEFORM_COLOR);
-        gc.setLineWidth(1.0);
-
-        for (int px = visibleStart; px < visibleEnd; px++) {
-            int sampleStart = (int) ((long) px * totalSamples / totalPixelWidth);
-            int sampleEnd = (int) ((long) (px + 1) * totalSamples / totalPixelWidth);
-            sampleEnd = Math.min(sampleEnd, totalSamples);
-
-            if (sampleStart >= sampleEnd) {
-                continue;
-            }
-            float min = channel[sampleStart];
-            float max = channel[sampleStart];
-            for (int s = sampleStart + 1; s < sampleEnd; s++) {
-                float val = channel[s];
-                if (val < min) {
-                    min = val;
-                }
-                if (val > max) {
-                    max = val;
-                }
-            }
-
-            double x = clipX + px;
-            double y1 = centerY - max * halfHeight;
-            double y2 = centerY - min * halfHeight;
-            gc.strokeLine(x, y1, x, y2);
-        }
-    }
-
-    private void drawMidiClip(GraphicsContext gc, Track track, MidiClip midiClip,
-                               Color trackColor, double laneY,
-                               double canvasWidth, double canvasHeight) {
-        List<MidiNoteData> notes = midiClip.getNotes();
-        if (notes.isEmpty()) {
-            return;
-        }
-
-        // Determine the clip bounds from notes
-        int minColumn = Integer.MAX_VALUE;
-        int maxEndColumn = 0;
-        int minNote = MidiNoteData.MAX_NOTE_NUMBER;
-        int maxNote = 0;
-        for (MidiNoteData note : notes) {
-            if (note.startColumn() < minColumn) {
-                minColumn = note.startColumn();
-            }
-            if (note.endColumn() > maxEndColumn) {
-                maxEndColumn = note.endColumn();
-            }
-            if (note.noteNumber() < minNote) {
-                minNote = note.noteNumber();
-            }
-            if (note.noteNumber() > maxNote) {
-                maxNote = note.noteNumber();
-            }
-        }
-
-        double clipStartBeat = minColumn * BEATS_PER_COLUMN;
-        double clipDurationBeats = (maxEndColumn - minColumn) * BEATS_PER_COLUMN;
-        if (clipDurationBeats <= 0) {
-            clipDurationBeats = BEATS_PER_COLUMN;
-        }
-
-        double clipX = (clipStartBeat - scrollXBeats) * pixelsPerBeat;
-        double clipWidth = clipDurationBeats * pixelsPerBeat;
-
-        if (clipX + clipWidth < 0 || clipX > canvasWidth) {
-            return;
-        }
-
-        double clipY = laneY + CLIP_INSET;
-        double clipHeight = trackHeight - 2 * CLIP_INSET;
-
-        // Clip body
-        Color fillColor = trackColor.deriveColor(0, 1.0, 1.0, CLIP_OPACITY);
-        gc.setFill(fillColor);
-        gc.fillRoundRect(clipX, clipY, clipWidth, clipHeight,
-                CLIP_CORNER_RADIUS, CLIP_CORNER_RADIUS);
-
-        // Clip border
-        gc.setStroke(CLIP_BORDER_COLOR);
-        gc.setLineWidth(1.0);
-        gc.strokeRoundRect(clipX, clipY, clipWidth, clipHeight,
-                CLIP_CORNER_RADIUS, CLIP_CORNER_RADIUS);
-
-        // Selection highlight overlay for selected MIDI clips
-        if (selectionModel != null && selectionModel.isMidiClipSelected(midiClip)) {
-            gc.setFill(CLIP_SELECTED_OVERLAY_COLOR);
-            gc.fillRoundRect(clipX, clipY, clipWidth, clipHeight,
-                    CLIP_CORNER_RADIUS, CLIP_CORNER_RADIUS);
-            gc.setStroke(CLIP_SELECTED_BORDER_COLOR);
-            gc.setLineWidth(2.0);
-            gc.strokeRoundRect(clipX, clipY, clipWidth, clipHeight,
-                    CLIP_CORNER_RADIUS, CLIP_CORNER_RADIUS);
-        }
-
-        // Draw mini piano-roll notes
-        int noteRange = maxNote - minNote + 1;
-        if (noteRange < 1) {
-            noteRange = 1;
-        }
-        double noteAreaY = clipY + 14;
-        double noteAreaHeight = clipHeight - 18;
-        if (noteAreaHeight < 4) {
-            noteAreaHeight = 4;
-        }
-        double noteHeight = Math.max(2.0, Math.min(noteAreaHeight / noteRange,
-                clipHeight * MIDI_NOTE_HEIGHT_FRACTION));
-
-        gc.setFill(MIDI_NOTE_COLOR);
-        for (MidiNoteData note : notes) {
-            double nx = clipX + (note.startColumn() - minColumn) * BEATS_PER_COLUMN * pixelsPerBeat;
-            double nw = note.durationColumns() * BEATS_PER_COLUMN * pixelsPerBeat;
-            double pitchFraction = noteRange > 1
-                    ? (double) (maxNote - note.noteNumber()) / (noteRange - 1)
-                    : 0.5;
-            double ny = noteAreaY + pitchFraction * (noteAreaHeight - noteHeight);
-            gc.fillRect(nx, ny, Math.max(1, nw), noteHeight);
-        }
-
-        // Clip name label
-        drawClipLabel(gc, track.getName(), clipX, clipY, clipWidth, clipHeight);
-    }
-
-    private void drawClipLabel(GraphicsContext gc, String name,
-                                double clipX, double clipY,
-                                double clipWidth, double clipHeight) {
-        if (clipWidth < 20) {
-            return;
-        }
-        gc.setFont(CLIP_LABEL_FONT);
-        gc.setFill(CLIP_LABEL_COLOR);
-        gc.setTextAlign(TextAlignment.LEFT);
-
-        // Clip the text rendering to the clip bounds
-        gc.save();
-        gc.beginPath();
-        gc.rect(clipX, clipY, clipWidth, clipHeight);
-        gc.clip();
-        gc.fillText(name, clipX + CLIP_LABEL_PADDING, clipY + 12);
-        gc.restore();
-    }
-
-    private void drawPlayhead(GraphicsContext gc, double canvasWidth, double canvasHeight) {
-        if (playheadBeat < 0) {
-            return;
-        }
-        double x = (playheadBeat - scrollXBeats) * pixelsPerBeat;
-        if (x < 0 || x > canvasWidth) {
-            return;
-        }
-        gc.setFill(PLAYHEAD_COLOR);
-        gc.fillRect(x - PLAYHEAD_WIDTH / 2.0, 0, PLAYHEAD_WIDTH, canvasHeight);
-    }
-
-    private void drawLoopHighlight(GraphicsContext gc, double canvasWidth, double canvasHeight) {
-        if (!loopEnabled) {
-            return;
-        }
-        double x1 = (loopStartBeat - scrollXBeats) * pixelsPerBeat;
-        double x2 = (loopEndBeat - scrollXBeats) * pixelsPerBeat;
-        double drawX1 = Math.max(0, x1);
-        double drawX2 = Math.min(canvasWidth, x2);
-        if (drawX2 > drawX1) {
-            gc.setFill(LOOP_HIGHLIGHT_COLOR);
-            gc.fillRect(drawX1, 0, drawX2 - drawX1, canvasHeight);
-        }
-    }
-
-    private void drawSelectionHighlight(GraphicsContext gc, double canvasWidth, double canvasHeight) {
-        if (!selectionActive || selectionStartBeat >= selectionEndBeat) {
-            return;
-        }
-        double x1 = (selectionStartBeat - scrollXBeats) * pixelsPerBeat;
-        double x2 = (selectionEndBeat - scrollXBeats) * pixelsPerBeat;
-        double drawX1 = Math.max(0, x1);
-        double drawX2 = Math.min(canvasWidth, x2);
-        if (drawX2 <= drawX1) {
-            return;
-        }
-
-        // Semi-transparent fill spanning all track lanes
-        gc.setFill(SELECTION_HIGHLIGHT_COLOR);
-        gc.fillRect(drawX1, 0, drawX2 - drawX1, canvasHeight);
-
-        // Left and right border lines
-        gc.setStroke(SELECTION_BORDER_COLOR);
-        gc.setLineWidth(SELECTION_BORDER_WIDTH);
-        if (x1 >= 0 && x1 <= canvasWidth) {
-            gc.strokeLine(x1, 0, x1, canvasHeight);
-        }
-        if (x2 >= 0 && x2 <= canvasWidth) {
-            gc.strokeLine(x2, 0, x2, canvasHeight);
-        }
-
-        // Draggable handle indicators at left and right edges
-        drawSelectionHandle(gc, x1, canvasHeight);
-        drawSelectionHandle(gc, x2, canvasHeight);
-    }
-
-    private void drawSelectionHandle(GraphicsContext gc, double x, double canvasHeight) {
-        if (x < -SELECTION_HANDLE_VISUAL_WIDTH || x > canvas.getWidth() + SELECTION_HANDLE_VISUAL_WIDTH) {
-            return;
-        }
-        double handleHeight = Math.min(40.0, canvasHeight * 0.3);
-        double handleY = (canvasHeight - handleHeight) / 2.0;
-        gc.setFill(SELECTION_HANDLE_FILL_COLOR);
-        gc.fillRoundRect(x - SELECTION_HANDLE_VISUAL_WIDTH / 2.0, handleY,
-                SELECTION_HANDLE_VISUAL_WIDTH, handleHeight, 2.0, 2.0);
-        gc.setStroke(SELECTION_HANDLE_COLOR);
-        gc.setLineWidth(1.0);
-        gc.strokeRoundRect(x - SELECTION_HANDLE_VISUAL_WIDTH / 2.0, handleY,
-                SELECTION_HANDLE_VISUAL_WIDTH, handleHeight, 2.0, 2.0);
-    }
-
-    private void drawRubberBand(GraphicsContext gc, double canvasWidth, double canvasHeight) {
-        if (!rubberBandActive) {
-            return;
-        }
-        double x = Math.min(rubberBandX1, rubberBandX2);
-        double y = Math.min(rubberBandY1, rubberBandY2);
-        double w = Math.abs(rubberBandX2 - rubberBandX1);
-        double h = Math.abs(rubberBandY2 - rubberBandY1);
-        // Clamp to canvas bounds
-        double drawX = Math.max(0, x);
-        double drawY = Math.max(0, y);
-        double drawRight = Math.min(canvasWidth, x + w);
-        double drawBottom = Math.min(canvasHeight, y + h);
-        if (drawRight <= drawX || drawBottom <= drawY) {
-            return;
-        }
-        double drawW = drawRight - drawX;
-        double drawH = drawBottom - drawY;
-
-        gc.setFill(RUBBER_BAND_FILL_COLOR);
-        gc.fillRect(drawX, drawY, drawW, drawH);
-
-        gc.setStroke(RUBBER_BAND_BORDER_COLOR);
-        gc.setLineWidth(1.0);
-        gc.setLineDashes(4.0, 3.0);
-        gc.strokeRect(drawX, drawY, drawW, drawH);
-        gc.setLineDashes((double[]) null);
-    }
-
-    private void drawTrimPreview(GraphicsContext gc, double canvasWidth, double canvasHeight) {
+    private void drawTrimPreviewIfVisible(GraphicsContext gc,
+                                          double canvasWidth, double canvasHeight) {
         if (trimPreviewBeat < 0 || trimPreviewTrackIndex < 0
                 || trimPreviewTrackIndex >= laneYCache.length) {
             return;
         }
-        double x = (trimPreviewBeat - scrollXBeats) * pixelsPerBeat;
-        if (x < 0 || x > canvasWidth) {
-            return;
-        }
-        double laneY = cachedLaneY(trimPreviewTrackIndex);
-        double laneBottom = laneY + trackHeight;
-        if (laneBottom < 0 || laneY > canvasHeight) {
-            return;
-        }
-        double drawY = Math.max(0, laneY + CLIP_INSET);
-        double drawBottom = Math.min(canvasHeight, laneBottom - CLIP_INSET);
-        if (drawBottom <= drawY) {
-            return;
-        }
-        gc.setStroke(TRIM_PREVIEW_COLOR);
-        gc.setLineWidth(TRIM_PREVIEW_LINE_WIDTH);
-        gc.strokeLine(x, drawY, x, drawBottom);
+        ClipOverlayRenderer.drawTrimPreview(gc, trimPreviewBeat, scrollXBeats,
+                pixelsPerBeat, laneYCache[trimPreviewTrackIndex], trackHeight,
+                canvasWidth, canvasHeight);
     }
 
     private Color parseTrackColor(Track track) {
