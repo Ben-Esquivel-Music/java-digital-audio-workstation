@@ -30,7 +30,9 @@ class AudioEditorViewTest {
                 latch.countDown();
             }
         });
-        latch.await(5, TimeUnit.SECONDS);
+        assertThat(latch.await(5, TimeUnit.SECONDS))
+                .as("FX thread timed out creating AudioEditorView")
+                .isTrue();
         return ref.get();
     }
 
@@ -43,7 +45,9 @@ class AudioEditorViewTest {
                 latch.countDown();
             }
         });
-        latch.await(5, TimeUnit.SECONDS);
+        assertThat(latch.await(5, TimeUnit.SECONDS))
+                .as("FX thread timed out running action")
+                .isTrue();
     }
 
     // ── Component tests ─────────────────────────────────────────────────────

@@ -30,7 +30,9 @@ class MidiEditorViewTest {
                 latch.countDown();
             }
         });
-        latch.await(5, TimeUnit.SECONDS);
+        assertThat(latch.await(5, TimeUnit.SECONDS))
+                .as("FX thread timed out creating MidiEditorView")
+                .isTrue();
         return ref.get();
     }
 
@@ -43,7 +45,9 @@ class MidiEditorViewTest {
                 latch.countDown();
             }
         });
-        latch.await(5, TimeUnit.SECONDS);
+        assertThat(latch.await(5, TimeUnit.SECONDS))
+                .as("FX thread timed out running action")
+                .isTrue();
     }
 
     // ── Canvas tests ─────────────────────────────────────────────────────────

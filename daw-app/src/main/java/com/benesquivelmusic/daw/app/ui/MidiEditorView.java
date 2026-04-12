@@ -702,7 +702,12 @@ final class MidiEditorView extends VBox {
         }
         @Override public String description() { return "Add MIDI Note"; }
         @Override public void execute() { notes.add(note); }
-        @Override public void undo() { notes.remove(note); }
+        @Override public void undo() {
+            int idx = notes.lastIndexOf(note);
+            if (idx >= 0) {
+                notes.remove(idx);
+            }
+        }
     }
 
     static final class NoteListRemoveAction implements UndoableAction {
@@ -715,7 +720,12 @@ final class MidiEditorView extends VBox {
             this.index = index;
         }
         @Override public String description() { return "Delete MIDI Note"; }
-        @Override public void execute() { notes.remove(note); }
+        @Override public void execute() {
+            int idx = notes.indexOf(note);
+            if (idx >= 0) {
+                notes.remove(idx);
+            }
+        }
         @Override public void undo() {
             if (index >= 0 && index <= notes.size()) {
                 notes.add(index, note);

@@ -114,7 +114,8 @@ public final class EditorView extends VBox {
         // Enable keyboard events for Delete key
         setFocusTraversable(true);
         setOnKeyPressed(event -> {
-            if (event.getCode() == KeyCode.DELETE || event.getCode() == KeyCode.BACK_SPACE) {
+            if ((event.getCode() == KeyCode.DELETE || event.getCode() == KeyCode.BACK_SPACE)
+                    && currentMode == Mode.MIDI) {
                 midiEditorView.deleteSelectedNote();
             }
         });
