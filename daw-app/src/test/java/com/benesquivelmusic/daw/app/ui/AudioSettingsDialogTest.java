@@ -112,10 +112,7 @@ class AudioSettingsDialogTest {
         AudioSettingsDialog dialog = onFxThread(() -> new AudioSettingsDialog(model, stub));
         runOnFxAndWait(() -> {
             dialog.getOutputDeviceCombo().setValue("Main Out");
-            dialog.getBackendCombo().getOnAction();
-            // Force the test-tone action by grabbing the button via the dialog graph
-            // — but simplest: call the controller directly through applyNow path.
-            stub.playTestTone("Main Out");
+            dialog.fireTestTone();
         });
         assertThat(stub.toneCount).isEqualTo(1);
         assertThat(stub.lastToneDevice).isEqualTo("Main Out");
