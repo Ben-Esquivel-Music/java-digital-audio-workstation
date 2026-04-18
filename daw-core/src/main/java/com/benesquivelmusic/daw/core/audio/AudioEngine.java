@@ -1,24 +1,13 @@
 package com.benesquivelmusic.daw.core.audio;
 
-import com.benesquivelmusic.daw.core.automation.AutomationData;
-import com.benesquivelmusic.daw.core.automation.AutomationParameter;
-import com.benesquivelmusic.daw.core.automation.PluginParameterTarget;
-import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
-import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
-import com.benesquivelmusic.daw.core.track.AutomationMode;
 import com.benesquivelmusic.daw.core.track.Track;
-import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
-import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.*;
-import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 
-import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -64,14 +53,9 @@ public final class AudioEngine {
     private volatile boolean streamPaused;
     private volatile boolean backendInitialized;
 
-    // Pre-allocated mix buffer used by processBlock
-    private float[][] mixBuffer;
-
-    // Pre-allocated per-track buffers for rendering: [track][channel][frame]
-    private float[][][] trackBuffers;
-
-    // Pre-allocated per-return-bus buffers for send routing: [returnBus][channel][frame]
-    private float[][][] returnBuffers;
+    // Unified per-block render pipeline shared by live playback and offline
+    // export. Owns the pre-allocated mix, per-track, and return-bus buffers.
+    private RenderPipeline renderPipeline;
 
     // MIDI track renderer for SoundFont synthesis (volatile for safe stop() from UI thread)
     private volatile MidiTrackRenderer midiTrackRenderer;
@@ -86,9 +70,6 @@ public final class AudioEngine {
 
     // Optional performance monitor for CPU load and underrun tracking
     private volatile PerformanceMonitor performanceMonitor;
-
-    // Flag to log return-bus cap warning only once
-    private volatile boolean returnBusCapWarningLogged;
 
     /**
      * Creates a new audio engine with the specified format.
@@ -115,14 +96,8 @@ public final class AudioEngine {
         int channels = format.channels();
         int frames = format.bufferSize();
 
-        // Pre-allocate the mix buffer
-        mixBuffer = new float[channels][frames];
-
-        // Pre-allocate per-track buffers
-        trackBuffers = new float[MAX_TRACKS][channels][frames];
-
-        // Pre-allocate per-return-bus buffers for send routing
-        returnBuffers = new float[Mixer.MAX_RETURN_BUSES][channels][frames];
+        // Pre-allocate the unified render pipeline (owns mix/track/return buffers)
+        renderPipeline = new RenderPipeline(format, MAX_TRACKS, frames);
 
         // Pre-allocate the buffer pool (8 buffers for intermediate processing)
         bufferPool = new AudioBufferPool(8, channels, frames);
@@ -591,31 +566,22 @@ public final class AudioEngine {
     }
 
     /**
-     * Processes a single block of audio through the rendering pipeline.
+     * Processes a single block of audio by delegating to the unified
+     * {@link RenderPipeline}.
      *
      * <p>When a transport, mixer, and track list are configured and the
      * transport is in {@link TransportState#PLAYING} or
-     * {@link TransportState#RECORDING} state, the engine:</p>
-     * <ol>
-     *   <li>Reads audio data from each track's clips at the current
-     *       transport position into pre-allocated per-track buffers</li>
-     *   <li>Applies automation lane values to mixer channel parameters
-     *       (volume, pan, mute, send level) for tracks with
-     *       {@link AutomationMode#READ} enabled</li>
-     *   <li>Sums all track outputs through the {@link Mixer} (applying
-     *       per-channel volume, pan, mute, and solo)</li>
-     *   <li>Processes the mixed result through the master effects chain</li>
-     *   <li>Advances the transport position by the number of beats
-     *       corresponding to {@code numFrames} at the current tempo</li>
-     * </ol>
+     * {@link TransportState#RECORDING} state, the pipeline renders clip
+     * audio, applies automation, mixes through the mixer, and applies the
+     * master effects chain. Otherwise, {@code inputBuffer} is passed
+     * through the master effects chain (the original passthrough
+     * behavior).</p>
      *
-     * <p>When the transport is not configured or not playing, the engine
-     * falls back to copying {@code inputBuffer} through the master effects
-     * chain (the original passthrough behavior).</p>
-     *
-     * <p>This method is designed to be called from the audio callback thread.
-     * It performs zero allocations and zero lock acquisitions — all buffers
-     * are pre-allocated during {@link #start()}.</p>
+     * <p>This method is designed to be called from the audio callback
+     * thread. It performs zero allocations and zero lock acquisitions —
+     * all buffers are pre-allocated during {@link #start()}, and the
+     * {@link RenderPipeline} reads only from volatile snapshots of the
+     * transport, mixer, track list, and MIDI renderer.</p>
      *
      * @param inputBuffer  the input audio data {@code [channel][frame]}
      * @param outputBuffer the output audio data {@code [channel][frame]}
@@ -628,374 +594,33 @@ public final class AudioEngine {
             throw new IllegalStateException("Engine is not running");
         }
 
-        // Snapshot the performance monitor once for this block
-        PerformanceMonitor monitor = this.performanceMonitor;
-        long startNanos = 0;
-        if (monitor != null) {
-            startNanos = System.nanoTime();
-        }
-
-        // Clear the mix buffer
-        for (float[] channel : mixBuffer) {
-            Arrays.fill(channel, 0, numFrames, 0.0f);
-        }
-
-        // Snapshot volatile references once for this block
+        // Snapshot volatile references once for this block so that the
+        // UI thread cannot tear the configuration mid-render.
         Transport currentTransport = this.transport;
         Mixer currentMixer = this.mixer;
         List<Track> currentTracks = this.tracks;
         MidiTrackRenderer currentMidiRenderer = this.midiTrackRenderer;
+        RecordingCallback cb = this.recordingCallback;
+        PerformanceMonitor monitor = this.performanceMonitor;
 
-        boolean playbackActive = currentTransport != null
-                && currentMixer != null
-                && currentTracks != null
-                && (currentTransport.getState() == TransportState.PLAYING
-                    || currentTransport.getState() == TransportState.RECORDING);
-
-        if (playbackActive) {
-            int trackCount = Math.min(currentTracks.size(), MAX_TRACKS);
-
-            // Compute the render offset so that PDC delays align output with
-            // the displayed transport position. We render audio slightly ahead
-            // of the transport cursor; the compensation delays then push the
-            // audio back, so beat-1 arrives at the output exactly on time.
-            int systemLatency = currentMixer.getSystemLatencySamples();
-            double samplesPerBeatForOffset = format.sampleRate() * 60.0
-                    / currentTransport.getTempo();
-            double renderOffsetBeats = systemLatency / samplesPerBeatForOffset;
-
-            // Render clip audio for each track into pre-allocated per-track buffers
-            renderTracks(currentTracks, trackCount, currentTransport,
-                         renderOffsetBeats, currentMidiRenderer, numFrames);
-
-            // Apply automation lane values to mixer channel parameters.
-            // Snapshot the channel list once to avoid the unmodifiableList
-            // wrapper allocation on each call to getChannels().
-            List<MixerChannel> mixerChannels = currentMixer.getChannels();
-            applyAutomation(currentTracks, trackCount, mixerChannels, currentTransport);
-
-            // Warn once if the mixer has more return buses than pre-allocated buffers
-            if (!returnBusCapWarningLogged
-                    && currentMixer.getReturnBusCount() > Mixer.MAX_RETURN_BUSES) {
-                returnBusCapWarningLogged = true;
-                LOG.warning(() -> "Mixer has " + currentMixer.getReturnBusCount()
-                        + " return buses but only " + Mixer.MAX_RETURN_BUSES
-                        + " are supported; extra buses will not receive send audio");
-            }
-
-            // Mix all track buffers through the mixer into the mix buffer,
-            // routing sends to return buses which are summed into the main output.
-            // Channels with non-master output routing are skipped by mixDown and
-            // their post-insert audio remains in trackBuffers for direct output.
-            currentMixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames);
-        } else {
-            // Fallback: copy input into the mix buffer (original passthrough behavior)
-            int channels = Math.min(inputBuffer.length, mixBuffer.length);
-            for (int ch = 0; ch < channels; ch++) {
-                System.arraycopy(inputBuffer[ch], 0, mixBuffer[ch], 0, numFrames);
-            }
-        }
-
-        // Notify recording callback with the captured input
-        RecordingCallback cb = recordingCallback;
-        if (cb != null) {
-            cb.onAudioCaptured(inputBuffer, numFrames);
-        }
-
-        // Process through the master effects chain
-        masterChain.process(mixBuffer, outputBuffer, numFrames);
-
-        // Write non-master channels to their assigned hardware output channels.
-        // This runs AFTER the master chain so that its overwrite of outputBuffer
-        // (channels 0..N) does not clobber direct output data on higher channels.
-        if (playbackActive) {
-            currentMixer.renderDirectOutputs(trackBuffers, outputBuffer, numFrames);
-        }
-
-        // Advance the transport position
-        if (playbackActive) {
-            double samplesPerBeat = format.sampleRate() * 60.0 / currentTransport.getTempo();
-            double deltaBeats = numFrames / samplesPerBeat;
-            currentTransport.advancePosition(deltaBeats);
-        }
-
-        // Record processing time to the performance monitor
-        if (monitor != null) {
-            long elapsedNanos = System.nanoTime() - startNanos;
-            monitor.recordProcessingTime(elapsedNanos);
-        }
+        renderPipeline.renderBlock(inputBuffer, outputBuffer, numFrames,
+                currentTransport, currentMixer, currentTracks,
+                currentMidiRenderer, masterChain, cb, monitor);
     }
 
     /**
-     * Applies automation lane values to the corresponding mixer channel
-     * parameters for each track that has automation read enabled.
+     * Returns the unified render pipeline used by this engine. Package
+     * private so that offline export callers (e.g., master rendering,
+     * stem export, track bouncing) can construct their own pipeline or
+     * reuse the engine’s to render with identical semantics.
      *
-     * <p>For each track with {@link AutomationMode#READ}, the current
-     * transport position is used to look up the automation value for
-     * volume, pan, mute, and send level. These values are applied to the
-     * corresponding {@link MixerChannel} before {@link Mixer#mixDown}
-     * processes the block. Only parameters that have automation lanes
-     * with at least one point are applied — parameters without automation
-     * data retain their static fader values.</p>
-     *
-     * @param tracks     the list of tracks
-     * @param trackCount the number of tracks to process
-     * @param channels   the mixer channels corresponding to tracks by index
-     * @param transport  the transport providing the current beat position
+     * @return the render pipeline, or {@code null} if the engine has not
+     *         been started
      */
-    @RealTimeSafe
-    private void applyAutomation(List<Track> tracks, int trackCount,
-                                 List<MixerChannel> channels, Transport transport) {
-        int channelCount = channels.size();
-        double currentBeat = transport.getPositionInBeats();
-
-        for (int t = 0; t < trackCount && t < channelCount; t++) {
-            Track track = tracks.get(t);
-            if (!track.getAutomationMode().readsAutomation()) {
-                continue;
-            }
-
-            AutomationData automation = track.getAutomationData();
-            MixerChannel channel = channels.get(t);
-
-            // Values are clamped to valid ranges to prevent IllegalArgumentException
-            // on the audio thread if automation data is in an inconsistent state.
-            if (automation.hasActiveAutomation(AutomationParameter.VOLUME)) {
-                channel.setVolume(Math.clamp(
-                        automation.getValueAtTime(AutomationParameter.VOLUME, currentBeat),
-                        0.0, 1.0));
-            }
-
-            if (automation.hasActiveAutomation(AutomationParameter.PAN)) {
-                channel.setPan(Math.clamp(
-                        automation.getValueAtTime(AutomationParameter.PAN, currentBeat),
-                        -1.0, 1.0));
-            }
-
-            if (automation.hasActiveAutomation(AutomationParameter.MUTE)) {
-                channel.setMuted(
-                        automation.getValueAtTime(AutomationParameter.MUTE, currentBeat) > 0.5);
-            }
-
-            if (automation.hasActiveAutomation(AutomationParameter.SEND_LEVEL)) {
-                channel.setSendLevel(Math.clamp(
-                        automation.getValueAtTime(AutomationParameter.SEND_LEVEL, currentBeat),
-                        0.0, 1.0));
-            }
-
-            applyPluginParameterAutomation(automation, channel, currentBeat);
-        }
+    RenderPipeline getRenderPipeline() {
+        return renderPipeline;
     }
 
-    /**
-     * Applies plugin-parameter automation values for every plugin insert on
-     * the channel that has an active lane. Plugin-parameter lanes are keyed
-     * by {@link PluginParameterTarget}, whose {@code pluginInstanceId} the
-     * host uses to match against the {@link DawPlugin} retained on each
-     * {@link InsertSlot}. When the ids match, the automated value (clamped
-     * to the target's declared range) is routed to
-     * {@link DawPlugin#setAutomatableParameter(int, double)}.
-     *
-     * <p>Plugin lanes whose {@code pluginInstanceId} no longer matches any
-     * insert on the channel are silently skipped — this can happen if a
-     * plugin was removed after the automation was recorded. The lane data is
-     * preserved so that re-inserting the plugin restores the binding.</p>
-     */
-    @RealTimeSafe
-    private void applyPluginParameterAutomation(AutomationData automation,
-                                                MixerChannel channel,
-                                                double currentBeat) {
-        Map<PluginParameterTarget, ?> pluginLanes = automation.getPluginLanes();
-        if (pluginLanes.isEmpty()) {
-            return;
-        }
-        List<InsertSlot> inserts = channel.getInsertSlots();
-        for (PluginParameterTarget target : pluginLanes.keySet()) {
-            if (!automation.hasActiveAutomation(target)) {
-                continue;
-            }
-            DawPlugin plugin = findPluginByInstanceId(inserts, target.pluginInstanceId());
-            if (plugin == null) {
-                continue;
-            }
-            double value = Math.clamp(
-                    automation.getValueAtTime(target, currentBeat),
-                    target.getMinValue(), target.getMaxValue());
-            plugin.setAutomatableParameter(target.parameterId(), value);
-        }
-    }
-
-    @RealTimeSafe
-    private static DawPlugin findPluginByInstanceId(List<InsertSlot> inserts,
-                                                    String instanceId) {
-        for (int i = 0, n = inserts.size(); i < n; i++) {
-            InsertSlot slot = inserts.get(i);
-            DawPlugin plugin = slot.getPlugin();
-            if (plugin != null
-                    && instanceId.equals(plugin.getDescriptor().id())) {
-                return plugin;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Renders audio from each track's clips into the pre-allocated
-     * {@link #trackBuffers} array. Handles loop-boundary crossing by
-     * splitting the block into contiguous segments.
-     *
-     * @param tracks            the list of tracks to render
-     * @param trackCount        the number of tracks to process (capped at {@link #MAX_TRACKS})
-     * @param transport         the transport providing position and loop state
-     * @param renderOffsetBeats the PDC render offset in beats — added to the transport
-     *                          position so that after compensation delays the output
-     *                          aligns with the displayed transport cursor
-     * @param midiRenderer      the snapshotted MIDI track renderer (may be {@code null})
-     * @param numFrames         the total number of frames in this block
-     */
-    @RealTimeSafe
-    private void renderTracks(List<Track> tracks, int trackCount, Transport transport,
-                              double renderOffsetBeats, MidiTrackRenderer midiRenderer,
-                              int numFrames) {
-        // Clear per-track buffers
-        int audioChannels = format.channels();
-        for (int t = 0; t < trackCount; t++) {
-            for (int ch = 0; ch < audioChannels; ch++) {
-                Arrays.fill(trackBuffers[t][ch], 0, numFrames, 0.0f);
-            }
-        }
-
-        double tempo = transport.getTempo();
-        double sampleRate = format.sampleRate();
-        double samplesPerBeat = sampleRate * 60.0 / tempo;
-        // Offset the render position ahead by the PDC system latency so that
-        // after compensation delays, the output aligns with the transport cursor
-        double currentBeat = transport.getPositionInBeats() + renderOffsetBeats;
-        boolean loopEnabled = transport.isLoopEnabled();
-        double loopStart = transport.getLoopStartInBeats();
-        double loopEnd = transport.getLoopEndInBeats();
-        double loopLength = loopEnd - loopStart;
-
-        int framesProcessed = 0;
-
-        while (framesProcessed < numFrames) {
-            int framesToProcess = numFrames - framesProcessed;
-
-            // If looping, limit the segment to not cross the loop boundary
-            if (loopEnabled && loopLength > 0.0 && currentBeat < loopEnd) {
-                double beatsUntilLoopEnd = loopEnd - currentBeat;
-                int framesUntilLoopEnd = (int) Math.ceil(beatsUntilLoopEnd * samplesPerBeat);
-                if (framesUntilLoopEnd > 0) {
-                    framesToProcess = Math.min(framesToProcess, framesUntilLoopEnd);
-                }
-            }
-
-            // Render this contiguous segment for all tracks
-            renderSegment(tracks, trackCount, currentBeat, samplesPerBeat,
-                          midiRenderer, framesProcessed, framesToProcess);
-
-            framesProcessed += framesToProcess;
-            currentBeat += framesToProcess / samplesPerBeat;
-
-            // Handle loop wrap — send all-notes-off to MIDI renderers to prevent
-            // stuck notes spanning the loop boundary
-            if (loopEnabled && loopLength > 0.0 && currentBeat >= loopEnd) {
-                currentBeat = loopStart + (currentBeat - loopEnd);
-                if (midiRenderer != null) {
-                    midiRenderer.allNotesOff();
-                }
-            }
-        }
-    }
-
-    /**
-     * Renders a contiguous segment of audio from all tracks' clips into
-     * the pre-allocated track buffers. This segment does not cross a loop
-     * boundary.
-     *
-     * <p>For audio tracks, clip audio data is copied from the clip buffers.
-     * For MIDI tracks with a {@link com.benesquivelmusic.daw.core.midi.SoundFontAssignment},
-     * MIDI note events are sent to the SoundFont renderer and the synthesized
-     * audio is rendered into the track buffer.</p>
-     *
-     * @param tracks          the list of tracks
-     * @param trackCount      the number of tracks to process
-     * @param startBeat       the beat position at the start of this segment
-     * @param samplesPerBeat  samples per beat at the current tempo
-     * @param midiRenderer    the snapshotted MIDI track renderer (may be {@code null})
-     * @param frameOffset     the frame offset within the block's track buffer
-     * @param framesToProcess the number of frames in this segment
-     */
-    @RealTimeSafe
-    private void renderSegment(List<Track> tracks, int trackCount,
-                               double startBeat, double samplesPerBeat,
-                               MidiTrackRenderer midiRenderer,
-                               int frameOffset, int framesToProcess) {
-        double endBeat = startBeat + framesToProcess / samplesPerBeat;
-
-        for (int t = 0; t < trackCount; t++) {
-            Track track = tracks.get(t);
-
-            // Render MIDI tracks via SoundFont synthesis
-            if (track.getType() == TrackType.MIDI
-                    && track.getSoundFontAssignment() != null
-                    && midiRenderer != null) {
-                midiRenderer.renderMidiTrack(track, trackBuffers[t],
-                        startBeat, endBeat, samplesPerBeat,
-                        frameOffset, framesToProcess);
-                continue;
-            }
-
-            List<AudioClip> clips = track.getClips();
-
-            for (int c = 0; c < clips.size(); c++) {
-                AudioClip clip = clips.get(c);
-                float[][] audioData = clip.getAudioData();
-                if (audioData == null || audioData.length == 0) {
-                    continue;
-                }
-
-                double clipStart = clip.getStartBeat();
-                double clipEnd = clip.getEndBeat();
-
-                // Skip clips that do not overlap this segment
-                if (endBeat <= clipStart || startBeat >= clipEnd) {
-                    continue;
-                }
-
-                // Determine the overlapping beat range
-                double overlapStart = Math.max(startBeat, clipStart);
-                double overlapEnd = Math.min(endBeat, clipEnd);
-
-                // Map to frame indices in the output buffer
-                int outStart = frameOffset + (int) Math.round((overlapStart - startBeat) * samplesPerBeat);
-                int outEnd = frameOffset + (int) Math.round((overlapEnd - startBeat) * samplesPerBeat);
-                outEnd = Math.min(outEnd, frameOffset + framesToProcess);
-
-                // Map to sample index in the clip's audio data
-                double beatInClip = overlapStart - clipStart + clip.getSourceOffsetBeats();
-                int srcStart = (int) Math.round(beatInClip * samplesPerBeat);
-                int audioLength = audioData[0].length;
-
-                if (srcStart < 0) {
-                    outStart += -srcStart;
-                    srcStart = 0;
-                }
-
-                int copyLength = Math.min(outEnd - outStart, audioLength - srcStart);
-                if (copyLength <= 0) {
-                    continue;
-                }
-
-                int audioChannels = Math.min(audioData.length, trackBuffers[t].length);
-                for (int ch = 0; ch < audioChannels; ch++) {
-                    for (int f = 0; f < copyLength; f++) {
-                        trackBuffers[t][ch][outStart + f] += audioData[ch][srcStart + f];
-                    }
-                }
-            }
-        }
-    }
 
     /**
      * Callback interface invoked from the audio thread to capture input audio
