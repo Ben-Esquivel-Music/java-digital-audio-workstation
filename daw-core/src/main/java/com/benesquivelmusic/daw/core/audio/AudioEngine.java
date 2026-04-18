@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.core.audio;
 
 import com.benesquivelmusic.daw.core.automation.AutomationData;
 import com.benesquivelmusic.daw.core.automation.AutomationParameter;
+import com.benesquivelmusic.daw.core.automation.PluginParameterTarget;
+import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
@@ -12,9 +14,11 @@ import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.*;
+import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -747,7 +751,7 @@ public final class AudioEngine {
 
         for (int t = 0; t < trackCount && t < channelCount; t++) {
             Track track = tracks.get(t);
-            if (track.getAutomationMode() != AutomationMode.READ) {
+            if (!track.getAutomationMode().readsAutomation()) {
                 continue;
             }
 
@@ -778,7 +782,61 @@ public final class AudioEngine {
                         automation.getValueAtTime(AutomationParameter.SEND_LEVEL, currentBeat),
                         0.0, 1.0));
             }
+
+            applyPluginParameterAutomation(automation, channel, currentBeat);
         }
+    }
+
+    /**
+     * Applies plugin-parameter automation values for every plugin insert on
+     * the channel that has an active lane. Plugin-parameter lanes are keyed
+     * by {@link PluginParameterTarget}, whose {@code pluginInstanceId} the
+     * host uses to match against the {@link DawPlugin} retained on each
+     * {@link InsertSlot}. When the ids match, the automated value (clamped
+     * to the target's declared range) is routed to
+     * {@link DawPlugin#setAutomatableParameter(int, double)}.
+     *
+     * <p>Plugin lanes whose {@code pluginInstanceId} no longer matches any
+     * insert on the channel are silently skipped — this can happen if a
+     * plugin was removed after the automation was recorded. The lane data is
+     * preserved so that re-inserting the plugin restores the binding.</p>
+     */
+    @RealTimeSafe
+    private void applyPluginParameterAutomation(AutomationData automation,
+                                                MixerChannel channel,
+                                                double currentBeat) {
+        Map<PluginParameterTarget, ?> pluginLanes = automation.getPluginLanes();
+        if (pluginLanes.isEmpty()) {
+            return;
+        }
+        List<InsertSlot> inserts = channel.getInsertSlots();
+        for (PluginParameterTarget target : pluginLanes.keySet()) {
+            if (!automation.hasActiveAutomation(target)) {
+                continue;
+            }
+            DawPlugin plugin = findPluginByInstanceId(inserts, target.pluginInstanceId());
+            if (plugin == null) {
+                continue;
+            }
+            double value = Math.clamp(
+                    automation.getValueAtTime(target, currentBeat),
+                    target.getMinValue(), target.getMaxValue());
+            plugin.setAutomatableParameter(target.parameterId(), value);
+        }
+    }
+
+    @RealTimeSafe
+    private static DawPlugin findPluginByInstanceId(List<InsertSlot> inserts,
+                                                    String instanceId) {
+        for (int i = 0, n = inserts.size(); i < n; i++) {
+            InsertSlot slot = inserts.get(i);
+            DawPlugin plugin = slot.getPlugin();
+            if (plugin != null
+                    && instanceId.equals(plugin.getDescriptor().id())) {
+                return plugin;
+            }
+        }
+        return null;
     }
 
     /**

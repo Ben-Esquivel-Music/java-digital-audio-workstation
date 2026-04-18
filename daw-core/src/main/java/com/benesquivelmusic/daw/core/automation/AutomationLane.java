@@ -8,35 +8,57 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * An automation lane for a single {@link AutomationParameter}.
+ * An automation lane for a single {@link AutomationTarget}.
  *
  * <p>The lane maintains a time-sorted list of {@link AutomationPoint}s that
  * define a breakpoint envelope. The {@link #getValueAtTime(double)} method
  * evaluates the envelope at any time position using the interpolation mode
  * defined on each point.</p>
  *
- * <p>When no points are present, the lane returns the parameter's
- * {@linkplain AutomationParameter#getDefaultValue() default value}.</p>
+ * <p>When no points are present, the lane returns the target's
+ * {@linkplain AutomationTarget#getDefaultValue() default value}.</p>
+ *
+ * <p>A lane can be created for either a {@link AutomationParameter}
+ * (mixer-channel parameter) or a {@link PluginParameterTarget} (plugin
+ * parameter). Callers that only want to deal with mixer parameters can use
+ * {@link #getParameter()} which throws if the lane targets a plugin
+ * parameter.</p>
  */
 public final class AutomationLane {
 
-    private final AutomationParameter parameter;
+    private final AutomationTarget target;
     private final List<AutomationPoint> points = new ArrayList<>();
     private boolean visible;
 
     /**
-     * Creates a new automation lane for the given parameter.
+     * Creates a new automation lane for the given target.
      *
-     * @param parameter the parameter controlled by this lane
+     * @param target the target controlled by this lane
      */
-    public AutomationLane(AutomationParameter parameter) {
-        this.parameter = Objects.requireNonNull(parameter, "parameter must not be null");
+    public AutomationLane(AutomationTarget target) {
+        this.target = Objects.requireNonNull(target, "target must not be null");
         this.visible = true;
     }
 
-    /** Returns the parameter controlled by this lane. */
+    /** Returns the target controlled by this lane. */
+    public AutomationTarget getTarget() {
+        return target;
+    }
+
+    /**
+     * Returns the mixer-channel parameter controlled by this lane.
+     *
+     * @return the {@link AutomationParameter} if this lane targets a
+     *         mixer-channel parameter
+     * @throws IllegalStateException if this lane targets a plugin parameter
+     *         rather than a mixer-channel parameter
+     */
     public AutomationParameter getParameter() {
-        return parameter;
+        if (target instanceof AutomationParameter parameter) {
+            return parameter;
+        }
+        throw new IllegalStateException(
+                "lane targets a plugin parameter, not a mixer-channel parameter: " + target);
     }
 
     /** Returns whether this lane is visible (expanded) in the arrangement view. */
@@ -57,11 +79,11 @@ public final class AutomationLane {
      */
     public void addPoint(AutomationPoint point) {
         Objects.requireNonNull(point, "point must not be null");
-        if (!parameter.isValidValue(point.getValue())) {
+        if (!target.isValidValue(point.getValue())) {
             throw new IllegalArgumentException(
                     "value " + point.getValue() + " is outside the valid range for "
-                            + parameter + " [" + parameter.getMinValue() + ", "
-                            + parameter.getMaxValue() + "]");
+                            + target + " [" + target.getMinValue() + ", "
+                            + target.getMaxValue() + "]");
         }
         points.add(point);
         Collections.sort(points);
@@ -121,7 +143,7 @@ public final class AutomationLane {
     @RealTimeSafe
     public double getValueAtTime(double timeInBeats) {
         if (points.isEmpty()) {
-            return parameter.getDefaultValue();
+            return target.getDefaultValue();
         }
 
         AutomationPoint first = points.get(0);

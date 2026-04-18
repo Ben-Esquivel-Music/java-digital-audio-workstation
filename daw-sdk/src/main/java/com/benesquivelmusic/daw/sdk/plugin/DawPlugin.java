@@ -94,4 +94,53 @@ public interface DawPlugin {
     default List<PluginParameter> getParameters() {
         return List.of();
     }
+
+    /**
+     * Returns the parameters of this plugin that can be driven by an
+     * automation lane.
+     *
+     * <p>The DAW host queries this list to populate the automation-lane
+     * parameter selector when a plugin is inserted on a track. Each returned
+     * descriptor includes the parameter id, display name, value range and an
+     * optional unit suffix.</p>
+     *
+     * <p>The default implementation derives the list from {@link #getParameters()}:
+     * every generic {@link PluginParameter} is automatically exposed as an
+     * {@link AutomatableParameter} (with an empty unit string). Plugins that
+     * want richer metadata (unit strings, a subset of parameters, or additional
+     * parameters not exposed in the generic editor) should override this
+     * method.</p>
+     *
+     * @return an unmodifiable list of automatable parameter descriptors,
+     *         never {@code null}
+     */
+    default List<AutomatableParameter> getAutomatableParameters() {
+        List<PluginParameter> parameters = getParameters();
+        if (parameters.isEmpty()) {
+            return List.of();
+        }
+        return parameters.stream()
+                .map(AutomatableParameter::from)
+                .toList();
+    }
+
+    /**
+     * Applies an automation value to the parameter with the given id.
+     *
+     * <p>Called by the host on the audio thread for every automation lane
+     * bound to this plugin during playback (when the track's automation mode
+     * allows reading). Implementations must be real-time safe: they should
+     * simply clamp the incoming value and update a numeric control — they
+     * must not allocate, lock, or perform blocking I/O.</p>
+     *
+     * <p>The default implementation is a no-op. Effect plugins that expose
+     * automatable parameters via {@link #getAutomatableParameters()} must
+     * override this method to route incoming values to their DSP state.</p>
+     *
+     * @param parameterId the parameter id (matches {@link AutomatableParameter#id()})
+     * @param value       the new parameter value (already inside the declared range)
+     */
+    default void setAutomatableParameter(int parameterId, double value) {
+        // default: plugin does not expose automatable parameters
+    }
 }
