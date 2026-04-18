@@ -19,7 +19,7 @@ class NativeLibraryDetectorTest {
                 .map(NativeLibraryStatus::libraryName)
                 .toList();
         assertThat(names).contains(
-                "libportaudio", "FluidSynth", "libmp3lame",
+                "libportaudio", "FluidSynth", "libmp3lame", "libfdk-aac",
                 "libogg", "libvorbis", "libvorbisenc", "libvorbisfile");
     }
 

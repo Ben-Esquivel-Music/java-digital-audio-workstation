@@ -169,6 +169,7 @@ public final class NativeLibraryLoader {
                 case "ogg" -> "libogg";
                 case "vorbis", "vorbisenc", "vorbisfile" -> "libvorbis";
                 case "mp3lame" -> "lame";
+                case "fdk-aac" -> "fdk-aac";
                 default -> "lib" + baseName;
             };
             return "'brew install " + brewPkg + "' on macOS";
@@ -178,6 +179,7 @@ public final class NativeLibraryLoader {
                 case "vorbis" -> "libvorbis0a";
                 case "vorbisenc" -> "libvorbisenc2";
                 case "vorbisfile" -> "libvorbisfile3";
+                case "fdk-aac" -> "libfdk-aac2";
                 default -> "lib" + baseName + "0";
             };
             return "'apt install " + debPkg + "' on Debian/Ubuntu";

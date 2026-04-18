@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.export;
 
+import com.benesquivelmusic.daw.core.audio.NativeLibraryLoader;
 import com.benesquivelmusic.daw.sdk.export.AudioMetadata;
 import com.benesquivelmusic.daw.sdk.export.DitherType;
 
@@ -343,18 +344,7 @@ public final class AacExporter {
     }
 
     private static SymbolLookup loadFdkAacLibrary(Arena arena) {
-        try {
-            return SymbolLookup.libraryLookup("libfdk-aac.so.2", arena);
-        } catch (IllegalArgumentException e1) {
-            try {
-                return SymbolLookup.libraryLookup("libfdk-aac.so", arena);
-            } catch (IllegalArgumentException e2) {
-                throw new UnsupportedOperationException(
-                        "AAC export requires libfdk-aac. "
-                                + "Install FDK-AAC (e.g., 'apt install libfdk-aac2' "
-                                + "on Debian/Ubuntu).");
-            }
-        }
+        return NativeLibraryLoader.loadLibrary(arena, "fdk-aac", 2);
     }
 
     private static long quantize16(double sample, TpdfDitherer tpdf,
