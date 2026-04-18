@@ -1,1 +1,0 @@
-This section describes the spatialiser classes.
