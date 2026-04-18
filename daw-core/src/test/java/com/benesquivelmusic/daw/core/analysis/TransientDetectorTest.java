@@ -72,6 +72,13 @@ class TransientDetectorTest {
     }
 
     @Test
+    void shouldRejectNullBlock() {
+        TransientDetector detector = new TransientDetector(1024);
+        assertThatThrownBy(() -> detector.detect(null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
     void shouldRejectBlockWithWrongLength() {
         TransientDetector detector = new TransientDetector(1024);
         float[] wrongSize = new float[512];

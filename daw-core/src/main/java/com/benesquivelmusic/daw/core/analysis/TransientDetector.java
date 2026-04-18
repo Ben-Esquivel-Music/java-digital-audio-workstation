@@ -134,7 +134,7 @@ public final class TransientDetector {
      * <p>The block is analyzed using two complementary methods:</p>
      * <ol>
      *   <li><strong>Temporal energy ratio:</strong> computes the ratio of the
-     *       current block's RMS energy to a long-term running average. A sudden
+     *       current block's mean power to a long-term running average. A sudden
      *       increase indicates a transient attack.</li>
      *   <li><strong>Spectral flux:</strong> computes the positive spectral flux
      *       (sum of magnitude increases across FFT bins) between the current and
@@ -146,9 +146,11 @@ public final class TransientDetector {
      *
      * @param block mono audio samples; length must equal the configured block size
      * @return detection result containing the binary decision and both metrics
+     * @throws NullPointerException     if {@code block} is null
      * @throws IllegalArgumentException if the block length does not match the block size
      */
     public Result detect(float[] block) {
+        java.util.Objects.requireNonNull(block, "block must not be null");
         if (block.length != blockSize) {
             throw new IllegalArgumentException(
                     "block length must equal blockSize (" + blockSize + "): " + block.length);
@@ -237,7 +239,7 @@ public final class TransientDetector {
     // ----------------------------------------------------------------
 
     /**
-     * Computes the RMS energy of a block.
+     * Computes the mean power (average of squared samples) of a block.
      */
     private double computeBlockEnergy(float[] block) {
         double sum = 0.0;
@@ -252,15 +254,9 @@ public final class TransientDetector {
      * from {@link FftUtils}.
      */
     private double computeSpectralFlux(float[] block) {
-        int length = Math.min(blockSize, block.length);
-
         // Apply Hann window and load into real buffer
-        for (int i = 0; i < length; i++) {
+        for (int i = 0; i < blockSize; i++) {
             real[i] = block[i] * window[i];
-            imag[i] = 0.0;
-        }
-        for (int i = length; i < blockSize; i++) {
-            real[i] = 0.0;
             imag[i] = 0.0;
         }
 
