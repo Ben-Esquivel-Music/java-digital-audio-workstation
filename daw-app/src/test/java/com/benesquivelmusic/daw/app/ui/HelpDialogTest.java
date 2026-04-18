@@ -47,14 +47,14 @@ class HelpDialogTest {
     }
 
     @Test
-    void shouldHaveThreeTabs() throws Exception {
+    void shouldHaveFourTabs() throws Exception {
         int tabCount = runOnFxThread(() -> {
             HelpDialog dialog = new HelpDialog();
             DialogPane pane = dialog.getDialogPane();
             TabPane tabPane = (TabPane) pane.getContent();
             return tabPane.getTabs().size();
         });
-        assertThat(tabCount).isEqualTo(3);
+        assertThat(tabCount).isEqualTo(4);
     }
 
     @Test
@@ -88,6 +88,17 @@ class HelpDialogTest {
             return tabPane.getTabs().get(2).getText();
         });
         assertThat(tabText).isEqualTo("About");
+    }
+
+    @Test
+    void shouldHaveSystemCapabilitiesTab() throws Exception {
+        String tabText = runOnFxThread(() -> {
+            HelpDialog dialog = new HelpDialog();
+            DialogPane pane = dialog.getDialogPane();
+            TabPane tabPane = (TabPane) pane.getContent();
+            return tabPane.getTabs().get(3).getText();
+        });
+        assertThat(tabText).isEqualTo("System Capabilities");
     }
 
     @Test
