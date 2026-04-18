@@ -24,7 +24,7 @@ All binaries come from **https://github.com/adoptium/temurin26-binaries/releases
 Adoptium tags follow `jdk-MAJOR+BUILD` (example: `jdk-26+35`).
 The Linux HotSpot tarball naming format is:
 
-```text
+```bash
 OpenJDK26U-jdk_<ARCH>_linux_hotspot_<MAJOR>_<BUILD>.tar.gz
 ```
 
@@ -36,8 +36,11 @@ OpenJDK26U-jdk_<ARCH>_linux_hotspot_<MAJOR>_<BUILD>.tar.gz
 
 ### 1) Detect architecture and find latest JDK 26 tag
 
+> Run steps **2-5 in the same shell session** as step 1 so strict mode and exported variables remain active.
+> Copy and run the code block below in its entirety.
+
 ```bash
-set -euo pipefail
+set -euo pipefail  # strict mode: fail on errors, unset variables, and propagate failures from pipelines
 
 ARCH=$(uname -m)
 case "$ARCH" in
@@ -49,7 +52,7 @@ esac
 # Resolve latest release via redirect target: .../releases/tag/jdk-26+<build>
 LATEST_URL=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
   https://github.com/adoptium/temurin26-binaries/releases/latest)
-LATEST_TAG=$(printf '%s' "$LATEST_URL" | sed -n 's#.*/tag/\(jdk-26+[0-9]\+\)$#\1#p')
+LATEST_TAG=$(printf '%s' "$LATEST_URL" | sed -En 's#.*/tag/(jdk-26\+[0-9]+)$#\1#p')
 
 if [ -z "$LATEST_TAG" ]; then
   echo "ERROR: Could not determine latest Temurin 26 release tag"; exit 1
@@ -74,6 +77,7 @@ curl -fsSL -o "/tmp/${FILENAME}" "$TARBALL_URL"
 curl -fsSL -o "/tmp/${SHA_FILE}" "$SHA_URL"
 
 (
+  # The checksum file references the tarball by filename only, so run verification from /tmp.
   cd /tmp
   sha256sum -c "$SHA_FILE"
 )
@@ -122,18 +126,20 @@ rm -f "/tmp/${FILENAME}" "/tmp/${SHA_FILE}"
 
 ## Quick One-Liner (user-local install, no sudo)
 
+> Keep this one-liner aligned with the step-by-step commands above when updating logic.
+
 ```bash
-set -euo pipefail; \
-ARCH=$(uname -m); case "$ARCH" in x86_64) ADOPT_ARCH=x64;; aarch64) ADOPT_ARCH=aarch64;; *) echo "Unsupported: $ARCH"; exit 1;; esac; \
-LATEST_URL=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/adoptium/temurin26-binaries/releases/latest); \
-TAG=$(printf '%s' "$LATEST_URL" | sed -n 's#.*/tag/\(jdk-26+[0-9]\+\)$#\1#p'); [ -n "$TAG" ] || { echo "Failed to resolve latest tag"; exit 1; }; \
-BUILD=${TAG#jdk-26+}; FILE="OpenJDK26U-jdk_${ADOPT_ARCH}_linux_hotspot_26_${BUILD}.tar.gz"; SHA="${FILE}.sha256.txt"; \
-BASE="https://github.com/adoptium/temurin26-binaries/releases/download/jdk-26%2B${BUILD}"; \
-curl -fsSL -o "/tmp/${FILE}" "${BASE}/${FILE}"; curl -fsSL -o "/tmp/${SHA}" "${BASE}/${SHA}"; \
-(cd /tmp && sha256sum -c "$SHA"); \
-mkdir -p "$HOME/.local/jdks"; tar xzf "/tmp/${FILE}" -C "$HOME/.local/jdks"; \
-export JAVA_HOME="$HOME/.local/jdks/${TAG}"; export PATH="${JAVA_HOME}/bin:${PATH}"; \
-java -version; mvn -version
+set -euo pipefail && \
+ARCH=$(uname -m) && case "$ARCH" in x86_64) ADOPT_ARCH="x64";; aarch64) ADOPT_ARCH="aarch64";; *) echo "Unsupported: $ARCH"; exit 1;; esac && \
+LATEST_URL=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/adoptium/temurin26-binaries/releases/latest) && \
+TAG=$(printf '%s' "$LATEST_URL" | sed -En 's#.*/tag/(jdk-26\+[0-9]+)$#\1#p') && [ -n "$TAG" ] || { echo "ERROR: Could not determine latest Temurin 26 release tag"; exit 1; } && \
+MAJOR=26 && BUILD=${TAG#jdk-26+} && FILE="OpenJDK26U-jdk_${ADOPT_ARCH}_linux_hotspot_${MAJOR}_${BUILD}.tar.gz" && SHA="${FILE}.sha256.txt" && \
+BASE="https://github.com/adoptium/temurin26-binaries/releases/download/jdk-${MAJOR}%2B${BUILD}" && \
+curl -fsSL -o "/tmp/${FILE}" "${BASE}/${FILE}" && curl -fsSL -o "/tmp/${SHA}" "${BASE}/${SHA}" && \
+(cd /tmp && sha256sum -c "$SHA") && \
+mkdir -p "$HOME/.local/jdks" && tar xzf "/tmp/${FILE}" -C "$HOME/.local/jdks" && \
+export JAVA_HOME="$HOME/.local/jdks/${TAG}" && export PATH="${JAVA_HOME}/bin:${PATH}" && \
+java -version && mvn -version
 ```
 
 ## Notes
