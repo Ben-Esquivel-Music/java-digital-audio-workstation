@@ -77,6 +77,7 @@ public final class TelemetrySetupPanel extends ScrollPane {
     private final ListView<SoundSource> sourceListView;
     private final ObservableList<SoundSource> soundSources;
     private final Label sourceErrorLabel;
+    private final CheckBox autoSyncCheckBox;
 
     private final TextField micNameField;
     private final TextField micXField;
@@ -186,6 +187,10 @@ public final class TelemetrySetupPanel extends ScrollPane {
         sourceListView.setPrefHeight(120);
         sourceListView.setStyle("-fx-background-color: #2a2a4a; -fx-border-color: #3a3a6a;");
         sourceListView.setCellFactory(list -> new SoundSourceCell());
+
+        autoSyncCheckBox = new CheckBox("Auto-sync with armed tracks");
+        autoSyncCheckBox.setSelected(true);
+        autoSyncCheckBox.setStyle(LABEL_STYLE);
 
         sourceErrorLabel = new Label();
         sourceErrorLabel.setStyle(ERROR_STYLE);
@@ -312,6 +317,7 @@ public final class TelemetrySetupPanel extends ScrollPane {
                 rt60Label,
                 new Separator() {{ setStyle(SEPARATOR_STYLE); }},
                 sourceSectionLabel,
+                autoSyncCheckBox,
                 sourceGrid,
                 sourceButtons,
                 sourceErrorLabel,
@@ -516,6 +522,20 @@ public final class TelemetrySetupPanel extends ScrollPane {
      */
     public Label getSourceErrorLabel() {
         return sourceErrorLabel;
+    }
+
+    /**
+     * Returns the "Auto-sync with armed tracks" check box. When selected,
+     * the host wires the panel's sound-source list to the
+     * {@code ArmedTrackSourceProvider} so arming/disarming tracks in the
+     * Arrangement View automatically updates the telemetry source list.
+     * When cleared, the source list behaves exactly as before — fully
+     * manual — so existing workflows are unchanged.
+     *
+     * @return the auto-sync check box (default: selected)
+     */
+    public CheckBox getAutoSyncCheckBox() {
+        return autoSyncCheckBox;
     }
 
     /**
