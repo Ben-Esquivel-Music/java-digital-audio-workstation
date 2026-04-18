@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -412,6 +413,15 @@ class GraphicEqProcessorTest {
         for (int i = 0; i < eq.getBandCount(); i++) {
             assertThat(eq.getBandGain(i)).isEqualTo(0.0);
         }
+    }
+
+    // ---- Real-time safety ----
+
+    @Test
+    void shouldBeAnnotatedRealTimeSafe() {
+        assertThat(GraphicEqProcessor.class.isAnnotationPresent(RealTimeSafe.class))
+                .as("GraphicEqProcessor should be annotated @RealTimeSafe")
+                .isTrue();
     }
 
     private static double rms(float[] buffer, int start, int end) {
