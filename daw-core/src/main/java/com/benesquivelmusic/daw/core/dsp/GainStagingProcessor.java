@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffect;
 
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
  * Simple gain staging processor for the mastering chain.
@@ -52,6 +53,7 @@ public final class GainStagingProcessor implements AudioProcessor {
         return new GainStagingProcessor(channels, 0.0);
     }
 
+    @RealTimeSafe
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         int activeCh = Math.min(channels, inputBuffer.length);

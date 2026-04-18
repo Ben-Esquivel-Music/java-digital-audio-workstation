@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.sdk.visualization.MultibandCompressorData;
 
 import java.util.Arrays;
 import java.util.Objects;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
  * Multiband dynamic range compressor that splits the audio signal into
@@ -137,6 +138,7 @@ public final class MultibandCompressorProcessor implements AudioProcessor {
         this.tempHigh = new float[channels][bufferSize];
     }
 
+    @RealTimeSafe
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         ensureBufferCapacity(numFrames);

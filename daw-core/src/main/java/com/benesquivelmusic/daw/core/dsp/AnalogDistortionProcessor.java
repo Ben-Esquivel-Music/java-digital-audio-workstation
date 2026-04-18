@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffect;
 
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
  * Virtual analog distortion processor that models non-ideal operational
@@ -125,6 +126,7 @@ public final class AnalogDistortionProcessor implements AudioProcessor {
         updateDerivedCoefficients();
     }
 
+    @RealTimeSafe
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         int activeCh = Math.min(channels, Math.min(inputBuffer.length, outputBuffer.length));

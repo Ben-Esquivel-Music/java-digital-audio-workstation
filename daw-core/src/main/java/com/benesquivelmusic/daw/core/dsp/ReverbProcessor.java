@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.Arrays;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
  * Algorithmic reverb processor using a Schroeder–Moorer topology.
@@ -93,6 +94,7 @@ public final class ReverbProcessor implements AudioProcessor {
         initializeDelayLines();
     }
 
+    @RealTimeSafe
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         int activeCh = Math.min(channels, inputBuffer.length);

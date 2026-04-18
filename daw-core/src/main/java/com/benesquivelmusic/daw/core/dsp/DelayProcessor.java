@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.Arrays;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
  * Stereo delay effect processor with feedback and mix controls.
@@ -77,6 +78,7 @@ public final class DelayProcessor implements AudioProcessor {
         this(channels, sampleRate, 2000.0);
     }
 
+    @RealTimeSafe
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         int activeCh = Math.min(channels, inputBuffer.length);

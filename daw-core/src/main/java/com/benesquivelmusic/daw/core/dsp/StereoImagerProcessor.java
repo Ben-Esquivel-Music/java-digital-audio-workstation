@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffect;
 
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
  * Stereo imaging processor using mid/side encoding.
@@ -62,6 +63,7 @@ public final class StereoImagerProcessor implements AudioProcessor {
         rebuildCrossoverFilters();
     }
 
+    @RealTimeSafe
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         if (inputBuffer.length < 2 || outputBuffer.length < 2) {

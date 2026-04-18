@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.Arrays;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
  * Peak reduction processor that reduces crest factor (peak-to-average ratio)
@@ -122,6 +123,7 @@ public final class ChirpPeakReducer implements AudioProcessor {
         rebuildKernel();
     }
 
+    @RealTimeSafe
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         int activeCh = Math.min(channels, Math.min(inputBuffer.length, outputBuffer.length));

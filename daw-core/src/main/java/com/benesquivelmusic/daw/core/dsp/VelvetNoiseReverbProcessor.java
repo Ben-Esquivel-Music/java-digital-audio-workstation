@@ -10,6 +10,7 @@ import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
  * Reverb processor based on velvet-noise sequences.
@@ -116,6 +117,7 @@ public final class VelvetNoiseReverbProcessor implements AudioProcessor {
         generateVelvetNoiseSequence();
     }
 
+    @RealTimeSafe
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         int activeCh = Math.min(channels, inputBuffer.length);
