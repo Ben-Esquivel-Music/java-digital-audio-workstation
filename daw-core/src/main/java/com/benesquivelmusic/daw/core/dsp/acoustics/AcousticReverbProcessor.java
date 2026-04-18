@@ -10,6 +10,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
  * {@link AudioProcessor} adapter that exposes the {@code daw-acoustics}
@@ -157,6 +158,7 @@ public final class AcousticReverbProcessor implements AudioProcessor {
         fdn.setTargetT60(t60);
     }
 
+    @RealTimeSafe
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         Objects.requireNonNull(inputBuffer, "inputBuffer must not be null");

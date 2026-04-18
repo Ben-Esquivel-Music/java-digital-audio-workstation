@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.dsp;
 import com.benesquivelmusic.daw.core.mixer.InsertEffect;
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
  * Dynamic range compressor with standard professional controls.
@@ -72,11 +73,13 @@ public final class CompressorProcessor implements SidechainAwareProcessor, GainR
         recalculateCoefficients();
     }
 
+    @RealTimeSafe
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         processInternal(inputBuffer, inputBuffer, outputBuffer, numFrames);
     }
 
+    @RealTimeSafe
     @Override
     public void processSidechain(float[][] inputBuffer, float[][] sidechainBuffer,
                                  float[][] outputBuffer, int numFrames) {

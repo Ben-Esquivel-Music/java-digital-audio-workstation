@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.Arrays;
 import java.util.Objects;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
  * Phase-vocoder-based time-stretch processor.
@@ -103,6 +104,7 @@ public final class TimeStretchProcessor implements AudioProcessor {
         }
     }
 
+    @RealTimeSafe
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         if (Math.abs(stretchRatio - 1.0) < 1e-6) {

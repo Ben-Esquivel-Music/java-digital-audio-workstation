@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffect;
 
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
  * Noise gate processor with threshold, attack, hold, and release controls.
@@ -74,11 +75,13 @@ public final class NoiseGateProcessor implements SidechainAwareProcessor {
         recalculateCoefficients();
     }
 
+    @RealTimeSafe
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         processInternal(inputBuffer, inputBuffer, outputBuffer, numFrames);
     }
 
+    @RealTimeSafe
     @Override
     public void processSidechain(float[][] inputBuffer, float[][] sidechainBuffer,
                                  float[][] outputBuffer, int numFrames) {

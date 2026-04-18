@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.dsp;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.Random;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
  * Real-time TPDF dithering processor for the mastering chain.
@@ -60,6 +61,7 @@ public final class DitherProcessor implements AudioProcessor {
         this.random = new Random(seed);
     }
 
+    @RealTimeSafe
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         int activeCh = Math.min(channels, inputBuffer.length);

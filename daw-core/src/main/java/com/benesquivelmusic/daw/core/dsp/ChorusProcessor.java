@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.Arrays;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
  * Chorus effect processor using a modulated delay line.
@@ -68,6 +69,7 @@ public final class ChorusProcessor implements AudioProcessor {
         this.lfoPhaseIncrement = 2.0 * Math.PI / sampleRate;
     }
 
+    @RealTimeSafe
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         int activeCh = Math.min(channels, inputBuffer.length);

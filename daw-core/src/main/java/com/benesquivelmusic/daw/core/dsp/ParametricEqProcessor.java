@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
  * Professional parametric equalizer with configurable filter bands,
@@ -353,6 +354,7 @@ public final class ParametricEqProcessor implements AudioProcessor {
 
     // ---- Processing ----
 
+    @RealTimeSafe
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         if (processingMode == ProcessingMode.MID_SIDE && channels >= 2) {

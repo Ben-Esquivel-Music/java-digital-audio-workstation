@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.mastering.TruePeakCeilingPreset;
 
 import java.util.Arrays;
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 
 /**
  * Look-ahead brick-wall limiter with true-peak detection.
@@ -88,6 +89,7 @@ public final class LimiterProcessor implements AudioProcessor, GainReductionProv
         recalculateCoefficients();
     }
 
+    @RealTimeSafe
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         double ceilingLinear = Math.pow(10.0, ceilingDb / 20.0);
