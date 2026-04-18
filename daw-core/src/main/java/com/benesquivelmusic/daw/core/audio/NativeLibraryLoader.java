@@ -168,6 +168,7 @@ public final class NativeLibraryLoader {
             String brewPkg = switch (baseName) {
                 case "ogg" -> "libogg";
                 case "vorbis", "vorbisenc", "vorbisfile" -> "libvorbis";
+                case "mp3lame" -> "lame";
                 default -> "lib" + baseName;
             };
             return "'brew install " + brewPkg + "' on macOS";
