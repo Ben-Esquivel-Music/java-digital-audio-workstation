@@ -7,7 +7,7 @@ allowed-tools: Bash
 
 # Java 26 Setup: Install Adoptium Temurin JDK 26
 
-Install the latest Adoptium Temurin JDK 26 early-access build so that Maven can compile and test this project.
+Install the latest Adoptium Temurin JDK 26 early-access build so Maven can compile and test this project.
 
 ## When to Use
 
@@ -21,111 +21,124 @@ All binaries come from **https://github.com/adoptium/temurin26-binaries/releases
 
 ## Asset Naming Convention
 
-Adoptium tags follow the pattern `jdk-MAJOR+BUILD` (e.g. `jdk-26+35`).
-Binary file names follow:
+Adoptium tags follow `jdk-MAJOR+BUILD` (example: `jdk-26+35`).
+The Linux HotSpot tarball naming format is:
 
-```
+```text
 OpenJDK26U-jdk_<ARCH>_linux_hotspot_<MAJOR>_<BUILD>.tar.gz
 ```
 
-| Placeholder | Values |
-|-------------|--------|
-| `ARCH` | `x64`, `aarch64` |
-| `MAJOR` | `26` |
-| `BUILD` | Build number from the tag (e.g. `35`) |
-
-Examples:
-- `OpenJDK26U-jdk_x64_linux_hotspot_26_35.tar.gz`
-- `OpenJDK26U-jdk_aarch64_linux_hotspot_26_35.tar.gz`
+`ARCH` values:
+- `x64` (for `x86_64`)
+- `aarch64`
 
 ## Installation Steps
 
-Run the following bash commands to download, extract, and activate Temurin JDK 26.
-
-### 1. Detect architecture and discover the latest release tag
+### 1) Detect architecture and find latest JDK 26 tag
 
 ```bash
-# Detect architecture
+set -euo pipefail
+
 ARCH=$(uname -m)
 case "$ARCH" in
   x86_64)  ADOPT_ARCH="x64" ;;
   aarch64) ADOPT_ARCH="aarch64" ;;
-  *)       echo "Unsupported architecture: $ARCH" && exit 1 ;;
+  *)       echo "Unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
-# Scrape the latest release tag from the releases page
-LATEST_TAG=$(curl -sL https://github.com/adoptium/temurin26-binaries/releases \
-  | grep -oP 'jdk-26\+\d+' | head -1)
+# Resolve latest release via redirect target: .../releases/tag/jdk-26+<build>
+LATEST_URL=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+  https://github.com/adoptium/temurin26-binaries/releases/latest)
+LATEST_TAG=$(printf '%s' "$LATEST_URL" | sed -n 's#.*/tag/\(jdk-26+[0-9]\+\)$#\1#p')
 
 if [ -z "$LATEST_TAG" ]; then
-  echo "ERROR: Could not determine latest Temurin 26 release tag" && exit 1
+  echo "ERROR: Could not determine latest Temurin 26 release tag"; exit 1
 fi
 
-echo "Latest tag: $LATEST_TAG"
+MAJOR=26
+BUILD=${LATEST_TAG#jdk-26+}
+FILENAME="OpenJDK26U-jdk_${ADOPT_ARCH}_linux_hotspot_${MAJOR}_${BUILD}.tar.gz"
+SHA_FILE="${FILENAME}.sha256.txt"
+BASE_URL="https://github.com/adoptium/temurin26-binaries/releases/download/jdk-${MAJOR}%2B${BUILD}"
+TARBALL_URL="${BASE_URL}/${FILENAME}"
+SHA_URL="${BASE_URL}/${SHA_FILE}"
 
-# Parse major and build number from the tag (e.g. jdk-26+35 → MAJOR=26, BUILD=35)
-MAJOR=$(echo "$LATEST_TAG" | sed 's/jdk-\([0-9]*\)+.*/\1/')
-BUILD=$(echo "$LATEST_TAG" | sed 's/jdk-[0-9]*+//')
+echo "Resolved release tag: ${LATEST_TAG}"
+echo "Resolved asset: ${FILENAME}"
 ```
 
-### 2. Download and extract
+### 2) Download tarball and verify checksum
 
 ```bash
-FILENAME="OpenJDK26U-jdk_${ADOPT_ARCH}_linux_hotspot_${MAJOR}_${BUILD}.tar.gz"
-URL="https://github.com/adoptium/temurin26-binaries/releases/download/jdk-${MAJOR}%2B${BUILD}/${FILENAME}"
+curl -fsSL -o "/tmp/${FILENAME}" "$TARBALL_URL"
+curl -fsSL -o "/tmp/${SHA_FILE}" "$SHA_URL"
 
-echo "Downloading $URL"
-curl -sL -o "/tmp/${FILENAME}" "$URL"
+(
+  cd /tmp
+  sha256sum -c "$SHA_FILE"
+)
+```
 
+### 3) Extract and set `JAVA_HOME`
+
+Choose one install mode:
+
+#### A) System-wide install (requires sudo)
+
+```bash
 sudo mkdir -p /usr/lib/jvm
 sudo tar xzf "/tmp/${FILENAME}" -C /usr/lib/jvm
-rm "/tmp/${FILENAME}"
+JAVA_HOME="/usr/lib/jvm/${LATEST_TAG}"
 ```
 
-### 3. Set JAVA_HOME and update PATH
+#### B) User-local install (no sudo)
 
 ```bash
-# The extracted directory is named like jdk-26+35
-JAVA_HOME="/usr/lib/jvm/${LATEST_TAG}"
+mkdir -p "$HOME/.local/jdks"
+tar xzf "/tmp/${FILENAME}" -C "$HOME/.local/jdks"
+JAVA_HOME="$HOME/.local/jdks/${LATEST_TAG}"
+```
+
+Activate Java 26 in the current shell:
+
+```bash
 export JAVA_HOME
 export PATH="${JAVA_HOME}/bin:${PATH}"
-
-echo "JAVA_HOME=${JAVA_HOME}"
-java -version
 ```
 
-### 4. Verify
+### 4) Verify
 
 ```bash
 java -version
-# Expected output: openjdk version "26" ...
 mvn -version
-# Should show Java version: 26 ...
+# Maven output should show Java version: 26
 ```
 
-## Complete One-Liner
-
-For quick setup, copy and run this single block:
+### 5) Cleanup downloaded files
 
 ```bash
-ARCH=$(uname -m) && \
-case "$ARCH" in x86_64) ADOPT_ARCH="x64";; aarch64) ADOPT_ARCH="aarch64";; *) echo "Unsupported: $ARCH" && exit 1;; esac && \
-TAG=$(curl -sL https://github.com/adoptium/temurin26-binaries/releases | grep -oP 'jdk-26\+\d+' | head -1) && \
-MAJOR=$(echo "$TAG" | sed 's/jdk-\([0-9]*\)+.*/\1/') && \
-BUILD=$(echo "$TAG" | sed 's/jdk-[0-9]*+//') && \
-FILE="OpenJDK26U-jdk_${ADOPT_ARCH}_linux_hotspot_${MAJOR}_${BUILD}.tar.gz" && \
-curl -sL -o "/tmp/${FILE}" "https://github.com/adoptium/temurin26-binaries/releases/download/jdk-${MAJOR}%2B${BUILD}/${FILE}" && \
-sudo mkdir -p /usr/lib/jvm && \
-sudo tar xzf "/tmp/${FILE}" -C /usr/lib/jvm && \
-rm "/tmp/${FILE}" && \
-export JAVA_HOME="/usr/lib/jvm/${TAG}" && \
-export PATH="${JAVA_HOME}/bin:${PATH}" && \
-java -version
+rm -f "/tmp/${FILENAME}" "/tmp/${SHA_FILE}"
+```
+
+## Quick One-Liner (user-local install, no sudo)
+
+```bash
+set -euo pipefail; \
+ARCH=$(uname -m); case "$ARCH" in x86_64) ADOPT_ARCH=x64;; aarch64) ADOPT_ARCH=aarch64;; *) echo "Unsupported: $ARCH"; exit 1;; esac; \
+LATEST_URL=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/adoptium/temurin26-binaries/releases/latest); \
+TAG=$(printf '%s' "$LATEST_URL" | sed -n 's#.*/tag/\(jdk-26+[0-9]\+\)$#\1#p'); [ -n "$TAG" ] || { echo "Failed to resolve latest tag"; exit 1; }; \
+BUILD=${TAG#jdk-26+}; FILE="OpenJDK26U-jdk_${ADOPT_ARCH}_linux_hotspot_26_${BUILD}.tar.gz"; SHA="${FILE}.sha256.txt"; \
+BASE="https://github.com/adoptium/temurin26-binaries/releases/download/jdk-26%2B${BUILD}"; \
+curl -fsSL -o "/tmp/${FILE}" "${BASE}/${FILE}"; curl -fsSL -o "/tmp/${SHA}" "${BASE}/${SHA}"; \
+(cd /tmp && sha256sum -c "$SHA"); \
+mkdir -p "$HOME/.local/jdks"; tar xzf "/tmp/${FILE}" -C "$HOME/.local/jdks"; \
+export JAVA_HOME="$HOME/.local/jdks/${TAG}"; export PATH="${JAVA_HOME}/bin:${PATH}"; \
+java -version; mvn -version
 ```
 
 ## Notes
 
-- These are **early-access builds**; the tag and build number change with each new release.
-- The skill always scrapes the latest tag so it stays current without hard-coded versions.
-- After setting `JAVA_HOME`, Maven (`mvn`) automatically uses the new JDK.
-- For CI workflows, prefer `actions/setup-java@v4` with `distribution: 'temurin'` and `java-version: '26'` instead.
+- Temurin 26 builds are early-access and updated frequently.
+- This skill resolves the latest release dynamically from GitHub redirects.
+- Use `curl -f` so failed downloads stop immediately instead of producing silent partial setup.
+- For GitHub Actions CI, prefer `actions/setup-java@v4` with `distribution: temurin` and `java-version: '26'`.
