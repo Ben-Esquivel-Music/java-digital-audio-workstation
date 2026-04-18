@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.core.mixer.InsertEffect;
+
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
@@ -43,6 +45,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
+@InsertEffect(type = "BASS_EXTENSION", displayName = "Bass Extension")
 public final class BassExtensionProcessor implements AudioProcessor {
 
     /** Minimum allowed crossover frequency in Hz. */

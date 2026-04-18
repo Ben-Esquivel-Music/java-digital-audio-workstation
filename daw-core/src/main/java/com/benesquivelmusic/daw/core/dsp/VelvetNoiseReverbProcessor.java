@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.core.mixer.InsertEffect;
+
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
@@ -36,6 +38,7 @@ import java.util.concurrent.Future;
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
+@InsertEffect(type = "VELVET_NOISE_REVERB", displayName = "Velvet Noise Reverb")
 public final class VelvetNoiseReverbProcessor implements AudioProcessor {
 
     private static final double MIN_DECAY_SECONDS = 0.1;

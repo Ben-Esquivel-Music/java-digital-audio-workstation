@@ -33,36 +33,11 @@ public final class InsertEffectFactory {
      */
     public static AudioProcessor createProcessor(InsertEffectType type, int channels, double sampleRate) {
         Objects.requireNonNull(type, "type must not be null");
-        return switch (type) {
-            case COMPRESSOR    -> new CompressorProcessor(channels, sampleRate);
-            case LIMITER       -> new LimiterProcessor(channels, sampleRate);
-            case REVERB        -> new ReverbProcessor(channels, sampleRate);
-            case DELAY         -> new DelayProcessor(channels, sampleRate);
-            case CHORUS        -> new ChorusProcessor(channels, sampleRate);
-            case NOISE_GATE    -> new NoiseGateProcessor(channels, sampleRate);
-            case STEREO_IMAGER -> {
-                if (channels != 2) {
-                    throw new IllegalArgumentException(
-                            "StereoImagerProcessor supports exactly 2 channels, but got " + channels);
-                }
-                yield new StereoImagerProcessor(sampleRate);
-            }
-            case PARAMETRIC_EQ -> new ParametricEqProcessor(channels, sampleRate);
-            case GRAPHIC_EQ    -> new GraphicEqProcessor(channels, sampleRate);
-            case ANALOG_DISTORTION     -> new AnalogDistortionProcessor(channels, sampleRate);
-            case BASS_EXTENSION        -> new BassExtensionProcessor(channels, sampleRate);
-            case CHIRP_PEAK_REDUCER    -> new ChirpPeakReducer(channels, sampleRate);
-            case GAIN_STAGING          -> new GainStagingProcessor(channels, 0.0);
-            case HEARING_LOSS_SIMULATOR -> new HearingLossSimulator(channels, sampleRate);
-            case LESLIE                -> new LeslieProcessor(channels, sampleRate);
-            case PITCH_SHIFT           -> new PitchShiftProcessor(channels, sampleRate);
-            case SPRING_REVERB         -> new SpringReverbProcessor(channels, sampleRate);
-            case TIME_STRETCH          -> new TimeStretchProcessor(channels, sampleRate);
-            case VELVET_NOISE_REVERB   -> new VelvetNoiseReverbProcessor(channels, sampleRate);
-            case WAVESHAPER            -> new WaveshaperProcessor(channels, sampleRate);
-            case CLAP_PLUGIN   -> throw new IllegalArgumentException(
+        if (type == InsertEffectType.CLAP_PLUGIN) {
+            throw new IllegalArgumentException(
                     "CLAP plugins must be loaded via ClapPluginManager, not this factory");
-        };
+        }
+        return ProcessorRegistry.getInstance().createProcessor(type, channels, sampleRate);
     }
 
     /**
@@ -118,67 +93,7 @@ public final class InsertEffectFactory {
      *         not a recognized built-in type
      */
     static InsertEffectType inferBuiltInEffectType(AudioProcessor processor) {
-        if (processor instanceof CompressorProcessor) {
-            return InsertEffectType.COMPRESSOR;
-        }
-        if (processor instanceof LimiterProcessor) {
-            return InsertEffectType.LIMITER;
-        }
-        if (processor instanceof ReverbProcessor) {
-            return InsertEffectType.REVERB;
-        }
-        if (processor instanceof DelayProcessor) {
-            return InsertEffectType.DELAY;
-        }
-        if (processor instanceof ChorusProcessor) {
-            return InsertEffectType.CHORUS;
-        }
-        if (processor instanceof NoiseGateProcessor) {
-            return InsertEffectType.NOISE_GATE;
-        }
-        if (processor instanceof StereoImagerProcessor) {
-            return InsertEffectType.STEREO_IMAGER;
-        }
-        if (processor instanceof ParametricEqProcessor) {
-            return InsertEffectType.PARAMETRIC_EQ;
-        }
-        if (processor instanceof GraphicEqProcessor) {
-            return InsertEffectType.GRAPHIC_EQ;
-        }
-        if (processor instanceof AnalogDistortionProcessor) {
-            return InsertEffectType.ANALOG_DISTORTION;
-        }
-        if (processor instanceof BassExtensionProcessor) {
-            return InsertEffectType.BASS_EXTENSION;
-        }
-        if (processor instanceof ChirpPeakReducer) {
-            return InsertEffectType.CHIRP_PEAK_REDUCER;
-        }
-        if (processor instanceof GainStagingProcessor) {
-            return InsertEffectType.GAIN_STAGING;
-        }
-        if (processor instanceof HearingLossSimulator) {
-            return InsertEffectType.HEARING_LOSS_SIMULATOR;
-        }
-        if (processor instanceof LeslieProcessor) {
-            return InsertEffectType.LESLIE;
-        }
-        if (processor instanceof PitchShiftProcessor) {
-            return InsertEffectType.PITCH_SHIFT;
-        }
-        if (processor instanceof SpringReverbProcessor) {
-            return InsertEffectType.SPRING_REVERB;
-        }
-        if (processor instanceof TimeStretchProcessor) {
-            return InsertEffectType.TIME_STRETCH;
-        }
-        if (processor instanceof VelvetNoiseReverbProcessor) {
-            return InsertEffectType.VELVET_NOISE_REVERB;
-        }
-        if (processor instanceof WaveshaperProcessor) {
-            return InsertEffectType.WAVESHAPER;
-        }
-        return null;
+        return ProcessorRegistry.getInstance().inferType(processor);
     }
 
     /**
@@ -200,29 +115,8 @@ public final class InsertEffectFactory {
         }
     }
 
-    private static Class<? extends AudioProcessor> processorClassFor(InsertEffectType type) {        return switch (type) {
-            case COMPRESSOR             -> CompressorProcessor.class;
-            case LIMITER                -> LimiterProcessor.class;
-            case REVERB                 -> ReverbProcessor.class;
-            case DELAY                  -> DelayProcessor.class;
-            case CHORUS                 -> ChorusProcessor.class;
-            case NOISE_GATE             -> NoiseGateProcessor.class;
-            case STEREO_IMAGER          -> StereoImagerProcessor.class;
-            case PARAMETRIC_EQ          -> ParametricEqProcessor.class;
-            case GRAPHIC_EQ             -> GraphicEqProcessor.class;
-            case ANALOG_DISTORTION      -> AnalogDistortionProcessor.class;
-            case BASS_EXTENSION         -> BassExtensionProcessor.class;
-            case CHIRP_PEAK_REDUCER     -> ChirpPeakReducer.class;
-            case GAIN_STAGING           -> GainStagingProcessor.class;
-            case HEARING_LOSS_SIMULATOR -> HearingLossSimulator.class;
-            case LESLIE                 -> LeslieProcessor.class;
-            case PITCH_SHIFT            -> PitchShiftProcessor.class;
-            case SPRING_REVERB          -> SpringReverbProcessor.class;
-            case TIME_STRETCH           -> TimeStretchProcessor.class;
-            case VELVET_NOISE_REVERB    -> VelvetNoiseReverbProcessor.class;
-            case WAVESHAPER             -> WaveshaperProcessor.class;
-            case CLAP_PLUGIN            -> null;
-        };
+    private static Class<? extends AudioProcessor> processorClassFor(InsertEffectType type) {
+        return ProcessorRegistry.getInstance().processorClassFor(type);
     }
 
     /**
@@ -363,27 +257,7 @@ public final class InsertEffectFactory {
      * @return the available built-in effect types
      */
     public static List<InsertEffectType> availableTypes() {
-        return List.of(
-                InsertEffectType.PARAMETRIC_EQ,
-                InsertEffectType.COMPRESSOR,
-                InsertEffectType.LIMITER,
-                InsertEffectType.REVERB,
-                InsertEffectType.DELAY,
-                InsertEffectType.CHORUS,
-                InsertEffectType.NOISE_GATE,
-                InsertEffectType.STEREO_IMAGER,
-                InsertEffectType.GRAPHIC_EQ,
-                InsertEffectType.ANALOG_DISTORTION,
-                InsertEffectType.BASS_EXTENSION,
-                InsertEffectType.CHIRP_PEAK_REDUCER,
-                InsertEffectType.GAIN_STAGING,
-                InsertEffectType.HEARING_LOSS_SIMULATOR,
-                InsertEffectType.LESLIE,
-                InsertEffectType.PITCH_SHIFT,
-                InsertEffectType.SPRING_REVERB,
-                InsertEffectType.TIME_STRETCH,
-                InsertEffectType.VELVET_NOISE_REVERB,
-                InsertEffectType.WAVESHAPER);
+        return ProcessorRegistry.getInstance().availableTypes();
     }
 
     /**

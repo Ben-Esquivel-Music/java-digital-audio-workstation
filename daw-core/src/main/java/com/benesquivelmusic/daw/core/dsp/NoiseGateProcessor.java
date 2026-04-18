@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.core.mixer.InsertEffect;
+
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor;
 
@@ -26,6 +28,7 @@ import com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor;
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
+@InsertEffect(type = "NOISE_GATE", displayName = "Noise Gate")
 public final class NoiseGateProcessor implements SidechainAwareProcessor {
 
     /** Gate state. */
