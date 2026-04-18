@@ -1,7 +1,14 @@
 package com.benesquivelmusic.daw.core.plugin;
 
+import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.project.DawProject;
+import com.benesquivelmusic.daw.core.telemetry.ArmedTrackSourceProvider;
+import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
+import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
+import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
+import com.benesquivelmusic.daw.sdk.telemetry.WallMaterial;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -126,6 +133,77 @@ class SoundWaveTelemetryPluginTest {
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────
+
+    // ── ArmedTrackSourceProvider wiring ─────────────────────────────────
+
+    @Test
+    void activateShouldSubscribeToArmedTrackSourceProvider() {
+        plugin.initialize(stubContext());
+        ArmedTrackSourceProvider provider = new ArmedTrackSourceProvider(
+                newProjectWithArmedTrack("Guitar"));
+        plugin.setArmedTrackSourceProvider(provider);
+
+        assertThat(plugin.isSubscribedToArmedTrackSourceProvider()).isFalse();
+
+        plugin.activate();
+
+        assertThat(plugin.isSubscribedToArmedTrackSourceProvider()).isTrue();
+        // Activation should trigger an initial reconciliation.
+        assertThat(provider.getManagedSources())
+                .extracting(s -> s.name())
+                .containsExactly("Guitar");
+    }
+
+    @Test
+    void deactivateShouldUnsubscribeFromArmedTrackSourceProvider() {
+        plugin.initialize(stubContext());
+        ArmedTrackSourceProvider provider = new ArmedTrackSourceProvider(
+                newProjectWithArmedTrack("Vocals"));
+        plugin.setArmedTrackSourceProvider(provider);
+
+        plugin.activate();
+        assertThat(plugin.isSubscribedToArmedTrackSourceProvider()).isTrue();
+
+        plugin.deactivate();
+        assertThat(plugin.isSubscribedToArmedTrackSourceProvider()).isFalse();
+    }
+
+    @Test
+    void disposeShouldUnsubscribeFromArmedTrackSourceProvider() {
+        plugin.initialize(stubContext());
+        ArmedTrackSourceProvider provider = new ArmedTrackSourceProvider(
+                newProjectWithArmedTrack("Drums"));
+        plugin.setArmedTrackSourceProvider(provider);
+
+        plugin.activate();
+        plugin.dispose();
+
+        assertThat(plugin.isSubscribedToArmedTrackSourceProvider()).isFalse();
+        assertThat(plugin.getArmedTrackSourceProvider()).isNull();
+    }
+
+    @Test
+    void settingProviderWhileActiveReSubscribes() {
+        plugin.initialize(stubContext());
+        plugin.activate();
+
+        ArmedTrackSourceProvider provider = new ArmedTrackSourceProvider(
+                newProjectWithArmedTrack("Bass"));
+        plugin.setArmedTrackSourceProvider(provider);
+
+        assertThat(plugin.isSubscribedToArmedTrackSourceProvider()).isTrue();
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────────
+
+    private static DawProject newProjectWithArmedTrack(String name) {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        project.setRoomConfiguration(new RoomConfiguration(
+                new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL));
+        Track track = project.createAudioTrack(name);
+        track.setArmed(true);
+        return project;
+    }
 
     private static PluginContext stubContext() {
         return new PluginContext() {
