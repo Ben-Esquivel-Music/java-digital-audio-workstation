@@ -1,12 +1,15 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
+import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 
 /**
  * Waveshaping distortion/saturation processor with configurable oversampling
- * (2×, 4×, 8×) to suppress aliasing artifacts caused by nonlinear transfer
+ * (1×, 2×, 4×, 8×) to suppress aliasing artifacts caused by nonlinear transfer
  * functions.
  *
  * <p>Implements oversampled waveshaping using polyphase FIR half-band filters
@@ -18,15 +21,28 @@ import java.util.Objects;
  * <p>Features:
  * <ul>
  *   <li>Built-in transfer functions: soft-clip (tanh), hard-clip, tube
- *       saturation, tape saturation</li>
+ *       saturation, tape saturation, plus a user-defined {@code CUSTOM} curve
+ *       built from control points</li>
  *   <li>Polyphase FIR half-band upsampler/downsampler pair for 2× oversampling,
- *       cascadable for 4×/8×</li>
+ *       cascadable for 4×/8×; {@code NONE} bypasses the oversampling chain</li>
  *   <li>Configurable drive, wet/dry mix, and output gain</li>
+ *   <li>Reports accurate {@link #getLatencySamples() latency} for plugin
+ *       delay compensation based on the oversampling filter's group delay</li>
  * </ul>
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
+@RealTimeSafe
 public final class WaveshaperProcessor implements AudioProcessor {
+
+    /** Minimum drive in dB accepted by {@link #setDriveDb(double)}. */
+    public static final double MIN_DRIVE_DB = 0.0;
+    /** Maximum drive in dB accepted by {@link #setDriveDb(double)}. */
+    public static final double MAX_DRIVE_DB = 48.0;
+    /** Minimum output gain in dB accepted by {@link #setOutputGainDb(double)}. */
+    public static final double MIN_OUTPUT_GAIN_DB = -12.0;
+    /** Maximum output gain in dB accepted by {@link #setOutputGainDb(double)}. */
+    public static final double MAX_OUTPUT_GAIN_DB = 12.0;
 
     /** Waveshaping transfer function. */
     public enum TransferFunction {
@@ -37,11 +53,19 @@ public final class WaveshaperProcessor implements AudioProcessor {
         /** Asymmetric tube-style saturation emulating push-pull tube stages. */
         TUBE_SATURATION,
         /** Gentle tape-style saturation with subtle even-harmonic warmth. */
-        TAPE_SATURATION
+        TAPE_SATURATION,
+        /**
+         * User-supplied transfer curve defined by control points. The curve is
+         * evaluated by piecewise-linear interpolation between the configured
+         * points — see {@link WaveshaperProcessor#setCustomCurvePoints(double[], double[])}.
+         */
+        CUSTOM
     }
 
     /** Oversampling factor for antialiasing. */
     public enum OversampleFactor {
+        /** 1× — no oversampling (processes at the native sample rate). */
+        NONE(0),
         /** 2× oversampling (one cascaded half-band stage). */
         TWO_X(1),
         /** 4× oversampling (two cascaded half-band stages). */
@@ -60,7 +84,7 @@ public final class WaveshaperProcessor implements AudioProcessor {
             return stages;
         }
 
-        /** Returns the integer oversampling factor (2, 4, or 8). */
+        /** Returns the integer oversampling factor (1, 2, 4, or 8). */
         public int getFactor() {
             return 1 << stages;
         }
@@ -91,6 +115,11 @@ public final class WaveshaperProcessor implements AudioProcessor {
     private double driveDb;
     private double mix;
     private double outputGainDb;
+
+    // CUSTOM transfer function: strictly-monotonic x control points with paired y values.
+    // Defaults to the identity curve (x -> x) within [-1, 1].
+    private double[] customX = {-1.0, 0.0, 1.0};
+    private double[] customY = {-1.0, 0.0, 1.0};
 
     // Upsample polyphase state: [stage][channel][NUM_EVEN_PHASE_COEFFS]
     private double[][][] upDelayLines;
@@ -139,6 +168,19 @@ public final class WaveshaperProcessor implements AudioProcessor {
         double driveLinear = Math.pow(10.0, driveDb / 20.0);
         double outputGainLinear = Math.pow(10.0, outputGainDb / 20.0);
         int numStages = oversampleFactor.getStages();
+
+        // 1× oversampling fast path: shape directly at the native sample rate.
+        if (numStages == 0) {
+            for (int ch = 0; ch < activeCh; ch++) {
+                for (int frame = 0; frame < numFrames; frame++) {
+                    float dry = inputBuffer[ch][frame];
+                    float wet = (float) (applyTransferFunction((float) (dry * driveLinear))
+                            * outputGainLinear);
+                    outputBuffer[ch][frame] = (float) (dry * (1.0 - mix) + wet * mix);
+                }
+            }
+            return;
+        }
 
         for (int ch = 0; ch < activeCh; ch++) {
             for (int frame = 0; frame < numFrames; frame++) {
@@ -258,7 +300,40 @@ public final class WaveshaperProcessor implements AudioProcessor {
             case HARD_CLIP -> Math.max(-1.0f, Math.min(1.0f, x));
             case TUBE_SATURATION -> tubeSaturate(x);
             case TAPE_SATURATION -> tapeSaturate(x);
+            case CUSTOM -> customCurve(x);
         };
+    }
+
+    /**
+     * Evaluates the user-supplied custom transfer curve at {@code x} using
+     * piecewise-linear interpolation between the configured control points.
+     * Inputs outside the configured x-range are clamped to the first/last
+     * control point's y-value (flat extrapolation).
+     */
+    private float customCurve(float x) {
+        double[] xs = customX;
+        double[] ys = customY;
+        int n = xs.length;
+        if (x <= xs[0]) {
+            return (float) ys[0];
+        }
+        if (x >= xs[n - 1]) {
+            return (float) ys[n - 1];
+        }
+        // Linear scan is fine for the small control-point counts typical of
+        // a transfer curve (≤ ~32 points); avoids array-allocating a binary
+        // search wrapper and keeps this path allocation-free.
+        for (int i = 1; i < n; i++) {
+            if (x <= xs[i]) {
+                double x0 = xs[i - 1];
+                double x1 = xs[i];
+                double y0 = ys[i - 1];
+                double y1 = ys[i];
+                double t = (x - x0) / (x1 - x0);
+                return (float) (y0 + t * (y1 - y0));
+            }
+        }
+        return (float) ys[n - 1];
     }
 
     /**
@@ -305,7 +380,18 @@ public final class WaveshaperProcessor implements AudioProcessor {
         return driveDb;
     }
 
+    /**
+     * Sets the input drive in dB.
+     *
+     * @param driveDb drive in dB, must be in [{@value #MIN_DRIVE_DB},
+     *                {@value #MAX_DRIVE_DB}]
+     * @throws IllegalArgumentException if {@code driveDb} is out of range
+     */
     public void setDriveDb(double driveDb) {
+        if (driveDb < MIN_DRIVE_DB || driveDb > MAX_DRIVE_DB) {
+            throw new IllegalArgumentException(
+                    "driveDb must be in [" + MIN_DRIVE_DB + ", " + MAX_DRIVE_DB + "]: " + driveDb);
+        }
         this.driveDb = driveDb;
     }
 
@@ -324,8 +410,73 @@ public final class WaveshaperProcessor implements AudioProcessor {
         return outputGainDb;
     }
 
+    /**
+     * Sets the output gain in dB.
+     *
+     * @param outputGainDb output gain in dB, must be in
+     *                     [{@value #MIN_OUTPUT_GAIN_DB}, {@value #MAX_OUTPUT_GAIN_DB}]
+     * @throws IllegalArgumentException if {@code outputGainDb} is out of range
+     */
     public void setOutputGainDb(double outputGainDb) {
+        if (outputGainDb < MIN_OUTPUT_GAIN_DB || outputGainDb > MAX_OUTPUT_GAIN_DB) {
+            throw new IllegalArgumentException("outputGainDb must be in ["
+                    + MIN_OUTPUT_GAIN_DB + ", " + MAX_OUTPUT_GAIN_DB + "]: " + outputGainDb);
+        }
         this.outputGainDb = outputGainDb;
+    }
+
+    /**
+     * Returns an unmodifiable snapshot of the custom-curve control-point
+     * x-coordinates. Defaults to {@code {-1, 0, 1}} (identity curve).
+     */
+    public List<Double> getCustomCurveXs() {
+        var list = new java.util.ArrayList<Double>(customX.length);
+        for (double v : customX) list.add(v);
+        return List.copyOf(list);
+    }
+
+    /**
+     * Returns an unmodifiable snapshot of the custom-curve control-point
+     * y-coordinates. Defaults to {@code {-1, 0, 1}} (identity curve).
+     */
+    public List<Double> getCustomCurveYs() {
+        var list = new java.util.ArrayList<Double>(customY.length);
+        for (double v : customY) list.add(v);
+        return List.copyOf(list);
+    }
+
+    /**
+     * Sets the control points defining the {@link TransferFunction#CUSTOM}
+     * transfer curve. The curve is evaluated by piecewise-linear interpolation
+     * between the supplied points; inputs outside {@code xs[0]..xs[n-1]} are
+     * clamped to the nearest endpoint y-value.
+     *
+     * @param xs strictly-monotonic increasing x-coordinates (at least 2 points)
+     * @param ys y-coordinates paired with {@code xs}; must be the same length
+     * @throws NullPointerException     if either array is {@code null}
+     * @throws IllegalArgumentException if the arrays have different lengths,
+     *                                  fewer than 2 points, or {@code xs} is
+     *                                  not strictly monotonic increasing
+     */
+    public void setCustomCurvePoints(double[] xs, double[] ys) {
+        Objects.requireNonNull(xs, "xs must not be null");
+        Objects.requireNonNull(ys, "ys must not be null");
+        if (xs.length != ys.length) {
+            throw new IllegalArgumentException(
+                    "xs and ys must have the same length: " + xs.length + " vs " + ys.length);
+        }
+        if (xs.length < 2) {
+            throw new IllegalArgumentException("at least 2 control points are required");
+        }
+        for (int i = 1; i < xs.length; i++) {
+            if (!(xs[i] > xs[i - 1])) {
+                throw new IllegalArgumentException(
+                        "xs must be strictly monotonic increasing at index " + i);
+            }
+        }
+        // Defensive copy so callers cannot mutate our state after the fact.
+        this.customX = Arrays.copyOf(xs, xs.length);
+        this.customY = Arrays.copyOf(ys, ys.length);
     }
 
     @Override
@@ -341,6 +492,42 @@ public final class WaveshaperProcessor implements AudioProcessor {
     @Override
     public int getOutputChannelCount() {
         return channels;
+    }
+
+    /**
+     * Returns the processing latency introduced by the oversampling
+     * upsample/downsample filter chain, in input-rate samples.
+     *
+     * <p>Each cascaded 2× polyphase half-band stage adds a group delay of
+     * {@code 2 × PASSTHROUGH_DELAY = 14} samples at that stage's input rate.
+     * For stage {@code k} (0-indexed, where {@code k = 0} is the outermost
+     * stage operating at the native sample rate), the contribution in
+     * native-rate samples is {@code 14 / 2^k}. The total latency at the
+     * native sample rate is therefore:</p>
+     *
+     * <pre>
+     *   latency = sum_{k=0..stages-1} 14 / 2^k
+     * </pre>
+     *
+     * <p>Values for each factor (rounded to the nearest integer):</p>
+     * <ul>
+     *   <li>{@link OversampleFactor#NONE}   → 0 samples</li>
+     *   <li>{@link OversampleFactor#TWO_X}  → 14 samples</li>
+     *   <li>{@link OversampleFactor#FOUR_X} → 21 samples</li>
+     *   <li>{@link OversampleFactor#EIGHT_X}→ 25 samples</li>
+     * </ul>
+     */
+    @Override
+    public int getLatencySamples() {
+        int stages = oversampleFactor.getStages();
+        if (stages == 0) {
+            return 0;
+        }
+        double total = 0.0;
+        for (int k = 0; k < stages; k++) {
+            total += (2.0 * PASSTHROUGH_DELAY) / (1 << k);
+        }
+        return (int) Math.round(total);
     }
 
     private void initFilterState() {
