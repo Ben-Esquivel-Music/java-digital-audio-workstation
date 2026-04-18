@@ -50,7 +50,16 @@ KNOWN_KEYS+=("lib/portaudio/LICENSE.txt");        KNOWN_VALS+=("PortAudio|v19.7+
 KNOWN_KEYS+=("lib/Clap-1.2.7/LICENSE");           KNOWN_VALS+=("CLAP (CLever Audio Plugin API)|1.2.7|MIT License|https://cleveraudio.org")
 KNOWN_KEYS+=("lib/fluidsynth-2.5.3/fluidsynth-2.5.3/LICENSE"); KNOWN_VALS+=("FluidSynth|2.5.3|GNU Lesser General Public License (LGPL), version 2.1|https://www.fluidsynth.org")
 KNOWN_KEYS+=("lib/libmp3lame/COPYING");           KNOWN_VALS+=("LAME (libmp3lame)|3.99.5|GNU Library General Public License (LGPL), version 2|https://lame.sourceforge.io")
-KNOWN_KEYS+=("lib/RoomAcoustiCpp-1.0.1/RoomAcoustiCpp-1.0.1/LICENSE"); KNOWN_VALS+=("RoomAcoustiCpp|1.0.1|GNU General Public License (GPL), version 3|https://github.com/audiolabs/RoomAcoustiCpp")
+
+# ── Extra (non-lib) attribution entries ─────────────────────────────
+# Some third-party works are not vendored as source under lib/ but
+# still require attribution — for example, derivative works ported
+# into our own modules.  Each entry is:
+#   display_name|version|license_type|website|license_file_path|notice
+# license_file_path is resolved relative to the repo root.  notice is
+# free-form prose appended after the license text block.
+EXTRA_ENTRIES=()
+EXTRA_ENTRIES+=("RoomAcoustiCpp (Java port; derivative work)|1.0.1|GNU General Public License (GPL), version 3|https://github.com/audiolabs/RoomAcoustiCpp|LICENSE|The \`daw-acoustics\` Maven module is a pure-Java port of the RoomAcoustiCpp room acoustics library. Per GPLv3 §5, the derivative work is distributed under the same GPLv3 license as the original. The vendored C++ source tree was removed from this repository once the port was complete; original upstream sources remain available at the Website URL above. The reproduced license text below is the same GPLv3 text used by this project itself (see the project root \`LICENSE\` file). See also \`daw-acoustics/NOTICE\` for the in-module attribution.|daw-acoustics/src/main/java/com/benesquivelmusic/daw/acoustics/")
 
 # Look up metadata for a license file path; prints the value or empty.
 lookup_known() {
@@ -173,6 +182,43 @@ HEADER
             echo '```'
         else
             echo "*License file not found at \`${rel_path}\`.*"
+        fi
+
+        echo ""
+        echo "---"
+        echo ""
+        INDEX=$((INDEX + 1))
+    done
+
+    # ── Emit extra (non-lib) attribution entries ───────────────────
+    for entry in "${EXTRA_ENTRIES[@]+"${EXTRA_ENTRIES[@]}"}"; do
+        IFS='|' read -r NAME VERSION LICENSE WEBSITE LICENSE_PATH NOTICE FILES_PATH <<< "${entry}"
+
+        echo "## ${INDEX}. ${NAME}"
+        echo ""
+        echo "- **Version**: ${VERSION}"
+        echo "- **License**: ${LICENSE}"
+        if [[ -n "${WEBSITE}" ]]; then
+            echo "- **Website**: ${WEBSITE}"
+        fi
+        if [[ -n "${FILES_PATH}" ]]; then
+            echo "- **Files**: \`${FILES_PATH}\` (derivative work)"
+        fi
+        echo "- **License file**: \`${LICENSE_PATH}\`"
+        echo ""
+        if [[ -n "${NOTICE}" ]]; then
+            echo "${NOTICE}"
+            echo ""
+        fi
+
+        abs_license="${REPO_ROOT}/${LICENSE_PATH}"
+        if [[ -f "${abs_license}" ]]; then
+            echo '```'
+            cat "${abs_license}"
+            echo ""
+            echo '```'
+        else
+            echo "*License file not found at \`${LICENSE_PATH}\`.*"
         fi
 
         echo ""

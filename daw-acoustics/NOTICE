@@ -1,0 +1,39 @@
+daw-acoustics
+=============
+
+This module is a pure-Java port of the RoomAcoustiCpp room acoustics
+library and is therefore a derivative work for the purposes of the
+GNU General Public License, version 3 (GPLv3).
+
+Original work
+-------------
+  Name    : RoomAcoustiCpp
+  Version : 1.0.1
+  Author  : Fraunhofer IIS / Audio Labs
+  Website : https://github.com/audiolabs/RoomAcoustiCpp
+  License : GNU General Public License (GPL), version 3
+
+Derivative work
+---------------
+  Module  : daw-acoustics
+  Path    : src/main/java/com/benesquivelmusic/daw/acoustics/
+  License : GNU General Public License (GPL), version 3
+            (see the project root LICENSE file for the full text)
+
+Per GPLv3 §5, this derivative work is distributed under the same GPLv3
+license as the original. The "Ported from RoomAcoustiCpp {@code …}"
+Javadoc comments throughout this module identify the C++ classes that
+each Java class is derived from.
+
+The vendored C++ source tree (formerly at lib/RoomAcoustiCpp-1.0.1/)
+has been removed from this repository now that the Java port is
+complete. The original upstream sources remain available at the
+Website URL above.
+
+Intentionally not ported (out of scope for a pure-Java DAW):
+  - Unity plugin bridge
+  - Windows Visual Studio project files
+  - Android NDK project files
+  - moodycamel lock-free queue (replaced by java.util.concurrent)
+  - AudioThreadPool / SpinLock (replaced by java.util.concurrent.locks)
+  - Timer / ScopedTimer / RACProfiler (use JFR / Micrometer instead)

@@ -34,12 +34,23 @@ in its directory under lib/.
    Files   : lib/Clap-1.2.7/
    Notice  : Full license text in lib/Clap-1.2.7/LICENSE
 
-5. RoomAcoustiCpp — Room Acoustics Library
-   Version : 1.0.1
+5. RoomAcoustiCpp — Room Acoustics Library (derivative work; Java port)
+   Original Version : 1.0.1
+   Original Author  : Fraunhofer IIS / Audio Labs
    License : GNU General Public License (GPL), version 3
    Website : https://github.com/audiolabs/RoomAcoustiCpp
-   Files   : lib/RoomAcoustiCpp-1.0.1/
-   Notice  : Full license text in lib/RoomAcoustiCpp-1.0.1/RoomAcoustiCpp-1.0.1/LICENSE
+   Files   : daw-acoustics/src/main/java/com/benesquivelmusic/daw/acoustics/
+             (derivative work; Java port of RoomAcoustiCpp 1.0.1)
+   Notice  : The `daw-acoustics` Maven module is a pure-Java port of the
+             RoomAcoustiCpp room acoustics library. Per GPLv3 §5, the
+             derivative work is distributed under the same GPLv3 license
+             as the original. The vendored C++ source tree
+             (`lib/RoomAcoustiCpp-1.0.1/`) was removed once the port was
+             complete; the original upstream sources remain available at
+             the Website URL above. The full GPLv3 license text is the
+             same text used by this project itself and is reproduced in
+             the project root `LICENSE` file. See also
+             `daw-acoustics/NOTICE` for the in-module attribution.
 
 6. libogg — Ogg Bitstream Library
    Version : 1.3.6
