@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.marker.MarkerManager;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshotManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
@@ -34,6 +35,7 @@ public final class DawProject {
     private final MarkerManager markerManager;
     private final ReferenceTrackManager referenceTrackManager;
     private final Metronome metronome;
+    private final MixerSnapshotManager mixerSnapshotManager = new MixerSnapshotManager();
     private RoomConfiguration roomConfiguration;
     private ProjectMetadata metadata;
     private boolean dirty;
@@ -240,6 +242,17 @@ public final class DawProject {
     /** Returns the metronome. */
     public Metronome getMetronome() {
         return metronome;
+    }
+
+    /**
+     * Returns the mixer snapshot manager, which stores up to
+     * {@link MixerSnapshotManager#MAX_SNAPSHOTS} saved mixer scenes plus two
+     * dedicated A/B recall slots for rapid mix comparison.
+     *
+     * @return the mixer snapshot manager
+     */
+    public MixerSnapshotManager getMixerSnapshotManager() {
+        return mixerSnapshotManager;
     }
 
     /**
