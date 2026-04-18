@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.dsp;
 
 import com.benesquivelmusic.daw.core.audio.StretchQuality;
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.Arrays;
@@ -207,6 +208,7 @@ public final class PitchShiftProcessor implements AudioProcessor {
     }
 
     /** Returns the current pitch shift in semitones. */
+    @ProcessorParam(id = 0, name = "Pitch Shift", min = -24.0, max = 24.0, defaultValue = 0.0, unit = "semitones")
     public double getPitchShiftSemitones() {
         return pitchShiftSemitones;
     }

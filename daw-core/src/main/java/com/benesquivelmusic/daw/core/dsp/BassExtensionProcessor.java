@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 /**
@@ -160,6 +161,7 @@ public final class BassExtensionProcessor implements AudioProcessor {
      *
      * @return crossover frequency
      */
+    @ProcessorParam(id = 0, name = "Crossover", min = 40.0, max = 120.0, defaultValue = 80.0, unit = "Hz")
     public double getCrossoverHz() {
         return crossoverHz;
     }
@@ -208,6 +210,7 @@ public final class BassExtensionProcessor implements AudioProcessor {
      *
      * @return harmonic level in [0.0, 1.0]
      */
+    @ProcessorParam(id = 1, name = "Harmonic Level", min = 0.0, max = 1.0, defaultValue = 0.5)
     public double getHarmonicLevel() {
         return harmonicLevel;
     }
@@ -230,6 +233,7 @@ public final class BassExtensionProcessor implements AudioProcessor {
      *
      * @return mix in [0.0, 1.0]
      */
+    @ProcessorParam(id = 2, name = "Mix", min = 0.0, max = 1.0, defaultValue = 1.0)
     public double getMix() {
         return mix;
     }

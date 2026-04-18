@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
@@ -376,6 +377,7 @@ public final class WaveshaperProcessor implements AudioProcessor {
         initFilterState();
     }
 
+    @ProcessorParam(id = 0, name = "Drive", min = 0.0, max = 48.0, defaultValue = 0.0, unit = "dB")
     public double getDriveDb() {
         return driveDb;
     }
@@ -395,6 +397,7 @@ public final class WaveshaperProcessor implements AudioProcessor {
         this.driveDb = driveDb;
     }
 
+    @ProcessorParam(id = 1, name = "Mix", min = 0.0, max = 1.0, defaultValue = 1.0)
     public double getMix() {
         return mix;
     }
@@ -406,6 +409,7 @@ public final class WaveshaperProcessor implements AudioProcessor {
         this.mix = mix;
     }
 
+    @ProcessorParam(id = 2, name = "Output Gain", min = -12.0, max = 12.0, defaultValue = 0.0, unit = "dB")
     public double getOutputGainDb() {
         return outputGainDb;
     }

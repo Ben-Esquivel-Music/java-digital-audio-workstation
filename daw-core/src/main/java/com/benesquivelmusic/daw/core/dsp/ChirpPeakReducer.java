@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.Arrays;
@@ -221,6 +222,7 @@ public final class ChirpPeakReducer implements AudioProcessor {
      *
      * @return threshold in dB
      */
+    @ProcessorParam(id = 0, name = "Threshold", min = -60.0, max = 0.0, defaultValue = -6.0, unit = "dB")
     public double getThresholdDb() {
         return thresholdDb;
     }
@@ -244,6 +246,7 @@ public final class ChirpPeakReducer implements AudioProcessor {
      *
      * @return chirp duration in ms
      */
+    @ProcessorParam(id = 1, name = "Chirp Duration", min = 1.0, max = 5.0, defaultValue = 2.0, unit = "ms")
     public double getChirpDurationMs() {
         return chirpDurationMs;
     }
@@ -268,6 +271,7 @@ public final class ChirpPeakReducer implements AudioProcessor {
      *
      * @return chirp bandwidth in Hz
      */
+    @ProcessorParam(id = 2, name = "Chirp Bandwidth", min = 1000.0, max = 20000.0, defaultValue = 8000.0, unit = "Hz")
     public double getChirpBandwidthHz() {
         return chirpBandwidthHz;
     }
@@ -292,6 +296,7 @@ public final class ChirpPeakReducer implements AudioProcessor {
      *
      * @return mix in [0.0, 1.0]
      */
+    @ProcessorParam(id = 3, name = "Mix", min = 0.0, max = 1.0, defaultValue = 1.0)
     public double getMix() {
         return mix;
     }

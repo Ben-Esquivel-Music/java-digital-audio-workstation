@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 /**
@@ -211,6 +212,7 @@ public final class AnalogDistortionProcessor implements AudioProcessor {
     // --- Parameter accessors ---
 
     /** Returns the drive gain in dB. */
+    @ProcessorParam(id = 0, name = "Drive", min = 0.0, max = 60.0, defaultValue = 0.0, unit = "dB")
     public double getDriveDb() {
         return driveDb;
     }
@@ -231,6 +233,7 @@ public final class AnalogDistortionProcessor implements AudioProcessor {
     }
 
     /** Returns the tone control value in [-1, 1]. */
+    @ProcessorParam(id = 1, name = "Tone", min = -1.0, max = 1.0, defaultValue = 0.0)
     public double getTone() {
         return tone;
     }
@@ -251,6 +254,7 @@ public final class AnalogDistortionProcessor implements AudioProcessor {
     }
 
     /** Returns the slew rate in V/µs. */
+    @ProcessorParam(id = 2, name = "Slew Rate", min = 0.1, max = 100.0, defaultValue = 13.0, unit = "V/µs")
     public double getSlewRate() {
         return slewRate;
     }
@@ -271,6 +275,7 @@ public final class AnalogDistortionProcessor implements AudioProcessor {
     }
 
     /** Returns the asymmetry value in [-1, 1]. */
+    @ProcessorParam(id = 3, name = "Asymmetry", min = -1.0, max = 1.0, defaultValue = 0.0)
     public double getAsymmetry() {
         return asymmetry;
     }
@@ -291,6 +296,7 @@ public final class AnalogDistortionProcessor implements AudioProcessor {
     }
 
     /** Returns the output level in dB. */
+    @ProcessorParam(id = 4, name = "Output Level", min = -24.0, max = 24.0, defaultValue = 0.0, unit = "dB")
     public double getOutputLevelDb() {
         return outputLevelDb;
     }

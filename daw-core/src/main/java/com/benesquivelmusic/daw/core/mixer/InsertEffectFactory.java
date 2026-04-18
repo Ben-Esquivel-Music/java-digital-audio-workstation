@@ -49,6 +49,17 @@ public final class InsertEffectFactory {
             }
             case PARAMETRIC_EQ -> new ParametricEqProcessor(channels, sampleRate);
             case GRAPHIC_EQ    -> new GraphicEqProcessor(channels, sampleRate);
+            case ANALOG_DISTORTION     -> new AnalogDistortionProcessor(channels, sampleRate);
+            case BASS_EXTENSION        -> new BassExtensionProcessor(channels, sampleRate);
+            case CHIRP_PEAK_REDUCER    -> new ChirpPeakReducer(channels, sampleRate);
+            case GAIN_STAGING          -> new GainStagingProcessor(channels, 0.0);
+            case HEARING_LOSS_SIMULATOR -> new HearingLossSimulator(channels, sampleRate);
+            case LESLIE                -> new LeslieProcessor(channels, sampleRate);
+            case PITCH_SHIFT           -> new PitchShiftProcessor(channels, sampleRate);
+            case SPRING_REVERB         -> new SpringReverbProcessor(channels, sampleRate);
+            case TIME_STRETCH          -> new TimeStretchProcessor(channels, sampleRate);
+            case VELVET_NOISE_REVERB   -> new VelvetNoiseReverbProcessor(channels, sampleRate);
+            case WAVESHAPER            -> new WaveshaperProcessor(channels, sampleRate);
             case CLAP_PLUGIN   -> throw new IllegalArgumentException(
                     "CLAP plugins must be loaded via ClapPluginManager, not this factory");
         };
@@ -134,7 +145,84 @@ public final class InsertEffectFactory {
         if (processor instanceof GraphicEqProcessor) {
             return InsertEffectType.GRAPHIC_EQ;
         }
+        if (processor instanceof AnalogDistortionProcessor) {
+            return InsertEffectType.ANALOG_DISTORTION;
+        }
+        if (processor instanceof BassExtensionProcessor) {
+            return InsertEffectType.BASS_EXTENSION;
+        }
+        if (processor instanceof ChirpPeakReducer) {
+            return InsertEffectType.CHIRP_PEAK_REDUCER;
+        }
+        if (processor instanceof GainStagingProcessor) {
+            return InsertEffectType.GAIN_STAGING;
+        }
+        if (processor instanceof HearingLossSimulator) {
+            return InsertEffectType.HEARING_LOSS_SIMULATOR;
+        }
+        if (processor instanceof LeslieProcessor) {
+            return InsertEffectType.LESLIE;
+        }
+        if (processor instanceof PitchShiftProcessor) {
+            return InsertEffectType.PITCH_SHIFT;
+        }
+        if (processor instanceof SpringReverbProcessor) {
+            return InsertEffectType.SPRING_REVERB;
+        }
+        if (processor instanceof TimeStretchProcessor) {
+            return InsertEffectType.TIME_STRETCH;
+        }
+        if (processor instanceof VelvetNoiseReverbProcessor) {
+            return InsertEffectType.VELVET_NOISE_REVERB;
+        }
+        if (processor instanceof WaveshaperProcessor) {
+            return InsertEffectType.WAVESHAPER;
+        }
         return null;
+    }
+
+    /**
+     * Returns the concrete processor class associated with the given effect
+     * type, or {@code null} for {@link InsertEffectType#CLAP_PLUGIN}.
+     */
+    /**
+     * Verifies that the processor instance matches the expected concrete
+     * class for the given built-in effect type. Throws
+     * {@link IllegalArgumentException} on mismatch. No-op for
+     * {@link InsertEffectType#CLAP_PLUGIN} (external plugin).
+     */
+    private static void validateProcessorClass(InsertEffectType type, AudioProcessor processor) {
+        Class<? extends AudioProcessor> expected = processorClassFor(type);
+        if (expected != null && !expected.isInstance(processor)) {
+            throw new IllegalArgumentException(
+                    "Expected " + expected.getSimpleName()
+                            + ", got " + processor.getClass().getSimpleName());
+        }
+    }
+
+    private static Class<? extends AudioProcessor> processorClassFor(InsertEffectType type) {        return switch (type) {
+            case COMPRESSOR             -> CompressorProcessor.class;
+            case LIMITER                -> LimiterProcessor.class;
+            case REVERB                 -> ReverbProcessor.class;
+            case DELAY                  -> DelayProcessor.class;
+            case CHORUS                 -> ChorusProcessor.class;
+            case NOISE_GATE             -> NoiseGateProcessor.class;
+            case STEREO_IMAGER          -> StereoImagerProcessor.class;
+            case PARAMETRIC_EQ          -> ParametricEqProcessor.class;
+            case GRAPHIC_EQ             -> GraphicEqProcessor.class;
+            case ANALOG_DISTORTION      -> AnalogDistortionProcessor.class;
+            case BASS_EXTENSION         -> BassExtensionProcessor.class;
+            case CHIRP_PEAK_REDUCER     -> ChirpPeakReducer.class;
+            case GAIN_STAGING           -> GainStagingProcessor.class;
+            case HEARING_LOSS_SIMULATOR -> HearingLossSimulator.class;
+            case LESLIE                 -> LeslieProcessor.class;
+            case PITCH_SHIFT            -> PitchShiftProcessor.class;
+            case SPRING_REVERB          -> SpringReverbProcessor.class;
+            case TIME_STRETCH           -> TimeStretchProcessor.class;
+            case VELVET_NOISE_REVERB    -> VelvetNoiseReverbProcessor.class;
+            case WAVESHAPER             -> WaveshaperProcessor.class;
+            case CLAP_PLUGIN            -> null;
+        };
     }
 
     /**
@@ -149,6 +237,11 @@ public final class InsertEffectFactory {
      */
     public static List<PluginParameter> getParameterDescriptors(InsertEffectType type) {
         Objects.requireNonNull(type, "type must not be null");
+        Class<? extends AudioProcessor> processorClass = processorClassFor(type);
+        if (processorClass != null
+                && ReflectiveParameterRegistry.hasAnnotatedParameters(processorClass)) {
+            return ReflectiveParameterRegistry.getParameterDescriptors(processorClass);
+        }
         return switch (type) {
             case COMPRESSOR -> List.of(
                     new PluginParameter(0, "Threshold (dB)", -60.0, 0.0, -20.0),
@@ -186,7 +279,7 @@ public final class InsertEffectFactory {
             case PARAMETRIC_EQ -> List.of();
             case GRAPHIC_EQ -> List.of(
                     new PluginParameter(0, "Q", 0.1, 10.0, 1.0));
-            case CLAP_PLUGIN -> List.of();
+            default -> List.of();
         };
     }
 
@@ -205,6 +298,10 @@ public final class InsertEffectFactory {
                                                                      AudioProcessor processor) {
         Objects.requireNonNull(type, "type must not be null");
         Objects.requireNonNull(processor, "processor must not be null");
+        validateProcessorClass(type, processor);
+        if (ReflectiveParameterRegistry.hasAnnotatedParameters(processor.getClass())) {
+            return ReflectiveParameterRegistry.createParameterHandler(processor);
+        }
         return switch (type) {
             case COMPRESSOR -> {
                 if (!(processor instanceof CompressorProcessor p)) {
@@ -255,7 +352,7 @@ public final class InsertEffectFactory {
                 }
                 yield graphicEqHandler(p);
             }
-            case CLAP_PLUGIN -> (_, _) -> { };
+            default -> (_, _) -> { };
         };
     }
 
@@ -275,7 +372,18 @@ public final class InsertEffectFactory {
                 InsertEffectType.CHORUS,
                 InsertEffectType.NOISE_GATE,
                 InsertEffectType.STEREO_IMAGER,
-                InsertEffectType.GRAPHIC_EQ);
+                InsertEffectType.GRAPHIC_EQ,
+                InsertEffectType.ANALOG_DISTORTION,
+                InsertEffectType.BASS_EXTENSION,
+                InsertEffectType.CHIRP_PEAK_REDUCER,
+                InsertEffectType.GAIN_STAGING,
+                InsertEffectType.HEARING_LOSS_SIMULATOR,
+                InsertEffectType.LESLIE,
+                InsertEffectType.PITCH_SHIFT,
+                InsertEffectType.SPRING_REVERB,
+                InsertEffectType.TIME_STRETCH,
+                InsertEffectType.VELVET_NOISE_REVERB,
+                InsertEffectType.WAVESHAPER);
     }
 
     /**
@@ -293,6 +401,10 @@ public final class InsertEffectFactory {
                                                            AudioProcessor processor) {
         Objects.requireNonNull(type, "type must not be null");
         Objects.requireNonNull(processor, "processor must not be null");
+        validateProcessorClass(type, processor);
+        if (ReflectiveParameterRegistry.hasAnnotatedParameters(processor.getClass())) {
+            return ReflectiveParameterRegistry.getParameterValues(processor);
+        }
         Map<Integer, Double> values = new LinkedHashMap<>();
         switch (type) {
             case COMPRESSOR -> {
@@ -363,6 +475,7 @@ public final class InsertEffectFactory {
                 values.put(0, p.getQ());
             }
             case PARAMETRIC_EQ, CLAP_PLUGIN -> { }
+            default -> { }
         }
         return values;
     }

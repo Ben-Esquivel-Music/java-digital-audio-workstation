@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor;
 
 /**
@@ -149,27 +150,32 @@ public final class NoiseGateProcessor implements SidechainAwareProcessor {
 
     // --- Parameter accessors ---
 
+    @ProcessorParam(id = 0, name = "Threshold", min = -80.0, max = 0.0, defaultValue = -40.0, unit = "dB")
     public double getThresholdDb() { return thresholdDb; }
     public void setThresholdDb(double thresholdDb) { this.thresholdDb = thresholdDb; }
 
+    @ProcessorParam(id = 1, name = "Attack", min = 0.01, max = 50.0, defaultValue = 1.0, unit = "ms")
     public double getAttackMs() { return attackMs; }
     public void setAttackMs(double attackMs) {
         this.attackMs = attackMs;
         recalculateCoefficients();
     }
 
+    @ProcessorParam(id = 2, name = "Hold", min = 0.0, max = 500.0, defaultValue = 50.0, unit = "ms")
     public double getHoldMs() { return holdMs; }
     public void setHoldMs(double holdMs) {
         this.holdMs = holdMs;
         recalculateCoefficients();
     }
 
+    @ProcessorParam(id = 3, name = "Release", min = 1.0, max = 500.0, defaultValue = 50.0, unit = "ms")
     public double getReleaseMs() { return releaseMs; }
     public void setReleaseMs(double releaseMs) {
         this.releaseMs = releaseMs;
         recalculateCoefficients();
     }
 
+    @ProcessorParam(id = 4, name = "Range", min = -80.0, max = 0.0, defaultValue = -80.0, unit = "dB")
     public double getRangeDb() { return rangeDb; }
     public void setRangeDb(double rangeDb) { this.rangeDb = rangeDb; }
 

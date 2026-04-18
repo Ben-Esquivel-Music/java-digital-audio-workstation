@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
@@ -234,6 +235,7 @@ public final class HearingLossSimulator implements AudioProcessor {
      * {@code 0} disables recruitment; {@code 1} sums the fully compressed
      * per-band signals into the output.
      */
+    @ProcessorParam(id = 0, name = "Recruitment", min = 0.0, max = 1.0, defaultValue = 0.5)
     public double getRecruitmentLevel() {
         return recruitmentLevel;
     }
@@ -252,6 +254,7 @@ public final class HearingLossSimulator implements AudioProcessor {
      * nominal (healthy frequency selectivity); larger values broaden the
      * audiogram attenuation bands to mimic reduced frequency resolution.
      */
+    @ProcessorParam(id = 1, name = "Filter Broadening", min = 1.0, max = 5.0, defaultValue = 1.0)
     public double getFilterBroadening() {
         return filterBroadening;
     }

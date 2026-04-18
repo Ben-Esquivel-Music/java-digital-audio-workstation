@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.Arrays;
@@ -104,6 +105,7 @@ public final class ChorusProcessor implements AudioProcessor {
 
     // --- Parameter accessors ---
 
+    @ProcessorParam(id = 0, name = "Rate", min = 0.1, max = 10.0, defaultValue = 1.0, unit = "Hz")
     public double getRateHz() { return rateHz; }
 
     public void setRateHz(double rateHz) {
@@ -113,6 +115,7 @@ public final class ChorusProcessor implements AudioProcessor {
         this.rateHz = rateHz;
     }
 
+    @ProcessorParam(id = 1, name = "Depth", min = 0.1, max = 20.0, defaultValue = 5.0, unit = "ms")
     public double getDepthMs() { return depthMs; }
 
     public void setDepthMs(double depthMs) {
@@ -122,6 +125,7 @@ public final class ChorusProcessor implements AudioProcessor {
         this.depthMs = depthMs;
     }
 
+    @ProcessorParam(id = 2, name = "Base Delay", min = 1.0, max = 50.0, defaultValue = 10.0, unit = "ms")
     public double getBaseDelayMs() { return baseDelayMs; }
 
     public void setBaseDelayMs(double baseDelayMs) {
@@ -132,6 +136,7 @@ public final class ChorusProcessor implements AudioProcessor {
         this.baseDelayMs = baseDelayMs;
     }
 
+    @ProcessorParam(id = 3, name = "Mix", min = 0.0, max = 1.0, defaultValue = 0.5)
     public double getMix() { return mix; }
 
     public void setMix(double mix) {

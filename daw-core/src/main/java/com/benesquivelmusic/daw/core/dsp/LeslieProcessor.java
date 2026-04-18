@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.Arrays;
@@ -186,6 +187,7 @@ public final class LeslieProcessor implements AudioProcessor {
 
     // --- Parameter accessors ---
 
+    @ProcessorParam(id = 0, name = "Speed", min = 0.0, max = 1.0, defaultValue = 0.0)
     public double getSpeed() { return speed; }
 
     public void setSpeed(double speed) {
@@ -195,6 +197,7 @@ public final class LeslieProcessor implements AudioProcessor {
         this.speed = speed;
     }
 
+    @ProcessorParam(id = 1, name = "Acceleration", min = 0.0, max = 1.0, defaultValue = 0.5)
     public double getAcceleration() { return acceleration; }
 
     public void setAcceleration(double acceleration) {
@@ -205,6 +208,7 @@ public final class LeslieProcessor implements AudioProcessor {
         this.acceleration = acceleration;
     }
 
+    @ProcessorParam(id = 2, name = "Horn/Drum Balance", min = 0.0, max = 1.0, defaultValue = 0.5)
     public double getHornDrumBalance() { return hornDrumBalance; }
 
     public void setHornDrumBalance(double hornDrumBalance) {
@@ -215,6 +219,7 @@ public final class LeslieProcessor implements AudioProcessor {
         this.hornDrumBalance = hornDrumBalance;
     }
 
+    @ProcessorParam(id = 3, name = "Distance", min = 0.0, max = 1.0, defaultValue = 0.5)
     public double getDistance() { return distance; }
 
     public void setDistance(double distance) {
@@ -224,6 +229,7 @@ public final class LeslieProcessor implements AudioProcessor {
         this.distance = distance;
     }
 
+    @ProcessorParam(id = 4, name = "Mix", min = 0.0, max = 1.0, defaultValue = 0.5)
     public double getMix() { return mix; }
 
     public void setMix(double mix) {

@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.Arrays;
@@ -100,6 +101,7 @@ public final class DelayProcessor implements AudioProcessor {
 
     // --- Parameter accessors ---
 
+    @ProcessorParam(id = 0, name = "Delay", min = 1.0, max = 2000.0, defaultValue = 500.0, unit = "ms")
     public double getDelayMs() { return delayMs; }
 
     public void setDelayMs(double delayMs) {
@@ -115,6 +117,7 @@ public final class DelayProcessor implements AudioProcessor {
         this.delaySamples = (int) (delayMs * 0.001 * sampleRate);
     }
 
+    @ProcessorParam(id = 1, name = "Feedback", min = 0.0, max = 0.99, defaultValue = 0.3)
     public double getFeedback() { return feedback; }
 
     public void setFeedback(double feedback) {
@@ -125,6 +128,7 @@ public final class DelayProcessor implements AudioProcessor {
         this.feedback = feedback;
     }
 
+    @ProcessorParam(id = 2, name = "Mix", min = 0.0, max = 1.0, defaultValue = 0.5)
     public double getMix() { return mix; }
 
     public void setMix(double mix) {

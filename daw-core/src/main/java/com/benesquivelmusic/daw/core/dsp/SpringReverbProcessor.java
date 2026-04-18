@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.Arrays;
@@ -184,6 +185,7 @@ public final class SpringReverbProcessor implements AudioProcessor {
 
     // --- Parameter accessors ---
 
+    @ProcessorParam(id = 0, name = "Spring Tension", min = 0.0, max = 1.0, defaultValue = 0.5)
     public double getSpringTension() { return springTension; }
 
     public void setSpringTension(double springTension) {
@@ -195,6 +197,7 @@ public final class SpringReverbProcessor implements AudioProcessor {
         initializeAllpassDelays();
     }
 
+    @ProcessorParam(id = 1, name = "Decay Time", min = 0.0, max = 1.0, defaultValue = 0.5)
     public double getDecayTime() { return decayTime; }
 
     public void setDecayTime(double decayTime) {
@@ -204,6 +207,7 @@ public final class SpringReverbProcessor implements AudioProcessor {
         this.decayTime = decayTime;
     }
 
+    @ProcessorParam(id = 2, name = "Damping", min = 0.0, max = 1.0, defaultValue = 0.5)
     public double getDamping() { return damping; }
 
     public void setDamping(double damping) {
@@ -213,6 +217,7 @@ public final class SpringReverbProcessor implements AudioProcessor {
         this.damping = damping;
     }
 
+    @ProcessorParam(id = 3, name = "Mix", min = 0.0, max = 1.0, defaultValue = 0.3)
     public double getMix() { return mix; }
 
     public void setMix(double mix) {
@@ -222,6 +227,7 @@ public final class SpringReverbProcessor implements AudioProcessor {
         this.mix = mix;
     }
 
+    @ProcessorParam(id = 4, name = "Pre-Delay", min = 0.0, max = 200.0, defaultValue = 10.0, unit = "ms")
     public double getPreDelayMs() { return preDelayMs; }
 
     public void setPreDelayMs(double preDelayMs) {
@@ -233,6 +239,7 @@ public final class SpringReverbProcessor implements AudioProcessor {
         this.preDelaySamples = (int) (preDelayMs * 0.001 * sampleRate);
     }
 
+    @ProcessorParam(id = 5, name = "Helix Angle", min = 0.0, max = 1.0, defaultValue = 0.5)
     public double getHelixAngle() { return helixAngle; }
 
     public void setHelixAngle(double helixAngle) {
