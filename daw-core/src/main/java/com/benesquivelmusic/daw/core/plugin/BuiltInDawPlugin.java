@@ -26,6 +26,7 @@ import java.util.logging.Logger;
 public sealed interface BuiltInDawPlugin extends DawPlugin
         permits VirtualKeyboardPlugin,
                 ParametricEqPlugin,
+                GraphicEqPlugin,
                 CompressorPlugin,
                 ReverbPlugin,
                 SpectrumAnalyzerPlugin,

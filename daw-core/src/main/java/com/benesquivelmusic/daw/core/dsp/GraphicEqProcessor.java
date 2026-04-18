@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.Arrays;
@@ -44,6 +45,7 @@ import java.util.Objects;
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
+@RealTimeSafe
 public final class GraphicEqProcessor implements AudioProcessor {
 
     /** Maximum gain magnitude allowed per band (±12 dB). */

@@ -24,9 +24,9 @@ class BuiltInDawPluginTest {
     }
 
     @Test
-    void shouldPermitExactlyNineSubclasses() {
+    void shouldPermitExactlyTenSubclasses() {
         Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
-        assertThat(permitted).hasSize(9);
+        assertThat(permitted).hasSize(10);
     }
 
     @Test
@@ -35,6 +35,7 @@ class BuiltInDawPluginTest {
         assertThat(permitted).containsExactlyInAnyOrder(
                 VirtualKeyboardPlugin.class,
                 ParametricEqPlugin.class,
+                GraphicEqPlugin.class,
                 CompressorPlugin.class,
                 ReverbPlugin.class,
                 SpectrumAnalyzerPlugin.class,
