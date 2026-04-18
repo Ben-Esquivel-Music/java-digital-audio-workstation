@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.core.mixer.InsertEffect;
+
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.ArrayList;
@@ -60,6 +62,7 @@ import java.util.Objects;
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
+@InsertEffect(type = "PARAMETRIC_EQ", displayName = "Parametric EQ")
 public final class ParametricEqProcessor implements AudioProcessor {
 
     /** Filter implementation mode. */

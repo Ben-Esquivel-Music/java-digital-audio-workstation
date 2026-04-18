@@ -118,7 +118,47 @@ mvn -version
 # Maven output should show Java version: 26
 ```
 
-### 5) Cleanup downloaded files
+### 5) Fix missing CA certificates (if Maven downloads fail with PKIX errors)
+
+Early-access Temurin 26 builds may ship with an **empty or incomplete `cacerts` truststore**, causing Maven dependency downloads from Maven Central (or any HTTPS repo) to fail with:
+
+```
+PKIX path building failed: sun.security.provider.certpath.SunCertPathBuilderException:
+unable to find valid certification path to requested target
+```
+
+The fix is to replace the JDK 26 truststore with one from a pre-installed system JDK (Temurin 21 or 25 are typical). Do NOT configure Maven to disable TLS verification — that's insecure.
+
+```bash
+# Find a good source truststore (prefer an already-installed system JDK).
+for candidate in \
+    /usr/lib/jvm/temurin-25-jdk-amd64/lib/security/cacerts \
+    /usr/lib/jvm/temurin-21-jdk-amd64/lib/security/cacerts \
+    /etc/ssl/certs/java/cacerts; do
+  if [ -f "$candidate" ]; then
+    SYSTEM_CACERTS="$candidate"
+    break
+  fi
+done
+
+if [ -z "${SYSTEM_CACERTS:-}" ]; then
+  echo "ERROR: No system cacerts found. Install ca-certificates-java or a system JDK first."
+  exit 1
+fi
+
+# Replace the JDK 26 truststore. Back up first for safety.
+cp "${JAVA_HOME}/lib/security/cacerts" "${JAVA_HOME}/lib/security/cacerts.bak"
+cp "$SYSTEM_CACERTS" "${JAVA_HOME}/lib/security/cacerts"
+
+# Purge any poisoned .lastUpdated markers so Maven retries the failed downloads.
+find "$HOME/.m2/repository" -name '*.lastUpdated' -delete 2>/dev/null || true
+
+echo "Truststore replaced from: $SYSTEM_CACERTS"
+```
+
+After this, `mvn compile test` should download artifacts successfully.
+
+### 6) Cleanup downloaded files
 
 ```bash
 rm -f "/tmp/${FILENAME}" "/tmp/${SHA_FILE}"
@@ -147,4 +187,5 @@ java -version && mvn -version
 - Temurin 26 builds are early-access and updated frequently.
 - This skill resolves the latest release dynamically from GitHub redirects.
 - Use `curl -f` so failed downloads stop immediately instead of producing silent partial setup.
+- Early-access JDK 26 truststores can be incomplete and break Maven HTTPS downloads with `PKIX path building failed` errors — always perform step 5 in a fresh environment. See step 5 for the secure fix (copy `cacerts` from a pre-installed system JDK; never disable TLS verification).
 - For GitHub Actions CI, prefer `actions/setup-java@v4` with `distribution: temurin` and `java-version: '26'`.

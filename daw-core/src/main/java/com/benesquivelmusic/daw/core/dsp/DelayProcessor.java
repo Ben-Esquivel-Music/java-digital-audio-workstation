@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.core.mixer.InsertEffect;
+
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
@@ -22,6 +24,7 @@ import java.util.Arrays;
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
+@InsertEffect(type = "DELAY", displayName = "Delay")
 public final class DelayProcessor implements AudioProcessor {
 
     private static final double MAX_FEEDBACK = 0.99;

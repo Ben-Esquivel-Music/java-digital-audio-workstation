@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.core.mixer.InsertEffect;
+
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
@@ -12,6 +14,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
+@InsertEffect(type = "GAIN_STAGING", displayName = "Gain Staging")
 public final class GainStagingProcessor implements AudioProcessor {
 
     private final int channels;
@@ -30,6 +33,23 @@ public final class GainStagingProcessor implements AudioProcessor {
         }
         this.channels = channels;
         setGainDb(gainDb);
+    }
+
+    /**
+     * Factory method used by the {@link com.benesquivelmusic.daw.core.mixer.ProcessorRegistry}
+     * to honor the uniform {@code (int channels, double sampleRate)} registry
+     * contract. Gain staging has no sample-rate dependency, so the
+     * {@code sampleRate} argument is ignored and the processor is initialized
+     * with {@code gainDb == 0.0}; callers can adjust the gain afterwards via
+     * {@link #setGainDb(double)}.
+     *
+     * @param channels   number of audio channels
+     * @param sampleRate the sample rate in Hz (unused; kept for registry contract)
+     * @return a new processor with 0 dB gain
+     */
+    public static GainStagingProcessor createInsertEffect(int channels, double sampleRate) {
+        // sampleRate intentionally ignored — gain staging is sample-rate independent.
+        return new GainStagingProcessor(channels, 0.0);
     }
 
     @Override

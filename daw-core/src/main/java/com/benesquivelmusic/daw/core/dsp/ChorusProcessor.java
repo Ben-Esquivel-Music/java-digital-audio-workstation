@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.core.mixer.InsertEffect;
+
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
@@ -23,6 +25,7 @@ import java.util.Arrays;
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
  */
+@InsertEffect(type = "CHORUS", displayName = "Chorus")
 public final class ChorusProcessor implements AudioProcessor {
 
     private static final double MAX_DELAY_MS = 50.0;
