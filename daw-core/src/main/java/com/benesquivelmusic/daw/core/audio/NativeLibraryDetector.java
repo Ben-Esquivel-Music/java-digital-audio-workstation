@@ -45,6 +45,8 @@ public final class NativeLibraryDetector {
                 "SoundFont synthesis (MIDI playback)"));
         results.add(detect(os, "libmp3lame", "mp3lame", 0,
                 "MP3 export"));
+        results.add(detect(os, "libfdk-aac", "fdk-aac", 2,
+                "AAC export"));
         results.add(detect(os, "libogg", "ogg", 0,
                 "OGG Vorbis import and export"));
         results.add(detect(os, "libvorbis", "vorbis", 0,

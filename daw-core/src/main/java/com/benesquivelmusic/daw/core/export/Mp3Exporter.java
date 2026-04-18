@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.export;
 
+import com.benesquivelmusic.daw.core.audio.NativeLibraryLoader;
 import com.benesquivelmusic.daw.sdk.export.AudioMetadata;
 import com.benesquivelmusic.daw.sdk.export.DitherType;
 
@@ -10,7 +11,6 @@ import java.lang.invoke.MethodHandle;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Objects;
-import java.util.Optional;
 
 /**
  * Exports audio data to MP3 (MPEG-1 Audio Layer III) format using
@@ -234,65 +234,15 @@ public final class Mp3Exporter {
         }
     }
 
-    private static SymbolLookup loadLameLibrary(Arena arena) {
-        String os = System.getProperty("os.name", "").toLowerCase();
-        String[] names;   // bare names for system-installed libraries (OS loader)
-        String[] files;   // filenames for java.library.path search
-        if (os.contains("win")) {
-            names = new String[]{"libmp3lame", "mp3lame", "lame"};
-            files = new String[]{"libmp3lame.dll", "mp3lame.dll", "lame.dll"};
-        } else if (os.contains("mac")) {
-            names = new String[]{"libmp3lame.dylib", "libmp3lame.0.dylib"};
-            files = names;
-        } else {
-            names = new String[]{"libmp3lame.so.0", "libmp3lame.so"};
-            files = names;
-        }
-
-        // 1. Try OS-level library loader (finds system-installed copies)
-        for (String name : names) {
-            try {
-                return SymbolLookup.libraryLookup(name, arena);
-            } catch (IllegalArgumentException _) {
-                // try next candidate
-            }
-        }
-
-        // 2. Search java.library.path directories (finds project-built copies)
-        Optional<SymbolLookup> lookup = searchLibraryPath(arena, files);
-        if (lookup.isPresent()) {
-            return lookup.get();
-        }
-
-        throw new UnsupportedOperationException(
-                "MP3 export requires libmp3lame. "
-                        + "Install LAME (e.g., 'apt install libmp3lame0' on Debian/Ubuntu, "
-                        + "'brew install lame' on macOS, "
-                        + "or build with CMake on Windows).");
-    }
-
     /**
-     * Searches {@code java.library.path} directories for any of the given
-     * library filenames, loading via {@link SymbolLookup#libraryLookup(Path, Arena)}.
+     * Loads {@code libmp3lame} via the centralized {@link NativeLibraryLoader},
+     * which prefers bundled libraries in {@code java.library.path} (built by
+     * CMake from {@code lib/libmp3lame}) and falls back to the OS-level
+     * library loader. This ensures MP3 export uses the same load strategy as
+     * other native codecs in the codebase (e.g. OGG Vorbis).
      */
-    private static Optional<SymbolLookup> searchLibraryPath(Arena arena, String... fileNames) {
-        String libraryPath = System.getProperty("java.library.path", "");
-        if (libraryPath.isEmpty()) {
-            return Optional.empty();
-        }
-        for (String dir : libraryPath.split(java.io.File.pathSeparator)) {
-            for (String fileName : fileNames) {
-                Path candidate = Path.of(dir, fileName);
-                if (Files.isRegularFile(candidate)) {
-                    try {
-                        return Optional.of(SymbolLookup.libraryLookup(candidate, arena));
-                    } catch (IllegalArgumentException _) {
-                        // file exists but not loadable — try next
-                    }
-                }
-            }
-        }
-        return Optional.empty();
+    private static SymbolLookup loadLameLibrary(Arena arena) {
+        return NativeLibraryLoader.loadLibrary(arena, "mp3lame", 0);
     }
 
     private static void setId3Tag(MethodHandle setter, MemorySegment gfp,
