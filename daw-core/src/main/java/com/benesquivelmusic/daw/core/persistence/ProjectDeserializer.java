@@ -10,6 +10,11 @@ import com.benesquivelmusic.daw.core.marker.MarkerRange;
 import com.benesquivelmusic.daw.core.marker.MarkerType;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.mixer.*;
+import com.benesquivelmusic.daw.core.mixer.snapshot.ChannelSnapshot;
+import com.benesquivelmusic.daw.core.mixer.snapshot.InsertSnapshot;
+import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshot;
+import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshotManager;
+import com.benesquivelmusic.daw.core.mixer.snapshot.SendSnapshot;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.ClickSound;
 import com.benesquivelmusic.daw.core.recording.Metronome;
@@ -189,6 +194,12 @@ public final class ProjectDeserializer {
         List<Element> roomConfigElements = getDirectChildElements(root, "room-configuration");
         if (!roomConfigElements.isEmpty()) {
             parseRoomConfiguration(roomConfigElements.getFirst(), project);
+        }
+
+        // Parse mixer snapshots
+        List<Element> snapshotsContainers = getDirectChildElements(root, "mixer-snapshots");
+        if (!snapshotsContainers.isEmpty()) {
+            parseMixerSnapshots(snapshotsContainers.getFirst(), project);
         }
 
         return project;
@@ -887,5 +898,155 @@ public final class ProjectDeserializer {
         }
 
         project.setRoomConfiguration(config);
+    }
+
+    private void parseMixerSnapshots(Element elem, DawProject project) {
+        MixerSnapshotManager manager = project.getMixerSnapshotManager();
+
+        for (Element snapshotElem : getDirectChildElements(elem, "snapshot")) {
+            MixerSnapshot snapshot = parseSnapshot(snapshotElem);
+            if (snapshot != null && manager.getSnapshotCount() < MixerSnapshotManager.MAX_SNAPSHOTS) {
+                manager.addSnapshot(snapshot);
+            }
+        }
+
+        List<Element> slotA = getDirectChildElements(elem, "slot-a");
+        if (!slotA.isEmpty()) {
+            MixerSnapshot snap = parseSnapshot(slotA.getFirst());
+            if (snap != null) {
+                manager.setSlot(MixerSnapshotManager.Slot.A, snap);
+            }
+        }
+        List<Element> slotB = getDirectChildElements(elem, "slot-b");
+        if (!slotB.isEmpty()) {
+            MixerSnapshot snap = parseSnapshot(slotB.getFirst());
+            if (snap != null) {
+                manager.setSlot(MixerSnapshotManager.Slot.B, snap);
+            }
+        }
+
+        String active = elem.getAttribute("active-slot");
+        if (!active.isEmpty()) {
+            try {
+                manager.setActiveSlot(MixerSnapshotManager.Slot.valueOf(active));
+            } catch (IllegalArgumentException ignored) {
+                // keep default active slot on invalid value
+            }
+        }
+    }
+
+    private MixerSnapshot parseSnapshot(Element elem) {
+        String name = elem.getAttribute("name");
+        if (name.isEmpty()) {
+            name = "Untitled";
+        }
+        Instant timestamp = parseInstant(elem.getAttribute("timestamp"), Instant.now());
+
+        List<Element> masterElems = getDirectChildElements(elem, "master");
+        if (masterElems.isEmpty()) {
+            return null;
+        }
+        ChannelSnapshot master = parseChannelSnapshot(masterElems.getFirst());
+        if (master == null) {
+            return null;
+        }
+
+        List<ChannelSnapshot> channels = new ArrayList<>();
+        List<Element> channelContainers = getDirectChildElements(elem, "channels");
+        if (!channelContainers.isEmpty()) {
+            for (Element ce : getDirectChildElements(channelContainers.getFirst(), "channel")) {
+                ChannelSnapshot cs = parseChannelSnapshot(ce);
+                if (cs != null) {
+                    channels.add(cs);
+                }
+            }
+        }
+
+        List<ChannelSnapshot> returnBuses = new ArrayList<>();
+        List<Element> returnContainers = getDirectChildElements(elem, "return-buses");
+        if (!returnContainers.isEmpty()) {
+            for (Element re : getDirectChildElements(returnContainers.getFirst(), "return-bus")) {
+                ChannelSnapshot cs = parseChannelSnapshot(re);
+                if (cs != null) {
+                    returnBuses.add(cs);
+                }
+            }
+        }
+
+        return new MixerSnapshot(name, timestamp, master, channels, returnBuses);
+    }
+
+    private ChannelSnapshot parseChannelSnapshot(Element elem) {
+        try {
+            double volume = clampDouble(parseDoubleAttr(elem, "volume", 1.0), 0.0, 1.0);
+            double pan = clampDouble(parseDoubleAttr(elem, "pan", 0.0), -1.0, 1.0);
+            boolean muted = parseBooleanAttr(elem, "muted");
+            boolean solo = parseBooleanAttr(elem, "solo");
+            boolean phaseInverted = parseBooleanAttr(elem, "phase-inverted");
+            double sendLevel = clampDouble(parseDoubleAttr(elem, "send-level", 0.0), 0.0, 1.0);
+
+            OutputRouting routing = OutputRouting.MASTER;
+            int orChannel = parseIntAttr(elem, "output-routing-channel", Integer.MIN_VALUE);
+            if (orChannel != Integer.MIN_VALUE) {
+                int orCount = parseIntAttr(elem, "output-routing-count", 2);
+                try {
+                    routing = new OutputRouting(orChannel, orCount);
+                } catch (IllegalArgumentException ignored) {
+                    routing = OutputRouting.MASTER;
+                }
+            }
+
+            List<InsertSnapshot> inserts = new ArrayList<>();
+            List<Element> insertContainers = getDirectChildElements(elem, "inserts");
+            if (!insertContainers.isEmpty()) {
+                for (Element ie : getDirectChildElements(insertContainers.getFirst(), "insert")) {
+                    InsertSnapshot is = parseInsertSnapshot(ie);
+                    if (is != null) {
+                        inserts.add(is);
+                    }
+                }
+            }
+
+            List<SendSnapshot> sends = new ArrayList<>();
+            List<Element> sendContainers = getDirectChildElements(elem, "sends");
+            if (!sendContainers.isEmpty()) {
+                for (Element se : getDirectChildElements(sendContainers.getFirst(), "send")) {
+                    int targetIndex = parseIntAttr(se, "target-index", -1);
+                    double level = clampDouble(parseDoubleAttr(se, "level", 0.0), 0.0, 1.0);
+                    SendMode mode = parseSendMode(se.getAttribute("mode"));
+                    if (targetIndex >= 0) {
+                        sends.add(new SendSnapshot(targetIndex, level, mode));
+                    }
+                }
+            }
+
+            return new ChannelSnapshot(volume, pan, muted, solo, phaseInverted,
+                    sendLevel, routing, inserts, sends);
+        } catch (IllegalArgumentException ignored) {
+            return null;
+        }
+    }
+
+    private InsertSnapshot parseInsertSnapshot(Element elem) {
+        boolean bypassed = parseBooleanAttr(elem, "bypassed");
+        InsertEffectType effectType = null;
+        String effectTypeStr = elem.getAttribute("effect-type");
+        if (!effectTypeStr.isEmpty()) {
+            try {
+                effectType = InsertEffectType.valueOf(effectTypeStr);
+            } catch (IllegalArgumentException ignored) {
+                effectType = null;
+            }
+        }
+
+        java.util.Map<Integer, Double> params = new java.util.LinkedHashMap<>();
+        for (Element pe : getDirectChildElements(elem, "parameter")) {
+            int id = parseIntAttr(pe, "id", -1);
+            double value = parseDoubleAttr(pe, "value", Double.NaN);
+            if (id >= 0 && !Double.isNaN(value)) {
+                params.put(id, value);
+            }
+        }
+        return new InsertSnapshot(effectType, bypassed, params);
     }
 }

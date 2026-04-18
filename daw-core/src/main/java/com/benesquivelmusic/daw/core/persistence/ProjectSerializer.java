@@ -10,6 +10,11 @@ import com.benesquivelmusic.daw.core.marker.MarkerManager;
 import com.benesquivelmusic.daw.core.marker.MarkerRange;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.mixer.*;
+import com.benesquivelmusic.daw.core.mixer.snapshot.ChannelSnapshot;
+import com.benesquivelmusic.daw.core.mixer.snapshot.InsertSnapshot;
+import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshot;
+import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshotManager;
+import com.benesquivelmusic.daw.core.mixer.snapshot.SendSnapshot;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
@@ -99,6 +104,7 @@ public final class ProjectSerializer {
         buildMetronome(document, root, project.getMetronome());
         buildReferenceTrackManager(document, root, project.getReferenceTrackManager());
         buildRoomConfiguration(document, root, project.getRoomConfiguration());
+        buildMixerSnapshots(document, root, project.getMixerSnapshotManager());
     }
 
     private void buildMetadata(Document document, Element root, DawProject project) {
@@ -472,5 +478,100 @@ public final class ProjectSerializer {
             memberElem.setAttribute("z", String.valueOf(pos.z()));
             configElem.appendChild(memberElem);
         }
+    }
+
+    private void buildMixerSnapshots(Document document, Element root,
+                                     MixerSnapshotManager manager) {
+        List<MixerSnapshot> snapshots = manager.getSnapshots();
+        MixerSnapshot slotA = manager.getSlotA();
+        MixerSnapshot slotB = manager.getSlotB();
+        if (snapshots.isEmpty() && slotA == null && slotB == null) {
+            return;
+        }
+
+        Element root0 = document.createElement("mixer-snapshots");
+        root0.setAttribute("active-slot", manager.getActiveSlot().name());
+        root.appendChild(root0);
+
+        for (MixerSnapshot snapshot : snapshots) {
+            root0.appendChild(buildSnapshotElement(document, "snapshot", snapshot));
+        }
+        if (slotA != null) {
+            Element slotElem = buildSnapshotElement(document, "slot-a", slotA);
+            root0.appendChild(slotElem);
+        }
+        if (slotB != null) {
+            Element slotElem = buildSnapshotElement(document, "slot-b", slotB);
+            root0.appendChild(slotElem);
+        }
+    }
+
+    private Element buildSnapshotElement(Document document, String tagName, MixerSnapshot snapshot) {
+        Element elem = document.createElement(tagName);
+        elem.setAttribute("name", snapshot.name());
+        elem.setAttribute("timestamp", snapshot.timestamp().toString());
+
+        elem.appendChild(buildChannelSnapshotElement(document, "master", snapshot.master()));
+
+        Element channelsElem = document.createElement("channels");
+        elem.appendChild(channelsElem);
+        for (ChannelSnapshot cs : snapshot.channels()) {
+            channelsElem.appendChild(buildChannelSnapshotElement(document, "channel", cs));
+        }
+
+        Element returnsElem = document.createElement("return-buses");
+        elem.appendChild(returnsElem);
+        for (ChannelSnapshot cs : snapshot.returnBuses()) {
+            returnsElem.appendChild(buildChannelSnapshotElement(document, "return-bus", cs));
+        }
+        return elem;
+    }
+
+    private Element buildChannelSnapshotElement(Document document, String tagName, ChannelSnapshot cs) {
+        Element elem = document.createElement(tagName);
+        elem.setAttribute("volume", String.valueOf(cs.volume()));
+        elem.setAttribute("pan", String.valueOf(cs.pan()));
+        elem.setAttribute("muted", String.valueOf(cs.muted()));
+        elem.setAttribute("solo", String.valueOf(cs.solo()));
+        elem.setAttribute("phase-inverted", String.valueOf(cs.phaseInverted()));
+        elem.setAttribute("send-level", String.valueOf(cs.sendLevel()));
+        if (!cs.outputRouting().isMaster()) {
+            elem.setAttribute("output-routing-channel",
+                    String.valueOf(cs.outputRouting().firstChannel()));
+            elem.setAttribute("output-routing-count",
+                    String.valueOf(cs.outputRouting().channelCount()));
+        }
+
+        if (!cs.inserts().isEmpty()) {
+            Element insertsElem = document.createElement("inserts");
+            elem.appendChild(insertsElem);
+            for (InsertSnapshot is : cs.inserts()) {
+                Element insertElem = document.createElement("insert");
+                insertElem.setAttribute("bypassed", String.valueOf(is.bypassed()));
+                if (is.effectType() != null) {
+                    insertElem.setAttribute("effect-type", is.effectType().name());
+                }
+                for (Map.Entry<Integer, Double> entry : is.parameters().entrySet()) {
+                    Element paramElem = document.createElement("parameter");
+                    paramElem.setAttribute("id", String.valueOf(entry.getKey()));
+                    paramElem.setAttribute("value", String.valueOf(entry.getValue()));
+                    insertElem.appendChild(paramElem);
+                }
+                insertsElem.appendChild(insertElem);
+            }
+        }
+
+        if (!cs.sends().isEmpty()) {
+            Element sendsElem = document.createElement("sends");
+            elem.appendChild(sendsElem);
+            for (SendSnapshot ss : cs.sends()) {
+                Element sendElem = document.createElement("send");
+                sendElem.setAttribute("target-index", String.valueOf(ss.targetIndex()));
+                sendElem.setAttribute("level", String.valueOf(ss.level()));
+                sendElem.setAttribute("mode", ss.mode().name());
+                sendsElem.appendChild(sendElem);
+            }
+        }
+        return elem;
     }
 }
