@@ -1,6 +1,5 @@
 package com.benesquivelmusic.daw.core.audio;
 
-import java.io.File;
 import java.lang.foreign.Arena;
 import java.lang.foreign.SymbolLookup;
 import java.nio.file.Files;
@@ -73,9 +72,10 @@ public final class NativeLibraryDetector {
         String[] names = NativeLibraryLoader.platformLibraryNames(os, baseName, soVersion);
 
         // 1. Search bundled libraries in java.library.path
-        String bundledPath = searchLibraryPath(names);
+        Path bundledPath = NativeLibraryLoader.findFirstLoadableInLibraryPath(names);
         if (bundledPath != null) {
-            return NativeLibraryStatus.found(displayName, requiredFor, bundledPath);
+            return NativeLibraryStatus.found(displayName, requiredFor,
+                    bundledPath.toString());
         }
 
         // 2. Fall back to OS-level system loader
@@ -91,44 +91,6 @@ public final class NativeLibraryDetector {
         }
 
         return NativeLibraryStatus.missing(displayName, requiredFor);
-    }
-
-    /**
-     * Searches {@code java.library.path} directories for any of the given
-     * library filenames and returns the absolute path of the first match,
-     * or {@code null} if none is found.
-     */
-    private static String searchLibraryPath(String... fileNames) {
-        String libraryPath = System.getProperty("java.library.path", "");
-        if (libraryPath.isEmpty()) {
-            return null;
-        }
-        for (String dir : libraryPath.split(File.pathSeparator)) {
-            if (dir.isBlank()) {
-                continue;
-            }
-            try {
-                Path dirPath = Path.of(dir).normalize();
-                if (dirPath.toString().isEmpty()) {
-                    continue;
-                }
-                for (String fileName : fileNames) {
-                    Path candidate = dirPath.resolve(fileName).toAbsolutePath();
-                    if (Files.isRegularFile(candidate)) {
-                        // Verify the library is actually loadable
-                        try (Arena arena = Arena.ofConfined()) {
-                            SymbolLookup.libraryLookup(candidate, arena);
-                            return candidate.toString();
-                        } catch (IllegalArgumentException | UnsatisfiedLinkError _) {
-                            // file exists but not loadable — try next
-                        }
-                    }
-                }
-            } catch (InvalidPathException _) {
-                // malformed path segment — skip
-            }
-        }
-        return null;
     }
 
     /**

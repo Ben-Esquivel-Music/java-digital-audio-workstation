@@ -75,9 +75,35 @@ public final class NativeLibraryLoader {
      */
     public static Optional<SymbolLookup> searchLibraryPath(Arena arena,
                                                            String... fileNames) {
+        Path found = findFirstLoadableInLibraryPath(fileNames);
+        if (found != null) {
+            try {
+                return Optional.of(SymbolLookup.libraryLookup(found, arena));
+            } catch (IllegalArgumentException | UnsatisfiedLinkError _) {
+                // race: file disappeared or became unloadable between find and load
+            }
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Searches {@code java.library.path} for the first regular file matching
+     * any of the given filenames that can be loaded as a native library.
+     * Returns the absolute {@link Path} of the first loadable candidate, or
+     * {@code null} if none is found.
+     *
+     * <p>This is the shared helper used by both the loader (to obtain a
+     * {@link SymbolLookup}) and the detector (to resolve the on-disk path).
+     * Keeping the path-scanning logic in one place prevents drift between
+     * the two code paths.</p>
+     *
+     * @param fileNames platform-specific library file names to search for
+     * @return the absolute path of the first loadable candidate, or null
+     */
+    static Path findFirstLoadableInLibraryPath(String... fileNames) {
         String libraryPath = System.getProperty("java.library.path", "");
         if (libraryPath.isEmpty()) {
-            return Optional.empty();
+            return null;
         }
         for (String dir : libraryPath.split(java.io.File.pathSeparator)) {
             if (dir.isBlank()) {
@@ -91,10 +117,10 @@ public final class NativeLibraryLoader {
                 for (String fileName : fileNames) {
                     Path candidate = dirPath.resolve(fileName).toAbsolutePath();
                     if (Files.isRegularFile(candidate)) {
-                        try {
-                            return Optional.of(
-                                    SymbolLookup.libraryLookup(candidate, arena));
-                        } catch (IllegalArgumentException _) {
+                        try (Arena arena = Arena.ofConfined()) {
+                            SymbolLookup.libraryLookup(candidate, arena);
+                            return candidate;
+                        } catch (IllegalArgumentException | UnsatisfiedLinkError _) {
                             // file exists but not loadable — try next
                         }
                     }
@@ -103,7 +129,7 @@ public final class NativeLibraryLoader {
                 // malformed path segment — skip
             }
         }
-        return Optional.empty();
+        return null;
     }
 
     // ── Internal helpers ───────────────────────────────────────────────

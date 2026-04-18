@@ -69,7 +69,11 @@ lookup_known() {
 # Collect COPYING, LICENSE, and LICENSE.txt files under lib/ (up to
 # FIND_MAX_DEPTH levels deep to cover nested vendor trees like
 # fluidsynth-X.Y/fluidsynth-X.Y/).
-mapfile -t DISCOVERED < <(
+# Uses a while-read loop instead of mapfile for Bash 3.2 compatibility.
+DISCOVERED=()
+while IFS= read -r line; do
+    DISCOVERED+=("${line}")
+done < <(
     find "${REPO_ROOT}/lib" -maxdepth "${FIND_MAX_DEPTH}" \
         \( -name "COPYING" -o -name "LICENSE" -o -name "LICENSE.txt" \) \
         -type f | sort

@@ -14,9 +14,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Verifies that THIRD_PARTY_NOTICES.md is present and contains the
  * required attribution text for all vendored native libraries.
  *
- * <p>The repo-root tests verify build-time generation; the classpath
- * test verifies that the file will appear in the packaged JAR under
- * {@code META-INF/} as configured in daw-app's resource includes.</p>
+ * <p>The repo-root tests verify build-time generation; the classpath-
+ * oriented test verifies that the same content is available via the
+ * classpath when present and otherwise falls back to the repo-root
+ * file in unit test environments.</p>
  */
 class ThirdPartyNoticesTest {
 
@@ -74,7 +75,8 @@ class ThirdPartyNoticesTest {
     @Test
     void thirdPartyNoticesShouldContainVerbatimLicenseText() throws IOException {
         String content = Files.readString(REPO_ROOT.resolve("THIRD_PARTY_NOTICES.md"));
-        // Verify the full BSD 3-clause copyright notices are present verbatim
+        // Verify verbatim license text from both BSD 3-clause (libogg/libvorbis)
+        // and MIT (PortAudio/CLAP) licenses is present in the notices file.
         assertThat(content).contains(
                 "Redistributions in binary form must reproduce the above copyright");
         assertThat(content).contains(
