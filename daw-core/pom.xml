@@ -33,7 +33,23 @@
         <native.libs.dir>${maven.multiModuleProjectDirectory}/target/build/native</native.libs.dir>
         <!-- Set -DskipNativeBuild to skip CMake compilation (pure-Java workflow) -->
         <skipNativeBuild>false</skipNativeBuild>
+        <!-- Set -DskipNoticesGeneration=true to skip THIRD_PARTY_NOTICES.md
+             generation (auto-set on Windows where bash may not be available) -->
+        <skipNoticesGeneration>false</skipNoticesGeneration>
     </properties>
+
+    <profiles>
+        <!-- Skip bash-based notices generation on Windows -->
+        <profile>
+            <id>skip-notices-on-windows</id>
+            <activation>
+                <os><family>windows</family></os>
+            </activation>
+            <properties>
+                <skipNoticesGeneration>true</skipNoticesGeneration>
+            </properties>
+        </profile>
+    </profiles>
 
     <build>
         <plugins>
@@ -74,6 +90,22 @@
                                 <argument>--config</argument>
                                 <argument>Release</argument>
                                 <argument>--parallel</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                    <!-- Generate THIRD_PARTY_NOTICES.md from vendored license files.
+                         Skipped on Windows where bash may not be available;
+                         set -DskipNoticesGeneration=true to skip explicitly. -->
+                    <execution>
+                        <id>generate-third-party-notices</id>
+                        <phase>generate-resources</phase>
+                        <goals><goal>exec</goal></goals>
+                        <configuration>
+                            <skip>${skipNoticesGeneration}</skip>
+                            <executable>bash</executable>
+                            <workingDirectory>${maven.multiModuleProjectDirectory}</workingDirectory>
+                            <arguments>
+                                <argument>generate-third-party-notices.sh</argument>
                             </arguments>
                         </configuration>
                     </execution>

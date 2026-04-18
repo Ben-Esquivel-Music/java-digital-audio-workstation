@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# ──────────────────────────────────────────────────────────────────────
+# generate-third-party-notices.sh
+#
+# Generates THIRD_PARTY_NOTICES.md at the repository root by auto-
+# discovering each vendored library's LICENSE/COPYING file under lib/.
+#
+# The script walks lib/ and collects every COPYING, LICENSE, or
+# LICENSE.txt file (see FIND_MAX_DEPTH below).  Known libraries have
+# display-name, version, license-type, and website metadata defined
+# below; newly added libraries that have not yet been annotated are
+# still included with best-effort metadata derived from their
+# directory name.
+#
+# This script is run as part of the Maven build (generate-resources
+# phase) so that adding a new vendored library's license file
+# automatically flows into the notices on the next build.
+#
+# Compatibility: requires only Bash 3.2+ features (no associative
+# arrays) so it works on macOS default /bin/bash as well as Linux.
+#
+# Usage:
+#   ./generate-third-party-notices.sh [output-file]
+#
+# If output-file is not specified, writes to THIRD_PARTY_NOTICES.md in
+# the same directory as this script's parent (the repo root).
+# ──────────────────────────────────────────────────────────────────────
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}" && pwd)"
+OUTPUT="${1:-${REPO_ROOT}/THIRD_PARTY_NOTICES.md}"
+
+# Maximum depth when searching for license files under lib/.
+FIND_MAX_DEPTH=4
+
+# ── Known-library metadata ──────────────────────────────────────────
+# Stored as parallel indexed arrays for Bash 3.2 compatibility (no
+# associative arrays).  KNOWN_KEYS[i] is a license file path relative
+# to the repo root; KNOWN_VALS[i] is the metadata string:
+#   display_name|version|license_type|website
+#
+# When a discovered license file matches a key, the richer metadata is
+# used.  Otherwise the script infers a name from the parent directory.
+KNOWN_KEYS=()
+KNOWN_VALS=()
+KNOWN_KEYS+=("lib/ogg-1.3.6/COPYING");          KNOWN_VALS+=("libogg|1.3.6|BSD 3-Clause License|https://xiph.org/ogg/")
+KNOWN_KEYS+=("lib/vorbis-1.3.7/COPYING");        KNOWN_VALS+=("libvorbis|1.3.7|BSD 3-Clause License|https://xiph.org/vorbis/")
+KNOWN_KEYS+=("lib/portaudio/LICENSE.txt");        KNOWN_VALS+=("PortAudio|v19.7+|MIT License|http://www.portaudio.com")
+KNOWN_KEYS+=("lib/Clap-1.2.7/LICENSE");           KNOWN_VALS+=("CLAP (CLever Audio Plugin API)|1.2.7|MIT License|https://cleveraudio.org")
+KNOWN_KEYS+=("lib/fluidsynth-2.5.3/fluidsynth-2.5.3/LICENSE"); KNOWN_VALS+=("FluidSynth|2.5.3|GNU Lesser General Public License (LGPL), version 2.1|https://www.fluidsynth.org")
+KNOWN_KEYS+=("lib/libmp3lame/COPYING");           KNOWN_VALS+=("LAME (libmp3lame)|3.99.5|GNU Library General Public License (LGPL), version 2|https://lame.sourceforge.io")
+KNOWN_KEYS+=("lib/RoomAcoustiCpp-1.0.1/RoomAcoustiCpp-1.0.1/LICENSE"); KNOWN_VALS+=("RoomAcoustiCpp|1.0.1|GNU General Public License (GPL), version 3|https://github.com/audiolabs/RoomAcoustiCpp")
+
+# Look up metadata for a license file path; prints the value or empty.
+lookup_known() {
+    local key="$1"
+    local i
+    for i in "${!KNOWN_KEYS[@]}"; do
+        if [[ "${KNOWN_KEYS[$i]}" == "${key}" ]]; then
+            echo "${KNOWN_VALS[$i]}"
+            return
+        fi
+    done
+    echo ""
+}
+
+# ── Auto-discover license files ─────────────────────────────────────
+# Collect COPYING, LICENSE, and LICENSE.txt files under lib/ (up to
+# FIND_MAX_DEPTH levels deep to cover nested vendor trees like
+# fluidsynth-X.Y/fluidsynth-X.Y/).
+# Uses a while-read loop instead of mapfile for Bash 3.2 compatibility.
+DISCOVERED=()
+while IFS= read -r line; do
+    DISCOVERED+=("${line}")
+done < <(
+    find "${REPO_ROOT}/lib" -maxdepth "${FIND_MAX_DEPTH}" \
+        \( -name "COPYING" -o -name "LICENSE" -o -name "LICENSE.txt" \) \
+        -type f | sort
+)
+
+# De-duplicate: if a directory has both COPYING and LICENSE, prefer
+# COPYING (more common in C libraries).  Also skip license files from
+# sub-directories of already-covered library trees (e.g.
+# portaudio/bindings/cpp/COPYING is covered by portaudio/LICENSE.txt).
+SEEN_DIRS=()
+COVERED_TOP_DIRS=()
+UNIQUE_FILES=()
+
+contains() {
+    local needle="$1"; shift
+    for item in "$@"; do
+        [[ "$item" == "$needle" ]] && return 0
+    done
+    return 1
+}
+
+for f in "${DISCOVERED[@]}"; do
+    dir="$(dirname "${f}")"
+    rel="${f#"${REPO_ROOT}/"}"
+
+    # Determine the top-level lib/<name> directory for this file
+    # e.g. lib/portaudio/bindings/cpp/COPYING → lib/portaudio
+    top_dir="$(echo "${rel}" | cut -d'/' -f1-2)"
+
+    # Skip if we already have a license file for this exact directory
+    if contains "${dir}" "${SEEN_DIRS[@]+"${SEEN_DIRS[@]}"}"; then
+        continue
+    fi
+
+    # Skip if this is a nested subdirectory of an already-covered library
+    if contains "${top_dir}" "${COVERED_TOP_DIRS[@]+"${COVERED_TOP_DIRS[@]}"}"; then
+        continue
+    fi
+
+    SEEN_DIRS+=("${dir}")
+    COVERED_TOP_DIRS+=("${top_dir}")
+    UNIQUE_FILES+=("${f}")
+done
+
+{
+    cat <<'HEADER'
+# Third-Party Notices
+
+This file is auto-generated by `generate-third-party-notices.sh`.
+Do not edit manually — update the vendored license files instead.
+
+License files are auto-discovered under `lib/`; adding a new vendored
+library with a `COPYING`, `LICENSE`, or `LICENSE.txt` file will
+automatically include it in this notices file on the next build.
+
+This project bundles or links to the following third-party native
+libraries at runtime. Each library retains its own license; the full
+text of each license is reproduced below.
+
+---
+
+HEADER
+
+    INDEX=1
+    for abs_path in "${UNIQUE_FILES[@]}"; do
+        # Relative path from repo root
+        rel_path="${abs_path#"${REPO_ROOT}/"}"
+
+        meta="$(lookup_known "${rel_path}")"
+        if [[ -n "${meta}" ]]; then
+            IFS='|' read -r NAME VERSION LICENSE WEBSITE <<< "${meta}"
+        else
+            # Best-effort metadata from directory name
+            dir_name="$(basename "$(dirname "${abs_path}")")"
+            NAME="${dir_name}"
+            VERSION="unknown"
+            LICENSE="See license file"
+            WEBSITE=""
+        fi
+
+        echo "## ${INDEX}. ${NAME}"
+        echo ""
+        echo "- **Version**: ${VERSION}"
+        echo "- **License**: ${LICENSE}"
+        if [[ -n "${WEBSITE}" ]]; then
+            echo "- **Website**: ${WEBSITE}"
+        fi
+        echo "- **Source file**: \`${rel_path}\`"
+        echo ""
+
+        if [[ -f "${abs_path}" ]]; then
+            echo '```'
+            cat "${abs_path}"
+            # Ensure a newline exists before the closing fence, even if
+            # the license file lacks a trailing newline.
+            echo ""
+            echo '```'
+        else
+            echo "*License file not found at \`${rel_path}\`.*"
+        fi
+
+        echo ""
+        echo "---"
+        echo ""
+        INDEX=$((INDEX + 1))
+    done
+} > "${OUTPUT}"
+
+echo "Generated ${OUTPUT}"

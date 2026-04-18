@@ -40,3 +40,17 @@ in its directory under lib/.
    Website : https://github.com/audiolabs/RoomAcoustiCpp
    Files   : lib/RoomAcoustiCpp-1.0.1/
    Notice  : Full license text in lib/RoomAcoustiCpp-1.0.1/RoomAcoustiCpp-1.0.1/LICENSE
+
+6. libogg — Ogg Bitstream Library
+   Version : 1.3.6
+   License : BSD 3-Clause License
+   Website : https://xiph.org/ogg/
+   Files   : lib/ogg-1.3.6/
+   Notice  : Full license text in lib/ogg-1.3.6/COPYING
+
+7. libvorbis — Vorbis Audio Codec Library
+   Version : 1.3.7
+   License : BSD 3-Clause License
+   Website : https://xiph.org/vorbis/
+   Files   : lib/vorbis-1.3.7/
+   Notice  : Full license text in lib/vorbis-1.3.7/COPYING

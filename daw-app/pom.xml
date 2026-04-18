@@ -40,8 +40,77 @@
         </dependency>
     </dependencies>
 
+    <properties>
+        <!-- Native library build directory (output of CMake in daw-core) -->
+        <native.libs.dir>${maven.multiModuleProjectDirectory}/target/build/native</native.libs.dir>
+    </properties>
+
     <build>
+        <!-- Include THIRD_PARTY_NOTICES.md in the JAR so the distribution
+             always carries the required attribution text. -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+            <resource>
+                <directory>${maven.multiModuleProjectDirectory}</directory>
+                <includes>
+                    <include>THIRD_PARTY_NOTICES.md</include>
+                </includes>
+                <targetPath>META-INF</targetPath>
+            </resource>
+        </resources>
         <plugins>
+            <!-- Copy native libraries from CMake output to a distribution
+                 directory under target/dist/native/<os-arch>/. The set of
+                 files is not hardcoded — everything in the native output
+                 directory is copied, so additions to DAW_NATIVE_TARGETS in
+                 lib/CMakeLists.txt are picked up automatically.
+
+                 failonerror is true so an incomplete distribution (missing
+                 native libs or license notices) cannot be produced silently.
+                 Use -DskipNativeBuild=true if you do not need native libs. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>3.2.0</version>
+                <executions>
+                    <execution>
+                        <id>copy-native-libs-to-dist</id>
+                        <phase>prepare-package</phase>
+                        <goals><goal>run</goal></goals>
+                        <configuration>
+                            <target>
+                                <!-- Determine platform identifier -->
+                                <condition property="os.id" value="windows">
+                                    <os family="windows"/>
+                                </condition>
+                                <condition property="os.id" value="macos">
+                                    <os family="mac"/>
+                                </condition>
+                                <property name="os.id" value="linux"/>
+                                <condition property="arch.id" value="arm64">
+                                    <os arch="aarch64"/>
+                                </condition>
+                                <property name="arch.id" value="x64"/>
+                                <property name="dist.native.dir"
+                                          value="${project.build.directory}/dist/native/${os.id}-${arch.id}"/>
+                                <!-- Copy native libs -->
+                                <mkdir dir="${dist.native.dir}"/>
+                                <copy todir="${dist.native.dir}" failonerror="true">
+                                    <fileset dir="${native.libs.dir}"
+                                             includes="*.so,*.so.*,*.dylib,*.dll"
+                                             erroronmissingdir="false"/>
+                                </copy>
+                                <!-- Copy THIRD_PARTY_NOTICES.md to dist root -->
+                                <copy file="${maven.multiModuleProjectDirectory}/THIRD_PARTY_NOTICES.md"
+                                      todir="${project.build.directory}/dist"
+                                      failonerror="true"/>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.openjfx</groupId>
                 <artifactId>javafx-maven-plugin</artifactId>
