@@ -38,6 +38,12 @@ class TransientDetectorTest {
     }
 
     @Test
+    void shouldRejectBlockSizeOfOne() {
+        assertThatThrownBy(() -> new TransientDetector(1))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void shouldRejectZeroBlockSize() {
         assertThatThrownBy(() -> new TransientDetector(0))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -307,5 +313,111 @@ class TransientDetectorTest {
         // The sensitive detector should detect while the insensitive one should not
         assertThat(sensitiveResult.transientDetected()).isTrue();
         assertThat(insensitiveResult.transientDetected()).isFalse();
+    }
+
+    // ----------------------------------------------------------------
+    // detectInPlace / MutableResult tests
+    // ----------------------------------------------------------------
+
+    @Test
+    void detectInPlaceShouldNotDetectTransientOnFirstBlock() {
+        TransientDetector detector = new TransientDetector(1024);
+        TransientDetector.MutableResult result = new TransientDetector.MutableResult();
+        float[] block = new float[1024];
+        for (int i = 0; i < block.length; i++) {
+            block[i] = (float) (0.5 * Math.sin(2.0 * Math.PI * 440.0 * i / 44100.0));
+        }
+
+        detector.detectInPlace(block, result);
+
+        assertThat(result.transientDetected()).isFalse();
+        assertThat(result.temporalEnergyRatio()).isEqualTo(1.0);
+    }
+
+    @Test
+    void detectInPlaceShouldDetectTransientOnSilenceToBurst() {
+        TransientDetector detector = new TransientDetector(1024, 2.0);
+        TransientDetector.MutableResult result = new TransientDetector.MutableResult();
+        double sampleRate = 44100.0;
+        float[] silence = new float[1024];
+
+        for (int i = 0; i < 20; i++) {
+            detector.detectInPlace(silence, result);
+        }
+
+        float[] burst = new float[1024];
+        for (int i = 0; i < burst.length; i++) {
+            burst[i] = (float) (0.9 * Math.sin(2.0 * Math.PI * 440.0 * i / sampleRate));
+        }
+
+        detector.detectInPlace(burst, result);
+
+        assertThat(result.transientDetected()).isTrue();
+        assertThat(result.temporalEnergyRatio()).isGreaterThan(1.0);
+        assertThat(result.spectralFlux()).isGreaterThan(0.0);
+    }
+
+    @Test
+    void detectInPlaceShouldMatchDetectResults() {
+        double sampleRate = 44100.0;
+        float[] quiet = new float[1024];
+        for (int i = 0; i < quiet.length; i++) {
+            quiet[i] = (float) (0.01 * Math.sin(2.0 * Math.PI * 440.0 * i / sampleRate));
+        }
+        float[] loud = new float[1024];
+        int offset = 20 * 1024;
+        for (int i = 0; i < loud.length; i++) {
+            loud[i] = (float) (0.95 * Math.sin(
+                    2.0 * Math.PI * 440.0 * (offset + i) / sampleRate));
+        }
+
+        // Run detect() path
+        TransientDetector d1 = new TransientDetector(1024, 2.0);
+        for (int i = 0; i < 20; i++) { d1.detect(quiet); }
+        TransientDetector.Result recordResult = d1.detect(loud);
+
+        // Run detectInPlace() path
+        TransientDetector d2 = new TransientDetector(1024, 2.0);
+        TransientDetector.MutableResult mutableResult = new TransientDetector.MutableResult();
+        for (int i = 0; i < 20; i++) { d2.detectInPlace(quiet, mutableResult); }
+        d2.detectInPlace(loud, mutableResult);
+
+        // Both should produce identical results
+        assertThat(mutableResult.transientDetected()).isEqualTo(recordResult.transientDetected());
+        assertThat(mutableResult.temporalEnergyRatio()).isEqualTo(recordResult.temporalEnergyRatio());
+        assertThat(mutableResult.spectralFlux()).isEqualTo(recordResult.spectralFlux());
+    }
+
+    @Test
+    void detectInPlaceShouldRejectNullBlock() {
+        TransientDetector detector = new TransientDetector(1024);
+        TransientDetector.MutableResult result = new TransientDetector.MutableResult();
+        assertThatThrownBy(() -> detector.detectInPlace(null, result))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void detectInPlaceShouldRejectNullResult() {
+        TransientDetector detector = new TransientDetector(1024);
+        float[] block = new float[1024];
+        assertThatThrownBy(() -> detector.detectInPlace(block, null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void detectInPlaceShouldRejectWrongBlockLength() {
+        TransientDetector detector = new TransientDetector(1024);
+        TransientDetector.MutableResult result = new TransientDetector.MutableResult();
+        float[] wrongSize = new float[512];
+        assertThatThrownBy(() -> detector.detectInPlace(wrongSize, result))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void mutableResultShouldHaveDefaultValues() {
+        TransientDetector.MutableResult result = new TransientDetector.MutableResult();
+        assertThat(result.transientDetected()).isFalse();
+        assertThat(result.temporalEnergyRatio()).isEqualTo(0.0);
+        assertThat(result.spectralFlux()).isEqualTo(0.0);
     }
 }

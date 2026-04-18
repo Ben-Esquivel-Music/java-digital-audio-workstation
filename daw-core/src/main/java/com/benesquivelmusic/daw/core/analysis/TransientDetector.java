@@ -37,6 +37,40 @@ public final class TransientDetector {
     public record Result(boolean transientDetected, double temporalEnergyRatio,
                          double spectralFlux) {}
 
+    /**
+     * Mutable result holder for allocation-free transient detection in
+     * real-time audio callbacks.
+     *
+     * <p>Create one instance and reuse it across {@link #detectInPlace} calls
+     * to avoid per-block garbage collection pressure.</p>
+     *
+     * @see #detectInPlace(float[], MutableResult)
+     */
+    public static final class MutableResult {
+        private boolean transientDetected;
+        private double temporalEnergyRatio;
+        private double spectralFlux;
+
+        /** Creates a mutable result with default values. */
+        public MutableResult() {}
+
+        /** Returns {@code true} if a transient was detected. */
+        public boolean transientDetected() { return transientDetected; }
+
+        /** Returns the ratio of short-term to long-term energy. */
+        public double temporalEnergyRatio() { return temporalEnergyRatio; }
+
+        /** Returns the positive spectral flux for the block. */
+        public double spectralFlux() { return spectralFlux; }
+
+        private void set(boolean transientDetected, double temporalEnergyRatio,
+                         double spectralFlux) {
+            this.transientDetected = transientDetected;
+            this.temporalEnergyRatio = temporalEnergyRatio;
+            this.spectralFlux = spectralFlux;
+        }
+    }
+
     /** Default sensitivity threshold (typical range: 1.5–4.0). */
     private static final double DEFAULT_SENSITIVITY = 3.0;
 
@@ -74,20 +108,20 @@ public final class TransientDetector {
     /**
      * Creates a transient detector with full configuration.
      *
-     * @param blockSize            audio block size (must be a power of two)
+     * @param blockSize            audio block size (must be a power of two and at least 2)
      * @param sensitivityThreshold multiplier for the adaptive threshold;
      *                             higher values are less sensitive (typical: 1.5–4.0)
      * @param longTermDecay        exponential decay factor for long-term energy
      *                             tracking (typical: 0.95–0.999)
-     * @throws IllegalArgumentException if blockSize is not a positive power of two,
+     * @throws IllegalArgumentException if blockSize is less than 2 or not a power of two,
      *                                  sensitivityThreshold is not positive, or
      *                                  longTermDecay is not in (0, 1)
      */
     public TransientDetector(int blockSize, double sensitivityThreshold,
                              double longTermDecay) {
-        if (blockSize <= 0 || (blockSize & (blockSize - 1)) != 0) {
+        if (blockSize < 2 || (blockSize & (blockSize - 1)) != 0) {
             throw new IllegalArgumentException(
-                    "blockSize must be a positive power of two: " + blockSize);
+                    "blockSize must be a power of two and at least 2: " + blockSize);
         }
         if (sensitivityThreshold <= 0) {
             throw new IllegalArgumentException(
@@ -112,7 +146,7 @@ public final class TransientDetector {
     /**
      * Creates a transient detector with default long-term decay (0.99).
      *
-     * @param blockSize            audio block size (must be a power of two)
+     * @param blockSize            audio block size (must be a power of two and at least 2)
      * @param sensitivityThreshold multiplier for the adaptive threshold
      */
     public TransientDetector(int blockSize, double sensitivityThreshold) {
@@ -122,7 +156,7 @@ public final class TransientDetector {
     /**
      * Creates a transient detector with default sensitivity (3.0) and decay (0.99).
      *
-     * @param blockSize audio block size (must be a power of two)
+     * @param blockSize audio block size (must be a power of two and at least 2)
      */
     public TransientDetector(int blockSize) {
         this(blockSize, DEFAULT_SENSITIVITY, DEFAULT_LONG_TERM_DECAY);
@@ -167,43 +201,61 @@ public final class TransientDetector {
             return new Result(false, 1.0, spectralFlux);
         }
 
-        // Temporal energy ratio — uses a noise floor to avoid spurious
-        // infinite ratios from numerical near-zero values, but recognizes
-        // genuine silence-to-signal transitions as transients.
-        double energyRatio;
-        if (longTermEnergy > NOISE_FLOOR) {
-            energyRatio = shortTermEnergy / longTermEnergy;
-        } else if (shortTermEnergy > NOISE_FLOOR) {
-            // Genuine transition from silence to signal
-            energyRatio = shortTermEnergy / NOISE_FLOOR;
-        } else {
-            energyRatio = 1.0;
-        }
-
-        // Spectral flux ratio — same noise-floor logic
-        double fluxRatio;
-        if (prevSpectralFlux > NOISE_FLOOR) {
-            fluxRatio = spectralFlux / prevSpectralFlux;
-        } else if (spectralFlux > NOISE_FLOOR) {
-            fluxRatio = spectralFlux / NOISE_FLOOR;
-        } else {
-            fluxRatio = 1.0;
-        }
+        double energyRatio = computeEnergyRatio(shortTermEnergy);
+        double fluxRatio = computeFluxRatio(spectralFlux);
 
         // Combined decision score
         double combinedScore = TEMPORAL_WEIGHT * energyRatio
                 + SPECTRAL_WEIGHT * fluxRatio;
         boolean transientDetected = combinedScore > sensitivityThreshold;
 
-        // Update long-term energy using exponential moving average
-        longTermEnergy = longTermDecay * longTermEnergy
-                + (1.0 - longTermDecay) * shortTermEnergy;
-
-        // Update previous spectral flux using exponential moving average
-        prevSpectralFlux = longTermDecay * prevSpectralFlux
-                + (1.0 - longTermDecay) * spectralFlux;
+        updateState(shortTermEnergy, spectralFlux);
 
         return new Result(transientDetected, energyRatio, spectralFlux);
+    }
+
+    /**
+     * Allocation-free variant of {@link #detect(float[])} for use in real-time
+     * audio callbacks.
+     *
+     * <p>Writes the detection result into a caller-provided {@link MutableResult}
+     * instead of allocating a new {@link Result} record, eliminating per-block
+     * GC pressure in latency-sensitive paths.</p>
+     *
+     * @param block  mono audio samples; length must equal the configured block size
+     * @param result mutable result holder to write into
+     * @throws NullPointerException     if {@code block} or {@code result} is null
+     * @throws IllegalArgumentException if the block length does not match the block size
+     */
+    public void detectInPlace(float[] block, MutableResult result) {
+        java.util.Objects.requireNonNull(block, "block must not be null");
+        java.util.Objects.requireNonNull(result, "result must not be null");
+        if (block.length != blockSize) {
+            throw new IllegalArgumentException(
+                    "block length must equal blockSize (" + blockSize + "): " + block.length);
+        }
+
+        double shortTermEnergy = computeBlockEnergy(block);
+        double spectralFlux = computeSpectralFlux(block);
+
+        if (!initialized) {
+            longTermEnergy = shortTermEnergy;
+            prevSpectralFlux = spectralFlux;
+            initialized = true;
+            result.set(false, 1.0, spectralFlux);
+            return;
+        }
+
+        double energyRatio = computeEnergyRatio(shortTermEnergy);
+        double fluxRatio = computeFluxRatio(spectralFlux);
+
+        double combinedScore = TEMPORAL_WEIGHT * energyRatio
+                + SPECTRAL_WEIGHT * fluxRatio;
+        boolean transientDetected = combinedScore > sensitivityThreshold;
+
+        updateState(shortTermEnergy, spectralFlux);
+
+        result.set(transientDetected, energyRatio, spectralFlux);
     }
 
     /**
@@ -237,6 +289,45 @@ public final class TransientDetector {
     // ----------------------------------------------------------------
     // Internal DSP methods
     // ----------------------------------------------------------------
+
+    /**
+     * Computes the temporal energy ratio using noise-floor logic to avoid
+     * spurious infinite ratios from numerical near-zero values while
+     * recognizing genuine silence-to-signal transitions as transients.
+     */
+    private double computeEnergyRatio(double shortTermEnergy) {
+        if (longTermEnergy > NOISE_FLOOR) {
+            return shortTermEnergy / longTermEnergy;
+        } else if (shortTermEnergy > NOISE_FLOOR) {
+            return shortTermEnergy / NOISE_FLOOR;
+        } else {
+            return 1.0;
+        }
+    }
+
+    /**
+     * Computes the spectral flux ratio using the same noise-floor logic.
+     */
+    private double computeFluxRatio(double spectralFlux) {
+        if (prevSpectralFlux > NOISE_FLOOR) {
+            return spectralFlux / prevSpectralFlux;
+        } else if (spectralFlux > NOISE_FLOOR) {
+            return spectralFlux / NOISE_FLOOR;
+        } else {
+            return 1.0;
+        }
+    }
+
+    /**
+     * Updates long-term energy and spectral flux state using exponential
+     * moving average.
+     */
+    private void updateState(double shortTermEnergy, double spectralFlux) {
+        longTermEnergy = longTermDecay * longTermEnergy
+                + (1.0 - longTermDecay) * shortTermEnergy;
+        prevSpectralFlux = longTermDecay * prevSpectralFlux
+                + (1.0 - longTermDecay) * spectralFlux;
+    }
 
     /**
      * Computes the mean power (average of squared samples) of a block.
