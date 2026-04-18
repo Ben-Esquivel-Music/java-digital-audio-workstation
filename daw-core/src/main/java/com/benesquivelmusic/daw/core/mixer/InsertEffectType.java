@@ -18,6 +18,17 @@ public enum InsertEffectType {
     NOISE_GATE("Noise Gate"),
     STEREO_IMAGER("Stereo Imager"),
     GRAPHIC_EQ("Graphic EQ"),
+    ANALOG_DISTORTION("Analog Distortion"),
+    BASS_EXTENSION("Bass Extension"),
+    CHIRP_PEAK_REDUCER("Chirp Peak Reducer"),
+    GAIN_STAGING("Gain Staging"),
+    HEARING_LOSS_SIMULATOR("Hearing Loss Simulator"),
+    LESLIE("Leslie"),
+    PITCH_SHIFT("Pitch Shift"),
+    SPRING_REVERB("Spring Reverb"),
+    TIME_STRETCH("Time Stretch"),
+    VELVET_NOISE_REVERB("Velvet Noise Reverb"),
+    WAVESHAPER("Waveshaper"),
     CLAP_PLUGIN("CLAP Plugin");
 
     private final String displayName;

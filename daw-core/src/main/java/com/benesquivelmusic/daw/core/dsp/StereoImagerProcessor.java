@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 /**
@@ -155,6 +156,7 @@ public final class StereoImagerProcessor implements AudioProcessor {
     /**
      * Returns the stereo width (0.0 = mono, 1.0 = unchanged, 2.0 = extra-wide).
      */
+    @ProcessorParam(id = 0, name = "Width", min = 0.0, max = 2.0, defaultValue = 1.0)
     public double getWidth() { return width; }
 
     /**

@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.dsp;
 
 import com.benesquivelmusic.daw.core.audio.StretchQuality;
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.Arrays;
@@ -223,6 +224,7 @@ public final class TimeStretchProcessor implements AudioProcessor {
     }
 
     /** Returns the current stretch ratio. */
+    @ProcessorParam(id = 0, name = "Stretch Ratio", min = 0.25, max = 4.0, defaultValue = 1.0)
     public double getStretchRatio() {
         return stretchRatio;
     }

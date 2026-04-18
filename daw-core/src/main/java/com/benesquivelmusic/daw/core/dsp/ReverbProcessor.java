@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.Arrays;
@@ -143,6 +144,7 @@ public final class ReverbProcessor implements AudioProcessor {
 
     // --- Parameter accessors ---
 
+    @ProcessorParam(id = 0, name = "Room Size", min = 0.0, max = 1.0, defaultValue = 0.5)
     public double getRoomSize() { return roomSize; }
 
     public void setRoomSize(double roomSize) {
@@ -153,6 +155,7 @@ public final class ReverbProcessor implements AudioProcessor {
         initializeDelayLines();
     }
 
+    @ProcessorParam(id = 1, name = "Decay", min = 0.0, max = 1.0, defaultValue = 0.5)
     public double getDecay() { return decay; }
 
     public void setDecay(double decay) {
@@ -162,6 +165,7 @@ public final class ReverbProcessor implements AudioProcessor {
         this.decay = decay;
     }
 
+    @ProcessorParam(id = 2, name = "Damping", min = 0.0, max = 1.0, defaultValue = 0.3)
     public double getDamping() { return damping; }
 
     public void setDamping(double damping) {
@@ -171,6 +175,7 @@ public final class ReverbProcessor implements AudioProcessor {
         this.damping = damping;
     }
 
+    @ProcessorParam(id = 3, name = "Mix", min = 0.0, max = 1.0, defaultValue = 0.3)
     public double getMix() { return mix; }
 
     public void setMix(double mix) {

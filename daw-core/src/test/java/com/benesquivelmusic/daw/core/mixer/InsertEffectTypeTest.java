@@ -8,7 +8,7 @@ class InsertEffectTypeTest {
 
     @Test
     void shouldHaveTenTypes() {
-        assertThat(InsertEffectType.values()).hasSize(10);
+        assertThat(InsertEffectType.values()).hasSize(21);
     }
 
     @Test

@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.mastering.TruePeakCeilingPreset;
 
@@ -207,6 +208,7 @@ public final class LimiterProcessor implements AudioProcessor, GainReductionProv
 
     // --- Parameter accessors ---
 
+    @ProcessorParam(id = 0, name = "Ceiling", min = -12.0, max = 0.0, defaultValue = -1.0, unit = "dB")
     public double getCeilingDb() { return ceilingDb; }
     public void setCeilingDb(double ceilingDb) {
         if (ceilingDb > 0) throw new IllegalArgumentException("ceilingDb must be <= 0: " + ceilingDb);
@@ -222,6 +224,7 @@ public final class LimiterProcessor implements AudioProcessor, GainReductionProv
         setCeilingDb(preset.getCeilingDbtp());
     }
 
+    @ProcessorParam(id = 1, name = "Attack", min = 0.01, max = 50.0, defaultValue = 0.3, unit = "ms")
     public double getAttackMs() { return attackMs; }
     public void setAttackMs(double attackMs) {
         if (attackMs < 0) throw new IllegalArgumentException("attackMs must be >= 0: " + attackMs);
@@ -229,6 +232,7 @@ public final class LimiterProcessor implements AudioProcessor, GainReductionProv
         recalculateCoefficients();
     }
 
+    @ProcessorParam(id = 2, name = "Release", min = 10.0, max = 500.0, defaultValue = 100.0, unit = "ms")
     public double getReleaseMs() { return releaseMs; }
     public void setReleaseMs(double releaseMs) {
         if (releaseMs < 0) throw new IllegalArgumentException("releaseMs must be >= 0: " + releaseMs);

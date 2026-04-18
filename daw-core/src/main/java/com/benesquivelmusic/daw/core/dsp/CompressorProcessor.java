@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor;
 
 /**
@@ -144,15 +145,18 @@ public final class CompressorProcessor implements SidechainAwareProcessor, GainR
 
     // --- Parameter accessors ---
 
+    @ProcessorParam(id = 0, name = "Threshold", min = -60.0, max = 0.0, defaultValue = -20.0, unit = "dB")
     public double getThresholdDb() { return thresholdDb; }
     public void setThresholdDb(double thresholdDb) { this.thresholdDb = thresholdDb; }
 
+    @ProcessorParam(id = 1, name = "Ratio", min = 1.0, max = 20.0, defaultValue = 4.0)
     public double getRatio() { return ratio; }
     public void setRatio(double ratio) {
         if (ratio < 1.0) throw new IllegalArgumentException("ratio must be >= 1.0: " + ratio);
         this.ratio = ratio;
     }
 
+    @ProcessorParam(id = 2, name = "Attack", min = 0.01, max = 100.0, defaultValue = 10.0, unit = "ms")
     public double getAttackMs() { return attackMs; }
     public void setAttackMs(double attackMs) {
         if (attackMs < 0) throw new IllegalArgumentException("attackMs must be >= 0: " + attackMs);
@@ -160,6 +164,7 @@ public final class CompressorProcessor implements SidechainAwareProcessor, GainR
         recalculateCoefficients();
     }
 
+    @ProcessorParam(id = 3, name = "Release", min = 10.0, max = 1000.0, defaultValue = 100.0, unit = "ms")
     public double getReleaseMs() { return releaseMs; }
     public void setReleaseMs(double releaseMs) {
         if (releaseMs < 0) throw new IllegalArgumentException("releaseMs must be >= 0: " + releaseMs);
@@ -167,12 +172,14 @@ public final class CompressorProcessor implements SidechainAwareProcessor, GainR
         recalculateCoefficients();
     }
 
+    @ProcessorParam(id = 4, name = "Knee", min = 0.0, max = 24.0, defaultValue = 6.0, unit = "dB")
     public double getKneeDb() { return kneeDb; }
     public void setKneeDb(double kneeDb) {
         if (kneeDb < 0) throw new IllegalArgumentException("kneeDb must be >= 0: " + kneeDb);
         this.kneeDb = kneeDb;
     }
 
+    @ProcessorParam(id = 5, name = "Makeup Gain", min = 0.0, max = 30.0, defaultValue = 0.0, unit = "dB")
     public double getMakeupGainDb() { return makeupGainDb; }
     public void setMakeupGainDb(double makeupGainDb) { this.makeupGainDb = makeupGainDb; }
 

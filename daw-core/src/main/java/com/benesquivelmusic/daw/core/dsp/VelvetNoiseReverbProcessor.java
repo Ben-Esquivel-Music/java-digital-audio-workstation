@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.Arrays;
@@ -172,6 +173,7 @@ public final class VelvetNoiseReverbProcessor implements AudioProcessor {
 
     // --- Parameter accessors ---
 
+    @ProcessorParam(id = 0, name = "Decay Time", min = 0.0, max = 1.0, defaultValue = 0.5)
     public double getDecayTime() { return decayTime; }
 
     public void setDecayTime(double decayTime) {
@@ -182,6 +184,7 @@ public final class VelvetNoiseReverbProcessor implements AudioProcessor {
         generateVelvetNoiseSequence();
     }
 
+    @ProcessorParam(id = 1, name = "Density", min = 0.0, max = 1.0, defaultValue = 0.5)
     public double getDensity() { return density; }
 
     public void setDensity(double density) {
@@ -192,6 +195,7 @@ public final class VelvetNoiseReverbProcessor implements AudioProcessor {
         generateVelvetNoiseSequence();
     }
 
+    @ProcessorParam(id = 2, name = "Early/Late Mix", min = 0.0, max = 1.0, defaultValue = 0.5)
     public double getEarlyLateMix() { return earlyLateMix; }
 
     public void setEarlyLateMix(double earlyLateMix) {
@@ -202,6 +206,7 @@ public final class VelvetNoiseReverbProcessor implements AudioProcessor {
         this.earlyLateMix = earlyLateMix;
     }
 
+    @ProcessorParam(id = 3, name = "Damping", min = 0.0, max = 1.0, defaultValue = 0.5)
     public double getDamping() { return damping; }
 
     public void setDamping(double damping) {
@@ -211,6 +216,7 @@ public final class VelvetNoiseReverbProcessor implements AudioProcessor {
         this.damping = damping;
     }
 
+    @ProcessorParam(id = 4, name = "Mix", min = 0.0, max = 1.0, defaultValue = 0.3)
     public double getMix() { return mix; }
 
     public void setMix(double mix) {

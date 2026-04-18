@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
@@ -261,6 +262,7 @@ public final class GraphicEqProcessor implements AudioProcessor {
      *
      * @return the Q factor
      */
+    @ProcessorParam(id = 0, name = "Q", min = 0.1, max = 10.0, defaultValue = 1.0)
     public double getQ() {
         return q;
     }

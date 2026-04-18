@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp;
 
+import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 /**
@@ -49,6 +50,7 @@ public final class GainStagingProcessor implements AudioProcessor {
     }
 
     /** Returns the current gain in dB. */
+    @ProcessorParam(id = 0, name = "Gain", min = -24.0, max = 24.0, defaultValue = 0.0, unit = "dB")
     public double getGainDb() {
         return gainDb;
     }
