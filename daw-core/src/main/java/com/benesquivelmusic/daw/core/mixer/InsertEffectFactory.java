@@ -90,15 +90,11 @@ public final class InsertEffectFactory {
         return plugin.asAudioProcessor()
                 .map(processor -> {
                     InsertEffectType effectType = inferBuiltInEffectType(processor);
-                    if (effectType != null) {
-                        return new InsertSlot(
-                                plugin.getDescriptor().name(),
-                                processor,
-                                effectType);
-                    }
                     return new InsertSlot(
                             plugin.getDescriptor().name(),
-                            processor);
+                            processor,
+                            effectType,
+                            plugin);
                 });
     }
 

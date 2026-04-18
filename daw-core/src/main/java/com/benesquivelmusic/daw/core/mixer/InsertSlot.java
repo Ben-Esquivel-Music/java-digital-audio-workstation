@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.mixer;
 
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 
 import java.util.Objects;
 
@@ -21,6 +22,7 @@ public final class InsertSlot {
     private final String name;
     private final AudioProcessor processor;
     private final InsertEffectType effectType;
+    private final DawPlugin plugin;
     private boolean bypassed;
     private MixerChannel sidechainSource;
 
@@ -31,7 +33,7 @@ public final class InsertSlot {
      * @param processor the audio processor for this slot
      */
     public InsertSlot(String name, AudioProcessor processor) {
-        this(name, processor, null);
+        this(name, processor, null, null);
     }
 
     /**
@@ -42,9 +44,29 @@ public final class InsertSlot {
      * @param effectType the built-in effect type, or {@code null} for CLAP/external plugins
      */
     public InsertSlot(String name, AudioProcessor processor, InsertEffectType effectType) {
+        this(name, processor, effectType, null);
+    }
+
+    /**
+     * Creates a new insert slot associated with a {@link DawPlugin}.
+     *
+     * <p>The plugin reference is optional — it is retained so the host can
+     * route plugin-parameter automation values back to the plugin via
+     * {@link DawPlugin#setAutomatableParameter(int, double)} during playback.
+     * Slots created without a plugin (built-in DSP processors, legacy code
+     * paths) pass {@code null}.</p>
+     *
+     * @param name       the display name of the effect
+     * @param processor  the audio processor for this slot
+     * @param effectType the built-in effect type, or {@code null}
+     * @param plugin     the source plugin, or {@code null}
+     */
+    public InsertSlot(String name, AudioProcessor processor,
+                      InsertEffectType effectType, DawPlugin plugin) {
         this.name = Objects.requireNonNull(name, "name must not be null");
         this.processor = Objects.requireNonNull(processor, "processor must not be null");
         this.effectType = effectType;
+        this.plugin = plugin;
         this.bypassed = false;
     }
 
@@ -75,6 +97,22 @@ public final class InsertSlot {
      */
     public InsertEffectType getEffectType() {
         return effectType;
+    }
+
+    /**
+     * Returns the {@link DawPlugin} that produced this slot, or {@code null}
+     * if the slot was created directly from a raw {@link AudioProcessor}
+     * (built-in DSP, CLAP/external plugin paths, legacy code).
+     *
+     * <p>The host uses the plugin reference to route plugin-parameter
+     * automation values from {@link com.benesquivelmusic.daw.core.automation.AutomationData
+     * AutomationData} back to {@link DawPlugin#setAutomatableParameter(int, double)}
+     * during playback.</p>
+     *
+     * @return the originating plugin, or {@code null}
+     */
+    public DawPlugin getPlugin() {
+        return plugin;
     }
 
     /**

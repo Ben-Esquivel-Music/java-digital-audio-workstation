@@ -6,7 +6,7 @@ package com.benesquivelmusic.daw.core.automation;
  * <p>Each parameter has a defined value range used to validate automation
  * point values.</p>
  */
-public enum AutomationParameter {
+public enum AutomationParameter implements AutomationTarget {
 
     /** Track volume (0.0 = silence, 1.0 = unity gain). */
     VOLUME(0.0, 1.0, 1.0),
@@ -31,18 +31,27 @@ public enum AutomationParameter {
     }
 
     /** Returns the minimum allowed value for this parameter. */
+    @Override
     public double getMinValue() {
         return minValue;
     }
 
     /** Returns the maximum allowed value for this parameter. */
+    @Override
     public double getMaxValue() {
         return maxValue;
     }
 
     /** Returns the default value for this parameter. */
+    @Override
     public double getDefaultValue() {
         return defaultValue;
+    }
+
+    /** Returns a short human-readable label (the enum constant name). */
+    @Override
+    public String displayName() {
+        return name();
     }
 
     /**
@@ -52,6 +61,7 @@ public enum AutomationParameter {
      * @param value the value to check
      * @return {@code true} if valid
      */
+    @Override
     public boolean isValidValue(double value) {
         return value >= minValue && value <= maxValue;
     }
