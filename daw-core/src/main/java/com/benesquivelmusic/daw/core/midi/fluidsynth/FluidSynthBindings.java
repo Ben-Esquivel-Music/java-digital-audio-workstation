@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.midi.fluidsynth;
 
+import com.benesquivelmusic.daw.core.audio.NativeLibraryLoader;
+
 import java.lang.foreign.*;
 import java.lang.invoke.MethodHandle;
 import java.util.Optional;
@@ -34,9 +36,13 @@ import java.util.Optional;
  * </ul>
  *
  * <h2>Native Library Loading</h2>
- * <p>The FluidSynth shared library ({@code libfluidsynth.so}, {@code libfluidsynth.dylib},
- * or {@code fluidsynth.dll}) must be on the system library path. Use
- * {@link #isAvailable()} to check before calling any other method.</p>
+ * <p>The FluidSynth shared library is loaded via {@link NativeLibraryLoader},
+ * which prefers the project-built copy bundled in the directory referenced by
+ * {@code java.library.path} (e.g. {@code libfluidsynth.so.3} produced by the
+ * CMake build under {@code lib/}) and falls back to a system-installed copy
+ * ({@code libfluidsynth.so}, {@code libfluidsynth.dylib}, or
+ * {@code fluidsynth.dll}). Use {@link #isAvailable()} to check before calling
+ * any other method.</p>
  *
  * @see <a href="https://www.fluidsynth.org/api/">FluidSynth API Reference</a>
  */
@@ -50,6 +56,9 @@ public final class FluidSynthBindings {
 
     /** Number of MIDI channels supported. */
     public static final int MIDI_CHANNELS = 16;
+
+    /** FluidSynth shared library SOVERSION (matches {@code LIB_VERSION_CURRENT} in upstream CMake). */
+    private static final int FLUIDSYNTH_SOVERSION = 3;
 
     private static final Linker LINKER = Linker.nativeLinker();
 
@@ -116,10 +125,17 @@ public final class FluidSynthBindings {
         Arena tempArena = Arena.ofAuto();
 
         try {
-            tempLookup = SymbolLookup.libraryLookup(resolveLibraryName(), tempArena);
+            // Prefer the project-built libfluidsynth bundled under java.library.path
+            // (produced by the CMake build in lib/), then fall back to a system
+            // install. This mirrors the loading strategy used by the OGG/Vorbis/MP3
+            // bindings via NativeLibraryLoader.
+            tempLookup = NativeLibraryLoader.loadLibrary(tempArena, "fluidsynth",
+                    FLUIDSYNTH_SOVERSION);
             tempAvailable = true;
-        } catch (IllegalArgumentException | UnsatisfiedLinkError _) {
+        } catch (UnsupportedOperationException | IllegalArgumentException
+                 | UnsatisfiedLinkError _) {
             // Native library not found — expected on systems without FluidSynth
+            // and without a successful native build
         }
 
         this.lookup = tempLookup;
@@ -706,16 +722,5 @@ public final class FluidSynthBindings {
             throw new FluidSynthException("Symbol not found: " + name, FLUID_FAILED);
         }
         return LINKER.downcallHandle(symbol.get(), descriptor);
-    }
-
-    private static String resolveLibraryName() {
-        String os = System.getProperty("os.name", "").toLowerCase();
-        if (os.contains("win")) {
-            return "fluidsynth";
-        } else if (os.contains("mac")) {
-            return "libfluidsynth.dylib";
-        } else {
-            return "libfluidsynth.so";
-        }
     }
 }
