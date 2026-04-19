@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.core.telemetry.RoomGeometrySolver;
 import com.benesquivelmusic.daw.core.telemetry.RoomParameterController;
 import com.benesquivelmusic.daw.sdk.telemetry.*;
 import javafx.collections.FXCollections;
@@ -90,6 +91,28 @@ public final class TelemetrySetupPanel extends ScrollPane {
     private final ListView<MicrophonePlacement> micListView;
     private final ObservableList<MicrophonePlacement> microphones;
     private final Label micErrorLabel;
+
+    // ── Auto-size-from-mic-distance section ──────────────────────────
+    private final TextField distanceField;
+    private final ComboBox<SoundSource> primarySourceCombo;
+    private final ComboBox<MicrophonePlacement> primaryMicCombo;
+    private final Label autoSizePreviewLabel;
+    private final Button applyAutoSizeButton;
+
+    /**
+     * {@code true} while the panel is programmatically writing dimension
+     * fields from the auto-size solver. Used to suppress the
+     * "manual edit disengages auto-size" listener during our own writes.
+     */
+    private boolean programmaticDimensionUpdate = false;
+
+    /**
+     * {@code true} while the UI is in auto-size mode — i.e. the user has
+     * clicked Apply and subsequent distance/material/power changes should
+     * keep refreshing the dimension fields. Flipped to {@code false} the
+     * moment the user manually edits a dimension input.
+     */
+    private boolean autoSizeActive = false;
 
     /**
      * Creates a new telemetry setup panel with sensible defaults.
@@ -230,9 +253,36 @@ public final class TelemetrySetupPanel extends ScrollPane {
         micErrorLabel.setVisible(false);
         micErrorLabel.setManaged(false);
 
+        // ── Auto-size-from-mic-distance section ──────────────────────
+        distanceField = createNumericField("1.0");
+
+        primarySourceCombo = new ComboBox<>(soundSources);
+        primarySourceCombo.setStyle(COMBO_STYLE);
+        primarySourceCombo.setMaxWidth(Double.MAX_VALUE);
+        primarySourceCombo.setPromptText("Primary source (defaults to #1)");
+        primarySourceCombo.setCellFactory(list -> new SoundSourceCell());
+        primarySourceCombo.setButtonCell(new SoundSourceCell());
+
+        primaryMicCombo = new ComboBox<>(microphones);
+        primaryMicCombo.setStyle(COMBO_STYLE);
+        primaryMicCombo.setMaxWidth(Double.MAX_VALUE);
+        primaryMicCombo.setPromptText("Primary microphone (defaults to #1)");
+        primaryMicCombo.setCellFactory(list -> new MicrophonePlacementCell());
+        primaryMicCombo.setButtonCell(new MicrophonePlacementCell());
+
+        autoSizePreviewLabel = new Label();
+        autoSizePreviewLabel.setStyle(ABSORPTION_LABEL_STYLE);
+        autoSizePreviewLabel.setWrapText(true);
+
+        applyAutoSizeButton = new Button("Apply");
+        applyAutoSizeButton.setStyle(BUTTON_STYLE);
+        applyAutoSizeButton.setOnAction(event -> applyAutoSize());
+
         // ── Auto-fill on preset selection ────────────────────────────
         presetCombo.valueProperty().addListener((observable, oldValue, newValue) -> {
             if (newValue != null) {
+                // Picking a named preset is an explicit manual override.
+                autoSizeActive = false;
                 RoomDimensions dimensions = newValue.dimensions();
                 widthField.setText(String.valueOf(dimensions.width()));
                 lengthField.setText(String.valueOf(dimensions.length()));
@@ -247,17 +297,70 @@ public final class TelemetrySetupPanel extends ScrollPane {
 
         // ── Validate on text change and update RT60 ──────────────────
         widthField.textProperty().addListener((observable, oldValue, newValue) -> {
+            if (!programmaticDimensionUpdate) {
+                autoSizeActive = false;
+            }
             validateInputs();
             updateRt60Display();
         });
         lengthField.textProperty().addListener((observable, oldValue, newValue) -> {
+            if (!programmaticDimensionUpdate) {
+                autoSizeActive = false;
+            }
             validateInputs();
             updateRt60Display();
         });
         heightField.textProperty().addListener((observable, oldValue, newValue) -> {
+            if (!programmaticDimensionUpdate) {
+                autoSizeActive = false;
+            }
             validateInputs();
             updateRt60Display();
         });
+
+        // ── Auto-size listeners (live preview + re-apply if active) ──
+        distanceField.textProperty().addListener((observable, oldValue, newValue) -> {
+            updateAutoSizePreview();
+            if (autoSizeActive) {
+                writeAutoSizeToDimensionFields();
+            }
+        });
+        wallMaterialCombo.valueProperty().addListener((observable, oldValue, newValue) -> {
+            updateAutoSizePreview();
+            if (autoSizeActive) {
+                writeAutoSizeToDimensionFields();
+            }
+        });
+        primarySourceCombo.valueProperty().addListener((observable, oldValue, newValue) -> {
+            updateAutoSizePreview();
+            if (autoSizeActive) {
+                writeAutoSizeToDimensionFields();
+            }
+        });
+        // Re-computing on source-list changes ensures power updates from
+        // armed-track sync (story 120) flow through to the preview. Also
+        // default-selects the first source/mic when none is chosen yet.
+        soundSources.addListener((javafx.collections.ListChangeListener<SoundSource>) change -> {
+            if (primarySourceCombo.getValue() == null && !soundSources.isEmpty()) {
+                primarySourceCombo.setValue(soundSources.get(0));
+            } else if (primarySourceCombo.getValue() != null
+                    && !soundSources.contains(primarySourceCombo.getValue())) {
+                primarySourceCombo.setValue(soundSources.isEmpty() ? null : soundSources.get(0));
+            }
+            updateAutoSizePreview();
+            if (autoSizeActive) {
+                writeAutoSizeToDimensionFields();
+            }
+        });
+        microphones.addListener((javafx.collections.ListChangeListener<MicrophonePlacement>) change -> {
+            if (primaryMicCombo.getValue() == null && !microphones.isEmpty()) {
+                primaryMicCombo.setValue(microphones.get(0));
+            } else if (primaryMicCombo.getValue() != null
+                    && !microphones.contains(primaryMicCombo.getValue())) {
+                primaryMicCombo.setValue(microphones.isEmpty() ? null : microphones.get(0));
+            }
+        });
+        updateAutoSizePreview();
 
         // ── Build layout ─────────────────────────────────────────────
         VBox content = new VBox(12);
@@ -272,6 +375,16 @@ public final class TelemetrySetupPanel extends ScrollPane {
 
         Label presetSectionLabel = new Label("Room Preset");
         presetSectionLabel.setStyle(SECTION_LABEL_STYLE);
+
+        Label autoSizeSectionLabel = new Label("Auto-size room from mic distance");
+        autoSizeSectionLabel.setStyle(SECTION_LABEL_STYLE);
+
+        Label autoSizeHelpLabel = new Label(
+                "Estimated from distance — refine manually if known.");
+        autoSizeHelpLabel.setStyle(LABEL_STYLE);
+        autoSizeHelpLabel.setWrapText(true);
+
+        GridPane autoSizeGrid = createAutoSizeGrid();
 
         Label dimensionsSectionLabel = new Label("Room Dimensions");
         dimensionsSectionLabel.setStyle(SECTION_LABEL_STYLE);
@@ -301,6 +414,12 @@ public final class TelemetrySetupPanel extends ScrollPane {
         content.getChildren().addAll(
                 header,
                 headerSep,
+                autoSizeSectionLabel,
+                autoSizeHelpLabel,
+                autoSizeGrid,
+                autoSizePreviewLabel,
+                applyAutoSizeButton,
+                new Separator() {{ setStyle(SEPARATOR_STYLE); }},
                 presetSectionLabel,
                 presetCombo,
                 new Separator() {{ setStyle(SEPARATOR_STYLE); }},
@@ -637,6 +756,73 @@ public final class TelemetrySetupPanel extends ScrollPane {
         return micErrorLabel;
     }
 
+    // ── Auto-size accessors ─────────────────────────────────────────
+
+    /**
+     * Returns the "distance from source to nearest microphone" input
+     * field used by the auto-size-from-mic-distance feature.
+     *
+     * @return the distance field
+     */
+    public TextField getDistanceField() {
+        return distanceField;
+    }
+
+    /**
+     * Returns the primary source combo used by the auto-size feature.
+     * Defaults to the first source in {@link #getSoundSources()} when the
+     * user has not explicitly selected one.
+     *
+     * @return the primary source combo
+     */
+    public ComboBox<SoundSource> getPrimarySourceCombo() {
+        return primarySourceCombo;
+    }
+
+    /**
+     * Returns the primary microphone combo used by the auto-size feature.
+     * Defaults to the first microphone in {@link #getMicrophones()} when
+     * the user has not explicitly selected one.
+     *
+     * @return the primary microphone combo
+     */
+    public ComboBox<MicrophonePlacement> getPrimaryMicCombo() {
+        return primaryMicCombo;
+    }
+
+    /**
+     * Returns the auto-size preview label that shows the derived
+     * dimensions and resulting RT60 for the current distance, material,
+     * and primary source power.
+     *
+     * @return the auto-size preview label
+     */
+    public Label getAutoSizePreviewLabel() {
+        return autoSizePreviewLabel;
+    }
+
+    /**
+     * Returns the "Apply" button that writes the derived auto-size
+     * dimensions into the width/length/height fields.
+     *
+     * @return the apply auto-size button
+     */
+    public Button getApplyAutoSizeButton() {
+        return applyAutoSizeButton;
+    }
+
+    /**
+     * Indicates whether the panel is currently in auto-size mode — i.e.
+     * the user has clicked Apply and subsequent distance/material/power
+     * changes continue to update the dimension fields. Flipped to
+     * {@code false} the moment the user manually edits a dimension.
+     *
+     * @return {@code true} if auto-size mode is engaged
+     */
+    public boolean isAutoSizeActive() {
+        return autoSizeActive;
+    }
+
     /**
      * Returns the currently configured room dimensions, or {@code null}
      * if any input is invalid.
@@ -932,6 +1118,36 @@ public final class TelemetrySetupPanel extends ScrollPane {
         return grid;
     }
 
+    private GridPane createAutoSizeGrid() {
+        GridPane grid = new GridPane();
+        grid.setHgap(12);
+        grid.setVgap(8);
+
+        Label distanceLabel = new Label("Distance from source to nearest microphone (m):");
+        distanceLabel.setStyle(LABEL_STYLE);
+        distanceLabel.setWrapText(true);
+
+        Label sourceLabel = new Label("Primary source:");
+        sourceLabel.setStyle(LABEL_STYLE);
+
+        Label micLabel = new Label("Primary microphone:");
+        micLabel.setStyle(LABEL_STYLE);
+
+        ColumnConstraints labelCol = new ColumnConstraints();
+        ColumnConstraints fieldCol = new ColumnConstraints();
+        fieldCol.setHgrow(Priority.ALWAYS);
+        grid.getColumnConstraints().addAll(labelCol, fieldCol);
+
+        grid.add(distanceLabel, 0, 0);
+        grid.add(distanceField, 1, 0);
+        grid.add(sourceLabel, 0, 1);
+        grid.add(primarySourceCombo, 1, 1);
+        grid.add(micLabel, 0, 2);
+        grid.add(primaryMicCombo, 1, 2);
+
+        return grid;
+    }
+
     static Double parsePositiveDouble(String text) {
         if (text == null || text.isBlank()) {
             return null;
@@ -1039,6 +1255,99 @@ public final class TelemetrySetupPanel extends ScrollPane {
         double coeff = material.absorptionCoefficient();
         absorptionLabel.setText(String.format("Absorption: %.0f%%", coeff * 100));
         absorptionBar.setProgress(coeff);
+    }
+
+    // ── Auto-size from mic distance ──────────────────────────────────
+
+    /**
+     * Computes the auto-sized room dimensions from the current distance,
+     * wall material, and primary source power, or {@code null} if the
+     * distance or material is invalid.
+     *
+     * @return the derived dimensions, or {@code null} if inputs are invalid
+     */
+    RoomDimensions computeAutoSizeDimensions() {
+        Double distance = parsePositiveDouble(distanceField.getText());
+        WallMaterial material = wallMaterialCombo.getValue();
+        if (distance == null || material == null) {
+            return null;
+        }
+        double powerDb = getPrimarySourcePowerDb();
+        return RoomGeometrySolver.solve(distance, material, powerDb);
+    }
+
+    /**
+     * Returns the power of the selected primary source, defaulting to the
+     * first source in the list, then to {@link #DEFAULT_POWER_DB} if no
+     * sources are configured.
+     */
+    private double getPrimarySourcePowerDb() {
+        SoundSource selected = primarySourceCombo.getValue();
+        if (selected != null) {
+            return selected.powerDb();
+        }
+        if (!soundSources.isEmpty()) {
+            return soundSources.get(0).powerDb();
+        }
+        return DEFAULT_POWER_DB;
+    }
+
+    private void updateAutoSizePreview() {
+        RoomDimensions dims = computeAutoSizeDimensions();
+        if (dims == null) {
+            autoSizePreviewLabel.setText("Preview: enter a positive distance and select a wall material.");
+            return;
+        }
+        WallMaterial material = wallMaterialCombo.getValue();
+        double rt60 = RoomParameterController.computeRt60(dims, material);
+        String rt60Text;
+        if (Double.isInfinite(rt60) || rt60 == Double.MAX_VALUE) {
+            rt60Text = "∞";
+        } else {
+            rt60Text = String.format("%.2f s", rt60);
+        }
+        autoSizePreviewLabel.setText(String.format(
+                "Preview: %.1f × %.1f × %.1f m  (RT60 ≈ %s)",
+                dims.width(), dims.length(), dims.height(), rt60Text));
+    }
+
+    /**
+     * Writes the currently derived auto-size dimensions to the
+     * width/length/height fields and sliders, without flipping the panel
+     * out of auto-size mode.
+     */
+    private void writeAutoSizeToDimensionFields() {
+        RoomDimensions dims = computeAutoSizeDimensions();
+        if (dims == null) {
+            return;
+        }
+        programmaticDimensionUpdate = true;
+        try {
+            widthField.setText(String.format("%.1f", dims.width()));
+            lengthField.setText(String.format("%.1f", dims.length()));
+            heightField.setText(String.format("%.1f", dims.height()));
+            widthSlider.setValue(dims.width());
+            lengthSlider.setValue(dims.length());
+            heightSlider.setValue(dims.height());
+        } finally {
+            programmaticDimensionUpdate = false;
+        }
+        validateInputs();
+        updateRt60Display();
+    }
+
+    /**
+     * Invoked when the user clicks the "Apply" button. Writes the derived
+     * dimensions to {@code width/length/height} and engages auto-size
+     * mode so subsequent distance/material/power changes keep refreshing
+     * the fields until the user manually edits one.
+     */
+    void applyAutoSize() {
+        if (computeAutoSizeDimensions() == null) {
+            return;
+        }
+        writeAutoSizeToDimensionFields();
+        autoSizeActive = true;
     }
 
     static String formatPresetName(RoomPreset preset) {
