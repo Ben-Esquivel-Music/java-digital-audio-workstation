@@ -128,6 +128,14 @@ class CeilingShapeTest {
     }
 
     @Test
+    void angledShouldRejectHighLessThanLow() {
+        assertThatThrownBy(() -> new CeilingShape.Angled(
+                5.0, 3.0, CeilingShape.Axis.X))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("highHeight must be greater than or equal to lowHeight");
+    }
+
+    @Test
     void axisShouldBeRequired() {
         assertThatThrownBy(() -> new CeilingShape.BarrelVault(3.0, 5.0, null))
                 .isInstanceOf(NullPointerException.class);

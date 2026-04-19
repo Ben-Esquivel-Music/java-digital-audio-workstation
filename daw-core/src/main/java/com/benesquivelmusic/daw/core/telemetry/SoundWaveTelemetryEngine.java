@@ -239,6 +239,8 @@ public final class SoundWaveTelemetryEngine {
         List<SoundWavePath> out = new ArrayList<>();
         Position3D sp = source.position();
         Position3D mp = mic.position();
+        double roomW = dims.width();
+        double roomL = dims.length();
         for (CeilingFacet facet : facets) {
             double[] n = facet.normal();
             Position3D c = facet.centroid();
@@ -261,10 +263,26 @@ public final class SoundWaveTelemetryEngine {
             double t = ((c.x() - image.x()) * n[0]
                     + (c.y() - image.y()) * n[1]
                     + (c.z() - image.z()) * n[2]) / denom;
+
+            // Reject intersections behind the image or beyond the mic.
+            if (t < 0.0 || t > 1.0) {
+                continue;
+            }
+
             Position3D rp = new Position3D(
                     image.x() + t * lineDx,
                     image.y() + t * lineDy,
                     image.z() + t * lineDz);
+
+            // Reject points outside the room floor bounds.
+            if (rp.x() < 0 || rp.x() > roomW || rp.y() < 0 || rp.y() > roomL) {
+                continue;
+            }
+
+            // Barycentric point-in-triangle test for the reflection point.
+            if (!pointInTriangle(rp, facet.a(), facet.b(), facet.c())) {
+                continue;
+            }
 
             double totalDist = sp.distanceTo(rp) + rp.distanceTo(mp);
             double delayMs = (totalDist / SPEED_OF_SOUND_MPS) * 1000.0;
@@ -276,6 +294,30 @@ public final class SoundWaveTelemetryEngine {
                     totalDist, delayMs, attenuationDb, true));
         }
         return out;
+    }
+
+    /**
+     * Tests whether 3D point {@code p} lies inside the triangle
+     * defined by vertices {@code a}, {@code b}, {@code c} using
+     * a barycentric coordinate test.
+     */
+    static boolean pointInTriangle(Position3D p, Position3D a, Position3D b, Position3D c) {
+        double v0x = c.x() - a.x(), v0y = c.y() - a.y(), v0z = c.z() - a.z();
+        double v1x = b.x() - a.x(), v1y = b.y() - a.y(), v1z = b.z() - a.z();
+        double v2x = p.x() - a.x(), v2y = p.y() - a.y(), v2z = p.z() - a.z();
+
+        double dot00 = v0x * v0x + v0y * v0y + v0z * v0z;
+        double dot01 = v0x * v1x + v0y * v1y + v0z * v1z;
+        double dot02 = v0x * v2x + v0y * v2y + v0z * v2z;
+        double dot11 = v1x * v1x + v1y * v1y + v1z * v1z;
+        double dot12 = v1x * v2x + v1y * v2y + v1z * v2z;
+
+        double inv = dot00 * dot11 - dot01 * dot01;
+        if (Math.abs(inv) < 1e-12) return false;
+        double invDenom = 1.0 / inv;
+        double u = (dot11 * dot02 - dot01 * dot12) * invDenom;
+        double v = (dot00 * dot12 - dot01 * dot02) * invDenom;
+        return (u >= -1e-9) && (v >= -1e-9) && (u + v <= 1.0 + 1e-9);
     }
 
     static List<CeilingFacet> sampleCurvedCeilingFacets(RoomDimensions dims, int resolution) {
@@ -475,11 +517,15 @@ public final class SoundWaveTelemetryEngine {
         switch (shape) {
             case CeilingShape.Domed dome -> {
                 Position3D focus = dome.focus(w, l);
+                double minX = Math.min(0.5, w / 2.0);
+                double minY = Math.min(0.5, l / 2.0);
                 for (MicrophonePlacement mic : config.getMicrophones()) {
                     if (mic.position().distanceTo(focus) < FOCUS_PROXIMITY_METERS) {
+                        double saferX = Math.max(minX, Math.min(w, mic.position().x() - 1.0));
+                        double saferY = Math.max(minY, Math.min(l, mic.position().y()));
                         Position3D safer = new Position3D(
-                                Math.max(0.5, mic.position().x() - 1.0),
-                                mic.position().y(),
+                                saferX,
+                                saferY,
                                 mic.position().z());
                         suggestions.add(new TelemetrySuggestion.AdjustMicPosition(
                                 mic.name(), safer,
@@ -523,11 +569,22 @@ public final class SoundWaveTelemetryEngine {
                         }
                     }
                     if (!alignedSourceNames.isEmpty()) {
+                        Position3D p = mic.position();
+                        double offsetMeters = 0.5;
+                        Position3D suggestedPosition = ridgeAlongX
+                                ? new Position3D(
+                                        p.x(),
+                                        Math.min(Math.max(0.5, p.y() + offsetMeters), l - 0.5),
+                                        p.z())
+                                : new Position3D(
+                                        Math.min(Math.max(0.5, p.x() + offsetMeters), w - 0.5),
+                                        p.y(),
+                                        p.z());
                         suggestions.add(new TelemetrySuggestion.AdjustMicPosition(
-                                mic.name(), mic.position(),
+                                mic.name(), suggestedPosition,
                                 "source(s) %s and microphone are aligned with the cathedral ridge axis; "
                                         .formatted(String.join(", ", alignedSourceNames))
-                                + "this geometry risks flutter echoes between the two rake planes"));
+                                + "this geometry risks flutter echoes between the two rake planes, so move the mic slightly off the ridge axis"));
                     }
                 }
             }

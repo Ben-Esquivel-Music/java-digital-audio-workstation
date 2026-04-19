@@ -891,9 +891,10 @@ public final class TelemetrySetupPanel extends ScrollPane {
 
     /**
      * Builds a {@link CeilingShape} from the current ceiling-UI state.
-     * The {@code fallbackHeight} is used as the default apex/ridge/high
-     * height if the contextual input is missing or invalid, and as the
-     * fixed height for a flat ceiling.
+     * The {@code fallbackHeight} is used as the default for both the
+     * base/eave/low and the apex/ridge/high height when the respective
+     * contextual input is missing or invalid, and as the fixed height
+     * for a flat ceiling.
      *
      * @return the ceiling shape, or {@code null} if values are invalid
      */
@@ -1032,7 +1033,7 @@ public final class TelemetrySetupPanel extends ScrollPane {
         CeilingShape.Kind kind = ceilingKindCombo.getValue();
         if (kind != null && kind != CeilingShape.Kind.FLAT && height != null) {
             if (buildCeilingShape(height) == null) {
-                errors.append("Ceiling: base/eave/low height must be positive and ≤ apex/ridge/high height. ");
+                errors.append("Ceiling: base/eave/low height must be positive and ≤ apex/ridge/high height (both must be positive). ");
             }
         }
 

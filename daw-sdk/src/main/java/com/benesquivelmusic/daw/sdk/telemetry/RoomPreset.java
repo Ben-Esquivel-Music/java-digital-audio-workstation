@@ -26,7 +26,7 @@ public enum RoomPreset {
      * Medium-sized concert hall. Models the classic "shoebox with curved
      * rear" geometry by using a shallow barrel vault along the hall's
      * length — this captures the hall's cylindrical acoustic focusing
-     * behaviour.
+     * behavior.
      */
     CONCERT_HALL(new RoomDimensions(25.0, 40.0,
             new CeilingShape.BarrelVault(12.0, 15.0, CeilingShape.Axis.Y)),

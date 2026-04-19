@@ -355,6 +355,11 @@ public sealed interface CeilingShape
             if (highHeight <= 0) {
                 throw new IllegalArgumentException("highHeight must be positive: " + highHeight);
             }
+            if (highHeight < lowHeight) {
+                throw new IllegalArgumentException(
+                        "highHeight must be greater than or equal to lowHeight: "
+                                + "lowHeight=" + lowHeight + ", highHeight=" + highHeight);
+            }
         }
 
         @Override public Kind kind() { return Kind.ANGLED; }

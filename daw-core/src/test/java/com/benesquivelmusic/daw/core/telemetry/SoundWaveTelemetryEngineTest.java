@@ -292,10 +292,12 @@ class SoundWaveTelemetryEngineTest {
                 source, mic, dims, WallMaterial.DRYWALL);
 
         // 5 flat surfaces + ceiling facets (some may be skipped when the
-        // image–mic ray is nearly parallel to the facet plane).
+        // image–mic ray is nearly parallel to the facet plane, outside
+        // room bounds, or outside the triangular facet).
         int maxCeilingFacets = 2 * SoundWaveTelemetryEngine.CURVED_CEILING_FACETS
                 * SoundWaveTelemetryEngine.CURVED_CEILING_FACETS;
-        assertThat(reflections).hasSizeBetween(5 + 1, 5 + maxCeilingFacets);
+        assertThat(reflections).hasSizeBetween(5, 5 + maxCeilingFacets);
+        assertThat(reflections.size()).isGreaterThan(5); // at least one ceiling facet hit
         for (SoundWavePath path : reflections) {
             assertThat(path.reflected()).isTrue();
             assertThat(path.totalDistance()).isGreaterThan(0);
@@ -314,8 +316,10 @@ class SoundWaveTelemetryEngineTest {
                 source, mic, dims, WallMaterial.DRYWALL);
 
         // 5 flat surfaces + up to 4 rake-plane facets (some may be
-        // skipped when the ray is nearly parallel to the facet)
-        assertThat(reflections).hasSizeBetween(5 + 1, 5 + 4);
+        // skipped when the ray is nearly parallel to the facet, outside
+        // room bounds, or outside the triangular facet)
+        assertThat(reflections).hasSizeBetween(5, 5 + 4);
+        assertThat(reflections.size()).isGreaterThan(5); // at least one rake facet hit
     }
 
     @Test
