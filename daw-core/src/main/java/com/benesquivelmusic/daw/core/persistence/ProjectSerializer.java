@@ -24,8 +24,10 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
+import com.benesquivelmusic.daw.sdk.telemetry.CeilingShape;
 import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
+import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
 import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -440,10 +442,14 @@ public final class ProjectSerializer {
         }
 
         Element configElem = document.createElement("room-configuration");
-        configElem.setAttribute("width", String.valueOf(config.getDimensions().width()));
-        configElem.setAttribute("length", String.valueOf(config.getDimensions().length()));
-        configElem.setAttribute("height", String.valueOf(config.getDimensions().height()));
+        RoomDimensions dims = config.getDimensions();
+        configElem.setAttribute("width", String.valueOf(dims.width()));
+        configElem.setAttribute("length", String.valueOf(dims.length()));
+        // Legacy "height" attribute (maxHeight) kept for readers that
+        // predate CeilingShape support. New readers use the <ceiling> child.
+        configElem.setAttribute("height", String.valueOf(dims.height()));
         configElem.setAttribute("wall-material", config.getWallMaterial().name());
+        configElem.appendChild(buildCeilingElement(document, dims.ceiling()));
         root.appendChild(configElem);
 
         for (SoundSource source : config.getSoundSources()) {
@@ -478,6 +484,35 @@ public final class ProjectSerializer {
             memberElem.setAttribute("z", String.valueOf(pos.z()));
             configElem.appendChild(memberElem);
         }
+    }
+
+    private Element buildCeilingElement(Document document, CeilingShape shape) {
+        Element ceiling = document.createElement("ceiling");
+        ceiling.setAttribute("kind", shape.kind().name());
+        switch (shape) {
+            case CeilingShape.Flat flat ->
+                    ceiling.setAttribute("height", String.valueOf(flat.height()));
+            case CeilingShape.Domed dome -> {
+                ceiling.setAttribute("base-height", String.valueOf(dome.baseHeight()));
+                ceiling.setAttribute("apex-height", String.valueOf(dome.apexHeight()));
+            }
+            case CeilingShape.BarrelVault vault -> {
+                ceiling.setAttribute("base-height", String.valueOf(vault.baseHeight()));
+                ceiling.setAttribute("apex-height", String.valueOf(vault.apexHeight()));
+                ceiling.setAttribute("axis", vault.axis().name());
+            }
+            case CeilingShape.Cathedral c -> {
+                ceiling.setAttribute("eave-height", String.valueOf(c.eaveHeight()));
+                ceiling.setAttribute("ridge-height", String.valueOf(c.ridgeHeight()));
+                ceiling.setAttribute("axis", c.ridgeAxis().name());
+            }
+            case CeilingShape.Angled a -> {
+                ceiling.setAttribute("low-height", String.valueOf(a.lowHeight()));
+                ceiling.setAttribute("high-height", String.valueOf(a.highHeight()));
+                ceiling.setAttribute("axis", a.slopeAxis().name());
+            }
+        }
+        return ceiling;
     }
 
     private void buildMixerSnapshots(Document document, Element root,
