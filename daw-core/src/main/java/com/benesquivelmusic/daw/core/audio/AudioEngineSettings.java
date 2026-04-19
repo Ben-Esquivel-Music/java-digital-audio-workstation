@@ -24,7 +24,7 @@ package com.benesquivelmusic.daw.core.audio;
  */
 public record AudioEngineSettings(int workerPoolSize, int minParallelBlockSize) {
 
-    /** Validates ranges and normalizes to safe values. */
+    /** Validates ranges and rejects invalid values. */
     public AudioEngineSettings {
         if (workerPoolSize <= 0) {
             throw new IllegalArgumentException(

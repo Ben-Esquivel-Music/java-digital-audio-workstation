@@ -107,9 +107,18 @@ public final class AudioWorkerPool implements AutoCloseable {
             return;
         }
         if (size == 1 || workers.length == 0) {
-            // Degenerate: no worker threads — run inline on the caller.
+            // Match worker-path semantics by skipping null tasks and isolating
+            // per-task failures so one bad task does not abort the batch.
             for (int i = 0; i < count; i++) {
-                tasks[i].run();
+                Runnable task = tasks[i];
+                if (task == null) {
+                    continue;
+                }
+                try {
+                    task.run();
+                } catch (Throwable ignored) {
+                    // Intentionally ignored to preserve batch execution semantics.
+                }
             }
             return;
         }

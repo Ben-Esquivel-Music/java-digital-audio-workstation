@@ -9,9 +9,11 @@ import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 /**
  * Correctness tests for {@link AudioGraphScheduler}. Validates that
@@ -237,20 +239,22 @@ class AudioGraphSchedulerTest {
         // Regression guard for the "bus shared by every track" stress case.
         // If the scheduler were to serialize on a bus lock, a 16-track render
         // with every track routed to the same bus would deadlock or stall.
-        try (AudioWorkerPool pool = new AudioWorkerPool(8)) {
-            Mixer mixer = buildBusyMixer(99L);
-            mixer.setGraphScheduler(new AudioGraphScheduler(pool, 16));
+        // Wrapped in assertTimeoutPreemptively so a real deadlock fails the
+        // test instead of hanging CI indefinitely.
+        assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+            try (AudioWorkerPool pool = new AudioWorkerPool(8)) {
+                Mixer mixer = buildBusyMixer(99L);
+                mixer.setGraphScheduler(new AudioGraphScheduler(pool, 16));
 
-            long deadline = System.nanoTime() + 10L * 1_000_000_000L; // 10s budget
-            for (int i = 0; i < 100 && System.nanoTime() < deadline; i++) {
-                float[][][] trackBufs = new float[16][CHANNELS][128];
-                fillTrackBuffers(trackBufs, 128, 31L + i);
-                float[][] out = zeroed(CHANNELS, 128);
-                float[][][] ret = zeroed3D(Mixer.MAX_RETURN_BUSES, CHANNELS, 128);
-                mixer.mixDown(trackBufs, out, ret, 128);
+                for (int i = 0; i < 100; i++) {
+                    float[][][] trackBufs = new float[16][CHANNELS][128];
+                    fillTrackBuffers(trackBufs, 128, 31L + i);
+                    float[][] out = zeroed(CHANNELS, 128);
+                    float[][][] ret = zeroed3D(Mixer.MAX_RETURN_BUSES, CHANNELS, 128);
+                    mixer.mixDown(trackBufs, out, ret, 128);
+                }
             }
-            assertThat(System.nanoTime()).isLessThan(deadline);
-        }
+        });
     }
 
     @Test

@@ -161,6 +161,10 @@ public final class AudioGraphScheduler {
 
         final int channelCount = Math.min(channels.size(), channelBuffers.length);
         final int limit = Math.min(channelCount, taskImpls.length);
+        if (processed.length < limit) {
+            throw new IllegalArgumentException(
+                    "processed.length must be at least " + limit + " but was " + processed.length);
+        }
         int taskIdx = 0;
 
         for (int i = 0; i < limit; i++) {
@@ -188,6 +192,12 @@ public final class AudioGraphScheduler {
 
         lastDispatchedTaskCount = taskIdx;
         pool.invokeAll(taskSlots, taskIdx);
+
+        // Clear references held by ChannelTask instances so large audio buffers
+        // and mixer channels are not retained between blocks / across sessions.
+        for (int i = 0; i < taskIdx; i++) {
+            taskImpls[i].clearReferences();
+        }
     }
 
     /**
@@ -211,6 +221,13 @@ public final class AudioGraphScheduler {
             this.numFrames = numFrames;
             this.processed = processed;
             this.channelIndex = channelIndex;
+        }
+
+        /** Clears retained references to allow GC between blocks / sessions. */
+        void clearReferences() {
+            this.channel = null;
+            this.buffer = null;
+            this.processed = null;
         }
 
         @Override

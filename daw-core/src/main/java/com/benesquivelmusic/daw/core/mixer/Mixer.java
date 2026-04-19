@@ -246,6 +246,9 @@ public final class Mixer {
             returnBus.prepareEffectsChain(audioChannels, blockSize);
         }
         masterChannel.prepareEffectsChain(audioChannels, blockSize);
+        // Pre-allocate the parallel pre-pass flag array so the first mixDown
+        // call is allocation-free (satisfies the @RealTimeSafe contract).
+        this.insertsProcessedFlags = new boolean[channels.size()];
         recalculateDelayCompensation();
         rebindAllReflectiveParameterBindings();
     }
