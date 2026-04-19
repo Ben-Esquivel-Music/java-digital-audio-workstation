@@ -825,4 +825,103 @@ class ProjectSerializationRoundTripTest {
         // Invalid values should be ignored, keeping the default (MASTER)
         assertThat(restoredChannel.getOutputRouting()).isEqualTo(OutputRouting.MASTER);
     }
+
+    @Test
+    void shouldRoundTripCpuBudgetBypassExpensive() throws IOException {
+        DawProject original = new DawProject("Budget Test", AudioFormat.CD_QUALITY);
+        original.createAudioTrack("Synth");
+
+        MixerChannel channel = original.getMixer().getChannels().get(0);
+        channel.setCpuBudget(new com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget(
+                0.25, new com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.BypassExpensive()));
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        MixerChannel restoredChannel = restored.getMixer().getChannels().get(0);
+        com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget budget = restoredChannel.getCpuBudget();
+        assertThat(budget).isNotNull();
+        assertThat(budget.maxFractionOfBlock()).isCloseTo(0.25, within(0.001));
+        assertThat(budget.onOverBudget())
+                .isInstanceOf(com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.BypassExpensive.class);
+    }
+
+    @Test
+    void shouldRoundTripCpuBudgetReduceOversampling() throws IOException {
+        DawProject original = new DawProject("Budget Test 2", AudioFormat.CD_QUALITY);
+        original.createAudioTrack("Reverb");
+
+        MixerChannel channel = original.getMixer().getChannels().get(0);
+        channel.setCpuBudget(new com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget(
+                0.5, new com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.ReduceOversampling(2)));
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        MixerChannel restoredChannel = restored.getMixer().getChannels().get(0);
+        com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget budget = restoredChannel.getCpuBudget();
+        assertThat(budget).isNotNull();
+        assertThat(budget.maxFractionOfBlock()).isCloseTo(0.5, within(0.001));
+        assertThat(budget.onOverBudget())
+                .isInstanceOf(com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.ReduceOversampling.class);
+        com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.ReduceOversampling ro =
+                (com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.ReduceOversampling) budget.onOverBudget();
+        assertThat(ro.fallbackFactor()).isEqualTo(2);
+    }
+
+    @Test
+    void shouldRoundTripCpuBudgetSubstituteSimpleKernel() throws IOException {
+        DawProject original = new DawProject("Budget Test 3", AudioFormat.CD_QUALITY);
+        original.createAudioTrack("Convolution");
+
+        MixerChannel channel = original.getMixer().getChannels().get(0);
+        channel.setCpuBudget(new com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget(
+                0.3, new com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.SubstituteSimpleKernel("algo-reverb")));
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        MixerChannel restoredChannel = restored.getMixer().getChannels().get(0);
+        com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget budget = restoredChannel.getCpuBudget();
+        assertThat(budget).isNotNull();
+        assertThat(budget.maxFractionOfBlock()).isCloseTo(0.3, within(0.001));
+        assertThat(budget.onOverBudget())
+                .isInstanceOf(com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.SubstituteSimpleKernel.class);
+        com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.SubstituteSimpleKernel sk =
+                (com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.SubstituteSimpleKernel) budget.onOverBudget();
+        assertThat(sk.kernelId()).isEqualTo("algo-reverb");
+    }
+
+    @Test
+    void shouldRoundTripCpuBudgetDoNothing() throws IOException {
+        DawProject original = new DawProject("Budget Test 4", AudioFormat.CD_QUALITY);
+        original.createAudioTrack("Track");
+
+        MixerChannel channel = original.getMixer().getChannels().get(0);
+        channel.setCpuBudget(new com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget(
+                0.8, new com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.DoNothing()));
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        MixerChannel restoredChannel = restored.getMixer().getChannels().get(0);
+        com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget budget = restoredChannel.getCpuBudget();
+        assertThat(budget).isNotNull();
+        assertThat(budget.maxFractionOfBlock()).isCloseTo(0.8, within(0.001));
+        assertThat(budget.onOverBudget())
+                .isInstanceOf(com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.DoNothing.class);
+    }
+
+    @Test
+    void shouldRoundTripNoCpuBudget() throws IOException {
+        DawProject original = new DawProject("No Budget Test", AudioFormat.CD_QUALITY);
+        original.createAudioTrack("Legacy Track");
+
+        // No cpuBudget set — should remain null after round-trip
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        MixerChannel restoredChannel = restored.getMixer().getChannels().get(0);
+        assertThat(restoredChannel.getCpuBudget()).isNull();
+    }
 }

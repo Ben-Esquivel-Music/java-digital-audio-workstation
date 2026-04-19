@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer;
 import com.benesquivelmusic.daw.core.automation.AutomationData;
 import com.benesquivelmusic.daw.core.automation.AutomationParameter;
 import com.benesquivelmusic.daw.core.automation.PluginParameterTarget;
@@ -169,6 +170,47 @@ public final class RenderPipeline {
                             EffectsChain masterChain,
                             AudioEngine.RecordingCallback recordingCallback,
                             PerformanceMonitor performanceMonitor) {
+        renderBlock(inputBuffer, outputBuffer, numFrames, transport, mixer,
+                tracks, midiRenderer, masterChain, recordingCallback,
+                performanceMonitor, null);
+    }
+
+    /**
+     * Renders a single block of audio into {@code outputBuffer}, optionally
+     * feeding per-track CPU measurements to a {@link TrackCpuBudgetEnforcer}.
+     *
+     * <p>This overload adds per-track CPU timing around the mixer's insert
+     * processing. When {@code cpuBudgetEnforcer} is non-null, each track's
+     * mixer processing time is measured and reported to the enforcer, which
+     * evaluates per-track and master budgets and publishes degradation or
+     * restoration events.</p>
+     *
+     * @param inputBuffer        the input audio data {@code [channel][frame]}
+     *                           (may be {@code null} when rendering offline)
+     * @param outputBuffer       the output audio data {@code [channel][frame]}
+     * @param numFrames          the number of sample frames to process
+     * @param transport          the transport, or {@code null} for pass-through
+     * @param mixer              the mixer, or {@code null} for pass-through
+     * @param tracks             the tracks, or {@code null} for pass-through
+     * @param midiRenderer       the MIDI track renderer, or {@code null}
+     * @param masterChain        the master effects chain applied after mixdown
+     * @param recordingCallback  optional recording callback (may be {@code null})
+     * @param performanceMonitor optional performance monitor (may be {@code null})
+     * @param cpuBudgetEnforcer  optional per-track CPU budget enforcer
+     *                           (may be {@code null})
+     */
+    @RealTimeSafe
+    public void renderBlock(float[][] inputBuffer,
+                            float[][] outputBuffer,
+                            int numFrames,
+                            Transport transport,
+                            Mixer mixer,
+                            List<Track> tracks,
+                            MidiTrackRenderer midiRenderer,
+                            EffectsChain masterChain,
+                            AudioEngine.RecordingCallback recordingCallback,
+                            PerformanceMonitor performanceMonitor,
+                            TrackCpuBudgetEnforcer cpuBudgetEnforcer) {
         Objects.requireNonNull(outputBuffer, "outputBuffer must not be null");
         Objects.requireNonNull(masterChain, "masterChain must not be null");
 
@@ -217,9 +259,19 @@ public final class RenderPipeline {
                                 + " are supported; extra buses will not receive send audio");
             }
 
-            // Mix through the mixer into the mix buffer, routing sends to
-            // return buses which are summed into the main output.
-            mixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames);
+            // Per-track CPU timing for budget enforcement. The enforcer
+            // measures around each track's mixer processing (insert chain
+            // application, delay compensation, and summing). When not
+            // present, the mixer processes all channels in one call with
+            // no instrumentation overhead.
+            if (cpuBudgetEnforcer != null) {
+                mixer.mixDownInstrumented(trackBuffers, mixBuffer, returnBuffers,
+                        numFrames, tracks, cpuBudgetEnforcer);
+            } else {
+                // Mix through the mixer into the mix buffer, routing sends to
+                // return buses which are summed into the main output.
+                mixer.mixDown(trackBuffers, mixBuffer, returnBuffers, numFrames);
+            }
         } else if (inputBuffer != null) {
             // Fallback: copy input into the mix buffer (pass-through)
             int channels = Math.min(inputBuffer.length, mixBuffer.length);
@@ -255,6 +307,11 @@ public final class RenderPipeline {
         if (performanceMonitor != null) {
             long elapsedNanos = System.nanoTime() - startNanos;
             performanceMonitor.recordProcessingTime(elapsedNanos);
+        }
+
+        // Evaluate master budget after all per-track recordings for this block
+        if (cpuBudgetEnforcer != null && playbackActive) {
+            cpuBudgetEnforcer.evaluateMasterBudget();
         }
     }
 

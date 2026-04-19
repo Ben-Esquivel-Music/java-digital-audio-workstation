@@ -762,6 +762,213 @@ public final class Mixer {
         }
     }
 
+    /**
+     * Sums all channel audio into the output buffer like
+     * {@link #mixDown(float[][][], float[][], float[][][], int)}, but
+     * additionally instruments per-track mixer processing (insert chain,
+     * send routing, delay compensation, and summing) and feeds the
+     * measurement to the supplied {@link TrackCpuBudgetEnforcer}.
+     *
+     * <p>The enforcer receives one
+     * {@link TrackCpuBudgetEnforcer#recordTrackCpu(String, long)} call per
+     * active track per block, using the track's stable id. This enables
+     * per-track CPU budget evaluation and graceful degradation.</p>
+     *
+     * @param channelBuffers    per-channel audio data
+     * @param outputBuffer      the destination output buffer
+     * @param returnBuffers     per-return-bus output buffers
+     * @param numFrames         the number of sample frames to mix
+     * @param tracks            the track list (for stable id lookup)
+     * @param enforcer          the CPU budget enforcer (must not be null)
+     */
+    @RealTimeSafe
+    public void mixDownInstrumented(float[][][] channelBuffers,
+                                    float[][] outputBuffer,
+                                    float[][][] returnBuffers,
+                                    int numFrames,
+                                    java.util.List<com.benesquivelmusic.daw.core.track.Track> tracks,
+                                    com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer enforcer) {
+        boolean useDouble = mixPrecision == MixPrecision.DOUBLE_64;
+        double[][] acc = useDouble ? ensureAccumulator(outputBuffer.length, numFrames) : null;
+
+        for (float[] ch : outputBuffer) {
+            Arrays.fill(ch, 0, numFrames, 0.0f);
+        }
+        if (useDouble) {
+            for (int ch = 0; ch < outputBuffer.length; ch++) {
+                Arrays.fill(acc[ch], 0, numFrames, 0.0);
+            }
+        }
+
+        int returnBusCount = Math.min(returnBuses.size(), returnBuffers.length);
+        for (int r = 0; r < returnBusCount; r++) {
+            for (float[] ch : returnBuffers[r]) {
+                Arrays.fill(ch, 0, numFrames, 0.0f);
+            }
+        }
+
+        boolean anySolo = false;
+        for (MixerChannel channel : channels) {
+            if (channel.isSolo()) {
+                anySolo = true;
+                break;
+            }
+        }
+
+        int channelCount = Math.min(channels.size(), channelBuffers.length);
+        int trackListSize = tracks.size();
+
+        for (int i = 0; i < channelCount; i++) {
+            MixerChannel channel = channels.get(i);
+            if (channel.isMuted()) {
+                continue;
+            }
+            if (anySolo && !channel.isSolo()) {
+                continue;
+            }
+
+            // Start timing this track's mixer processing
+            long trackStart = System.nanoTime();
+
+            float[][] src = channelBuffers[i];
+
+            if (!channel.getEffectsChain().isEmpty()) {
+                if (hasSidechainRouting(channel)) {
+                    processInsertsWithSidechain(channel, src, channelBuffers, returnBuffers, numFrames);
+                } else {
+                    channel.getEffectsChain().process(src, src, numFrames);
+                }
+            }
+
+            float volume = (float) channel.getVolume();
+
+            List<Send> sends = channel.getSends();
+            for (int s = 0; s < sends.size(); s++) {
+                Send send = sends.get(s);
+                float sendLevel = (float) send.getLevel();
+                if (sendLevel <= 0.0f) {
+                    continue;
+                }
+                MixerChannel target = send.getTarget();
+                int returnIndex = -1;
+                for (int r = 0; r < returnBusCount; r++) {
+                    if (returnBuses.get(r) == target) {
+                        returnIndex = r;
+                        break;
+                    }
+                }
+                if (returnIndex < 0) {
+                    continue;
+                }
+                float[][] returnBuf = returnBuffers[returnIndex];
+                int returnAudioChannels = Math.min(src.length, returnBuf.length);
+                if (send.getMode() == SendMode.PRE_FADER) {
+                    for (int ch = 0; ch < returnAudioChannels; ch++) {
+                        for (int f = 0; f < numFrames; f++) {
+                            returnBuf[ch][f] += src[ch][f] * sendLevel;
+                        }
+                    }
+                } else {
+                    for (int ch = 0; ch < returnAudioChannels; ch++) {
+                        for (int f = 0; f < numFrames; f++) {
+                            returnBuf[ch][f] += src[ch][f] * volume * sendLevel;
+                        }
+                    }
+                }
+            }
+
+            delayCompensation.applyToChannel(i, src, numFrames);
+
+            if (!channel.getOutputRouting().isMaster()) {
+                // Record timing even for direct-output tracks
+                long trackElapsed = System.nanoTime() - trackStart;
+                if (i < trackListSize) {
+                    enforcer.recordTrackCpu(tracks.get(i).getId(), trackElapsed);
+                }
+                continue;
+            }
+
+            if (useDouble) {
+                sumChannelToOutputDouble(channel, src, acc, outputBuffer.length, numFrames);
+            } else {
+                sumChannelToOutput(channel, src, outputBuffer, numFrames);
+            }
+
+            // Record per-track CPU measurement
+            long trackElapsed = System.nanoTime() - trackStart;
+            if (i < trackListSize) {
+                enforcer.recordTrackCpu(tracks.get(i).getId(), trackElapsed);
+            }
+        }
+
+        // Process return bus effects, apply compensation, and sum into main output
+        for (int r = 0; r < returnBusCount; r++) {
+            MixerChannel returnBus = returnBuses.get(r);
+            float[][] returnBuf = returnBuffers[r];
+            if (!returnBus.getEffectsChain().isEmpty()) {
+                if (useDouble) {
+                    double[][] dblBuf = ensureReturnBusScratchDouble(returnBuf.length, numFrames);
+                    for (int ch = 0; ch < returnBuf.length; ch++) {
+                        for (int f = 0; f < numFrames; f++) {
+                            dblBuf[ch][f] = returnBuf[ch][f];
+                        }
+                    }
+                    returnBus.getEffectsChain().processDouble(dblBuf, dblBuf, numFrames);
+                    for (int ch = 0; ch < returnBuf.length; ch++) {
+                        for (int f = 0; f < numFrames; f++) {
+                            returnBuf[ch][f] = (float) dblBuf[ch][f];
+                        }
+                    }
+                } else {
+                    returnBus.getEffectsChain().process(returnBuf, returnBuf, numFrames);
+                }
+            }
+            delayCompensation.applyToReturnBus(r, returnBuf, numFrames);
+
+            float returnVolume = (float) returnBus.getVolume();
+            int returnAudioChannels = Math.min(returnBuf.length, outputBuffer.length);
+            if (returnBus.isMuted()) {
+                for (float[] ch : returnBuf) {
+                    Arrays.fill(ch, 0, numFrames, 0.0f);
+                }
+            } else if (useDouble) {
+                double returnVolumeD = returnBus.getVolume();
+                for (int ch = 0; ch < returnAudioChannels; ch++) {
+                    for (int f = 0; f < numFrames; f++) {
+                        double scaled = returnBuf[ch][f] * returnVolumeD;
+                        returnBuf[ch][f] = (float) scaled;
+                        acc[ch][f] += scaled;
+                    }
+                }
+            } else {
+                for (int ch = 0; ch < returnAudioChannels; ch++) {
+                    for (int f = 0; f < numFrames; f++) {
+                        returnBuf[ch][f] *= returnVolume;
+                        outputBuffer[ch][f] += returnBuf[ch][f];
+                    }
+                }
+            }
+        }
+
+        float masterVolume = (float) masterChannel.getVolume();
+        if (useDouble) {
+            finalizeAccumulator(acc, outputBuffer, numFrames,
+                    masterChannel.isMuted() ? 0.0 : masterChannel.getVolume());
+            return;
+        }
+        if (!masterChannel.isMuted()) {
+            for (float[] ch : outputBuffer) {
+                for (int f = 0; f < numFrames; f++) {
+                    ch[f] *= masterVolume;
+                }
+            }
+        } else {
+            for (float[] ch : outputBuffer) {
+                Arrays.fill(ch, 0, numFrames, 0.0f);
+            }
+        }
+    }
+
     // ── Channel → output summing ─────────────────────────────────────────
 
     /**

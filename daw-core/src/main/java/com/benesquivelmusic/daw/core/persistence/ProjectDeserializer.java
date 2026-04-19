@@ -28,6 +28,8 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackColor;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy;
+import com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget;
 import com.benesquivelmusic.daw.sdk.telemetry.*;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -471,6 +473,40 @@ public final class ProjectDeserializer {
                 parseSend(sendElem, channel, returnBuses);
             }
         }
+
+        // Parse per-track CPU budget
+        List<Element> budgetElements = getDirectChildElements(elem, "cpu-budget");
+        if (!budgetElements.isEmpty()) {
+            TrackCpuBudget budget = parseCpuBudget(budgetElements.getFirst());
+            if (budget != null) {
+                channel.setCpuBudget(budget);
+            }
+        }
+    }
+
+    private TrackCpuBudget parseCpuBudget(Element elem) {
+        double maxFraction = parseDoubleAttr(elem, "max-fraction", Double.NaN);
+        if (Double.isNaN(maxFraction) || maxFraction <= 0.0 || maxFraction > 1.0) {
+            return null;
+        }
+        String policyStr = elem.getAttribute("policy");
+        DegradationPolicy policy = switch (policyStr) {
+            case "bypass-expensive" -> new DegradationPolicy.BypassExpensive();
+            case "reduce-oversampling" -> {
+                int factor = parseIntAttr(elem, "fallback-factor", 1);
+                yield new DegradationPolicy.ReduceOversampling(Math.max(1, factor));
+            }
+            case "substitute-simple-kernel" -> {
+                String kernelId = elem.getAttribute("kernel-id");
+                if (kernelId == null || kernelId.isBlank()) {
+                    yield new DegradationPolicy.DoNothing();
+                }
+                yield new DegradationPolicy.SubstituteSimpleKernel(kernelId);
+            }
+            case "do-nothing" -> new DegradationPolicy.DoNothing();
+            default -> new DegradationPolicy.DoNothing();
+        };
+        return new TrackCpuBudget(maxFraction, policy);
     }
 
     private void parseInsertSlot(Element elem, MixerChannel channel, DawProject project) {
@@ -1103,8 +1139,14 @@ public final class ProjectDeserializer {
                 }
             }
 
+            TrackCpuBudget cpuBudget = null;
+            List<Element> budgetElements = getDirectChildElements(elem, "cpu-budget");
+            if (!budgetElements.isEmpty()) {
+                cpuBudget = parseCpuBudget(budgetElements.getFirst());
+            }
+
             return new ChannelSnapshot(volume, pan, muted, solo, phaseInverted,
-                    sendLevel, routing, inserts, sends);
+                    sendLevel, routing, inserts, sends, cpuBudget);
         } catch (IllegalArgumentException ignored) {
             return null;
         }

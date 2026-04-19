@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.audio.EffectsChain;
 import com.benesquivelmusic.daw.core.plugin.PluginInvocationSupervisor;
 import com.benesquivelmusic.daw.core.track.TrackColor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -41,6 +42,7 @@ public final class MixerChannel {
     private final List<Send> sends = new ArrayList<>();
     private final List<InsertSlot> insertSlots = new ArrayList<>();
     private final EffectsChain effectsChain = new EffectsChain();
+    private TrackCpuBudget cpuBudget;
     private int allocatedChannels;
     private int allocatedBlockSize;
     private Runnable onEffectsChainChanged;
@@ -176,6 +178,28 @@ public final class MixerChannel {
      */
     public void setColor(TrackColor color) {
         this.color = color;
+    }
+
+    /**
+     * Returns the per-track CPU budget assigned to this channel, or
+     * {@code null} if no budget has been configured (equivalent to
+     * unlimited — preserving legacy behaviour).
+     *
+     * @return the CPU budget, or {@code null}
+     */
+    public TrackCpuBudget getCpuBudget() {
+        return cpuBudget;
+    }
+
+    /**
+     * Sets the per-track CPU budget for this mixer channel.
+     *
+     * <p>Pass {@code null} to remove the budget (unlimited).
+     *
+     * @param cpuBudget the CPU budget, or {@code null} to clear
+     */
+    public void setCpuBudget(TrackCpuBudget cpuBudget) {
+        this.cpuBudget = cpuBudget;
     }
 
     /**

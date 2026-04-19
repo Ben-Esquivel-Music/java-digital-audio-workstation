@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -70,6 +71,9 @@ public final class AudioEngine {
 
     // Optional performance monitor for CPU load and underrun tracking
     private volatile PerformanceMonitor performanceMonitor;
+
+    // Optional per-track CPU budget enforcer for graceful degradation
+    private volatile TrackCpuBudgetEnforcer cpuBudgetEnforcer;
 
     /**
      * Creates a new audio engine with the specified format.
@@ -566,6 +570,32 @@ public final class AudioEngine {
     }
 
     /**
+     * Sets the per-track CPU budget enforcer for graceful degradation.
+     *
+     * <p>When set, the engine measures the time taken by each track's mixer
+     * processing and feeds the measurements to the enforcer. The enforcer
+     * evaluates per-track and master budgets each block. When a track
+     * persistently exceeds its budget, the enforcer applies the configured
+     * {@link com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy}
+     * and publishes events for the UI.</p>
+     *
+     * @param enforcer the CPU budget enforcer, or {@code null} to disable
+     */
+    public void setCpuBudgetEnforcer(TrackCpuBudgetEnforcer enforcer) {
+        this.cpuBudgetEnforcer = enforcer;
+    }
+
+    /**
+     * Returns the currently configured per-track CPU budget enforcer, or
+     * {@code null}.
+     *
+     * @return the CPU budget enforcer
+     */
+    public TrackCpuBudgetEnforcer getCpuBudgetEnforcer() {
+        return cpuBudgetEnforcer;
+    }
+
+    /**
      * Processes a single block of audio by delegating to the unified
      * {@link RenderPipeline}.
      *
@@ -602,10 +632,12 @@ public final class AudioEngine {
         MidiTrackRenderer currentMidiRenderer = this.midiTrackRenderer;
         RecordingCallback cb = this.recordingCallback;
         PerformanceMonitor monitor = this.performanceMonitor;
+        TrackCpuBudgetEnforcer enforcer = this.cpuBudgetEnforcer;
 
         renderPipeline.renderBlock(inputBuffer, outputBuffer, numFrames,
                 currentTransport, currentMixer, currentTracks,
-                currentMidiRenderer, masterChain, cb, monitor);
+                currentMidiRenderer, masterChain, cb, monitor,
+                enforcer);
     }
 
     /**
