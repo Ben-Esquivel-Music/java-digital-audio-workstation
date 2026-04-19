@@ -1441,4 +1441,131 @@ class TelemetrySetupPanelTest {
                 .isEqualTo(WallMaterial.ACOUSTIC_FOAM.absorptionCoefficient());
         assertThat(panel.getAbsorptionLabel().getText()).contains("70%");
     }
+
+    // ── Auto-size-from-mic-distance feature ─────────────────────────
+
+    @Test
+    void shouldExposeAutoSizeControls() throws Exception {
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        assertThat(panel.getDistanceField()).isNotNull();
+        assertThat(panel.getDistanceField().getText()).isEqualTo("1.0");
+        assertThat(panel.getPrimarySourceCombo()).isNotNull();
+        assertThat(panel.getPrimaryMicCombo()).isNotNull();
+        assertThat(panel.getAutoSizePreviewLabel()).isNotNull();
+        assertThat(panel.getApplyAutoSizeButton()).isNotNull();
+        assertThat(panel.getApplyAutoSizeButton().getText()).isEqualTo("Apply");
+    }
+
+    @Test
+    void autoSizePreviewShouldUpdateWhenMaterialChanges() throws Exception {
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        AtomicReference<String> concreteText = new AtomicReference<>();
+        AtomicReference<String> foamText = new AtomicReference<>();
+
+        runOnFxThread(() -> {
+            panel.getDistanceField().setText("1.0");
+            panel.getWallMaterialCombo().setValue(WallMaterial.CONCRETE);
+            concreteText.set(panel.getAutoSizePreviewLabel().getText());
+            panel.getWallMaterialCombo().setValue(WallMaterial.ACOUSTIC_FOAM);
+            foamText.set(panel.getAutoSizePreviewLabel().getText());
+        });
+
+        assertThat(concreteText.get()).isNotBlank().contains("Preview:");
+        assertThat(foamText.get()).isNotBlank().contains("Preview:");
+        // Different materials → different previewed dimensions.
+        assertThat(concreteText.get()).isNotEqualTo(foamText.get());
+    }
+
+    @Test
+    void applyAutoSizeShouldWriteDerivedDimensionsToConfigurationFields() throws Exception {
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getDistanceField().setText("1.0");
+            panel.getWallMaterialCombo().setValue(WallMaterial.ACOUSTIC_FOAM);
+            panel.getApplyAutoSizeButton().fire();
+        });
+
+        // After Apply, the dimension fields should reflect the solver's
+        // output for a booth-like (absorbent) small room.
+        RoomDimensions dims = panel.getRoomDimensions();
+        assertThat(dims).isNotNull();
+        assertThat(dims.width()).isLessThan(5.0);
+        assertThat(dims.length()).isLessThan(5.0);
+        assertThat(panel.isAutoSizeActive()).isTrue();
+    }
+
+    @Test
+    void applyAutoSizeShouldKeepFieldsInSyncWithFurtherDistanceChanges() throws Exception {
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getDistanceField().setText("1.0");
+            panel.getWallMaterialCombo().setValue(WallMaterial.CARPET);
+            panel.getApplyAutoSizeButton().fire();
+        });
+        double widthAfterApply = panel.getRoomDimensions().width();
+
+        runOnFxThread(() -> panel.getDistanceField().setText("3.0"));
+        double widthAfterDistanceBump = panel.getRoomDimensions().width();
+
+        // Still in auto-size mode → longer distance must grow the room.
+        assertThat(panel.isAutoSizeActive()).isTrue();
+        assertThat(widthAfterDistanceBump).isGreaterThan(widthAfterApply);
+    }
+
+    @Test
+    void manualDimensionEditShouldDisengageAutoSizeMode() throws Exception {
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getDistanceField().setText("1.0");
+            panel.getWallMaterialCombo().setValue(WallMaterial.CARPET);
+            panel.getApplyAutoSizeButton().fire();
+        });
+        assertThat(panel.isAutoSizeActive()).isTrue();
+
+        // Simulate user typing in the width field.
+        runOnFxThread(() -> panel.getWidthField().setText("7.5"));
+        assertThat(panel.isAutoSizeActive()).isFalse();
+
+        // Subsequent distance changes must NOT overwrite width anymore.
+        runOnFxThread(() -> panel.getDistanceField().setText("0.2"));
+        assertThat(panel.getWidthField().getText()).isEqualTo("7.5");
+    }
+
+    @Test
+    void autoSizeShouldUseFirstSourcePowerByDefault() throws Exception {
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> {
+            panel.getSoundSources().add(
+                    new SoundSource("Loud Amp", new Position3D(1, 1, 1), 110.0));
+            panel.getSoundSources().add(
+                    new SoundSource("Vocalist", new Position3D(2, 2, 1), 70.0));
+            panel.getDistanceField().setText("1.0");
+            panel.getWallMaterialCombo().setValue(WallMaterial.DRYWALL);
+        });
+
+        // The combo should default-select the first source.
+        assertThat(panel.getPrimarySourceCombo().getValue().name()).isEqualTo("Loud Amp");
+        assertThat(panel.getAutoSizePreviewLabel().getText()).contains("Preview:");
+    }
+
+    @Test
+    void autoSizeShouldHandleInvalidDistanceGracefully() throws Exception {
+        TelemetrySetupPanel panel = createOnFxThread();
+
+        runOnFxThread(() -> panel.getDistanceField().setText("abc"));
+
+        // Preview shows helpful hint; pressing Apply must not throw or
+        // clobber the existing dimensions.
+        String before = panel.getWidthField().getText();
+        runOnFxThread(() -> panel.getApplyAutoSizeButton().fire());
+        assertThat(panel.getWidthField().getText()).isEqualTo(before);
+        assertThat(panel.isAutoSizeActive()).isFalse();
+        assertThat(panel.getAutoSizePreviewLabel().getText()).contains("positive distance");
+    }
 }
