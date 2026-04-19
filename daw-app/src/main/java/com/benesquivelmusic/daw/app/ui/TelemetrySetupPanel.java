@@ -71,6 +71,9 @@ public final class TelemetrySetupPanel extends ScrollPane {
     private final Slider lengthSlider;
     private final Slider heightSlider;
     private final ComboBox<WallMaterial> wallMaterialCombo;
+    private final java.util.EnumMap<RoomSurface, ComboBox<WallMaterial>> surfaceCombos =
+            new java.util.EnumMap<>(RoomSurface.class);
+    private final javafx.scene.canvas.Canvas wireframeCanvas;
     private final Label errorLabel;
     private final Label rt60Label;
     private final Label absorptionLabel;
@@ -200,6 +203,40 @@ public final class TelemetrySetupPanel extends ScrollPane {
             if (newValue != null) {
                 updateAbsorptionDisplay(newValue);
                 updateRt60Display();
+                broadcastWallMaterialToSurfaceCombos(newValue);
+            }
+        });
+
+        // ── Per-surface material pickers (one ComboBox per RoomSurface) ──
+        for (RoomSurface surface : RoomSurface.values()) {
+            ComboBox<WallMaterial> combo = new ComboBox<>();
+            combo.getItems().addAll(WallMaterial.values());
+            combo.setStyle(COMBO_STYLE);
+            combo.setMaxWidth(Double.MAX_VALUE);
+            combo.setValue(defaultPreset.wallMaterial());
+            combo.setCellFactory(list -> new WallMaterialCell());
+            combo.setButtonCell(new WallMaterialCell());
+            combo.valueProperty().addListener((obs, oldV, newV) -> {
+                if (newV != null) {
+                    updateRt60Display();
+                    redrawWireframe();
+                }
+            });
+            surfaceCombos.put(surface, combo);
+        }
+
+        // ── 3D wireframe inset: an isometric cube whose faces are colored
+        //    by absorption coefficient. Clicking a face opens that
+        //    surface's material picker. ────────────────────────────────
+        wireframeCanvas = new javafx.scene.canvas.Canvas(220, 160);
+        wireframeCanvas.setOnMouseClicked(e -> {
+            RoomSurface picked = pickSurfaceAt(e.getX(), e.getY());
+            if (picked != null) {
+                ComboBox<WallMaterial> combo = surfaceCombos.get(picked);
+                if (combo != null) {
+                    combo.requestFocus();
+                    combo.show();
+                }
             }
         });
 
@@ -437,6 +474,36 @@ public final class TelemetrySetupPanel extends ScrollPane {
         Label materialSectionLabel = new Label("Wall Material");
         materialSectionLabel.setStyle(SECTION_LABEL_STYLE);
 
+        // Per-surface material picker grid + 3D wireframe inset (story 123).
+        Label perSurfaceLabel = new Label("Per-surface materials");
+        perSurfaceLabel.setStyle(SECTION_LABEL_STYLE);
+        Label perSurfaceHelp = new Label(
+                "Click a face on the wireframe to edit that surface, or pick directly below.");
+        perSurfaceHelp.setStyle(LABEL_STYLE);
+        perSurfaceHelp.setWrapText(true);
+
+        GridPane surfaceGrid = new GridPane();
+        surfaceGrid.setHgap(8);
+        surfaceGrid.setVgap(6);
+        RoomSurface[] surfaceOrder = {
+                RoomSurface.FLOOR, RoomSurface.CEILING,
+                RoomSurface.FRONT_WALL, RoomSurface.BACK_WALL,
+                RoomSurface.LEFT_WALL, RoomSurface.RIGHT_WALL
+        };
+        for (int i = 0; i < surfaceOrder.length; i++) {
+            RoomSurface s = surfaceOrder[i];
+            Label l = new Label(formatSurfaceName(s));
+            l.setStyle(LABEL_STYLE);
+            int row = i / 2;
+            int col = (i % 2) * 2;
+            surfaceGrid.add(l, col, row);
+            surfaceGrid.add(surfaceCombos.get(s), col + 1, row);
+            javafx.scene.layout.GridPane.setHgrow(surfaceCombos.get(s), Priority.ALWAYS);
+        }
+        VBox perSurfaceBox = new VBox(8, perSurfaceLabel, perSurfaceHelp,
+                wireframeCanvas, surfaceGrid);
+        redrawWireframe();
+
         Label sourceSectionLabel = new Label("Sound Sources");
         sourceSectionLabel.setStyle(SECTION_LABEL_STYLE);
 
@@ -476,6 +543,8 @@ public final class TelemetrySetupPanel extends ScrollPane {
                 wallMaterialCombo,
                 absorptionLabel,
                 absorptionBar,
+                new Separator() {{ setStyle(SEPARATOR_STYLE); }},
+                perSurfaceBox,
                 errorLabel,
                 new Separator() {{ setStyle(SEPARATOR_STYLE); }},
                 rt60SectionLabel,
@@ -543,6 +612,27 @@ public final class TelemetrySetupPanel extends ScrollPane {
      */
     public ComboBox<WallMaterial> getWallMaterialCombo() {
         return wallMaterialCombo;
+    }
+
+    /**
+     * Returns the per-surface material combo box for the given room
+     * surface. Provided for tests and external code that need to interact
+     * with the per-surface picker directly.
+     *
+     * @param surface the room surface
+     * @return the combo box for that surface
+     */
+    public ComboBox<WallMaterial> getSurfaceMaterialCombo(RoomSurface surface) {
+        return surfaceCombos.get(surface);
+    }
+
+    /**
+     * Returns the JavaFX {@link javafx.scene.canvas.Canvas Canvas} hosting
+     * the 3D wireframe inset whose surfaces are color-coded by material
+     * absorption and clickable to open the matching per-surface picker.
+     */
+    public javafx.scene.canvas.Canvas getWireframeCanvas() {
+        return wireframeCanvas;
     }
 
     /**
@@ -1432,9 +1522,9 @@ public final class TelemetrySetupPanel extends ScrollPane {
 
     private void updateRt60Display() {
         RoomDimensions dims = getRoomDimensions();
-        WallMaterial material = wallMaterialCombo.getValue();
-        if (dims != null && material != null) {
-            double rt60 = RoomParameterController.computeRt60(dims, material);
+        SurfaceMaterialMap map = getCurrentMaterialMap();
+        if (dims != null && map != null) {
+            double rt60 = RoomParameterController.computeRt60(dims, map);
             if (Double.isInfinite(rt60) || rt60 == Double.MAX_VALUE) {
                 rt60Label.setText("RT60: ∞ (no absorption)");
             } else {
@@ -1443,6 +1533,151 @@ public final class TelemetrySetupPanel extends ScrollPane {
         } else {
             rt60Label.setText("RT60: —");
         }
+    }
+
+    /**
+     * Returns the current per-surface material map composed from the six
+     * surface combo boxes, or {@code null} if any combo is empty.
+     */
+    SurfaceMaterialMap getCurrentMaterialMap() {
+        WallMaterial floor = surfaceCombos.get(RoomSurface.FLOOR).getValue();
+        WallMaterial front = surfaceCombos.get(RoomSurface.FRONT_WALL).getValue();
+        WallMaterial back = surfaceCombos.get(RoomSurface.BACK_WALL).getValue();
+        WallMaterial left = surfaceCombos.get(RoomSurface.LEFT_WALL).getValue();
+        WallMaterial right = surfaceCombos.get(RoomSurface.RIGHT_WALL).getValue();
+        WallMaterial ceil = surfaceCombos.get(RoomSurface.CEILING).getValue();
+        if (floor == null || front == null || back == null
+                || left == null || right == null || ceil == null) {
+            // Fall back to the master combo if some per-surface combo has
+            // not been initialised yet.
+            WallMaterial master = wallMaterialCombo.getValue();
+            return master == null ? null : new SurfaceMaterialMap(master);
+        }
+        return new SurfaceMaterialMap(floor, front, back, left, right, ceil);
+    }
+
+    private void broadcastWallMaterialToSurfaceCombos(WallMaterial material) {
+        for (ComboBox<WallMaterial> combo : surfaceCombos.values()) {
+            if (combo.getValue() != material) {
+                combo.setValue(material);
+            }
+        }
+        redrawWireframe();
+    }
+
+    // ── Wireframe inset rendering ────────────────────────────────────
+
+    /** Cached per-face screen polygons used for both rendering and picking. */
+    private double[][] faceXs;
+    private double[][] faceYs;
+    private RoomSurface[] faceOrder;
+
+    private void redrawWireframe() {
+        javafx.scene.canvas.GraphicsContext gc = wireframeCanvas.getGraphicsContext2D();
+        double w = wireframeCanvas.getWidth();
+        double h = wireframeCanvas.getHeight();
+        gc.clearRect(0, 0, w, h);
+
+        // Isometric projection of a unit cube laid out with floor at the
+        // bottom and ceiling at the top. Vertex indices:
+        //   0..3 = floor (z=0):    front-left, front-right, back-right, back-left
+        //   4..7 = ceiling (z=1):  front-left, front-right, back-right, back-left
+        double cx = w / 2.0;
+        double cy = h / 2.0 + 18;
+        double scale = Math.min(w, h) * 0.32;
+
+        double[][] cube = {
+                {0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0},
+                {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}
+        };
+        double[][] proj = new double[8][2];
+        for (int i = 0; i < 8; i++) {
+            // Standard isometric: x' = (x - y) * cos(30°), y' = (x + y) * sin(30°) - z
+            double x = cube[i][0] - 0.5;
+            double y = cube[i][1] - 0.5;
+            double z = cube[i][2] - 0.5;
+            proj[i][0] = cx + scale * (x - y) * 0.866;
+            proj[i][1] = cy + scale * ((x + y) * 0.5 - z * 1.0);
+        }
+
+        // Visible faces in painter's-back-to-front order.
+        // Each face: 4 vertex indices into proj[].
+        int[][] faces = {
+                { 0, 1, 2, 3 }, // floor (z=0)
+                { 0, 1, 5, 4 }, // front wall (y=0)
+                { 1, 2, 6, 5 }, // right wall (x=1)
+                { 3, 2, 6, 7 }, // back wall (y=1) - back-facing, drawn for completeness
+                { 0, 3, 7, 4 }, // left wall (x=0) - back-facing, drawn for completeness
+                { 4, 5, 6, 7 }  // ceiling (z=1)
+        };
+        RoomSurface[] surfaces = {
+                RoomSurface.FLOOR,
+                RoomSurface.FRONT_WALL,
+                RoomSurface.RIGHT_WALL,
+                RoomSurface.BACK_WALL,
+                RoomSurface.LEFT_WALL,
+                RoomSurface.CEILING
+        };
+
+        faceXs = new double[faces.length][4];
+        faceYs = new double[faces.length][4];
+        faceOrder = surfaces;
+
+        for (int f = 0; f < faces.length; f++) {
+            for (int v = 0; v < 4; v++) {
+                faceXs[f][v] = proj[faces[f][v]][0];
+                faceYs[f][v] = proj[faces[f][v]][1];
+            }
+            ComboBox<WallMaterial> combo = surfaceCombos.get(surfaces[f]);
+            WallMaterial m = combo == null ? null : combo.getValue();
+            gc.setFill(materialColor(m));
+            gc.setGlobalAlpha(0.85);
+            gc.fillPolygon(faceXs[f], faceYs[f], 4);
+            gc.setGlobalAlpha(1.0);
+            gc.setStroke(javafx.scene.paint.Color.web("#e0e0e0"));
+            gc.setLineWidth(1.2);
+            gc.strokePolygon(faceXs[f], faceYs[f], 4);
+        }
+    }
+
+    /**
+     * Returns a color whose hue ranges from red (reflective, α≈0) through
+     * yellow to green (absorbent, α≈1) for the supplied material.
+     */
+    private static javafx.scene.paint.Color materialColor(WallMaterial material) {
+        if (material == null) {
+            return javafx.scene.paint.Color.web("#3a3a6a");
+        }
+        double a = Math.max(0.0, Math.min(1.0, material.absorptionCoefficient()));
+        // Hue 0 (red) → 120 (green) as absorption increases.
+        double hue = a * 120.0;
+        return javafx.scene.paint.Color.hsb(hue, 0.65, 0.85);
+    }
+
+    /** Returns the surface whose projected polygon contains (x, y), or null. */
+    private RoomSurface pickSurfaceAt(double x, double y) {
+        if (faceXs == null) {
+            return null;
+        }
+        // Iterate front-facing faces last so they win ties at shared edges.
+        for (int f = faceXs.length - 1; f >= 0; f--) {
+            if (pointInPolygon(faceXs[f], faceYs[f], x, y)) {
+                return faceOrder[f];
+            }
+        }
+        return null;
+    }
+
+    private static boolean pointInPolygon(double[] xs, double[] ys, double x, double y) {
+        boolean inside = false;
+        int n = xs.length;
+        for (int i = 0, j = n - 1; i < n; j = i++) {
+            if (((ys[i] > y) != (ys[j] > y))
+                    && (x < (xs[j] - xs[i]) * (y - ys[i]) / (ys[j] - ys[i]) + xs[i])) {
+                inside = !inside;
+            }
+        }
+        return inside;
     }
 
     private void updateAbsorptionDisplay(WallMaterial material) {
@@ -1555,6 +1790,10 @@ public final class TelemetrySetupPanel extends ScrollPane {
         String name = formatEnumName(material.name());
         return String.format("%s  (absorption: %.2f)",
                 name, material.absorptionCoefficient());
+    }
+
+    static String formatSurfaceName(RoomSurface surface) {
+        return formatEnumName(surface.name());
     }
 
     private static String formatEnumName(String enumName) {

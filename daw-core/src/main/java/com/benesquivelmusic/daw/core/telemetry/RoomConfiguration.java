@@ -21,20 +21,36 @@ import java.util.Objects;
 public final class RoomConfiguration {
 
     private RoomDimensions dimensions;
-    private WallMaterial wallMaterial;
+    private SurfaceMaterialMap materialMap;
     private final List<MicrophonePlacement> microphones = new ArrayList<>();
     private final List<SoundSource> soundSources = new ArrayList<>();
     private final List<AudienceMember> audienceMembers = new ArrayList<>();
 
     /**
-     * Creates a room configuration with the given dimensions and wall material.
+     * Creates a room configuration with the given dimensions and a single
+     * wall material broadcast to every surface.
+     *
+     * <p>This constructor remains for backwards compatibility — it is
+     * equivalent to calling {@link #RoomConfiguration(RoomDimensions,
+     * SurfaceMaterialMap)} with {@code new SurfaceMaterialMap(wallMaterial)}.</p>
      *
      * @param dimensions   the room dimensions
-     * @param wallMaterial the predominant wall material
+     * @param wallMaterial the material applied uniformly to all six surfaces
      */
     public RoomConfiguration(RoomDimensions dimensions, WallMaterial wallMaterial) {
+        this(dimensions, new SurfaceMaterialMap(
+                Objects.requireNonNull(wallMaterial, "wallMaterial must not be null")));
+    }
+
+    /**
+     * Creates a room configuration with per-surface materials.
+     *
+     * @param dimensions  the room dimensions
+     * @param materialMap the per-surface material assignment
+     */
+    public RoomConfiguration(RoomDimensions dimensions, SurfaceMaterialMap materialMap) {
         this.dimensions = Objects.requireNonNull(dimensions, "dimensions must not be null");
-        this.wallMaterial = Objects.requireNonNull(wallMaterial, "wallMaterial must not be null");
+        this.materialMap = Objects.requireNonNull(materialMap, "materialMap must not be null");
     }
 
     /** Returns the room dimensions. */
@@ -47,14 +63,47 @@ public final class RoomConfiguration {
         this.dimensions = Objects.requireNonNull(dimensions, "dimensions must not be null");
     }
 
-    /** Returns the predominant wall material. */
-    public WallMaterial getWallMaterial() {
-        return wallMaterial;
+    /**
+     * Returns the per-surface material map.
+     *
+     * @return the surface-to-material assignment
+     */
+    public SurfaceMaterialMap getMaterialMap() {
+        return materialMap;
     }
 
-    /** Sets the predominant wall material. */
+    /**
+     * Replaces the per-surface material map.
+     *
+     * @param materialMap the new per-surface material assignment
+     */
+    public void setMaterialMap(SurfaceMaterialMap materialMap) {
+        this.materialMap = Objects.requireNonNull(materialMap, "materialMap must not be null");
+    }
+
+    /**
+     * Returns the predominant wall material — defined as the material
+     * assigned to the front wall. When the configuration was built via
+     * the legacy single-material constructor, this matches the original
+     * material on every surface.
+     *
+     * @return the front-wall material (legacy &quot;predominant&quot; material)
+     */
+    public WallMaterial getWallMaterial() {
+        return materialMap.frontWall();
+    }
+
+    /**
+     * Replaces every surface's material with {@code wallMaterial}, i.e.
+     * broadcasts the supplied material across all six surfaces.
+     *
+     * <p>Provided for backwards compatibility. Prefer
+     * {@link #setMaterialMap(SurfaceMaterialMap)} when per-surface
+     * granularity is needed.</p>
+     */
     public void setWallMaterial(WallMaterial wallMaterial) {
-        this.wallMaterial = Objects.requireNonNull(wallMaterial, "wallMaterial must not be null");
+        Objects.requireNonNull(wallMaterial, "wallMaterial must not be null");
+        this.materialMap = new SurfaceMaterialMap(wallMaterial);
     }
 
     /**
