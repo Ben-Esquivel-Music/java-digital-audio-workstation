@@ -42,6 +42,17 @@ class InsertSlotTest {
                 .isInstanceOf(NullPointerException.class);
     }
 
+    @Test
+    void shouldExposeCapabilitiesOfProcessor() {
+        InsertSlot slot = new InsertSlot("Stub", new StubProcessor());
+
+        // Capabilities are reflectively introspected and never null.
+        assertThat(slot.getCapabilities()).isNotNull();
+        assertThat(slot.getCapabilities().processesAudio()).isTrue();
+        assertThat(slot.getCapabilities().providesSidechainInput()).isFalse();
+        assertThat(slot.getCapabilities().reportsGainReduction()).isFalse();
+    }
+
     // --- Stub processor ---
 
     private static class StubProcessor implements AudioProcessor {

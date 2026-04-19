@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.mixer;
 
+import com.benesquivelmusic.daw.core.plugin.PluginCapabilities;
+import com.benesquivelmusic.daw.core.plugin.PluginCapabilityIntrospector;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 
@@ -23,6 +25,7 @@ public final class InsertSlot {
     private final AudioProcessor processor;
     private final InsertEffectType effectType;
     private final DawPlugin plugin;
+    private final PluginCapabilities capabilities;
     private boolean bypassed;
     private MixerChannel sidechainSource;
 
@@ -67,6 +70,7 @@ public final class InsertSlot {
         this.processor = Objects.requireNonNull(processor, "processor must not be null");
         this.effectType = effectType;
         this.plugin = plugin;
+        this.capabilities = PluginCapabilityIntrospector.capabilitiesOf(processor);
         this.bypassed = false;
     }
 
@@ -113,6 +117,22 @@ public final class InsertSlot {
      */
     public DawPlugin getPlugin() {
         return plugin;
+    }
+
+    /**
+     * Returns the reflectively-discovered {@link PluginCapabilities} of the
+     * processor loaded in this slot.
+     *
+     * <p>UI components (mixer channel strips, insert rack, generic parameter
+     * editor) should query this record instead of performing {@code instanceof}
+     * checks against specific capability interfaces. The value is computed once
+     * when the slot is constructed and cached per processor class by
+     * {@link PluginCapabilityIntrospector}.</p>
+     *
+     * @return the capabilities of the slot's processor; never {@code null}
+     */
+    public PluginCapabilities getCapabilities() {
+        return capabilities;
     }
 
     /**
