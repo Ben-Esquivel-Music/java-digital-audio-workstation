@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -70,6 +71,9 @@ public final class AudioEngine {
 
     // Optional performance monitor for CPU load and underrun tracking
     private volatile PerformanceMonitor performanceMonitor;
+
+    // Optional per-track CPU budget enforcer for graceful degradation
+    private volatile TrackCpuBudgetEnforcer cpuBudgetEnforcer;
 
     /**
      * Creates a new audio engine with the specified format.
@@ -566,6 +570,32 @@ public final class AudioEngine {
     }
 
     /**
+     * Sets the per-track CPU budget enforcer for graceful degradation.
+     *
+     * <p>When set, the engine measures the time taken by each track's mixer
+     * processing and feeds the measurements to the enforcer. The enforcer
+     * evaluates per-track and master budgets each block. When a track
+     * persistently exceeds its budget, the enforcer applies the configured
+     * {@link com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy}
+     * and publishes events for the UI.</p>
+     *
+     * @param enforcer the CPU budget enforcer, or {@code null} to disable
+     */
+    public void setCpuBudgetEnforcer(TrackCpuBudgetEnforcer enforcer) {
+        this.cpuBudgetEnforcer = enforcer;
+    }
+
+    /**
+     * Returns the currently configured per-track CPU budget enforcer, or
+     * {@code null}.
+     *
+     * @return the CPU budget enforcer
+     */
+    public TrackCpuBudgetEnforcer getCpuBudgetEnforcer() {
+        return cpuBudgetEnforcer;
+    }
+
+    /**
      * Processes a single block of audio by delegating to the unified
      * {@link RenderPipeline}.
      *
@@ -578,10 +608,14 @@ public final class AudioEngine {
      * behavior).</p>
      *
      * <p>This method is designed to be called from the audio callback
-     * thread. It performs zero allocations and zero lock acquisitions —
-     * all buffers are pre-allocated during {@link #start()}, and the
+     * thread. When no {@link TrackCpuBudgetEnforcer} is configured, it
+     * performs zero allocations and zero lock acquisitions — all buffers
+     * are pre-allocated during {@link #start()}, and the
      * {@link RenderPipeline} reads only from volatile snapshots of the
-     * transport, mixer, track list, and MIDI renderer.</p>
+     * transport, mixer, track list, and MIDI renderer. When an enforcer
+     * is present, per-track CPU timing occurs and the enforcer acquires
+     * an internal lock for each measurement; the enforcer pre-allocates
+     * its own buffers to minimize GC pressure on the audio thread.</p>
      *
      * @param inputBuffer  the input audio data {@code [channel][frame]}
      * @param outputBuffer the output audio data {@code [channel][frame]}
@@ -602,10 +636,12 @@ public final class AudioEngine {
         MidiTrackRenderer currentMidiRenderer = this.midiTrackRenderer;
         RecordingCallback cb = this.recordingCallback;
         PerformanceMonitor monitor = this.performanceMonitor;
+        TrackCpuBudgetEnforcer enforcer = this.cpuBudgetEnforcer;
 
         renderPipeline.renderBlock(inputBuffer, outputBuffer, numFrames,
                 currentTransport, currentMixer, currentTracks,
-                currentMidiRenderer, masterChain, cb, monitor);
+                currentMidiRenderer, masterChain, cb, monitor,
+                enforcer);
     }
 
     /**

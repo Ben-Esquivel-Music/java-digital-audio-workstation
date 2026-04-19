@@ -139,7 +139,8 @@ public record MixerSnapshot(String name,
                 channel.getSendLevel(),
                 channel.getOutputRouting(),
                 inserts,
-                sends);
+                sends,
+                channel.getCpuBudget());
     }
 
     private static InsertSnapshot captureInsert(InsertSlot slot) {
@@ -164,6 +165,7 @@ public record MixerSnapshot(String name,
         channel.setPhaseInverted(state.phaseInverted());
         channel.setSendLevel(state.sendLevel());
         channel.setOutputRouting(state.outputRouting());
+        channel.setCpuBudget(state.cpuBudget());
 
         // Apply insert state index-aligned: bypass + parameter values.
         List<InsertSlot> slots = channel.getInsertSlots();

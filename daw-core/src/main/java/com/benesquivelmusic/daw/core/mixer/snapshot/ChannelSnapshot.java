@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.mixer.snapshot;
 
 import com.benesquivelmusic.daw.core.mixer.OutputRouting;
+import com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget;
 
 import java.util.Collections;
 import java.util.List;
@@ -22,6 +23,7 @@ import java.util.Objects;
  * @param outputRouting  the output routing (never {@code null})
  * @param inserts        per-insert-slot state, in slot order (defensively copied, unmodifiable)
  * @param sends          per-send state, in send order (defensively copied, unmodifiable)
+ * @param cpuBudget      the per-track CPU budget, or {@code null} if not configured
  */
 public record ChannelSnapshot(double volume,
                               double pan,
@@ -31,7 +33,21 @@ public record ChannelSnapshot(double volume,
                               double sendLevel,
                               OutputRouting outputRouting,
                               List<InsertSnapshot> inserts,
-                              List<SendSnapshot> sends) {
+                              List<SendSnapshot> sends,
+                              TrackCpuBudget cpuBudget) {
+
+    /**
+     * Backward-compatible constructor for snapshots that do not carry a
+     * CPU budget (pre-issue-553 callers, deserialized legacy projects).
+     */
+    public ChannelSnapshot(double volume, double pan, boolean muted,
+                           boolean solo, boolean phaseInverted, double sendLevel,
+                           OutputRouting outputRouting,
+                           List<InsertSnapshot> inserts,
+                           List<SendSnapshot> sends) {
+        this(volume, pan, muted, solo, phaseInverted, sendLevel,
+             outputRouting, inserts, sends, null);
+    }
 
     public ChannelSnapshot {
         Objects.requireNonNull(outputRouting, "outputRouting must not be null");
