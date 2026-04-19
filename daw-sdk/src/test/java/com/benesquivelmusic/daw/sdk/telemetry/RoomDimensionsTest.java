@@ -95,9 +95,8 @@ class RoomDimensionsTest {
         RoomDimensions flat = new RoomDimensions(10.0, 8.0, 3.0);
         RoomDimensions angled = new RoomDimensions(10.0, 8.0,
                 new CeilingShape.Angled(3.0, 6.0, CeilingShape.Axis.X));
-        // An angled ceiling always has strictly more surface area than an
-        // equivalent-volume flat ceiling because the ceiling face itself is
-        // tilted.
+        // An angled ceiling has more surface area than this flat-ceiling
+        // baseline because the ceiling face itself is tilted.
         assertThat(angled.surfaceArea()).isGreaterThan(flat.surfaceArea());
     }
 

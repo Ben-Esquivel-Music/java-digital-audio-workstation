@@ -150,10 +150,14 @@ public sealed interface CeilingShape
         }
 
         /**
-         * Returns the world-space focal position of the dome (the
-         * geometric focus of the spherical-cap mirror) on the vertical
-         * axis through the room center. A mic placed near this point
-         * experiences the characteristic "whispering-gallery" focus.
+         * Returns an approximate world-space focal position for this domed
+         * ceiling model on the vertical axis through the room center.
+         * <p>
+         * The {@link Domed} shape is modeled as a sinusoidal height field,
+         * not a spherical cap, so this value is a heuristic estimate rather
+         * than the exact geometric focus of a mirror. A mic placed near this
+         * point may still capture the characteristic center-focused acoustic
+         * effect.
          */
         public Position3D focus(double w, double l) {
             // Approximate focal height ≈ (baseHeight + apexHeight) / 2

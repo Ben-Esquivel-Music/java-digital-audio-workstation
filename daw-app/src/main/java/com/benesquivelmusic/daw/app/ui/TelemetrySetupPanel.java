@@ -1023,8 +1023,17 @@ public final class TelemetrySetupPanel extends ScrollPane {
         if (parsePositiveDouble(lengthField.getText()) == null) {
             errors.append("Length must be a positive number. ");
         }
-        if (parsePositiveDouble(heightField.getText()) == null) {
+        Double height = parsePositiveDouble(heightField.getText());
+        if (height == null) {
             errors.append("Height must be a positive number. ");
+        }
+
+        // Validate ceiling shape fields when a non-flat shape is selected.
+        CeilingShape.Kind kind = ceilingKindCombo.getValue();
+        if (kind != null && kind != CeilingShape.Kind.FLAT && height != null) {
+            if (buildCeilingShape(height) == null) {
+                errors.append("Ceiling: base/eave/low height must be positive and ≤ apex/ridge/high height. ");
+            }
         }
 
         if (errors.isEmpty()) {

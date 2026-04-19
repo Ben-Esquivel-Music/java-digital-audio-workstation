@@ -178,13 +178,15 @@ public final class SoundWaveTelemetryEngine {
                 double delayMs = (totalDist / SPEED_OF_SOUND_MPS) * 1000.0;
                 double attenuationDb = -20.0 * Math.log10(Math.max(totalDist, 0.001))
                         + 10.0 * Math.log10(1.0 - material.absorptionCoefficient());
-                double t = (flat.height() - image.z()) / (mp.z() - image.z() == 0
-                        ? 1.0 : (mp.z() - image.z()));
-                Position3D rp = interpolate(image, mp, clamp01(t));
-                reflections.add(new SoundWavePath(
-                        source.name(), mic.name(),
-                        List.of(sp, rp, mp),
-                        totalDist, delayMs, attenuationDb, true));
+                double denominator = mp.z() - image.z();
+                if (Math.abs(denominator) >= 1.0e-9) {
+                    double t = (flat.height() - image.z()) / denominator;
+                    Position3D rp = interpolate(image, mp, clamp01(t));
+                    reflections.add(new SoundWavePath(
+                            source.name(), mic.name(),
+                            List.of(sp, rp, mp),
+                            totalDist, delayMs, attenuationDb, true));
+                }
             }
             case CeilingShape.Domed dome -> reflections.addAll(
                     facetedCeilingReflections(source, mic, dims, material,
@@ -246,13 +248,31 @@ public final class SoundWaveTelemetryEngine {
                     sp.x() - 2 * d * n[0],
                     sp.y() - 2 * d * n[1],
                     sp.z() - 2 * d * n[2]);
-            double totalDist = image.distanceTo(mp);
+
+            // Intersect the image->mic line with the facet plane to get the true
+            // specular reflection point for this facet.
+            double lineDx = mp.x() - image.x();
+            double lineDy = mp.y() - image.y();
+            double lineDz = mp.z() - image.z();
+            double denom = lineDx * n[0] + lineDy * n[1] + lineDz * n[2];
+            if (Math.abs(denom) < 1e-9) {
+                continue;
+            }
+            double t = ((c.x() - image.x()) * n[0]
+                    + (c.y() - image.y()) * n[1]
+                    + (c.z() - image.z()) * n[2]) / denom;
+            Position3D rp = new Position3D(
+                    image.x() + t * lineDx,
+                    image.y() + t * lineDy,
+                    image.z() + t * lineDz);
+
+            double totalDist = sp.distanceTo(rp) + rp.distanceTo(mp);
             double delayMs = (totalDist / SPEED_OF_SOUND_MPS) * 1000.0;
             double attenuationDb = -20.0 * Math.log10(Math.max(totalDist, 0.001))
                     + 10.0 * Math.log10(1.0 - material.absorptionCoefficient());
             out.add(new SoundWavePath(
                     source.name(), mic.name(),
-                    List.of(sp, c, mp),
+                    List.of(sp, rp, mp),
                     totalDist, delayMs, attenuationDb, true));
         }
         return out;
@@ -489,6 +509,7 @@ public final class SoundWaveTelemetryEngine {
             case CeilingShape.Cathedral cathedral -> {
                 boolean ridgeAlongX = cathedral.ridgeAxis() == CeilingShape.Axis.X;
                 for (MicrophonePlacement mic : config.getMicrophones()) {
+                    List<String> alignedSourceNames = new ArrayList<>();
                     for (SoundSource src : config.getSoundSources()) {
                         double dx = mic.position().x() - src.position().x();
                         double dy = mic.position().y() - src.position().y();
@@ -498,12 +519,15 @@ public final class SoundWaveTelemetryEngine {
                                 ? Math.abs(dx) / horizDist
                                 : Math.abs(dy) / horizDist;
                         if (cosAxis > RIDGE_ALIGNMENT_COS_THRESHOLD) {
-                            suggestions.add(new TelemetrySuggestion.AdjustMicPosition(
-                                    mic.name(), mic.position(),
-                                    "source '%s' and microphone are aligned with the cathedral ridge axis; "
-                                            .formatted(src.name())
-                                    + "this geometry risks flutter echoes between the two rake planes"));
+                            alignedSourceNames.add(src.name());
                         }
+                    }
+                    if (!alignedSourceNames.isEmpty()) {
+                        suggestions.add(new TelemetrySuggestion.AdjustMicPosition(
+                                mic.name(), mic.position(),
+                                "source(s) %s and microphone are aligned with the cathedral ridge axis; "
+                                        .formatted(String.join(", ", alignedSourceNames))
+                                + "this geometry risks flutter echoes between the two rake planes"));
                     }
                 }
             }
