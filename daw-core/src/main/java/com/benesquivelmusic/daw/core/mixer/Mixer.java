@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.mixer;
 import com.benesquivelmusic.daw.core.audio.AudioGraphScheduler;
 import com.benesquivelmusic.daw.core.audio.PluginDelayCompensation;
 import com.benesquivelmusic.daw.core.automation.ReflectiveParameterBinder;
+import com.benesquivelmusic.daw.core.plugin.PluginInvocationSupervisor;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor;
@@ -48,6 +49,7 @@ public final class Mixer {
      * so output is bit-exact with the single-threaded path.
      */
     private AudioGraphScheduler graphScheduler;
+    private PluginInvocationSupervisor pluginSupervisor;
     /**
      * Reusable flag array marking which channels had their insert chain
      * already applied by the parallel pre-pass. Lazily grown to the current
@@ -118,6 +120,40 @@ public final class Mixer {
     }
 
     /**
+     * Installs a {@link PluginInvocationSupervisor} on every current channel
+     * (regular, return bus, master) and remembers it so that channels added
+     * later via {@link #addChannel(MixerChannel)} or
+     * {@link #addReturnBus(String)} inherit it automatically. Passing
+     * {@code null} clears the supervisor from all current channels and stops
+     * newly-added channels from inheriting one until another supervisor is set.
+     *
+     * @param supervisor the supervisor to cascade, or {@code null} to clear
+     *                   current channels and stop decorating newly-added channels
+     */
+    public void setPluginSupervisor(PluginInvocationSupervisor supervisor) {
+        this.pluginSupervisor = supervisor;
+        for (MixerChannel channel : channels) {
+            setPluginSupervisorWithoutEffectsChainCallback(channel, supervisor);
+        }
+        for (MixerChannel returnBus : returnBuses) {
+            setPluginSupervisorWithoutEffectsChainCallback(returnBus, supervisor);
+        }
+        if (masterChannel != null) {
+            setPluginSupervisorWithoutEffectsChainCallback(masterChannel, supervisor);
+        }
+        recalculateDelayCompensation();
+    }
+
+    private void setPluginSupervisorWithoutEffectsChainCallback(
+            MixerChannel channel,
+            PluginInvocationSupervisor supervisor
+    ) {
+        channel.setOnEffectsChainChanged(null);
+        channel.setPluginSupervisor(supervisor);
+        channel.setOnEffectsChainChanged(this::recalculateDelayCompensation);
+    }
+
+    /**
      * Adds a new channel to the mixer.
      *
      * @param channel the channel to add
@@ -125,6 +161,9 @@ public final class Mixer {
     public void addChannel(MixerChannel channel) {
         Objects.requireNonNull(channel, "channel must not be null");
         channel.setOnEffectsChainChanged(this::recalculateDelayCompensation);
+        if (pluginSupervisor != null) {
+            channel.setPluginSupervisor(pluginSupervisor);
+        }
         channels.add(channel);
         recalculateDelayCompensation();
     }
@@ -197,6 +236,9 @@ public final class Mixer {
         }
         MixerChannel returnBus = new MixerChannel(name);
         returnBus.setOnEffectsChainChanged(this::recalculateDelayCompensation);
+        if (pluginSupervisor != null) {
+            returnBus.setPluginSupervisor(pluginSupervisor);
+        }
         returnBuses.add(returnBus);
         recalculateDelayCompensation();
         return returnBus;
@@ -212,6 +254,9 @@ public final class Mixer {
         Objects.requireNonNull(returnBus, "returnBus must not be null");
         if (!returnBuses.contains(returnBus)) {
             returnBus.setOnEffectsChainChanged(this::recalculateDelayCompensation);
+            if (pluginSupervisor != null) {
+                returnBus.setPluginSupervisor(pluginSupervisor);
+            }
             returnBuses.add(returnBus);
             recalculateDelayCompensation();
         }

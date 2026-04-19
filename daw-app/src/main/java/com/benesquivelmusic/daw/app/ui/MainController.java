@@ -13,6 +13,7 @@ import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
 import com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin;
+import com.benesquivelmusic.daw.core.plugin.PluginInvocationSupervisor;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
@@ -96,6 +97,8 @@ public final class MainController {
     private DefaultAudioEngineController audioEngineController;
     private NotificationBar notificationBar;
     private Metronome metronome;
+    private PluginInvocationSupervisor pluginSupervisor;
+    private PluginFaultUiController pluginFaultUiController;
 
     private final ClipboardManager clipboardManager = new ClipboardManager();
     private final SelectionModel selectionModel = new SelectionModel();
@@ -188,6 +191,7 @@ public final class MainController {
         buildBrowserPanel(toolbarStateStore.loadBrowserVisible());
         createTempoEditController();
         initializeNotificationBar();
+        initializePluginFaultIsolation();
         createTransportController();
         createMetronomeController(prefs);
         createProjectLifecycleController();
@@ -227,7 +231,15 @@ public final class MainController {
             if (scene != null) {
                 keyboardShortcutController.register(scene);
                 if (scene.getWindow() instanceof Stage primaryStage) {
-                    primaryStage.setOnHidden(_ -> pluginViewController.dispose());
+                    primaryStage.setOnHidden(_ -> {
+                        pluginViewController.dispose();
+                        if (pluginFaultUiController != null) {
+                            pluginFaultUiController.dispose();
+                        }
+                        if (pluginSupervisor != null) {
+                            pluginSupervisor.close();
+                        }
+                    });
                 }
             }
         });
@@ -520,6 +532,34 @@ public final class MainController {
         notificationBar.setHistoryService(notificationHistoryService);
         notificationBarContainer.getChildren().add(notificationBar);
         HBox.setHgrow(notificationBar, Priority.ALWAYS);
+    }
+
+    /**
+     * Installs a {@link PluginInvocationSupervisor} on every mixer channel so
+     * that an exception thrown by a plugin on the audio thread bypasses the
+     * slot and surfaces as a toast/fault-log entry rather than crashing the
+     * session. Wrapped in a try/catch so a wiring glitch cannot prevent the
+     * main window from opening.
+     */
+    private void initializePluginFaultIsolation() {
+        try {
+            pluginSupervisor = new PluginInvocationSupervisor();
+            pluginFaultUiController = new PluginFaultUiController(pluginSupervisor, notificationBar);
+            // Mixer.setPluginSupervisor both installs the supervisor on every
+            // current channel/bus/master AND remembers it so channels added
+            // later (new tracks, return buses) inherit it automatically.
+            project.getMixer().setPluginSupervisor(pluginSupervisor);
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Failed to initialize plugin fault supervisor", e);
+        }
+    }
+
+    /**
+     * Returns the plugin fault UI controller, for menu-bar wiring that opens
+     * the fault log dialog. May be {@code null} if initialization failed.
+     */
+    PluginFaultUiController getPluginFaultUiController() {
+        return pluginFaultUiController;
     }
 
     private void buildBrowserPanel(boolean initiallyVisible) {
