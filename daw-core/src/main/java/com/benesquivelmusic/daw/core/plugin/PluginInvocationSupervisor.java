@@ -7,7 +7,6 @@ import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
-import java.lang.ref.WeakReference;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -63,10 +62,6 @@ public final class PluginInvocationSupervisor {
     private final SubmissionPublisher<PluginFault> publisher = new SubmissionPublisher<>();
     private final Map<String, AtomicInteger> faultCounts = new ConcurrentHashMap<>();
     private final Map<String, Boolean> quarantined = new ConcurrentHashMap<>();
-    // Latest InsertSlot registered for each pluginId. Uses WeakReference so
-    // that removed slots can be garbage-collected rather than being retained
-    // indefinitely over long sessions with many add/remove cycles.
-    private final Map<String, WeakReference<InsertSlot>> slotsByPluginId = new ConcurrentHashMap<>();
 
     // Unbounded queue so the RT catch block never blocks or allocates beyond
     // a single LinkedBlockingQueue Node per event; drain thread does all I/O.
@@ -115,7 +110,6 @@ public final class PluginInvocationSupervisor {
         Objects.requireNonNull(slot, "slot must not be null");
         Objects.requireNonNull(delegate, "delegate must not be null");
         SupervisedProcessor wrapper = new SupervisedProcessor(slot, delegate);
-        slotsByPluginId.put(wrapper.pluginId, new WeakReference<>(slot));
         return wrapper;
     }
 
@@ -152,29 +146,28 @@ public final class PluginInvocationSupervisor {
     }
 
     /**
-     * Re-enables the most recently supervised slot for {@code pluginId}:
-     * un-bypasses it and clears quarantine. Returns {@code true} if a slot
-     * was found and un-bypassed. Used by the fault log dialog, which only
-     * knows faults by their plugin id.
+     * Clears quarantine state for {@code pluginId}.
+     *
+     * <p>This overload intentionally does not un-bypass any slot because the
+     * resolved plugin id may identify a plugin type rather than a unique
+     * slot instance. When multiple slots host the same plugin type, using
+     * {@code pluginId} to re-enable a single slot can target the wrong
+     * instance. Callers that need to recover a specific slot must use
+     * {@link #reenable(InsertSlot)}.</p>
+     *
+     * @return {@code false}, because no specific slot instance is re-enabled
+     *         by plugin-type id alone
      */
     public boolean reenable(String pluginId) {
-        WeakReference<InsertSlot> ref = slotsByPluginId.get(pluginId);
-        InsertSlot slot = ref == null ? null : ref.get();
-        if (slot == null) {
-            // Prune stale reference if it was GC'd.
-            if (ref != null) {
-                slotsByPluginId.remove(pluginId, ref);
-            }
-            return false;
-        }
-        slot.setBypassed(false);
+        Objects.requireNonNull(pluginId, "pluginId must not be null");
         clearQuarantine(pluginId);
-        return true;
+        return false;
     }
 
     /**
      * Shuts down the drain thread and the event publisher. Intended for
-     * tests and graceful application shutdown.
+     * tests and graceful application shutdown. Remaining queued faults are
+     * drained/persisted before the thread exits.
      */
     public void close() {
         if (!running) {
@@ -193,7 +186,7 @@ public final class PluginInvocationSupervisor {
     // ── Drain thread: off-RT formatting + publishing + I/O ──────────────────
 
     private void drainLoop() {
-        while (running) {
+        for (;;) {
             try {
                 PendingFault pending = faultQueue.take();
                 if (pending == SHUTDOWN) {

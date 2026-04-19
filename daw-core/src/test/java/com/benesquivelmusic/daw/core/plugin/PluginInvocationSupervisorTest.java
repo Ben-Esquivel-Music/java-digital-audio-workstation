@@ -144,7 +144,7 @@ class PluginInvocationSupervisorTest {
     }
 
     @Test
-    void reenableByPluginIdShouldClearBypassAndQuarantine() throws Exception {
+    void reenableByPluginIdShouldClearQuarantineOnly() throws Exception {
         CollectingSubscriber subscriber = new CollectingSubscriber(1);
         supervisor.publisher().subscribe(subscriber);
 
@@ -155,10 +155,13 @@ class PluginInvocationSupervisorTest {
         assertThat(subscriber.latch.await(2, TimeUnit.SECONDS)).isTrue();
         assertThat(slot.isBypassed()).isTrue();
 
+        // reenable(String) only clears quarantine — it does NOT un-bypass
+        // because the pluginId may identify a type shared by multiple slots.
         boolean reenabled = supervisor.reenable("Reenabled");
 
-        assertThat(reenabled).isTrue();
-        assertThat(slot.isBypassed()).isFalse();
+        assertThat(reenabled).isFalse();
+        // Bypass state unchanged — caller must use reenable(InsertSlot) for that
+        assertThat(slot.isBypassed()).isTrue();
         assertThat(supervisor.isQuarantined("Reenabled")).isFalse();
         assertThat(supervisor.getFaultCount("Reenabled")).isZero();
     }

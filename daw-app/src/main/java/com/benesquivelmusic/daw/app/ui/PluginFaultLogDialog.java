@@ -63,11 +63,9 @@ public final class PluginFaultLogDialog {
         root.setPadding(new Insets(8));
         stage.setScene(new Scene(root, 720, 480));
 
-        // Cancel the subscription when the window is dismissed via the X
-        // button so the publisher doesn't retain this dialog and the rows
-        // list doesn't keep growing after the window is closed.
-        stage.setOnHidden(_ -> subscriber.cancel());
-
+        // Keep the subscription for the lifetime of this dialog instance so
+        // the same dialog can be hidden and shown again via showDialog()
+        // without losing fault events. Cleanup is handled by close().
         supervisor.publisher().subscribe(subscriber);
     }
 
@@ -153,16 +151,9 @@ public final class PluginFaultLogDialog {
             details.setExpanded(false);
 
             Button reenable = new Button(
-                    f.quarantined() ? "Clear quarantine & re-enable" : "Re-enable");
+                    f.quarantined() ? "Clear quarantine" : "Clear quarantine");
             reenable.setOnAction(_ -> {
-                boolean reenabled = supervisor.reenable(f.pluginId());
-                // If the slot is no longer tracked (chain rebuilt, plugin
-                // removed) fall back to clearing quarantine only so the user
-                // can re-arm the next load. Disable the button either way to
-                // give visual feedback that the click was handled.
-                if (!reenabled && f.quarantined()) {
-                    supervisor.clearQuarantine(f.pluginId());
-                }
+                supervisor.reenable(f.pluginId());
                 reenable.setDisable(true);
             });
 

@@ -133,14 +133,24 @@ public final class Mixer {
     public void setPluginSupervisor(PluginInvocationSupervisor supervisor) {
         this.pluginSupervisor = supervisor;
         for (MixerChannel channel : channels) {
-            channel.setPluginSupervisor(supervisor);
+            setPluginSupervisorWithoutEffectsChainCallback(channel, supervisor);
         }
         for (MixerChannel returnBus : returnBuses) {
-            returnBus.setPluginSupervisor(supervisor);
+            setPluginSupervisorWithoutEffectsChainCallback(returnBus, supervisor);
         }
         if (masterChannel != null) {
-            masterChannel.setPluginSupervisor(supervisor);
+            setPluginSupervisorWithoutEffectsChainCallback(masterChannel, supervisor);
         }
+        recalculateDelayCompensation();
+    }
+
+    private void setPluginSupervisorWithoutEffectsChainCallback(
+            MixerChannel channel,
+            PluginInvocationSupervisor supervisor
+    ) {
+        channel.setOnEffectsChainChanged(null);
+        channel.setPluginSupervisor(supervisor);
+        channel.setOnEffectsChainChanged(this::recalculateDelayCompensation);
     }
 
     /**
