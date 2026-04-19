@@ -340,27 +340,31 @@ public final class ProjectSerializer {
         // Serialize per-track CPU budget
         TrackCpuBudget cpuBudget = channel.getCpuBudget();
         if (cpuBudget != null) {
-            Element budgetElem = document.createElement("cpu-budget");
-            budgetElem.setAttribute("max-fraction", String.valueOf(cpuBudget.maxFractionOfBlock()));
-            DegradationPolicy policy = cpuBudget.onOverBudget();
-            switch (policy) {
-                case DegradationPolicy.BypassExpensive _ ->
-                    budgetElem.setAttribute("policy", "bypass-expensive");
-                case DegradationPolicy.ReduceOversampling r -> {
-                    budgetElem.setAttribute("policy", "reduce-oversampling");
-                    budgetElem.setAttribute("fallback-factor", String.valueOf(r.fallbackFactor()));
-                }
-                case DegradationPolicy.SubstituteSimpleKernel s -> {
-                    budgetElem.setAttribute("policy", "substitute-simple-kernel");
-                    budgetElem.setAttribute("kernel-id", s.kernelId());
-                }
-                case DegradationPolicy.DoNothing _ ->
-                    budgetElem.setAttribute("policy", "do-nothing");
-            }
-            elem.appendChild(budgetElem);
+            elem.appendChild(buildCpuBudgetElement(document, cpuBudget));
         }
 
         return elem;
+    }
+
+    private Element buildCpuBudgetElement(Document document, TrackCpuBudget cpuBudget) {
+        Element budgetElem = document.createElement("cpu-budget");
+        budgetElem.setAttribute("max-fraction", String.valueOf(cpuBudget.maxFractionOfBlock()));
+        DegradationPolicy policy = cpuBudget.onOverBudget();
+        switch (policy) {
+            case DegradationPolicy.BypassExpensive _ ->
+                budgetElem.setAttribute("policy", "bypass-expensive");
+            case DegradationPolicy.ReduceOversampling r -> {
+                budgetElem.setAttribute("policy", "reduce-oversampling");
+                budgetElem.setAttribute("fallback-factor", String.valueOf(r.fallbackFactor()));
+            }
+            case DegradationPolicy.SubstituteSimpleKernel s -> {
+                budgetElem.setAttribute("policy", "substitute-simple-kernel");
+                budgetElem.setAttribute("kernel-id", s.kernelId());
+            }
+            case DegradationPolicy.DoNothing _ ->
+                budgetElem.setAttribute("policy", "do-nothing");
+        }
+        return budgetElem;
     }
 
     private void buildAutomationData(Document document, Element trackElem, AutomationData automationData) {
@@ -654,24 +658,7 @@ public final class ProjectSerializer {
 
         TrackCpuBudget cpuBudget = cs.cpuBudget();
         if (cpuBudget != null) {
-            Element budgetElem = document.createElement("cpu-budget");
-            budgetElem.setAttribute("max-fraction", String.valueOf(cpuBudget.maxFractionOfBlock()));
-            DegradationPolicy policy = cpuBudget.onOverBudget();
-            switch (policy) {
-                case DegradationPolicy.BypassExpensive _ ->
-                    budgetElem.setAttribute("policy", "bypass-expensive");
-                case DegradationPolicy.ReduceOversampling r -> {
-                    budgetElem.setAttribute("policy", "reduce-oversampling");
-                    budgetElem.setAttribute("fallback-factor", String.valueOf(r.fallbackFactor()));
-                }
-                case DegradationPolicy.SubstituteSimpleKernel s -> {
-                    budgetElem.setAttribute("policy", "substitute-simple-kernel");
-                    budgetElem.setAttribute("kernel-id", s.kernelId());
-                }
-                case DegradationPolicy.DoNothing _ ->
-                    budgetElem.setAttribute("policy", "do-nothing");
-            }
-            elem.appendChild(budgetElem);
+            elem.appendChild(buildCpuBudgetElement(document, cpuBudget));
         }
 
         return elem;
