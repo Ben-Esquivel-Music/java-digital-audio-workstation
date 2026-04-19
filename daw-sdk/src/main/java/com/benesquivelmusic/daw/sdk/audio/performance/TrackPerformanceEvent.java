@@ -24,8 +24,8 @@ public sealed interface TrackPerformanceEvent
     /**
      * Emitted when a track's rolling CPU fraction has exceeded its
      * budget for the required number of consecutive blocks and the
-     * engine has applied {@link #appliedPolicy} to keep the overall
-     * mix intact.
+     * engine has applied {@link TrackDegraded#appliedPolicy()} to keep
+     * the overall mix intact.
      *
      * @param trackId        identifier of the degraded track; must not
      *                       be {@code null}
@@ -45,7 +45,7 @@ public sealed interface TrackPerformanceEvent
             Objects.requireNonNull(trackId, "trackId must not be null");
             Objects.requireNonNull(budget, "budget must not be null");
             Objects.requireNonNull(appliedPolicy, "appliedPolicy must not be null");
-            if (Double.isNaN(measuredFraction) || measuredFraction < 0.0) {
+            if (Double.isNaN(measuredFraction) || Double.isInfinite(measuredFraction) || measuredFraction < 0.0) {
                 throw new IllegalArgumentException(
                         "measuredFraction must be non-negative and finite: " + measuredFraction);
             }
@@ -64,7 +64,7 @@ public sealed interface TrackPerformanceEvent
     record TrackRestored(String trackId, double measuredFraction) implements TrackPerformanceEvent {
         public TrackRestored {
             Objects.requireNonNull(trackId, "trackId must not be null");
-            if (Double.isNaN(measuredFraction) || measuredFraction < 0.0) {
+            if (Double.isNaN(measuredFraction) || Double.isInfinite(measuredFraction) || measuredFraction < 0.0) {
                 throw new IllegalArgumentException(
                         "measuredFraction must be non-negative and finite: " + measuredFraction);
             }

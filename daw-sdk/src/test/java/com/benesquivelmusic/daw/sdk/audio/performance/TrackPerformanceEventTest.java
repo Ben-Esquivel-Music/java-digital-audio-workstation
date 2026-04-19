@@ -41,6 +41,12 @@ class TrackPerformanceEventTest {
         assertThatThrownBy(() -> new TrackPerformanceEvent.TrackDegraded(
                 "t", Double.NaN, B, new DegradationPolicy.DoNothing()))
                 .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new TrackPerformanceEvent.TrackDegraded(
+                "t", Double.POSITIVE_INFINITY, B, new DegradationPolicy.DoNothing()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new TrackPerformanceEvent.TrackDegraded(
+                "t", Double.NEGATIVE_INFINITY, B, new DegradationPolicy.DoNothing()))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -56,6 +62,10 @@ class TrackPerformanceEventTest {
         assertThatThrownBy(() -> new TrackPerformanceEvent.TrackRestored(null, 0.1))
                 .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> new TrackPerformanceEvent.TrackRestored("t", -0.1))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new TrackPerformanceEvent.TrackRestored("t", Double.POSITIVE_INFINITY))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new TrackPerformanceEvent.TrackRestored("t", Double.NEGATIVE_INFINITY))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 

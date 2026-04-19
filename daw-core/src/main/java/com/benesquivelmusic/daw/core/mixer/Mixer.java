@@ -774,6 +774,23 @@ public final class Mixer {
      * active track per block, using the track's stable id. This enables
      * per-track CPU budget evaluation and graceful degradation.</p>
      *
+     * <p>Tracks are automatically registered (or re-registered) with the
+     * enforcer using each mixer channel's
+     * {@link MixerChannel#getCpuBudget() cpuBudget} property, ensuring
+     * budgets take effect without requiring external registration.</p>
+     *
+     * <p>When an {@link AudioGraphScheduler} is configured, the parallel
+     * insert-chain pre-pass runs before per-track timing begins, matching
+     * the uninstrumented {@code mixDown} behavior. Per-track CPU
+     * measurement still covers the sequential portion (send routing, delay
+     * compensation, and summing) for each channel.</p>
+     *
+     * <p><strong>RT-safety note:</strong> this method acquires a lock inside
+     * the enforcer for each {@code recordTrackCpu} and
+     * {@code registerTrack} call. The enforcer pre-allocates internal
+     * buffers to minimize GC pressure, but the lock acquisitions mean this
+     * path is not fully lock-free.</p>
+     *
      * @param channelBuffers    per-channel audio data
      * @param outputBuffer      the destination output buffer
      * @param returnBuffers     per-return-bus output buffers
@@ -818,6 +835,16 @@ public final class Mixer {
         int channelCount = Math.min(channels.size(), channelBuffers.length);
         int trackListSize = tracks.size();
 
+        // Parallel pre-pass: dispatch insert-chain processing for channels
+        // without sidechain routing to worker threads, matching the
+        // uninstrumented mixDown() behavior.
+        boolean[] insertsDone = ensureInsertsProcessedFlags(channelCount);
+        AudioGraphScheduler scheduler = this.graphScheduler;
+        if (scheduler != null && channelCount >= 2) {
+            scheduler.processInsertsParallel(channels, channelBuffers, numFrames,
+                    anySolo, Mixer::hasSidechainRouting, insertsDone);
+        }
+
         for (int i = 0; i < channelCount; i++) {
             MixerChannel channel = channels.get(i);
             if (channel.isMuted()) {
@@ -827,12 +854,18 @@ public final class Mixer {
                 continue;
             }
 
+            // Auto-register the track with the enforcer so budgets take
+            // effect without requiring explicit external registration.
+            if (i < trackListSize) {
+                enforcer.registerTrack(tracks.get(i).getId(), channel.getCpuBudget());
+            }
+
             // Start timing this track's mixer processing
             long trackStart = System.nanoTime();
 
             float[][] src = channelBuffers[i];
 
-            if (!channel.getEffectsChain().isEmpty()) {
+            if (!channel.getEffectsChain().isEmpty() && !insertsDone[i]) {
                 if (hasSidechainRouting(channel)) {
                     processInsertsWithSidechain(channel, src, channelBuffers, returnBuffers, numFrames);
                 } else {

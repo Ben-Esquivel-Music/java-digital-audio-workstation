@@ -185,6 +185,14 @@ public final class RenderPipeline {
      * evaluates per-track and master budgets and publishes degradation or
      * restoration events.</p>
      *
+     * <p><strong>RT-safety note:</strong> When {@code cpuBudgetEnforcer} is
+     * non-null, this method acquires a {@link java.util.concurrent.locks.ReentrantLock}
+     * inside the enforcer for each {@code recordTrackCpu} call and for the
+     * {@code evaluateMasterBudget} cascade. The enforcer pre-allocates its
+     * internal snapshot/sort buffers to minimize GC pressure, but the lock
+     * acquisitions mean this path is not fully lock-free. When the enforcer
+     * is {@code null}, the method remains allocation-free and lock-free.</p>
+     *
      * @param inputBuffer        the input audio data {@code [channel][frame]}
      *                           (may be {@code null} when rendering offline)
      * @param outputBuffer       the output audio data {@code [channel][frame]}
@@ -197,7 +205,8 @@ public final class RenderPipeline {
      * @param recordingCallback  optional recording callback (may be {@code null})
      * @param performanceMonitor optional performance monitor (may be {@code null})
      * @param cpuBudgetEnforcer  optional per-track CPU budget enforcer
-     *                           (may be {@code null})
+     *                           (may be {@code null}); when non-null, per-track
+     *                           timing and lock acquisition occur on this path
      */
     @RealTimeSafe
     public void renderBlock(float[][] inputBuffer,

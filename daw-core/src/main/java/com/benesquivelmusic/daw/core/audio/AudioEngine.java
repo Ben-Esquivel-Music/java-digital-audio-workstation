@@ -608,10 +608,14 @@ public final class AudioEngine {
      * behavior).</p>
      *
      * <p>This method is designed to be called from the audio callback
-     * thread. It performs zero allocations and zero lock acquisitions —
-     * all buffers are pre-allocated during {@link #start()}, and the
+     * thread. When no {@link TrackCpuBudgetEnforcer} is configured, it
+     * performs zero allocations and zero lock acquisitions — all buffers
+     * are pre-allocated during {@link #start()}, and the
      * {@link RenderPipeline} reads only from volatile snapshots of the
-     * transport, mixer, track list, and MIDI renderer.</p>
+     * transport, mixer, track list, and MIDI renderer. When an enforcer
+     * is present, per-track CPU timing occurs and the enforcer acquires
+     * an internal lock for each measurement; the enforcer pre-allocates
+     * its own buffers to minimize GC pressure on the audio thread.</p>
      *
      * @param inputBuffer  the input audio data {@code [channel][frame]}
      * @param outputBuffer the output audio data {@code [channel][frame]}

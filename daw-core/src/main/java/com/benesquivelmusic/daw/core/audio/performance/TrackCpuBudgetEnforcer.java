@@ -5,7 +5,6 @@ import com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget;
 import com.benesquivelmusic.daw.sdk.audio.performance.TrackPerformanceEvent;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -76,6 +75,16 @@ public final class TrackCpuBudgetEnforcer implements AutoCloseable {
     private final ReentrantLock lock = new ReentrantLock();
     /** Preserves registration order so master-budget cascades are deterministic for same-CPU ties. */
     private final Map<String, TrackState> tracks = new LinkedHashMap<>();
+
+    // ── Pre-allocated buffers for evaluateMasterBudget() ──────────────
+    // Reused every block to avoid GC pressure on the audio thread.
+    /** Scratch arrays for the master-budget snapshot. Grown lazily in {@link #ensureSnapshotCapacity(int)}. */
+    private String[] snapshotIds = new String[16];
+    private double[] snapshotAvgs = new double[16];
+    /** Scratch list for the shed-order result. Cleared and reused each call. */
+    private final List<String> shedOrderScratch = new ArrayList<>();
+    /** Scratch list for deferred event publishing. Cleared and reused each call. */
+    private final List<TrackPerformanceEvent> publishScratch = new ArrayList<>();
 
     /**
      * Creates an enforcer with {@link System#nanoTime()} as the clock
@@ -311,54 +320,68 @@ public final class TrackCpuBudgetEnforcer implements AutoCloseable {
      *         first); empty if the master budget was not exceeded
      */
     public List<String> evaluateMasterBudget() {
-        List<TrackPerformanceEvent> toPublish = new ArrayList<>();
-        List<String> shedOrder = new ArrayList<>();
+        shedOrderScratch.clear();
+        publishScratch.clear();
         lock.lock();
         try {
+            int size = tracks.size();
+            ensureSnapshotCapacity(size);
             double total = 0.0;
-            List<Map.Entry<String, Double>> snapshot = new ArrayList<>(tracks.size());
+            int snapshotLen = 0;
             for (Map.Entry<String, TrackState> e : tracks.entrySet()) {
                 double avg = e.getValue().rollingAverage();
                 total += avg;
-                snapshot.add(Map.entry(e.getKey(), avg));
+                snapshotIds[snapshotLen] = e.getKey();
+                snapshotAvgs[snapshotLen] = avg;
+                snapshotLen++;
             }
             if (total <= masterMaxFractionOfBlock) {
                 return List.of();
             }
-            // Sort descending by CPU fraction; stable for ties so
-            // registration order breaks ties deterministically.
-            snapshot.sort(Comparator.<Map.Entry<String, Double>>comparingDouble(Map.Entry::getValue)
-                    .reversed());
-            for (Map.Entry<String, Double> e : snapshot) {
+            // Sort descending by CPU fraction using a simple insertion sort
+            // to avoid allocating a Comparator or boxed wrappers. The
+            // snapshot is typically small (tens of tracks at most).
+            for (int i = 1; i < snapshotLen; i++) {
+                double keyAvg = snapshotAvgs[i];
+                String keyId = snapshotIds[i];
+                int j = i - 1;
+                while (j >= 0 && snapshotAvgs[j] < keyAvg) {
+                    snapshotAvgs[j + 1] = snapshotAvgs[j];
+                    snapshotIds[j + 1] = snapshotIds[j];
+                    j--;
+                }
+                snapshotAvgs[j + 1] = keyAvg;
+                snapshotIds[j + 1] = keyId;
+            }
+            for (int i = 0; i < snapshotLen; i++) {
                 if (total <= masterMaxFractionOfBlock) {
                     break;
                 }
-                String trackId = e.getKey();
-                double avg = e.getValue();
+                String trackId = snapshotIds[i];
+                double avg = snapshotAvgs[i];
                 TrackState st = tracks.get(trackId);
-                if (st == null) {
+                if (st == null || st.degraded) {
                     continue;
                 }
-                shedOrder.add(trackId);
+                st.degraded = true;
+                st.appliedPolicy = st.budget.onOverBudget();
+                st.consecutiveOverBudget = CONSECUTIVE_BLOCKS_TO_DEGRADE;
+                st.underBudgetSinceNanos = -1L;
+                shedOrderScratch.add(trackId);
                 total -= avg;
-                if (!st.degraded) {
-                    st.degraded = true;
-                    st.appliedPolicy = st.budget.onOverBudget();
-                    st.consecutiveOverBudget = CONSECUTIVE_BLOCKS_TO_DEGRADE;
-                    st.underBudgetSinceNanos = -1L;
-                    if (!(st.appliedPolicy instanceof DegradationPolicy.DoNothing)) {
-                        toPublish.add(new TrackPerformanceEvent.TrackDegraded(
-                                trackId, avg, st.budget, st.appliedPolicy));
-                    }
+                if (!(st.appliedPolicy instanceof DegradationPolicy.DoNothing)) {
+                    publishScratch.add(new TrackPerformanceEvent.TrackDegraded(
+                            trackId, avg, st.budget, st.appliedPolicy));
                 }
             }
         } finally {
             lock.unlock();
         }
-        for (TrackPerformanceEvent ev : toPublish) {
-            publisher.offer(ev, null);
+        for (int i = 0; i < publishScratch.size(); i++) {
+            publisher.offer(publishScratch.get(i), null);
         }
-        return shedOrder;
+        // Return an unmodifiable copy so callers cannot mutate the scratch list.
+        return List.copyOf(shedOrderScratch);
     }
 
     /** Clears all per-track state. Called on transport start/stop or sample-rate change. */
@@ -376,6 +399,19 @@ public final class TrackCpuBudgetEnforcer implements AutoCloseable {
     @Override
     public void close() {
         publisher.close();
+    }
+
+    /**
+     * Ensures the snapshot arrays are large enough for the given track count.
+     * Only allocates when the track count exceeds the current capacity.
+     * Must be called under {@link #lock}.
+     */
+    private void ensureSnapshotCapacity(int required) {
+        if (snapshotIds.length < required) {
+            int newLen = Math.max(required, snapshotIds.length * 2);
+            snapshotIds = new String[newLen];
+            snapshotAvgs = new double[newLen];
+        }
     }
 
     /** Mutable per-track bookkeeping. Access guarded by the enclosing {@link #lock}. */

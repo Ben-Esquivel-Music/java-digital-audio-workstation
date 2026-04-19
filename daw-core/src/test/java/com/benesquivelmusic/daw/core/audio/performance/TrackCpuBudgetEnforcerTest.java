@@ -247,6 +247,39 @@ class TrackCpuBudgetEnforcerTest {
     }
 
     @Test
+    void masterBudgetCascadeSkipsAlreadyDegradedTracks() throws Exception {
+        AtomicLong clock = new AtomicLong(0L);
+        try (TrackCpuBudgetEnforcer e = new TrackCpuBudgetEnforcer(
+                SAMPLE_RATE, BUFFER_SIZE, 0.5, clock::get)) {
+            EventCollector sub = new EventCollector();
+            e.performanceEvents().subscribe(sub);
+
+            e.registerTrack("high", new TrackCpuBudget(0.1, new DegradationPolicy.BypassExpensive()));
+            e.registerTrack("mid",  new TrackCpuBudget(0.9, new DegradationPolicy.BypassExpensive()));
+            e.registerTrack("low",  new TrackCpuBudget(0.9, new DegradationPolicy.BypassExpensive()));
+
+            // Trip per-track degradation for "high" first.
+            for (int i = 0; i < TrackCpuBudgetEnforcer.CONSECUTIVE_BLOCKS_TO_DEGRADE; i++) {
+                e.recordTrackCpu("high", (long) (BLOCK_BUDGET_NS * 0.5));
+                e.recordTrackCpu("mid",  (long) (BLOCK_BUDGET_NS * 0.3));
+                e.recordTrackCpu("low",  (long) (BLOCK_BUDGET_NS * 0.2));
+                clock.addAndGet(BLOCK_BUDGET_NS);
+            }
+            sub.awaitEvents(1);
+            assertThat(e.isDegraded("high")).isTrue();
+
+            // Now evaluate master: total = 1.0, master = 0.5.
+            // "high" is already degraded and must be skipped.
+            // Cascade sheds "mid" (total drops to 0.7) then
+            // still > 0.5 so sheds "low" (total drops to 0.5).
+            List<String> shed = e.evaluateMasterBudget();
+            assertThat(shed).doesNotContain("high");
+            // mid and low should be shed (they were not yet degraded)
+            assertThat(shed).contains("mid", "low");
+        }
+    }
+
+    @Test
     void masterBudgetNotExceededReturnsEmptyList() {
         try (TrackCpuBudgetEnforcer e = new TrackCpuBudgetEnforcer(
                 SAMPLE_RATE, BUFFER_SIZE, 0.9, System::nanoTime)) {
