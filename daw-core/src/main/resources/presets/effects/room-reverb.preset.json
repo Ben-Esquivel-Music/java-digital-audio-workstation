@@ -1,0 +1,10 @@
+{
+  "processorClassName": "com.benesquivelmusic.daw.core.dsp.ReverbProcessor",
+  "displayName": "Room Reverb",
+  "parameterValues": {
+    "Damping": 0.4,
+    "Decay": 0.55,
+    "Mix": 0.25,
+    "Room Size": 0.45
+  }
+}

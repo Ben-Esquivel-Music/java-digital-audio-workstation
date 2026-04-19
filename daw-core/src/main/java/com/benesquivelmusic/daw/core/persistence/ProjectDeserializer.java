@@ -15,6 +15,7 @@ import com.benesquivelmusic.daw.core.mixer.snapshot.InsertSnapshot;
 import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshot;
 import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshotManager;
 import com.benesquivelmusic.daw.core.mixer.snapshot.SendSnapshot;
+import com.benesquivelmusic.daw.core.preset.ReflectivePresetSerializer;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.ClickSound;
 import com.benesquivelmusic.daw.core.recording.Metronome;
@@ -45,7 +46,9 @@ import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.BiConsumer;
 
 /**
@@ -487,16 +490,42 @@ public final class ProjectDeserializer {
                 slot.setBypassed(true);
             }
 
-            // Restore parameter values
+            // Restore parameter values.
+            //
+            // New-format presets carry a human-readable "name" attribute and
+            // are restored via the reflective preset serializer (which clamps
+            // out-of-range values and skips unknown keys for forward
+            // compatibility). Legacy projects saved before the preset system
+            // use the id-keyed path.
             List<Element> paramElements = getDirectChildElements(elem, "parameter");
             if (!paramElements.isEmpty()) {
-                BiConsumer<Integer, Double> handler =
-                        InsertEffectFactory.createParameterHandler(effectType, slot.getProcessor());
+                Map<String, Double> namedValues = new LinkedHashMap<>();
+                List<Element> legacyIdElements = new ArrayList<>();
                 for (Element paramElem : paramElements) {
-                    int paramId = parseIntAttr(paramElem, "id", -1);
+                    String paramName = paramElem.getAttribute("name");
                     double paramValue = parseDoubleAttr(paramElem, "value", Double.NaN);
-                    if (paramId >= 0 && !Double.isNaN(paramValue)) {
-                        handler.accept(paramId, paramValue);
+                    if (Double.isNaN(paramValue)) {
+                        continue;
+                    }
+                    if (paramName != null && !paramName.isEmpty()) {
+                        namedValues.put(paramName, paramValue);
+                    } else {
+                        legacyIdElements.add(paramElem);
+                    }
+                }
+                if (!namedValues.isEmpty()
+                        && ReflectivePresetSerializer.isSupported(slot.getProcessor())) {
+                    ReflectivePresetSerializer.restore(slot.getProcessor(), namedValues);
+                }
+                if (!legacyIdElements.isEmpty()) {
+                    BiConsumer<Integer, Double> handler =
+                            InsertEffectFactory.createParameterHandler(effectType, slot.getProcessor());
+                    for (Element paramElem : legacyIdElements) {
+                        int paramId = parseIntAttr(paramElem, "id", -1);
+                        double paramValue = parseDoubleAttr(paramElem, "value", Double.NaN);
+                        if (paramId >= 0 && !Double.isNaN(paramValue)) {
+                            handler.accept(paramId, paramValue);
+                        }
                     }
                 }
             }

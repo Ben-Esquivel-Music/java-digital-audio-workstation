@@ -1,0 +1,12 @@
+{
+  "processorClassName": "com.benesquivelmusic.daw.core.dsp.CompressorProcessor",
+  "displayName": "Vocal Compressor",
+  "parameterValues": {
+    "Attack": 5.0,
+    "Knee": 6.0,
+    "Makeup Gain": 3.0,
+    "Ratio": 3.0,
+    "Release": 80.0,
+    "Threshold": -18.0
+  }
+}

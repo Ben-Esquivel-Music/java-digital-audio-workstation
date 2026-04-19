@@ -15,6 +15,7 @@ import com.benesquivelmusic.daw.core.mixer.snapshot.InsertSnapshot;
 import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshot;
 import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshotManager;
 import com.benesquivelmusic.daw.core.mixer.snapshot.SendSnapshot;
+import com.benesquivelmusic.daw.core.preset.ReflectivePresetSerializer;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
@@ -274,13 +275,31 @@ public final class ProjectSerializer {
                 InsertEffectType effectType = slot.getEffectType();
                 if (effectType != null) {
                     slotElem.setAttribute("effect-type", effectType.name());
-                    Map<Integer, Double> paramValues =
-                            InsertEffectFactory.getParameterValues(effectType, slot.getProcessor());
-                    for (Map.Entry<Integer, Double> entry : paramValues.entrySet()) {
-                        Element paramElem = document.createElement("parameter");
-                        paramElem.setAttribute("id", String.valueOf(entry.getKey()));
-                        paramElem.setAttribute("value", String.valueOf(entry.getValue()));
-                        slotElem.appendChild(paramElem);
+                    if (ReflectivePresetSerializer.isSupported(slot.getProcessor())) {
+                        // Annotated processor — emit name-keyed parameters via
+                        // reflective snapshot. This is robust to parameter-id
+                        // renumbering and keeps save/load working automatically
+                        // when new @ProcessorParam fields are added.
+                        Map<String, Double> named =
+                                ReflectivePresetSerializer.snapshot(slot.getProcessor());
+                        for (Map.Entry<String, Double> entry : named.entrySet()) {
+                            Element paramElem = document.createElement("parameter");
+                            paramElem.setAttribute("name", entry.getKey());
+                            paramElem.setAttribute("value", String.valueOf(entry.getValue()));
+                            slotElem.appendChild(paramElem);
+                        }
+                    } else {
+                        // Fallback for processors that do not (yet) declare
+                        // @ProcessorParam annotations: preserve the legacy
+                        // id-keyed serialization.
+                        Map<Integer, Double> paramValues =
+                                InsertEffectFactory.getParameterValues(effectType, slot.getProcessor());
+                        for (Map.Entry<Integer, Double> entry : paramValues.entrySet()) {
+                            Element paramElem = document.createElement("parameter");
+                            paramElem.setAttribute("id", String.valueOf(entry.getKey()));
+                            paramElem.setAttribute("value", String.valueOf(entry.getValue()));
+                            slotElem.appendChild(paramElem);
+                        }
                     }
                 }
                 // Serialize sidechain source reference
