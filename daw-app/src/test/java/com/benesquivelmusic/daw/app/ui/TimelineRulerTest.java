@@ -367,4 +367,67 @@ class TimelineRulerTest {
         });
         assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
     }
+
+    // ── punch region rendering ──────────────────────────────────────────────
+
+    @Test
+    void shouldRedrawWithPunchRegionWhenSet() throws Exception {
+        Transport transport = new Transport();
+        transport.setPunchRegion(
+                com.benesquivelmusic.daw.sdk.transport.PunchRegion.enabled(44_100L, 88_200L));
+
+        TimelineRuler ruler = createOnFxThread(transport);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            ruler.resize(400, TimelineRuler.DEFAULT_HEIGHT);
+            ruler.redraw();
+            latch.countDown();
+        });
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+        // Verify no exception was thrown — punch region rendered successfully
+    }
+
+    @Test
+    void shouldRedrawWithoutPunchRegionWhenUnset() throws Exception {
+        Transport transport = new Transport();
+        // No punch region set
+
+        TimelineRuler ruler = createOnFxThread(transport);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            ruler.resize(400, TimelineRuler.DEFAULT_HEIGHT);
+            ruler.redraw();
+            latch.countDown();
+        });
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+    }
+
+    @Test
+    void shouldRedrawPunchRegionAtDifferentZoomLevels() throws Exception {
+        Transport transport = new Transport();
+        transport.setPunchRegion(
+                com.benesquivelmusic.daw.sdk.transport.PunchRegion.enabled(22_050L, 66_150L));
+
+        TimelineRuler ruler = createOnFxThread(transport);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            ruler.resize(400, TimelineRuler.DEFAULT_HEIGHT);
+            ruler.applyZoom(0.25);
+            ruler.redraw();
+            ruler.applyZoom(4.0);
+            ruler.redraw();
+            latch.countDown();
+        });
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+    }
+
+    @Test
+    void punchRegionColorsShouldBeDefined() {
+        assertThat(TimelineRuler.PUNCH_REGION_COLOR).isNotNull();
+        assertThat(TimelineRuler.PUNCH_HANDLE_COLOR).isNotNull();
+        assertThat(TimelineRuler.PUNCH_HANDLE_LINE_COLOR).isNotNull();
+    }
 }

@@ -35,6 +35,16 @@ class RecordingPipelineTest {
         transport = new Transport();
     }
 
+    /**
+     * Advances the transport position by the given number of frames, matching
+     * what {@code RenderPipeline} does after the recording callback fires.
+     */
+    private void advanceTransportByFrames(int numFrames) {
+        double samplesPerBeat = format.sampleRate() * 60.0 / transport.getTempo();
+        double deltaBeats = numFrames / samplesPerBeat;
+        transport.advancePosition(deltaBeats);
+    }
+
     @Test
     void shouldRejectEmptyArmedTracks() {
         assertThatThrownBy(() -> new RecordingPipeline(
@@ -581,6 +591,7 @@ class RecordingPipelineTest {
         float[][] output = new float[2][512];
         for (int i = 0; i < 4; i++) {
             audioEngine.processBlock(input, output, 512);
+            advanceTransportByFrames(512);
         }
 
         RecordingSession session = pipeline.getSession(track);
@@ -632,6 +643,7 @@ class RecordingPipelineTest {
         }
         float[][] output = new float[2][512];
         audioEngine.processBlock(input, output, 512);
+        advanceTransportByFrames(512);
 
         assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).isEqualTo(100L);
 
@@ -659,6 +671,7 @@ class RecordingPipelineTest {
         float[][] output = new float[2][512];
         for (int i = 0; i < 4; i++) {
             audioEngine.processBlock(input, output, 512);
+            advanceTransportByFrames(512);
         }
 
         float[][] captured = pipeline.getSession(track).getCapturedAudio();
@@ -687,9 +700,13 @@ class RecordingPipelineTest {
 
     @Test
     void shouldAutoPunchAcrossMultiplePassesWhileArmed() {
-        // Auto-punch: transport rewinds back into the region (simulating a
-        // loop or manual rewind) while the pipeline remains active — the
-        // pipeline must resume capturing on re-entry without being re-armed.
+        // Auto-punch: transport loops back into the region while the pipeline
+        // remains active — the pipeline must resume capturing on re-entry
+        // without being re-armed.
+        //
+        // At 120 BPM / 44100 Hz: 22050 frames/beat.
+        // Punch region = [512, 1024) frames.
+        // We simulate a loop by setting transport position back to beat 0.
         Track track = new Track("Audio 1", TrackType.AUDIO);
         track.setArmed(true);
         transport.setPunchRegion(new PunchRegion(512L, 1024L, true));
@@ -701,21 +718,26 @@ class RecordingPipelineTest {
         float[][] input = new float[2][512];
         float[][] output = new float[2][512];
 
-        // Pass 1: blocks 0, 1, 2 — only block 1 is inside the region.
+        // Pass 1: blocks starting at frames 0, 512, 1024 —
+        // only the block starting at frame 512 is inside [512, 1024).
         for (int i = 0; i < 3; i++) {
             audioEngine.processBlock(input, output, 512);
+            advanceTransportByFrames(512);
         }
         long afterPass1 = pipeline.getSession(track).getTotalSamplesRecorded();
         assertThat(afterPass1).isEqualTo(512L);
 
-        // Pass 2: the engine wraps and callbacks continue — re-enter region.
-        // We can't rewind internal counters, but auto-punch must honour the
-        // region on every block regardless of pass count. Advance further
-        // blocks that stay outside the region and confirm no extra capture.
+        // Simulate a loop/rewind: reset transport position to beat 0.
+        transport.setPositionInBeats(0.0);
+
+        // Pass 2: same blocks as pass 1 — the punch region must be re-entered
+        // and captured again because the transport position has rewound.
         for (int i = 0; i < 3; i++) {
             audioEngine.processBlock(input, output, 512);
+            advanceTransportByFrames(512);
         }
-        assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).isEqualTo(afterPass1);
+        long afterPass2 = pipeline.getSession(track).getTotalSamplesRecorded();
+        assertThat(afterPass2).isEqualTo(afterPass1 + 512L);
 
         pipeline.stop();
     }
@@ -738,6 +760,7 @@ class RecordingPipelineTest {
         float[][] output = new float[2][512];
         for (int i = 0; i < 4; i++) {
             audioEngine.processBlock(input, output, 512);
+            advanceTransportByFrames(512);
         }
 
         // Frame region captured 1024 frames despite the legacy beat range

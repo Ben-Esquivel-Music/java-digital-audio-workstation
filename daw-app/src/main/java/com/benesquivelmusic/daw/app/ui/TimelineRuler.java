@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.core.transport.TimeDisplayMode;
 import com.benesquivelmusic.daw.core.transport.TimelineRulerModel;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
@@ -56,14 +57,19 @@ public final class TimelineRuler extends Pane {
     static final Color LOOP_REGION_COLOR = Color.web("#b388ff", 0.3);
     static final Color LOOP_HANDLE_COLOR = Color.web("#b388ff", 0.9);
     static final Color LOOP_HANDLE_LINE_COLOR = Color.web("#b388ff", 0.7);
+    static final Color PUNCH_REGION_COLOR = Color.web("#ff5555", 0.25);
+    static final Color PUNCH_HANDLE_COLOR = Color.web("#ff5555", 0.9);
+    static final Color PUNCH_HANDLE_LINE_COLOR = Color.web("#ff5555", 0.7);
 
     private static final Font LABEL_FONT = Font.font("Monospaced", 10);
     private static final Font TEMPO_FONT = Font.font("Monospaced", 9);
+    private static final Font PUNCH_LABEL_FONT = Font.font("Monospaced", 8);
     private static final double TICK_MAJOR_HEIGHT = 12.0;
     private static final double TICK_MINOR_HEIGHT = 6.0;
     private static final double PLAYHEAD_WIDTH = 2.0;
     private static final double LOOP_HANDLE_WIDTH = 6.0;
     private static final double LOOP_HANDLE_HIT_ZONE = 8.0;
+    private static final double PUNCH_HANDLE_WIDTH = 6.0;
 
     private final TimelineRulerModel model;
     private final Canvas canvas;
@@ -243,9 +249,11 @@ public final class TimelineRuler extends Pane {
         gc.fillRect(0, 0, w, h);
 
         drawLoopRegion(gc, w, h);
+        drawPunchRegion(gc, w, h);
         drawTempoAndTimeSignature(gc, h);
         drawSubdivisions(gc, w, h);
         drawLoopHandles(gc, h);
+        drawPunchHandles(gc, h);
         drawPlayhead(gc, h);
     }
 
@@ -354,6 +362,68 @@ public final class TimelineRuler extends Pane {
             gc.setFill(LOOP_HANDLE_COLOR);
             gc.fillRect(endX - LOOP_HANDLE_WIDTH / 2.0, 0, LOOP_HANDLE_WIDTH, h * 0.5);
         }
+    }
+
+    private void drawPunchRegion(GraphicsContext gc, double w, double h) {
+        Transport transport = model.getTransport();
+        PunchRegion punch = transport.getPunchRegion();
+        if (punch == null) {
+            return;
+        }
+        double punchStartBeats = framesToBeats(punch.startFrames());
+        double punchEndBeats = framesToBeats(punch.endFrames());
+        double x1 = (punchStartBeats - scrollOffsetBeats) * pixelsPerBeat;
+        double x2 = (punchEndBeats - scrollOffsetBeats) * pixelsPerBeat;
+
+        double drawX1 = Math.max(0, x1);
+        double drawX2 = Math.min(w, x2);
+        if (drawX2 > drawX1) {
+            gc.setFill(PUNCH_REGION_COLOR);
+            gc.fillRect(drawX1, 0, drawX2 - drawX1, h);
+        }
+    }
+
+    private void drawPunchHandles(GraphicsContext gc, double h) {
+        Transport transport = model.getTransport();
+        PunchRegion punch = transport.getPunchRegion();
+        if (punch == null) {
+            return;
+        }
+        double w = canvas.getWidth();
+        double punchStartBeats = framesToBeats(punch.startFrames());
+        double punchEndBeats = framesToBeats(punch.endFrames());
+
+        double startX = (punchStartBeats - scrollOffsetBeats) * pixelsPerBeat;
+        if (startX >= -PUNCH_HANDLE_WIDTH && startX <= w + PUNCH_HANDLE_WIDTH) {
+            gc.setStroke(PUNCH_HANDLE_LINE_COLOR);
+            gc.setLineWidth(1.5);
+            gc.strokeLine(startX, 0, startX, h);
+            gc.setFill(PUNCH_HANDLE_COLOR);
+            gc.fillRect(startX - PUNCH_HANDLE_WIDTH / 2.0, h * 0.5, PUNCH_HANDLE_WIDTH, h * 0.5);
+            gc.setFont(PUNCH_LABEL_FONT);
+            gc.setFill(PUNCH_HANDLE_COLOR);
+            gc.setTextAlign(TextAlignment.LEFT);
+            gc.fillText("I", startX + 2, h * 0.5 - 2);
+        }
+
+        double endX = (punchEndBeats - scrollOffsetBeats) * pixelsPerBeat;
+        if (endX >= -PUNCH_HANDLE_WIDTH && endX <= w + PUNCH_HANDLE_WIDTH) {
+            gc.setStroke(PUNCH_HANDLE_LINE_COLOR);
+            gc.setLineWidth(1.5);
+            gc.strokeLine(endX, 0, endX, h);
+            gc.setFill(PUNCH_HANDLE_COLOR);
+            gc.fillRect(endX - PUNCH_HANDLE_WIDTH / 2.0, h * 0.5, PUNCH_HANDLE_WIDTH, h * 0.5);
+            gc.setFont(PUNCH_LABEL_FONT);
+            gc.setFill(PUNCH_HANDLE_COLOR);
+            gc.setTextAlign(TextAlignment.RIGHT);
+            gc.fillText("O", endX - 2, h * 0.5 - 2);
+        }
+    }
+
+    private double framesToBeats(long frames) {
+        Transport transport = model.getTransport();
+        double seconds = frames / 44_100.0; // default sample rate
+        return transport.getTempoMap().secondsToBeats(seconds);
     }
 
     // ── Mouse interaction for loop handles ──────────────────────────────────

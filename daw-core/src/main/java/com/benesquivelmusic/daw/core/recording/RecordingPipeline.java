@@ -370,10 +370,13 @@ public final class RecordingPipeline {
     }
 
     private void onAudioCaptured(float[][] inputBuffer, int numFrames) {
-        long blockStart = currentFrame;
+        // Derive the block position from the transport's current beat position
+        // so that punch gating stays aligned after loop/rewind/seek. The
+        // recording callback fires *before* advancePosition(), so
+        // getPositionInBeats() still reflects this block's start.
+        long blockStart = beatsToFrames(transport.getPositionInBeats());
         long blockEnd = blockStart + numFrames;
-        // Always advance the frame counter, regardless of whether this block
-        // falls within any punch region — the counter mirrors transport time.
+        // Update the cached frame counter for consistency with the transport.
         currentFrame = blockEnd;
 
         // Prefer the frame-based transport punch region (sample-accurate) when
