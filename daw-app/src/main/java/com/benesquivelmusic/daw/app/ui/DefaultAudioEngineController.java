@@ -4,15 +4,18 @@ import com.benesquivelmusic.daw.core.audio.AudioBackendFactory;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.javasound.JavaSoundBackend;
+import com.benesquivelmusic.daw.core.audio.performance.XrunDetector;
 import com.benesquivelmusic.daw.core.audio.portaudio.PortAudioBackend;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
+import com.benesquivelmusic.daw.sdk.audio.XrunEvent;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.Flow;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -33,11 +36,13 @@ final class DefaultAudioEngineController implements AudioEngineController {
     private final AudioEngine audioEngine;
     private final TestTonePlayer tonePlayer;
     private final Runnable postReconfigureCallback;
+    private volatile XrunDetector xrunDetector;
 
     DefaultAudioEngineController(AudioEngine audioEngine, Runnable postReconfigureCallback) {
         this.audioEngine = Objects.requireNonNull(audioEngine, "audioEngine must not be null");
         this.tonePlayer = new TestTonePlayer();
         this.postReconfigureCallback = postReconfigureCallback;
+        this.xrunDetector = createDetectorFor(audioEngine.getFormat());
     }
 
     @Override
@@ -129,6 +134,15 @@ final class DefaultAudioEngineController implements AudioEngineController {
                 request.bufferSize().getFrames());
         audioEngine.setFormat(updated);
 
+        // Buffer size or sample rate may have changed — rebuild the
+        // xrun detector so its deadline matches the new format, and
+        // reset the counter per the issue's reset-on-reconfigure rule.
+        XrunDetector previousDetector = this.xrunDetector;
+        this.xrunDetector = createDetectorFor(updated);
+        if (previousDetector != null) {
+            previousDetector.close();
+        }
+
         NativeAudioBackend currentBackend = audioEngine.getAudioBackend();
         if (currentBackend == null || !request.backendName().equals(currentBackend.getBackendName())) {
             NativeAudioBackend newBackend = createBackendByName(request.backendName());
@@ -163,9 +177,30 @@ final class DefaultAudioEngineController implements AudioEngineController {
         tonePlayer.play(outputDeviceName == null ? "" : outputDeviceName);
     }
 
+    @Override
+    public Flow.Publisher<XrunEvent> xrunEvents() {
+        return xrunDetector.xrunEvents();
+    }
+
+    /**
+     * Exposes the detector for tests and for engine-internal wiring
+     * that records per-buffer timing.
+     */
+    XrunDetector getXrunDetector() {
+        return xrunDetector;
+    }
+
     /** Closes background resources owned by this controller. */
     void shutdown() {
         tonePlayer.close();
+        XrunDetector detector = this.xrunDetector;
+        if (detector != null) {
+            detector.close();
+        }
+    }
+
+    private static XrunDetector createDetectorFor(AudioFormat format) {
+        return new XrunDetector(format.sampleRate(), format.bufferSize());
     }
 
     private static NativeAudioBackend createBackendByName(String name) {

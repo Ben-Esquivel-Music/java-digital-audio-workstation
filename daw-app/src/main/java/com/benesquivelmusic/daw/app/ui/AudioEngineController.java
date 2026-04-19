@@ -3,8 +3,10 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.BufferSize;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
+import com.benesquivelmusic.daw.sdk.audio.XrunEvent;
 
 import java.util.List;
+import java.util.concurrent.Flow;
 
 /**
  * Application-layer abstraction that the {@link AudioSettingsDialog} uses
@@ -111,4 +113,26 @@ public interface AudioEngineController {
      * @throws RuntimeException if the tone cannot be played
      */
     void playTestTone(String outputDeviceName);
+
+    /**
+     * Returns a {@link Flow.Publisher} that emits {@link XrunEvent}s
+     * whenever the audio engine detects a late buffer, a dropped
+     * buffer, or a graph-wide CPU overload.
+     *
+     * <p>UI components (for example an xrun counter in the transport
+     * bar) subscribe to this publisher so they never have to poll the
+     * audio thread. The default implementation returns an empty
+     * publisher that never emits, which is safe for test doubles that
+     * do not need xrun reporting.</p>
+     *
+     * @return a publisher of {@link XrunEvent}s; never {@code null}
+     */
+    default Flow.Publisher<XrunEvent> xrunEvents() {
+        return subscriber -> {
+            subscriber.onSubscribe(new Flow.Subscription() {
+                @Override public void request(long n) { /* no-op */ }
+                @Override public void cancel() { /* no-op */ }
+            });
+        };
+    }
 }
