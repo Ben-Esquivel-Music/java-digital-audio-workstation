@@ -1,0 +1,3 @@
+vocal-compressor.preset.json
+room-reverb.preset.json
+tape-delay.preset.json

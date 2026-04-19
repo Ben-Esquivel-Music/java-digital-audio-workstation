@@ -1,0 +1,9 @@
+{
+  "processorClassName": "com.benesquivelmusic.daw.core.dsp.DelayProcessor",
+  "displayName": "Tape Delay",
+  "parameterValues": {
+    "Delay": 375.0,
+    "Feedback": 0.45,
+    "Mix": 0.35
+  }
+}
