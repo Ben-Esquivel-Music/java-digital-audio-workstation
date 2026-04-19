@@ -1,0 +1,153 @@
+package com.benesquivelmusic.daw.sdk.audio;
+
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.ShortBuffer;
+import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.Flow;
+
+/**
+ * Deterministic {@link AudioBackend} implementation for offline tests.
+ *
+ * <p>A {@code MockAudioBackend} never touches real hardware: it plays
+ * {@link #inputBlocks()} from a caller-supplied {@code byte[]} of
+ * little-endian 16-bit PCM and captures every block written to
+ * {@link #sink(AudioBlock)} into an internal {@code byte[]} that tests
+ * can assert on. That is what makes it safe on headless CI runners
+ * where no audio device is available.</p>
+ *
+ * <p>Integration tests use this backend instead of {@link JavaxSoundBackend}
+ * so they produce bit-exact reproducible output without requiring
+ * {@code xvfb} or a sound card on the runner.</p>
+ */
+public final class MockAudioBackend implements AudioBackend {
+
+    /** Backend name. */
+    public static final String NAME = "Mock";
+
+    private final AudioBackendSupport support = new AudioBackendSupport();
+    private final byte[] inputPcm;
+    private final java.io.ByteArrayOutputStream outputPcm = new java.io.ByteArrayOutputStream();
+    private int inputCursor;
+
+    /**
+     * Creates a new mock backend with no pre-canned input audio. Useful when
+     * the test only needs to assert on {@link #sink(AudioBlock)} output.
+     */
+    public MockAudioBackend() {
+        this(new byte[0]);
+    }
+
+    /**
+     * Creates a new mock backend seeded with the given PCM data that will
+     * be streamed out through {@link #inputBlocks()} on each call to
+     * {@link #pumpInput(int)}.
+     *
+     * @param inputPcm little-endian 16-bit PCM to replay as captured input;
+     *                 must not be null (may be empty)
+     */
+    public MockAudioBackend(byte[] inputPcm) {
+        this.inputPcm = Objects.requireNonNull(inputPcm, "inputPcm").clone();
+    }
+
+    @Override
+    public String name() {
+        return NAME;
+    }
+
+    @Override
+    public boolean isAvailable() {
+        return true;
+    }
+
+    @Override
+    public List<AudioDeviceInfo> listDevices() {
+        return List.of(new AudioDeviceInfo(
+                0,
+                "Mock Device",
+                NAME,
+                2,
+                2,
+                48_000.0,
+                List.of(SampleRate.HZ_44100, SampleRate.HZ_48000),
+                0.0,
+                0.0));
+    }
+
+    @Override
+    public void open(DeviceId device, AudioFormat format, int bufferFrames) {
+        Objects.requireNonNull(device, "device must not be null");
+        Objects.requireNonNull(format, "format must not be null");
+        support.markOpen(format, bufferFrames);
+        this.inputCursor = 0;
+        this.outputPcm.reset();
+    }
+
+    @Override
+    public Flow.Publisher<AudioBlock> inputBlocks() {
+        return support.inputBlocks();
+    }
+
+    @Override
+    public void sink(AudioBlock block) {
+        support.validateOutgoing(block);
+        if (!support.isOpen()) {
+            return;
+        }
+        byte[] pcm = JavaxSoundBackend.encodePcm16(block, 16);
+        outputPcm.write(pcm, 0, pcm.length);
+    }
+
+    @Override
+    public boolean isOpen() {
+        return support.isOpen();
+    }
+
+    @Override
+    public void close() {
+        support.close();
+    }
+
+    /**
+     * Deterministically emits one {@link AudioBlock} of {@code frames} sample
+     * frames drawn from the seeded input PCM buffer. When the buffer is
+     * exhausted the remainder of the block is zero-padded.
+     *
+     * @param frames number of sample frames to emit (must be positive)
+     */
+    public void pumpInput(int frames) {
+        if (frames <= 0) {
+            throw new IllegalArgumentException("frames must be positive: " + frames);
+        }
+        if (!support.isOpen()) {
+            throw new IllegalStateException("pumpInput called before open()");
+        }
+        AudioFormat fmt = support.format();
+        int channels = fmt.channels();
+        int byteCount = frames * channels * 2; // 16-bit PCM
+        byte[] slice = new byte[byteCount];
+        int available = Math.max(0, Math.min(byteCount, inputPcm.length - inputCursor));
+        if (available > 0) {
+            System.arraycopy(inputPcm, inputCursor, slice, 0, available);
+            inputCursor += available;
+        }
+        ShortBuffer sb = ByteBuffer.wrap(slice).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer();
+        float[] samples = new float[frames * channels];
+        for (int i = 0; i < samples.length; i++) {
+            samples[i] = sb.get(i) / 32768.0f;
+        }
+        support.publishInput(new AudioBlock(fmt.sampleRate(), channels, frames, samples));
+    }
+
+    /**
+     * Returns a copy of every byte written to {@link #sink(AudioBlock)} since
+     * the most recent {@link #open(DeviceId, AudioFormat, int)} call, encoded
+     * as little-endian 16-bit PCM.
+     *
+     * @return recorded output PCM (never null)
+     */
+    public byte[] recordedOutput() {
+        return outputPcm.toByteArray();
+    }
+}
