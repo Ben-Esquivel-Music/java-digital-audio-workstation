@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.mixer;
 
+import com.benesquivelmusic.daw.core.audio.AudioGraphScheduler;
 import com.benesquivelmusic.daw.core.audio.PluginDelayCompensation;
 import com.benesquivelmusic.daw.core.automation.ReflectiveParameterBinder;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
@@ -38,6 +39,21 @@ public final class Mixer {
     private int preparedAudioChannels;
     private float[][] scratchBufferA;
     private float[][] scratchBufferB;
+    /**
+     * Optional multi-core graph scheduler. When non-null and the block size
+     * meets the scheduler's parallel threshold, per-channel insert chains
+     * without sidechain routing are dispatched across worker threads; the
+     * summing, send-routing, and delay-compensation phases remain sequential
+     * so output is bit-exact with the single-threaded path.
+     */
+    private AudioGraphScheduler graphScheduler;
+    /**
+     * Reusable flag array marking which channels had their insert chain
+     * already applied by the parallel pre-pass. Lazily grown to the current
+     * channel count; reset at the start of every {@link #mixDown} call to
+     * preserve allocation-free real-time behavior.
+     */
+    private boolean[] insertsProcessedFlags = new boolean[0];
 
     /** Creates a new mixer with an empty channel list, a default master channel, and a reverb return aux bus. */
     public Mixer() {
@@ -443,6 +459,19 @@ public final class Mixer {
         }
 
         int channelCount = Math.min(channels.size(), channelBuffers.length);
+
+        // Parallel pre-pass: dispatch insert-chain processing for channels
+        // without sidechain routing to worker threads. The scheduler itself
+        // falls back to no-op when the pool size is 1 or the block size is
+        // below the parallel threshold — preserving bit-exact behavior with
+        // the single-threaded path in both cases.
+        boolean[] insertsDone = ensureInsertsProcessedFlags(channelCount);
+        AudioGraphScheduler scheduler = this.graphScheduler;
+        if (scheduler != null && channelCount >= 2) {
+            scheduler.processInsertsParallel(channels, channelBuffers, numFrames,
+                    anySolo, Mixer::hasSidechainRouting, insertsDone);
+        }
+
         for (int i = 0; i < channelCount; i++) {
             MixerChannel channel = channels.get(i);
             if (channel.isMuted()) {
@@ -454,7 +483,7 @@ public final class Mixer {
 
             float[][] src = channelBuffers[i];
 
-            if (!channel.getEffectsChain().isEmpty()) {
+            if (!channel.getEffectsChain().isEmpty() && !insertsDone[i]) {
                 if (hasSidechainRouting(channel)) {
                     processInsertsWithSidechain(channel, src, channelBuffers, returnBuffers, numFrames);
                 } else {
@@ -712,8 +741,12 @@ public final class Mixer {
     /**
      * Returns {@code true} if any non-bypassed insert slot on the channel has
      * a sidechain source configured with a {@link SidechainAwareProcessor}.
+     *
+     * <p>Package-private so the {@link AudioGraphScheduler} can consult this
+     * predicate when deciding which channels can run their insert chains on
+     * worker threads.</p>
      */
-    private static boolean hasSidechainRouting(MixerChannel channel) {
+    static boolean hasSidechainRouting(MixerChannel channel) {
         for (InsertSlot slot : channel.getInsertSlots()) {
             if (!slot.isBypassed()
                     && slot.getSidechainSource() != null
@@ -905,6 +938,33 @@ public final class Mixer {
         return reflectiveParameterBinder;
     }
 
+    /**
+     * Installs the multi-core audio graph scheduler used to distribute
+     * per-channel insert-effect processing across worker threads during
+     * {@link #mixDown(float[][][], float[][], float[][][], int)}. Pass
+     * {@code null} to restore single-threaded behavior.
+     *
+     * <p>When a scheduler is installed, channels whose insert chain has no
+     * sidechain routing run their inserts on worker threads; the summing,
+     * send-routing, and delay-compensation phases remain sequential so
+     * the output is bit-exact with the single-threaded path.</p>
+     *
+     * @param scheduler the scheduler, or {@code null} to disable parallelism
+     */
+    public void setGraphScheduler(AudioGraphScheduler scheduler) {
+        this.graphScheduler = scheduler;
+    }
+
+    /**
+     * Returns the currently installed graph scheduler, or {@code null} if
+     * parallel graph processing is disabled.
+     *
+     * @return the scheduler, or {@code null}
+     */
+    public AudioGraphScheduler getGraphScheduler() {
+        return graphScheduler;
+    }
+
     private void rebindAllReflectiveParameterBindings() {
         for (MixerChannel channel : channels) {
             reflectiveParameterBinder.rebind(channel);
@@ -913,5 +973,24 @@ public final class Mixer {
             reflectiveParameterBinder.rebind(returnBus);
         }
         reflectiveParameterBinder.rebind(masterChannel);
+    }
+
+    /**
+     * Returns the insert-processed flag array grown to at least
+     * {@code minLength} entries and cleared to {@code false}.
+     *
+     * <p>Allocation-free on the steady state: the array is retained across
+     * {@link #mixDown} invocations and only reallocated when the channel
+     * count grows. This preserves real-time safety on the audio thread.</p>
+     */
+    private boolean[] ensureInsertsProcessedFlags(int minLength) {
+        boolean[] flags = this.insertsProcessedFlags;
+        if (flags.length < minLength) {
+            flags = new boolean[minLength];
+            this.insertsProcessedFlags = flags;
+        } else {
+            Arrays.fill(flags, 0, minLength, false);
+        }
+        return flags;
     }
 }
