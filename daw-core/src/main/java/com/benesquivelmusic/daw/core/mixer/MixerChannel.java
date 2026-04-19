@@ -1,7 +1,9 @@
 package com.benesquivelmusic.daw.core.mixer;
 
 import com.benesquivelmusic.daw.core.audio.EffectsChain;
+import com.benesquivelmusic.daw.core.plugin.PluginInvocationSupervisor;
 import com.benesquivelmusic.daw.core.track.TrackColor;
+import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -42,6 +44,7 @@ public final class MixerChannel {
     private int allocatedChannels;
     private int allocatedBlockSize;
     private Runnable onEffectsChainChanged;
+    private PluginInvocationSupervisor pluginSupervisor;
 
     /**
      * Creates a new mixer channel with the specified name.
@@ -252,6 +255,19 @@ public final class MixerChannel {
         this.onEffectsChainChanged = callback;
     }
 
+    /**
+     * Installs a {@link PluginInvocationSupervisor} that wraps each slot's
+     * processor with a fault-catching adapter. Passing {@code null} removes
+     * the supervisor (the chain then calls each processor directly, matching
+     * pre-issue-552 behaviour). Triggers a chain rebuild.
+     *
+     * @param supervisor the supervisor to install, or {@code null}
+     */
+    public void setPluginSupervisor(PluginInvocationSupervisor supervisor) {
+        this.pluginSupervisor = supervisor;
+        rebuildEffectsChain();
+    }
+
     // ── Insert effect slot management ───────────────────────────────────────
 
     /**
@@ -399,7 +415,11 @@ public final class MixerChannel {
         }
         for (InsertSlot slot : insertSlots) {
             if (!slot.isBypassed()) {
-                effectsChain.addProcessor(slot.getProcessor());
+                AudioProcessor processor = slot.getProcessor();
+                if (pluginSupervisor != null) {
+                    processor = pluginSupervisor.supervise(slot, processor);
+                }
+                effectsChain.addProcessor(processor);
             }
         }
         if (allocatedChannels > 0 && allocatedBlockSize > 0 && !effectsChain.isEmpty()) {
