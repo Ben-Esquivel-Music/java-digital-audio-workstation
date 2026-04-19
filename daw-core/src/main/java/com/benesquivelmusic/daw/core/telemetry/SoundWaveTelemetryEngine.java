@@ -517,12 +517,12 @@ public final class SoundWaveTelemetryEngine {
         switch (shape) {
             case CeilingShape.Domed dome -> {
                 Position3D focus = dome.focus(w, l);
-                double minX = Math.min(0.5, w / 2.0);
-                double minY = Math.min(0.5, l / 2.0);
+                double safeMarginX = Math.min(0.5, w / 2.0);
+                double safeMarginY = Math.min(0.5, l / 2.0);
                 for (MicrophonePlacement mic : config.getMicrophones()) {
                     if (mic.position().distanceTo(focus) < FOCUS_PROXIMITY_METERS) {
-                        double saferX = Math.max(minX, Math.min(w, mic.position().x() - 1.0));
-                        double saferY = Math.max(minY, Math.min(l, mic.position().y()));
+                        double saferX = Math.max(safeMarginX, Math.min(w - safeMarginX, mic.position().x() - 1.0));
+                        double saferY = Math.max(safeMarginY, Math.min(l - safeMarginY, mic.position().y()));
                         Position3D safer = new Position3D(
                                 saferX,
                                 saferY,
