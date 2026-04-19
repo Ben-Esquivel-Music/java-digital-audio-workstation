@@ -187,6 +187,10 @@ public final class MainController {
         createProjectLifecycleController();
         createAnimationController();
         createViewNavigationController();
+        // initializeViewNavigation() constructs the MixerView; it must run before
+        // createTrackStripController() because TrackStripController requires a
+        // non-null MixerView in its constructor.
+        viewNavigationController.initializeViewNavigation();
         createTrackStripController();
         createPluginViewController();
         createClipEditController();
@@ -201,7 +205,6 @@ public final class MainController {
         updateCheckpointStatus();
         updateUndoRedoState();
         animationController.start();
-        viewNavigationController.initializeViewNavigation();
         viewNavigationController.getMixerView().setPluginRegistry(pluginRegistry);
         createArrangementCanvas();
         viewNavigationController.setOnEditToolChanged(() -> {
