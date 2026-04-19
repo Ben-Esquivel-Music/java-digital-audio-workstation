@@ -19,6 +19,7 @@ import java.util.Optional;
  * output gain, oversampling-factor, and transfer-function parameters for
  * high-quality, antialiased nonlinear saturation.</p>
  */
+@BuiltInPlugin(label = "Waveshaper / Saturation", icon = "waveshaper", category = BuiltInPluginCategory.EFFECT)
 public final class WaveshaperPlugin implements BuiltInDawPlugin {
 
     /** Stable plugin identifier — used by the host to map plugins to views. */
@@ -36,21 +37,6 @@ public final class WaveshaperPlugin implements BuiltInDawPlugin {
     private boolean active;
 
     public WaveshaperPlugin() {
-    }
-
-    @Override
-    public String getMenuLabel() {
-        return "Waveshaper / Saturation";
-    }
-
-    @Override
-    public String getMenuIcon() {
-        return "waveshaper";
-    }
-
-    @Override
-    public BuiltInPluginCategory getCategory() {
-        return BuiltInPluginCategory.EFFECT;
     }
 
     @Override

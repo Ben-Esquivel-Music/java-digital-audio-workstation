@@ -30,6 +30,7 @@ import java.util.Objects;
  * to support alternate tuning standards (e.g., A4 = 432 Hz baroque pitch
  * or A4 = 443 Hz orchestral pitch).</p>
  */
+@BuiltInPlugin(label = "Chromatic Tuner", icon = "spectrum", category = BuiltInPluginCategory.UTILITY)
 public final class TunerPlugin implements BuiltInDawPlugin {
 
     /** Stable plugin identifier — used by the host to map plugins to views. */
@@ -93,21 +94,6 @@ public final class TunerPlugin implements BuiltInDawPlugin {
     }
 
     public TunerPlugin() {
-    }
-
-    @Override
-    public String getMenuLabel() {
-        return "Chromatic Tuner";
-    }
-
-    @Override
-    public String getMenuIcon() {
-        return "spectrum";
-    }
-
-    @Override
-    public BuiltInPluginCategory getCategory() {
-        return BuiltInPluginCategory.UTILITY;
     }
 
     @Override

@@ -26,6 +26,7 @@ import java.util.Objects;
  *   <li>{@link #dispose()} — releases the processor and renderer resources.</li>
  * </ol>
  */
+@BuiltInPlugin(label = "Virtual Keyboard", icon = "keyboard", category = BuiltInPluginCategory.INSTRUMENT)
 public final class VirtualKeyboardPlugin implements BuiltInDawPlugin {
 
     /** Stable plugin identifier — used by the host to map plugins to views. */
@@ -52,21 +53,6 @@ public final class VirtualKeyboardPlugin implements BuiltInDawPlugin {
      */
     void setRenderer(SoundFontRenderer renderer) {
         this.renderer = renderer;
-    }
-
-    @Override
-    public String getMenuLabel() {
-        return "Virtual Keyboard";
-    }
-
-    @Override
-    public String getMenuIcon() {
-        return "keyboard";
-    }
-
-    @Override
-    public BuiltInPluginCategory getCategory() {
-        return BuiltInPluginCategory.INSTRUMENT;
     }
 
     @Override

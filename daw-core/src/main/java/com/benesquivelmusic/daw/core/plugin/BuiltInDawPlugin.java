@@ -16,11 +16,19 @@ import java.util.logging.Logger;
  * can implement it.  This gives the DAW full control over the set of built-in
  * plugins and enables exhaustive pattern matching over them.</p>
  *
- * <p>Every permitted implementation must provide a <b>public no-arg constructor</b>
- * so that {@link #discoverAll()} can reflectively instantiate each one via
- * {@link Class#getConstructor() getConstructor()}{@code .newInstance()}.</p>
+ * <p>Every permitted implementation must:</p>
+ * <ul>
+ *   <li>Declare a <b>public no-arg constructor</b> so that {@link #discoverAll()}
+ *       can reflectively instantiate each one via
+ *       {@link Class#getConstructor() getConstructor()}{@code .newInstance()}.</li>
+ *   <li>Carry the {@link BuiltInPlugin @BuiltInPlugin} class-level annotation so
+ *       that the menu layer can read metadata (label, icon, category) without
+ *       instantiating the plugin — avoiding any expensive initialization that
+ *       only the host should trigger.</li>
+ * </ul>
  *
  * @see DawPlugin
+ * @see BuiltInPlugin
  * @see BuiltInPluginCategory
  */
 public sealed interface BuiltInDawPlugin extends DawPlugin
@@ -57,53 +65,83 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
     /**
      * Returns the human-readable label to display in the Plugins menu.
      *
+     * <p>The default implementation reads the {@link BuiltInPlugin#label()}
+     * attribute from the class-level {@link BuiltInPlugin @BuiltInPlugin}
+     * annotation, eliminating the need for each plugin class to override
+     * this method just to return a compile-time constant.</p>
+     *
      * @return the menu label, never {@code null} or blank
      */
-    String getMenuLabel();
+    default String getMenuLabel() {
+        return requireAnnotation(this.getClass()).label();
+    }
 
     /**
      * Returns an icon identifier for the Plugins menu item.
+     *
+     * <p>The default implementation reads the {@link BuiltInPlugin#icon()}
+     * attribute from the class-level {@link BuiltInPlugin @BuiltInPlugin}
+     * annotation.</p>
      *
      * <p>The identifier can be a resource path, an icon-font name, or any
      * string that the UI layer can resolve to a visual icon.</p>
      *
      * @return the icon identifier, never {@code null} or blank
      */
-    String getMenuIcon();
+    default String getMenuIcon() {
+        return requireAnnotation(this.getClass()).icon();
+    }
 
     /**
      * Returns the category used to group this plugin in the Plugins menu.
      *
+     * <p>The default implementation reads the {@link BuiltInPlugin#category()}
+     * attribute from the class-level {@link BuiltInPlugin @BuiltInPlugin}
+     * annotation.</p>
+     *
      * @return the plugin category, never {@code null}
      */
-    BuiltInPluginCategory getCategory();
+    default BuiltInPluginCategory getCategory() {
+        return requireAnnotation(this.getClass()).category();
+    }
 
     /**
-     * Returns lightweight metadata entries for all discovered built-in
-     * plugins, suitable for constructing menu items without retaining
+     * Returns lightweight metadata entries for all permitted built-in plugins,
+     * suitable for constructing menu items without retaining (or even creating)
      * live plugin instances.
      *
-     * <p>Plugin instances are created briefly to extract metadata and
-     * then discarded.  The host manages its own plugin lifecycle
-     * independently via the class references in the returned entries.</p>
+     * <p>Metadata is read directly from the class-level
+     * {@link BuiltInPlugin @BuiltInPlugin} annotation via reflection.  No plugin
+     * is instantiated — this avoids any potentially expensive initialization
+     * (loading resources, allocating buffers) that is wasted when only metadata
+     * is needed for menu construction.</p>
      *
-     * <p>If a permitted subclass cannot be instantiated (e.g., missing no-arg
-     * constructor or access error), a warning is logged and that plugin is
-     * skipped rather than crashing the application.</p>
+     * <p>A permitted subclass missing the annotation is skipped with a warning
+     * rather than crashing the application.</p>
      *
      * @return an unmodifiable list of menu entries for all built-in plugins
      */
     static List<MenuEntry> menuEntries() {
-        return discoverWith(instance -> {
+        Logger log = Logger.getLogger(BuiltInDawPlugin.class.getName());
+        Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
+        if (permitted == null) {
+            return List.of();
+        }
+        var results = new ArrayList<MenuEntry>(permitted.length);
+        for (Class<?> clazz : permitted) {
+            BuiltInPlugin meta = clazz.getAnnotation(BuiltInPlugin.class);
+            if (meta == null) {
+                log.log(Level.WARNING,
+                        "Skipping built-in plugin %s: missing @BuiltInPlugin annotation"
+                                .formatted(clazz.getName()));
+                continue;
+            }
             @SuppressWarnings("unchecked")
             Class<? extends BuiltInDawPlugin> pluginClass =
-                    (Class<? extends BuiltInDawPlugin>) instance.getClass();
-            return new MenuEntry(
-                    pluginClass,
-                    instance.getMenuLabel(),
-                    instance.getMenuIcon(),
-                    instance.getCategory());
-        });
+                    (Class<? extends BuiltInDawPlugin>) clazz;
+            results.add(new MenuEntry(pluginClass, meta.label(), meta.icon(), meta.category()));
+        }
+        return List.copyOf(results);
     }
 
     /**
@@ -157,5 +195,21 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
             }
         }
         return List.copyOf(results);
+    }
+
+    /**
+     * Resolves the {@link BuiltInPlugin} annotation for the given plugin class
+     * or throws an {@link IllegalStateException} — a missing annotation on a
+     * permitted subclass is a programming error, not a runtime condition to be
+     * silently tolerated when a plugin instance already exists.
+     */
+    private static BuiltInPlugin requireAnnotation(Class<?> clazz) {
+        BuiltInPlugin meta = clazz.getAnnotation(BuiltInPlugin.class);
+        if (meta == null) {
+            throw new IllegalStateException(
+                    "Built-in plugin %s is missing the @BuiltInPlugin annotation"
+                            .formatted(clazz.getName()));
+        }
+        return meta;
     }
 }

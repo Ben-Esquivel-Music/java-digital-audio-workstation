@@ -27,6 +27,7 @@ import java.util.Objects;
  *   <li>{@link #dispose()} — releases held resources.</li>
  * </ol>
  */
+@BuiltInPlugin(label = "Sound Wave Telemetry", icon = "surround", category = BuiltInPluginCategory.ANALYZER)
 public final class SoundWaveTelemetryPlugin implements BuiltInDawPlugin {
 
     /** Stable plugin identifier — used by the host to map plugins to views. */
@@ -73,21 +74,6 @@ public final class SoundWaveTelemetryPlugin implements BuiltInDawPlugin {
     /** Returns the currently wired provider, or {@code null} if none. */
     public ArmedTrackSourceProvider getArmedTrackSourceProvider() {
         return armedTrackSourceProvider;
-    }
-
-    @Override
-    public String getMenuLabel() {
-        return "Sound Wave Telemetry";
-    }
-
-    @Override
-    public String getMenuIcon() {
-        return "surround";
-    }
-
-    @Override
-    public BuiltInPluginCategory getCategory() {
-        return BuiltInPluginCategory.ANALYZER;
     }
 
     @Override

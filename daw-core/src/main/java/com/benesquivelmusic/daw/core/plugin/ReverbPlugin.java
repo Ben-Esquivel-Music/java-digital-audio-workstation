@@ -17,6 +17,7 @@ import java.util.Optional;
  * <p>Wraps the DAW's {@link ReverbProcessor} as a first-class plugin
  * so it appears in the Plugins menu alongside external plugins.</p>
  */
+@BuiltInPlugin(label = "Reverb", icon = "reverb", category = BuiltInPluginCategory.EFFECT)
 public final class ReverbPlugin implements BuiltInDawPlugin {
 
     /** Stable plugin identifier — used by the host to map plugins to views. */
@@ -34,21 +35,6 @@ public final class ReverbPlugin implements BuiltInDawPlugin {
     private boolean active;
 
     public ReverbPlugin() {
-    }
-
-    @Override
-    public String getMenuLabel() {
-        return "Reverb";
-    }
-
-    @Override
-    public String getMenuIcon() {
-        return "reverb";
-    }
-
-    @Override
-    public BuiltInPluginCategory getCategory() {
-        return BuiltInPluginCategory.EFFECT;
     }
 
     @Override

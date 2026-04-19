@@ -17,6 +17,7 @@ import java.util.Optional;
  * <p>Wraps the DAW's {@link ParametricEqProcessor} as a first-class plugin
  * so it appears in the Plugins menu alongside external plugins.</p>
  */
+@BuiltInPlugin(label = "Parametric EQ", icon = "eq", category = BuiltInPluginCategory.EFFECT)
 public final class ParametricEqPlugin implements BuiltInDawPlugin {
 
     /** Stable plugin identifier — used by the host to map plugins to views. */
@@ -34,21 +35,6 @@ public final class ParametricEqPlugin implements BuiltInDawPlugin {
     private boolean active;
 
     public ParametricEqPlugin() {
-    }
-
-    @Override
-    public String getMenuLabel() {
-        return "Parametric EQ";
-    }
-
-    @Override
-    public String getMenuIcon() {
-        return "eq";
-    }
-
-    @Override
-    public BuiltInPluginCategory getCategory() {
-        return BuiltInPluginCategory.EFFECT;
     }
 
     @Override

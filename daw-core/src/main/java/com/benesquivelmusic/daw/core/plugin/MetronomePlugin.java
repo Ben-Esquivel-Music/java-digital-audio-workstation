@@ -44,6 +44,7 @@ import java.util.Objects;
  *   <li><b>Subdivision</b> — quarter, eighth, or sixteenth notes via {@link Subdivision}</li>
  * </ul>
  */
+@BuiltInPlugin(label = "Metronome", icon = "metronome", category = BuiltInPluginCategory.UTILITY)
 public final class MetronomePlugin implements BuiltInDawPlugin {
 
     /** Stable plugin identifier — used by the host to map plugins to views. */
@@ -66,21 +67,6 @@ public final class MetronomePlugin implements BuiltInDawPlugin {
     private CountInMode countInMode = CountInMode.ONE_BAR;
 
     public MetronomePlugin() {
-    }
-
-    @Override
-    public String getMenuLabel() {
-        return "Metronome";
-    }
-
-    @Override
-    public String getMenuIcon() {
-        return "metronome";
-    }
-
-    @Override
-    public BuiltInPluginCategory getCategory() {
-        return BuiltInPluginCategory.UTILITY;
     }
 
     @Override
