@@ -62,6 +62,55 @@ class MixPrecisionTest {
         assertThat(output[0]).containsExactly(0.3f + 0.4f, 0.2f + 0.1f);
     }
 
+    /**
+     * Golden-render parity: verifies that FLOAT_32 summing produces
+     * bit-identical output across two independent Mixer instances, ensuring
+     * the legacy path is deterministic. Also compares against a manually
+     * computed reference sum using pure 32-bit float arithmetic to confirm
+     * no silent widening or double contamination.
+     */
+    @Test
+    void float32ModeShouldProduceBitExactGoldenRender() {
+        final int trackCount = 16;
+        final int frames = 256;
+
+        // Two independent mixer instances with identical configuration
+        Mixer mixerA = new Mixer();
+        Mixer mixerB = new Mixer();
+        mixerA.setMixPrecision(MixPrecision.FLOAT_32);
+        mixerB.setMixPrecision(MixPrecision.FLOAT_32);
+
+        float[][][] channelBuffers = new float[trackCount][1][frames];
+        for (int t = 0; t < trackCount; t++) {
+            MixerChannel chA = new MixerChannel("Track " + t);
+            MixerChannel chB = new MixerChannel("Track " + t);
+            mixerA.addChannel(chA);
+            mixerB.addChannel(chB);
+            for (int f = 0; f < frames; f++) {
+                // Pathological values that expose float rounding
+                channelBuffers[t][0][f] = (float) Math.sin(0.01 * t + 0.001 * f) * 0.05f;
+            }
+        }
+
+        float[][] outputA = new float[1][frames];
+        float[][] outputB = new float[1][frames];
+        mixerA.mixDown(channelBuffers, outputA, frames);
+        mixerB.mixDown(channelBuffers, outputB, frames);
+
+        // The two renders must be bit-identical
+        assertThat(outputA[0]).containsExactly(outputB[0]);
+
+        // Verify against a hand-computed golden reference using strict
+        // 32-bit float arithmetic (no widening to double allowed).
+        float[] golden = new float[frames];
+        for (int t = 0; t < trackCount; t++) {
+            for (int f = 0; f < frames; f++) {
+                golden[f] += channelBuffers[t][0][f]; // float accumulation
+            }
+        }
+        assertThat(outputA[0]).containsExactly(golden);
+    }
+
     @Test
     void double64ModeShouldSum128TracksWithinAnalyticalTruth() {
         // 128 mono tracks at identical amplitude should sum to a known

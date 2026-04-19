@@ -24,6 +24,13 @@ public final class AudioBufferPool {
     private final int frames;
 
     /**
+     * Cached double-precision backing buffer for {@link #viewDouble()}.
+     * Allocated lazily on first call and reused on subsequent calls so
+     * that the 64-bit mix bus path stays allocation-free at steady state.
+     */
+    private DoubleAudioBuffer cachedDoubleBuffer;
+
+    /**
      * Creates a pool of pre-allocated audio buffers.
      *
      * @param poolSize the number of buffers to pre-allocate
@@ -141,18 +148,22 @@ public final class AudioBufferPool {
 
     /**
      * Returns a 64-bit double-precision {@link BufferView.DoubleBufferView}
-     * over a {@link DoubleAudioBuffer} with the same channel and frame
-     * dimensions as this pool.
+     * over a shared {@link DoubleAudioBuffer} with the same channel and
+     * frame dimensions as this pool.
      *
-     * <p>Because the pool backs float storage directly, callers use this
-     * helper to allocate a companion {@code double} buffer for the 64-bit
-     * summing bus; pool re-use semantics for the returned view are the
-     * caller's responsibility.</p>
+     * <p>The backing {@code DoubleAudioBuffer} is allocated once on the
+     * first call and reused on subsequent calls (cleared to silence each
+     * time), keeping the 64-bit mix bus path allocation-free at steady
+     * state.</p>
      *
      * @return a double view sized to match this pool
      * @see com.benesquivelmusic.daw.sdk.audio.MixPrecision#DOUBLE_64
      */
     public BufferView.DoubleBufferView viewDouble() {
-        return BufferView.DoubleBufferView.of(new DoubleAudioBuffer(channels, frames));
+        if (cachedDoubleBuffer == null) {
+            cachedDoubleBuffer = new DoubleAudioBuffer(channels, frames);
+        }
+        cachedDoubleBuffer.clear();
+        return BufferView.DoubleBufferView.of(cachedDoubleBuffer);
     }
 }
