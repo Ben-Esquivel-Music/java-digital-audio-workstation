@@ -89,6 +89,9 @@ public final class TimelineRuler extends Pane {
     private boolean snapEnabled = false;
     private GridResolution gridResolution = GridResolution.QUARTER;
 
+    /** Sample rate used to convert punch region frame positions to beats. */
+    private double sampleRate = 44_100.0;
+
     private final List<Consumer<Double>> seekListeners = new ArrayList<>();
 
     private final Tooltip loopTooltip = new Tooltip();
@@ -222,6 +225,25 @@ public final class TimelineRuler extends Pane {
     /** Sets the grid resolution used for snap-to-grid on loop locators. */
     public void setGridResolution(GridResolution gridResolution) {
         this.gridResolution = Objects.requireNonNull(gridResolution, "gridResolution must not be null");
+    }
+
+    /** Returns the sample rate used for punch region frame-to-beat conversion. */
+    public double getSampleRate() {
+        return sampleRate;
+    }
+
+    /**
+     * Sets the sample rate used to convert punch region frame positions to
+     * beat positions for rendering.
+     *
+     * @param sampleRate the sample rate in Hz (must be &gt; 0)
+     */
+    public void setSampleRate(double sampleRate) {
+        if (sampleRate <= 0) {
+            throw new IllegalArgumentException("sampleRate must be positive: " + sampleRate);
+        }
+        this.sampleRate = sampleRate;
+        redraw();
     }
 
     /** Toggles the time display mode and redraws. */
@@ -422,7 +444,7 @@ public final class TimelineRuler extends Pane {
 
     private double framesToBeats(long frames) {
         Transport transport = model.getTransport();
-        double seconds = frames / 44_100.0; // default sample rate
+        double seconds = frames / sampleRate;
         return transport.getTempoMap().secondsToBeats(seconds);
     }
 

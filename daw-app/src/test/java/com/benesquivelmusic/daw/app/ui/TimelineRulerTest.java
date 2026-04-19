@@ -425,7 +425,7 @@ class TimelineRulerTest {
     }
 
     @Test
-    void punchRegionColorsShouldBeDefined() {
+    void shouldDefinePunchRegionColors() {
         assertThat(TimelineRuler.PUNCH_REGION_COLOR).isNotNull();
         assertThat(TimelineRuler.PUNCH_HANDLE_COLOR).isNotNull();
         assertThat(TimelineRuler.PUNCH_HANDLE_LINE_COLOR).isNotNull();
