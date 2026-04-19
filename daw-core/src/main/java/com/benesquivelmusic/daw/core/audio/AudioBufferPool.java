@@ -24,6 +24,13 @@ public final class AudioBufferPool {
     private final int frames;
 
     /**
+     * Cached double-precision backing buffer for {@link #viewDouble()}.
+     * Allocated lazily on first call and reused on subsequent calls so
+     * that the 64-bit mix bus path stays allocation-free at steady state.
+     */
+    private DoubleAudioBuffer cachedDoubleBuffer;
+
+    /**
      * Creates a pool of pre-allocated audio buffers.
      *
      * @param poolSize the number of buffers to pre-allocate
@@ -123,5 +130,40 @@ public final class AudioBufferPool {
      */
     public int getFrames() {
         return frames;
+    }
+
+    /**
+     * Returns a 32-bit single-precision {@link BufferView.FloatBufferView}
+     * over an acquired {@link AudioBuffer}. The view shares storage with
+     * the underlying buffer and is real-time safe to create.
+     *
+     * @param buffer a buffer acquired from this pool
+     * @return a float view over the buffer
+     * @see com.benesquivelmusic.daw.sdk.audio.MixPrecision#FLOAT_32
+     */
+    @RealTimeSafe
+    public BufferView.FloatBufferView viewFloat(AudioBuffer buffer) {
+        return BufferView.FloatBufferView.of(buffer);
+    }
+
+    /**
+     * Returns a 64-bit double-precision {@link BufferView.DoubleBufferView}
+     * over a shared {@link DoubleAudioBuffer} with the same channel and
+     * frame dimensions as this pool.
+     *
+     * <p>The backing {@code DoubleAudioBuffer} is allocated once on the
+     * first call and reused on subsequent calls (cleared to silence each
+     * time), keeping the 64-bit mix bus path allocation-free at steady
+     * state.</p>
+     *
+     * @return a double view sized to match this pool
+     * @see com.benesquivelmusic.daw.sdk.audio.MixPrecision#DOUBLE_64
+     */
+    public BufferView.DoubleBufferView viewDouble() {
+        if (cachedDoubleBuffer == null) {
+            cachedDoubleBuffer = new DoubleAudioBuffer(channels, frames);
+        }
+        cachedDoubleBuffer.clear();
+        return BufferView.DoubleBufferView.of(cachedDoubleBuffer);
     }
 }

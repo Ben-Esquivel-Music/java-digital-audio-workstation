@@ -109,6 +109,23 @@ public final class BiquadFilter {
     }
 
     /**
+     * Processes a single sample in 64-bit double precision.
+     *
+     * <p>Identical to {@link #processSample(float)} but avoids the
+     * {@code float} narrowing at both input and output, preserving the
+     * full precision of the filter's internal {@code double} arithmetic.</p>
+     *
+     * @param input the input sample
+     * @return the filtered output sample in full double precision
+     */
+    public double processSampleDouble(double input) {
+        double output = b0 * input + z1;
+        z1 = b1 * input - a1 * output + z2;
+        z2 = b2 * input - a2 * output;
+        return output;
+    }
+
+    /**
      * Processes a buffer of samples in-place.
      *
      * @param buffer the sample buffer
@@ -118,6 +135,19 @@ public final class BiquadFilter {
     public void process(float[] buffer, int offset, int length) {
         for (int i = offset; i < offset + length; i++) {
             buffer[i] = processSample(buffer[i]);
+        }
+    }
+
+    /**
+     * Processes a buffer of double-precision samples in-place.
+     *
+     * @param buffer the sample buffer
+     * @param offset start offset
+     * @param length number of samples to process
+     */
+    public void processDouble(double[] buffer, int offset, int length) {
+        for (int i = offset; i < offset + length; i++) {
+            buffer[i] = processSampleDouble(buffer[i]);
         }
     }
 

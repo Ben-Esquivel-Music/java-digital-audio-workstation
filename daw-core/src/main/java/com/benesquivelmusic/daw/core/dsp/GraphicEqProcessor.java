@@ -99,6 +99,10 @@ public final class GraphicEqProcessor implements AudioProcessor {
     // Linear-phase composite filters: [channel]
     private LinearPhaseFilter[] linearFilters;
 
+    // Pre-allocated scratch buffers for the linear-phase double→float fallback
+    private float[][] floatScratchIn;
+    private float[][] floatScratchOut;
+
     /**
      * Creates a graphic EQ with the specified channel count and sample rate.
      *
@@ -329,6 +333,45 @@ public final class GraphicEqProcessor implements AudioProcessor {
     }
 
     @Override
+    public boolean supportsDouble() {
+        return true;
+    }
+
+    @RealTimeSafe
+    @Override
+    public void processDouble(double[][] inputBuffer, double[][] outputBuffer, int numFrames) {
+        if (filterMode == FilterMode.LINEAR_PHASE) {
+            int chCount = Math.min(inputBuffer.length, outputBuffer.length);
+            float[][] fIn = ensureFloatScratch(chCount, numFrames);
+            float[][] fOut = ensureFloatScratchOut(chCount, numFrames);
+            for (int ch = 0; ch < chCount; ch++) {
+                for (int f = 0; f < numFrames; f++) {
+                    fIn[ch][f] = (float) inputBuffer[ch][f];
+                }
+            }
+            process(fIn, fOut, numFrames);
+            for (int ch = 0; ch < chCount; ch++) {
+                for (int f = 0; f < numFrames; f++) {
+                    outputBuffer[ch][f] = fOut[ch][f];
+                }
+            }
+            return;
+        }
+
+        for (int ch = 0; ch < Math.min(inputBuffer.length, outputBuffer.length); ch++) {
+            System.arraycopy(inputBuffer[ch], 0, outputBuffer[ch], 0, numFrames);
+        }
+        for (int band = 0; band < filters.length; band++) {
+            if (gainDb[band] == 0.0) {
+                continue;
+            }
+            for (int ch = 0; ch < Math.min(channels, outputBuffer.length); ch++) {
+                filters[band][ch].processDouble(outputBuffer[ch], 0, numFrames);
+            }
+        }
+    }
+
+    @Override
     public void reset() {
         for (BiquadFilter[] bandFilters : filters) {
             for (BiquadFilter filter : bandFilters) {
@@ -420,5 +463,21 @@ public final class GraphicEqProcessor implements AudioProcessor {
         // Standard Q for constant-bandwidth graphic EQ:
         // Octave bandwidth → Q ≈ 1.414, Third-octave bandwidth → Q ≈ 4.318
         return (type == BandType.OCTAVE) ? 1.414 : 4.318;
+    }
+
+    private float[][] ensureFloatScratch(int channels, int frames) {
+        if (floatScratchIn == null || floatScratchIn.length < channels
+                || (floatScratchIn.length > 0 && floatScratchIn[0].length < frames)) {
+            floatScratchIn = new float[channels][frames];
+        }
+        return floatScratchIn;
+    }
+
+    private float[][] ensureFloatScratchOut(int channels, int frames) {
+        if (floatScratchOut == null || floatScratchOut.length < channels
+                || (floatScratchOut.length > 0 && floatScratchOut[0].length < frames)) {
+            floatScratchOut = new float[channels][frames];
+        }
+        return floatScratchOut;
     }
 }

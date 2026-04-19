@@ -138,6 +138,11 @@ public final class ParametricEqProcessor implements AudioProcessor {
     private float[] midBuffer;
     private float[] sideBuffer;
 
+    // Pre-allocated scratch buffers for the linear-phase double→float fallback
+    // path in processDouble(). Lazily grown to the required dimensions.
+    private float[][] floatScratchIn;
+    private float[][] floatScratchOut;
+
     /**
      * Creates a parametric EQ with the specified channel count and sample rate.
      *
@@ -364,6 +369,46 @@ public final class ParametricEqProcessor implements AudioProcessor {
         }
     }
 
+    @Override
+    public boolean supportsDouble() {
+        return true;
+    }
+
+    @RealTimeSafe
+    @Override
+    public void processDouble(double[][] inputBuffer, double[][] outputBuffer, int numFrames) {
+        if (filterMode == FilterMode.LINEAR_PHASE) {
+            // Linear-phase FIR filters currently operate on float buffers.
+            // Fall back to the narrowing adapter for this mode.
+            int chCount = Math.min(inputBuffer.length, outputBuffer.length);
+            float[][] floatIn = ensureFloatScratch(chCount, numFrames);
+            float[][] floatOut = ensureFloatScratchOut(chCount, numFrames);
+            for (int ch = 0; ch < chCount; ch++) {
+                for (int f = 0; f < numFrames; f++) {
+                    floatIn[ch][f] = (float) inputBuffer[ch][f];
+                }
+            }
+            process(floatIn, floatOut, numFrames);
+            for (int ch = 0; ch < chCount; ch++) {
+                for (int f = 0; f < numFrames; f++) {
+                    outputBuffer[ch][f] = floatOut[ch][f];
+                }
+            }
+            return;
+        }
+
+        // Minimum-phase: apply biquad filters natively in double precision
+        for (int ch = 0; ch < Math.min(inputBuffer.length, outputBuffer.length); ch++) {
+            System.arraycopy(inputBuffer[ch], 0, outputBuffer[ch], 0, numFrames);
+        }
+        for (int band = 0; band < filters.length; band++) {
+            if (!bandConfigs.get(band).enabled()) continue;
+            for (int ch = 0; ch < Math.min(channels, outputBuffer.length); ch++) {
+                filters[band][ch].processDouble(outputBuffer[ch], 0, numFrames);
+            }
+        }
+    }
+
     private void processStereo(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         // Copy input to output first
         for (int ch = 0; ch < Math.min(inputBuffer.length, outputBuffer.length); ch++) {
@@ -542,5 +587,21 @@ public final class ParametricEqProcessor implements AudioProcessor {
             }
         }
         return active;
+    }
+
+    private float[][] ensureFloatScratch(int channels, int frames) {
+        if (floatScratchIn == null || floatScratchIn.length < channels
+                || (floatScratchIn.length > 0 && floatScratchIn[0].length < frames)) {
+            floatScratchIn = new float[channels][frames];
+        }
+        return floatScratchIn;
+    }
+
+    private float[][] ensureFloatScratchOut(int channels, int frames) {
+        if (floatScratchOut == null || floatScratchOut.length < channels
+                || (floatScratchOut.length > 0 && floatScratchOut[0].length < frames)) {
+            floatScratchOut = new float[channels][frames];
+        }
+        return floatScratchOut;
     }
 }

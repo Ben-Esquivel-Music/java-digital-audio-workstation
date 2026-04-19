@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.audio.AudioGraphScheduler;
 import com.benesquivelmusic.daw.core.audio.PluginDelayCompensation;
 import com.benesquivelmusic.daw.core.automation.ReflectiveParameterBinder;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
+import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor;
 
 import java.util.*;
@@ -55,12 +56,65 @@ public final class Mixer {
      */
     private boolean[] insertsProcessedFlags = new boolean[0];
 
+    /**
+     * The numeric precision of the internal mix bus. {@link MixPrecision#DOUBLE_64}
+     * (the default) sums channels and return buses in 64-bit double precision
+     * before narrowing the final result to the output float buffer; this
+     * matches the summing precision of every professional DAW and prevents
+     * low-bit accumulation error on large sessions. {@link MixPrecision#FLOAT_32}
+     * retains legacy 32-bit summation and is bit-exact with prior DAW
+     * versions — useful for low-CPU machines or regression renders.
+     */
+    private MixPrecision mixPrecision = MixPrecision.DEFAULT;
+
+    /**
+     * Pre-allocated 64-bit summing accumulator reused on every
+     * {@link #mixDown} invocation when {@link #mixPrecision} is
+     * {@link MixPrecision#DOUBLE_64}. Lazily (re)sized to match the
+     * current {@code outputBuffer} dimensions so real-time invocations
+     * remain allocation-free after the first block.
+     */
+    private double[][] mixAccumulator = new double[0][0];
+
+    /**
+     * Pre-allocated 64-bit scratch buffer used when processing return bus
+     * insert effects via {@code EffectsChain.processDouble()} under the
+     * {@link MixPrecision#DOUBLE_64} path. Lazily grown on the first
+     * block when the double bus is active.
+     */
+    private double[][] returnBusScratchDouble = new double[0][0];
+
     /** Creates a new mixer with an empty channel list, a default master channel, and a reverb return aux bus. */
     public Mixer() {
         this.masterChannel = new MixerChannel("Master");
         MixerChannel defaultReturn = new MixerChannel("Reverb Return");
         defaultReturn.setOnEffectsChainChanged(this::recalculateDelayCompensation);
         returnBuses.add(defaultReturn);
+    }
+
+    /**
+     * Returns the precision of the internal summing bus.
+     *
+     * @return the current mix precision (never {@code null})
+     * @see MixPrecision
+     */
+    public MixPrecision getMixPrecision() {
+        return mixPrecision;
+    }
+
+    /**
+     * Sets the precision of the internal summing bus.
+     *
+     * <p>This call is safe to issue at any time; the next
+     * {@link #mixDown} invocation will pick up the new precision.
+     * Changing precision does not change plugin I/O — plugins continue
+     * to process at their own declared precision via
+     * {@link com.benesquivelmusic.daw.sdk.audio.AudioProcessor#supportsDouble()}.</p>
+     *
+     * @param mixPrecision the new mix precision (must not be {@code null})
+     */
+    public void setMixPrecision(MixPrecision mixPrecision) {
+        this.mixPrecision = Objects.requireNonNull(mixPrecision, "mixPrecision must not be null");
     }
 
     /**
@@ -272,9 +326,17 @@ public final class Mixer {
      */
     @RealTimeSafe
     public void mixDown(float[][][] channelBuffers, float[][] outputBuffer, int numFrames) {
-        // Clear output
+        boolean useDouble = mixPrecision == MixPrecision.DOUBLE_64;
+        double[][] acc = useDouble ? ensureAccumulator(outputBuffer.length, numFrames) : null;
+
+        // Clear output (and double accumulator when the 64-bit mix bus is active)
         for (float[] ch : outputBuffer) {
             Arrays.fill(ch, 0, numFrames, 0.0f);
+        }
+        if (useDouble) {
+            for (int ch = 0; ch < outputBuffer.length; ch++) {
+                Arrays.fill(acc[ch], 0, numFrames, 0.0);
+            }
         }
 
         boolean anySolo = false;
@@ -316,11 +378,20 @@ public final class Mixer {
                 continue;
             }
 
-            sumChannelToOutput(channel, src, outputBuffer, numFrames);
+            if (useDouble) {
+                sumChannelToOutputDouble(channel, src, acc, outputBuffer.length, numFrames);
+            } else {
+                sumChannelToOutput(channel, src, outputBuffer, numFrames);
+            }
         }
 
         // Apply master volume
         float masterVolume = (float) masterChannel.getVolume();
+        if (useDouble) {
+            finalizeAccumulator(acc, outputBuffer, numFrames,
+                    masterChannel.isMuted() ? 0.0 : masterChannel.getVolume());
+            return;
+        }
         if (!masterChannel.isMuted()) {
             for (float[] ch : outputBuffer) {
                 for (int f = 0; f < numFrames; f++) {
@@ -440,9 +511,17 @@ public final class Mixer {
     @RealTimeSafe
     public void mixDown(float[][][] channelBuffers, float[][] outputBuffer,
                         float[][][] returnBuffers, int numFrames) {
-        // Clear output
+        boolean useDouble = mixPrecision == MixPrecision.DOUBLE_64;
+        double[][] acc = useDouble ? ensureAccumulator(outputBuffer.length, numFrames) : null;
+
+        // Clear output (and double accumulator when the 64-bit mix bus is active)
         for (float[] ch : outputBuffer) {
             Arrays.fill(ch, 0, numFrames, 0.0f);
+        }
+        if (useDouble) {
+            for (int ch = 0; ch < outputBuffer.length; ch++) {
+                Arrays.fill(acc[ch], 0, numFrames, 0.0);
+            }
         }
 
         // Clear all return buffers
@@ -548,7 +627,11 @@ public final class Mixer {
                 continue;
             }
 
-            sumChannelToOutput(channel, src, outputBuffer, numFrames);
+            if (useDouble) {
+                sumChannelToOutputDouble(channel, src, acc, outputBuffer.length, numFrames);
+            } else {
+                sumChannelToOutput(channel, src, outputBuffer, numFrames);
+            }
         }
 
         // Process return bus effects, apply compensation, and sum into main output
@@ -558,7 +641,28 @@ public final class Mixer {
 
             // Apply return bus insert effects
             if (!returnBus.getEffectsChain().isEmpty()) {
-                returnBus.getEffectsChain().process(returnBuf, returnBuf, numFrames);
+                if (useDouble) {
+                    // Process return bus effects in double precision: widen
+                    // float→double, apply effects via processDouble, and let
+                    // the accumulation loop below consume the double result.
+                    double[][] dblBuf = ensureReturnBusScratchDouble(
+                            returnBuf.length, numFrames);
+                    for (int ch = 0; ch < returnBuf.length; ch++) {
+                        for (int f = 0; f < numFrames; f++) {
+                            dblBuf[ch][f] = returnBuf[ch][f];
+                        }
+                    }
+                    returnBus.getEffectsChain().processDouble(dblBuf, dblBuf, numFrames);
+                    // Narrow back to the float return buffer for PDC and
+                    // any downstream consumer that reads returnBuffers[r].
+                    for (int ch = 0; ch < returnBuf.length; ch++) {
+                        for (int f = 0; f < numFrames; f++) {
+                            returnBuf[ch][f] = (float) dblBuf[ch][f];
+                        }
+                    }
+                } else {
+                    returnBus.getEffectsChain().process(returnBuf, returnBuf, numFrames);
+                }
             }
 
             // Apply delay compensation for the return bus
@@ -570,6 +674,18 @@ public final class Mixer {
             if (returnBus.isMuted()) {
                 for (float[] ch : returnBuf) {
                     Arrays.fill(ch, 0, numFrames, 0.0f);
+                }
+            } else if (useDouble) {
+                double returnVolumeD = returnBus.getVolume();
+                for (int ch = 0; ch < returnAudioChannels; ch++) {
+                    for (int f = 0; f < numFrames; f++) {
+                        // Apply return-bus volume in 64-bit and sum into the
+                        // double accumulator (keep returnBuf coherent by also
+                        // writing back the scaled value as float).
+                        double scaled = returnBuf[ch][f] * returnVolumeD;
+                        returnBuf[ch][f] = (float) scaled;
+                        acc[ch][f] += scaled;
+                    }
                 }
             } else {
                 for (int ch = 0; ch < returnAudioChannels; ch++) {
@@ -583,6 +699,11 @@ public final class Mixer {
 
         // Apply master volume
         float masterVolume = (float) masterChannel.getVolume();
+        if (useDouble) {
+            finalizeAccumulator(acc, outputBuffer, numFrames,
+                    masterChannel.isMuted() ? 0.0 : masterChannel.getVolume());
+            return;
+        }
         if (!masterChannel.isMuted()) {
             for (float[] ch : outputBuffer) {
                 for (int f = 0; f < numFrames; f++) {
@@ -597,6 +718,110 @@ public final class Mixer {
     }
 
     // ── Channel → output summing ─────────────────────────────────────────
+
+    /**
+     * Ensures the pre-allocated 64-bit mix accumulator has at least
+     * {@code channels} rows and {@code frames} samples per row. Reuses the
+     * existing array whenever possible so steady-state {@link #mixDown}
+     * invocations remain allocation-free. A one-time growth occurs when
+     * the block size or audio channel count increases.
+     */
+    private double[][] ensureAccumulator(int channels, int frames) {
+        double[][] acc = this.mixAccumulator;
+        if (acc.length < channels || (acc.length > 0 && acc[0].length < frames)) {
+            int rows = Math.max(channels, acc.length);
+            int cols = Math.max(frames, acc.length > 0 ? acc[0].length : 0);
+            acc = new double[rows][cols];
+            this.mixAccumulator = acc;
+        }
+        return acc;
+    }
+
+    /**
+     * Ensures the return-bus double scratch buffer has at least
+     * {@code channels} rows and {@code frames} samples per row.
+     */
+    private double[][] ensureReturnBusScratchDouble(int channels, int frames) {
+        double[][] buf = this.returnBusScratchDouble;
+        if (buf.length < channels || (buf.length > 0 && buf[0].length < frames)) {
+            int rows = Math.max(channels, buf.length);
+            int cols = Math.max(frames, (buf.length > 0 && buf[0].length > 0) ? buf[0].length : 0);
+            buf = new double[rows][cols];
+            this.returnBusScratchDouble = buf;
+        }
+        return buf;
+    }
+
+    /**
+     * Narrows the 64-bit mix accumulator into the float {@code outputBuffer},
+     * applying the master channel volume in double precision as the final
+     * summing-bus stage.
+     */
+    @RealTimeSafe
+    private static void finalizeAccumulator(double[][] acc, float[][] outputBuffer,
+                                            int numFrames, double masterVolume) {
+        int channelCount = Math.min(acc.length, outputBuffer.length);
+        if (masterVolume == 0.0) {
+            for (int ch = 0; ch < outputBuffer.length; ch++) {
+                Arrays.fill(outputBuffer[ch], 0, numFrames, 0.0f);
+            }
+            return;
+        }
+        for (int ch = 0; ch < channelCount; ch++) {
+            for (int f = 0; f < numFrames; f++) {
+                outputBuffer[ch][f] = (float) (acc[ch][f] * masterVolume);
+            }
+        }
+        // Zero any trailing hardware-output channels that the mixer did not
+        // drive (they may later receive direct-output audio).
+        for (int ch = channelCount; ch < outputBuffer.length; ch++) {
+            Arrays.fill(outputBuffer[ch], 0, numFrames, 0.0f);
+        }
+    }
+
+    /**
+     * Double-precision counterpart to {@link #sumChannelToOutput}: sums a
+     * channel's post-insert audio into the 64-bit accumulator using the same
+     * constant-power pan law as the single-precision path.
+     */
+    @RealTimeSafe
+    private static void sumChannelToOutputDouble(MixerChannel channel, float[][] src,
+                                                 double[][] acc, int outChannels,
+                                                 int numFrames) {
+        double volume = channel.getVolume();
+        int audioChannels = Math.min(src.length, outChannels);
+
+        if (outChannels >= 2 && audioChannels >= 1) {
+            double pan = channel.getPan();
+            double angle = (pan + 1.0) * 0.25 * Math.PI;
+            double leftGain = Math.cos(angle) * volume;
+            double rightGain = Math.sin(angle) * volume;
+
+            for (int f = 0; f < numFrames; f++) {
+                acc[0][f] += src[0][f] * leftGain;
+            }
+            if (audioChannels >= 2) {
+                for (int f = 0; f < numFrames; f++) {
+                    acc[1][f] += src[1][f] * rightGain;
+                }
+            } else {
+                for (int f = 0; f < numFrames; f++) {
+                    acc[1][f] += src[0][f] * rightGain;
+                }
+            }
+            for (int ch = 2; ch < audioChannels; ch++) {
+                for (int f = 0; f < numFrames; f++) {
+                    acc[ch][f] += src[ch][f] * volume;
+                }
+            }
+        } else {
+            for (int ch = 0; ch < audioChannels; ch++) {
+                for (int f = 0; f < numFrames; f++) {
+                    acc[ch][f] += src[ch][f] * volume;
+                }
+            }
+        }
+    }
 
     /**
      * Sums a single channel's post-insert audio into the given output buffer,

@@ -200,6 +200,51 @@ public final class CompressorProcessor implements SidechainAwareProcessor, GainR
     }
 
     @Override
+    public boolean supportsDouble() {
+        return true;
+    }
+
+    @RealTimeSafe
+    @Override
+    public void processDouble(double[][] inputBuffer, double[][] outputBuffer, int numFrames) {
+        processInternalDouble(inputBuffer, inputBuffer, outputBuffer, numFrames);
+    }
+
+    private void processInternalDouble(double[][] inputBuffer, double[][] detectionBuffer,
+                                       double[][] outputBuffer, int numFrames) {
+        double makeupLinear = Math.pow(10.0, makeupGainDb / 20.0);
+        int detectionChannels = Math.min(channels, detectionBuffer.length);
+        int outputChannels = Math.min(channels, inputBuffer.length);
+
+        for (int frame = 0; frame < numFrames; frame++) {
+            double level = 0.0;
+            for (int ch = 0; ch < detectionChannels; ch++) {
+                double s = Math.abs(detectionBuffer[ch][frame]);
+                if (detectionMode == DetectionMode.RMS) {
+                    level += s * s;
+                } else {
+                    level = Math.max(level, s);
+                }
+            }
+            if (detectionMode == DetectionMode.RMS) {
+                level = Math.sqrt(level / channels);
+            }
+
+            double inputDb = (level > 0) ? 20.0 * Math.log10(level) : -120.0;
+            double coeff = (inputDb > envelopeDb) ? attackCoeff : releaseCoeff;
+            envelopeDb = coeff * envelopeDb + (1.0 - coeff) * inputDb;
+
+            double gainReductionDb = computeGainReduction(envelopeDb);
+            currentGainReductionDb = gainReductionDb;
+
+            double gainLinear = Math.pow(10.0, gainReductionDb / 20.0) * makeupLinear;
+            for (int ch = 0; ch < outputChannels; ch++) {
+                outputBuffer[ch][frame] = inputBuffer[ch][frame] * gainLinear;
+            }
+        }
+    }
+
+    @Override
     public int getInputChannelCount() { return channels; }
 
     @Override

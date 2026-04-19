@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -41,6 +42,27 @@ class SettingsModelTest {
     @Test
     void shouldDefaultTo256BufferSize() {
         assertThat(model.getBufferSize()).isEqualTo(256);
+    }
+
+    @Test
+    void shouldDefaultToDouble64MixPrecision() {
+        assertThat(model.getMixPrecision()).isEqualTo(MixPrecision.DOUBLE_64);
+    }
+
+    @Test
+    void shouldPersistMixPrecisionAcrossInstances() {
+        model.setMixPrecision(MixPrecision.FLOAT_32);
+
+        SettingsModel reloaded = new SettingsModel(prefs);
+
+        assertThat(reloaded.getMixPrecision()).isEqualTo(MixPrecision.FLOAT_32);
+    }
+
+    @Test
+    void shouldRejectNullMixPrecision() {
+        //noinspection DataFlowIssue
+        assertThatThrownBy(() -> model.setMixPrecision(null))
+                .isInstanceOf(NullPointerException.class);
     }
 
     // ── Project defaults ─────────────────────────────────────────────────────

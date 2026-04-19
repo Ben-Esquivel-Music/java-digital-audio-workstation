@@ -21,6 +21,7 @@ public final class EffectsChain {
     private final List<AudioProcessor> processors = new ArrayList<>();
     private boolean bypassed;
     private float[][][] intermediateBuffers;
+    private double[][][] intermediateDoubleBuffers;
 
     /**
      * Appends a processor to the end of the chain.
@@ -171,6 +172,64 @@ public final class EffectsChain {
     }
 
     /**
+     * Processes audio through the entire chain in 64-bit double precision.
+     *
+     * <p>For processors that report {@link AudioProcessor#supportsDouble()},
+     * the native {@code processDouble} path is used. For processors that
+     * do not, the default narrowing adapter on {@code AudioProcessor} is
+     * invoked — note that the default adapter allocates scratch buffers,
+     * so calling this method on the real-time audio thread is only safe
+     * when all processors in the chain support double or intermediate
+     * double buffers have been pre-allocated via
+     * {@link #allocateIntermediateDoubleBuffers(int, int)}.</p>
+     *
+     * @param inputBuffer  input audio data {@code [channel][frame]}
+     * @param outputBuffer output audio data {@code [channel][frame]}
+     * @param numFrames    the number of frames to process
+     */
+    public void processDouble(double[][] inputBuffer, double[][] outputBuffer, int numFrames) {
+        if (bypassed || processors.isEmpty()) {
+            copyBufferDouble(inputBuffer, outputBuffer, numFrames);
+            return;
+        }
+
+        double[][] currentInput = inputBuffer;
+        for (int i = 0; i < processors.size(); i++) {
+            double[][] currentOutput;
+            if (i == processors.size() - 1) {
+                currentOutput = outputBuffer;
+            } else if (intermediateDoubleBuffers != null && i < intermediateDoubleBuffers.length) {
+                currentOutput = intermediateDoubleBuffers[i];
+                clearBufferDouble(currentOutput, numFrames);
+            } else {
+                currentOutput = new double[outputBuffer.length][numFrames];
+            }
+            processors.get(i).processDouble(currentInput, currentOutput, numFrames);
+            currentInput = currentOutput;
+        }
+    }
+
+    /**
+     * Pre-allocates double-precision intermediate buffers for the
+     * {@link #processDouble} path. Call alongside
+     * {@link #allocateIntermediateBuffers(int, int)} when the mixer is
+     * configured for {@link com.benesquivelmusic.daw.sdk.audio.MixPrecision#DOUBLE_64}.
+     *
+     * @param channels the number of audio channels
+     * @param frames   the number of sample frames per buffer
+     */
+    public void allocateIntermediateDoubleBuffers(int channels, int frames) {
+        if (channels <= 0) {
+            throw new IllegalArgumentException("channels must be positive: " + channels);
+        }
+        if (frames <= 0) {
+            throw new IllegalArgumentException("frames must be positive: " + frames);
+        }
+        int maxIntermediateNeeded = Math.max(processors.size() - 1, 0);
+        intermediateDoubleBuffers = new double[maxIntermediateNeeded][channels][frames];
+    }
+
+    /**
      * Resets all processors in the chain.
      */
     public void reset() {
@@ -194,5 +253,18 @@ public final class EffectsChain {
 
     private static float[][] createTempBuffer(int channels, int frames) {
         return new float[channels][frames];
+    }
+
+    private static void copyBufferDouble(double[][] src, double[][] dst, int numFrames) {
+        int channels = Math.min(src.length, dst.length);
+        for (int ch = 0; ch < channels; ch++) {
+            System.arraycopy(src[ch], 0, dst[ch], 0, numFrames);
+        }
+    }
+
+    private static void clearBufferDouble(double[][] buffer, int numFrames) {
+        for (double[] channel : buffer) {
+            Arrays.fill(channel, 0, numFrames, 0.0);
+        }
     }
 }

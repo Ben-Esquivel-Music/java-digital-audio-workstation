@@ -49,6 +49,7 @@ public final class LimiterProcessor implements AudioProcessor, GainReductionProv
 
     // Look-ahead delay buffers
     private float[][] delayBuffers;
+    private double[][] delayBuffersDouble;
     private int delayWritePos;
 
     // Envelope
@@ -285,8 +286,78 @@ public final class LimiterProcessor implements AudioProcessor, GainReductionProv
         for (float[] buf : delayBuffers) {
             Arrays.fill(buf, 0.0f);
         }
+        if (delayBuffersDouble != null) {
+            for (double[] buf : delayBuffersDouble) {
+                Arrays.fill(buf, 0.0);
+            }
+        }
         for (TruePeakDetector detector : truePeakDetectors) {
             detector.reset();
+        }
+    }
+
+    @Override
+    public boolean supportsDouble() {
+        return true;
+    }
+
+    @RealTimeSafe
+    @Override
+    public void processDouble(double[][] inputBuffer, double[][] outputBuffer, int numFrames) {
+        double ceilingLinear = Math.pow(10.0, ceilingDb / 20.0);
+
+        for (int frame = 0; frame < numFrames; frame++) {
+            double truePeakLevel = 0.0;
+            double samplePeakLevel = 0.0;
+            int activeCh = Math.min(channels, inputBuffer.length);
+            for (int ch = 0; ch < activeCh; ch++) {
+                double sampleAbs = Math.abs(inputBuffer[ch][frame]);
+                if (sampleAbs > samplePeakLevel) {
+                    samplePeakLevel = sampleAbs;
+                }
+                double tp = truePeakDetectors[ch].processSample((float) inputBuffer[ch][frame]);
+                if (tp > truePeakLevel) {
+                    truePeakLevel = tp;
+                }
+            }
+
+            double peakLevel = Math.max(samplePeakLevel, truePeakLevel);
+
+            if (truePeakLevel > currentTruePeakLinear) {
+                currentTruePeakLinear = truePeakLevel;
+                currentTruePeakDbtp = (currentTruePeakLinear > 0.0)
+                        ? 20.0 * Math.log10(currentTruePeakLinear)
+                        : -120.0;
+            }
+
+            if (peakLevel > envelopeLinear) {
+                envelopeLinear = attackCoeff * envelopeLinear
+                        + (1.0 - attackCoeff) * peakLevel;
+            } else {
+                double effectiveReleaseCoeff = releaseCoeff;
+                if (autoRelease) {
+                    effectiveReleaseCoeff = computeAutoReleaseCoeff();
+                }
+                envelopeLinear = effectiveReleaseCoeff * envelopeLinear
+                        + (1.0 - effectiveReleaseCoeff) * peakLevel;
+            }
+
+            double gain;
+            if (envelopeLinear > ceilingLinear) {
+                gain = ceilingLinear / envelopeLinear;
+            } else {
+                gain = 1.0;
+            }
+
+            currentGainReductionDb = (gain < 1.0) ? 20.0 * Math.log10(gain) : 0.0;
+
+            for (int ch = 0; ch < activeCh; ch++) {
+                delayBuffersDouble[ch][delayWritePos] = inputBuffer[ch][frame];
+                int readPos = (delayWritePos - lookAheadSamples + delayBuffersDouble[ch].length)
+                        % delayBuffersDouble[ch].length;
+                outputBuffer[ch][frame] = delayBuffersDouble[ch][readPos] * gain;
+            }
+            delayWritePos = (delayWritePos + 1) % delayBuffersDouble[0].length;
         }
     }
 
@@ -299,6 +370,7 @@ public final class LimiterProcessor implements AudioProcessor, GainReductionProv
     private void initDelayBuffers() {
         int size = lookAheadSamples + 1;
         delayBuffers = new float[channels][size];
+        delayBuffersDouble = new double[channels][size];
         delayWritePos = 0;
     }
 
