@@ -47,6 +47,71 @@ public interface AudioProcessor {
     int getOutputChannelCount();
 
     /**
+     * Indicates whether this processor natively supports 64-bit
+     * double-precision audio I/O via
+     * {@link #processDouble(double[][], double[][], int)}.
+     *
+     * <p>The default implementation returns {@code false}: processors that
+     * benefit from double precision on the internal mix bus (EQs,
+     * compressors, limiters, linear-phase processors, convolution reverbs)
+     * should override this method to return {@code true} <em>and</em>
+     * provide a native {@link #processDouble} implementation. Processors
+     * that remain in {@code float} (the vast majority) inherit the default
+     * double adapter implementation, which the DAW invokes transparently.</p>
+     *
+     * @return {@code true} if this processor has a native {@code double}
+     *         processing path; {@code false} otherwise
+     * @see MixPrecision
+     */
+    default boolean supportsDouble() {
+        return false;
+    }
+
+    /**
+     * Processes audio data in 64-bit double precision.
+     *
+     * <p>The default implementation is a transparent adapter that narrows
+     * {@code double} input to {@code float}, delegates to
+     * {@link #process(float[][], float[][], int)}, and widens the
+     * {@code float} output back to {@code double}. This allows the DAW
+     * to keep its summing bus in double precision without requiring every
+     * processor to be rewritten.</p>
+     *
+     * <p>Processors that override {@link #supportsDouble()} to return
+     * {@code true} should override this method with a native
+     * double-precision implementation that bypasses the narrowing adapter.
+     * Implementations must remain allocation-free and real-time safe.</p>
+     *
+     * <p><strong>Note:</strong> The default adapter allocates scratch
+     * {@code float} buffers and is therefore not real-time safe on its own.
+     * Hosts that call {@code processDouble} on the audio thread for
+     * non-double-aware processors must provide pre-allocated narrowing
+     * buffers via a dedicated adapter; see {@code MixerChannel} for the
+     * reference implementation.</p>
+     *
+     * @param inputBuffer  the input audio buffer, indexed as {@code [channel][frame]}
+     * @param outputBuffer the output audio buffer, indexed as {@code [channel][frame]}
+     * @param numFrames    the number of sample frames to process
+     * @since the 64-bit mix bus feature
+     */
+    default void processDouble(double[][] inputBuffer, double[][] outputBuffer, int numFrames) {
+        int channels = Math.min(inputBuffer.length, outputBuffer.length);
+        float[][] floatIn = new float[channels][numFrames];
+        float[][] floatOut = new float[channels][numFrames];
+        for (int ch = 0; ch < channels; ch++) {
+            for (int f = 0; f < numFrames; f++) {
+                floatIn[ch][f] = (float) inputBuffer[ch][f];
+            }
+        }
+        process(floatIn, floatOut, numFrames);
+        for (int ch = 0; ch < channels; ch++) {
+            for (int f = 0; f < numFrames; f++) {
+                outputBuffer[ch][f] = floatOut[ch][f];
+            }
+        }
+    }
+
+    /**
      * Returns the processing latency introduced by this processor, in samples.
      *
      * <p>Processors that buffer samples internally (e.g., linear-phase EQs,

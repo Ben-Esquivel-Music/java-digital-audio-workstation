@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.BufferSize;
+import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 
 import javafx.animation.KeyFrame;
@@ -65,6 +66,7 @@ public final class AudioSettingsDialog extends Dialog<Void> {
     private final ComboBox<Integer> sampleRateCombo;
     private final ComboBox<Integer> bufferSizeCombo;
     private final ComboBox<Integer> bitDepthCombo;
+    private final ComboBox<MixPrecision> mixPrecisionCombo;
     private final Label bufferLatencyLabel;
     private final Label sampleRateLatencyLabel;
     private final Label cpuLoadLabel;
@@ -99,9 +101,11 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         sampleRateCombo = new ComboBox<>();
         bufferSizeCombo = new ComboBox<>();
         bitDepthCombo = new ComboBox<>();
+        mixPrecisionCombo = new ComboBox<>();
 
         bufferSizeCombo.getItems().setAll(BUFFER_SIZE_OPTIONS);
         bitDepthCombo.getItems().setAll(BIT_DEPTH_OPTIONS);
+        mixPrecisionCombo.getItems().setAll(MixPrecision.values());
 
         bufferLatencyLabel = new Label();
         sampleRateLatencyLabel = new Label();
@@ -178,6 +182,10 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         grid.add(bitDepthCombo, 1, row);
         row++;
 
+        grid.add(new Label("Mix Bus Precision:"), 0, row);
+        grid.add(mixPrecisionCombo, 1, row, 2, 1);
+        row++;
+
         HBox buttonRow = new HBox(12, testToneButton, cpuLoadLabel);
         grid.add(new Separator(), 0, row, 3, 1);
         row++;
@@ -219,6 +227,7 @@ public final class AudioSettingsDialog extends Dialog<Void> {
 
             bufferSizeCombo.setValue(nearestOption(BUFFER_SIZE_OPTIONS, model.getBufferSize()));
             bitDepthCombo.setValue(nearestOption(BIT_DEPTH_OPTIONS, model.getBitDepth()));
+            mixPrecisionCombo.setValue(model.getMixPrecision());
 
             refreshDevicesForBackend(backendCombo.getValue());
 
@@ -403,6 +412,10 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         model.setSampleRate(sampleRate);
         model.setBufferSize(bufferFrames);
         model.setBitDepth(bitDepth);
+        MixPrecision mixPrecision = mixPrecisionCombo.getValue();
+        if (mixPrecision != null) {
+            model.setMixPrecision(mixPrecision);
+        }
         String backend = backendCombo.getValue();
         if (backend != null) {
             model.setAudioBackend(backend);

@@ -30,3 +30,16 @@ xvfb-run --auto-servernum mvn -B clean verify \
 ### Important note
 
 Do **not** force `-Djava.awt.headless=true` for JavaFX UI tests; that disables graphics initialization and usually causes more failures.
+
+## Internal Mix Bus Precision
+
+The DAW's internal summing bus is selectable between 32-bit single-precision and 64-bit double-precision via the **Audio Settings → Mix Bus Precision** combo box (model key `audio.mixPrecision`, enum `com.benesquivelmusic.daw.sdk.audio.MixPrecision`).
+
+| Mode        | When to use                                                          |
+| ----------- | -------------------------------------------------------------------- |
+| `DOUBLE_64` | **Default.** Matches every professional DAW (Pro Tools HDX, Logic, Cubase, Studio One, Reaper, Ableton). Eliminates low-bit accumulation error on large (64+ track) sessions and during dynamic processing. |
+| `FLOAT_32`  | Legacy / very low-CPU machines. Bit-exact with pre-existing DAW renders.                                                                 |
+
+`DOUBLE_64` roughly doubles mix-bus memory bandwidth, but typical total CPU impact is **modest**: plugin DSP still runs at each plugin's preferred precision (float unless the plugin overrides `AudioProcessor.supportsDouble()`). The extra cost lives in the summing stages themselves, which are dwarfed by plugin processing in any real session.
+
+The per-hardware-output conversion to the device's native format (typically `float32`) happens once at the output stage; only the internal summing and gain-staging loops run at 64-bit when `DOUBLE_64` is selected.

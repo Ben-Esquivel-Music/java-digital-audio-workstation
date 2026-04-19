@@ -124,4 +124,35 @@ public final class AudioBufferPool {
     public int getFrames() {
         return frames;
     }
+
+    /**
+     * Returns a 32-bit single-precision {@link BufferView.FloatBufferView}
+     * over an acquired {@link AudioBuffer}. The view shares storage with
+     * the underlying buffer and is real-time safe to create.
+     *
+     * @param buffer a buffer acquired from this pool
+     * @return a float view over the buffer
+     * @see com.benesquivelmusic.daw.sdk.audio.MixPrecision#FLOAT_32
+     */
+    @RealTimeSafe
+    public BufferView.FloatBufferView viewFloat(AudioBuffer buffer) {
+        return BufferView.FloatBufferView.of(buffer);
+    }
+
+    /**
+     * Returns a 64-bit double-precision {@link BufferView.DoubleBufferView}
+     * over a {@link DoubleAudioBuffer} with the same channel and frame
+     * dimensions as this pool.
+     *
+     * <p>Because the pool backs float storage directly, callers use this
+     * helper to allocate a companion {@code double} buffer for the 64-bit
+     * summing bus; pool re-use semantics for the returned view are the
+     * caller's responsibility.</p>
+     *
+     * @return a double view sized to match this pool
+     * @see com.benesquivelmusic.daw.sdk.audio.MixPrecision#DOUBLE_64
+     */
+    public BufferView.DoubleBufferView viewDouble() {
+        return BufferView.DoubleBufferView.of(new DoubleAudioBuffer(channels, frames));
+    }
 }

@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
+
 import java.util.Objects;
 import java.util.prefs.Preferences;
 
@@ -16,6 +18,7 @@ public final class SettingsModel {
     private static final String KEY_SAMPLE_RATE = "audio.sampleRate";
     private static final String KEY_BIT_DEPTH = "audio.bitDepth";
     private static final String KEY_BUFFER_SIZE = "audio.bufferSize";
+    private static final String KEY_MIX_PRECISION = "audio.mixPrecision";
     private static final String KEY_AUDIO_BACKEND = "audio.backend";
     private static final String KEY_AUDIO_INPUT_DEVICE = "audio.inputDevice";
     private static final String KEY_AUDIO_OUTPUT_DEVICE = "audio.outputDevice";
@@ -34,6 +37,15 @@ public final class SettingsModel {
     static final double DEFAULT_SAMPLE_RATE = 96_000.0;
     static final int DEFAULT_BIT_DEPTH = 24;
     static final int DEFAULT_BUFFER_SIZE = 256;
+    /**
+     * Default internal mix bus precision: 64-bit double precision, matching
+     * the summing-bus precision of every professional DAW. Users on very
+     * low-CPU machines may select {@link MixPrecision#FLOAT_32} to reduce
+     * mix-bus memory bandwidth; typical CPU impact of {@link MixPrecision#DOUBLE_64}
+     * is modest because plugin processing still runs at each plugin's
+     * preferred precision.
+     */
+    static final MixPrecision DEFAULT_MIX_PRECISION = MixPrecision.DOUBLE_64;
     static final int DEFAULT_AUTO_SAVE_INTERVAL_SECONDS = 120;
     static final double DEFAULT_TEMPO = 120.0;
     static final double DEFAULT_UI_SCALE = 1.0;
@@ -48,6 +60,7 @@ public final class SettingsModel {
     private double sampleRate;
     private int bitDepth;
     private int bufferSize;
+    private MixPrecision mixPrecision;
     private int autoSaveIntervalSeconds;
     private double defaultTempo;
     private double uiScale;
@@ -71,6 +84,14 @@ public final class SettingsModel {
         sampleRate = prefs.getDouble(KEY_SAMPLE_RATE, DEFAULT_SAMPLE_RATE);
         bitDepth = prefs.getInt(KEY_BIT_DEPTH, DEFAULT_BIT_DEPTH);
         bufferSize = prefs.getInt(KEY_BUFFER_SIZE, DEFAULT_BUFFER_SIZE);
+        String storedPrecision = prefs.get(KEY_MIX_PRECISION, DEFAULT_MIX_PRECISION.name());
+        MixPrecision resolved = DEFAULT_MIX_PRECISION;
+        try {
+            resolved = MixPrecision.valueOf(storedPrecision);
+        } catch (IllegalArgumentException ignored) {
+            // Unknown value persisted by a newer build; fall back to default.
+        }
+        mixPrecision = resolved;
         autoSaveIntervalSeconds = prefs.getInt(KEY_AUTO_SAVE_INTERVAL_SECONDS,
                 DEFAULT_AUTO_SAVE_INTERVAL_SECONDS);
         defaultTempo = prefs.getDouble(KEY_DEFAULT_TEMPO, DEFAULT_TEMPO);
@@ -135,6 +156,25 @@ public final class SettingsModel {
         }
         this.bufferSize = bufferSize;
         prefs.putInt(KEY_BUFFER_SIZE, bufferSize);
+    }
+
+    /**
+     * Returns the configured internal mix bus precision.
+     *
+     * @return the mix precision (never {@code null})
+     */
+    public MixPrecision getMixPrecision() {
+        return mixPrecision;
+    }
+
+    /**
+     * Sets the internal mix bus precision and persists the change.
+     *
+     * @param mixPrecision the new mix precision (must not be {@code null})
+     */
+    public void setMixPrecision(MixPrecision mixPrecision) {
+        this.mixPrecision = Objects.requireNonNull(mixPrecision, "mixPrecision must not be null");
+        prefs.put(KEY_MIX_PRECISION, mixPrecision.name());
     }
 
     /**
@@ -286,6 +326,7 @@ public final class SettingsModel {
         setSampleRate(DEFAULT_SAMPLE_RATE);
         setBitDepth(DEFAULT_BIT_DEPTH);
         setBufferSize(DEFAULT_BUFFER_SIZE);
+        setMixPrecision(DEFAULT_MIX_PRECISION);
         setAutoSaveIntervalSeconds(DEFAULT_AUTO_SAVE_INTERVAL_SECONDS);
         setDefaultTempo(DEFAULT_TEMPO);
         setUiScale(DEFAULT_UI_SCALE);
