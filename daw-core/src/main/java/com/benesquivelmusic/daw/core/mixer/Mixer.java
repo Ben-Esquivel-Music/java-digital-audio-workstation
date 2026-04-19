@@ -745,7 +745,7 @@ public final class Mixer {
         double[][] buf = this.returnBusScratchDouble;
         if (buf.length < channels || (buf.length > 0 && buf[0].length < frames)) {
             int rows = Math.max(channels, buf.length);
-            int cols = Math.max(frames, buf.length > 0 ? buf[0].length : 0);
+            int cols = Math.max(frames, (buf.length > 0 && buf[0].length > 0) ? buf[0].length : 0);
             buf = new double[rows][cols];
             this.returnBusScratchDouble = buf;
         }

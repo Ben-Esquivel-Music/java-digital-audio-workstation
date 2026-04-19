@@ -286,8 +286,10 @@ public final class LimiterProcessor implements AudioProcessor, GainReductionProv
         for (float[] buf : delayBuffers) {
             Arrays.fill(buf, 0.0f);
         }
-        for (double[] buf : delayBuffersDouble) {
-            Arrays.fill(buf, 0.0);
+        if (delayBuffersDouble != null) {
+            for (double[] buf : delayBuffersDouble) {
+                Arrays.fill(buf, 0.0);
+            }
         }
         for (TruePeakDetector detector : truePeakDetectors) {
             detector.reset();
