@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -399,5 +400,43 @@ class AudioClipTest {
 
         // Second half gets the original fade-out curve type
         assertThat(second.getFadeOutCurveType()).isEqualTo(FadeCurveType.EQUAL_POWER);
+    }
+
+    @Test
+    void sourceRateMetadataDefaultsToNull() {
+        AudioClip clip = new AudioClip("t", 0.0, 4.0, null);
+        assertThat(clip.getSourceRateMetadata()).isNull();
+    }
+
+    @Test
+    void sourceRateMetadataRoundTripsThroughSetter() {
+        AudioClip clip = new AudioClip("t", 0.0, 4.0, null);
+        SourceRateMetadata meta = SourceRateMetadata.of(44_100, 2);
+        clip.setSourceRateMetadata(meta);
+        assertThat(clip.getSourceRateMetadata()).isSameAs(meta);
+
+        clip.setSourceRateMetadata(null);
+        assertThat(clip.getSourceRateMetadata()).isNull();
+    }
+
+    @Test
+    void duplicatePropagatesSourceRateMetadata() {
+        AudioClip clip = new AudioClip("t", 0.0, 4.0, null);
+        SourceRateMetadata meta = SourceRateMetadata.of(96_000, 2);
+        clip.setSourceRateMetadata(meta);
+
+        AudioClip copy = clip.duplicate();
+        assertThat(copy.getSourceRateMetadata()).isEqualTo(meta);
+    }
+
+    @Test
+    void splitPropagatesSourceRateMetadataToBothHalves() {
+        AudioClip clip = new AudioClip("t", 0.0, 8.0, null);
+        SourceRateMetadata meta = SourceRateMetadata.of(48_000, 2);
+        clip.setSourceRateMetadata(meta);
+
+        AudioClip second = clip.splitAt(4.0);
+        assertThat(clip.getSourceRateMetadata()).isEqualTo(meta);
+        assertThat(second.getSourceRateMetadata()).isEqualTo(meta);
     }
 }

@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata;
 import com.benesquivelmusic.daw.sdk.audio.TimelineRegion;
 
 import java.util.Objects;
@@ -29,6 +30,7 @@ public final class AudioClip implements TimelineRegion {
     private double pitchShiftSemitones;
     private StretchQuality stretchQuality;
     private float[][] audioData;
+    private SourceRateMetadata sourceRateMetadata;
 
     /**
      * Creates a new audio clip.
@@ -292,6 +294,30 @@ public final class AudioClip implements TimelineRegion {
         this.audioData = audioData;
     }
 
+    /**
+     * Returns this clip's native sample-rate metadata, or {@code null}
+     * if the clip is treated as native-rate-equals-session-rate.
+     *
+     * <p>The render pipeline consults this value to decide whether to
+     * perform just-in-time sample-rate conversion (via
+     * {@link com.benesquivelmusic.daw.sdk.audio.SampleRateConverter})
+     * when the session rate differs from the clip's native rate.</p>
+     *
+     * @return the source-rate metadata, or {@code null} if absent
+     */
+    public SourceRateMetadata getSourceRateMetadata() {
+        return sourceRateMetadata;
+    }
+
+    /**
+     * Sets this clip's native sample-rate metadata.
+     *
+     * @param sourceRateMetadata the metadata, or {@code null} to clear it
+     */
+    public void setSourceRateMetadata(SourceRateMetadata sourceRateMetadata) {
+        this.sourceRateMetadata = sourceRateMetadata;
+    }
+
     /** Returns the end beat position (start + duration). */
     public double getEndBeat() {
         return startBeat + durationBeats;
@@ -345,6 +371,7 @@ public final class AudioClip implements TimelineRegion {
         copy.setPitchShiftSemitones(pitchShiftSemitones);
         copy.setStretchQuality(stretchQuality);
         copy.setAudioData(audioData);
+        copy.setSourceRateMetadata(sourceRateMetadata);
         return copy;
     }
 
@@ -380,6 +407,7 @@ public final class AudioClip implements TimelineRegion {
         second.setPitchShiftSemitones(pitchShiftSemitones);
         second.setStretchQuality(stretchQuality);
         second.setAudioData(audioData);
+        second.setSourceRateMetadata(sourceRateMetadata);
 
         // Truncate this clip
         this.durationBeats = splitBeat - startBeat;
