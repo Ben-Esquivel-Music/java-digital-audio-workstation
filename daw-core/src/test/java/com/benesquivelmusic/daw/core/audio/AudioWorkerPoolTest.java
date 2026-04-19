@@ -94,25 +94,49 @@ class AudioWorkerPoolTest {
 
     @Test
     void workerThreadsArePlatformDaemonMaxPriority() throws Exception {
-        try (AudioWorkerPool pool = new AudioWorkerPool(2)) {
-            Thread[] observed = new Thread[1];
-            Runnable[] tasks = { () -> observed[0] = Thread.currentThread(),
-                                 () -> { /* keeps coordinator busy so worker definitely runs the first */ } };
-            // Run many batches so we are statistically certain a worker thread
-            // (not the coordinator) picks up the first task at least once.
+        try (AudioWorkerPool pool = new AudioWorkerPool(3)) {
             Thread caller = Thread.currentThread();
-            boolean sawWorker = false;
-            for (int i = 0; i < 200 && !sawWorker; i++) {
-                pool.invokeAll(tasks, 2);
-                if (observed[0] != null && observed[0] != caller) {
-                    sawWorker = true;
-                    assertThat(observed[0].isDaemon()).isTrue();
-                    assertThat(observed[0].getPriority()).isEqualTo(Thread.MAX_PRIORITY);
-                    assertThat(observed[0].getName()).startsWith("daw-audio-worker-");
-                    assertThat(observed[0].isVirtual()).isFalse();
+            // Use a large batch of tasks that each take measurable time so the
+            // worker threads are guaranteed to claim some of them — the
+            // coordinator cannot race ahead and drain the queue before workers
+            // wake up.
+            final java.util.concurrent.ConcurrentHashMap<Thread, Boolean> seen =
+                    new java.util.concurrent.ConcurrentHashMap<>();
+            final int taskCount = 64;
+            Runnable[] tasks = new Runnable[taskCount];
+            for (int i = 0; i < taskCount; i++) {
+                tasks[i] = () -> {
+                    seen.putIfAbsent(Thread.currentThread(), Boolean.TRUE);
+                    // Busy-wait briefly so multiple workers get a chance to
+                    // claim tasks from the shared array.
+                    long end = System.nanoTime() + 100_000L; // 100µs
+                    while (System.nanoTime() < end) {
+                        Thread.onSpinWait();
+                    }
+                };
+            }
+
+            Thread workerThread = null;
+            // Retry a few batches to tolerate the rare case where the
+            // coordinator itself manages to drain every task.
+            for (int attempt = 0; attempt < 20 && workerThread == null; attempt++) {
+                seen.clear();
+                pool.invokeAll(tasks, taskCount);
+                for (Thread t : seen.keySet()) {
+                    if (t != caller) {
+                        workerThread = t;
+                        break;
+                    }
                 }
             }
-            assertThat(sawWorker).as("at least one batch ran on a worker thread").isTrue();
+
+            assertThat(workerThread)
+                    .as("at least one task must execute on a worker thread")
+                    .isNotNull();
+            assertThat(workerThread.isDaemon()).isTrue();
+            assertThat(workerThread.getPriority()).isEqualTo(Thread.MAX_PRIORITY);
+            assertThat(workerThread.getName()).startsWith("daw-audio-worker-");
+            assertThat(workerThread.isVirtual()).isFalse();
         }
     }
 
