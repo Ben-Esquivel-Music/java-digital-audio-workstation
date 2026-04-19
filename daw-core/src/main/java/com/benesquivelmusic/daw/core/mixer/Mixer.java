@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.mixer;
 
 import com.benesquivelmusic.daw.core.audio.PluginDelayCompensation;
+import com.benesquivelmusic.daw.core.automation.ReflectiveParameterBinder;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor;
 
@@ -33,6 +34,7 @@ public final class Mixer {
     private final List<MixerChannel> returnBuses = new ArrayList<>();
     private final MixerChannel masterChannel;
     private final PluginDelayCompensation delayCompensation = new PluginDelayCompensation();
+    private final ReflectiveParameterBinder reflectiveParameterBinder = new ReflectiveParameterBinder();
     private int preparedAudioChannels;
     private float[][] scratchBufferA;
     private float[][] scratchBufferB;
@@ -67,6 +69,7 @@ public final class Mixer {
         boolean removed = channels.remove(channel);
         if (removed) {
             channel.setOnEffectsChainChanged(null);
+            reflectiveParameterBinder.forget(channel);
             recalculateDelayCompensation();
         }
         return removed;
@@ -228,6 +231,7 @@ public final class Mixer {
         }
         masterChannel.prepareEffectsChain(audioChannels, blockSize);
         recalculateDelayCompensation();
+        rebindAllReflectiveParameterBindings();
     }
 
     /**
@@ -878,5 +882,36 @@ public final class Mixer {
             audioChannels = 2;
         }
         delayCompensation.recalculate(channels, returnBuses, audioChannels);
+        // Insert-chain mutations invalidate every channel's reflective parameter
+        // bindings. Rebinding here keeps the real-time apply() path allocation-free
+        // without forcing every call site that mutates inserts to remember.
+        rebindAllReflectiveParameterBindings();
+    }
+
+    /**
+     * Returns the mixer's shared {@link ReflectiveParameterBinder}, which
+     * maps automation lanes to {@code @ProcessorParam}-annotated setters on
+     * insert-slot processors.
+     *
+     * <p>Host code may use the binder to enumerate automatable plugin
+     * parameters per channel ({@link ReflectiveParameterBinder#getAutomatablePluginParameters(MixerChannel)})
+     * and to apply automation on the audio thread
+     * ({@link ReflectiveParameterBinder#apply(MixerChannel,
+     * com.benesquivelmusic.daw.core.automation.AutomationData, double)}).</p>
+     *
+     * @return the binder; never {@code null}
+     */
+    public ReflectiveParameterBinder getReflectiveParameterBinder() {
+        return reflectiveParameterBinder;
+    }
+
+    private void rebindAllReflectiveParameterBindings() {
+        for (MixerChannel channel : channels) {
+            reflectiveParameterBinder.rebind(channel);
+        }
+        for (MixerChannel returnBus : returnBuses) {
+            reflectiveParameterBinder.rebind(returnBus);
+        }
+        reflectiveParameterBinder.rebind(masterChannel);
     }
 }

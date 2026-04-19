@@ -204,7 +204,7 @@ public final class RenderPipeline {
 
             // Apply automation lane values to mixer channel parameters
             List<MixerChannel> mixerChannels = mixer.getChannels();
-            applyAutomation(tracks, trackCount, mixerChannels, transport);
+            applyAutomation(tracks, trackCount, mixerChannels, transport, mixer);
 
             // Warn once if the mixer has more return buses than pre-allocated
             if (!returnBusCapWarningLogged
@@ -472,7 +472,8 @@ public final class RenderPipeline {
 
     @RealTimeSafe
     private void applyAutomation(List<Track> tracks, int trackCount,
-                                 List<MixerChannel> channels, Transport transport) {
+                                 List<MixerChannel> channels, Transport transport,
+                                 Mixer mixer) {
         int channelCount = channels.size();
         double currentBeat = transport.getPositionInBeats();
 
@@ -509,6 +510,11 @@ public final class RenderPipeline {
             }
 
             applyPluginParameterAutomation(automation, channel, currentBeat);
+
+            // Apply reflective @ProcessorParam automation for built-in DSP inserts.
+            // Bindings are pre-computed in Mixer.prepareForPlayback (and re-computed
+            // when inserts change), so this call is allocation-free on the audio thread.
+            mixer.getReflectiveParameterBinder().apply(channel, automation, currentBeat);
         }
     }
 
