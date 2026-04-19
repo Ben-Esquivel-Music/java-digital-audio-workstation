@@ -7,7 +7,6 @@ import com.benesquivelmusic.daw.core.plugin.PluginLoadException;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.undo.UndoHistoryListener;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
-import com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
@@ -208,8 +207,10 @@ public final class InsertEffectRack extends VBox {
 
     /**
      * Sets the mixer reference used to populate sidechain source dropdowns.
-     * When set, insert slots containing a {@link SidechainAwareProcessor}
-     * show a sidechain source selector listing available channels and buses.
+     * When set, insert slots whose processor reports
+     * {@link com.benesquivelmusic.daw.core.plugin.PluginCapabilities#providesSidechainInput()
+     * providesSidechainInput} show a sidechain source selector listing
+     * available channels and buses.
      *
      * @param mixer the mixer, or {@code null} to disable sidechain UI
      */
@@ -336,8 +337,9 @@ public final class InsertEffectRack extends VBox {
 
         row.getChildren().addAll(bypassBtn, nameLabel);
 
-        // Add sidechain source selector for SidechainAwareProcessor inserts
-        if (mixer != null && slot.getProcessor() instanceof SidechainAwareProcessor) {
+        // Add sidechain source selector for processors whose capabilities
+        // report sidechain input support (reflection-based introspection).
+        if (mixer != null && slot.getCapabilities().providesSidechainInput()) {
             VBox wrapper = new VBox(1);
             wrapper.getChildren().addAll(row, buildSidechainSelector(slot));
             return wrapper;
