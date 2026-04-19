@@ -399,6 +399,109 @@ class ProjectDeserializerTest {
     }
 
     @Test
+    void shouldRoundTripDomedCeiling() throws IOException {
+        DawProject original = new DawProject("Test", AudioFormat.CD_QUALITY);
+        original.setRoomConfiguration(new RoomConfiguration(
+                new RoomDimensions(10, 10, new CeilingShape.Domed(4.0, 9.0)),
+                WallMaterial.WOOD));
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        CeilingShape ceiling = restored.getRoomConfiguration().getDimensions().ceiling();
+        assertThat(ceiling).isInstanceOf(CeilingShape.Domed.class);
+        CeilingShape.Domed d = (CeilingShape.Domed) ceiling;
+        assertThat(d.baseHeight()).isEqualTo(4.0);
+        assertThat(d.apexHeight()).isEqualTo(9.0);
+    }
+
+    @Test
+    void shouldRoundTripBarrelVaultCeiling() throws IOException {
+        DawProject original = new DawProject("Test", AudioFormat.CD_QUALITY);
+        original.setRoomConfiguration(new RoomConfiguration(
+                new RoomDimensions(10, 20,
+                        new CeilingShape.BarrelVault(4.0, 8.0, CeilingShape.Axis.Y)),
+                WallMaterial.WOOD));
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        CeilingShape ceiling = restored.getRoomConfiguration().getDimensions().ceiling();
+        assertThat(ceiling).isInstanceOf(CeilingShape.BarrelVault.class);
+        CeilingShape.BarrelVault v = (CeilingShape.BarrelVault) ceiling;
+        assertThat(v.baseHeight()).isEqualTo(4.0);
+        assertThat(v.apexHeight()).isEqualTo(8.0);
+        assertThat(v.axis()).isEqualTo(CeilingShape.Axis.Y);
+    }
+
+    @Test
+    void shouldRoundTripCathedralCeiling() throws IOException {
+        DawProject original = new DawProject("Test", AudioFormat.CD_QUALITY);
+        original.setRoomConfiguration(new RoomConfiguration(
+                new RoomDimensions(20, 10,
+                        new CeilingShape.Cathedral(3.0, 7.0, CeilingShape.Axis.X)),
+                WallMaterial.WOOD));
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        CeilingShape ceiling = restored.getRoomConfiguration().getDimensions().ceiling();
+        assertThat(ceiling).isInstanceOf(CeilingShape.Cathedral.class);
+        CeilingShape.Cathedral c = (CeilingShape.Cathedral) ceiling;
+        assertThat(c.eaveHeight()).isEqualTo(3.0);
+        assertThat(c.ridgeHeight()).isEqualTo(7.0);
+        assertThat(c.ridgeAxis()).isEqualTo(CeilingShape.Axis.X);
+    }
+
+    @Test
+    void shouldRoundTripAngledCeiling() throws IOException {
+        DawProject original = new DawProject("Test", AudioFormat.CD_QUALITY);
+        original.setRoomConfiguration(new RoomConfiguration(
+                new RoomDimensions(10, 8,
+                        new CeilingShape.Angled(2.5, 4.5, CeilingShape.Axis.Y)),
+                WallMaterial.WOOD));
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        CeilingShape ceiling = restored.getRoomConfiguration().getDimensions().ceiling();
+        assertThat(ceiling).isInstanceOf(CeilingShape.Angled.class);
+        CeilingShape.Angled a = (CeilingShape.Angled) ceiling;
+        assertThat(a.lowHeight()).isEqualTo(2.5);
+        assertThat(a.highHeight()).isEqualTo(4.5);
+        assertThat(a.slopeAxis()).isEqualTo(CeilingShape.Axis.Y);
+    }
+
+    @Test
+    void shouldLoadLegacyRoomConfigurationWithoutCeilingElement() throws IOException {
+        // Project file written before CeilingShape support: only the
+        // scalar height attribute on <room-configuration>. Must load
+        // successfully as a flat ceiling for backward compatibility.
+        String legacyXml = """
+                <?xml version="1.0" encoding="UTF-8" standalone="no"?>
+                <daw-project version="1">
+                    <name>Legacy</name>
+                    <audio-format sample-rate="44100.0" channels="2" bit-depth="16" buffer-size="512"/>
+                    <transport tempo="120.0" beats-per-measure="4" beat-unit="4" loop-enabled="false" loop-start="0.0" loop-end="0.0" playhead="0.0"/>
+                    <tracks/>
+                    <mixer/>
+                    <markers/>
+                    <track-groups/>
+                    <room-configuration width="10.0" length="8.0" height="3.0" wall-material="DRYWALL"/>
+                </daw-project>
+                """;
+
+        DawProject restored = deserializer.deserialize(legacyXml);
+
+        RoomConfiguration rc = restored.getRoomConfiguration();
+        assertThat(rc).isNotNull();
+        CeilingShape ceiling = rc.getDimensions().ceiling();
+        assertThat(ceiling).isInstanceOf(CeilingShape.Flat.class);
+        assertThat(((CeilingShape.Flat) ceiling).height()).isEqualTo(3.0);
+        assertThat(rc.getDimensions().height()).isEqualTo(3.0);
+    }
+
+    @Test
     void shouldRoundTripMidiInputDeviceName() throws IOException {
         DawProject original = new DawProject("Test", AudioFormat.CD_QUALITY);
         Track midi = original.createMidiTrack("Keys");

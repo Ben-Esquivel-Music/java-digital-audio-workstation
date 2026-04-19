@@ -238,6 +238,77 @@ class ProjectSerializerTest {
     }
 
     @Test
+    void shouldSerializeFlatCeilingExplicitly() throws IOException {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        project.setRoomConfiguration(new RoomConfiguration(
+                new RoomDimensions(10, 8, 3), WallMaterial.DRYWALL));
+
+        String xml = new ProjectSerializer().serialize(project);
+
+        assertThat(xml).contains("<ceiling");
+        assertThat(xml).contains("kind=\"FLAT\"");
+    }
+
+    @Test
+    void shouldSerializeDomedCeiling() throws IOException {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        project.setRoomConfiguration(new RoomConfiguration(
+                new RoomDimensions(10, 10, new CeilingShape.Domed(4.0, 9.0)),
+                WallMaterial.WOOD));
+
+        String xml = new ProjectSerializer().serialize(project);
+
+        assertThat(xml).contains("kind=\"DOMED\"");
+        assertThat(xml).contains("base-height=\"4.0\"");
+        assertThat(xml).contains("apex-height=\"9.0\"");
+    }
+
+    @Test
+    void shouldSerializeBarrelVaultCeiling() throws IOException {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        project.setRoomConfiguration(new RoomConfiguration(
+                new RoomDimensions(10, 20,
+                        new CeilingShape.BarrelVault(4.0, 8.0, CeilingShape.Axis.Y)),
+                WallMaterial.WOOD));
+
+        String xml = new ProjectSerializer().serialize(project);
+
+        assertThat(xml).contains("kind=\"BARREL_VAULT\"");
+        assertThat(xml).contains("axis=\"Y\"");
+    }
+
+    @Test
+    void shouldSerializeCathedralCeiling() throws IOException {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        project.setRoomConfiguration(new RoomConfiguration(
+                new RoomDimensions(20, 10,
+                        new CeilingShape.Cathedral(3.0, 7.0, CeilingShape.Axis.X)),
+                WallMaterial.WOOD));
+
+        String xml = new ProjectSerializer().serialize(project);
+
+        assertThat(xml).contains("kind=\"CATHEDRAL\"");
+        assertThat(xml).contains("eave-height=\"3.0\"");
+        assertThat(xml).contains("ridge-height=\"7.0\"");
+        assertThat(xml).contains("axis=\"X\"");
+    }
+
+    @Test
+    void shouldSerializeAngledCeiling() throws IOException {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        project.setRoomConfiguration(new RoomConfiguration(
+                new RoomDimensions(10, 8,
+                        new CeilingShape.Angled(2.5, 4.5, CeilingShape.Axis.X)),
+                WallMaterial.WOOD));
+
+        String xml = new ProjectSerializer().serialize(project);
+
+        assertThat(xml).contains("kind=\"ANGLED\"");
+        assertThat(xml).contains("low-height=\"2.5\"");
+        assertThat(xml).contains("high-height=\"4.5\"");
+    }
+
+    @Test
     void shouldSerializeMidiInputDeviceName() throws IOException {
         DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
         Track midi = project.createMidiTrack("Keys");

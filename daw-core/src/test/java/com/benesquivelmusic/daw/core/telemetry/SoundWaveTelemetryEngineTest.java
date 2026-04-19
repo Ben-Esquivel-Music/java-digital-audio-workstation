@@ -277,4 +277,148 @@ class SoundWaveTelemetryEngineTest {
 
         assertThat(data.wallMaterial()).isEqualTo(WallMaterial.CONCRETE);
     }
+
+    // ── Ceiling shape support ────────────────────────────────────────
+
+    @Test
+    void shouldComputeManyFacetedReflectionsForDomedCeiling() {
+        RoomDimensions dims = new RoomDimensions(10, 10,
+                new CeilingShape.Domed(3.0, 7.0));
+        SoundSource source = new SoundSource("Src", new Position3D(5, 5, 1), 80);
+        MicrophonePlacement mic = new MicrophonePlacement(
+                "Mic", new Position3D(3, 3, 1.5), 0, 0);
+
+        List<SoundWavePath> reflections = SoundWaveTelemetryEngine.computeFirstOrderReflections(
+                source, mic, dims, WallMaterial.DRYWALL);
+
+        // 5 flat surfaces + (2 * N * N) ceiling facets where N = CURVED_CEILING_FACETS
+        int expectedCeilingFacets = 2 * SoundWaveTelemetryEngine.CURVED_CEILING_FACETS
+                * SoundWaveTelemetryEngine.CURVED_CEILING_FACETS;
+        assertThat(reflections).hasSize(5 + expectedCeilingFacets);
+        for (SoundWavePath path : reflections) {
+            assertThat(path.reflected()).isTrue();
+            assertThat(path.totalDistance()).isGreaterThan(0);
+        }
+    }
+
+    @Test
+    void shouldProduceCathedralReflectionsForFourRakeFacets() {
+        RoomDimensions dims = new RoomDimensions(10, 12,
+                new CeilingShape.Cathedral(3.0, 7.0, CeilingShape.Axis.X));
+        SoundSource source = new SoundSource("Src", new Position3D(5, 5, 1), 80);
+        MicrophonePlacement mic = new MicrophonePlacement(
+                "Mic", new Position3D(4, 4, 1.5), 0, 0);
+
+        List<SoundWavePath> reflections = SoundWaveTelemetryEngine.computeFirstOrderReflections(
+                source, mic, dims, WallMaterial.DRYWALL);
+
+        // 5 flat surfaces + 4 rake-plane facets
+        assertThat(reflections).hasSize(5 + 4);
+    }
+
+    @Test
+    void shouldEmitFocusSuggestionForMicUnderDomeApex() {
+        CeilingShape.Domed dome = new CeilingShape.Domed(4.0, 10.0);
+        RoomDimensions dims = new RoomDimensions(10, 10, dome);
+        RoomConfiguration config = new RoomConfiguration(dims, WallMaterial.WOOD);
+        config.addSoundSource(new SoundSource("Src", new Position3D(2, 2, 1), 80));
+        // Place the mic at the dome's geometric focus
+        Position3D focus = dome.focus(10, 10);
+        config.addMicrophone(new MicrophonePlacement("Mic", focus, 0, 0));
+
+        RoomTelemetryData data = SoundWaveTelemetryEngine.compute(config);
+
+        assertThat(data.suggestions()).anySatisfy(s -> {
+            assertThat(s).isInstanceOf(TelemetrySuggestion.AdjustMicPosition.class);
+            assertThat(((TelemetrySuggestion.AdjustMicPosition) s).reason())
+                    .contains("whispering-gallery");
+        });
+    }
+
+    @Test
+    void shouldNotEmitFocusSuggestionWhenMicFarFromDomeFocus() {
+        CeilingShape.Domed dome = new CeilingShape.Domed(4.0, 10.0);
+        RoomDimensions dims = new RoomDimensions(10, 10, dome);
+        RoomConfiguration config = new RoomConfiguration(dims, WallMaterial.WOOD);
+        config.addSoundSource(new SoundSource("Src", new Position3D(2, 2, 1), 80));
+        config.addMicrophone(new MicrophonePlacement("Mic", new Position3D(1.5, 1.5, 1.2), 0, 0));
+
+        RoomTelemetryData data = SoundWaveTelemetryEngine.compute(config);
+
+        assertThat(data.suggestions()).noneSatisfy(s ->
+                assertThat(s).isInstanceOfSatisfying(TelemetrySuggestion.AdjustMicPosition.class,
+                        mp -> assertThat(mp.reason()).contains("whispering-gallery")));
+    }
+
+    @Test
+    void shouldEmitBarrelVaultFocusSuggestionForMicOnFocalLine() {
+        CeilingShape.BarrelVault vault =
+                new CeilingShape.BarrelVault(4.0, 10.0, CeilingShape.Axis.X);
+        RoomDimensions dims = new RoomDimensions(10, 20, vault);
+        RoomConfiguration config = new RoomConfiguration(dims, WallMaterial.WOOD);
+        config.addSoundSource(new SoundSource("Src", new Position3D(1, 1, 1), 80));
+        // Focal line sits along x at y=l/2=10, z=(4+10)/2=7
+        config.addMicrophone(new MicrophonePlacement(
+                "Mic", new Position3D(5, 10, 7), 0, 0));
+
+        RoomTelemetryData data = SoundWaveTelemetryEngine.compute(config);
+
+        assertThat(data.suggestions()).anySatisfy(s ->
+                assertThat(s).isInstanceOfSatisfying(TelemetrySuggestion.AdjustMicPosition.class,
+                        mp -> assertThat(mp.reason()).contains("barrel-vault")));
+    }
+
+    @Test
+    void shouldEmitCathedralFlutterSuggestionForRidgeAlignedPair() {
+        CeilingShape.Cathedral c =
+                new CeilingShape.Cathedral(3.0, 8.0, CeilingShape.Axis.X);
+        RoomDimensions dims = new RoomDimensions(20, 10, c);
+        RoomConfiguration config = new RoomConfiguration(dims, WallMaterial.WOOD);
+        // Source and mic lie along the X axis (aligned with ridge direction)
+        config.addSoundSource(new SoundSource("Src", new Position3D(2, 5, 1.5), 80));
+        config.addMicrophone(new MicrophonePlacement(
+                "Mic", new Position3D(18, 5, 1.5), 0, 0));
+
+        RoomTelemetryData data = SoundWaveTelemetryEngine.compute(config);
+
+        assertThat(data.suggestions()).anySatisfy(s ->
+                assertThat(s).isInstanceOfSatisfying(TelemetrySuggestion.AdjustMicPosition.class,
+                        mp -> assertThat(mp.reason()).contains("cathedral ridge axis")));
+    }
+
+    @Test
+    void shouldNotEmitCathedralFlutterSuggestionForPerpendicularPair() {
+        CeilingShape.Cathedral c =
+                new CeilingShape.Cathedral(3.0, 8.0, CeilingShape.Axis.X);
+        RoomDimensions dims = new RoomDimensions(20, 10, c);
+        RoomConfiguration config = new RoomConfiguration(dims, WallMaterial.WOOD);
+        // Source → mic line runs along Y, perpendicular to ridge (X)
+        config.addSoundSource(new SoundSource("Src", new Position3D(10, 2, 1.5), 80));
+        config.addMicrophone(new MicrophonePlacement(
+                "Mic", new Position3D(10, 8, 1.5), 0, 0));
+
+        RoomTelemetryData data = SoundWaveTelemetryEngine.compute(config);
+
+        assertThat(data.suggestions()).noneSatisfy(s ->
+                assertThat(s).isInstanceOfSatisfying(TelemetrySuggestion.AdjustMicPosition.class,
+                        mp -> assertThat(mp.reason()).contains("cathedral ridge axis")));
+    }
+
+    @Test
+    void rt60ShouldReflectDomedVolumeNotBoundingBox() {
+        // Same footprint and max height, but one has a dome (smaller volume
+        // than the bounding box) and one is flat (uses the full box volume).
+        RoomDimensions flat = new RoomDimensions(10, 10,
+                new CeilingShape.Flat(10.0));
+        RoomDimensions domed = new RoomDimensions(10, 10,
+                new CeilingShape.Domed(3.0, 10.0));
+
+        double rt60Flat = SoundWaveTelemetryEngine.estimateRt60(flat, WallMaterial.CONCRETE);
+        double rt60Domed = SoundWaveTelemetryEngine.estimateRt60(domed, WallMaterial.CONCRETE);
+
+        assertThat(rt60Domed).isNotEqualTo(rt60Flat);
+        // Dome has less volume than the bounding box and smaller wall area,
+        // so it must yield a shorter RT60.
+        assertThat(rt60Domed).isLessThan(rt60Flat);
+    }
 }
