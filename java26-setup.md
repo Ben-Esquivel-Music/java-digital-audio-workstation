@@ -20,11 +20,11 @@ This is the expected pattern for headless Linux CI because JavaFX UI tests still
 
 ### Optional stability flags
 
-If you still see rendering/runtime issues in CI, pass these JVM properties to test runs:
+If you still see rendering/runtime issues in CI, pass the properties as system properties on the Maven command line. Do **not** use `-DargLine="..."` because that overrides the `argLine` already configured in the POM (which includes required flags like `--enable-native-access=ALL-UNNAMED` and `-Djava.library.path`).
 
 ```bash
-mvn -B test \
-  -DargLine="-Dglass.platform=gtk -Dprism.order=sw"
+xvfb-run --auto-servernum mvn -B clean verify \
+  -Dglass.platform=gtk -Dprism.order=sw
 ```
 
 ### Important note
