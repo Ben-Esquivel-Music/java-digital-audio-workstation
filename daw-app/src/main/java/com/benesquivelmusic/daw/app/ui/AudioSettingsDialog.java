@@ -433,6 +433,13 @@ public final class AudioSettingsDialog extends Dialog<Void> {
             return;
         }
 
+        // Apply mix precision directly — it does not require an engine
+        // restart so it is applied outside the Request/applyConfiguration
+        // path which stops and restarts the audio stream.
+        if (mixPrecision != null) {
+            controller.applyMixPrecision(mixPrecision);
+        }
+
         AudioEngineController.Request request = new AudioEngineController.Request(
                 backend == null ? controller.getActiveBackendName() : backend,
                 model.getAudioInputDevice(),

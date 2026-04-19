@@ -161,6 +161,12 @@ public final class MainController {
         }
         audioEngineController = new DefaultAudioEngineController(audioEngine, this::updateProjectInfo);
 
+        // Apply the persisted mix precision from user preferences to the
+        // project's mixer so that a previously-saved FLOAT_32 choice is
+        // honoured on restart rather than silently reverting to the default.
+        SettingsModel startupSettings = new SettingsModel(Preferences.userNodeForPackage(SettingsModel.class));
+        project.getMixer().setMixPrecision(startupSettings.getMixPrecision());
+
         CheckpointManager checkpointManager = new CheckpointManager(AutoSaveConfig.DEFAULT);
         Preferences prefs = Preferences.userNodeForPackage(MainController.class);
         RecentProjectsStore recentProjectsStore = new RecentProjectsStore(prefs);

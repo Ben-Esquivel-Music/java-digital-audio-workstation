@@ -76,6 +76,14 @@ public final class Mixer {
      */
     private double[][] mixAccumulator = new double[0][0];
 
+    /**
+     * Pre-allocated 64-bit scratch buffer used when processing return bus
+     * insert effects via {@code EffectsChain.processDouble()} under the
+     * {@link MixPrecision#DOUBLE_64} path. Lazily grown on the first
+     * block when the double bus is active.
+     */
+    private double[][] returnBusScratchDouble = new double[0][0];
+
     /** Creates a new mixer with an empty channel list, a default master channel, and a reverb return aux bus. */
     public Mixer() {
         this.masterChannel = new MixerChannel("Master");
@@ -633,7 +641,28 @@ public final class Mixer {
 
             // Apply return bus insert effects
             if (!returnBus.getEffectsChain().isEmpty()) {
-                returnBus.getEffectsChain().process(returnBuf, returnBuf, numFrames);
+                if (useDouble) {
+                    // Process return bus effects in double precision: widen
+                    // float→double, apply effects via processDouble, and let
+                    // the accumulation loop below consume the double result.
+                    double[][] dblBuf = ensureReturnBusScratchDouble(
+                            returnBuf.length, numFrames);
+                    for (int ch = 0; ch < returnBuf.length; ch++) {
+                        for (int f = 0; f < numFrames; f++) {
+                            dblBuf[ch][f] = returnBuf[ch][f];
+                        }
+                    }
+                    returnBus.getEffectsChain().processDouble(dblBuf, dblBuf, numFrames);
+                    // Narrow back to the float return buffer for PDC and
+                    // any downstream consumer that reads returnBuffers[r].
+                    for (int ch = 0; ch < returnBuf.length; ch++) {
+                        for (int f = 0; f < numFrames; f++) {
+                            returnBuf[ch][f] = (float) dblBuf[ch][f];
+                        }
+                    }
+                } else {
+                    returnBus.getEffectsChain().process(returnBuf, returnBuf, numFrames);
+                }
             }
 
             // Apply delay compensation for the return bus
@@ -706,6 +735,21 @@ public final class Mixer {
             this.mixAccumulator = acc;
         }
         return acc;
+    }
+
+    /**
+     * Ensures the return-bus double scratch buffer has at least
+     * {@code channels} rows and {@code frames} samples per row.
+     */
+    private double[][] ensureReturnBusScratchDouble(int channels, int frames) {
+        double[][] buf = this.returnBusScratchDouble;
+        if (buf.length < channels || (buf.length > 0 && buf[0].length < frames)) {
+            int rows = Math.max(channels, buf.length);
+            int cols = Math.max(frames, buf.length > 0 ? buf[0].length : 0);
+            buf = new double[rows][cols];
+            this.returnBusScratchDouble = buf;
+        }
+        return buf;
     }
 
     /**

@@ -6,8 +6,10 @@ import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.javasound.JavaSoundBackend;
 import com.benesquivelmusic.daw.core.audio.performance.XrunDetector;
 import com.benesquivelmusic.daw.core.audio.portaudio.PortAudioBackend;
+import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
+import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.XrunEvent;
 
@@ -175,6 +177,16 @@ final class DefaultAudioEngineController implements AudioEngineController {
     @Override
     public void playTestTone(String outputDeviceName) {
         tonePlayer.play(outputDeviceName == null ? "" : outputDeviceName);
+    }
+
+    @Override
+    public void applyMixPrecision(MixPrecision precision) {
+        Objects.requireNonNull(precision, "precision must not be null");
+        Mixer mixer = audioEngine.getMixer();
+        if (mixer != null) {
+            mixer.setMixPrecision(precision);
+            LOG.info("Mix precision set to " + precision);
+        }
     }
 
     @Override

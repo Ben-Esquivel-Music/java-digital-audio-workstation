@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.BufferSize;
+import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 import com.benesquivelmusic.daw.sdk.audio.XrunEvent;
 
@@ -102,6 +103,20 @@ public interface AudioEngineController {
      * @throws RuntimeException if the configuration cannot be applied
      */
     void applyConfiguration(Request request);
+
+    /**
+     * Applies the given {@link MixPrecision} to the live mixer. The change
+     * takes effect on the next {@code Mixer.mixDown()} invocation; it does
+     * not require stopping or restarting the audio stream.
+     *
+     * <p>The default implementation is a no-op, which is safe for test
+     * doubles that do not have a real engine.</p>
+     *
+     * @param precision the new mix precision (must not be {@code null})
+     */
+    default void applyMixPrecision(MixPrecision precision) {
+        // no-op for test stubs
+    }
 
     /**
      * Plays a short 440 Hz sine tone to verify audio output. Non-blocking —
