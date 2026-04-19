@@ -117,6 +117,10 @@ public final class RoomTelemetryDisplay extends Region {
     private double cachedCenterY;
     private double cachedScale;
 
+    // Cached ceiling overlay (regenerated only when telemetry data changes)
+    private javafx.scene.image.WritableImage cachedCeilingOverlay;
+    private RoomDimensions cachedCeilingDims;
+
     /**
      * Creates a new room telemetry display.
      */
@@ -145,6 +149,8 @@ public final class RoomTelemetryDisplay extends Region {
         ripples.clear();
         animationTime = 0;
         timeSinceLastRipple = 0;
+        cachedCeilingOverlay = null;
+        cachedCeilingDims = null;
 
         if (data != null) {
             for (SoundWavePath path : data.wavePaths()) {
@@ -449,6 +455,9 @@ public final class RoomTelemetryDisplay extends Region {
 
         // ── Draw room statistics panel ──
         drawRoomStats(gc);
+
+        // ── Draw ceiling-shape overlay (iso-contour + side silhouette) ──
+        drawCeilingOverlay(gc, w, h, roomW, roomL);
 
         // ── Draw color legend ──
         drawLegend(gc, w);
@@ -1292,6 +1301,104 @@ public final class RoomTelemetryDisplay extends Region {
     protected void layoutChildren() {
         super.layoutChildren();
         render();
+    }
+
+    // ── Ceiling shape overlay (iso-contour + side silhouette) ──────────
+    //
+    // The contour grid and silhouette only depend on the room dimensions and
+    // ceiling shape, which are static between telemetry updates. We cache
+    // the overlay into a WritableImage and blit it each frame, regenerating
+    // only when the room dimensions change.
+
+    private void drawCeilingOverlay(GraphicsContext gc, double w, double h,
+                                    double roomW, double roomL) {
+        if (telemetryData == null) return;
+        RoomDimensions dims = telemetryData.roomDimensions();
+        CeilingShape ceiling = dims.ceiling();
+        if (ceiling instanceof CeilingShape.Flat) {
+            return; // nothing interesting to show
+        }
+
+        double panelSize = 140;
+        double margin = 12;
+        double x0 = w - panelSize - margin;
+        double y0 = margin;
+
+        // Regenerate the cached overlay only when needed.
+        if (cachedCeilingOverlay == null || !dims.equals(cachedCeilingDims)) {
+            cachedCeilingOverlay = renderCeilingOverlayImage(ceiling, roomW, roomL, panelSize);
+            cachedCeilingDims = dims;
+        }
+
+        gc.drawImage(cachedCeilingOverlay, x0, y0);
+    }
+
+    private javafx.scene.image.WritableImage renderCeilingOverlayImage(
+            CeilingShape ceiling, double roomW, double roomL, double panelSize) {
+
+        int size = (int) Math.ceil(panelSize);
+        Canvas offscreen = new Canvas(size, size);
+        GraphicsContext gc = offscreen.getGraphicsContext2D();
+
+        // Background card
+        gc.setFill(Color.rgb(10, 15, 25, 0.72));
+        gc.fillRect(0, 0, panelSize, panelSize);
+        gc.setStroke(Color.rgb(90, 110, 160, 0.8));
+        gc.setLineWidth(1.0);
+        gc.strokeRect(0, 0, panelSize, panelSize);
+
+        gc.setFill(Color.rgb(200, 210, 230));
+        gc.setFont(Font.font("System", 11));
+        gc.setTextAlign(TextAlignment.LEFT);
+        gc.fillText("Ceiling: " + ceiling.kind(), 6, 14);
+
+        // Iso-contour heatmap (top half)
+        double contourTop = 20;
+        double contourHeight = (panelSize - 22) * 0.55;
+        double contourWidth = panelSize - 12;
+        int cells = 20;
+        double minZ = ceiling.minHeight();
+        double maxZ = ceiling.maxHeight();
+        double range = Math.max(1e-9, maxZ - minZ);
+        for (int iy = 0; iy < cells; iy++) {
+            for (int ix = 0; ix < cells; ix++) {
+                double rx = roomW * (ix + 0.5) / cells;
+                double ry = roomL * (iy + 0.5) / cells;
+                double z = ceiling.heightAt(rx, ry, roomW, roomL);
+                double t = (z - minZ) / range;
+                Color col = Color.color(0.2 + 0.7 * t, 0.3 + 0.6 * t, 0.6 - 0.2 * t);
+                gc.setFill(col);
+                double cx = 6 + contourWidth * ix / cells;
+                double cy = contourTop + contourHeight * iy / cells;
+                gc.fillRect(cx, cy, contourWidth / cells + 0.5, contourHeight / cells + 0.5);
+            }
+        }
+
+        // Side-view silhouette (bottom half): X-axis cross-section at y = length/2
+        double sideTop = contourTop + contourHeight + 4;
+        double sideHeight = (panelSize - 22) * 0.35;
+        gc.setStroke(Color.rgb(160, 200, 255));
+        gc.setLineWidth(1.2);
+        int samples = 40;
+        double prevPx = Double.NaN, prevPy = Double.NaN;
+        for (int i = 0; i <= samples; i++) {
+            double rx = roomW * i / samples;
+            double z = ceiling.heightAt(rx, roomL / 2.0, roomW, roomL);
+            double px = 6 + contourWidth * i / samples;
+            double py = sideTop + sideHeight - sideHeight * (z / maxZ);
+            if (!Double.isNaN(prevPx)) {
+                gc.strokeLine(prevPx, prevPy, px, py);
+            }
+            prevPx = px;
+            prevPy = py;
+        }
+        // Floor line
+        gc.setStroke(Color.rgb(90, 110, 160, 0.6));
+        gc.strokeLine(6, sideTop + sideHeight, 6 + contourWidth, sideTop + sideHeight);
+
+        javafx.scene.SnapshotParameters params = new javafx.scene.SnapshotParameters();
+        params.setFill(Color.TRANSPARENT);
+        return offscreen.snapshot(params, null);
     }
 
     // ── Inner data carrier ─────────────────────────────────────────

@@ -858,7 +858,8 @@ public final class ProjectDeserializer {
             material = WallMaterial.DRYWALL;
         }
 
-        RoomDimensions dimensions = new RoomDimensions(width, length, height);
+        CeilingShape ceiling = parseCeilingShape(elem, height);
+        RoomDimensions dimensions = new RoomDimensions(width, length, ceiling);
         RoomConfiguration config = new RoomConfiguration(dimensions, material);
 
         for (Element sourceElem : getDirectChildElements(elem, "sound-source")) {
@@ -898,6 +899,59 @@ public final class ProjectDeserializer {
         }
 
         project.setRoomConfiguration(config);
+    }
+
+    private CeilingShape parseCeilingShape(Element configElem, double legacyHeight) {
+        List<Element> ceilings = getDirectChildElements(configElem, "ceiling");
+        if (ceilings.isEmpty()) {
+            // Backward compatibility: older project files store only the
+            // scalar height attribute and imply a flat ceiling.
+            return new CeilingShape.Flat(legacyHeight);
+        }
+        Element ceiling = ceilings.getFirst();
+        String kindStr = ceiling.getAttribute("kind");
+        CeilingShape.Kind kind;
+        try {
+            kind = CeilingShape.Kind.valueOf(kindStr);
+        } catch (IllegalArgumentException | NullPointerException e) {
+            return new CeilingShape.Flat(legacyHeight);
+        }
+        try {
+            return switch (kind) {
+                case FLAT -> new CeilingShape.Flat(
+                        parseDoubleAttr(ceiling, "height", legacyHeight));
+                case DOMED -> new CeilingShape.Domed(
+                        parseDoubleAttr(ceiling, "base-height", legacyHeight),
+                        parseDoubleAttr(ceiling, "apex-height", legacyHeight));
+                case BARREL_VAULT -> new CeilingShape.BarrelVault(
+                        parseDoubleAttr(ceiling, "base-height", legacyHeight),
+                        parseDoubleAttr(ceiling, "apex-height", legacyHeight),
+                        parseAxis(ceiling, "axis", CeilingShape.Axis.X));
+                case CATHEDRAL -> new CeilingShape.Cathedral(
+                        parseDoubleAttr(ceiling, "eave-height", legacyHeight),
+                        parseDoubleAttr(ceiling, "ridge-height", legacyHeight),
+                        parseAxis(ceiling, "axis", CeilingShape.Axis.X));
+                case ANGLED -> new CeilingShape.Angled(
+                        parseDoubleAttr(ceiling, "low-height", legacyHeight),
+                        parseDoubleAttr(ceiling, "high-height", legacyHeight),
+                        parseAxis(ceiling, "axis", CeilingShape.Axis.X));
+            };
+        } catch (IllegalArgumentException e) {
+            // Invalid values (e.g. apex < base) fall back to a flat ceiling.
+            return new CeilingShape.Flat(legacyHeight);
+        }
+    }
+
+    private CeilingShape.Axis parseAxis(Element elem, String attr, CeilingShape.Axis fallback) {
+        String raw = elem.getAttribute(attr);
+        if (raw == null || raw.isEmpty()) {
+            return fallback;
+        }
+        try {
+            return CeilingShape.Axis.valueOf(raw);
+        } catch (IllegalArgumentException e) {
+            return fallback;
+        }
     }
 
     private void parseMixerSnapshots(Element elem, DawProject project) {

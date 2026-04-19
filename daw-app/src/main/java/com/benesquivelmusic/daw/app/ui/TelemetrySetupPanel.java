@@ -57,6 +57,13 @@ public final class TelemetrySetupPanel extends ScrollPane {
     static final double DEFAULT_POWER_DB = 85.0;
 
     private final ComboBox<RoomPreset> presetCombo;
+    private final ComboBox<CeilingShape.Kind> ceilingKindCombo;
+    private final ComboBox<CeilingShape.Axis> ceilingAxisCombo;
+    private final TextField ceilingBaseHeightField;
+    private final TextField ceilingApexHeightField;
+    private final Label ceilingBaseLabel;
+    private final Label ceilingApexLabel;
+    private final Label ceilingAxisLabel;
     private final TextField widthField;
     private final TextField lengthField;
     private final TextField heightField;
@@ -132,6 +139,27 @@ public final class TelemetrySetupPanel extends ScrollPane {
         presetCombo.setPromptText("Select a room preset…");
         presetCombo.setCellFactory(list -> new PresetCell());
         presetCombo.setButtonCell(new PresetCell());
+
+        // ── Ceiling shape selector ───────────────────────────────────
+        ceilingKindCombo = new ComboBox<>();
+        ceilingKindCombo.getItems().addAll(CeilingShape.Kind.values());
+        ceilingKindCombo.setValue(CeilingShape.Kind.FLAT);
+        ceilingKindCombo.setStyle(COMBO_STYLE);
+        ceilingKindCombo.setMaxWidth(Double.MAX_VALUE);
+
+        ceilingAxisCombo = new ComboBox<>();
+        ceilingAxisCombo.getItems().addAll(CeilingShape.Axis.values());
+        ceilingAxisCombo.setValue(CeilingShape.Axis.X);
+        ceilingAxisCombo.setStyle(COMBO_STYLE);
+
+        ceilingBaseHeightField = createNumericField("3.0");
+        ceilingApexHeightField = createNumericField("5.0");
+        ceilingBaseLabel = new Label("Base height (m)");
+        ceilingBaseLabel.setStyle(LABEL_STYLE);
+        ceilingApexLabel = new Label("Apex height (m)");
+        ceilingApexLabel.setStyle(LABEL_STYLE);
+        ceilingAxisLabel = new Label("Axis");
+        ceilingAxisLabel.setStyle(LABEL_STYLE);
 
         // ── Dimension fields ─────────────────────────────────────────
         RoomPreset defaultPreset = RoomPreset.STUDIO;
@@ -290,6 +318,7 @@ public final class TelemetrySetupPanel extends ScrollPane {
                 widthSlider.setValue(dimensions.width());
                 lengthSlider.setValue(dimensions.length());
                 heightSlider.setValue(dimensions.height());
+                applyCeilingShapeToUi(dimensions.ceiling());
                 wallMaterialCombo.setValue(newValue.wallMaterial());
                 validateInputs();
             }
@@ -317,6 +346,16 @@ public final class TelemetrySetupPanel extends ScrollPane {
             validateInputs();
             updateRt60Display();
         });
+
+        // ── Ceiling-shape listeners (live RT60 + contextual visibility) ──
+        ceilingKindCombo.valueProperty().addListener((obs, oldVal, newVal) -> {
+            updateCeilingFieldVisibility();
+            updateRt60Display();
+        });
+        ceilingAxisCombo.valueProperty().addListener((obs, oldVal, newVal) -> updateRt60Display());
+        ceilingBaseHeightField.textProperty().addListener((obs, oldVal, newVal) -> updateRt60Display());
+        ceilingApexHeightField.textProperty().addListener((obs, oldVal, newVal) -> updateRt60Display());
+        updateCeilingFieldVisibility();
 
         // ── Auto-size listeners (live preview + re-apply if active) ──
         distanceField.textProperty().addListener((observable, oldValue, newValue) -> {
@@ -391,6 +430,10 @@ public final class TelemetrySetupPanel extends ScrollPane {
 
         GridPane dimensionsGrid = createDimensionsGrid();
 
+        Label ceilingSectionLabel = new Label("Ceiling shape");
+        ceilingSectionLabel.setStyle(SECTION_LABEL_STYLE);
+        GridPane ceilingGrid = createCeilingGrid();
+
         Label materialSectionLabel = new Label("Wall Material");
         materialSectionLabel.setStyle(SECTION_LABEL_STYLE);
 
@@ -425,6 +468,9 @@ public final class TelemetrySetupPanel extends ScrollPane {
                 new Separator() {{ setStyle(SEPARATOR_STYLE); }},
                 dimensionsSectionLabel,
                 dimensionsGrid,
+                new Separator() {{ setStyle(SEPARATOR_STYLE); }},
+                ceilingSectionLabel,
+                ceilingGrid,
                 new Separator() {{ setStyle(SEPARATOR_STYLE); }},
                 materialSectionLabel,
                 wallMaterialCombo,
@@ -836,7 +882,121 @@ public final class TelemetrySetupPanel extends ScrollPane {
         if (width == null || length == null || height == null) {
             return null;
         }
-        return new RoomDimensions(width, length, height);
+        CeilingShape ceiling = buildCeilingShape(height);
+        if (ceiling == null) {
+            return null;
+        }
+        return new RoomDimensions(width, length, ceiling);
+    }
+
+    /**
+     * Builds a {@link CeilingShape} from the current ceiling-UI state.
+     * The {@code fallbackHeight} is used as the default for both the
+     * base/eave/low and the apex/ridge/high height when the respective
+     * contextual input is missing or invalid, and as the fixed height
+     * for a flat ceiling.
+     *
+     * @return the ceiling shape, or {@code null} if values are invalid
+     */
+    CeilingShape buildCeilingShape(double fallbackHeight) {
+        CeilingShape.Kind kind = ceilingKindCombo.getValue();
+        if (kind == null) kind = CeilingShape.Kind.FLAT;
+        Double base = parsePositiveDouble(ceilingBaseHeightField.getText());
+        Double apex = parsePositiveDouble(ceilingApexHeightField.getText());
+        CeilingShape.Axis axis = ceilingAxisCombo.getValue();
+        if (axis == null) axis = CeilingShape.Axis.X;
+        try {
+            return switch (kind) {
+                case FLAT -> new CeilingShape.Flat(fallbackHeight);
+                case DOMED -> new CeilingShape.Domed(
+                        base != null ? base : fallbackHeight,
+                        apex != null ? apex : fallbackHeight);
+                case BARREL_VAULT -> new CeilingShape.BarrelVault(
+                        base != null ? base : fallbackHeight,
+                        apex != null ? apex : fallbackHeight,
+                        axis);
+                case CATHEDRAL -> new CeilingShape.Cathedral(
+                        base != null ? base : fallbackHeight,
+                        apex != null ? apex : fallbackHeight,
+                        axis);
+                case ANGLED -> new CeilingShape.Angled(
+                        base != null ? base : fallbackHeight,
+                        apex != null ? apex : fallbackHeight,
+                        axis);
+            };
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Populates the ceiling-shape UI inputs from an existing
+     * {@link CeilingShape}, e.g. when a preset with a non-flat ceiling is
+     * selected.
+     */
+    void applyCeilingShapeToUi(CeilingShape ceiling) {
+        if (ceiling == null) return;
+        ceilingKindCombo.setValue(ceiling.kind());
+        switch (ceiling) {
+            case CeilingShape.Flat f -> { /* nothing extra */ }
+            case CeilingShape.Domed d -> {
+                ceilingBaseHeightField.setText(String.valueOf(d.baseHeight()));
+                ceilingApexHeightField.setText(String.valueOf(d.apexHeight()));
+            }
+            case CeilingShape.BarrelVault v -> {
+                ceilingBaseHeightField.setText(String.valueOf(v.baseHeight()));
+                ceilingApexHeightField.setText(String.valueOf(v.apexHeight()));
+                ceilingAxisCombo.setValue(v.axis());
+            }
+            case CeilingShape.Cathedral c -> {
+                ceilingBaseHeightField.setText(String.valueOf(c.eaveHeight()));
+                ceilingApexHeightField.setText(String.valueOf(c.ridgeHeight()));
+                ceilingAxisCombo.setValue(c.ridgeAxis());
+            }
+            case CeilingShape.Angled a -> {
+                ceilingBaseHeightField.setText(String.valueOf(a.lowHeight()));
+                ceilingApexHeightField.setText(String.valueOf(a.highHeight()));
+                ceilingAxisCombo.setValue(a.slopeAxis());
+            }
+        }
+        updateCeilingFieldVisibility();
+    }
+
+    private void updateCeilingFieldVisibility() {
+        CeilingShape.Kind kind = ceilingKindCombo.getValue();
+        if (kind == null) kind = CeilingShape.Kind.FLAT;
+        boolean showBaseApex = kind != CeilingShape.Kind.FLAT;
+        boolean showAxis = kind == CeilingShape.Kind.BARREL_VAULT
+                || kind == CeilingShape.Kind.CATHEDRAL
+                || kind == CeilingShape.Kind.ANGLED;
+        ceilingBaseHeightField.setVisible(showBaseApex);
+        ceilingBaseHeightField.setManaged(showBaseApex);
+        ceilingApexHeightField.setVisible(showBaseApex);
+        ceilingApexHeightField.setManaged(showBaseApex);
+        ceilingBaseLabel.setVisible(showBaseApex);
+        ceilingBaseLabel.setManaged(showBaseApex);
+        ceilingApexLabel.setVisible(showBaseApex);
+        ceilingApexLabel.setManaged(showBaseApex);
+        ceilingAxisCombo.setVisible(showAxis);
+        ceilingAxisCombo.setManaged(showAxis);
+        ceilingAxisLabel.setVisible(showAxis);
+        ceilingAxisLabel.setManaged(showAxis);
+        // Relabel base/apex to match the variant's semantics.
+        switch (kind) {
+            case DOMED, BARREL_VAULT -> {
+                ceilingBaseLabel.setText("Base height (m)");
+                ceilingApexLabel.setText("Apex height (m)");
+            }
+            case CATHEDRAL -> {
+                ceilingBaseLabel.setText("Eave height (m)");
+                ceilingApexLabel.setText("Ridge height (m)");
+            }
+            case ANGLED -> {
+                ceilingBaseLabel.setText("Low height (m)");
+                ceilingApexLabel.setText("High height (m)");
+            }
+            case FLAT -> { /* labels hidden */ }
+        }
     }
 
     /**
@@ -864,8 +1024,17 @@ public final class TelemetrySetupPanel extends ScrollPane {
         if (parsePositiveDouble(lengthField.getText()) == null) {
             errors.append("Length must be a positive number. ");
         }
-        if (parsePositiveDouble(heightField.getText()) == null) {
+        Double height = parsePositiveDouble(heightField.getText());
+        if (height == null) {
             errors.append("Height must be a positive number. ");
+        }
+
+        // Validate ceiling shape fields when a non-flat shape is selected.
+        CeilingShape.Kind kind = ceilingKindCombo.getValue();
+        if (kind != null && kind != CeilingShape.Kind.FLAT && height != null) {
+            if (buildCeilingShape(height) == null) {
+                errors.append("Ceiling: base/eave/low height must be positive and ≤ apex/ridge/high height (both must be positive). ");
+            }
         }
 
         if (errors.isEmpty()) {
@@ -1054,6 +1223,31 @@ public final class TelemetrySetupPanel extends ScrollPane {
         grid.add(heightLabel, 0, 2);
         grid.add(heightField, 1, 2);
         grid.add(heightSlider, 2, 2);
+
+        return grid;
+    }
+
+    private GridPane createCeilingGrid() {
+        GridPane grid = new GridPane();
+        grid.setHgap(12);
+        grid.setVgap(8);
+
+        Label kindLabel = new Label("Shape:");
+        kindLabel.setStyle(LABEL_STYLE);
+
+        ColumnConstraints labelCol = new ColumnConstraints();
+        ColumnConstraints fieldCol = new ColumnConstraints();
+        fieldCol.setHgrow(Priority.ALWAYS);
+        grid.getColumnConstraints().addAll(labelCol, fieldCol);
+
+        grid.add(kindLabel, 0, 0);
+        grid.add(ceilingKindCombo, 1, 0);
+        grid.add(ceilingBaseLabel, 0, 1);
+        grid.add(ceilingBaseHeightField, 1, 1);
+        grid.add(ceilingApexLabel, 0, 2);
+        grid.add(ceilingApexHeightField, 1, 2);
+        grid.add(ceilingAxisLabel, 0, 3);
+        grid.add(ceilingAxisCombo, 1, 3);
 
         return grid;
     }

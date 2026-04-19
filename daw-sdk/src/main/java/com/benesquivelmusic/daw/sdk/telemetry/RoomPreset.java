@@ -22,11 +22,23 @@ public enum RoomPreset {
     /** Small tiled bathroom — highly reflective. */
     BATHROOM(new RoomDimensions(2.5, 3.0, 2.4), WallMaterial.GLASS),
 
-    /** Medium-sized concert hall. */
-    CONCERT_HALL(new RoomDimensions(25.0, 40.0, 15.0), WallMaterial.WOOD),
+    /**
+     * Medium-sized concert hall. Models the classic "shoebox with curved
+     * rear" geometry by using a shallow barrel vault along the hall's
+     * length — this captures the hall's cylindrical acoustic focusing
+     * behavior.
+     */
+    CONCERT_HALL(new RoomDimensions(25.0, 40.0,
+            new CeilingShape.BarrelVault(12.0, 15.0, CeilingShape.Axis.Y)),
+            WallMaterial.WOOD),
 
-    /** Large cathedral with long reverberation. */
-    CATHEDRAL(new RoomDimensions(30.0, 60.0, 25.0), WallMaterial.CONCRETE),
+    /**
+     * Large cathedral with long reverberation and a domed ceiling rising
+     * from the transept walls to a high apex.
+     */
+    CATHEDRAL(new RoomDimensions(30.0, 60.0,
+            new CeilingShape.Domed(18.0, 25.0)),
+            WallMaterial.CONCRETE),
 
     /** Standard classroom or lecture hall. */
     CLASSROOM(new RoomDimensions(8.0, 10.0, 3.0), WallMaterial.DRYWALL),

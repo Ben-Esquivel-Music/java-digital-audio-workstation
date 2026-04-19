@@ -49,4 +49,60 @@ class RoomDimensionsTest {
         assertThatThrownBy(() -> new RoomDimensions(10.0, 8.0, -3.0))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void legacyConstructorShouldProduceFlatCeiling() {
+        RoomDimensions room = new RoomDimensions(10.0, 8.0, 3.0);
+
+        assertThat(room.ceiling()).isInstanceOf(CeilingShape.Flat.class);
+        assertThat(((CeilingShape.Flat) room.ceiling()).height()).isEqualTo(3.0);
+    }
+
+    @Test
+    void heightShouldReturnMaxHeightForCurvedCeiling() {
+        CeilingShape.Domed dome = new CeilingShape.Domed(3.0, 8.0);
+        RoomDimensions room = new RoomDimensions(10.0, 10.0, dome);
+
+        assertThat(room.height()).isEqualTo(8.0);
+    }
+
+    @Test
+    void volumeShouldIntegrateDomedCeiling() {
+        CeilingShape.Domed dome = new CeilingShape.Domed(3.0, 8.0);
+        RoomDimensions room = new RoomDimensions(10.0, 10.0, dome);
+
+        double expected = 10 * 10 * 3.0 + 4.0 * 10 * 10 * 5.0 / (Math.PI * Math.PI);
+        assertThat(room.volume()).isCloseTo(expected, offset(1e-9));
+    }
+
+    @Test
+    void volumeShouldIntegrateCathedralCeiling() {
+        CeilingShape.Cathedral c = new CeilingShape.Cathedral(3.0, 7.0, CeilingShape.Axis.X);
+        RoomDimensions room = new RoomDimensions(10.0, 8.0, c);
+
+        assertThat(room.volume()).isCloseTo(10 * 8 * 5.0, offset(1e-9));
+    }
+
+    @Test
+    void surfaceAreaShouldIncludeFloorCeilingAndWallsForFlat() {
+        RoomDimensions room = new RoomDimensions(10.0, 8.0, 3.0);
+        // 2*(w*l) + 2*h*(w+l) = 2*80 + 6*18 = 160 + 108 = 268
+        assertThat(room.surfaceArea()).isCloseTo(268.0, offset(1e-9));
+    }
+
+    @Test
+    void surfaceAreaShouldChangeWithCeilingShape() {
+        RoomDimensions flat = new RoomDimensions(10.0, 8.0, 3.0);
+        RoomDimensions angled = new RoomDimensions(10.0, 8.0,
+                new CeilingShape.Angled(3.0, 6.0, CeilingShape.Axis.X));
+        // An angled ceiling has more surface area than this flat-ceiling
+        // baseline because the ceiling face itself is tilted.
+        assertThat(angled.surfaceArea()).isGreaterThan(flat.surfaceArea());
+    }
+
+    @Test
+    void shouldRejectNullCeiling() {
+        assertThatThrownBy(() -> new RoomDimensions(10.0, 8.0, (CeilingShape) null))
+                .isInstanceOf(NullPointerException.class);
+    }
 }
