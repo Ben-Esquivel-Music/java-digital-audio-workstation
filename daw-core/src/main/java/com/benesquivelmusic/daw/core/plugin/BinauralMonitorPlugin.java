@@ -21,6 +21,7 @@ import java.util.Optional;
  * spatial mixes on headphones without requiring a dedicated multi-speaker
  * monitoring setup.</p>
  */
+@BuiltInPlugin(label = "Binaural Monitor", icon = "binaural-monitor", category = BuiltInPluginCategory.EFFECT)
 public final class BinauralMonitorPlugin implements BuiltInDawPlugin {
 
     /** Stable plugin identifier — used by the host to map plugins to views. */
@@ -39,15 +40,6 @@ public final class BinauralMonitorPlugin implements BuiltInDawPlugin {
 
     public BinauralMonitorPlugin() {
     }
-
-    @Override
-    public String getMenuLabel() { return "Binaural Monitor"; }
-
-    @Override
-    public String getMenuIcon() { return "binaural-monitor"; }
-
-    @Override
-    public BuiltInPluginCategory getCategory() { return BuiltInPluginCategory.EFFECT; }
 
     @Override
     public PluginDescriptor getDescriptor() { return DESCRIPTOR; }

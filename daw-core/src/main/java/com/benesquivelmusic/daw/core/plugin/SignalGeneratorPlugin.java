@@ -42,6 +42,7 @@ import java.util.Random;
  *   <li>{@link #dispose()} — releases all audio resources.</li>
  * </ol>
  */
+@BuiltInPlugin(label = "Signal Generator", icon = "waveform", category = BuiltInPluginCategory.UTILITY)
 public final class SignalGeneratorPlugin implements BuiltInDawPlugin {
 
     /** Stable plugin identifier — used by the host to map plugins to views. */
@@ -128,21 +129,6 @@ public final class SignalGeneratorPlugin implements BuiltInDawPlugin {
     private double pinkNoiseRunningSum;
 
     public SignalGeneratorPlugin() {
-    }
-
-    @Override
-    public String getMenuLabel() {
-        return "Signal Generator";
-    }
-
-    @Override
-    public String getMenuIcon() {
-        return "waveform";
-    }
-
-    @Override
-    public BuiltInPluginCategory getCategory() {
-        return BuiltInPluginCategory.UTILITY;
     }
 
     @Override

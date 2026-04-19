@@ -17,6 +17,7 @@ import java.util.Optional;
  * <p>Wraps the DAW's {@link CompressorProcessor} as a first-class plugin
  * so it appears in the Plugins menu alongside external plugins.</p>
  */
+@BuiltInPlugin(label = "Compressor", icon = "compressor", category = BuiltInPluginCategory.EFFECT)
 public final class CompressorPlugin implements BuiltInDawPlugin {
 
     /** Stable plugin identifier — used by the host to map plugins to views. */
@@ -34,21 +35,6 @@ public final class CompressorPlugin implements BuiltInDawPlugin {
     private boolean active;
 
     public CompressorPlugin() {
-    }
-
-    @Override
-    public String getMenuLabel() {
-        return "Compressor";
-    }
-
-    @Override
-    public String getMenuIcon() {
-        return "compressor";
-    }
-
-    @Override
-    public BuiltInPluginCategory getCategory() {
-        return BuiltInPluginCategory.EFFECT;
     }
 
     @Override

@@ -24,6 +24,7 @@ import java.util.Objects;
  *   <li>{@link #dispose()} — releases the analyzer instance.</li>
  * </ol>
  */
+@BuiltInPlugin(label = "Spectrum Analyzer", icon = "spectrum", category = BuiltInPluginCategory.ANALYZER)
 public final class SpectrumAnalyzerPlugin implements BuiltInDawPlugin {
 
     /** Stable plugin identifier — used by the host to map plugins to views. */
@@ -48,21 +49,6 @@ public final class SpectrumAnalyzerPlugin implements BuiltInDawPlugin {
     private boolean active;
 
     public SpectrumAnalyzerPlugin() {
-    }
-
-    @Override
-    public String getMenuLabel() {
-        return "Spectrum Analyzer";
-    }
-
-    @Override
-    public String getMenuIcon() {
-        return "spectrum";
-    }
-
-    @Override
-    public BuiltInPluginCategory getCategory() {
-        return BuiltInPluginCategory.ANALYZER;
     }
 
     @Override

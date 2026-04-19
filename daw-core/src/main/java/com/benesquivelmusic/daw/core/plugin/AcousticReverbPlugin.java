@@ -19,6 +19,7 @@ import java.util.Optional;
  * alongside the simpler {@link ReverbPlugin}. This plugin is the user-visible
  * integration point for the {@code daw-acoustics} module.</p>
  */
+@BuiltInPlugin(label = "Acoustic Reverb", icon = "acoustic-reverb", category = BuiltInPluginCategory.EFFECT)
 public final class AcousticReverbPlugin implements BuiltInDawPlugin {
 
     /** Stable plugin identifier — used by the host to map plugins to views. */
@@ -37,15 +38,6 @@ public final class AcousticReverbPlugin implements BuiltInDawPlugin {
 
     public AcousticReverbPlugin() {
     }
-
-    @Override
-    public String getMenuLabel() { return "Acoustic Reverb"; }
-
-    @Override
-    public String getMenuIcon() { return "acoustic-reverb"; }
-
-    @Override
-    public BuiltInPluginCategory getCategory() { return BuiltInPluginCategory.EFFECT; }
 
     @Override
     public PluginDescriptor getDescriptor() { return DESCRIPTOR; }

@@ -25,6 +25,7 @@ import java.util.Optional;
  * ±{@value GraphicEqProcessor#MAX_GAIN_DB}&nbsp;dB, so the generic plugin
  * parameter editor can render one slider per band.</p>
  */
+@BuiltInPlugin(label = "Graphic EQ", icon = "eq", category = BuiltInPluginCategory.EFFECT)
 public final class GraphicEqPlugin implements BuiltInDawPlugin {
 
     /** Stable plugin identifier — used by the host to map plugins to views. */
@@ -42,21 +43,6 @@ public final class GraphicEqPlugin implements BuiltInDawPlugin {
     private boolean active;
 
     public GraphicEqPlugin() {
-    }
-
-    @Override
-    public String getMenuLabel() {
-        return "Graphic EQ";
-    }
-
-    @Override
-    public String getMenuIcon() {
-        return "eq";
-    }
-
-    @Override
-    public BuiltInPluginCategory getCategory() {
-        return BuiltInPluginCategory.EFFECT;
     }
 
     @Override
