@@ -26,7 +26,7 @@ public final class InsertSlot {
     private final InsertEffectType effectType;
     private final DawPlugin plugin;
     private final PluginCapabilities capabilities;
-    private boolean bypassed;
+    private volatile boolean bypassed;
     private MixerChannel sidechainSource;
 
     /**

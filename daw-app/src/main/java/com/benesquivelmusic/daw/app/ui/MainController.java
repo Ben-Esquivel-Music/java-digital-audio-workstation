@@ -12,7 +12,6 @@ import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
-import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin;
 import com.benesquivelmusic.daw.core.plugin.PluginInvocationSupervisor;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
@@ -232,7 +231,15 @@ public final class MainController {
             if (scene != null) {
                 keyboardShortcutController.register(scene);
                 if (scene.getWindow() instanceof Stage primaryStage) {
-                    primaryStage.setOnHidden(_ -> pluginViewController.dispose());
+                    primaryStage.setOnHidden(_ -> {
+                        pluginViewController.dispose();
+                        if (pluginFaultUiController != null) {
+                            pluginFaultUiController.dispose();
+                        }
+                        if (pluginSupervisor != null) {
+                            pluginSupervisor.close();
+                        }
+                    });
                 }
             }
         });

@@ -7,6 +7,7 @@ import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.lang.ref.WeakReference;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -62,9 +63,10 @@ public final class PluginInvocationSupervisor {
     private final SubmissionPublisher<PluginFault> publisher = new SubmissionPublisher<>();
     private final Map<String, AtomicInteger> faultCounts = new ConcurrentHashMap<>();
     private final Map<String, Boolean> quarantined = new ConcurrentHashMap<>();
-    // Latest InsertSlot registered for each pluginId. Lets the fault-log UI
-    // un-bypass a slot it only knows by pluginId.
-    private final Map<String, InsertSlot> slotsByPluginId = new ConcurrentHashMap<>();
+    // Latest InsertSlot registered for each pluginId. Uses WeakReference so
+    // that removed slots can be garbage-collected rather than being retained
+    // indefinitely over long sessions with many add/remove cycles.
+    private final Map<String, WeakReference<InsertSlot>> slotsByPluginId = new ConcurrentHashMap<>();
 
     // Unbounded queue so the RT catch block never blocks or allocates beyond
     // a single LinkedBlockingQueue Node per event; drain thread does all I/O.
@@ -113,7 +115,7 @@ public final class PluginInvocationSupervisor {
         Objects.requireNonNull(slot, "slot must not be null");
         Objects.requireNonNull(delegate, "delegate must not be null");
         SupervisedProcessor wrapper = new SupervisedProcessor(slot, delegate);
-        slotsByPluginId.put(wrapper.pluginId, slot);
+        slotsByPluginId.put(wrapper.pluginId, new WeakReference<>(slot));
         return wrapper;
     }
 
@@ -156,8 +158,13 @@ public final class PluginInvocationSupervisor {
      * knows faults by their plugin id.
      */
     public boolean reenable(String pluginId) {
-        InsertSlot slot = slotsByPluginId.get(pluginId);
+        WeakReference<InsertSlot> ref = slotsByPluginId.get(pluginId);
+        InsertSlot slot = ref == null ? null : ref.get();
         if (slot == null) {
+            // Prune stale reference if it was GC'd.
+            if (ref != null) {
+                slotsByPluginId.remove(pluginId, ref);
+            }
             return false;
         }
         slot.setBypassed(false);
@@ -201,7 +208,10 @@ public final class PluginInvocationSupervisor {
                 // Persist before publishing so a subscriber that latches on
                 // onNext can assert the log file exists (deterministic tests).
                 appendToLog(fault);
-                publisher.submit(fault);
+                // Never block the drain thread on a slow subscriber; if a
+                // subscriber is backpressured, drop this publication rather
+                // than stalling faultQueue draining.
+                publisher.offer(fault, (subscriber, dropped) -> false);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;
@@ -401,6 +411,12 @@ public final class PluginInvocationSupervisor {
         }
 
         private void handleFault(Throwable t) {
+            // Only enqueue a fault event if the slot is not already bypassed.
+            // If the chain hasn't been rebuilt yet the same faulting plugin
+            // would otherwise spam the unbounded queue/log once per block.
+            if (slot.isBypassed()) {
+                return;
+            }
             slot.setBypassed(true);
             // LinkedBlockingQueue.offer allocates one Node wrapper; the
             // Instant.now() and PendingFault allocations are unavoidable but
@@ -409,10 +425,10 @@ public final class PluginInvocationSupervisor {
         }
 
         private void logJvmError(Error err) {
-            LOG.log(Level.SEVERE,
-                    () -> "JVM-level error in plugin " + pluginId
-                            + " (" + err.getClass().getName()
-                            + ") — session continued but the JVM may be unstable");
+            String message = "JVM-level error in plugin " + pluginId
+                    + " (" + err.getClass().getName()
+                    + ") — session continued but the JVM may be unstable";
+            LOG.log(Level.SEVERE, message, err);
         }
 
         private static void zero(float[][] buffer, int numFrames) {

@@ -49,10 +49,11 @@ public final class PluginFaultLogDialog {
         list.setPlaceholder(new Label("No plugin faults recorded this session."));
 
         Label footnote = new Label(
-                "JVM-level crashes (OOM, StackOverflowError, or native "
-                        + "segfaults in FFM downcalls) are not catchable here — "
-                        + "this log only records exceptions thrown by plugin "
-                        + "audio code.");
+                "This log records exceptions and some JVM errors thrown by "
+                        + "plugin audio code. Native segfaults (for example in "
+                        + "FFM downcalls) cannot be caught here, and severe JVM "
+                        + "failures such as OOM may leave the process too "
+                        + "unstable to log reliably.");
         footnote.setWrapText(true);
         footnote.setPadding(new Insets(6, 8, 0, 8));
         footnote.getStyleClass().add("plugin-fault-footnote");
@@ -61,6 +62,11 @@ public final class PluginFaultLogDialog {
         root.setBottom(footnote);
         root.setPadding(new Insets(8));
         stage.setScene(new Scene(root, 720, 480));
+
+        // Cancel the subscription when the window is dismissed via the X
+        // button so the publisher doesn't retain this dialog and the rows
+        // list doesn't keep growing after the window is closed.
+        stage.setOnHidden(_ -> subscriber.cancel());
 
         supervisor.publisher().subscribe(subscriber);
     }

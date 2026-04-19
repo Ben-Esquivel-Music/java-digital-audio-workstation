@@ -123,12 +123,12 @@ public final class Mixer {
      * Installs a {@link PluginInvocationSupervisor} on every current channel
      * (regular, return bus, master) and remembers it so that channels added
      * later via {@link #addChannel(MixerChannel)} or
-     * {@link #addReturnBus(String)} inherit it automatically. Pass
-     * {@code null} to clear — callers should follow that with per-channel
-     * clears if they want to fully detach.
+     * {@link #addReturnBus(String)} inherit it automatically. Passing
+     * {@code null} clears the supervisor from all current channels and stops
+     * newly-added channels from inheriting one until another supervisor is set.
      *
-     * @param supervisor the supervisor to cascade, or {@code null} to stop
-     *                   decorating newly-added channels
+     * @param supervisor the supervisor to cascade, or {@code null} to clear
+     *                   current channels and stop decorating newly-added channels
      */
     public void setPluginSupervisor(PluginInvocationSupervisor supervisor) {
         this.pluginSupervisor = supervisor;
