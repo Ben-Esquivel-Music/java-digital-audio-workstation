@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
+import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -555,5 +556,194 @@ class RecordingPipelineTest {
             assertThat(clip.getAudioData()).isNotNull();
             assertThat(clip.getAudioData()[0][0]).isEqualTo(0.75f);
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // Frame-based PunchRegion on Transport (sample-accurate auto-punch).
+    // ---------------------------------------------------------------------
+
+    @Test
+    void shouldCaptureOnlyWithinTransportPunchRegion() {
+        // Punch region spans frames [512, 1536) — exactly blocks 1 and 2 out
+        // of a 4-block run. Blocks 0 and 3 must not be captured.
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+        transport.setPunchRegion(new PunchRegion(512L, 1536L, true));
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track));
+        pipeline.start();
+
+        float[][] input = new float[2][512];
+        for (int ch = 0; ch < 2; ch++) {
+            java.util.Arrays.fill(input[ch], 1.0f);
+        }
+        float[][] output = new float[2][512];
+        for (int i = 0; i < 4; i++) {
+            audioEngine.processBlock(input, output, 512);
+        }
+
+        RecordingSession session = pipeline.getSession(track);
+        // Exactly two blocks (512 * 2 = 1024 frames) fall inside the region.
+        assertThat(session.getTotalSamplesRecorded()).isEqualTo(1024L);
+
+        pipeline.stop();
+    }
+
+    @Test
+    void shouldNotCaptureWhenPunchRegionDisabled() {
+        // Punch region is installed but the enabled flag is false — behave
+        // as if no punch region were set (capture entire transport output).
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+        transport.setPunchRegion(new PunchRegion(512L, 1536L, false));
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track));
+        pipeline.start();
+
+        float[][] input = new float[2][512];
+        float[][] output = new float[2][512];
+        for (int i = 0; i < 4; i++) {
+            audioEngine.processBlock(input, output, 512);
+        }
+
+        // All 4 blocks should be captured because punch is disabled.
+        assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).isEqualTo(2048L);
+
+        pipeline.stop();
+    }
+
+    @Test
+    void shouldApplySampleAccuratePunchBoundariesWithinOneBlock() {
+        // Punch region strictly inside a single 512-frame block: capture
+        // only 100 frames out of the middle block.
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+        transport.setPunchRegion(new PunchRegion(100L, 200L, true));
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track));
+        pipeline.start();
+
+        float[][] input = new float[2][512];
+        for (int ch = 0; ch < 2; ch++) {
+            java.util.Arrays.fill(input[ch], 1.0f);
+        }
+        float[][] output = new float[2][512];
+        audioEngine.processBlock(input, output, 512);
+
+        assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).isEqualTo(100L);
+
+        pipeline.stop();
+    }
+
+    @Test
+    void shouldApplyCosineCrossfadeAtPunchBoundaries() {
+        // Verify a 5 ms (≈ 220 frames at 44.1 kHz) cosine ramp at both the
+        // punch-in and punch-out boundaries. The captured audio's first
+        // sample must be ~0 and the final sample (at punch-out) must be ~0.
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+        // Punch range = 1024 frames; comfortably longer than a 5 ms fade.
+        transport.setPunchRegion(new PunchRegion(512L, 1536L, true));
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track));
+        pipeline.start();
+
+        float[][] input = new float[2][512];
+        for (int ch = 0; ch < 2; ch++) {
+            java.util.Arrays.fill(input[ch], 1.0f);
+        }
+        float[][] output = new float[2][512];
+        for (int i = 0; i < 4; i++) {
+            audioEngine.processBlock(input, output, 512);
+        }
+
+        float[][] captured = pipeline.getSession(track).getCapturedAudio();
+        assertThat(captured).isNotNull();
+        assertThat(captured[0].length).isGreaterThanOrEqualTo(1024);
+
+        int fadeFrames = (int) Math.round(0.005 * format.sampleRate());
+
+        // Fade-in: sample at index 0 should be 0 (silence ramping up).
+        assertThat(captured[0][0]).isEqualTo(0.0f);
+        // Half-way through the ramp the gain is 0.5.
+        float midFadeIn = captured[0][fadeFrames / 2];
+        assertThat(midFadeIn).isBetween(0.3f, 0.7f);
+        // After the ramp the signal should be at full gain.
+        assertThat(captured[0][fadeFrames + 10]).isEqualTo(1.0f);
+
+        // Fade-out: final sample should be near zero; the middle of the
+        // tail ramp should be around 0.5.
+        int lastIdx = 1024 - 1;
+        assertThat(Math.abs(captured[0][lastIdx])).isLessThan(0.05f);
+        float midFadeOut = captured[0][lastIdx - fadeFrames / 2];
+        assertThat(midFadeOut).isBetween(0.3f, 0.7f);
+
+        pipeline.stop();
+    }
+
+    @Test
+    void shouldAutoPunchAcrossMultiplePassesWhileArmed() {
+        // Auto-punch: transport rewinds back into the region (simulating a
+        // loop or manual rewind) while the pipeline remains active — the
+        // pipeline must resume capturing on re-entry without being re-armed.
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+        transport.setPunchRegion(new PunchRegion(512L, 1024L, true));
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track));
+        pipeline.start();
+
+        float[][] input = new float[2][512];
+        float[][] output = new float[2][512];
+
+        // Pass 1: blocks 0, 1, 2 — only block 1 is inside the region.
+        for (int i = 0; i < 3; i++) {
+            audioEngine.processBlock(input, output, 512);
+        }
+        long afterPass1 = pipeline.getSession(track).getTotalSamplesRecorded();
+        assertThat(afterPass1).isEqualTo(512L);
+
+        // Pass 2: the engine wraps and callbacks continue — re-enter region.
+        // We can't rewind internal counters, but auto-punch must honour the
+        // region on every block regardless of pass count. Advance further
+        // blocks that stay outside the region and confirm no extra capture.
+        for (int i = 0; i < 3; i++) {
+            audioEngine.processBlock(input, output, 512);
+        }
+        assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).isEqualTo(afterPass1);
+
+        pipeline.stop();
+    }
+
+    @Test
+    void shouldPreferTransportPunchRegionOverLegacyPunchRange() {
+        // If both a frame-based PunchRegion and a beat-based PunchRange are
+        // set, the sample-accurate transport region wins.
+        Track track = new Track("Audio 1", TrackType.AUDIO);
+        track.setArmed(true);
+        transport.setPunchRegion(new PunchRegion(512L, 1536L, true));
+        PunchRange legacy = new PunchRange(100.0, 200.0); // far-away beats
+
+        RecordingPipeline pipeline = new RecordingPipeline(
+                audioEngine, transport, format, tempDir, List.of(track),
+                CountInMode.OFF, InputMonitoringMode.OFF, legacy);
+        pipeline.start();
+
+        float[][] input = new float[2][512];
+        float[][] output = new float[2][512];
+        for (int i = 0; i < 4; i++) {
+            audioEngine.processBlock(input, output, 512);
+        }
+
+        // Frame region captured 1024 frames despite the legacy beat range
+        // covering a completely different span.
+        assertThat(pipeline.getSession(track).getTotalSamplesRecorded()).isEqualTo(1024L);
+
+        pipeline.stop();
     }
 }

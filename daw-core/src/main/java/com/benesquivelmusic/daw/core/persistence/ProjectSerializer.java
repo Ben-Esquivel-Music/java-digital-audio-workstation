@@ -30,6 +30,7 @@ import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
 import com.benesquivelmusic.daw.sdk.telemetry.CeilingShape;
 import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
+import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
 import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
 import org.w3c.dom.Document;
@@ -148,6 +149,12 @@ public final class ProjectSerializer {
         elem.setAttribute("loop-start", String.valueOf(transport.getLoopStartInBeats()));
         elem.setAttribute("loop-end", String.valueOf(transport.getLoopEndInBeats()));
         elem.setAttribute("position", String.valueOf(transport.getPositionInBeats()));
+        PunchRegion punch = transport.getPunchRegion();
+        if (punch != null) {
+            elem.setAttribute("punch-start-frames", String.valueOf(punch.startFrames()));
+            elem.setAttribute("punch-end-frames", String.valueOf(punch.endFrames()));
+            elem.setAttribute("punch-enabled", String.valueOf(punch.enabled()));
+        }
         root.appendChild(elem);
     }
 

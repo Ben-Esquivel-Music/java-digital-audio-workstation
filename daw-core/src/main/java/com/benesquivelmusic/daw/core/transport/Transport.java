@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.transport;
 
+import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
+
 /**
  * Controls the playback transport of the DAW (play, stop, record, pause).
  *
@@ -21,6 +23,7 @@ public final class Transport {
     private boolean loopEnabled = false;
     private double loopStartInBeats = DEFAULT_LOOP_START;
     private double loopEndInBeats = DEFAULT_LOOP_END;
+    private PunchRegion punchRegion;
 
     /** Starts playback from the current position. */
     public void play() {
@@ -187,5 +190,57 @@ public final class Transport {
                 positionInBeats -= loopLength;
             }
         }
+    }
+
+    /**
+     * Installs a frame-based punch-in/out region on the transport.
+     *
+     * <p>When the region is {@linkplain PunchRegion#enabled() enabled}, the
+     * recording pipeline captures input only within
+     * {@code [startFrames, endFrames)} while the transport continues to play
+     * back normally outside that range. This enables auto-punch: the record
+     * arm can remain pressed across multiple passes and only the punch range
+     * is captured each time.</p>
+     *
+     * @param punchRegion the punch region to install (must not be {@code null};
+     *                    use {@link #clearPunchRegion()} to remove)
+     * @throws NullPointerException if {@code punchRegion} is {@code null}
+     */
+    public void setPunchRegion(PunchRegion punchRegion) {
+        if (punchRegion == null) {
+            throw new NullPointerException("punchRegion must not be null; use clearPunchRegion() to remove");
+        }
+        this.punchRegion = punchRegion;
+    }
+
+    /**
+     * Removes any installed punch region. After this call
+     * {@link #isPunchEnabled()} returns {@code false} and
+     * {@link #getPunchRegion()} returns {@code null}.
+     */
+    public void clearPunchRegion() {
+        this.punchRegion = null;
+    }
+
+    /**
+     * Returns the currently installed punch region, or {@code null} if none
+     * has been set. The region may be present but disabled; use
+     * {@link #isPunchEnabled()} to test whether punch recording is active.
+     *
+     * @return the punch region, or {@code null}
+     */
+    public PunchRegion getPunchRegion() {
+        return punchRegion;
+    }
+
+    /**
+     * Returns whether punch recording is currently active — i.e. a punch
+     * region has been installed <em>and</em> its {@code enabled} flag is
+     * {@code true}.
+     *
+     * @return {@code true} if punch recording should gate input capture
+     */
+    public boolean isPunchEnabled() {
+        return punchRegion != null && punchRegion.enabled();
     }
 }

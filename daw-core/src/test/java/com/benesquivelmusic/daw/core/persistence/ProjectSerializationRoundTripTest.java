@@ -24,6 +24,7 @@ import com.benesquivelmusic.daw.core.track.AutomationMode;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.track.TrackType;
+import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -923,5 +924,46 @@ class ProjectSerializationRoundTripTest {
 
         MixerChannel restoredChannel = restored.getMixer().getChannels().get(0);
         assertThat(restoredChannel.getCpuBudget()).isNull();
+    }
+
+    @Test
+    void shouldRoundTripPunchRegion() throws IOException {
+        DawProject original = new DawProject("Punch Test", AudioFormat.CD_QUALITY);
+        original.getTransport().setPunchRegion(new PunchRegion(44_100L, 88_200L, true));
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        PunchRegion region = restored.getTransport().getPunchRegion();
+        assertThat(region).isNotNull();
+        assertThat(region.startFrames()).isEqualTo(44_100L);
+        assertThat(region.endFrames()).isEqualTo(88_200L);
+        assertThat(region.enabled()).isTrue();
+        assertThat(restored.getTransport().isPunchEnabled()).isTrue();
+    }
+
+    @Test
+    void shouldRoundTripDisabledPunchRegion() throws IOException {
+        DawProject original = new DawProject("Punch Test", AudioFormat.CD_QUALITY);
+        original.getTransport().setPunchRegion(new PunchRegion(1000L, 2000L, false));
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        PunchRegion region = restored.getTransport().getPunchRegion();
+        assertThat(region).isNotNull();
+        assertThat(region.enabled()).isFalse();
+        assertThat(restored.getTransport().isPunchEnabled()).isFalse();
+    }
+
+    @Test
+    void shouldPreserveAbsenceOfPunchRegion() throws IOException {
+        DawProject original = new DawProject("No Punch", AudioFormat.CD_QUALITY);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getTransport().getPunchRegion()).isNull();
+        assertThat(restored.getTransport().isPunchEnabled()).isFalse();
     }
 }

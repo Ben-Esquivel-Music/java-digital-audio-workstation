@@ -66,6 +66,31 @@ class ProjectSerializerTest {
     }
 
     @Test
+    void shouldSerializePunchRegion() throws IOException {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        project.getTransport().setPunchRegion(
+                new com.benesquivelmusic.daw.sdk.transport.PunchRegion(44_100L, 88_200L, true));
+
+        ProjectSerializer serializer = new ProjectSerializer();
+        String xml = serializer.serialize(project);
+
+        assertThat(xml).contains("punch-start-frames=\"44100\"");
+        assertThat(xml).contains("punch-end-frames=\"88200\"");
+        assertThat(xml).contains("punch-enabled=\"true\"");
+    }
+
+    @Test
+    void shouldOmitPunchRegionWhenNotSet() throws IOException {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+
+        ProjectSerializer serializer = new ProjectSerializer();
+        String xml = serializer.serialize(project);
+
+        assertThat(xml).doesNotContain("punch-start-frames");
+        assertThat(xml).doesNotContain("punch-end-frames");
+    }
+
+    @Test
     void shouldSerializeTracks() throws IOException {
         DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
         Track audio = project.createAudioTrack("Vocals");
