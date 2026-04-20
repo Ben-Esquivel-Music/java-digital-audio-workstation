@@ -979,6 +979,17 @@ public final class ProjectDeserializer {
             double z = parseDoubleAttr(sourceElem, "z", 0);
             double powerDb = parseDoubleAttr(sourceElem, "power-db", 85.0);
             config.addSoundSource(new SoundSource(name, new Position3D(x, y, z), powerDb));
+            // Directivity is optional — legacy projects without it fall
+            // back to OMNIDIRECTIONAL (handled by RoomConfiguration).
+            String directivityRaw = sourceElem.getAttribute("directivity");
+            if (directivityRaw != null && !directivityRaw.isEmpty()) {
+                try {
+                    config.setSourceDirectivity(
+                            name, SourceDirectivity.valueOf(directivityRaw));
+                } catch (IllegalArgumentException ignored) {
+                    // Unknown enum constant: keep the default.
+                }
+            }
         }
 
         for (Element micElem : getDirectChildElements(elem, "microphone")) {

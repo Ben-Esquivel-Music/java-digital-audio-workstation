@@ -35,6 +35,7 @@ import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
 import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
+import com.benesquivelmusic.daw.sdk.telemetry.SourceDirectivity;
 import com.benesquivelmusic.daw.sdk.telemetry.SurfaceMaterialMap;
 import com.benesquivelmusic.daw.sdk.telemetry.TreatmentKind;
 import com.benesquivelmusic.daw.sdk.telemetry.WallAttachment;
@@ -540,6 +541,14 @@ public final class ProjectSerializer {
             sourceElem.setAttribute("y", String.valueOf(pos.y()));
             sourceElem.setAttribute("z", String.valueOf(pos.z()));
             sourceElem.setAttribute("power-db", String.valueOf(source.powerDb()));
+            // Directivity pattern — omitted for the OMNIDIRECTIONAL default
+            // so older files remain readable and tests comparing raw XML
+            // are not disturbed when the user never changed it.
+            SourceDirectivity directivity =
+                    config.getSourceDirectivity(source.name());
+            if (directivity != SourceDirectivity.OMNIDIRECTIONAL) {
+                sourceElem.setAttribute("directivity", directivity.name());
+            }
             configElem.appendChild(sourceElem);
         }
 

@@ -4,7 +4,10 @@ import com.benesquivelmusic.daw.sdk.telemetry.*;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -26,6 +29,20 @@ public final class RoomConfiguration {
     private final List<SoundSource> soundSources = new ArrayList<>();
     private final List<AudienceMember> audienceMembers = new ArrayList<>();
     private final List<AcousticTreatment> appliedTreatments = new ArrayList<>();
+
+    /**
+     * Per-source directivity assignments, keyed by {@link SoundSource#name()}.
+     * Entries default to {@link SourceDirectivity#OMNIDIRECTIONAL} when
+     * missing (see {@link #getSourceDirectivity(String)}).
+     *
+     * <p>A {@link LinkedHashMap} is used for deterministic iteration in
+     * diagnostic output such as {@link #getSourceDirectivities()};
+     * persistence itself iterates the {@code soundSources} list (not
+     * this map) so the on-disk ordering is driven by source-insertion
+     * order, not by this map's iteration order.</p>
+     */
+    private final Map<String, SourceDirectivity> sourceDirectivities =
+            new LinkedHashMap<>();
 
     /**
      * Creates a room configuration with the given dimensions and a single
@@ -153,6 +170,7 @@ public final class RoomConfiguration {
      * @return {@code true} if a source was removed
      */
     public boolean removeSoundSource(String name) {
+        sourceDirectivities.remove(name);
         return soundSources.removeIf(s -> s.name().equals(name));
     }
 
@@ -222,5 +240,50 @@ public final class RoomConfiguration {
     /** Returns an unmodifiable view of the applied treatments. */
     public List<AcousticTreatment> getAppliedTreatments() {
         return Collections.unmodifiableList(appliedTreatments);
+    }
+
+    // ------------------------------------------------------------------
+    // Per-source directivity
+    // ------------------------------------------------------------------
+
+    /**
+     * Sets the directivity pattern for the named sound source. Sources
+     * that have not been explicitly configured default to
+     * {@link SourceDirectivity#OMNIDIRECTIONAL}. Passing {@code null}
+     * reverts the source to that default.
+     *
+     * @param sourceName  the source name (must not be {@code null})
+     * @param directivity the directivity, or {@code null} to clear
+     */
+    public void setSourceDirectivity(String sourceName, SourceDirectivity directivity) {
+        Objects.requireNonNull(sourceName, "sourceName must not be null");
+        if (directivity == null || directivity == SourceDirectivity.OMNIDIRECTIONAL) {
+            sourceDirectivities.remove(sourceName);
+        } else {
+            sourceDirectivities.put(sourceName, directivity);
+        }
+    }
+
+    /**
+     * Returns the directivity configured for {@code sourceName}, or
+     * {@link SourceDirectivity#OMNIDIRECTIONAL} if none has been set.
+     *
+     * @param sourceName the source name (must not be {@code null})
+     * @return the directivity (never {@code null})
+     */
+    public SourceDirectivity getSourceDirectivity(String sourceName) {
+        Objects.requireNonNull(sourceName, "sourceName must not be null");
+        return sourceDirectivities.getOrDefault(
+                sourceName, SourceDirectivity.OMNIDIRECTIONAL);
+    }
+
+    /**
+     * Returns an unmodifiable snapshot of the explicit per-source
+     * directivity assignments. Sources using the default
+     * {@link SourceDirectivity#OMNIDIRECTIONAL} are <em>not</em> present
+     * in the returned map.
+     */
+    public Map<String, SourceDirectivity> getSourceDirectivities() {
+        return Collections.unmodifiableMap(new HashMap<>(sourceDirectivities));
     }
 }
