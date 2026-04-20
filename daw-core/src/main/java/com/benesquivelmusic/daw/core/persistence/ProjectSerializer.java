@@ -265,6 +265,25 @@ public final class ProjectSerializer {
         for (MixerChannel returnBus : mixer.getReturnBuses()) {
             returnBusesElem.appendChild(buildMixerChannelElement(document, "return-bus", returnBus, mixer));
         }
+
+        Element cueBussesElem = document.createElement("cue-busses");
+        mixerElem.appendChild(cueBussesElem);
+        for (CueBus bus : project.getCueBusManager().getCueBusses()) {
+            Element busElem = document.createElement("cue-bus");
+            busElem.setAttribute("id", bus.id().toString());
+            busElem.setAttribute("label", bus.label());
+            busElem.setAttribute("hardware-output-index", String.valueOf(bus.hardwareOutputIndex()));
+            busElem.setAttribute("master-gain", String.valueOf(bus.masterGain()));
+            for (CueSend send : bus.sends()) {
+                Element sendElem = document.createElement("cue-send");
+                sendElem.setAttribute("track-id", send.trackId().toString());
+                sendElem.setAttribute("gain", String.valueOf(send.gain()));
+                sendElem.setAttribute("pan", String.valueOf(send.pan()));
+                sendElem.setAttribute("pre-fader", String.valueOf(send.preFader()));
+                busElem.appendChild(sendElem);
+            }
+            cueBussesElem.appendChild(busElem);
+        }
     }
 
     private Element buildMixerChannelElement(Document document, String tagName,
