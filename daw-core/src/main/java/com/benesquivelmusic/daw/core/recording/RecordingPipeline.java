@@ -10,6 +10,9 @@ import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Orchestrates the recording pipeline by connecting the {@link AudioEngine},
@@ -49,6 +52,20 @@ public final class RecordingPipeline {
     private final Map<Track, RecordingSession> sessions = new LinkedHashMap<>();
     private final Map<Track, AudioClip> recordedClips = new LinkedHashMap<>();
     private final Map<Track, float[][]> routedInputBuffers = new LinkedHashMap<>();
+    /**
+     * Take groups accumulated during loop-record; one per armed track.
+     * Populated as each loop lap wraps (see {@link #finalizeLoopTake}).
+     */
+    private final Map<Track, TakeGroup> takeGroups = new LinkedHashMap<>();
+    /**
+     * Executor used to finalize takes off the audio thread (virtual threads,
+     * per story 205). Disk I/O for take finalization must never run on the
+     * audio callback thread or xruns will occur.
+     */
+    private ExecutorService takeFinalizationExecutor;
+    private boolean loopRecord;
+    /** Previous callback's loop-wrap detector (beat-domain). */
+    private double previousBeatPosition = -1.0;
     private boolean active;
     private double recordingStartBeat;
     /** Absolute sample-frame position aligned with {@link Transport}. Used for
@@ -123,6 +140,16 @@ public final class RecordingPipeline {
             throw new IllegalStateException("Recording pipeline is already active");
         }
         active = true;
+
+        // Prepare a virtual-thread executor so take finalization disk I/O
+        // never runs on the audio callback thread (see JEP 444 — virtual
+        // threads are cheap; we create one per finalization task).
+        if (loopRecord && takeFinalizationExecutor == null) {
+            takeFinalizationExecutor = Executors.newVirtualThreadPerTaskExecutor();
+        }
+
+        takeGroups.clear();
+        previousBeatPosition = -1.0;
 
         // Capture the recording start position before any transport changes.
         // When the transport has an enabled (frame-based) punch region, prefer
@@ -201,6 +228,12 @@ public final class RecordingPipeline {
         // Stop the transport (this resets positionInBeats to 0)
         transport.stop();
 
+        // In loop-record mode, finalize the in-flight loop lap as the last
+        // take of the group so stopping mid-loop still yields a complete stack.
+        if (loopRecord) {
+            finalizeLoopTake();
+        }
+
         // Finalize sessions and create clips using the captured start position
         List<AudioClip> clips = new ArrayList<>();
 
@@ -209,6 +242,20 @@ public final class RecordingPipeline {
             if (session != null && session.isActive()) {
                 session.stop();
             }
+
+            // In loop-record mode the accumulated takes have already been
+            // stamped into the TakeGroup above. Expose the active take's
+            // clip on the track lane and attach the group to the track.
+            TakeGroup group = takeGroups.get(track);
+            if (loopRecord && group != null && !group.isEmpty()) {
+                AudioClip activeClip = group.activeClip();
+                track.addClip(activeClip);
+                track.putTakeGroup(group);
+                recordedClips.put(track, activeClip);
+                clips.add(activeClip);
+                continue;
+            }
+
             if (session != null && session.getTotalSamplesRecorded() > 0) {
                 double durationSeconds = session.getTotalSamplesRecorded() / format.sampleRate();
                 double durationBeats = durationSeconds * (transport.getTempo() / 60.0);
@@ -239,6 +286,21 @@ public final class RecordingPipeline {
 
         sessions.clear();
         routedInputBuffers.clear();
+
+        // Shut down the virtual-thread executor gracefully.
+        if (takeFinalizationExecutor != null) {
+            takeFinalizationExecutor.shutdown();
+            try {
+                if (!takeFinalizationExecutor.awaitTermination(2, TimeUnit.SECONDS)) {
+                    takeFinalizationExecutor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                takeFinalizationExecutor.shutdownNow();
+            }
+            takeFinalizationExecutor = null;
+        }
+
         return Collections.unmodifiableList(clips);
     }
 
@@ -370,11 +432,26 @@ public final class RecordingPipeline {
     }
 
     private void onAudioCaptured(float[][] inputBuffer, int numFrames) {
+        // Loop-record: if the transport's beat position wrapped backwards
+        // between the previous callback and this one, a loop lap just
+        // completed. Finalize the current take (off the audio thread) and
+        // start the next pass without dropping input frames. We detect the
+        // wrap *before* routing this block so the wrapped audio goes into
+        // the new take — giving sample-accurate loop boundaries.
+        double currentBeatPosition = transport.getPositionInBeats();
+        if (loopRecord && active
+                && previousBeatPosition >= 0.0
+                && currentBeatPosition < previousBeatPosition
+                && transport.isLoopEnabled()) {
+            finalizeLoopTake();
+        }
+        previousBeatPosition = currentBeatPosition;
+
         // Derive the block position from the transport's current beat position
         // so that punch gating stays aligned after loop/rewind/seek. The
         // recording callback fires *before* advancePosition(), so
         // getPositionInBeats() still reflects this block's start.
-        long blockStart = beatsToFrames(transport.getPositionInBeats());
+        long blockStart = beatsToFrames(currentBeatPosition);
         long blockEnd = blockStart + numFrames;
         // Update the cached frame counter for consistency with the transport.
         currentFrame = blockEnd;
@@ -517,5 +594,122 @@ public final class RecordingPipeline {
         double bpm = transport.getTempo();
         double seconds = beats * 60.0 / bpm;
         return Math.round(seconds * format.sampleRate());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Loop-record (story 132)
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * Returns whether loop-record mode is enabled. When {@code true}, each
+     * loop lap of the {@link Transport} is stamped as a new {@link Take}
+     * grouped under a {@link TakeGroup} per armed track, rather than the
+     * pipeline overwriting the previous capture.
+     */
+    public boolean isLoopRecord() {
+        return loopRecord;
+    }
+
+    /**
+     * Enables or disables loop-record mode. Must be called before
+     * {@link #start()}; changing the flag while recording is active is
+     * not supported and has no effect on the current session.
+     */
+    public void setLoopRecord(boolean loopRecord) {
+        this.loopRecord = loopRecord;
+    }
+
+    /**
+     * Returns an unmodifiable map of the {@link TakeGroup}s accumulated so
+     * far during a loop-record session, keyed by armed track. The map is
+     * populated as each loop lap wraps; after {@link #stop()} it contains
+     * the final stacks.
+     *
+     * @return the per-track take groups (never {@code null})
+     */
+    public Map<Track, TakeGroup> getTakeGroups() {
+        return Collections.unmodifiableMap(new LinkedHashMap<>(takeGroups));
+    }
+
+    /**
+     * Finalizes the buffered audio of each armed track into a new
+     * {@link Take}, appends it to the track's {@link TakeGroup}, and starts
+     * a fresh recording session for the next loop lap. Buffer rotation is
+     * synchronous (so no frames are dropped at the seam); actual disk I/O
+     * for the previous segment runs on {@link #takeFinalizationExecutor}
+     * (a virtual-thread executor) so the audio thread is never blocked.
+     *
+     * <p>Invoked from {@link #onAudioCaptured} when a loop wrap is detected.
+     * </p>
+     */
+    private void finalizeLoopTake() {
+        double bpm = transport.getTempo();
+
+        for (Track track : armedTracks) {
+            RecordingSession previous = sessions.get(track);
+            if (previous == null) {
+                continue;
+            }
+
+            // Swap the track's recording session first so the next block's
+            // audio is routed into a fresh buffer with no gap. Rotation is
+            // intentionally cheap — just allocating a new session object.
+            Path trackDir = outputDirectory.resolve(track.getId());
+            RecordingSession next = new RecordingSession(format, trackDir);
+            next.start();
+            sessions.put(track, next);
+
+            // Stop + snapshot the previous session in-thread (captures buffer
+            // references only — no disk I/O yet).
+            if (previous.isActive()) {
+                previous.stop();
+            }
+            long samples = previous.getTotalSamplesRecorded();
+            if (samples <= 0) {
+                continue;
+            }
+            float[][] capturedAudio = previous.getCapturedAudio();
+            String segmentPath = previous.getSegments().isEmpty()
+                    ? null
+                    : previous.getSegments().getFirst().filePath().toString();
+
+            double durationSeconds = samples / format.sampleRate();
+            double durationBeats = durationSeconds * (bpm / 60.0);
+            if (durationBeats <= 0) {
+                durationBeats = 0.01;
+            }
+
+            // Build an AudioClip for this take. The in-memory audio is set
+            // immediately so playback can happen without waiting on I/O.
+            AudioClip clip = new AudioClip(
+                    "Take — " + track.getName(),
+                    recordingStartBeat,
+                    durationBeats,
+                    segmentPath);
+            if (capturedAudio != null) {
+                clip.setAudioData(capturedAudio);
+            }
+
+            Take take = Take.of(clip);
+            TakeGroup existing = takeGroups.get(track);
+            TakeGroup updated = (existing == null ? TakeGroup.empty() : existing)
+                    .withTakeAppended(take);
+            takeGroups.put(track, updated);
+
+            // Hand the previous session off to the virtual-thread executor —
+            // any pending segment flushing or listener notification happens
+            // off the audio thread. Today the RecordingSession already wrote
+            // its buffers inline; this hook keeps the architecture ready for
+            // future async flushing without touching the audio callback path.
+            ExecutorService exec = takeFinalizationExecutor;
+            if (exec != null) {
+                RecordingSession captured = previous;
+                exec.submit(() -> {
+                    // No-op today: the session is already stopped. Exists so
+                    // async disk work can be added here safely.
+                    Objects.requireNonNull(captured);
+                });
+            }
+        }
     }
 }

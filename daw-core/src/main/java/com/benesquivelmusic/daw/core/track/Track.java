@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.comping.TakeComping;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
+import com.benesquivelmusic.daw.core.recording.TakeGroup;
 
 import java.util.*;
 
@@ -46,6 +47,7 @@ public final class Track {
     private boolean frozen;
     private float[][] frozenAudioData;
     private final TakeComping takeComping = new TakeComping();
+    private final Map<UUID, TakeGroup> takeGroups = new LinkedHashMap<>();
     private SoundFontAssignment soundFontAssignment;
     private String midiInputDeviceName;
     private AutomationMode automationMode = AutomationMode.READ;
@@ -532,6 +534,51 @@ public final class Track {
      */
     public TakeComping getTakeComping() {
         return takeComping;
+    }
+
+    /**
+     * Returns an unmodifiable snapshot of the {@link TakeGroup}s recorded on
+     * this track, keyed by {@link TakeGroup#id()}. Each group represents a
+     * stack of loop-record takes captured for the same clip slot.
+     *
+     * @return the take groups (never {@code null}; may be empty)
+     */
+    public Map<UUID, TakeGroup> getTakeGroups() {
+        return Collections.unmodifiableMap(new LinkedHashMap<>(takeGroups));
+    }
+
+    /**
+     * Returns the {@link TakeGroup} with the given id, or {@code null}
+     * if no such group exists on this track.
+     */
+    public TakeGroup getTakeGroup(UUID id) {
+        if (id == null) {
+            return null;
+        }
+        return takeGroups.get(id);
+    }
+
+    /**
+     * Stores or replaces a {@link TakeGroup} on this track. The track keeps
+     * the take group indexed by {@link TakeGroup#id()}; immutable record
+     * semantics mean callers always get back the latest instance via
+     * {@link #getTakeGroup(UUID)}.
+     */
+    public void putTakeGroup(TakeGroup group) {
+        Objects.requireNonNull(group, "group must not be null");
+        takeGroups.put(group.id(), group);
+    }
+
+    /**
+     * Removes the take group with the given id from this track.
+     *
+     * @return the removed group, or {@code null} if there was none
+     */
+    public TakeGroup removeTakeGroup(UUID id) {
+        if (id == null) {
+            return null;
+        }
+        return takeGroups.remove(id);
     }
 
     /**
