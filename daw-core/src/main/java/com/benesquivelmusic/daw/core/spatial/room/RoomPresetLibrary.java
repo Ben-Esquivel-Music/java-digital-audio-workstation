@@ -77,63 +77,13 @@ public final class RoomPresetLibrary {
     }
 
     private static Map<String, WallMaterial> buildSurfaceMaterials(RoomPreset preset) {
-        return switch (preset) {
-            case RECORDING_BOOTH -> Map.of(
-                    "floor", WallMaterial.CARPET,
-                    "ceiling", WallMaterial.ACOUSTIC_FOAM,
-                    "leftWall", WallMaterial.ACOUSTIC_FOAM,
-                    "rightWall", WallMaterial.ACOUSTIC_FOAM,
-                    "frontWall", WallMaterial.ACOUSTIC_FOAM,
-                    "backWall", WallMaterial.ACOUSTIC_FOAM);
-            case STUDIO -> Map.of(
-                    "floor", WallMaterial.CARPET,
-                    "ceiling", WallMaterial.ACOUSTIC_TILE,
-                    "leftWall", WallMaterial.ACOUSTIC_TILE,
-                    "rightWall", WallMaterial.ACOUSTIC_TILE,
-                    "frontWall", WallMaterial.WOOD,
-                    "backWall", WallMaterial.ACOUSTIC_FOAM);
-            case LIVING_ROOM -> Map.of(
-                    "floor", WallMaterial.CARPET,
-                    "ceiling", WallMaterial.DRYWALL,
-                    "leftWall", WallMaterial.DRYWALL,
-                    "rightWall", WallMaterial.DRYWALL,
-                    "frontWall", WallMaterial.CURTAINS,
-                    "backWall", WallMaterial.DRYWALL);
-            case BATHROOM -> Map.of(
-                    "floor", WallMaterial.MARBLE,
-                    "ceiling", WallMaterial.PLASTER,
-                    "leftWall", WallMaterial.GLASS,
-                    "rightWall", WallMaterial.GLASS,
-                    "frontWall", WallMaterial.GLASS,
-                    "backWall", WallMaterial.GLASS);
-            case CONCERT_HALL -> Map.of(
-                    "floor", WallMaterial.WOOD,
-                    "ceiling", WallMaterial.WOOD,
-                    "leftWall", WallMaterial.WOOD,
-                    "rightWall", WallMaterial.WOOD,
-                    "frontWall", WallMaterial.WOOD,
-                    "backWall", WallMaterial.CURTAINS);
-            case CATHEDRAL -> Map.of(
-                    "floor", WallMaterial.MARBLE,
-                    "ceiling", WallMaterial.CONCRETE,
-                    "leftWall", WallMaterial.CONCRETE,
-                    "rightWall", WallMaterial.CONCRETE,
-                    "frontWall", WallMaterial.CONCRETE,
-                    "backWall", WallMaterial.CONCRETE);
-            case CLASSROOM -> Map.of(
-                    "floor", WallMaterial.LINOLEUM,
-                    "ceiling", WallMaterial.ACOUSTIC_TILE,
-                    "leftWall", WallMaterial.DRYWALL,
-                    "rightWall", WallMaterial.DRYWALL,
-                    "frontWall", WallMaterial.DRYWALL,
-                    "backWall", WallMaterial.DRYWALL);
-            case WAREHOUSE -> Map.of(
-                    "floor", WallMaterial.CONCRETE,
-                    "ceiling", WallMaterial.CONCRETE,
-                    "leftWall", WallMaterial.CONCRETE,
-                    "rightWall", WallMaterial.CONCRETE,
-                    "frontWall", WallMaterial.CONCRETE,
-                    "backWall", WallMaterial.CONCRETE);
-        };
+        SurfaceMaterialMap m = preset.materialMap();
+        return Map.of(
+                "floor", m.floor(),
+                "ceiling", m.ceiling(),
+                "leftWall", m.leftWall(),
+                "rightWall", m.rightWall(),
+                "frontWall", m.frontWall(),
+                "backWall", m.backWall());
     }
 }

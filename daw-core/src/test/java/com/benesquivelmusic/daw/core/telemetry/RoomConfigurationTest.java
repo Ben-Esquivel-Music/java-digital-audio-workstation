@@ -71,7 +71,7 @@ class RoomConfigurationTest {
 
     @Test
     void shouldRejectNullWallMaterial() {
-        assertThatThrownBy(() -> new RoomConfiguration(new RoomDimensions(10, 8, 3), null))
+        assertThatThrownBy(() -> new RoomConfiguration(new RoomDimensions(10, 8, 3), (WallMaterial) null))
                 .isInstanceOf(NullPointerException.class);
     }
 

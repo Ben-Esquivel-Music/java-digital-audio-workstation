@@ -938,16 +938,21 @@ public final class ProjectDeserializer {
         }
 
         String materialStr = elem.getAttribute("wall-material");
-        WallMaterial material;
+        WallMaterial defaultMaterial;
         try {
-            material = WallMaterial.valueOf(materialStr);
+            defaultMaterial = WallMaterial.valueOf(materialStr);
         } catch (IllegalArgumentException | NullPointerException e) {
-            material = WallMaterial.DRYWALL;
+            defaultMaterial = WallMaterial.DRYWALL;
         }
+
+        // Per-surface material map. Legacy projects only have the
+        // wall-material attribute, in which case we broadcast it to all six
+        // surfaces.
+        SurfaceMaterialMap materialMap = parseSurfaceMaterialMap(elem, defaultMaterial);
 
         CeilingShape ceiling = parseCeilingShape(elem, height);
         RoomDimensions dimensions = new RoomDimensions(width, length, ceiling);
-        RoomConfiguration config = new RoomConfiguration(dimensions, material);
+        RoomConfiguration config = new RoomConfiguration(dimensions, materialMap);
 
         for (Element sourceElem : getDirectChildElements(elem, "sound-source")) {
             String name = sourceElem.getAttribute("name");
@@ -986,6 +991,39 @@ public final class ProjectDeserializer {
         }
 
         project.setRoomConfiguration(config);
+    }
+
+    /**
+     * Parses the {@code <surface-materials>} child element. When the element
+     * is absent (legacy projects), {@code defaultMaterial} is broadcast to
+     * every surface so the result is bit-identical to the pre-per-surface
+     * single-material behaviour.
+     */
+    private SurfaceMaterialMap parseSurfaceMaterialMap(Element configElem, WallMaterial defaultMaterial) {
+        List<Element> elems = getDirectChildElements(configElem, "surface-materials");
+        if (elems.isEmpty()) {
+            return new SurfaceMaterialMap(defaultMaterial);
+        }
+        Element materials = elems.getFirst();
+        return new SurfaceMaterialMap(
+                parseSurfaceMaterial(materials, "floor", defaultMaterial),
+                parseSurfaceMaterial(materials, "front-wall", defaultMaterial),
+                parseSurfaceMaterial(materials, "back-wall", defaultMaterial),
+                parseSurfaceMaterial(materials, "left-wall", defaultMaterial),
+                parseSurfaceMaterial(materials, "right-wall", defaultMaterial),
+                parseSurfaceMaterial(materials, "ceiling", defaultMaterial));
+    }
+
+    private static WallMaterial parseSurfaceMaterial(Element elem, String attr, WallMaterial fallback) {
+        String raw = elem.getAttribute(attr);
+        if (raw == null || raw.isEmpty()) {
+            return fallback;
+        }
+        try {
+            return WallMaterial.valueOf(raw);
+        } catch (IllegalArgumentException e) {
+            return fallback;
+        }
     }
 
     private CeilingShape parseCeilingShape(Element configElem, double legacyHeight) {

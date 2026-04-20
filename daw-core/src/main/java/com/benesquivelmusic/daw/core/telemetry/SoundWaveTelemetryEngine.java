@@ -63,23 +63,23 @@ public final class SoundWaveTelemetryEngine {
         Objects.requireNonNull(config, "config must not be null");
 
         RoomDimensions dims = config.getDimensions();
-        WallMaterial material = config.getWallMaterial();
+        SurfaceMaterialMap materialMap = config.getMaterialMap();
 
         List<SoundWavePath> allPaths = new ArrayList<>();
 
         for (SoundSource source : config.getSoundSources()) {
             for (MicrophonePlacement mic : config.getMicrophones()) {
                 allPaths.add(computeDirectPath(source, mic));
-                allPaths.addAll(computeFirstOrderReflections(source, mic, dims, material));
+                allPaths.addAll(computeFirstOrderReflections(source, mic, dims, materialMap));
             }
         }
 
-        double rt60 = estimateRt60(dims, material);
+        double rt60 = estimateRt60(dims, materialMap);
         List<TelemetrySuggestion> suggestions = generateSuggestions(config, allPaths, rt60);
 
         return new RoomTelemetryData(dims, allPaths, rt60, suggestions,
                 config.getAudienceMembers(), config.getSoundSources(),
-                config.getMicrophones(), material);
+                config.getMicrophones(), materialMap.frontWall(), materialMap);
     }
 
     // ----------------------------------------------------------------
@@ -106,9 +106,19 @@ public final class SoundWaveTelemetryEngine {
     // First-order reflections (image-source method)
     // ----------------------------------------------------------------
 
+    /**
+     * Backwards-compatible overload that broadcasts a single
+     * {@link WallMaterial} to every surface.
+     */
     static List<SoundWavePath> computeFirstOrderReflections(
             SoundSource source, MicrophonePlacement mic,
             RoomDimensions dims, WallMaterial material) {
+        return computeFirstOrderReflections(source, mic, dims, new SurfaceMaterialMap(material));
+    }
+
+    static List<SoundWavePath> computeFirstOrderReflections(
+            SoundSource source, MicrophonePlacement mic,
+            RoomDimensions dims, SurfaceMaterialMap materialMap) {
 
         List<SoundWavePath> reflections = new ArrayList<>();
         Position3D sp = source.position();
@@ -123,8 +133,12 @@ public final class SoundWaveTelemetryEngine {
                 new Position3D(sp.x(), sp.y(), -sp.z())                     // floor       (z = 0)
         };
 
-        String[] surfaceNames = {
-                "left wall", "right wall", "front wall", "back wall", "floor"
+        RoomSurface[] surfaces = {
+                RoomSurface.LEFT_WALL,
+                RoomSurface.RIGHT_WALL,
+                RoomSurface.FRONT_WALL,
+                RoomSurface.BACK_WALL,
+                RoomSurface.FLOOR
         };
 
         for (int i = 0; i < images.length; i++) {
@@ -133,8 +147,9 @@ public final class SoundWaveTelemetryEngine {
             double totalDist = image.distanceTo(mp);
             double delayMs = (totalDist / SPEED_OF_SOUND_MPS) * 1000.0;
 
+            WallMaterial surfaceMaterial = materialMap.materialAt(surfaces[i]);
             double distAtten = -20.0 * Math.log10(Math.max(totalDist, 0.001));
-            double absorptionLoss = 10.0 * Math.log10(1.0 - material.absorptionCoefficient());
+            double absorptionLoss = 10.0 * Math.log10(1.0 - surfaceMaterial.absorptionCoefficient());
             double attenuationDb = distAtten + absorptionLoss;
 
             Position3D reflectionPoint = computeReflectionPoint(sp, image, mp, i, dims);
@@ -146,11 +161,12 @@ public final class SoundWaveTelemetryEngine {
                     totalDist,
                     delayMs,
                     attenuationDb,
-                    true
+                    true,
+                    surfaces[i]
             ));
         }
 
-        reflections.addAll(computeCeilingReflections(source, mic, dims, material));
+        reflections.addAll(computeCeilingReflections(source, mic, dims, materialMap));
 
         return reflections;
     }
@@ -165,11 +181,18 @@ public final class SoundWaveTelemetryEngine {
     static List<SoundWavePath> computeCeilingReflections(
             SoundSource source, MicrophonePlacement mic,
             RoomDimensions dims, WallMaterial material) {
+        return computeCeilingReflections(source, mic, dims, new SurfaceMaterialMap(material));
+    }
+
+    static List<SoundWavePath> computeCeilingReflections(
+            SoundSource source, MicrophonePlacement mic,
+            RoomDimensions dims, SurfaceMaterialMap materialMap) {
 
         List<SoundWavePath> reflections = new ArrayList<>();
         Position3D sp = source.position();
         Position3D mp = mic.position();
         CeilingShape shape = dims.ceiling();
+        WallMaterial material = materialMap.ceiling();
 
         switch (shape) {
             case CeilingShape.Flat flat -> {
@@ -185,7 +208,8 @@ public final class SoundWaveTelemetryEngine {
                     reflections.add(new SoundWavePath(
                             source.name(), mic.name(),
                             List.of(sp, rp, mp),
-                            totalDist, delayMs, attenuationDb, true));
+                            totalDist, delayMs, attenuationDb, true,
+                            RoomSurface.CEILING));
                 }
             }
             case CeilingShape.Domed dome -> reflections.addAll(
@@ -291,7 +315,8 @@ public final class SoundWaveTelemetryEngine {
             out.add(new SoundWavePath(
                     source.name(), mic.name(),
                     List.of(sp, rp, mp),
-                    totalDist, delayMs, attenuationDb, true));
+                    totalDist, delayMs, attenuationDb, true,
+                    RoomSurface.CEILING));
         }
         return out;
     }
@@ -428,18 +453,107 @@ public final class SoundWaveTelemetryEngine {
     // ----------------------------------------------------------------
 
     /**
-     * Estimates RT60 reverberation time using the Sabine equation:
-     * {@code RT60 = 0.161 * V / A} where V is room volume and A is
-     * total absorption in sabins.
+     * Estimates RT60 reverberation time for a single uniform material —
+     * exposed publicly so non-package callers (e.g. UI controllers) can
+     * use the per-surface aware engine via the
+     * {@link com.benesquivelmusic.daw.core.telemetry.RoomParameterController}
+     * facade. When the per-surface materials are uniform — or this overload
+     * is invoked directly with a single {@link WallMaterial} — Sabine is
+     * used and the result is bit-identical to the legacy single-material
+     * formula {@code RT60 = 0.161 * V / (S * α)}.
      */
-    static double estimateRt60(RoomDimensions dims, WallMaterial material) {
-        double volume = dims.volume();
-        double surfaceArea = dims.surfaceArea();
-        double totalAbsorption = surfaceArea * material.absorptionCoefficient();
-        if (totalAbsorption <= 0) {
+    public static double estimateRt60(RoomDimensions dims, WallMaterial material) {
+        return estimateRt60(dims, new SurfaceMaterialMap(material));
+    }
+
+    /** Mean absorption above which Eyring-Norris is preferred over Sabine. */
+    static final double EYRING_THRESHOLD = 0.2;
+
+    /**
+     * Per-surface RT60 estimation using each surface's absorption
+     * coefficient. See {@link #estimateRt60(RoomDimensions, WallMaterial)}
+     * for the bit-identical-broadcast guarantee.
+     *
+     * <p>For uniform material maps the engine uses the classical Sabine
+     * formula. For non-uniform maps the choice between Sabine and Eyring
+     * is made automatically based on the area-weighted mean absorption:
+     * the more accurate Eyring-Norris variant is used once the room is
+     * &quot;moderately absorbent&quot; (mean α &gt;
+     * {@value #EYRING_THRESHOLD}), where Sabine systematically over-estimates
+     * reverberation time.</p>
+     */
+    public static double estimateRt60(RoomDimensions dims, SurfaceMaterialMap materialMap) {
+        double[] areas = surfaceAreas(dims);
+        double[] alphas = surfaceAlphas(materialMap);
+
+        double totalAbsorption = 0.0;   // Σ S_i * α_i  (sabins)
+        double totalArea = 0.0;
+        for (int i = 0; i < areas.length; i++) {
+            totalAbsorption += areas[i] * alphas[i];
+            totalArea += areas[i];
+        }
+        if (totalAbsorption <= 0 || totalArea <= 0) {
             return Double.MAX_VALUE;
         }
-        return 0.161 * volume / totalAbsorption;
+
+        double volume = dims.volume();
+        double meanAbsorption = totalAbsorption / totalArea;
+
+        // Bit-identical to the legacy single-material Sabine formula when
+        // the material map is uniform (Σ S_i * α = α * S_total).
+        if (materialMap.isUniform() || meanAbsorption <= EYRING_THRESHOLD) {
+            return 0.161 * volume / totalAbsorption;
+        }
+
+        // Eyring-Norris: RT60 = 0.161 * V / (-S_total * ln(1 - mean α))
+        double denominator = -totalArea * Math.log(1.0 - meanAbsorption);
+        if (denominator <= 0) {
+            return Double.MAX_VALUE;
+        }
+        return 0.161 * volume / denominator;
+    }
+
+    /**
+     * Returns the six interior surface areas in the order
+     * {@link RoomSurface#FLOOR}, {@link RoomSurface#FRONT_WALL FRONT_WALL},
+     * {@link RoomSurface#BACK_WALL BACK_WALL},
+     * {@link RoomSurface#LEFT_WALL LEFT_WALL},
+     * {@link RoomSurface#RIGHT_WALL RIGHT_WALL},
+     * {@link RoomSurface#CEILING}.
+     *
+     * <p>Vertical wall areas are computed from the maximum ceiling height
+     * (for non-flat ceilings the leftover wall surface area is split
+     * between front/back vs left/right in proportion to width and length —
+     * an approximation that preserves the total wall area returned by
+     * {@link RoomDimensions#surfaceArea()}).</p>
+     */
+    static double[] surfaceAreas(RoomDimensions dims) {
+        double w = dims.width();
+        double l = dims.length();
+        double floorArea = w * l;
+        double ceilingArea = dims.ceiling().ceilingArea(w, l);
+        double totalWallArea = dims.ceiling().wallArea(w, l);
+        // Split total wall area between the X-facing and Y-facing wall pairs in
+        // proportion to their footprints. For a flat ceiling this reproduces
+        // the exact rectangular wall areas (front/back = w*h, left/right = l*h).
+        double xPairFraction = w / (w + l);
+        double yPairFraction = l / (w + l);
+        double frontArea = totalWallArea * xPairFraction / 2.0; // y = 0     wall
+        double backArea = frontArea;                            // y = length wall
+        double leftArea = totalWallArea * yPairFraction / 2.0;  // x = 0     wall
+        double rightArea = leftArea;                            // x = width  wall
+        return new double[] { floorArea, frontArea, backArea, leftArea, rightArea, ceilingArea };
+    }
+
+    private static double[] surfaceAlphas(SurfaceMaterialMap materialMap) {
+        return new double[] {
+                materialMap.floor().absorptionCoefficient(),
+                materialMap.frontWall().absorptionCoefficient(),
+                materialMap.backWall().absorptionCoefficient(),
+                materialMap.leftWall().absorptionCoefficient(),
+                materialMap.rightWall().absorptionCoefficient(),
+                materialMap.ceiling().absorptionCoefficient()
+        };
     }
 
     // ----------------------------------------------------------------

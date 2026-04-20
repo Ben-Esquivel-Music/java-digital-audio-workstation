@@ -59,7 +59,23 @@ public final class RoomParameterController {
     }
 
     /**
-     * Computes early reflection data for a source–microphone pair.
+     * Computes the estimated RT60 reverberation time using a per-surface
+     * material map. Delegates to
+     * {@link SoundWaveTelemetryEngine#estimateRt60(RoomDimensions, SurfaceMaterialMap)}
+     * which automatically chooses the Sabine or Eyring formulation based
+     * on the area-weighted mean absorption.
+     *
+     * @param dimensions  the room dimensions
+     * @param materialMap the per-surface material map
+     * @return the estimated RT60 in seconds
+     */
+    public static double computeRt60(RoomDimensions dimensions, SurfaceMaterialMap materialMap) {
+        Objects.requireNonNull(dimensions, "dimensions must not be null");
+        Objects.requireNonNull(materialMap, "materialMap must not be null");
+        return SoundWaveTelemetryEngine.estimateRt60(dimensions, materialMap);
+    }
+
+    /**
      *
      * <p>Uses the image-source method to compute first-order reflections
      * off the six room surfaces. Returns a list of

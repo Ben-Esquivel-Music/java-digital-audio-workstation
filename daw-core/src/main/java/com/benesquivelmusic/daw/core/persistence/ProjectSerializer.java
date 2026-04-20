@@ -33,6 +33,7 @@ import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
 import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
+import com.benesquivelmusic.daw.sdk.telemetry.SurfaceMaterialMap;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 
@@ -503,7 +504,20 @@ public final class ProjectSerializer {
         // Legacy "height" attribute (maxHeight) kept for readers that
         // predate CeilingShape support. New readers use the <ceiling> child.
         configElem.setAttribute("height", String.valueOf(dims.height()));
+        // Legacy "wall-material" attribute kept for readers that predate
+        // SurfaceMaterialMap support; it carries the predominant
+        // (front-wall) material so older readers still produce a sane
+        // single-material configuration on load.
         configElem.setAttribute("wall-material", config.getWallMaterial().name());
+        SurfaceMaterialMap materialMap = config.getMaterialMap();
+        Element materialsElem = document.createElement("surface-materials");
+        materialsElem.setAttribute("floor", materialMap.floor().name());
+        materialsElem.setAttribute("front-wall", materialMap.frontWall().name());
+        materialsElem.setAttribute("back-wall", materialMap.backWall().name());
+        materialsElem.setAttribute("left-wall", materialMap.leftWall().name());
+        materialsElem.setAttribute("right-wall", materialMap.rightWall().name());
+        materialsElem.setAttribute("ceiling", materialMap.ceiling().name());
+        configElem.appendChild(materialsElem);
         configElem.appendChild(buildCeilingElement(document, dims.ceiling()));
         root.appendChild(configElem);
 

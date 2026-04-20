@@ -23,6 +23,7 @@ import java.util.Objects;
  * @param soundSources          sound sources in the room (may be empty)
  * @param microphones           microphone placements in the room (may be empty)
  * @param wallMaterial          the predominant wall material (may be {@code null} for legacy data)
+ * @param materialMap           the per-surface material map (may be {@code null} for legacy data)
  */
 public record RoomTelemetryData(
         RoomDimensions roomDimensions,
@@ -32,7 +33,8 @@ public record RoomTelemetryData(
         List<AudienceMember> audienceMembers,
         List<SoundSource> soundSources,
         List<MicrophonePlacement> microphones,
-        WallMaterial wallMaterial
+        WallMaterial wallMaterial,
+        SurfaceMaterialMap materialMap
 ) {
 
     /**
@@ -54,6 +56,24 @@ public record RoomTelemetryData(
             throw new IllegalArgumentException(
                     "estimatedRt60Seconds must not be negative: " + estimatedRt60Seconds);
         }
+    }
+
+    /**
+     * Backwards-compatible constructor that accepts only a single
+     * {@link WallMaterial} and stores no per-surface material map.
+     */
+    public RoomTelemetryData(
+            RoomDimensions roomDimensions,
+            List<SoundWavePath> wavePaths,
+            double estimatedRt60Seconds,
+            List<TelemetrySuggestion> suggestions,
+            List<AudienceMember> audienceMembers,
+            List<SoundSource> soundSources,
+            List<MicrophonePlacement> microphones,
+            WallMaterial wallMaterial) {
+        this(roomDimensions, wavePaths, estimatedRt60Seconds, suggestions,
+                audienceMembers, soundSources, microphones, wallMaterial,
+                wallMaterial == null ? null : new SurfaceMaterialMap(wallMaterial));
     }
 
     /**

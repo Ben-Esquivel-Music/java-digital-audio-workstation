@@ -399,6 +399,47 @@ class ProjectDeserializerTest {
     }
 
     @Test
+    void shouldRoundTripPerSurfaceMaterialMap() throws IOException {
+        DawProject original = new DawProject("Test", AudioFormat.CD_QUALITY);
+        SurfaceMaterialMap map = new SurfaceMaterialMap(
+                WallMaterial.MARBLE,        // floor
+                WallMaterial.WOOD,          // frontWall
+                WallMaterial.CURTAINS,      // backWall
+                WallMaterial.GLASS,         // leftWall
+                WallMaterial.DRYWALL,       // rightWall
+                WallMaterial.ACOUSTIC_TILE  // ceiling
+        );
+        original.setRoomConfiguration(new RoomConfiguration(
+                new RoomDimensions(10, 8, 3), map));
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        SurfaceMaterialMap restoredMap = restored.getRoomConfiguration().getMaterialMap();
+        assertThat(restoredMap).isEqualTo(map);
+    }
+
+    @Test
+    void shouldDeserializeLegacyRoomConfigurationByBroadcastingWallMaterial() throws IOException {
+        // Legacy XML: only the wall-material attribute, no <surface-materials> child.
+        String legacyXml = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <daw-project version="1">
+                    <metadata><name>Legacy</name></metadata>
+                    <audio-format sample-rate="44100" bit-depth="16" channels="2"/>
+                    <transport tempo="120.0" time-signature-numerator="4" time-signature-denominator="4"/>
+                    <room-configuration width="6.0" length="8.0" height="3.0" wall-material="ACOUSTIC_FOAM"/>
+                </daw-project>
+                """;
+
+        DawProject restored = deserializer.deserialize(legacyXml);
+
+        SurfaceMaterialMap restoredMap = restored.getRoomConfiguration().getMaterialMap();
+        assertThat(restoredMap).isEqualTo(new SurfaceMaterialMap(WallMaterial.ACOUSTIC_FOAM));
+        assertThat(restoredMap.isUniform()).isTrue();
+    }
+
+    @Test
     void shouldRoundTripDomedCeiling() throws IOException {
         DawProject original = new DawProject("Test", AudioFormat.CD_QUALITY);
         original.setRoomConfiguration(new RoomConfiguration(
