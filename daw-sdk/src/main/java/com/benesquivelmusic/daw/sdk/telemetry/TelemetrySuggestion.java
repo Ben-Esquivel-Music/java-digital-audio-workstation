@@ -14,7 +14,8 @@ public sealed interface TelemetrySuggestion
         permits TelemetrySuggestion.AdjustMicPosition,
                 TelemetrySuggestion.AdjustMicAngle,
                 TelemetrySuggestion.AddDampening,
-                TelemetrySuggestion.RemoveDampening {
+                TelemetrySuggestion.RemoveDampening,
+                TelemetrySuggestion.MoveSoundSource {
 
     /** Returns a human-readable description of this suggestion. */
     String description();
@@ -104,6 +105,34 @@ public sealed interface TelemetrySuggestion
         @Override
         public String description() {
             return "Reduce dampening on %s: %s".formatted(surfaceDescription, reason);
+        }
+    }
+
+    /**
+     * Suggests moving a sound source (typically a monitor speaker) to a
+     * different position to mitigate Speaker Boundary Interference Response
+     * (SBIR) notches caused by the source being too close to a boundary.
+     *
+     * @param sourceName        the sound source to move
+     * @param suggestedPosition the recommended new position
+     * @param reason            why the move is recommended (e.g. predicted
+     *                          notch frequency / depth and the offending
+     *                          boundary)
+     */
+    record MoveSoundSource(String sourceName, Position3D suggestedPosition, String reason)
+            implements TelemetrySuggestion {
+
+        public MoveSoundSource {
+            Objects.requireNonNull(sourceName, "sourceName must not be null");
+            Objects.requireNonNull(suggestedPosition, "suggestedPosition must not be null");
+            Objects.requireNonNull(reason, "reason must not be null");
+        }
+
+        @Override
+        public String description() {
+            return "Move source '%s' to (%.2f, %.2f, %.2f): %s".formatted(
+                    sourceName, suggestedPosition.x(), suggestedPosition.y(),
+                    suggestedPosition.z(), reason);
         }
     }
 }
