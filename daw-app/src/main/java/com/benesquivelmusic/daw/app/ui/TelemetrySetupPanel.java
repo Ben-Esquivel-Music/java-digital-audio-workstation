@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.telemetry.BoundaryResponsePanel;
+import com.benesquivelmusic.daw.app.ui.telemetry.RoomModesPanel;
 import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
 import com.benesquivelmusic.daw.core.telemetry.RoomGeometrySolver;
 import com.benesquivelmusic.daw.core.telemetry.RoomParameterController;
@@ -113,6 +114,9 @@ public final class TelemetrySetupPanel extends ScrollPane {
 
     /** Boundary-response (SBIR) display — computed live from sources/mics. */
     private final BoundaryResponsePanel boundaryResponsePanel;
+
+    /** Room-modes plot — computed live from dimensions / materials. */
+    private final RoomModesPanel roomModesPanel;
 
     /**
      * {@code true} while the panel is programmatically writing dimension
@@ -349,13 +353,14 @@ public final class TelemetrySetupPanel extends ScrollPane {
         applyAutoSizeButton.setOnAction(event -> applyAutoSize());
 
         boundaryResponsePanel = new BoundaryResponsePanel();
+        roomModesPanel = new RoomModesPanel();
         // Refresh the SBIR display whenever the user adds/removes a
         // sound source or microphone. The panel computes from the live
         // configuration and persists nothing.
         soundSources.addListener((javafx.collections.ListChangeListener<SoundSource>)
-                change -> refreshBoundaryResponse());
+                change -> { refreshBoundaryResponse(); refreshRoomModes(); });
         microphones.addListener((javafx.collections.ListChangeListener<MicrophonePlacement>)
-                change -> refreshBoundaryResponse());
+                change -> { refreshBoundaryResponse(); refreshRoomModes(); });
 
         // ── Auto-fill on preset selection ────────────────────────────
         presetCombo.valueProperty().addListener((observable, oldValue, newValue) -> {
@@ -545,6 +550,17 @@ public final class TelemetrySetupPanel extends ScrollPane {
         boundaryResponseHelp.setStyle(LABEL_STYLE);
         boundaryResponseHelp.setWrapText(true);
 
+        Label roomModesSectionLabel = new Label("Room Modes");
+        roomModesSectionLabel.setStyle(SECTION_LABEL_STYLE);
+        Label roomModesHelp = new Label(
+                "Standing-wave resonances determined by the room's length, "
+                        + "width, and height. Axial (red) modes are loudest; "
+                        + "tangential (orange) and oblique (yellow) modes are "
+                        + "progressively weaker. The dashed vertical is the "
+                        + "Schroeder frequency — modal behaviour dominates below it.");
+        roomModesHelp.setStyle(LABEL_STYLE);
+        roomModesHelp.setWrapText(true);
+
         content.getChildren().addAll(
                 header,
                 headerSep,
@@ -589,12 +605,17 @@ public final class TelemetrySetupPanel extends ScrollPane {
                 new Separator() {{ setStyle(SEPARATOR_STYLE); }},
                 boundaryResponseSectionLabel,
                 boundaryResponseHelp,
-                boundaryResponsePanel
+                boundaryResponsePanel,
+                new Separator() {{ setStyle(SEPARATOR_STYLE); }},
+                roomModesSectionLabel,
+                roomModesHelp,
+                roomModesPanel
         );
 
         setContent(content);
         // Render an initial empty state.
         refreshBoundaryResponse();
+        refreshRoomModes();
     }
 
     // ── Boundary-response (SBIR) section ─────────────────────────────
@@ -641,6 +662,50 @@ public final class TelemetrySetupPanel extends ScrollPane {
     private RoomConfiguration emptyConfigForCurrentSources() {
         return new RoomConfiguration(
                 new RoomDimensions(1, 1, 1), WallMaterial.DRYWALL);
+    }
+
+    // ── Room-modes section ──────────────────────────────────────────
+
+    /**
+     * Returns the live Room Modes plot panel embedded in this setup
+     * panel. Tests may call {@link RoomModesPanel#update} directly
+     * with the latest room configuration to refresh the plot.
+     *
+     * @return the embedded room-modes panel (never {@code null})
+     */
+    public RoomModesPanel getRoomModesPanel() {
+        return roomModesPanel;
+    }
+
+    /**
+     * Recomputes the mode spectrum from the active room dimensions
+     * and material assignments. Called automatically when dimensions,
+     * materials, sources, or microphones change; can also be invoked
+     * manually.
+     */
+    public void refreshRoomModes() {
+        if (roomModesPanel == null) return; // early construction safety
+        try {
+            double w = Double.parseDouble(widthField.getText());
+            double l = Double.parseDouble(lengthField.getText());
+            double h = Double.parseDouble(heightField.getText());
+            if (w <= 0 || l <= 0 || h <= 0) {
+                roomModesPanel.update(emptyConfigForCurrentSources());
+                return;
+            }
+            SurfaceMaterialMap map = getCurrentMaterialMap();
+            if (map == null) {
+                roomModesPanel.update(emptyConfigForCurrentSources());
+                return;
+            }
+            RoomConfiguration cfg = new RoomConfiguration(
+                    new RoomDimensions(w, l, h), map);
+            for (SoundSource src : soundSources) cfg.addSoundSource(src);
+            for (MicrophonePlacement m : microphones) cfg.addMicrophone(m);
+            roomModesPanel.update(cfg);
+        } catch (NumberFormatException | NullPointerException ex) {
+            roomModesPanel.update(emptyConfigForCurrentSources());
+        }
     }
 
     // ── Public accessors ─────────────────────────────────────────────
@@ -1609,6 +1674,9 @@ public final class TelemetrySetupPanel extends ScrollPane {
         } else {
             rt60Label.setText("RT60: —");
         }
+        // The room-mode spectrum depends on dimensions + materials, so
+        // it must refresh in lock-step with RT60.
+        refreshRoomModes();
     }
 
     /**
