@@ -40,6 +40,7 @@ import org.xml.sax.SAXException;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
+import java.awt.geom.Rectangle2D;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -990,7 +991,46 @@ public final class ProjectDeserializer {
             config.addAudienceMember(new AudienceMember(name, new Position3D(x, y, z)));
         }
 
+        for (Element tElem : getDirectChildElements(elem, "applied-treatment")) {
+            AcousticTreatment treatment = parseAppliedTreatment(tElem);
+            if (treatment != null) {
+                config.addAppliedTreatment(treatment);
+            }
+        }
+
         project.setRoomConfiguration(config);
+    }
+
+    private AcousticTreatment parseAppliedTreatment(Element t) {
+        TreatmentKind kind;
+        try {
+            kind = TreatmentKind.valueOf(t.getAttribute("kind"));
+        } catch (IllegalArgumentException | NullPointerException e) {
+            return null;
+        }
+        double w = parseDoubleAttr(t, "size-w", 0);
+        double h = parseDoubleAttr(t, "size-h", 0);
+        if (w <= 0 || h <= 0) return null;
+        double improvement = parseDoubleAttr(t, "improvement-lufs", 0);
+        String location = t.getAttribute("location");
+        WallAttachment attach;
+        try {
+            if ("in-corner".equals(location)) {
+                RoomSurface a = RoomSurface.valueOf(t.getAttribute("surface-a"));
+                RoomSurface b = RoomSurface.valueOf(t.getAttribute("surface-b"));
+                double z = parseDoubleAttr(t, "z", 0);
+                attach = new WallAttachment.InCorner(a, b, z);
+            } else {
+                RoomSurface surface = RoomSurface.valueOf(t.getAttribute("surface"));
+                double u = parseDoubleAttr(t, "u", 0);
+                double v = parseDoubleAttr(t, "v", 0);
+                attach = new WallAttachment.OnSurface(surface, u, v);
+            }
+        } catch (IllegalArgumentException | NullPointerException e) {
+            return null;
+        }
+        Rectangle2D size = new Rectangle2D.Double(-w / 2.0, -h / 2.0, w, h);
+        return new AcousticTreatment(kind, attach, size, improvement);
     }
 
     /**

@@ -26,6 +26,7 @@ import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy;
 import com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget;
+import com.benesquivelmusic.daw.sdk.telemetry.AcousticTreatment;
 import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
 import com.benesquivelmusic.daw.sdk.telemetry.CeilingShape;
 import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
@@ -34,6 +35,8 @@ import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
 import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
 import com.benesquivelmusic.daw.sdk.telemetry.SurfaceMaterialMap;
+import com.benesquivelmusic.daw.sdk.telemetry.TreatmentKind;
+import com.benesquivelmusic.daw.sdk.telemetry.WallAttachment;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 
@@ -552,6 +555,30 @@ public final class ProjectSerializer {
             memberElem.setAttribute("y", String.valueOf(pos.y()));
             memberElem.setAttribute("z", String.valueOf(pos.z()));
             configElem.appendChild(memberElem);
+        }
+
+        for (AcousticTreatment treatment : config.getAppliedTreatments()) {
+            Element t = document.createElement("applied-treatment");
+            t.setAttribute("kind", treatment.kind().name());
+            t.setAttribute("size-w", String.valueOf(treatment.sizeMeters().getWidth()));
+            t.setAttribute("size-h", String.valueOf(treatment.sizeMeters().getHeight()));
+            t.setAttribute("improvement-lufs",
+                    String.valueOf(treatment.predictedImprovementLufs()));
+            switch (treatment.location()) {
+                case WallAttachment.OnSurface on -> {
+                    t.setAttribute("location", "on-surface");
+                    t.setAttribute("surface", on.surface().name());
+                    t.setAttribute("u", String.valueOf(on.u()));
+                    t.setAttribute("v", String.valueOf(on.v()));
+                }
+                case WallAttachment.InCorner in -> {
+                    t.setAttribute("location", "in-corner");
+                    t.setAttribute("surface-a", in.surfaceA().name());
+                    t.setAttribute("surface-b", in.surfaceB().name());
+                    t.setAttribute("z", String.valueOf(in.z()));
+                }
+            }
+            configElem.appendChild(t);
         }
     }
 

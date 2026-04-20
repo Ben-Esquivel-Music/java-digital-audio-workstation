@@ -121,6 +121,32 @@ public final class RoomTelemetryDisplay extends Region {
     private javafx.scene.image.WritableImage cachedCeilingOverlay;
     private RoomDimensions cachedCeilingDims;
 
+    // Treatment overlay — acoustic treatments marked as applied in the
+    // room configuration, rendered as small icons on top of the 2D room
+    // view so the user can see at a glance what is already installed.
+    private final List<AcousticTreatment> treatmentOverlays = new ArrayList<>();
+
+    /**
+     * Sets the list of acoustic treatments to overlay on the 2D room view.
+     * Typically populated from {@code RoomConfiguration.getAppliedTreatments()}
+     * plus any current {@code TreatmentAdvisor} suggestions being previewed.
+     * The list is defensively copied; pass an empty list to clear.
+     *
+     * @param treatments the treatments to display (must not be {@code null})
+     */
+    public void setTreatmentOverlays(List<AcousticTreatment> treatments) {
+        Objects.requireNonNull(treatments, "treatments must not be null");
+        this.treatmentOverlays.clear();
+        this.treatmentOverlays.addAll(treatments);
+        render();
+    }
+
+    /** Returns an unmodifiable snapshot of the current treatment overlays. */
+    public List<AcousticTreatment> getTreatmentOverlays() {
+        return java.util.Collections.unmodifiableList(
+                new ArrayList<>(treatmentOverlays));
+    }
+
     /**
      * Creates a new room telemetry display.
      */
@@ -449,6 +475,9 @@ public final class RoomTelemetryDisplay extends Region {
 
         // ── Draw RT60 glow on room edges ──
         drawRt60Glow(gc, roomW, roomL, roomH);
+
+        // ── Draw applied/suggested treatment icons ──
+        drawTreatmentOverlays(gc, roomW, roomL, roomH);
 
         // ── Draw suggestions panel ──
         drawSuggestions(gc, w, h);
@@ -1399,6 +1428,101 @@ public final class RoomTelemetryDisplay extends Region {
         javafx.scene.SnapshotParameters params = new javafx.scene.SnapshotParameters();
         params.setFill(Color.TRANSPARENT);
         return offscreen.snapshot(params, null);
+    }
+
+    // ── Treatment overlay drawing ──────────────────────────────────
+
+    private void drawTreatmentOverlays(
+            GraphicsContext gc, double roomW, double roomL, double roomH) {
+        if (treatmentOverlays.isEmpty()) return;
+
+        gc.save();
+        for (AcousticTreatment treatment : treatmentOverlays) {
+            Position3D p = treatmentAnchor3D(treatment, roomW, roomL, roomH);
+            if (p == null) continue;
+            double[] scr = projectToScreen(p.x(), p.y(), p.z());
+            Color color = treatmentColor(treatment.kind());
+            String glyph = treatmentGlyph(treatment.kind());
+
+            gc.setFill(Color.color(0, 0, 0, 0.55));
+            gc.fillOval(scr[0] - 9, scr[1] - 9, 18, 18);
+            gc.setFill(color);
+            gc.fillOval(scr[0] - 7, scr[1] - 7, 14, 14);
+            gc.setStroke(Color.WHITE);
+            gc.setLineWidth(1.4);
+            gc.strokeOval(scr[0] - 7, scr[1] - 7, 14, 14);
+
+            gc.setFill(Color.WHITE);
+            gc.setTextAlign(TextAlignment.CENTER);
+            gc.setFont(Font.font("SansSerif", 10));
+            gc.fillText(glyph, scr[0], scr[1] + 3.5);
+        }
+        gc.restore();
+    }
+
+    private static Position3D treatmentAnchor3D(
+            AcousticTreatment t, double roomW, double roomL, double roomH) {
+        return switch (t.location()) {
+            case com.benesquivelmusic.daw.sdk.telemetry.WallAttachment.OnSurface on ->
+                    switch (on.surface()) {
+                        case LEFT_WALL   -> new Position3D(0, clamp(on.u(), 0, roomL),
+                                clamp(on.v(), 0, roomH));
+                        case RIGHT_WALL  -> new Position3D(roomW, clamp(on.u(), 0, roomL),
+                                clamp(on.v(), 0, roomH));
+                        case FRONT_WALL  -> new Position3D(clamp(on.u(), 0, roomW), 0,
+                                clamp(on.v(), 0, roomH));
+                        case BACK_WALL   -> new Position3D(clamp(on.u(), 0, roomW), roomL,
+                                clamp(on.v(), 0, roomH));
+                        case FLOOR       -> new Position3D(clamp(on.u(), 0, roomW),
+                                clamp(on.v(), 0, roomL), 0);
+                        case CEILING     -> new Position3D(clamp(on.u(), 0, roomW),
+                                clamp(on.v(), 0, roomL), roomH);
+                    };
+            case com.benesquivelmusic.daw.sdk.telemetry.WallAttachment.InCorner in ->
+                    cornerAnchor(in, roomW, roomL, in.z());
+        };
+    }
+
+    private static Position3D cornerAnchor(
+            com.benesquivelmusic.daw.sdk.telemetry.WallAttachment.InCorner in,
+            double roomW, double roomL, double z) {
+        double x = isSurface(in, RoomSurface.RIGHT_WALL) ? roomW
+                : isSurface(in, RoomSurface.LEFT_WALL) ? 0.0
+                : roomW / 2.0;
+        double y = isSurface(in, RoomSurface.BACK_WALL) ? roomL
+                : isSurface(in, RoomSurface.FRONT_WALL) ? 0.0
+                : roomL / 2.0;
+        return new Position3D(x, y, z);
+    }
+
+    private static boolean isSurface(
+            com.benesquivelmusic.daw.sdk.telemetry.WallAttachment.InCorner in,
+            RoomSurface s) {
+        return in.surfaceA() == s || in.surfaceB() == s;
+    }
+
+    private static double clamp(double v, double lo, double hi) {
+        return v < lo ? lo : Math.min(v, hi);
+    }
+
+    private static Color treatmentColor(
+            com.benesquivelmusic.daw.sdk.telemetry.TreatmentKind kind) {
+        return switch (kind) {
+            case ABSORBER_BROADBAND -> Color.rgb(60, 150, 230);
+            case ABSORBER_LF_TRAP   -> Color.rgb(220, 80, 90);
+            case DIFFUSER_SKYLINE   -> Color.rgb(140, 200, 120);
+            case DIFFUSER_QUADRATIC -> Color.rgb(240, 190, 70);
+        };
+    }
+
+    private static String treatmentGlyph(
+            com.benesquivelmusic.daw.sdk.telemetry.TreatmentKind kind) {
+        return switch (kind) {
+            case ABSORBER_BROADBAND -> "A";
+            case ABSORBER_LF_TRAP   -> "L";
+            case DIFFUSER_SKYLINE   -> "S";
+            case DIFFUSER_QUADRATIC -> "Q";
+        };
     }
 
     // ── Inner data carrier ─────────────────────────────────────────
