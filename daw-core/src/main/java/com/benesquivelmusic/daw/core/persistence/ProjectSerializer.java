@@ -31,6 +31,7 @@ import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
 import com.benesquivelmusic.daw.sdk.telemetry.CeilingShape;
 import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
+import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
 import com.benesquivelmusic.daw.sdk.telemetry.SoundSource;
@@ -158,6 +159,12 @@ public final class ProjectSerializer {
             elem.setAttribute("punch-start-frames", String.valueOf(punch.startFrames()));
             elem.setAttribute("punch-end-frames", String.valueOf(punch.endFrames()));
             elem.setAttribute("punch-enabled", String.valueOf(punch.enabled()));
+        }
+        PreRollPostRoll prpr = transport.getPreRollPostRoll();
+        if (prpr != null && !prpr.equals(PreRollPostRoll.DISABLED)) {
+            elem.setAttribute("pre-roll-bars", String.valueOf(prpr.preBars()));
+            elem.setAttribute("post-roll-bars", String.valueOf(prpr.postBars()));
+            elem.setAttribute("pre-roll-enabled", String.valueOf(prpr.enabled()));
         }
         root.appendChild(elem);
     }

@@ -91,6 +91,31 @@ class ProjectSerializerTest {
     }
 
     @Test
+    void shouldSerializePreRollPostRoll() throws IOException {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        project.getTransport().setPreRollPostRoll(
+                com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll.enabled(2, 1));
+
+        ProjectSerializer serializer = new ProjectSerializer();
+        String xml = serializer.serialize(project);
+
+        assertThat(xml).contains("pre-roll-bars=\"2\"");
+        assertThat(xml).contains("post-roll-bars=\"1\"");
+        assertThat(xml).contains("pre-roll-enabled=\"true\"");
+    }
+
+    @Test
+    void shouldOmitPreRollPostRollWhenDisabledDefault() throws IOException {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+
+        ProjectSerializer serializer = new ProjectSerializer();
+        String xml = serializer.serialize(project);
+
+        assertThat(xml).doesNotContain("pre-roll-bars");
+        assertThat(xml).doesNotContain("post-roll-bars");
+    }
+
+    @Test
     void shouldSerializeTracks() throws IOException {
         DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
         Track audio = project.createAudioTrack("Vocals");
