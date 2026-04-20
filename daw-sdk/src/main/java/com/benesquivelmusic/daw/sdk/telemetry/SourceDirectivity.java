@@ -26,21 +26,23 @@ package com.benesquivelmusic.daw.sdk.telemetry;
 public enum SourceDirectivity {
 
     /** Uniform radiation in every direction. {@code Q = 1.0}. */
-    OMNIDIRECTIONAL(1.0),
+    OMNIDIRECTIONAL(1.0, "OMNI"),
 
     /** Standard cardioid polar pattern. {@code Q ≈ 2.5}. */
-    CARDIOID(2.5),
+    CARDIOID(2.5, "CARD"),
 
     /** Supercardioid polar pattern (narrower main lobe, small rear lobe). {@code Q ≈ 3.9}. */
-    SUPERCARDIOID(3.9),
+    SUPERCARDIOID(3.9, "SUPER"),
 
     /** Hypercardioid polar pattern (even narrower main lobe, larger rear lobe). {@code Q ≈ 4.0}. */
-    HYPERCARDIOID(4.0);
+    HYPERCARDIOID(4.0, "HYPER");
 
     private final double q;
+    private final String shortLabel;
 
-    SourceDirectivity(double q) {
+    SourceDirectivity(double q, String shortLabel) {
         this.q = q;
+        this.shortLabel = shortLabel;
     }
 
     /**
@@ -49,5 +51,15 @@ public enum SourceDirectivity {
      */
     public double q() {
         return q;
+    }
+
+    /**
+     * Returns a compact, user-friendly label suitable for on-canvas
+     * rendering (e.g. {@code "OMNI"}, {@code "CARD"}, {@code "SUPER"},
+     * {@code "HYPER"}). Decoupled from {@link #name()} so the enum
+     * constants can be renamed without disturbing the UI.
+     */
+    public String shortLabel() {
+        return shortLabel;
     }
 }

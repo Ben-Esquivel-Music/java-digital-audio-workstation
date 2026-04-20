@@ -33,9 +33,13 @@ public final class RoomConfiguration {
     /**
      * Per-source directivity assignments, keyed by {@link SoundSource#name()}.
      * Entries default to {@link SourceDirectivity#OMNIDIRECTIONAL} when
-     * missing (see {@link #getSourceDirectivity(String)}); the underlying
-     * map is preserved as a {@link LinkedHashMap} so serialization order
-     * is stable across round-trips.
+     * missing (see {@link #getSourceDirectivity(String)}).
+     *
+     * <p>A {@link LinkedHashMap} is used for deterministic iteration in
+     * diagnostic output such as {@link #getSourceDirectivities()};
+     * persistence itself iterates the {@code soundSources} list (not
+     * this map) so the on-disk ordering is driven by source-insertion
+     * order, not by this map's iteration order.</p>
      */
     private final Map<String, SourceDirectivity> sourceDirectivities =
             new LinkedHashMap<>();

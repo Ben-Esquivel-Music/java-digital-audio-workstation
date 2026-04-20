@@ -1273,20 +1273,28 @@ public final class RoomTelemetryDisplay extends Region {
         if (rt60 <= 0) return;
 
         // Fallback (Q=1) radius used for any source without an explicit
-        // snapshot. Matches the classical
-        //     d_c = 0.141·√(V/(π·T60)) ≈ 0.057·√(V/T60)
-        // previously hardcoded here.
-        double fallbackRadius = 0.057 * Math.sqrt(volume / rt60);
+        // snapshot — computed with the same textbook coefficient as
+        // CriticalDistanceCalculator so the overlay stays consistent
+        // whether snapshots are supplied or not:
+        //     d_c = 0.141 · √(Q · V / (π · T60))   with Q = 1.
+        double fallbackRadius = 0.141 * Math.sqrt(volume / (Math.PI * rt60));
+
+        // Build a one-shot sourceName → Position3D index so the
+        // direct/reverberant flag loop below runs in O(mics + sources)
+        // rather than O(mics · sources · wavePaths).
+        Map<String, Position3D> sourcePositions = new HashMap<>();
+        for (SoundWavePath path : telemetryData.wavePaths()) {
+            sourcePositions.putIfAbsent(
+                    path.sourceName(), path.waypoints().getFirst());
+        }
 
         gc.setStroke(CRITICAL_DISTANCE_COLOR);
         gc.setLineWidth(1.0);
         gc.setLineDashes(6, 4);
 
-        HashSet<String> drawnSources = new HashSet<>();
-        for (SoundWavePath path : telemetryData.wavePaths()) {
-            String srcName = path.sourceName();
-            if (!drawnSources.add(srcName)) continue;
-            Position3D sp = path.waypoints().getFirst();
+        for (Map.Entry<String, Position3D> e : sourcePositions.entrySet()) {
+            String srcName = e.getKey();
+            Position3D sp = e.getValue();
 
             CriticalDistanceSnapshot snapshot = criticalDistanceSnapshots.get(srcName);
             double radius = snapshot != null
@@ -1303,8 +1311,7 @@ public final class RoomTelemetryDisplay extends Region {
             gc.setTextAlign(TextAlignment.LEFT);
             String label = snapshot != null
                     ? "Dc %s %.2f m".formatted(
-                            snapshot.directivity().name().substring(0, 4),
-                            radius)
+                            snapshot.directivity().shortLabel(), radius)
                     : "Dc";
             gc.fillText(label, labelPos[0] + 2, labelPos[1] - 2);
         }
@@ -1312,7 +1319,7 @@ public final class RoomTelemetryDisplay extends Region {
 
         // Per-mic direct-vs-reverberant flags.
         if (!criticalDistanceSnapshots.isEmpty()) {
-            drawDirectReverberantFlags(gc);
+            drawDirectReverberantFlags(gc, sourcePositions);
         }
     }
 
@@ -1321,8 +1328,13 @@ public final class RoomTelemetryDisplay extends Region {
      * microphone, together with the direct-to-reverberant ratio in dB
      * for the nearest source. Only drawn when per-source
      * {@link CriticalDistanceSnapshot snapshots} are set.
+     *
+     * @param sourcePositions prebuilt sourceName → position map so the
+     *                        inner loop avoids repeated full scans of
+     *                        {@link RoomTelemetryData#wavePaths()}
      */
-    private void drawDirectReverberantFlags(GraphicsContext gc) {
+    private void drawDirectReverberantFlags(
+            GraphicsContext gc, Map<String, Position3D> sourcePositions) {
         if (telemetryData == null) return;
 
         HashSet<String> drawnMics = new HashSet<>();
@@ -1338,7 +1350,7 @@ public final class RoomTelemetryDisplay extends Region {
             double bestDc = 0.0;
             for (Map.Entry<String, CriticalDistanceSnapshot> e :
                     criticalDistanceSnapshots.entrySet()) {
-                Position3D sp = findSourcePositionByName(e.getKey());
+                Position3D sp = sourcePositions.get(e.getKey());
                 if (sp == null) continue;
                 double d = sp.distanceTo(micPos);
                 if (d < bestDist) {
@@ -1364,16 +1376,6 @@ public final class RoomTelemetryDisplay extends Region {
             gc.setTextAlign(TextAlignment.LEFT);
             gc.fillText(label, scr[0] + 10, scr[1] + 14);
         }
-    }
-
-    private Position3D findSourcePositionByName(String name) {
-        if (telemetryData == null) return null;
-        for (SoundWavePath path : telemetryData.wavePaths()) {
-            if (name.equals(path.sourceName())) {
-                return path.waypoints().getFirst();
-            }
-        }
-        return null;
     }
 
     // ── Helpers ─────────────────────────────────────────────────────
