@@ -67,6 +67,7 @@ public final class RecordingPipeline {
     /** Previous callback's loop-wrap detector (beat-domain). */
     private double previousBeatPosition = -1.0;
     private boolean active;
+    private boolean allInputsMuted;
     private double recordingStartBeat;
     /** Absolute sample-frame position aligned with {@link Transport}. Used for
      *  sample-accurate gating against {@link Transport#getPunchRegion()}. */
@@ -176,9 +177,16 @@ public final class RecordingPipeline {
         currentFrame = beatsToFrames(transport.getPositionInBeats());
         wasInsidePunchRegion = false;
 
-        // Set recording indicator on armed tracks
+        // Set recording indicator on armed tracks, and apply the
+        // pipeline-level monitoring mode as the default for any armed
+        // track still at the sentinel OFF default. Tracks that have
+        // already configured their own per-track mode are left alone.
         for (Track track : armedTracks) {
             track.setRecording(true);
+            if (monitoringMode != InputMonitoringMode.OFF
+                    && track.getInputMonitoring() == InputMonitoringMode.OFF) {
+                track.setInputMonitoring(monitoringMode);
+            }
         }
 
         // Create and start a recording session per armed track, and
@@ -355,7 +363,14 @@ public final class RecordingPipeline {
     /**
      * Returns the input monitoring mode configured for this pipeline.
      *
-     * @return the monitoring mode
+     * <p>This is the pipeline-level <em>default</em> monitoring mode
+     * applied to newly armed tracks that are still at the sentinel
+     * {@link InputMonitoringMode#OFF} default when the pipeline
+     * starts. Per-track overrides set via
+     * {@link Track#setInputMonitoring(InputMonitoringMode)} take
+     * precedence and are never overwritten.</p>
+     *
+     * @return the pipeline default monitoring mode
      */
     public InputMonitoringMode getMonitoringMode() {
         return monitoringMode;
@@ -404,14 +419,124 @@ public final class RecordingPipeline {
      * Returns whether input monitoring should be active, given the current
      * monitoring mode and transport state.
      *
-     * @return {@code true} if input monitoring is active
+     * <p>This reflects the pipeline-level default and does <em>not</em>
+     * consider per-track monitoring overrides. Use
+     * {@link #isInputMonitoringActive(Track)} to ask the question for a
+     * specific armed track (per-track mode + transport state + panic
+     * button), which is what the render pipeline consults in its
+     * per-track read step.</p>
+     *
+     * @return {@code true} if input monitoring is active at the pipeline
+     *         level
      */
     public boolean isInputMonitoringActive() {
         return switch (monitoringMode) {
             case OFF -> false;
             case ALWAYS -> true;
             case AUTO -> active;
+            // Tape mode at the pipeline level is treated as "input audible
+            // while stopped or recording" since there is no per-track
+            // context here; use isInputMonitoringActive(Track) for the
+            // full tape-mode resolution.
+            case TAPE -> !active
+                    || transport.getState() == com.benesquivelmusic.daw.core.transport.TransportState.RECORDING;
         };
+    }
+
+    /**
+     * Returns whether input monitoring should be audible for the given
+     * armed track, taking into account the track's per-track monitoring
+     * mode, the current transport state, any configured punch range, and
+     * the global "Mute All Inputs" panic switch.
+     *
+     * <p>This is the per-track query used by the render pipeline to
+     * decide whether to pass the routed input buffer through to the
+     * track's {@link com.benesquivelmusic.daw.core.audio.MixerChannel}
+     * (input audible) or to let the normal playback signal reach the
+     * channel (input muted).</p>
+     *
+     * @param track the armed track to query (must not be {@code null})
+     * @return {@code true} if the input should be audible for that track
+     */
+    public boolean isInputMonitoringActive(Track track) {
+        return resolveMonitoring(track).inputAudible();
+    }
+
+    /**
+     * Resolves the {@link com.benesquivelmusic.daw.sdk.audio.MonitoringResolution}
+     * for the given track, consulting its per-track monitoring mode, the
+     * current transport state, punch status, and the global
+     * {@linkplain #isAllInputsMuted() panic switch}.
+     *
+     * @param track the track to resolve for (must not be {@code null})
+     * @return the monitoring resolution for this block; never {@code null}
+     */
+    public com.benesquivelmusic.daw.sdk.audio.MonitoringResolution resolveMonitoring(Track track) {
+        Objects.requireNonNull(track, "track must not be null");
+        if (allInputsMuted) {
+            return com.benesquivelmusic.daw.sdk.audio.MonitoringResolution.SILENT;
+        }
+        InputMonitoringMode mode = track.getInputMonitoring();
+        return mode.resolve(
+                transport.getState(),
+                track.isArmed(),
+                isInsidePunchRange(),
+                format.sampleRate());
+    }
+
+    /**
+     * Returns whether the transport's current position is inside the
+     * configured punch range (if any). Pipelines without a punch range
+     * report {@code true}, matching the classic tape-machine behaviour
+     * where the whole timeline is "inside" and tape-mode acts as a
+     * simple play/record monitor toggle.
+     */
+    private boolean isInsidePunchRange() {
+        PunchRegion transportPunch = transport.isPunchEnabled()
+                ? transport.getPunchRegion()
+                : null;
+        if (transportPunch != null) {
+            double pos = transport.getPositionInBeats();
+            double bpm = transport.getTempo();
+            double startBeats = (transportPunch.startFrames() / format.sampleRate())
+                    * (bpm / 60.0);
+            double endBeats = (transportPunch.endFrames() / format.sampleRate())
+                    * (bpm / 60.0);
+            return pos >= startBeats && pos < endBeats;
+        }
+        if (punchRange != null) {
+            double pos = transport.getPositionInBeats();
+            return pos >= punchRange.punchInBeat() && pos < punchRange.punchOutBeat();
+        }
+        return true;
+    }
+
+    /**
+     * Returns {@code true} if the global "Mute All Inputs" panic switch
+     * is engaged. When {@code true}, {@link #resolveMonitoring(Track)}
+     * returns {@link com.benesquivelmusic.daw.sdk.audio.MonitoringResolution#SILENT}
+     * for every track, silencing every monitor send without altering
+     * any configured per-track monitoring modes or affecting the
+     * recorded signal.
+     *
+     * @return whether the panic switch is engaged
+     */
+    public boolean isAllInputsMuted() {
+        return allInputsMuted;
+    }
+
+    /**
+     * Engages or releases the global "Mute All Inputs" panic switch.
+     * Typically wired to the mixer header's panic button — the
+     * drummer-tracking lifesaver for silencing every monitor send in
+     * one click without changing any configured monitoring modes or
+     * altering what is being recorded to disk.
+     *
+     * @param muted {@code true} to silence all monitor inputs,
+     *              {@code false} to restore normal per-track resolution
+     */
+    public void setAllInputsMuted(boolean muted) {
+        this.allInputsMuted = muted;
     }
 
     /**

@@ -18,6 +18,7 @@ import com.benesquivelmusic.daw.core.mixer.snapshot.SendSnapshot;
 import com.benesquivelmusic.daw.core.preset.ReflectivePresetSerializer;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.ClickSound;
+import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.recording.Subdivision;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
@@ -272,6 +273,21 @@ public final class ProjectDeserializer {
                 track.setAutomationMode(AutomationMode.valueOf(automationModeStr));
             } catch (IllegalArgumentException ignored) {
                 // keep default mode on invalid value
+            }
+        }
+
+        // Per-track input monitoring mode. Older projects predate this
+        // attribute — to match the engineer-expected default for a
+        // re-opened session, fall back to AUTO rather than OFF when the
+        // attribute is absent.
+        String monitoringStr = elem.getAttribute("input-monitoring");
+        if (monitoringStr.isEmpty()) {
+            track.setInputMonitoring(InputMonitoringMode.AUTO);
+        } else {
+            try {
+                track.setInputMonitoring(InputMonitoringMode.valueOf(monitoringStr));
+            } catch (IllegalArgumentException ignored) {
+                track.setInputMonitoring(InputMonitoringMode.AUTO);
             }
         }
 

@@ -223,6 +223,33 @@ public final class Track {
     }
 
     /**
+     * Returns the input monitoring mode for this track.
+     *
+     * <p>Short-named alias of {@link #getInputMonitoringMode()} that
+     * matches the naming used in the public monitoring API
+     * (engineers refer to "input monitoring", not "input monitoring
+     * mode"). Both accessors are backed by the same field and always
+     * return the same value.</p>
+     *
+     * @return the monitoring mode (never {@code null})
+     */
+    public InputMonitoringMode getInputMonitoring() {
+        return inputMonitoringMode;
+    }
+
+    /**
+     * Sets the input monitoring mode for this track.
+     *
+     * <p>Short-named alias of
+     * {@link #setInputMonitoringMode(InputMonitoringMode)}.</p>
+     *
+     * @param mode the monitoring mode (must not be {@code null})
+     */
+    public void setInputMonitoring(InputMonitoringMode mode) {
+        setInputMonitoringMode(mode);
+    }
+
+    /**
      * Returns the index of the input device assigned to this track, or
      * {@link #NO_INPUT_DEVICE} ({@value #NO_INPUT_DEVICE}) if no device
      * has been assigned.
