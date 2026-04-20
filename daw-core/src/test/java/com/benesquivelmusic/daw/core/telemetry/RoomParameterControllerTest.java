@@ -49,7 +49,7 @@ class RoomParameterControllerTest {
 
     @Test
     void shouldRejectNullMaterialForRt60() {
-        assertThatThrownBy(() -> RoomParameterController.computeRt60(STUDIO, null))
+        assertThatThrownBy(() -> RoomParameterController.computeRt60(STUDIO, (WallMaterial) null))
                 .isInstanceOf(NullPointerException.class);
     }
 
