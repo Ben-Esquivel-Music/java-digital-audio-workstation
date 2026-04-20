@@ -32,6 +32,7 @@ import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy;
 import com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget;
 import com.benesquivelmusic.daw.sdk.telemetry.*;
+import com.benesquivelmusic.daw.sdk.transport.ClickOutput;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -736,6 +737,25 @@ public final class ProjectDeserializer {
         metronome.setVolume(volume);
         metronome.setClickSound(parseClickSound(elem.getAttribute("click-sound")));
         metronome.setSubdivision(parseSubdivision(elem.getAttribute("subdivision")));
+
+        List<Element> clickOutputs = getDirectChildElements(elem, "click-output");
+        if (!clickOutputs.isEmpty()) {
+            Element co = clickOutputs.getFirst();
+            int channel = parseIntAttr(co, "hardware-channel-index", 0);
+            double gain = clampDouble(parseDoubleAttr(co, "gain", 1.0), 0.0, 1.0);
+            // Match pre-story-136 defaults (main on, side off) when the
+            // attributes are absent so legacy files without them still
+            // round-trip to ClickOutput.MAIN_MIX_ONLY.
+            boolean mainMix = co.hasAttribute("main-mix-enabled")
+                    ? parseBooleanAttr(co, "main-mix-enabled") : true;
+            boolean sideOutput = parseBooleanAttr(co, "side-output-enabled");
+            try {
+                metronome.setClickOutput(
+                        new ClickOutput(Math.max(0, channel), gain, mainMix, sideOutput));
+            } catch (IllegalArgumentException ignored) {
+                metronome.setClickOutput(ClickOutput.MAIN_MIX_ONLY);
+            }
+        }
     }
 
     private void parseReferenceTrackManager(Element elem, DawProject project) {

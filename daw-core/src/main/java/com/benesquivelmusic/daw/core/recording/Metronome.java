@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.recording;
 
+import com.benesquivelmusic.daw.sdk.transport.ClickOutput;
+
 import java.util.Objects;
 
 /**
@@ -48,6 +50,7 @@ public final class Metronome {
     private float volume;
     private ClickSound clickSound;
     private Subdivision subdivision;
+    private ClickOutput clickOutput;
 
     /**
      * Creates a new metronome with default settings: enabled, full volume,
@@ -69,6 +72,7 @@ public final class Metronome {
         this.volume = 1.0f;
         this.clickSound = ClickSound.WOODBLOCK;
         this.subdivision = Subdivision.QUARTER;
+        this.clickOutput = ClickOutput.MAIN_MIX_ONLY;
     }
 
     /**
@@ -258,6 +262,26 @@ public final class Metronome {
      */
     public void setSubdivision(Subdivision subdivision) {
         this.subdivision = Objects.requireNonNull(subdivision, "subdivision must not be null");
+    }
+
+    /**
+     * Returns the current click-output routing (side-output channel, gain,
+     * and enable flags). Defaults to {@link ClickOutput#MAIN_MIX_ONLY}.
+     *
+     * @return the click output configuration (never null)
+     */
+    public ClickOutput getClickOutput() {
+        return clickOutput;
+    }
+
+    /**
+     * Sets the click-output routing.
+     *
+     * @param clickOutput the new routing
+     * @throws NullPointerException if {@code clickOutput} is null
+     */
+    public void setClickOutput(ClickOutput clickOutput) {
+        this.clickOutput = Objects.requireNonNull(clickOutput, "clickOutput must not be null");
     }
 
     /**

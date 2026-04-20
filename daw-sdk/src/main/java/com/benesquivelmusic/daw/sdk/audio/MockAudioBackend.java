@@ -4,7 +4,9 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.ShortBuffer;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Flow;
 
 /**
@@ -29,6 +31,8 @@ public final class MockAudioBackend implements AudioBackend {
     private final AudioBackendSupport support = new AudioBackendSupport();
     private final byte[] inputPcm;
     private final java.io.ByteArrayOutputStream outputPcm = new java.io.ByteArrayOutputStream();
+    private final Map<Integer, java.io.ByteArrayOutputStream> directChannelOutput =
+            new ConcurrentHashMap<>();
     private int inputCursor;
 
     /**
@@ -82,6 +86,7 @@ public final class MockAudioBackend implements AudioBackend {
         support.markOpen(format, bufferFrames);
         this.inputCursor = 0;
         this.outputPcm.reset();
+        this.directChannelOutput.clear();
     }
 
     @Override
@@ -97,6 +102,29 @@ public final class MockAudioBackend implements AudioBackend {
         }
         byte[] pcm = JavaxSoundBackend.encodePcm16(block, 16);
         outputPcm.write(pcm, 0, pcm.length);
+    }
+
+    @Override
+    public void writeToChannel(int channelIndex, float[] monoSamples) {
+        if (channelIndex < 0) {
+            throw new IllegalArgumentException(
+                    "channelIndex must not be negative: " + channelIndex);
+        }
+        Objects.requireNonNull(monoSamples, "monoSamples must not be null");
+        if (!support.isOpen()) {
+            return;
+        }
+        java.io.ByteArrayOutputStream buf =
+                directChannelOutput.computeIfAbsent(
+                        channelIndex, _ -> new java.io.ByteArrayOutputStream());
+        // Capture as float-to-bytes in little-endian for easy bit-exact asserts.
+        for (float sample : monoSamples) {
+            int bits = Float.floatToRawIntBits(sample);
+            buf.write(bits & 0xFF);
+            buf.write((bits >>> 8) & 0xFF);
+            buf.write((bits >>> 16) & 0xFF);
+            buf.write((bits >>> 24) & 0xFF);
+        }
     }
 
     @Override
@@ -149,5 +177,34 @@ public final class MockAudioBackend implements AudioBackend {
      */
     public byte[] recordedOutput() {
         return outputPcm.toByteArray();
+    }
+
+    /**
+     * Returns every sample written to
+     * {@link #writeToChannel(int, float[])} for the given physical channel
+     * since the most recent {@link #open(DeviceId, AudioFormat, int)}. Used
+     * by tests that assert on the metronome's direct-to-hardware side
+     * output (story 136).
+     *
+     * @param channelIndex 0-based output channel index
+     * @return concatenated float samples in write order (never null; empty
+     *         when the channel was never written to)
+     */
+    public float[] recordedChannelOutput(int channelIndex) {
+        java.io.ByteArrayOutputStream buf = directChannelOutput.get(channelIndex);
+        if (buf == null) {
+            return new float[0];
+        }
+        byte[] bytes = buf.toByteArray();
+        float[] out = new float[bytes.length / 4];
+        for (int i = 0; i < out.length; i++) {
+            int b0 = bytes[i * 4] & 0xFF;
+            int b1 = bytes[i * 4 + 1] & 0xFF;
+            int b2 = bytes[i * 4 + 2] & 0xFF;
+            int b3 = bytes[i * 4 + 3] & 0xFF;
+            int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+            out[i] = Float.intBitsToFloat(bits);
+        }
+        return out;
     }
 }

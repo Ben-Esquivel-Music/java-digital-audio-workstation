@@ -24,6 +24,7 @@ import com.benesquivelmusic.daw.core.track.AutomationMode;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.track.TrackType;
+import com.benesquivelmusic.daw.sdk.transport.ClickOutput;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import org.junit.jupiter.api.Test;
 
@@ -554,6 +555,34 @@ class ProjectSerializationRoundTripTest {
         assertThat(restoredMetronome.getVolume()).isCloseTo(1.0f, within(0.001f));
         assertThat(restoredMetronome.getClickSound()).isEqualTo(ClickSound.WOODBLOCK);
         assertThat(restoredMetronome.getSubdivision()).isEqualTo(Subdivision.QUARTER);
+        assertThat(restoredMetronome.getClickOutput())
+                .isEqualTo(ClickOutput.MAIN_MIX_ONLY);
+    }
+
+    @Test
+    void shouldRoundTripClickOutputRouting() throws IOException {
+        DawProject original = new DawProject("Click Output Test", AudioFormat.CD_QUALITY);
+        original.getMetronome().setClickOutput(
+                new ClickOutput(3, 0.42, false, true));
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        ClickOutput restoredOutput = restored.getMetronome().getClickOutput();
+        assertThat(restoredOutput.hardwareChannelIndex()).isEqualTo(3);
+        assertThat(restoredOutput.gain()).isCloseTo(0.42, within(1e-6));
+        assertThat(restoredOutput.mainMixEnabled()).isFalse();
+        assertThat(restoredOutput.sideOutputEnabled()).isTrue();
+    }
+
+    @Test
+    void shouldOmitClickOutputElementForDefaultRouting() throws IOException {
+        DawProject original = new DawProject("Default Routing", AudioFormat.CD_QUALITY);
+        // Leave ClickOutput at MAIN_MIX_ONLY
+
+        String xml = serializer.serialize(original);
+
+        assertThat(xml).doesNotContain("<click-output");
     }
 
     @Test

@@ -128,6 +128,36 @@ public sealed interface AudioBackend extends AutoCloseable
     void sink(AudioBlock block);
 
     /**
+     * Writes a mono buffer directly to a single physical output channel,
+     * bypassing the main mix bus and any track or return-bus processing.
+     *
+     * <p>Used by the metronome's side output (story 136) to feed the click
+     * to the drummer's headphone channel without the sample appearing in
+     * overhead or room microphones. The default implementation is a no-op;
+     * implementations that cannot address individual output channels may
+     * leave it as-is, in which case the side output is silently dropped.
+     * Buffers delivered while no stream is open are silently ignored.</p>
+     *
+     * @param channelIndex 0-based index of the physical output channel
+     *                     (must be &ge; 0)
+     * @param monoSamples  mono audio samples in {@code [-1.0, 1.0]};
+     *                     must not be null (may be empty)
+     * @throws IllegalArgumentException if {@code channelIndex} is negative
+     *                                  or {@code monoSamples} is null
+     */
+    default void writeToChannel(int channelIndex, float[] monoSamples) {
+        if (channelIndex < 0) {
+            throw new IllegalArgumentException(
+                    "channelIndex must not be negative: " + channelIndex);
+        }
+        if (monoSamples == null) {
+            throw new IllegalArgumentException("monoSamples must not be null");
+        }
+        // Default: drop the samples. Backends that can address individual
+        // output channels override this method.
+    }
+
+    /**
      * Returns {@code true} while a stream is open (between {@code open} and
      * {@code close}).
      *

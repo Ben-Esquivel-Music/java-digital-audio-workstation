@@ -5,13 +5,17 @@ import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.recording.ClickSound;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.Metronome;
+import com.benesquivelmusic.daw.core.recording.MetronomeSettingsStore;
 import com.benesquivelmusic.daw.core.recording.Subdivision;
+import com.benesquivelmusic.daw.sdk.transport.ClickOutput;
 import javafx.scene.control.*;
 import javafx.scene.input.MouseButton;
 import javafx.scene.layout.HBox;
 
+import java.io.IOException;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.prefs.Preferences;
 
@@ -41,21 +45,52 @@ final class MetronomeController {
     private final NotificationBar notificationBar;
     private final Label statusBarLabel;
     private final Preferences prefs;
+    private final MetronomeSettingsStore settingsStore;
 
     private CountInMode countInMode;
 
+    /**
+     * Creates a controller without a global settings store — convenience
+     * overload used by older call-sites and simple tests that do not
+     * exercise the story-136 {@link ClickOutput} persistence path.
+     */
     MetronomeController(Metronome metronome,
                         Button metronomeButton,
                         NotificationBar notificationBar,
                         Label statusBarLabel,
                         Preferences prefs) {
+        this(metronome, metronomeButton, notificationBar, statusBarLabel, prefs, null);
+    }
+
+    /**
+     * Creates a fully-wired controller.
+     *
+     * @param metronome       the metronome instance this controller owns
+     * @param metronomeButton the toolbar toggle button
+     * @param notificationBar transient toast/notification surface
+     * @param statusBarLabel  status-bar label used for latched status text
+     * @param prefs           backing {@link Preferences} for non-routing state
+     *                        (enabled, volume, click sound, subdivision, count-in)
+     * @param settingsStore   optional global-default store that persists
+     *                        {@link ClickOutput} across sessions to
+     *                        {@code ~/.daw/metronome-settings.json}; {@code null}
+     *                        skips global persistence (used by tests)
+     */
+    MetronomeController(Metronome metronome,
+                        Button metronomeButton,
+                        NotificationBar notificationBar,
+                        Label statusBarLabel,
+                        Preferences prefs,
+                        MetronomeSettingsStore settingsStore) {
         this.metronome = Objects.requireNonNull(metronome, "metronome must not be null");
         this.metronomeButton = Objects.requireNonNull(metronomeButton, "metronomeButton must not be null");
         this.notificationBar = Objects.requireNonNull(notificationBar, "notificationBar must not be null");
         this.statusBarLabel = Objects.requireNonNull(statusBarLabel, "statusBarLabel must not be null");
         this.prefs = Objects.requireNonNull(prefs, "prefs must not be null");
+        this.settingsStore = settingsStore;
         this.countInMode = CountInMode.OFF;
         loadPreferences();
+        loadGlobalSettings();
         updateButtonStyle();
         installContextMenu();
     }
@@ -124,6 +159,47 @@ final class MetronomeController {
             countInMode = CountInMode.valueOf(countInName);
         } catch (IllegalArgumentException e) {
             countInMode = CountInMode.OFF;
+        }
+    }
+
+    /**
+     * Loads the global metronome defaults — including {@link ClickOutput}
+     * routing — from {@code ~/.daw/metronome-settings.json} and applies them
+     * to the metronome. Per-project settings loaded later (via
+     * {@link com.benesquivelmusic.daw.core.persistence.ProjectDeserializer})
+     * take precedence and are expected to overwrite these defaults.
+     *
+     * <p>Silently ignores a missing or corrupt file — the caller falls back
+     * to {@link Metronome}'s own code-level defaults.</p>
+     */
+    private void loadGlobalSettings() {
+        if (settingsStore == null) {
+            return;
+        }
+        settingsStore.load().ifPresent(settings -> {
+            metronome.setClickOutput(settings.clickOutput());
+        });
+    }
+
+    /**
+     * Persists the current metronome state — enabled, volume, click sound,
+     * subdivision, and {@link ClickOutput} routing — to the global settings
+     * store, if one is wired.
+     */
+    private void saveGlobalSettings() {
+        if (settingsStore == null) {
+            return;
+        }
+        try {
+            settingsStore.save(new MetronomeSettingsStore.Settings(
+                    metronome.isEnabled(),
+                    metronome.getVolume(),
+                    metronome.getClickSound(),
+                    metronome.getSubdivision(),
+                    metronome.getClickOutput()));
+        } catch (IOException e) {
+            LOG.log(Level.WARNING, "Failed to save metronome settings to "
+                    + settingsStore.file(), e);
         }
     }
 
@@ -201,8 +277,30 @@ final class MetronomeController {
             countInMenu.getItems().add(item);
         }
 
-        menu.getItems().addAll(clickSoundMenu, volumeItem, subdivisionMenu, countInMenu);
+        // ── Click routing (story 136) ───────────────────────────────────────
+        MenuItem routingItem = new MenuItem("Click Routing\u2026");
+        routingItem.setGraphic(IconNode.of(DawIcon.METRONOME, 12));
+        routingItem.setOnAction(_ -> openClickRoutingDialog());
+
+        menu.getItems().addAll(clickSoundMenu, volumeItem, subdivisionMenu,
+                countInMenu, new SeparatorMenuItem(), routingItem);
         return menu;
+    }
+
+    /**
+     * Opens the {@link MetronomeSettingsDialog} pre-populated with the
+     * metronome's current {@link ClickOutput}. On Apply, the new routing is
+     * written back to the metronome and persisted to the global store so
+     * future sessions inherit it.
+     */
+    private void openClickRoutingDialog() {
+        MetronomeSettingsDialog dialog = new MetronomeSettingsDialog(
+                metronome.getClickOutput());
+        dialog.showAndWait().ifPresent(updated -> {
+            metronome.setClickOutput(updated);
+            saveGlobalSettings();
+            LOG.fine("Metronome click routing updated: " + updated);
+        });
     }
 
     private static String formatEnumName(String name) {

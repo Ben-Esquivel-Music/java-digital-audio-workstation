@@ -18,6 +18,7 @@ import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.Metronome;
+import com.benesquivelmusic.daw.core.recording.MetronomeSettingsStore;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
@@ -313,7 +314,8 @@ public final class MainController {
     private void createMetronomeController(Preferences prefs) {
         metronomeController = new MetronomeController(
                 metronome, metronomeButton, notificationBar,
-                statusBarLabel, prefs.node("metronome"));
+                statusBarLabel, prefs.node("metronome"),
+                new MetronomeSettingsStore());
     }
 
     private void createAnimationController() {
@@ -355,7 +357,8 @@ public final class MainController {
         metronome = new Metronome(project.getFormat().sampleRate(), project.getFormat().channels());
         createTransportController();
         metronomeController = new MetronomeController(metronome, metronomeButton, notificationBar,
-                statusBarLabel, Preferences.userNodeForPackage(MainController.class).node("metronome"));
+                statusBarLabel, Preferences.userNodeForPackage(MainController.class).node("metronome"),
+                new MetronomeSettingsStore());
         transportController.updateStatus();
         createTrackStripController();
         updateProjectInfo();

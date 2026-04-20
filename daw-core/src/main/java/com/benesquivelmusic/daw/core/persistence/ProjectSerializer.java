@@ -31,6 +31,7 @@ import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
 import com.benesquivelmusic.daw.sdk.telemetry.CeilingShape;
 import com.benesquivelmusic.daw.sdk.telemetry.MicrophonePlacement;
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
+import com.benesquivelmusic.daw.sdk.transport.ClickOutput;
 import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
@@ -494,6 +495,19 @@ public final class ProjectSerializer {
         metronomeElem.setAttribute("volume", String.valueOf(metronome.getVolume()));
         metronomeElem.setAttribute("click-sound", metronome.getClickSound().name());
         metronomeElem.setAttribute("subdivision", metronome.getSubdivision().name());
+
+        ClickOutput clickOutput = metronome.getClickOutput();
+        if (clickOutput != null && !clickOutput.equals(ClickOutput.MAIN_MIX_ONLY)) {
+            Element co = document.createElement("click-output");
+            co.setAttribute("hardware-channel-index",
+                    String.valueOf(clickOutput.hardwareChannelIndex()));
+            co.setAttribute("gain", String.valueOf(clickOutput.gain()));
+            co.setAttribute("main-mix-enabled",
+                    String.valueOf(clickOutput.mainMixEnabled()));
+            co.setAttribute("side-output-enabled",
+                    String.valueOf(clickOutput.sideOutputEnabled()));
+            metronomeElem.appendChild(co);
+        }
         root.appendChild(metronomeElem);
     }
 
