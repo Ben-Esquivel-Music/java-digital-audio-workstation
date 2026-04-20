@@ -29,6 +29,12 @@ public enum DawAction {
             new KeyCodeCombination(KeyCode.L)),
     TOGGLE_METRONOME("Toggle Metronome", Category.TRANSPORT,
             new KeyCodeCombination(KeyCode.M)),
+    SET_PUNCH_IN("Set Punch In", Category.TRANSPORT,
+            new KeyCodeCombination(KeyCode.I)),
+    SET_PUNCH_OUT("Set Punch Out", Category.TRANSPORT,
+            new KeyCodeCombination(KeyCode.O)),
+    TOGGLE_PUNCH("Toggle Punch", Category.TRANSPORT,
+            new KeyCodeCombination(KeyCode.P, KeyCombination.SHIFT_DOWN)),
 
     // ── Editing ──────────────────────────────────────────────────────────────
     UNDO("Undo", Category.EDITING,

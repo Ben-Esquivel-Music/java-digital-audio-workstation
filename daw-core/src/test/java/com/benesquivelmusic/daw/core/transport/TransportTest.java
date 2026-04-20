@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.transport;
 
+import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -214,5 +215,52 @@ class TransportTest {
         Transport transport = new Transport();
         assertThatThrownBy(() -> transport.advancePosition(-1.0))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void shouldHaveNoPunchRegionByDefault() {
+        Transport transport = new Transport();
+
+        assertThat(transport.getPunchRegion()).isNull();
+        assertThat(transport.isPunchEnabled()).isFalse();
+    }
+
+    @Test
+    void shouldInstallPunchRegion() {
+        Transport transport = new Transport();
+        PunchRegion region = new PunchRegion(44_100L, 88_200L, true);
+
+        transport.setPunchRegion(region);
+
+        assertThat(transport.getPunchRegion()).isEqualTo(region);
+        assertThat(transport.isPunchEnabled()).isTrue();
+    }
+
+    @Test
+    void isPunchEnabledShouldReflectEnabledFlag() {
+        Transport transport = new Transport();
+        transport.setPunchRegion(new PunchRegion(100L, 200L, false));
+
+        assertThat(transport.getPunchRegion()).isNotNull();
+        assertThat(transport.isPunchEnabled()).isFalse();
+    }
+
+    @Test
+    void clearPunchRegionShouldRemoveRegion() {
+        Transport transport = new Transport();
+        transport.setPunchRegion(new PunchRegion(100L, 200L, true));
+
+        transport.clearPunchRegion();
+
+        assertThat(transport.getPunchRegion()).isNull();
+        assertThat(transport.isPunchEnabled()).isFalse();
+    }
+
+    @Test
+    void setPunchRegionShouldRejectNull() {
+        Transport transport = new Transport();
+
+        assertThatThrownBy(() -> transport.setPunchRegion(null))
+                .isInstanceOf(NullPointerException.class);
     }
 }

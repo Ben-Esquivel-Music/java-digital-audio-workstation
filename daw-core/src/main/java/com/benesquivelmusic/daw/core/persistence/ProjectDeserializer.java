@@ -31,6 +31,7 @@ import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy;
 import com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget;
 import com.benesquivelmusic.daw.sdk.telemetry.*;
+import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
@@ -234,6 +235,15 @@ public final class ProjectDeserializer {
         double position = parseDoubleAttr(elem, "position", 0.0);
         if (position >= 0) {
             transport.setPositionInBeats(position);
+        }
+
+        if (elem.hasAttribute("punch-start-frames") && elem.hasAttribute("punch-end-frames")) {
+            long punchStart = parseLongAttr(elem, "punch-start-frames", -1L);
+            long punchEnd = parseLongAttr(elem, "punch-end-frames", -1L);
+            boolean punchEnabled = parseBooleanAttr(elem, "punch-enabled");
+            if (punchStart >= 0 && punchEnd > punchStart) {
+                transport.setPunchRegion(new PunchRegion(punchStart, punchEnd, punchEnabled));
+            }
         }
     }
 
@@ -896,6 +906,18 @@ public final class ProjectDeserializer {
         }
         try {
             return Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
+    }
+
+    private static long parseLongAttr(Element element, String attr, long defaultValue) {
+        String value = element.getAttribute(attr);
+        if (value.isEmpty()) {
+            return defaultValue;
+        }
+        try {
+            return Long.parseLong(value);
         } catch (NumberFormatException e) {
             return defaultValue;
         }

@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.InputRouting;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
 import java.nio.file.Path;
 import java.util.*;
@@ -50,6 +51,17 @@ public final class RecordingPipeline {
     private final Map<Track, float[][]> routedInputBuffers = new LinkedHashMap<>();
     private boolean active;
     private double recordingStartBeat;
+    /** Absolute sample-frame position aligned with {@link Transport}. Used for
+     *  sample-accurate gating against {@link Transport#getPunchRegion()}. */
+    private long currentFrame;
+    /** Previous callback's {@code currentFrame} at entry — enables detecting
+     *  the block containing the punch-in boundary for crossfade ramp-up and
+     *  supporting auto-punch re-entry after a transport rewind / loop. */
+    private boolean wasInsidePunchRegion;
+
+    /** Duration, in seconds, of the cosine crossfade applied at the
+     *  punch-in and punch-out boundaries to avoid clicks. */
+    private static final double PUNCH_CROSSFADE_SECONDS = 0.005;
 
     /**
      * Creates a new recording pipeline with default settings (no count-in,
@@ -112,10 +124,30 @@ public final class RecordingPipeline {
         }
         active = true;
 
-        // Capture the recording start position before any transport changes
-        recordingStartBeat = punchRange != null
-                ? punchRange.punchInBeat()
-                : transport.getPositionInBeats();
+        // Capture the recording start position before any transport changes.
+        // When the transport has an enabled (frame-based) punch region, prefer
+        // its start position so that recorded clips are anchored at the
+        // punch-in point even when playback began earlier (e.g. pre-roll).
+        PunchRegion transportPunch = transport.isPunchEnabled()
+                ? transport.getPunchRegion()
+                : null;
+        if (transportPunch != null) {
+            double bpm = transport.getTempo();
+            double startSeconds = transportPunch.startFrames() / format.sampleRate();
+            recordingStartBeat = startSeconds * (bpm / 60.0);
+        } else if (punchRange != null) {
+            recordingStartBeat = punchRange.punchInBeat();
+        } else {
+            recordingStartBeat = transport.getPositionInBeats();
+        }
+
+        // Initialize the frame counter from the transport's current beat
+        // position so that sample-accurate punch gating stays aligned with
+        // the transport. The transport may start earlier than the punch-in
+        // (e.g. pre-roll) — the counter advances monotonically per audio
+        // callback until it reaches the punch region.
+        currentFrame = beatsToFrames(transport.getPositionInBeats());
+        wasInsidePunchRegion = false;
 
         // Set recording indicator on armed tracks
         for (Track track : armedTracks) {
@@ -338,7 +370,27 @@ public final class RecordingPipeline {
     }
 
     private void onAudioCaptured(float[][] inputBuffer, int numFrames) {
-        // When punch recording is active, only record within the punch range
+        // Derive the block position from the transport's current beat position
+        // so that punch gating stays aligned after loop/rewind/seek. The
+        // recording callback fires *before* advancePosition(), so
+        // getPositionInBeats() still reflects this block's start.
+        long blockStart = beatsToFrames(transport.getPositionInBeats());
+        long blockEnd = blockStart + numFrames;
+        // Update the cached frame counter for consistency with the transport.
+        currentFrame = blockEnd;
+
+        // Prefer the frame-based transport punch region (sample-accurate) when
+        // enabled; fall back to the legacy beat-based PunchRange.
+        PunchRegion transportPunch = transport.isPunchEnabled()
+                ? transport.getPunchRegion()
+                : null;
+
+        if (transportPunch != null) {
+            captureWithTransportPunch(inputBuffer, numFrames, blockStart, blockEnd, transportPunch);
+            return;
+        }
+
+        // Legacy beat-based gating (backward-compatible with existing callers).
         if (punchRange != null) {
             double currentBeat = transport.getPositionInBeats();
             if (!punchRange.contains(currentBeat)) {
@@ -346,6 +398,62 @@ public final class RecordingPipeline {
             }
         }
 
+        recordToSessions(inputBuffer, 0, numFrames, null, 0, 0);
+    }
+
+    /**
+     * Captures input with sample-accurate slicing against {@code punch}.
+     *
+     * <p>Only frames that fall in {@code [punch.startFrames, punch.endFrames)}
+     * are forwarded to the recording sessions. A 5&nbsp;ms cosine crossfade
+     * ramp is applied on the blocks that straddle the punch-in and punch-out
+     * boundaries to eliminate clicks.</p>
+     *
+     * <p>Auto-punch: gating is re-evaluated per block, so if the transport
+     * rewinds or loops back into the region while {@link #active} remains
+     * {@code true}, recording automatically resumes for each new pass.</p>
+     */
+    private void captureWithTransportPunch(float[][] inputBuffer, int numFrames,
+                                           long blockStart, long blockEnd,
+                                           PunchRegion punch) {
+        long sliceStart = Math.max(blockStart, punch.startFrames());
+        long sliceEnd = Math.min(blockEnd, punch.endFrames());
+        if (sliceEnd <= sliceStart) {
+            wasInsidePunchRegion = false;
+            return;
+        }
+
+        int offset = (int) (sliceStart - blockStart);
+        int sliceFrames = (int) (sliceEnd - sliceStart);
+        int fadeFrames = Math.max(1, (int) Math.round(PUNCH_CROSSFADE_SECONDS * format.sampleRate()));
+        fadeFrames = Math.min(fadeFrames, sliceFrames);
+
+        // Punch-in crossfade: ramp-in when this block contains startFrames.
+        // Also applies on auto-punch re-entry (wasInsidePunchRegion was false).
+        int fadeInFrames = (blockStart <= punch.startFrames() && punch.startFrames() < blockEnd
+                || !wasInsidePunchRegion)
+                ? Math.min(fadeFrames, (int) (sliceEnd - sliceStart))
+                : 0;
+
+        // Punch-out crossfade: ramp-out when this block contains endFrames.
+        int fadeOutFrames = (blockStart < punch.endFrames() && punch.endFrames() <= blockEnd)
+                ? Math.min(fadeFrames, (int) (sliceEnd - sliceStart))
+                : 0;
+
+        recordToSessions(inputBuffer, offset, sliceFrames, punch,
+                fadeInFrames, fadeOutFrames);
+
+        wasInsidePunchRegion = (blockEnd < punch.endFrames());
+    }
+
+    /**
+     * Routes {@code sliceFrames} starting at {@code offset} in {@code inputBuffer}
+     * to each armed track's recording session, optionally applying a cosine
+     * fade-in at the start of the slice and/or fade-out at the end.
+     */
+    private void recordToSessions(float[][] inputBuffer, int offset, int sliceFrames,
+                                  PunchRegion punch,
+                                  int fadeInFrames, int fadeOutFrames) {
         for (Track track : armedTracks) {
             RecordingSession session = sessions.get(track);
             if (session == null) {
@@ -354,21 +462,60 @@ public final class RecordingPipeline {
 
             InputRouting routing = track.getInputRouting();
             if (routing.isNone()) {
-                // No input assigned — skip recording for this track
                 continue;
-            } else {
-                // Extract only the assigned input channels for this track
-                float[][] routed = routedInputBuffers.get(track);
-                int firstCh = routing.firstChannel();
-                int chCount = routing.channelCount();
-                for (int ch = 0; ch < chCount; ch++) {
-                    int srcCh = firstCh + ch;
-                    if (srcCh < inputBuffer.length && ch < routed.length) {
-                        System.arraycopy(inputBuffer[srcCh], 0, routed[ch], 0, numFrames);
-                    }
+            }
+
+            float[][] routed = routedInputBuffers.get(track);
+            int firstCh = routing.firstChannel();
+            int chCount = routing.channelCount();
+            for (int ch = 0; ch < chCount; ch++) {
+                int srcCh = firstCh + ch;
+                if (srcCh < inputBuffer.length && ch < routed.length) {
+                    System.arraycopy(inputBuffer[srcCh], offset, routed[ch], 0, sliceFrames);
                 }
-                session.recordAudioData(routed, numFrames);
+            }
+
+            if (punch != null && (fadeInFrames > 0 || fadeOutFrames > 0)) {
+                applyCosineFades(routed, chCount, sliceFrames, fadeInFrames, fadeOutFrames);
+            }
+
+            session.recordAudioData(routed, sliceFrames);
+        }
+    }
+
+    /**
+     * Applies an equal-power cosine fade-in at the start of the slice and/or
+     * a cosine fade-out at the end. The ramp rises (or falls) from 0 to 1
+     * along {@code 0.5 * (1 - cos(pi * t))} for {@code t} in {@code [0, 1]},
+     * giving a click-free transition at the punch boundary.
+     */
+    private static void applyCosineFades(float[][] buffer, int channels,
+                                         int sliceFrames,
+                                         int fadeInFrames, int fadeOutFrames) {
+        if (fadeInFrames > 0) {
+            for (int i = 0; i < fadeInFrames; i++) {
+                double t = (double) i / fadeInFrames;
+                float gain = (float) (0.5 * (1.0 - Math.cos(Math.PI * t)));
+                for (int ch = 0; ch < channels && ch < buffer.length; ch++) {
+                    buffer[ch][i] *= gain;
+                }
             }
         }
+        if (fadeOutFrames > 0) {
+            int start = sliceFrames - fadeOutFrames;
+            for (int i = 0; i < fadeOutFrames; i++) {
+                double t = (double) i / fadeOutFrames;
+                float gain = (float) (0.5 * (1.0 + Math.cos(Math.PI * t)));
+                for (int ch = 0; ch < channels && ch < buffer.length; ch++) {
+                    buffer[ch][start + i] *= gain;
+                }
+            }
+        }
+    }
+
+    private long beatsToFrames(double beats) {
+        double bpm = transport.getTempo();
+        double seconds = beats * 60.0 / bpm;
+        return Math.round(seconds * format.sampleRate());
     }
 }
