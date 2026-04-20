@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.transport;
 
+import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
 /**
@@ -24,16 +25,23 @@ public final class Transport {
     private double loopStartInBeats = DEFAULT_LOOP_START;
     private double loopEndInBeats = DEFAULT_LOOP_END;
     private PunchRegion punchRegion;
+    private PreRollPostRoll preRollPostRoll = PreRollPostRoll.DISABLED;
+    private boolean inPreRoll = false;
+    private boolean inPostRoll = false;
 
     /** Starts playback from the current position. */
     public void play() {
         state = TransportState.PLAYING;
+        inPreRoll = false;
+        inPostRoll = false;
     }
 
     /** Stops playback and resets the position to zero. */
     public void stop() {
         state = TransportState.STOPPED;
         positionInBeats = 0.0;
+        inPreRoll = false;
+        inPostRoll = false;
     }
 
     /** Pauses playback at the current position. */
@@ -242,5 +250,153 @@ public final class Transport {
      */
     public boolean isPunchEnabled() {
         return punchRegion != null && punchRegion.enabled();
+    }
+
+    // ── Pre-roll / Post-roll ───────────────────────────────────────────────
+
+    /**
+     * Installs a bar-based pre-roll/post-roll configuration on the transport.
+     *
+     * <p>When the configuration is {@linkplain PreRollPostRoll#enabled()
+     * enabled}, {@link #playWithPreRoll()} seeks the playhead back by
+     * {@code preBars} before beginning playback, and {@link #requestStop()}
+     * extends playback by {@code postBars} before fully stopping. During
+     * pre-roll and post-roll windows the click track keeps sounding but input
+     * must not be captured — callers can check {@link #isInputCaptureGated()}
+     * to implement that gating.</p>
+     *
+     * @param preRollPostRoll the configuration (must not be {@code null}; use
+     *                        {@link #clearPreRollPostRoll()} to reset)
+     * @throws NullPointerException if {@code preRollPostRoll} is {@code null}
+     */
+    public void setPreRollPostRoll(PreRollPostRoll preRollPostRoll) {
+        if (preRollPostRoll == null) {
+            throw new NullPointerException(
+                    "preRollPostRoll must not be null; use clearPreRollPostRoll() to reset");
+        }
+        this.preRollPostRoll = preRollPostRoll;
+    }
+
+    /**
+     * Resets the pre-roll/post-roll configuration to
+     * {@link PreRollPostRoll#DISABLED}.
+     */
+    public void clearPreRollPostRoll() {
+        this.preRollPostRoll = PreRollPostRoll.DISABLED;
+        this.inPreRoll = false;
+        this.inPostRoll = false;
+    }
+
+    /**
+     * Returns the currently installed pre-roll/post-roll configuration.
+     * Never {@code null}; defaults to {@link PreRollPostRoll#DISABLED}.
+     *
+     * @return the current configuration
+     */
+    public PreRollPostRoll getPreRollPostRoll() {
+        return preRollPostRoll;
+    }
+
+    /**
+     * Returns {@code true} if a pre-roll/post-roll configuration is installed
+     * and its {@code enabled} flag is {@code true}.
+     */
+    public boolean isPreRollPostRollEnabled() {
+        return preRollPostRoll.enabled();
+    }
+
+    /**
+     * Starts playback with pre-roll applied: before entering the
+     * {@link TransportState#PLAYING} state, the position is seeked backward by
+     * {@code preBars × beatsPerBar} (clamped to zero). When no pre-roll is
+     * configured (or the configuration is disabled or {@code preBars == 0}),
+     * this method is equivalent to {@link #play()}.
+     *
+     * <p>The returned value is the number of beats that playback was rewound
+     * by, which is useful for tests asserting sample-accurate pre-roll.</p>
+     *
+     * @return the number of beats by which the playhead was shifted back
+     */
+    public double playWithPreRoll() {
+        double shift = 0.0;
+        if (preRollPostRoll.enabled() && preRollPostRoll.preBars() > 0) {
+            shift = preRollPostRoll.preRollBeats(getTimeSignatureNumerator());
+            double target = positionInBeats - shift;
+            if (target < 0) {
+                shift = positionInBeats; // clamp
+                target = 0.0;
+            }
+            positionInBeats = target;
+            inPreRoll = shift > 0;
+        } else {
+            inPreRoll = false;
+        }
+        inPostRoll = false;
+        state = TransportState.PLAYING;
+        return shift;
+    }
+
+    /**
+     * Requests that the transport stop. If a post-roll is configured, the
+     * transport enters the post-roll window instead of stopping immediately;
+     * the caller is expected to invoke {@link #advancePosition(double)} as
+     * normal and call {@link #finishPostRoll()} once the post-roll duration
+     * has elapsed. If no post-roll is configured, this method is equivalent
+     * to {@link #stop()}.
+     *
+     * @return {@code true} if the transport entered a post-roll window
+     *         (still running), {@code false} if it stopped immediately
+     */
+    public boolean requestStop() {
+        if (preRollPostRoll.enabled() && preRollPostRoll.postBars() > 0
+                && (state == TransportState.PLAYING
+                        || state == TransportState.RECORDING)) {
+            inPostRoll = true;
+            inPreRoll = false;
+            // Post-roll plays back, not records — drop out of RECORDING.
+            state = TransportState.PLAYING;
+            return true;
+        }
+        stop();
+        return false;
+    }
+
+    /**
+     * Completes a post-roll window started by {@link #requestStop()}, moving
+     * the transport to the {@link TransportState#STOPPED} state. Safe to call
+     * when not in post-roll (no-op).
+     */
+    public void finishPostRoll() {
+        inPostRoll = false;
+        state = TransportState.STOPPED;
+        positionInBeats = 0.0;
+    }
+
+    /**
+     * Marks the transport as having crossed the pre-roll boundary — i.e. the
+     * playhead has reached the original starting position and real recording
+     * may begin. Safe to call when not in pre-roll (no-op).
+     */
+    public void finishPreRoll() {
+        inPreRoll = false;
+    }
+
+    /** Returns {@code true} if the transport is currently inside a pre-roll window. */
+    public boolean isInPreRoll() {
+        return inPreRoll;
+    }
+
+    /** Returns {@code true} if the transport is currently inside a post-roll window. */
+    public boolean isInPostRoll() {
+        return inPostRoll;
+    }
+
+    /**
+     * Returns {@code true} if input capture must be suppressed at the current
+     * moment — i.e. the transport is inside a pre-roll or post-roll window.
+     * The click/metronome is <em>not</em> affected by this flag.
+     */
+    public boolean isInputCaptureGated() {
+        return inPreRoll || inPostRoll;
     }
 }
