@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.analysis.InputLevelMonitor;
+import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
@@ -74,6 +76,12 @@ public final class AudioEngine {
 
     // Optional per-track CPU budget enforcer for graceful degradation
     private volatile TrackCpuBudgetEnforcer cpuBudgetEnforcer;
+
+    // Optional registry of input-level monitors (story 137). When set, the
+    // engine taps the raw input signal per armed track ahead of any
+    // processing and feeds it through the track's monitor so the mixer's
+    // input-meter column and the arrangement-view clip indicator stay live.
+    private volatile InputLevelMonitorRegistry inputLevelMonitorRegistry;
 
     /**
      * Creates a new audio engine with the specified format.
@@ -596,6 +604,34 @@ public final class AudioEngine {
     }
 
     /**
+     * Binds an {@link InputLevelMonitorRegistry} to the engine so that the
+     * raw input signal for each armed track is tapped ahead of any
+     * processing and fed through a per-track monitor (user story 137).
+     *
+     * <p>When set, every {@link #processBlock(float[][], float[][], int)}
+     * call iterates the armed tracks and forwards the configured input-
+     * channel slice to {@link InputLevelMonitor#processInputChannels} on
+     * the matching monitor. The mixer and arrangement-view UI read the
+     * resulting snapshots to drive the input-meter column and the clip
+     * LED.</p>
+     *
+     * <p>Pass {@code null} to disable the tap (the engine then reverts to
+     * pre-story-137 behavior — zero per-block overhead).</p>
+     *
+     * @param registry the registry, or {@code null} to disable
+     */
+    public void setInputLevelMonitorRegistry(InputLevelMonitorRegistry registry) {
+        this.inputLevelMonitorRegistry = registry;
+    }
+
+    /**
+     * Returns the currently bound input-level monitor registry, or {@code null}.
+     */
+    public InputLevelMonitorRegistry getInputLevelMonitorRegistry() {
+        return inputLevelMonitorRegistry;
+    }
+
+    /**
      * Processes a single block of audio by delegating to the unified
      * {@link RenderPipeline}.
      *
@@ -637,11 +673,63 @@ public final class AudioEngine {
         RecordingCallback cb = this.recordingCallback;
         PerformanceMonitor monitor = this.performanceMonitor;
         TrackCpuBudgetEnforcer enforcer = this.cpuBudgetEnforcer;
+        InputLevelMonitorRegistry inputRegistry = this.inputLevelMonitorRegistry;
+
+        // Story 137: tap the raw input signal per armed track BEFORE any
+        // processing so the mixer's input-meter column and the clip LED
+        // always reflect the converter-side signal (not post-gain / post-
+        // inserts). No-op when no registry is bound or no track is armed.
+        if (inputRegistry != null && inputBuffer != null && currentTracks != null) {
+            tapArmedTrackInputs(inputRegistry, inputBuffer, numFrames, currentTracks);
+        }
 
         renderPipeline.renderBlock(inputBuffer, outputBuffer, numFrames,
                 currentTransport, currentMixer, currentTracks,
                 currentMidiRenderer, masterChain, cb, monitor,
                 enforcer);
+    }
+
+    /**
+     * Iterates the armed tracks and forwards the raw input-channel slice
+     * for each one to its {@link InputLevelMonitor}.
+     *
+     * <p>Allocation-free hot path: the only per-block state is the snapshot
+     * volatile field read at the top of {@link
+     * #processBlock(float[][], float[][], int)}. Monitors are looked up by
+     * track id via {@link InputLevelMonitorRegistry#getOrCreate(String)},
+     * which synchronizes internally but allocates only the first time a
+     * given track is armed.</p>
+     */
+    @RealTimeSafe
+    private static void tapArmedTrackInputs(InputLevelMonitorRegistry registry,
+                                            float[][] inputBuffer,
+                                            int numFrames,
+                                            List<Track> currentTracks) {
+        int numInputChannels = inputBuffer.length;
+        if (numInputChannels == 0) {
+            return;
+        }
+        for (int i = 0, n = currentTracks.size(); i < n; i++) {
+            Track track = currentTracks.get(i);
+            if (track == null || !track.isArmed()) {
+                continue;
+            }
+            InputRouting routing = track.getInputRouting();
+            if (routing == null || routing.isNone()) {
+                continue;
+            }
+            int first = routing.firstChannel();
+            int count = routing.channelCount();
+            if (first < 0 || count <= 0 || first + count > numInputChannels) {
+                // Routing points off the end of the actual input buffer —
+                // e.g., user selected "Input 5-6" on a 2-in interface.
+                // Skip silently so metering never throws from the audio
+                // thread.
+                continue;
+            }
+            InputLevelMonitor monitor = registry.getOrCreate(track.getId());
+            monitor.processInputChannels(inputBuffer, first, count, numFrames);
+        }
     }
 
     /**

@@ -1,7 +1,10 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.display.MiniClipIndicator;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.core.analysis.InputLevelMonitor;
+import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.automation.AutomationParameter;
@@ -90,6 +93,10 @@ final class TrackStripController {
     private final SelectionModel selectionModel;
     private final Host host;
     private ArrangementCanvas arrangementCanvas;
+    // Story 137: when set, armed audio tracks grow a miniature clip
+    // indicator in their arrangement-view header that mirrors the mixer's
+    // input-meter clip LED.
+    private InputLevelMonitorRegistry inputLevelMonitorRegistry;
 
     TrackStripController(DawProject project,
                          UndoManager undoManager,
@@ -121,6 +128,15 @@ final class TrackStripController {
      */
     void setArrangementCanvas(ArrangementCanvas canvas) {
         this.arrangementCanvas = canvas;
+    }
+
+    /**
+     * Story 137: binds the registry used to drive the miniature clip
+     * indicator on each armed track's arrangement-view header. When
+     * {@code null}, no indicator is shown.
+     */
+    void setInputLevelMonitorRegistry(InputLevelMonitorRegistry registry) {
+        this.inputLevelMonitorRegistry = registry;
     }
 
     HBox addTrackToUI(Track track) {
@@ -314,6 +330,22 @@ final class TrackStripController {
             statusBarLabel.setGraphic(IconNode.of(DawIcon.SOLO, 12));
         });
 
+        // ── Miniature input-clip indicator (story 137) ──────────────────
+        // Slot in the track item that holds the clip indicator when the
+        // track is armed. Wrapped in a container so we can swap the
+        // indicator in/out on arm without touching the rest of the strip.
+        HBox clipIndicatorSlot = new HBox();
+        clipIndicatorSlot.setAlignment(Pos.CENTER);
+        clipIndicatorSlot.setPrefWidth(12);
+        clipIndicatorSlot.setMaxWidth(12);
+        if (track.isArmed() && inputLevelMonitorRegistry != null) {
+            InputLevelMonitor monitor = inputLevelMonitorRegistry.getOrCreate(track);
+            MiniClipIndicator indicator = new MiniClipIndicator(monitor, inputLevelMonitorRegistry);
+            Tooltip.install(indicator,
+                    new Tooltip("Input clipped. Click to reset; Alt+click resets all."));
+            clipIndicatorSlot.getChildren().add(indicator);
+        }
+
         // ── Arm button with icon and toggle action (Recording category) ─────
         Button armBtn = new Button();
         armBtn.setGraphic(IconNode.of(DawIcon.ARM_TRACK, TRACK_CONTROL_ICON_SIZE));
@@ -328,6 +360,11 @@ final class TrackStripController {
                     : "Disarmed: " + track.getName());
             statusBarLabel.setGraphic(IconNode.of(
                     track.isArmed() ? DawIcon.BELL_RING : DawIcon.ARM_TRACK, 12));
+
+            // Story 137: toggle the mini clip indicator on/off together
+            // with the arm state. Stops the indicator's redraw timer on
+            // disarm so we don't leak animation-timer subscriptions.
+            refreshClipIndicatorSlot(clipIndicatorSlot, track);
         });
 
         // ── Phase invert toggle (Recording category) ────────────────────────
@@ -431,7 +468,7 @@ final class TrackStripController {
 
         trackItem.getChildren().addAll(
                 typeIcon, ioLabel, nameLabel, insertChain, volRow, panRow,
-                autoBtn, paramSelector, spacer,
+                autoBtn, paramSelector, spacer, clipIndicatorSlot,
                 outputLabel, phaseBtn, muteBtn, soloBtn, armBtn, removeBtn);
         if (uiIndex >= 0 && uiIndex < trackListPanel.getChildren().size()) {
             trackListPanel.getChildren().add(uiIndex, trackItem);
@@ -450,6 +487,31 @@ final class TrackStripController {
         new ParallelTransition(slide, fade).play();
 
         return trackItem;
+    }
+
+    /**
+     * Story 137: populates or clears the miniature clip-indicator slot to
+     * match the track's current armed state. Also stops the timer on any
+     * previously-installed indicator so we don't leak
+     * {@link javafx.animation.AnimationTimer} subscriptions when a track
+     * is disarmed.
+     */
+    private void refreshClipIndicatorSlot(HBox slot, Track track) {
+        // Drop the old indicator (if any) and stop its redraw timer.
+        for (Node child : new ArrayList<>(slot.getChildren())) {
+            if (child instanceof MiniClipIndicator mci) {
+                mci.stop();
+            }
+        }
+        slot.getChildren().clear();
+
+        if (track.isArmed() && inputLevelMonitorRegistry != null) {
+            InputLevelMonitor monitor = inputLevelMonitorRegistry.getOrCreate(track);
+            MiniClipIndicator indicator = new MiniClipIndicator(monitor, inputLevelMonitorRegistry);
+            Tooltip.install(indicator,
+                    new Tooltip("Input clipped. Click to reset; Alt+click resets all."));
+            slot.getChildren().add(indicator);
+        }
     }
 
     /**

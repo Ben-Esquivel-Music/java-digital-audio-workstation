@@ -1,8 +1,11 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.display.InputMeterStrip;
 import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.core.analysis.InputLevelMonitor;
+import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.audio.InputRouting;
 import com.benesquivelmusic.daw.core.mixer.*;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
@@ -57,6 +60,7 @@ public final class MixerView extends VBox {
     private static final double CHANNEL_WIDTH = 80;
     private static final double METER_WIDTH = 12;
     private static final double METER_HEIGHT = 120;
+    private static final double INPUT_METER_WIDTH = 10;
     private static final double CONTROL_ICON_SIZE = 14;
     private static final double SEND_SLIDER_WIDTH = 60;
 
@@ -66,7 +70,9 @@ public final class MixerView extends VBox {
     private final HBox returnBusStrips;
     private final VBox masterStrip;
     private final List<InsertEffectRack> activeInsertRacks = new ArrayList<>();
+    private final List<InputMeterStrip> activeInputMeterStrips = new ArrayList<>();
     private PluginRegistry pluginRegistry;
+    private InputLevelMonitorRegistry inputLevelMonitorRegistry;
 
     /**
      * Creates a new mixer view bound to the given project.
@@ -139,6 +145,34 @@ public final class MixerView extends VBox {
     }
 
     /**
+     * Binds an {@link InputLevelMonitorRegistry} so that armed tracks show
+     * an input-signal meter column with a latching clip LED (user story 137).
+     *
+     * <p>When set, every channel strip whose backing track is armed gets a
+     * second vertical meter column sourced from the track's
+     * {@link InputLevelMonitor}. Clicking the clip LED on any strip resets
+     * that track's latch; {@code Alt+click} resets every track's latch via
+     * {@link InputLevelMonitorRegistry#resetAll()}.</p>
+     *
+     * <p>Call {@link #refresh()} after binding (or rebinding) so the strips
+     * rebuild with the new registry.</p>
+     *
+     * @param registry the registry to bind, or {@code null} to disable the
+     *                 input-meter column
+     */
+    public void setInputLevelMonitorRegistry(InputLevelMonitorRegistry registry) {
+        this.inputLevelMonitorRegistry = registry;
+    }
+
+    /**
+     * Returns the currently bound input-level monitor registry, or
+     * {@code null} if none has been set.
+     */
+    public InputLevelMonitorRegistry getInputLevelMonitorRegistry() {
+        return inputLevelMonitorRegistry;
+    }
+
+    /**
      * Rebuilds the channel strips from the current project tracks and return
      * buses.
      *
@@ -151,6 +185,13 @@ public final class MixerView extends VBox {
             rack.dispose();
         }
         activeInsertRacks.clear();
+        // Stop redraw timers on previously-constructed input-meter strips
+        // so they don't keep firing (and holding references to discarded
+        // JavaFX nodes) after a refresh.
+        for (InputMeterStrip strip : activeInputMeterStrips) {
+            strip.stop();
+        }
+        activeInputMeterStrips.clear();
 
         channelStrips.getChildren().clear();
         for (Track track : project.getTracks()) {
@@ -231,6 +272,28 @@ public final class MixerView extends VBox {
         levelMeter.setPrefHeight(METER_HEIGHT);
         levelMeter.setMinHeight(METER_HEIGHT);
 
+        // ── Input meter (second column, armed tracks only) ──────────────
+        // Story 137: when a track is armed, show a dedicated input-signal
+        // meter column ahead of the output meter with a latching clip LED.
+        // Clicking the clip LED resets that track; Alt+click resets all.
+        HBox meterRow = new HBox(2);
+        meterRow.setAlignment(Pos.CENTER);
+        if (track.isArmed() && inputLevelMonitorRegistry != null) {
+            InputLevelMonitor monitor = inputLevelMonitorRegistry.getOrCreate(track);
+            InputMeterStrip inputStrip = new InputMeterStrip(monitor, inputLevelMonitorRegistry);
+            inputStrip.setPrefWidth(INPUT_METER_WIDTH);
+            inputStrip.setMinWidth(INPUT_METER_WIDTH);
+            inputStrip.setMaxWidth(INPUT_METER_WIDTH);
+            inputStrip.setPrefHeight(METER_HEIGHT);
+            inputStrip.setMinHeight(METER_HEIGHT);
+            Tooltip.install(inputStrip,
+                    new Tooltip("Input meter (pre-processing). "
+                            + "Click clip LED to reset; Alt+click resets all."));
+            activeInputMeterStrips.add(inputStrip);
+            meterRow.getChildren().add(inputStrip);
+        }
+        meterRow.getChildren().add(levelMeter);
+
         // Volume fader (vertical slider)
         Slider volumeFader = new Slider(0.0, 1.0, mixerChannel.getVolume());
         volumeFader.setOrientation(Orientation.VERTICAL);
@@ -292,6 +355,11 @@ public final class MixerView extends VBox {
             track.setArmed(armed);
             armBtn.setStyle(armed
                     ? "-fx-background-color: #ff1744; -fx-text-fill: #ffffff;" : "");
+            // Story 137: refresh so the input-meter column appears (on arm)
+            // or disappears (on disarm) immediately.
+            if (inputLevelMonitorRegistry != null) {
+                refresh();
+            }
         });
 
         HBox buttonRow = new HBox(2, muteBtn, soloBtn, armBtn);
@@ -452,7 +520,7 @@ public final class MixerView extends VBox {
         strip.getChildren().addAll(
                 nameLabel, typeIcon,
                 inputRoutingCombo, outputRoutingCombo,
-                insertRack, latencyLabel, levelMeter, volumeFader,
+                insertRack, latencyLabel, meterRow, volumeFader,
                 panLabel, panSlider, buttonRow, pannerBtn,
                 sendBox, sendLabel, sendSlider);
 

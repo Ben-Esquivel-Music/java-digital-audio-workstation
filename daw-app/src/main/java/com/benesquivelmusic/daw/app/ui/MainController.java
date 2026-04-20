@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplay;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.audio.AudioBackendFactory;
 import com.benesquivelmusic.daw.core.audio.AudioDeviceManager;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
@@ -95,6 +96,9 @@ public final class MainController {
     private UndoManager undoManager;
     private boolean projectDirty;
     private AudioEngine audioEngine;
+    // Story 137: registry of per-track input-level monitors used by the
+    // mixer's input-meter column and the arrangement-view clip indicator.
+    private final InputLevelMonitorRegistry inputLevelMonitorRegistry = new InputLevelMonitorRegistry();
     private DefaultAudioEngineController audioEngineController;
     private NotificationBar notificationBar;
     private Metronome metronome;
@@ -157,6 +161,9 @@ public final class MainController {
         });
 
         audioEngine = new AudioEngine(project.getFormat());
+        // Story 137: bind the input-level-monitor registry so the engine
+        // taps the raw input signal per armed track before any processing.
+        audioEngine.setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
         metronome = new Metronome(project.getFormat().sampleRate(), project.getFormat().channels());
         try {
             audioEngine.setAudioBackend(AudioBackendFactory.createDefault());
@@ -217,6 +224,15 @@ public final class MainController {
         updateUndoRedoState();
         animationController.start();
         viewNavigationController.getMixerView().setPluginRegistry(pluginRegistry);
+        // Story 137: wire the input-level-monitor registry into the mixer
+        // so armed-track strips grow a second meter column with a latching
+        // clip LED, and into the track-strip controller so armed tracks
+        // also show the miniature clip indicator in the arrangement view.
+        viewNavigationController.getMixerView()
+                .setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
+        if (trackStripController != null) {
+            trackStripController.setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
+        }
         createArrangementCanvas();
         viewNavigationController.setOnEditToolChanged(() -> {
             if (clipInteractionController != null) clipInteractionController.updateCursor();
@@ -351,6 +367,11 @@ public final class MainController {
 
     private void handleProjectRebuild(MixerView newMixerView) {
         newMixerView.setPluginRegistry(pluginRegistry);
+        // Story 137: a fresh project means fresh tracks — drop the old
+        // per-track input monitors and let the engine/UI recreate them
+        // lazily as tracks are armed.
+        inputLevelMonitorRegistry.clear();
+        newMixerView.setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
         viewNavigationController.setMixerView(newMixerView);
         viewNavigationController.onProjectChanged();
         pluginViewController.onProjectChanged(project);
@@ -361,6 +382,9 @@ public final class MainController {
                 new MetronomeSettingsStore());
         transportController.updateStatus();
         createTrackStripController();
+        if (trackStripController != null) {
+            trackStripController.setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
+        }
         updateProjectInfo();
         updateTempoDisplay();
         updateUndoRedoState();
