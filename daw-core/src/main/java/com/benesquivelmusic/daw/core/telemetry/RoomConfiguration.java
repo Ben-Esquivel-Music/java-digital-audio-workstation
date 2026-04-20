@@ -25,6 +25,7 @@ public final class RoomConfiguration {
     private final List<MicrophonePlacement> microphones = new ArrayList<>();
     private final List<SoundSource> soundSources = new ArrayList<>();
     private final List<AudienceMember> audienceMembers = new ArrayList<>();
+    private final List<AcousticTreatment> appliedTreatments = new ArrayList<>();
 
     /**
      * Creates a room configuration with the given dimensions and a single
@@ -191,5 +192,35 @@ public final class RoomConfiguration {
      */
     public List<AudienceMember> getAudienceMembers() {
         return Collections.unmodifiableList(audienceMembers);
+    }
+
+    /**
+     * Records that an acoustic treatment has been installed in the room.
+     *
+     * <p>Applied treatments are consulted by
+     * {@code TreatmentAdvisor} so that subsequent analyses do not re-suggest
+     * a spot that already has treatment. They are persisted alongside the
+     * rest of the room configuration.</p>
+     *
+     * @param treatment the treatment to mark as applied
+     */
+    public void addAppliedTreatment(AcousticTreatment treatment) {
+        Objects.requireNonNull(treatment, "treatment must not be null");
+        appliedTreatments.add(treatment);
+    }
+
+    /**
+     * Removes an applied treatment by reference equality.
+     *
+     * @param treatment the treatment to remove
+     * @return {@code true} if the treatment was present and removed
+     */
+    public boolean removeAppliedTreatment(AcousticTreatment treatment) {
+        return appliedTreatments.remove(treatment);
+    }
+
+    /** Returns an unmodifiable view of the applied treatments. */
+    public List<AcousticTreatment> getAppliedTreatments() {
+        return Collections.unmodifiableList(appliedTreatments);
     }
 }
