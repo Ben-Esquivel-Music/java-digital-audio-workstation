@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.telemetry.BoundaryResponsePanel;
+import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
 import com.benesquivelmusic.daw.core.telemetry.RoomGeometrySolver;
 import com.benesquivelmusic.daw.core.telemetry.RoomParameterController;
 import com.benesquivelmusic.daw.sdk.telemetry.*;
@@ -108,6 +110,9 @@ public final class TelemetrySetupPanel extends ScrollPane {
     private final ComboBox<MicrophonePlacement> primaryMicCombo;
     private final Label autoSizePreviewLabel;
     private final Button applyAutoSizeButton;
+
+    /** Boundary-response (SBIR) display — computed live from sources/mics. */
+    private final BoundaryResponsePanel boundaryResponsePanel;
 
     /**
      * {@code true} while the panel is programmatically writing dimension
@@ -343,6 +348,15 @@ public final class TelemetrySetupPanel extends ScrollPane {
         applyAutoSizeButton.setStyle(BUTTON_STYLE);
         applyAutoSizeButton.setOnAction(event -> applyAutoSize());
 
+        boundaryResponsePanel = new BoundaryResponsePanel();
+        // Refresh the SBIR display whenever the user adds/removes a
+        // sound source or microphone. The panel computes from the live
+        // configuration and persists nothing.
+        soundSources.addListener((javafx.collections.ListChangeListener<SoundSource>)
+                change -> refreshBoundaryResponse());
+        microphones.addListener((javafx.collections.ListChangeListener<MicrophonePlacement>)
+                change -> refreshBoundaryResponse());
+
         // ── Auto-fill on preset selection ────────────────────────────
         presetCombo.valueProperty().addListener((observable, oldValue, newValue) -> {
             if (newValue != null) {
@@ -521,6 +535,16 @@ public final class TelemetrySetupPanel extends ScrollPane {
         Label rt60SectionLabel = new Label("Reverberation Time (RT60)");
         rt60SectionLabel.setStyle(SECTION_LABEL_STYLE);
 
+        Label boundaryResponseSectionLabel = new Label("Boundary Response (SBIR)");
+        boundaryResponseSectionLabel.setStyle(SECTION_LABEL_STYLE);
+        Label boundaryResponseHelp = new Label(
+                "Predicts comb-filter notches caused by reflections from the "
+                        + "speaker's nearest boundary. The deepest notch is "
+                        + "highlighted; move the speaker farther from the "
+                        + "offending boundary to mitigate.");
+        boundaryResponseHelp.setStyle(LABEL_STYLE);
+        boundaryResponseHelp.setWrapText(true);
+
         content.getChildren().addAll(
                 header,
                 headerSep,
@@ -561,10 +585,62 @@ public final class TelemetrySetupPanel extends ScrollPane {
                 micGrid,
                 micButtons,
                 micErrorLabel,
-                micListView
+                micListView,
+                new Separator() {{ setStyle(SEPARATOR_STYLE); }},
+                boundaryResponseSectionLabel,
+                boundaryResponseHelp,
+                boundaryResponsePanel
         );
 
         setContent(content);
+        // Render an initial empty state.
+        refreshBoundaryResponse();
+    }
+
+    // ── Boundary-response (SBIR) section ─────────────────────────────
+
+    /**
+     * Returns the live SBIR boundary-response panel embedded in this
+     * setup panel. Tests and external triggers may invoke
+     * {@link BoundaryResponsePanel#update} directly with the latest
+     * room configuration to refresh the curves.
+     *
+     * @return the embedded boundary-response panel (never {@code null})
+     */
+    public BoundaryResponsePanel getBoundaryResponsePanel() {
+        return boundaryResponsePanel;
+    }
+
+    /**
+     * Recomputes the SBIR predictions from the current source/mic
+     * lists and the active room dimensions. Called automatically when
+     * sources or microphones are added or removed; can also be invoked
+     * manually after dimension/material changes.
+     */
+    public void refreshBoundaryResponse() {
+        try {
+            double w = Double.parseDouble(widthField.getText());
+            double l = Double.parseDouble(lengthField.getText());
+            double h = Double.parseDouble(heightField.getText());
+            if (w <= 0 || l <= 0 || h <= 0) {
+                boundaryResponsePanel.update(emptyConfigForCurrentSources());
+                return;
+            }
+            RoomConfiguration cfg = new RoomConfiguration(
+                    new RoomDimensions(w, l, h),
+                    new SurfaceMaterialMap(wallMaterialCombo.getValue()));
+            for (SoundSource src : soundSources) cfg.addSoundSource(src);
+            for (MicrophonePlacement m : microphones) cfg.addMicrophone(m);
+            boundaryResponsePanel.update(cfg);
+        } catch (NumberFormatException | NullPointerException ex) {
+            // Setup panel mid-edit — show empty state until inputs are valid again.
+            boundaryResponsePanel.update(emptyConfigForCurrentSources());
+        }
+    }
+
+    private RoomConfiguration emptyConfigForCurrentSources() {
+        return new RoomConfiguration(
+                new RoomDimensions(1, 1, 1), WallMaterial.DRYWALL);
     }
 
     // ── Public accessors ─────────────────────────────────────────────

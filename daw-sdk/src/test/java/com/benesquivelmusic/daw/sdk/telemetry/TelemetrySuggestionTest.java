@@ -67,6 +67,7 @@ class TelemetrySuggestionTest {
             case TelemetrySuggestion.AdjustMicAngle ama -> "angle";
             case TelemetrySuggestion.AddDampening ad -> "add-dampening";
             case TelemetrySuggestion.RemoveDampening rd -> "remove-dampening";
+            case TelemetrySuggestion.MoveSoundSource mss -> "move-source";
         };
 
         assertThat(result).isEqualTo("add-dampening");

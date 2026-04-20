@@ -126,6 +126,11 @@ public final class RoomTelemetryDisplay extends Region {
     // view so the user can see at a glance what is already installed.
     private final List<AcousticTreatment> treatmentOverlays = new ArrayList<>();
 
+    // SBIR notch-risk overlay — one entry per source whose worst-boundary
+    // SBIR notch exceeds the configured threshold. Rendered as a soft
+    // orange contour around the source on the 2D room view.
+    private final Map<String, SbirPrediction> sbirOverlays = new HashMap<>();
+
     /**
      * Sets the list of acoustic treatments to overlay on the 2D room view.
      * Typically populated from {@code RoomConfiguration.getAppliedTreatments()}
@@ -145,6 +150,26 @@ public final class RoomTelemetryDisplay extends Region {
     public List<AcousticTreatment> getTreatmentOverlays() {
         return java.util.Collections.unmodifiableList(
                 new ArrayList<>(treatmentOverlays));
+    }
+
+    /**
+     * Sets the SBIR notch-risk overlays to draw around each speaker.
+     * Maps source name to its worst-boundary {@link SbirPrediction};
+     * sources whose notch is shallower than 5&nbsp;dB are typically
+     * omitted by the caller. Pass an empty map to clear.
+     *
+     * @param overlays predictions keyed by source name (must not be {@code null})
+     */
+    public void setSbirOverlays(Map<String, SbirPrediction> overlays) {
+        Objects.requireNonNull(overlays, "overlays must not be null");
+        this.sbirOverlays.clear();
+        this.sbirOverlays.putAll(overlays);
+        render();
+    }
+
+    /** Returns an unmodifiable snapshot of the current SBIR overlays. */
+    public Map<String, SbirPrediction> getSbirOverlays() {
+        return java.util.Collections.unmodifiableMap(new HashMap<>(sbirOverlays));
     }
 
     /**
@@ -472,6 +497,9 @@ public final class RoomTelemetryDisplay extends Region {
             AudienceMember member = audience.get(i);
             drawAudienceMember(gc, member.position(), member.name(), i);
         }
+
+        // ── Draw SBIR notch-risk contours around speakers ──
+        drawSbirOverlays(gc);
 
         // ── Draw RT60 glow on room edges ──
         drawRt60Glow(gc, roomW, roomL, roomH);
@@ -940,6 +968,7 @@ public final class RoomTelemetryDisplay extends Region {
                 case TelemetrySuggestion.AdjustMicAngle _ -> "\uD83D\uDD04";
                 case TelemetrySuggestion.AddDampening _ -> "\uD83E\uDDF1";
                 case TelemetrySuggestion.RemoveDampening _ -> "\uD83E\uDE9F";
+                case TelemetrySuggestion.MoveSoundSource _ -> "\uD83D\uDD0A";
             };
             String text = suggestions.get(i).description();
             if (text.length() > 60) text = text.substring(0, 57) + "...";
@@ -1431,6 +1460,62 @@ public final class RoomTelemetryDisplay extends Region {
     }
 
     // ── Treatment overlay drawing ──────────────────────────────────
+
+    /**
+     * Renders a soft contour around each speaker registered via
+     * {@link #setSbirOverlays(Map)}, signalling the &quot;notch-risk&quot;
+     * zone — the colour intensifies with deeper notches so the user
+     * sees at a glance which speakers carry SBIR problems.
+     */
+    private void drawSbirOverlays(GraphicsContext gc) {
+        if (sbirOverlays.isEmpty() || telemetryData == null) return;
+
+        gc.save();
+        // Locate each source position by scanning known wave paths.
+        HashSet<String> drawn = new HashSet<>();
+        for (SoundWavePath path : telemetryData.wavePaths()) {
+            String name = path.sourceName();
+            if (!drawn.add(name)) continue;
+            SbirPrediction prediction = sbirOverlays.get(name);
+            if (prediction == null) continue;
+
+            Position3D sp = path.waypoints().getFirst();
+            double[] scr = projectToScreen(sp.x(), sp.y(), sp.z());
+            // Map notch depth (−5 dB → faint, ≤ −15 dB → strong).
+            double depth = Math.max(0.0, -prediction.worstNotchDepthDb());
+            double t = Math.max(0.0, Math.min(1.0, (depth - 5.0) / 10.0));
+            // Radius grows slightly with depth.
+            double radius = 28 + 18 * t;
+            Color outer = Color.web("#ff7043", 0.05 + 0.30 * t);
+            Color inner = Color.web("#ff7043", 0.40 + 0.40 * t);
+
+            gc.setFill(new RadialGradient(0, 0,
+                    scr[0], scr[1], radius, false, CycleMethod.NO_CYCLE,
+                    new Stop(0.0, inner.deriveColor(0, 1, 1, 0.0)),
+                    new Stop(0.7, outer),
+                    new Stop(1.0, Color.TRANSPARENT)));
+            gc.fillOval(scr[0] - radius, scr[1] - radius,
+                    radius * 2, radius * 2);
+
+            // Dashed contour ring.
+            gc.setStroke(inner);
+            gc.setLineWidth(1.2);
+            gc.setLineDashes(4, 4);
+            gc.strokeOval(scr[0] - radius * 0.85, scr[1] - radius * 0.85,
+                    radius * 1.7, radius * 1.7);
+            gc.setLineDashes();
+
+            // Compact label near the contour.
+            gc.setFill(Color.web("#ffd0b0"));
+            gc.setFont(Font.font("System", 9));
+            gc.setTextAlign(TextAlignment.CENTER);
+            gc.fillText("\u26A0 %.0f dB @ %.0f Hz".formatted(
+                            prediction.worstNotchDepthDb(),
+                            prediction.worstNotchHz()),
+                    scr[0], scr[1] - radius - 4);
+        }
+        gc.restore();
+    }
 
     private void drawTreatmentOverlays(
             GraphicsContext gc, double roomW, double roomL, double roomH) {
