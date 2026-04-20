@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.project;
 
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.marker.MarkerManager;
+import com.benesquivelmusic.daw.core.mixer.CueBusManager;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshotManager;
@@ -36,6 +37,7 @@ public final class DawProject {
     private final ReferenceTrackManager referenceTrackManager;
     private final Metronome metronome;
     private final MixerSnapshotManager mixerSnapshotManager = new MixerSnapshotManager();
+    private final CueBusManager cueBusManager = new CueBusManager();
     private RoomConfiguration roomConfiguration;
     private ProjectMetadata metadata;
     private boolean dirty;
@@ -253,6 +255,20 @@ public final class DawProject {
      */
     public MixerSnapshotManager getMixerSnapshotManager() {
         return mixerSnapshotManager;
+    }
+
+    /**
+     * Returns the manager for independent headphone/cue mix buses.
+     *
+     * <p>Each cue bus carries its own set of {@link com.benesquivelmusic.daw.core.mixer.CueSend
+     * CueSend}s and is routed to a dedicated pair of hardware outputs so that
+     * the singer, drummer, bassist, etc. can each have a different monitor
+     * mix while tracking.</p>
+     *
+     * @return the cue bus manager (never null)
+     */
+    public CueBusManager getCueBusManager() {
+        return cueBusManager;
     }
 
     /**
