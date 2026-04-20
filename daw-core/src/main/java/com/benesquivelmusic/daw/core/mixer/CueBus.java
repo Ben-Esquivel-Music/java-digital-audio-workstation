@@ -29,9 +29,9 @@ import java.util.UUID;
  *
  * <p>This record is deeply immutable: {@link #sends()} returns an unmodifiable
  * view, and the convenience {@code withX} methods return new instances rather
- * than mutating the existing one. {@link CueBusManager} stores the current
- * {@code CueBus} for each id and replaces it atomically whenever a send is
- * edited, giving real-time safe reads without locks.</p>
+ * than mutating the existing one. That makes {@code CueBus} suitable for
+ * snapshot-style use by higher-level components such as {@link CueBusManager};
+ * threading and publication guarantees are defined by those components.</p>
  *
  * @param id                   stable identity; preserved across save/load
  * @param label                human-readable name, shown in the cue-mix UI

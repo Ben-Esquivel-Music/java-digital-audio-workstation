@@ -21,12 +21,12 @@ class CueBusManagerTest {
     }
 
     @Test
-    void shouldCreateAndListCueBusses() {
+    void shouldCreateAndListCueBuses() {
         CueBusManager mgr = new CueBusManager();
         CueBus a = mgr.createCueBus("Singer", 1);
         CueBus b = mgr.createCueBus("Drummer", 2);
 
-        assertThat(mgr.getCueBusses()).containsExactly(a, b);
+        assertThat(mgr.getCueBuses()).containsExactly(a, b);
         assertThat(mgr.getById(a.id())).isSameAs(a);
     }
 
@@ -135,17 +135,17 @@ class CueBusManagerTest {
         CreateCueBusAction create = new CreateCueBusAction(mgr, "Singer", 1);
         create.execute();
         CueBus bus = create.getCueBus();
-        assertThat(mgr.getCueBusses()).containsExactly(bus);
+        assertThat(mgr.getCueBuses()).containsExactly(bus);
 
         create.undo();
-        assertThat(mgr.getCueBusses()).isEmpty();
+        assertThat(mgr.getCueBuses()).isEmpty();
 
         create.execute(); // redo
         assertThat(mgr.getById(bus.id())).isNotNull();
 
         DeleteCueBusAction delete = new DeleteCueBusAction(mgr, bus.id());
         delete.execute();
-        assertThat(mgr.getCueBusses()).isEmpty();
+        assertThat(mgr.getCueBuses()).isEmpty();
         delete.undo();
         assertThat(mgr.getById(bus.id())).isNotNull();
     }

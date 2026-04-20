@@ -266,9 +266,9 @@ public final class ProjectSerializer {
             returnBusesElem.appendChild(buildMixerChannelElement(document, "return-bus", returnBus, mixer));
         }
 
-        Element cueBussesElem = document.createElement("cue-busses");
-        mixerElem.appendChild(cueBussesElem);
-        for (CueBus bus : project.getCueBusManager().getCueBusses()) {
+        Element cueBusesElem = document.createElement("cue-buses");
+        mixerElem.appendChild(cueBusesElem);
+        for (CueBus bus : project.getCueBusManager().getCueBuses()) {
             Element busElem = document.createElement("cue-bus");
             busElem.setAttribute("id", bus.id().toString());
             busElem.setAttribute("label", bus.label());
@@ -282,7 +282,7 @@ public final class ProjectSerializer {
                 sendElem.setAttribute("pre-fader", String.valueOf(send.preFader()));
                 busElem.appendChild(sendElem);
             }
-            cueBussesElem.appendChild(busElem);
+            cueBusesElem.appendChild(busElem);
         }
     }
 

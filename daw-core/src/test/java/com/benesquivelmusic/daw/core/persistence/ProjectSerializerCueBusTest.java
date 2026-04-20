@@ -14,7 +14,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ProjectSerializerCueBusTest {
 
     @Test
-    void shouldSerializeCueBussesAndSends() throws IOException {
+    void shouldSerializeCueBusesAndSends() throws IOException {
         DawProject project = new DawProject("Session", AudioFormat.CD_QUALITY);
         CueBus bus = project.getCueBusManager().createCueBus("Singer", 1);
         UUID vocals = UUID.randomUUID();
@@ -23,7 +23,7 @@ class ProjectSerializerCueBusTest {
 
         String xml = new ProjectSerializer().serialize(project);
 
-        assertThat(xml).contains("<cue-busses>");
+        assertThat(xml).contains("<cue-buses>");
         assertThat(xml).contains("label=\"Singer\"");
         assertThat(xml).contains("hardware-output-index=\"1\"");
         assertThat(xml).contains("master-gain=\"1.0\"");
@@ -34,11 +34,11 @@ class ProjectSerializerCueBusTest {
     }
 
     @Test
-    void shouldSerializeEmptyCueBussesElementWhenNoBusses() throws IOException {
+    void shouldSerializeEmptyCueBusesElementWhenNoBuses() throws IOException {
         DawProject project = new DawProject("Session", AudioFormat.CD_QUALITY);
 
         String xml = new ProjectSerializer().serialize(project);
         // Section is always emitted for forward compatibility, even when empty.
-        assertThat(xml).contains("cue-busses");
+        assertThat(xml).contains("cue-buses");
     }
 }
