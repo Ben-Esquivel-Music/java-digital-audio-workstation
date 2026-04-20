@@ -131,6 +131,11 @@ public final class RoomTelemetryDisplay extends Region {
     // orange contour around the source on the 2D room view.
     private final Map<String, SbirPrediction> sbirOverlays = new HashMap<>();
 
+    // Room-mode spectrum at the listening position — rendered as a small
+    // overlay histogram on the 2D room view showing the mode magnitude
+    // below the Schroeder frequency. Colour-coded by ModeKind.
+    private ModeSpectrum modeSpectrumOverlay;
+
     /**
      * Sets the list of acoustic treatments to overlay on the 2D room view.
      * Typically populated from {@code RoomConfiguration.getAppliedTreatments()}
@@ -170,6 +175,24 @@ public final class RoomTelemetryDisplay extends Region {
     /** Returns an unmodifiable snapshot of the current SBIR overlays. */
     public Map<String, SbirPrediction> getSbirOverlays() {
         return java.util.Collections.unmodifiableMap(new HashMap<>(sbirOverlays));
+    }
+
+    /**
+     * Sets the {@link ModeSpectrum} overlay rendered at the listening
+     * position. The overlay is drawn as a compact, colour-coded
+     * histogram showing each mode's magnitude up to the Schroeder
+     * frequency. Pass {@code null} to clear.
+     *
+     * @param spectrum the spectrum to overlay, or {@code null} to clear
+     */
+    public void setModeSpectrumOverlay(ModeSpectrum spectrum) {
+        this.modeSpectrumOverlay = spectrum;
+        render();
+    }
+
+    /** Returns the current mode-spectrum overlay, or {@code null}. */
+    public ModeSpectrum getModeSpectrumOverlay() {
+        return modeSpectrumOverlay;
     }
 
     /**
@@ -500,6 +523,9 @@ public final class RoomTelemetryDisplay extends Region {
 
         // ── Draw SBIR notch-risk contours around speakers ──
         drawSbirOverlays(gc);
+
+        // ── Draw mode-density heatmap at listening position ──
+        drawModeSpectrumOverlay(gc);
 
         // ── Draw RT60 glow on room edges ──
         drawRt60Glow(gc, roomW, roomL, roomH);
@@ -1515,6 +1541,95 @@ public final class RoomTelemetryDisplay extends Region {
                     scr[0], scr[1] - radius - 4);
         }
         gc.restore();
+    }
+
+    /**
+     * Draws the mode-density heatmap overlay for the configured
+     * {@link ModeSpectrum} — a small histogram pinned to the
+     * top-right of the canvas showing each below-Schroeder mode as a
+     * vertical bar coloured by {@link ModeKind} (axial red, tangential
+     * orange, oblique yellow). The height of each bar encodes the
+     * modal magnitude at the listening position; a dashed vertical
+     * marks the Schroeder frequency.
+     */
+    private void drawModeSpectrumOverlay(GraphicsContext gc) {
+        ModeSpectrum spectrum = modeSpectrumOverlay;
+        if (spectrum == null || spectrum.modes().isEmpty()) return;
+
+        final double w = canvas.getWidth();
+        final double plotW = 180;
+        final double plotH = 64;
+        final double pad = 10;
+        // Pin to top-right corner, below the (potential) suggestions panel.
+        final double x0 = w - plotW - pad;
+        final double y0 = pad;
+
+        gc.save();
+        // Semi-transparent background card.
+        gc.setFill(Color.web("#0a0a1e", 0.72));
+        gc.fillRoundRect(x0 - 6, y0 - 6, plotW + 12, plotH + 28, 8, 8);
+        gc.setStroke(Color.web("#2a2a5a"));
+        gc.setLineWidth(0.8);
+        gc.strokeRoundRect(x0 - 6, y0 - 6, plotW + 12, plotH + 28, 8, 8);
+
+        // Title.
+        gc.setFill(Color.web("#b0b0b0"));
+        gc.setFont(Font.font("System", 10));
+        gc.setTextAlign(TextAlignment.LEFT);
+        gc.fillText("Room Modes (at listening position)", x0, y0 + 2);
+
+        // Plot band: 20 Hz → max(500 Hz, 1.25 · Schroeder).
+        final double fMin = 20.0;
+        final double fMax = Math.max(500.0, spectrum.schroederHz() * 1.25);
+        final double baseline = y0 + 12 + plotH;
+
+        // Baseline.
+        gc.setStroke(Color.web("#33334a"));
+        gc.setLineWidth(0.6);
+        gc.strokeLine(x0, baseline, x0 + plotW, baseline);
+
+        // Bars — oblique first, then tangential, axial on top so the
+        // loudest modes are always visible.
+        drawModeBars(gc, spectrum.obliqueModes(),    Color.web("#ffee58"),
+                x0, baseline, plotW, plotH, fMin, fMax, 1.0);
+        drawModeBars(gc, spectrum.tangentialModes(), Color.web("#ffab40"),
+                x0, baseline, plotW, plotH, fMin, fMax, 1.2);
+        drawModeBars(gc, spectrum.axialModes(),      Color.web("#ff5252"),
+                x0, baseline, plotW, plotH, fMin, fMax, 1.6);
+
+        // Schroeder dashed vertical.
+        double sxRatio = (spectrum.schroederHz() - fMin) / (fMax - fMin);
+        if (sxRatio >= 0 && sxRatio <= 1) {
+            double sx = x0 + sxRatio * plotW;
+            gc.setStroke(Color.web("#81d4fa"));
+            gc.setLineWidth(1.0);
+            gc.setLineDashes(3, 3);
+            gc.strokeLine(sx, y0 + 12, sx, baseline);
+            gc.setLineDashes();
+            gc.setFill(Color.web("#81d4fa"));
+            gc.fillText("f_s %.0f Hz".formatted(spectrum.schroederHz()),
+                    Math.min(sx + 2, x0 + plotW - 40), y0 + 20);
+        }
+        gc.restore();
+    }
+
+    private void drawModeBars(GraphicsContext gc, java.util.List<RoomMode> modes,
+                              Color color, double x0, double baseline,
+                              double plotW, double plotH, double fMin,
+                              double fMax, double lineWidth) {
+        gc.setStroke(color);
+        gc.setLineWidth(lineWidth);
+        final double dbRange = 30.0; // magnitude range in dB
+        for (RoomMode m : modes) {
+            double f = m.frequencyHz();
+            if (f < fMin || f > fMax) continue;
+            double t = (f - fMin) / (fMax - fMin);
+            double x = x0 + t * plotW;
+            double db = Math.max(-dbRange, Math.min(0.0, m.magnitudeDb()));
+            double mag = (db + dbRange) / dbRange;
+            double bar = Math.max(2.0, mag * plotH);
+            gc.strokeLine(x, baseline, x, baseline - bar);
+        }
     }
 
     private void drawTreatmentOverlays(
