@@ -131,6 +131,13 @@ public final class RoomTelemetryDisplay extends Region {
     // orange contour around the source on the 2D room view.
     private final Map<String, SbirPrediction> sbirOverlays = new HashMap<>();
 
+    // Critical-distance overlays — one snapshot per source, keyed by
+    // source name. When populated, each source is drawn with its own
+    // d_c circle (radius scales with directivity Q) and each mic is
+    // flagged as direct- or reverberant-field relative to each source.
+    private final Map<String, CriticalDistanceSnapshot> criticalDistanceSnapshots =
+            new LinkedHashMap<>();
+
     // Room-mode spectrum at the listening position — rendered as a small
     // overlay histogram on the 2D room view showing the mode magnitude
     // below the Schroeder frequency. Colour-coded by ModeKind.
@@ -175,6 +182,34 @@ public final class RoomTelemetryDisplay extends Region {
     /** Returns an unmodifiable snapshot of the current SBIR overlays. */
     public Map<String, SbirPrediction> getSbirOverlays() {
         return java.util.Collections.unmodifiableMap(new HashMap<>(sbirOverlays));
+    }
+
+    /**
+     * Sets the per-source critical-distance snapshots to visualize.
+     * When set (non-empty) the display draws each source's
+     * {@link CriticalDistanceSnapshot#distanceMeters() d_c} as a
+     * dedicated dashed circle and flags each microphone as sitting in
+     * the direct- or reverberant-field of each source together with the
+     * numeric direct-to-reverberant ratio in dB. Pass an empty map to
+     * fall back to the uniform Q=1 estimation derived from RT60 alone.
+     *
+     * @param snapshots snapshots keyed by source name (must not be {@code null})
+     */
+    public void setCriticalDistanceSnapshots(
+            Map<String, CriticalDistanceSnapshot> snapshots) {
+        Objects.requireNonNull(snapshots, "snapshots must not be null");
+        this.criticalDistanceSnapshots.clear();
+        this.criticalDistanceSnapshots.putAll(snapshots);
+        render();
+    }
+
+    /**
+     * Returns an unmodifiable snapshot of the current critical-distance
+     * overlays (source name → snapshot).
+     */
+    public Map<String, CriticalDistanceSnapshot> getCriticalDistanceSnapshots() {
+        return java.util.Collections.unmodifiableMap(
+                new LinkedHashMap<>(criticalDistanceSnapshots));
     }
 
     /**
@@ -1237,7 +1272,11 @@ public final class RoomTelemetryDisplay extends Region {
         double rt60 = telemetryData.estimatedRt60Seconds();
         if (rt60 <= 0) return;
 
-        double criticalDistMeters = 0.057 * Math.sqrt(volume / rt60);
+        // Fallback (Q=1) radius used for any source without an explicit
+        // snapshot. Matches the classical
+        //     d_c = 0.141·√(V/(π·T60)) ≈ 0.057·√(V/T60)
+        // previously hardcoded here.
+        double fallbackRadius = 0.057 * Math.sqrt(volume / rt60);
 
         gc.setStroke(CRITICAL_DISTANCE_COLOR);
         gc.setLineWidth(1.0);
@@ -1245,19 +1284,96 @@ public final class RoomTelemetryDisplay extends Region {
 
         HashSet<String> drawnSources = new HashSet<>();
         for (SoundWavePath path : telemetryData.wavePaths()) {
-            if (drawnSources.add(path.sourceName())) {
-                Position3D sp = path.waypoints().getFirst();
-                strokeProjectedCircle(gc, sp.x(), sp.y(), sp.z(), criticalDistMeters);
+            String srcName = path.sourceName();
+            if (!drawnSources.add(srcName)) continue;
+            Position3D sp = path.waypoints().getFirst();
 
-                // "Dc" label at the edge
-                double[] labelPos = projectToScreen(sp.x() + criticalDistMeters, sp.y(), sp.z());
-                gc.setFill(TEXT_COLOR.deriveColor(0, 1, 1, 0.5));
-                gc.setFont(Font.font("System", 8));
-                gc.setTextAlign(TextAlignment.LEFT);
-                gc.fillText("Dc", labelPos[0] + 2, labelPos[1] - 2);
-            }
+            CriticalDistanceSnapshot snapshot = criticalDistanceSnapshots.get(srcName);
+            double radius = snapshot != null
+                    ? snapshot.distanceMeters()
+                    : fallbackRadius;
+            if (radius <= 0) continue;
+
+            strokeProjectedCircle(gc, sp.x(), sp.y(), sp.z(), radius);
+
+            // Label: "Dc  OMNI  0.80 m" (directivity shown only when known).
+            double[] labelPos = projectToScreen(sp.x() + radius, sp.y(), sp.z());
+            gc.setFill(TEXT_COLOR.deriveColor(0, 1, 1, 0.5));
+            gc.setFont(Font.font("System", 8));
+            gc.setTextAlign(TextAlignment.LEFT);
+            String label = snapshot != null
+                    ? "Dc %s %.2f m".formatted(
+                            snapshot.directivity().name().substring(0, 4),
+                            radius)
+                    : "Dc";
+            gc.fillText(label, labelPos[0] + 2, labelPos[1] - 2);
         }
         gc.setLineDashes();
+
+        // Per-mic direct-vs-reverberant flags.
+        if (!criticalDistanceSnapshots.isEmpty()) {
+            drawDirectReverberantFlags(gc);
+        }
+    }
+
+    /**
+     * Renders a small "direct" / "reverberant" badge near each
+     * microphone, together with the direct-to-reverberant ratio in dB
+     * for the nearest source. Only drawn when per-source
+     * {@link CriticalDistanceSnapshot snapshots} are set.
+     */
+    private void drawDirectReverberantFlags(GraphicsContext gc) {
+        if (telemetryData == null) return;
+
+        HashSet<String> drawnMics = new HashSet<>();
+        for (SoundWavePath path : telemetryData.wavePaths()) {
+            String micName = path.microphoneName();
+            if (!drawnMics.add(micName)) continue;
+            Position3D micPos = path.waypoints().getLast();
+
+            // Choose the nearest source — that is the one whose
+            // critical-distance field the mic is most likely to be in.
+            String bestSource = null;
+            double bestDist = Double.POSITIVE_INFINITY;
+            double bestDc = 0.0;
+            for (Map.Entry<String, CriticalDistanceSnapshot> e :
+                    criticalDistanceSnapshots.entrySet()) {
+                Position3D sp = findSourcePositionByName(e.getKey());
+                if (sp == null) continue;
+                double d = sp.distanceTo(micPos);
+                if (d < bestDist) {
+                    bestDist = d;
+                    bestSource = e.getKey();
+                    bestDc = e.getValue().distanceMeters();
+                }
+            }
+            if (bestSource == null || bestDc <= 0 || bestDist <= 0) continue;
+
+            boolean direct = bestDist <= bestDc;
+            double drDb = 20.0 * Math.log10(bestDc / bestDist);
+            drDb = Math.max(-80.0, Math.min(80.0, drDb));
+            String label = "%s  %+.1f dB D/R".formatted(
+                    direct ? "direct" : "reverberant", drDb);
+            Color fill = direct
+                    ? Color.web("#69f0ae", 0.85)
+                    : Color.web("#ff7043", 0.85);
+
+            double[] scr = projectToScreen(micPos.x(), micPos.y(), micPos.z());
+            gc.setFill(fill);
+            gc.setFont(Font.font("System", 9));
+            gc.setTextAlign(TextAlignment.LEFT);
+            gc.fillText(label, scr[0] + 10, scr[1] + 14);
+        }
+    }
+
+    private Position3D findSourcePositionByName(String name) {
+        if (telemetryData == null) return null;
+        for (SoundWavePath path : telemetryData.wavePaths()) {
+            if (name.equals(path.sourceName())) {
+                return path.waypoints().getFirst();
+            }
+        }
+        return null;
     }
 
     // ── Helpers ─────────────────────────────────────────────────────
