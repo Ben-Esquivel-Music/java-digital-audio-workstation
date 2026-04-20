@@ -188,6 +188,7 @@ public final class ProjectSerializer {
         elem.setAttribute("input-routing-count", String.valueOf(track.getInputRouting().channelCount()));
         elem.setAttribute("collapsed", String.valueOf(track.isCollapsed()));
         elem.setAttribute("automation-mode", track.getAutomationMode().name());
+        elem.setAttribute("input-monitoring", track.getInputMonitoring().name());
 
         String midiInputDeviceName = track.getMidiInputDeviceName();
         if (midiInputDeviceName != null) {

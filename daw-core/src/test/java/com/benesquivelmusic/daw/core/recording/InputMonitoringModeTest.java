@@ -11,7 +11,8 @@ class InputMonitoringModeTest {
         assertThat(InputMonitoringMode.values()).containsExactly(
                 InputMonitoringMode.OFF,
                 InputMonitoringMode.AUTO,
-                InputMonitoringMode.ALWAYS);
+                InputMonitoringMode.ALWAYS,
+                InputMonitoringMode.TAPE);
     }
 
     @Test
@@ -19,5 +20,6 @@ class InputMonitoringModeTest {
         assertThat(InputMonitoringMode.valueOf("OFF")).isEqualTo(InputMonitoringMode.OFF);
         assertThat(InputMonitoringMode.valueOf("AUTO")).isEqualTo(InputMonitoringMode.AUTO);
         assertThat(InputMonitoringMode.valueOf("ALWAYS")).isEqualTo(InputMonitoringMode.ALWAYS);
+        assertThat(InputMonitoringMode.valueOf("TAPE")).isEqualTo(InputMonitoringMode.TAPE);
     }
 }
