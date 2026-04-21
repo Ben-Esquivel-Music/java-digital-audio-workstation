@@ -51,6 +51,13 @@ class MidiEventPoolTest {
     }
 
     @Test
+    void shouldRejectNullRelease() {
+        MidiEventPool pool = new MidiEventPool(1);
+        assertThatThrownBy(() -> pool.release(null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
     void shouldRejectInvalidPoolSize() {
         assertThatThrownBy(() -> new MidiEventPool(0))
                 .isInstanceOf(IllegalArgumentException.class);

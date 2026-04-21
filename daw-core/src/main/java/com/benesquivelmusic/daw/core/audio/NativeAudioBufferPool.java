@@ -201,12 +201,17 @@ public final class NativeAudioBufferPool implements AutoCloseable {
      * @param buffer the buffer to return; must not be {@code null} and must
      *               originate from this pool (otherwise {@code false} is returned)
      * @return {@code true} if the buffer was returned, {@code false} if the
-     *         pool is full, or the buffer belongs to a different pool
+     *         pool is full, closed, or the buffer belongs to a different pool
      * @throws NullPointerException if {@code buffer} is {@code null}
      */
     @RealTimeSafe
     public boolean release(PooledBuffer buffer) {
         Objects.requireNonNull(buffer, "buffer must not be null");
+        if (closed) {
+            // Arena is already freed; the buffer's MemorySegment is
+            // invalid and must not be reinserted into the pool.
+            return false;
+        }
         if (buffer.ownerPoolId != poolId) {
             return false;
         }

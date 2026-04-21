@@ -159,7 +159,10 @@ public final class XrunEventRingBuffer {
             return null;
         }
         XrunSnapshot slot = slots[(int) (h & mask)];
-        head.set(h + 1);
+        // lazySet is sufficient for SPSC: we only need a release store so
+        // the producer eventually observes the advanced head. A full
+        // volatile store would add an avoidable StoreLoad fence.
+        head.lazySet(h + 1);
         return slot;
     }
 
@@ -192,6 +195,10 @@ public final class XrunEventRingBuffer {
 
     @RealTimeSafe
     private void commit() {
-        tail.set(tail.get() + 1);
+        // lazySet (release store) is sufficient for SPSC and avoids the
+        // StoreLoad fence a plain volatile set would impose on the audio
+        // thread. The slot write above happens-before this store, so the
+        // consumer's acquire-load of tail establishes the needed ordering.
+        tail.lazySet(tail.get() + 1);
     }
 }

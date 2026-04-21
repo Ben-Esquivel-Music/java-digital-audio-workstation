@@ -110,5 +110,15 @@ class NativeAudioBufferPoolTest {
             assertThat(poolB.available()).isEqualTo(1);
         }
     }
+
+    @Test
+    void releaseAfterCloseReturnsFalse() {
+        NativeAudioBufferPool pool = new NativeAudioBufferPool(1, 1, 4);
+        NativeAudioBufferPool.PooledBuffer b = pool.acquire();
+        assertThat(b).isNotNull();
+        pool.close();
+        // Post-close release must not re-insert a buffer backed by a freed arena.
+        assertThat(pool.release(b)).isFalse();
+    }
 }
 

@@ -91,6 +91,29 @@ class DawLauncherTest {
     }
 
     @Test
+    void rejectsSessionMemWithWhitespaceOrJunk(@TempDir Path tmp) {
+        assertThatThrownBy(() -> DawLauncher.installZgcConfig(tmp, "4 G"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> DawLauncher.installZgcConfig(tmp, "4G\n-XX:+HeapDumpOnOutOfMemoryError"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> DawLauncher.installZgcConfig(tmp, "abc"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void trimsWhitespaceAroundValidSessionMem(@TempDir Path tmp) throws IOException {
+        Path written = DawLauncher.installZgcConfig(tmp, "  4G  ");
+        String contents = Files.readString(written);
+        assertThat(contents).contains("-Xms4G").contains("-Xmx4G");
+    }
+
+    @Test
+    void returnsAbsolutePath(@TempDir Path tmp) throws IOException {
+        Path written = DawLauncher.installZgcConfig(tmp, "2G");
+        assertThat(written.isAbsolute()).isTrue();
+    }
+
+    @Test
     void userSettingsDirectoryIsUnderUserHome() {
         Path dir = DawLauncher.userSettingsDirectory();
         assertThat(dir).isNotNull();

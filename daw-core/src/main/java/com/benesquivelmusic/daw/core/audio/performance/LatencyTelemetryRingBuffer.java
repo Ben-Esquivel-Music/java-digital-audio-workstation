@@ -87,7 +87,10 @@ public final class LatencyTelemetryRingBuffer {
         slot.kind = kind;
         slot.samples = samples;
         slot.reportedBy = reportedBy;
-        tail.set(t + 1);
+        // lazySet (release store) is sufficient for SPSC and avoids the
+        // StoreLoad fence a plain volatile set would impose on the audio
+        // thread; slot writes above happen-before this store.
+        tail.lazySet(t + 1);
         return true;
     }
 
@@ -98,7 +101,7 @@ public final class LatencyTelemetryRingBuffer {
             return null;
         }
         LatencySnapshot slot = slots[(int) (h & mask)];
-        head.set(h + 1);
+        head.lazySet(h + 1);
         return slot;
     }
 

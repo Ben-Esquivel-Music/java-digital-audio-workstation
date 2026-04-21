@@ -7,11 +7,13 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 /**
  * Entry point for the DAW application.
@@ -37,6 +39,15 @@ public final class DawLauncher {
 
     /** Default heap size used when {@code sessionMem} is not provided. */
     static final String DEFAULT_SESSION_MEM = "4G";
+
+    /**
+     * Conservative validation for {@code sessionMem}: a positive integer
+     * followed by an optional {@code k/K/m/M/g/G} unit suffix. This is
+     * the same syntax accepted by {@code -Xms} / {@code -Xmx}, and
+     * prevents arbitrary whitespace / newlines / extra JVM args from
+     * being injected into the options file via substitution.
+     */
+    static final Pattern SESSION_MEM_PATTERN = Pattern.compile("\\d+[kKmMgG]?");
 
     private DawLauncher() {
         // utility class
@@ -68,20 +79,33 @@ public final class DawLauncher {
     public static Path installZgcConfig(Path settingsDir, String sessionMem) throws IOException {
         Objects.requireNonNull(settingsDir, "settingsDir must not be null");
         Objects.requireNonNull(sessionMem, "sessionMem must not be null");
-        if (sessionMem.isBlank()) {
+        String trimmed = sessionMem.trim();
+        if (trimmed.isEmpty()) {
             throw new IllegalArgumentException("sessionMem must not be blank");
+        }
+        if (!SESSION_MEM_PATTERN.matcher(trimmed).matches()) {
+            throw new IllegalArgumentException(
+                    "sessionMem must match " + SESSION_MEM_PATTERN.pattern()
+                            + " (e.g. \"4G\"): " + sessionMem);
         }
 
         Files.createDirectories(settingsDir);
-        Path target = settingsDir.resolve(ZGC_CONF_FILENAME);
+        Path target = settingsDir.resolve(ZGC_CONF_FILENAME).toAbsolutePath();
 
         String template = readResource(ZGC_CONF_RESOURCE);
-        String rendered = template.replace("${sessionMem}", sessionMem);
+        String rendered = template.replace("${sessionMem}", trimmed);
 
         Path tmp = Files.createTempFile(settingsDir, "zgc", ".conf.tmp");
         Files.writeString(tmp, rendered, StandardCharsets.UTF_8);
-        Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING,
-                StandardCopyOption.ATOMIC_MOVE);
+        try {
+            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException e) {
+            // Some filesystems (notably certain Windows setups) don't
+            // support atomic rename. Fall back to a plain replace; the
+            // temp-file write still avoids truncation on writer crash.
+            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+        }
         return target;
     }
 

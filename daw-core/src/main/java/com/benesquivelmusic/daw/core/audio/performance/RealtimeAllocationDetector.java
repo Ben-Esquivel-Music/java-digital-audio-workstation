@@ -15,9 +15,16 @@ import java.lang.management.ManagementFactory;
  * production.</p>
  *
  * <p>This class is intentionally <em>not</em> {@code @RealTimeSafe}: the
- * {@link #begin()} / {@link #end()} calls allocate zero bytes and take
- * zero locks, but they invoke a JVM intrinsic whose cost is small but
- * non-zero. Disable it in release builds.</p>
+ * {@link #begin()} / {@link #end()} calls take zero locks and, after
+ * the first call on a given thread, allocate zero bytes. <b>The first</b>
+ * {@code begin()} or {@code end()} call from a new thread does allocate
+ * a one-element {@code long[]} (initial value of the per-thread
+ * {@link ThreadLocal}), so before enabling instrumentation on the audio
+ * thread callers should invoke {@link #warmUp()} from that thread (or
+ * let a dry callback run with the detector disabled) to pre-populate
+ * the {@code ThreadLocal}. {@link #begin()} and {@link #end()} also
+ * invoke a JVM intrinsic whose cost is small but non-zero. Disable the
+ * detector in release builds.</p>
  */
 public final class RealtimeAllocationDetector {
 
@@ -87,6 +94,17 @@ public final class RealtimeAllocationDetector {
      */
     public boolean isSupported() {
         return mx != null && mx.isThreadAllocatedMemorySupported();
+    }
+
+    /**
+     * Forces the per-thread {@link ThreadLocal} {@code long[]} to be
+     * materialized on the calling thread, so that the first subsequent
+     * {@link #begin()} / {@link #end()} call does not allocate. Call
+     * this once from the audio thread during engine startup before
+     * enabling instrumentation.
+     */
+    public void warmUp() {
+        start.get();
     }
 
     /** Records the audio thread's allocation counter. Call at callback start. */

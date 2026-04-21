@@ -3,7 +3,8 @@ package com.benesquivelmusic.daw.core.midi;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.midi.MidiEvent;
 
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 
 /**
  * A pre-allocated pool of {@link MutableMidiEvent} slots used by the audio
@@ -17,8 +18,11 @@ import java.util.concurrent.atomic.AtomicInteger;
  * fills it in place, publishes it to a ring buffer, and the consumer thread
  * releases it back to the pool.</p>
  *
- * <p>The pool is a wait-free lock-free stack — safe to call from the audio
- * callback.</p>
+ * <p>The pool is a lock-free, allocation-free structure backed by an
+ * {@link AtomicReferenceArray} — each slot is claimed atomically via
+ * {@code getAndSet} / {@code compareAndSet}, so it is safe to call
+ * {@link #acquire()} and {@link #release(MutableMidiEvent)} from the
+ * audio callback without any publish-ordering hazards.</p>
  */
 @RealTimeSafe
 public final class MidiEventPool {
@@ -59,8 +63,7 @@ public final class MidiEventPool {
         @RealTimeSafe public int data2() { return data2; }
     }
 
-    private final MutableMidiEvent[] pool;
-    private final AtomicInteger top;
+    private final AtomicReferenceArray<MutableMidiEvent> pool;
 
     /**
      * Creates a pool with {@code poolSize} pre-allocated holders.
@@ -71,52 +74,59 @@ public final class MidiEventPool {
         if (poolSize <= 0) {
             throw new IllegalArgumentException("poolSize must be positive: " + poolSize);
         }
-        this.pool = new MutableMidiEvent[poolSize];
+        this.pool = new AtomicReferenceArray<>(poolSize);
         for (int i = 0; i < poolSize; i++) {
-            pool[i] = new MutableMidiEvent();
+            pool.set(i, new MutableMidiEvent());
         }
-        this.top = new AtomicInteger(poolSize);
     }
 
     /**
      * Acquires a free MIDI event holder. Returns {@code null} if the pool is
      * exhausted (the caller must treat exhaustion as a recoverable
      * back-pressure signal; never allocate a fresh holder on the audio thread).
+     *
+     * <p>Each slot is claimed atomically with {@code getAndSet(i, null)},
+     * so there is no separate top-of-stack pointer to be kept consistent
+     * with the slot read — eliminating the publish-ordering race the
+     * earlier array-plus-counter design was vulnerable to.</p>
      */
     @RealTimeSafe
     public MutableMidiEvent acquire() {
-        int current = top.get();
-        while (current > 0) {
-            if (top.compareAndSet(current, current - 1)) {
-                MutableMidiEvent ev = pool[current - 1];
-                pool[current - 1] = null;
+        for (int i = 0; i < pool.length(); i++) {
+            MutableMidiEvent ev = pool.getAndSet(i, null);
+            if (ev != null) {
                 return ev;
             }
-            current = top.get();
         }
         return null;
     }
 
     /**
-     * Returns a holder to the pool. Returns {@code false} if the pool is
-     * already full.
+     * Returns a holder to the pool. Rejects {@code null} and returns
+     * {@code false} if the pool is already full. The slot is filled
+     * atomically via {@code compareAndSet(i, null, ev)} so concurrent
+     * releasers cannot clobber each other's writes.
      */
     @RealTimeSafe
     public boolean release(MutableMidiEvent ev) {
-        int current = top.get();
-        while (current < pool.length) {
-            if (top.compareAndSet(current, current + 1)) {
-                pool[current] = ev;
+        Objects.requireNonNull(ev, "ev must not be null");
+        for (int i = 0; i < pool.length(); i++) {
+            if (pool.compareAndSet(i, null, ev)) {
                 return true;
             }
-            current = top.get();
         }
         return false;
     }
 
     /** Available slots in the pool. */
-    public int available() { return top.get(); }
+    public int available() {
+        int count = 0;
+        for (int i = 0; i < pool.length(); i++) {
+            if (pool.get(i) != null) count++;
+        }
+        return count;
+    }
 
     /** Total capacity of the pool. */
-    public int capacity() { return pool.length; }
+    public int capacity() { return pool.length(); }
 }
