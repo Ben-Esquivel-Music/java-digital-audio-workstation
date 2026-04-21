@@ -58,6 +58,7 @@ public final class ArrangementCanvas extends Pane {
 
     private List<Track> tracks = List.of();
     private double pixelsPerBeat = ArrangementNavigator.BASE_PIXELS_PER_BEAT;
+    private double samplesPerBeat = 0.0;
     private double scrollXBeats;
     private double scrollYPixels;
     private double trackHeight = TrackHeightZoom.DEFAULT_TRACK_HEIGHT;
@@ -152,6 +153,16 @@ public final class ArrangementCanvas extends Pane {
             return;
         }
         this.pixelsPerBeat = pixelsPerBeat;
+        redraw();
+    }
+
+    /**
+     * Sets the session's samples-per-beat (= sample rate &times; 60 / tempo)
+     * used to position per-clip gain-envelope breakpoints. Pass {@code 0.0}
+     * (the default) to disable the envelope overlay.
+     */
+    public void setSamplesPerBeat(double samplesPerBeat) {
+        this.samplesPerBeat = Math.max(0.0, samplesPerBeat);
         redraw();
     }
 
@@ -529,7 +540,7 @@ public final class ArrangementCanvas extends Pane {
             for (AudioClip clip : track.getClips()) {
                 ClipOverlayRenderer.drawAudioClip(gc, clip, trackColor,
                         laneY, trackHeight, pixelsPerBeat, scrollXBeats,
-                        canvasWidth, canvasHeight, selectionModel);
+                        canvasWidth, canvasHeight, selectionModel, samplesPerBeat);
             }
 
             MidiClip midiClip = track.getMidiClip();
