@@ -39,6 +39,7 @@ class ClipInteractionControllerTest {
     private double seekedPosition;
     private SelectionModel selectionModel;
     private String lastStatusBarText;
+    private com.benesquivelmusic.daw.sdk.edit.RippleMode rippleMode;
 
     @BeforeEach
     void setUp() {
@@ -53,6 +54,7 @@ class ClipInteractionControllerTest {
         seekedPosition = -1.0;
         selectionModel = new SelectionModel();
         lastStatusBarText = null;
+        rippleMode = com.benesquivelmusic.daw.sdk.edit.RippleMode.OFF;
     }
 
     private ClipInteractionController.Host createHost() {
@@ -72,7 +74,7 @@ class ClipInteractionControllerTest {
             @Override public SelectionModel selectionModel() { return selectionModel; }
             @Override public void updateStatusBar(String text) { lastStatusBarText = text; }
             @Override public com.benesquivelmusic.daw.sdk.edit.RippleMode rippleMode() {
-                return com.benesquivelmusic.daw.sdk.edit.RippleMode.OFF;
+                return rippleMode;
             }
             @Override public void showNotification(NotificationLevel level, String message) {
                 // no-op in tests
@@ -397,6 +399,39 @@ class ClipInteractionControllerTest {
         // (released at beat 7.0, drag offset was 1.0 beat into the clip)
         assertThat(clip.getStartBeat()).isEqualTo(6.0);
         assertThat(refreshCount).isEqualTo(2);
+    }
+
+    @Test
+    void pointerMoveOutsideSelectionShouldNotRipple() throws Exception {
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip moved = new AudioClip("Moved", 4.0, 4.0, null);
+        AudioClip later = new AudioClip("Later", 20.0, 4.0, null);
+        track.addClip(moved);
+        track.addClip(later);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+        rippleMode = com.benesquivelmusic.daw.sdk.edit.RippleMode.PER_TRACK;
+        selectionModel.setSelection(10.0, 18.0); // moved clip start (4.0) is outside
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Move clip from 4 -> 6 beats (press at 5, release at 7).
+                canvas.fireEvent(mousePressed(200.0, 40.0));
+                canvas.fireEvent(mouseReleased(280.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(moved.getStartBeat()).isEqualTo(6.0);
+        assertThat(later.getStartBeat()).isEqualTo(20.0);
     }
 
     // ── Cross-track move ─────────────────────────────────────────────────────

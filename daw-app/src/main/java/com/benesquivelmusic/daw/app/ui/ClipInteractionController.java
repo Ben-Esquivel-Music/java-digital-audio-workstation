@@ -661,9 +661,16 @@ final class ClipInteractionController {
             return;
         }
         try {
+            SelectionModel selectionModel = host.selectionModel();
+            java.util.OptionalDouble selectionStart = selectionModel.hasSelection()
+                    ? java.util.OptionalDouble.of(selectionModel.getStartBeat())
+                    : java.util.OptionalDouble.empty();
+            java.util.OptionalDouble selectionEnd = selectionModel.hasSelection()
+                    ? java.util.OptionalDouble.of(selectionModel.getEndBeat())
+                    : java.util.OptionalDouble.empty();
             host.undoManager().execute(RippleEditService.buildRippleMove(
                     clip, track, newStartBeat, mode, host.tracks(),
-                    java.util.OptionalDouble.empty(), java.util.OptionalDouble.empty()));
+                    selectionStart, selectionEnd));
             host.refreshCanvas();
         } catch (RippleValidationException e) {
             host.showNotification(NotificationLevel.ERROR,
