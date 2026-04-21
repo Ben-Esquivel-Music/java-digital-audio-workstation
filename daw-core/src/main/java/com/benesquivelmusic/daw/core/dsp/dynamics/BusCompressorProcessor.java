@@ -24,7 +24,8 @@ import java.util.Objects;
  *   <li>A wide soft knee (quadratic, ~10&nbsp;dB) for smooth, analog-style
  *       threshold transitions.</li>
  *   <li>An optional {@code DRIVE} harmonic-coloration stage that adds gentle
- *       2nd- and 3rd-order harmonics via a tanh-style saturation.</li>
+ *       2nd- and 3rd-order harmonics via a clipped cubic polynomial
+ *       waveshaper.</li>
  *   <li>A dry/wet {@code MIX} control for parallel ("New York") compression.</li>
  *   <li>External sidechain via {@link SidechainAwareProcessor}.</li>
  *   <li>Gain-reduction metering via {@link GainReductionProvider} for UI meters.</li>
@@ -70,6 +71,15 @@ public final class BusCompressorProcessor implements SidechainAwareProcessor, Ga
     // Derived envelope coefficients
     private double attackCoeff;
     private double releaseCoeff;
+    /** AUTO-release fast coefficient (~100 ms), cached on sample-rate change. */
+    private double autoFastReleaseCoeff;
+    /** AUTO-release slow coefficient (~1.2 s), cached on sample-rate change. */
+    private double autoSlowReleaseCoeff;
+
+    /** AUTO-release fast time constant (ms). */
+    private static final double AUTO_FAST_RELEASE_MS = 100.0;
+    /** AUTO-release slow time constant (ms). */
+    private static final double AUTO_SLOW_RELEASE_MS = 1200.0;
 
     // Per-audio-thread state
     private double envelopeDb;
@@ -148,9 +158,7 @@ public final class BusCompressorProcessor implements SidechainAwareProcessor, Ga
                 // sustained programme material releases slowly while transients
                 // release quickly — the classic SSL "breathing" behaviour.
                 double weight = Math.min(1.0, Math.abs(grSlowDb) / 6.0);
-                double fastR  = DynamicsCoefficients.envelope(0.1,  sampleRate);
-                double slowR  = DynamicsCoefficients.envelope(1.2,  sampleRate);
-                coeff = fastR + (slowR - fastR) * weight;
+                coeff = autoFastReleaseCoeff + (autoSlowReleaseCoeff - autoFastReleaseCoeff) * weight;
             } else {
                 coeff = releaseCoeff;
             }
@@ -206,9 +214,7 @@ public final class BusCompressorProcessor implements SidechainAwareProcessor, Ga
                 coeff = attackCoeff;
             } else if (releaseAuto) {
                 double weight = Math.min(1.0, Math.abs(grSlowDb) / 6.0);
-                double fastR  = DynamicsCoefficients.envelope(0.1,  sampleRate);
-                double slowR  = DynamicsCoefficients.envelope(1.2,  sampleRate);
-                coeff = fastR + (slowR - fastR) * weight;
+                coeff = autoFastReleaseCoeff + (autoSlowReleaseCoeff - autoFastReleaseCoeff) * weight;
             } else {
                 coeff = releaseCoeff;
             }
@@ -411,6 +417,8 @@ public final class BusCompressorProcessor implements SidechainAwareProcessor, Ga
     private void recalculateCoefficients() {
         attackCoeff  = DynamicsCoefficients.envelope(attackMs,      sampleRate);
         releaseCoeff = DynamicsCoefficients.envelope(releaseS * 1000.0, sampleRate);
+        autoFastReleaseCoeff = DynamicsCoefficients.envelope(AUTO_FAST_RELEASE_MS, sampleRate);
+        autoSlowReleaseCoeff = DynamicsCoefficients.envelope(AUTO_SLOW_RELEASE_MS, sampleRate);
     }
 
     /** Returns the step value nearest to {@code value}. */

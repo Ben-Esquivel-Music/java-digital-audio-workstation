@@ -9,8 +9,11 @@ package com.benesquivelmusic.daw.sdk.plugin;
  * the UI thread to read without synchronisation: all fields are scalar and
  * the record is immutable.</p>
  *
- * @param gainReductionDb the current gain reduction in dB (always &le; 0); a
- *                        value of {@code 0.0} means no gain reduction
+ * @param gainReductionDb the current gain reduction in dB; typically a
+ *                        non-positive value (&le; 0), where {@code 0.0} means
+ *                        no gain reduction. Not validated — callers that
+ *                        publish snapshots are responsible for supplying
+ *                        meaningful values.
  * @param inputLevelDb    the input level of the detection-source signal in
  *                        dBFS, or {@link Double#NEGATIVE_INFINITY} when not
  *                        available
@@ -31,7 +34,7 @@ public record PluginMeterSnapshot(
      * Convenience factory that constructs a snapshot carrying only a
      * gain-reduction reading.
      *
-     * @param gainReductionDb the current gain reduction in dB (always &le; 0)
+     * @param gainReductionDb the current gain reduction in dB (typically &le; 0)
      * @return a snapshot with input/output levels set to
      *         {@link Double#NEGATIVE_INFINITY}
      */
