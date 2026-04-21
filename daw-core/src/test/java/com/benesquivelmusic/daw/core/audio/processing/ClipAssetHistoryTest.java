@@ -1,5 +1,9 @@
 package com.benesquivelmusic.daw.core.audio.processing;
 
+import com.benesquivelmusic.daw.core.undo.CompoundUndoableAction;
+import com.benesquivelmusic.daw.core.undo.UndoManager;
+import com.benesquivelmusic.daw.core.undo.UndoableAction;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -36,7 +40,7 @@ class ClipAssetHistoryTest {
     }
 
     @Test
-    void purgeUnused_keepsMostRecentNAndDeletesOthers() throws IOException {
+    void purgeUnused_deletesOnlyManagedFilesOutsideRetention() throws IOException {
         ClipAssetHistory h = new ClipAssetHistory(2);
         Path p1 = touch("p1.wav");
         Path p2 = touch("p2.wav");
@@ -44,6 +48,9 @@ class ClipAssetHistoryTest {
         h.recordPriorAsset("c", p1);
         h.recordPriorAsset("c", p2);
         h.recordPriorAsset("c", p3);
+        h.markManaged(p1);
+        h.markManaged(p2);
+        h.markManaged(p3);
 
         List<Path> deleted = h.purgeUnused();
 
@@ -55,7 +62,80 @@ class ClipAssetHistoryTest {
     }
 
     @Test
-    void purgeUnused_retainsPinnedAssetsEvenIfBeyondRetention() throws IOException {
+    void purgeUnused_neverDeletesUnmanagedExternalFiles() throws IOException {
+        // Simulates the first destructive op: the clip's original
+        // user-imported file becomes a prior asset but is not managed
+        // by the DAW and must never be deleted.
+        ClipAssetHistory h = new ClipAssetHistory(1);
+        Path external = touch("user-original.wav");
+        Path managedLater = touch("Reversed-uuid.wav");
+        h.recordPriorAsset("c", external);
+        h.recordPriorAsset("c", managedLater);
+        // Only the DAW-generated file is managed.
+        h.markManaged(managedLater);
+
+        List<Path> deleted = h.purgeUnused();
+
+        assertThat(deleted).isEmpty();
+        assertThat(external).exists();
+        assertThat(managedLater).exists();
+        // The external file is dropped from the manifest (outside
+        // retention) but preserved on disk.
+        assertThat(h.priorAssets("c")).containsExactly(managedLater);
+    }
+
+    @Test
+    void syncPinsFromHistory_pinsAssetsReferencedByLiveActions() throws IOException {
+        ClipAssetHistory h = new ClipAssetHistory(1);
+        Path a = touch("a.wav");
+        Path b = touch("b.wav");
+
+        UndoManager um = new UndoManager();
+        um.execute(new StubReferencingAction(List.of(a)));
+        h.syncPinsFromHistory(um);
+        assertThat(h.isPinned(a)).isTrue();
+        assertThat(h.isPinned(b)).isFalse();
+
+        um.execute(new StubReferencingAction(List.of(b)));
+        h.syncPinsFromHistory(um);
+        assertThat(h.pinnedAssets()).containsExactlyInAnyOrder(a, b);
+    }
+
+    @Test
+    void syncPinsFromHistory_releasesAssetsOfDiscardedActions() {
+        // When UndoManager trims the oldest action (maxHistory=1), the
+        // asset it referenced should be released automatically — no leak.
+        ClipAssetHistory h = new ClipAssetHistory();
+        Path a = tempDir.resolve("a.wav");
+        Path b = tempDir.resolve("b.wav");
+
+        UndoManager um = new UndoManager(1);
+        um.addHistoryListener(m -> h.syncPinsFromHistory(m));
+        um.execute(new StubReferencingAction(List.of(a)));
+        assertThat(h.isPinned(a)).isTrue();
+
+        um.execute(new StubReferencingAction(List.of(b))); // trims the first action
+        assertThat(h.isPinned(a)).isFalse();
+        assertThat(h.isPinned(b)).isTrue();
+    }
+
+    @Test
+    void syncPinsFromHistory_alsoWalksCompoundChildren() {
+        ClipAssetHistory h = new ClipAssetHistory();
+        Path a = tempDir.resolve("a.wav");
+        Path b = tempDir.resolve("b.wav");
+
+        UndoManager um = new UndoManager();
+        um.execute(new CompoundUndoableAction("batch", List.of(
+                new StubReferencingAction(List.of(a)),
+                new StubReferencingAction(List.of(b)))));
+        h.syncPinsFromHistory(um);
+
+        assertThat(h.pinnedAssets()).containsExactlyInAnyOrder(a, b);
+    }
+
+    @Test
+    void purgeUnused_retainsPinnedManagedAssetsEvenBeyondRetention() throws IOException {
         ClipAssetHistory h = new ClipAssetHistory(1);
         Path p1 = touch("p1.wav");
         Path p2 = touch("p2.wav");
@@ -63,8 +143,13 @@ class ClipAssetHistoryTest {
         h.recordPriorAsset("c", p1);
         h.recordPriorAsset("c", p2);
         h.recordPriorAsset("c", p3);
+        h.markManaged(p1);
+        h.markManaged(p2);
+        h.markManaged(p3);
 
-        h.pin(p1); // simulate an undo/redo-stack reference
+        UndoManager um = new UndoManager();
+        um.execute(new StubReferencingAction(List.of(p1)));
+        h.syncPinsFromHistory(um);
 
         List<Path> deleted = h.purgeUnused();
 
@@ -74,21 +159,24 @@ class ClipAssetHistoryTest {
         assertThat(h.priorAssets("c")).containsExactly(p1, p3);
     }
 
-    @Test
-    void pinAndUnpin_areReferenceCounted() {
-        ClipAssetHistory h = new ClipAssetHistory();
-        Path p = tempDir.resolve("x.wav");
-        h.pin(p);
-        h.pin(p);
-        h.unpin(p);
-        assertThat(h.isPinned(p)).isTrue();
-        h.unpin(p);
-        assertThat(h.isPinned(p)).isFalse();
-    }
-
     private Path touch(String name) throws IOException {
         Path p = tempDir.resolve(name);
         Files.writeString(p, "x");
         return p;
+    }
+
+    /** Test double implementing both {@link UndoableAction} and {@link ClipAssetReferencing}. */
+    private static final class StubReferencingAction
+            implements UndoableAction, ClipAssetReferencing {
+        private final List<Path> paths;
+
+        StubReferencingAction(List<Path> paths) {
+            this.paths = List.copyOf(paths);
+        }
+
+        @Override public String description() { return "stub"; }
+        @Override public void execute() { /* no-op */ }
+        @Override public void undo() { /* no-op */ }
+        @Override public List<Path> referencedAssets() { return paths; }
     }
 }

@@ -42,6 +42,11 @@ public final class CompoundUndoableAction implements UndoableAction {
         return desc;
     }
 
+    /** Returns the immutable list of child actions. */
+    public List<UndoableAction> getActions() {
+        return actions;
+    }
+
     @Override
     public void execute() {
         for (UndoableAction action : actions) {

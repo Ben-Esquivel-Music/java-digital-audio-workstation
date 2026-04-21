@@ -25,10 +25,12 @@ import java.util.UUID;
  * original source asset (naming pattern {@code Reversed-<uuid>.wav}
  * or {@code Normalized-<uuid>.wav}), updates
  * {@link AudioClip#setSourceFilePath(String)} to point at the new file,
- * and records the prior asset path in a
- * {@link ClipAssetHistory} so that undo can restore the original
- * reference — even after the project is saved and reloaded, up until
- * the user explicitly purges clip history via
+ * and records the prior asset path in a {@link ClipAssetHistory} so
+ * that undo can restore the original reference for as long as the
+ * in-memory history manifest is available. Persisting the manifest
+ * across session reloads is out of scope for this service; the API is
+ * structured so serialization can be added without code changes here.
+ * Retention-window cleanup is triggered by
  * {@link ClipAssetHistory#purgeUnused()}.</p>
  *
  * <p>The returned {@link UndoableAction} can be executed through the
@@ -36,6 +38,15 @@ import java.util.UUID;
  * The batch variants ({@link #reverse(List)}, {@link #normalize(List, double)})
  * produce a {@link CompoundUndoableAction} so a multi-select apply is
  * undone as a single step.</p>
+ *
+ * <p><b>Pin lifecycle.</b> Actions returned by this service implement
+ * {@link ClipAssetReferencing}, exposing the prior and produced asset
+ * paths. Register {@link #createHistoryListener()} on your
+ * {@link com.benesquivelmusic.daw.core.undo.UndoManager} so that
+ * {@link ClipAssetHistory}'s pin set is rebuilt from the live history
+ * on every mutation — this automatically releases assets referenced
+ * only by actions that the undo manager has discarded (via
+ * history-depth trimming or a redo-stack clear), avoiding pin leaks.</p>
  *
  * <h2>Normalize algorithm</h2>
  * <p>The normalize operation is inter-sample-peak (true-peak) aware:
@@ -69,6 +80,19 @@ public final class ClipProcessingService {
     /** Returns the history this service writes into. */
     public ClipAssetHistory history() {
         return history;
+    }
+
+    /**
+     * Returns an {@link com.benesquivelmusic.daw.core.undo.UndoHistoryListener}
+     * that keeps the {@link ClipAssetHistory}'s pin set in sync with
+     * the live undo/redo history of the supplied
+     * {@link com.benesquivelmusic.daw.core.undo.UndoManager}. Register
+     * it via {@code undoManager.addHistoryListener(...)} once per
+     * manager to ensure pins are released automatically when actions
+     * are discarded.
+     */
+    public com.benesquivelmusic.daw.core.undo.UndoHistoryListener createHistoryListener() {
+        return manager -> history.syncPinsFromHistory(manager);
     }
 
     // ---------------------------------------------------------------------
@@ -208,7 +232,7 @@ public final class ClipProcessingService {
 
     private enum Mode { REVERSE, NORMALIZE }
 
-    private final class DestructiveClipAction implements UndoableAction {
+    private final class DestructiveClipAction implements UndoableAction, ClipAssetReferencing {
 
         private final AudioClip clip;
         private final Mode mode;
@@ -244,14 +268,12 @@ public final class ClipProcessingService {
                     previousPath = Paths.get(source);
                     newPath = produceProcessedFile(previousPath);
                     history.recordPriorAsset(clip.getId(), previousPath);
-                    // previousPath is now referenced by this action on the undo stack.
-                    history.pin(previousPath);
+                    // Only the newly-written file is DAW-managed and therefore
+                    // eligible for deletion by purgeUnused(); previousPath may
+                    // be an external user-imported file and is deliberately
+                    // not marked managed.
+                    history.markManaged(newPath);
                     executedOnce = true;
-                } else {
-                    // Redo: previousPath goes back on the undo stack, newPath
-                    // is no longer on the redo stack.
-                    history.pin(previousPath);
-                    history.unpin(newPath);
                 }
                 clip.setSourceFilePath(newPath.toString());
             } catch (IOException e) {
@@ -265,10 +287,14 @@ public final class ClipProcessingService {
                 throw new IllegalStateException("undo() called before execute()");
             }
             clip.setSourceFilePath(previousPath.toString());
-            // previousPath is active again (not a stack reference), newPath
-            // is now referenced by this action on the redo stack.
-            history.unpin(previousPath);
-            history.pin(newPath);
+        }
+
+        @Override
+        public List<Path> referencedAssets() {
+            if (!executedOnce) {
+                return List.of();
+            }
+            return List.of(previousPath, newPath);
         }
 
         private Path produceProcessedFile(Path source) throws IOException {
