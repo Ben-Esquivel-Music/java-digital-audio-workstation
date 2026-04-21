@@ -14,6 +14,7 @@ import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
+import com.benesquivelmusic.daw.sdk.audio.ClipGainEnvelope;
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 
 import java.util.Arrays;
@@ -527,9 +528,29 @@ public final class RenderPipeline {
                 }
 
                 int audioChannels = Math.min(audioData.length, trackBuffers[t].length);
-                for (int ch = 0; ch < audioChannels; ch++) {
-                    for (int f = 0; f < copyLength; f++) {
-                        trackBuffers[t][ch][outStart + f] += audioData[ch][srcStart + f];
+                // Resolve the per-sample gain: if the clip has a gain envelope,
+                // evaluate it per source-frame; otherwise use the scalar clip-gain.
+                ClipGainEnvelope envelope = clip.gainEnvelope().orElse(null);
+                double scalarGain = (envelope == null) ? Math.pow(10.0, clip.getGainDb() / 20.0) : 1.0;
+                if (envelope == null && scalarGain == 1.0) {
+                    for (int ch = 0; ch < audioChannels; ch++) {
+                        for (int f = 0; f < copyLength; f++) {
+                            trackBuffers[t][ch][outStart + f] += audioData[ch][srcStart + f];
+                        }
+                    }
+                } else if (envelope == null) {
+                    float g = (float) scalarGain;
+                    for (int ch = 0; ch < audioChannels; ch++) {
+                        for (int f = 0; f < copyLength; f++) {
+                            trackBuffers[t][ch][outStart + f] += audioData[ch][srcStart + f] * g;
+                        }
+                    }
+                } else {
+                    for (int ch = 0; ch < audioChannels; ch++) {
+                        for (int f = 0; f < copyLength; f++) {
+                            double g = envelope.linearAtFrame((long) (srcStart + f));
+                            trackBuffers[t][ch][outStart + f] += (float) (audioData[ch][srcStart + f] * g);
+                        }
                     }
                 }
             }

@@ -1,9 +1,11 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.sdk.audio.ClipGainEnvelope;
 import com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata;
 import com.benesquivelmusic.daw.sdk.audio.TimelineRegion;
 
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -31,6 +33,7 @@ public final class AudioClip implements TimelineRegion {
     private StretchQuality stretchQuality;
     private float[][] audioData;
     private SourceRateMetadata sourceRateMetadata;
+    private ClipGainEnvelope gainEnvelope;
 
     /**
      * Creates a new audio clip.
@@ -318,6 +321,29 @@ public final class AudioClip implements TimelineRegion {
         this.sourceRateMetadata = sourceRateMetadata;
     }
 
+    /**
+     * Returns this clip's per-clip gain envelope, if one has been set.
+     *
+     * <p>When absent, clip-level gain behaves as a single scalar determined
+     * by {@link #getGainDb()}. When present, the render pipeline evaluates
+     * the envelope sample-accurately, overriding the scalar.</p>
+     *
+     * @return the optional gain envelope
+     */
+    public Optional<ClipGainEnvelope> gainEnvelope() {
+        return Optional.ofNullable(gainEnvelope);
+    }
+
+    /**
+     * Sets (or clears, when {@code null}) the per-clip gain envelope.
+     *
+     * @param gainEnvelope the new envelope, or {@code null} to revert to
+     *                     the scalar {@link #getGainDb()} behavior
+     */
+    public void setGainEnvelope(ClipGainEnvelope gainEnvelope) {
+        this.gainEnvelope = gainEnvelope;
+    }
+
     /** Returns the end beat position (start + duration). */
     public double getEndBeat() {
         return startBeat + durationBeats;
@@ -372,6 +398,7 @@ public final class AudioClip implements TimelineRegion {
         copy.setStretchQuality(stretchQuality);
         copy.setAudioData(audioData);
         copy.setSourceRateMetadata(sourceRateMetadata);
+        copy.setGainEnvelope(gainEnvelope);
         return copy;
     }
 
@@ -408,6 +435,7 @@ public final class AudioClip implements TimelineRegion {
         second.setStretchQuality(stretchQuality);
         second.setAudioData(audioData);
         second.setSourceRateMetadata(sourceRateMetadata);
+        second.setGainEnvelope(gainEnvelope);
 
         // Truncate this clip
         this.durationBeats = splitBeat - startBeat;
