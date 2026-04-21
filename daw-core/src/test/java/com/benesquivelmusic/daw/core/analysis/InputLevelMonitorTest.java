@@ -254,4 +254,127 @@ class InputLevelMonitorTest {
         assertThat(monitor.snapshot().clippedSinceReset()).isTrue();
         assertThat(monitor.getClipThresholdLinear()).isEqualTo(0.5);
     }
+
+    // ── processInputChannels tests ──────────────────────────────────────────
+
+    @Test
+    void processInputChannelsShouldRejectNullChannels() {
+        InputLevelMonitor monitor = new InputLevelMonitor();
+        assertThatThrownBy(() -> monitor.processInputChannels(null, 0, 1, 64))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void processInputChannelsShouldRejectNonPositiveNumFrames() {
+        InputLevelMonitor monitor = new InputLevelMonitor();
+        float[][] channels = {new float[64], new float[64]};
+        assertThatThrownBy(() -> monitor.processInputChannels(channels, 0, 1, 0))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> monitor.processInputChannels(channels, 0, 1, -1))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void processInputChannelsShouldRejectOutOfRangeChannelSpec() {
+        InputLevelMonitor monitor = new InputLevelMonitor();
+        float[][] channels = {new float[64], new float[64]};
+        // negative firstChannel
+        assertThatThrownBy(() -> monitor.processInputChannels(channels, -1, 1, 32))
+                .isInstanceOf(IllegalArgumentException.class);
+        // zero channelCount
+        assertThatThrownBy(() -> monitor.processInputChannels(channels, 0, 0, 32))
+                .isInstanceOf(IllegalArgumentException.class);
+        // firstChannel + channelCount exceeds array length
+        assertThatThrownBy(() -> monitor.processInputChannels(channels, 1, 2, 32))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void processInputChannelsShouldMeasurePeakOfMonoSlice() {
+        InputLevelMonitor monitor = new InputLevelMonitor();
+        float[] ch0 = new float[32];
+        ch0[10] = 0.75f;
+        float[][] channels = {ch0};
+        monitor.processInputChannels(channels, 0, 1, 32);
+
+        InputLevelMeter snap = monitor.snapshot();
+        // Peak must be at least 0.75 linear ≈ −2.5 dBFS
+        assertThat(snap.peakDbfs()).isGreaterThanOrEqualTo(20.0 * Math.log10(0.75) - 0.01);
+        assertThat(snap.clippedSinceReset()).isFalse();
+    }
+
+    @Test
+    void processInputChannelsShouldUseLouderChannelForClipDecision() {
+        // Only the second channel (index 1) exceeds the clip threshold.
+        // The monitor should still latch the clip flag.
+        InputLevelMonitor monitor = new InputLevelMonitor();
+        float[] ch0 = new float[64];
+        float[] ch1 = new float[64];
+        for (int i = 0; i < ch1.length; i++) {
+            ch0[i] = 0.3f;   // well below threshold
+            ch1[i] = 1.5f;   // above full scale
+        }
+        float[][] channels = {ch0, ch1};
+        monitor.processInputChannels(channels, 0, 2, 64);
+
+        assertThat(monitor.snapshot().clippedSinceReset())
+                .as("clip on louder channel must latch the flag")
+                .isTrue();
+    }
+
+    @Test
+    void processInputChannelsShouldNotClipWhenBothChannelsBelowThreshold() {
+        InputLevelMonitor monitor = new InputLevelMonitor();
+        float[] ch0 = new float[64];
+        float[] ch1 = new float[64];
+        for (int i = 0; i < ch0.length; i++) {
+            ch0[i] = 0.5f;
+            ch1[i] = -0.4f;
+        }
+        float[][] channels = {ch0, ch1};
+        monitor.processInputChannels(channels, 0, 2, 64);
+
+        assertThat(monitor.snapshot().clippedSinceReset())
+                .as("no channel exceeds threshold; clip flag must remain clear")
+                .isFalse();
+    }
+
+    @Test
+    void processInputChannelsShouldAdvanceFrameCounter() {
+        InputLevelMonitor monitor = new InputLevelMonitor();
+        float[] ch0 = new float[100];
+        float[][] channels = {ch0};
+
+        // Warm-up: 100 frames silent
+        monitor.processInputChannels(channels, 0, 1, 100);
+
+        // Second block: clip at frame 7
+        float[] ch0b = new float[16];
+        ch0b[7] = 1.5f;
+        float[][] channels2 = {ch0b};
+        monitor.processInputChannels(channels2, 0, 1, 16);
+
+        InputLevelMeter snap = monitor.snapshot();
+        assertThat(snap.clippedSinceReset()).isTrue();
+        assertThat(snap.lastClipFrameIndex()).isEqualTo(107L);
+    }
+
+    @Test
+    void processInputChannelsShouldRespectChannelOffset() {
+        // firstChannel=1 selects only ch1; ch0 has clipping values that
+        // must be ignored.
+        InputLevelMonitor monitor = new InputLevelMonitor();
+        float[] ch0 = new float[32];
+        float[] ch1 = new float[32];
+        for (int i = 0; i < 32; i++) {
+            ch0[i] = 1.5f;  // above threshold — but ch0 is NOT selected
+            ch1[i] = 0.3f;  // below threshold
+        }
+        float[][] channels = {ch0, ch1};
+        monitor.processInputChannels(channels, 1, 1, 32);
+
+        assertThat(monitor.snapshot().clippedSinceReset())
+                .as("ch0 is outside the selected range; clip flag must stay clear")
+                .isFalse();
+    }
 }
