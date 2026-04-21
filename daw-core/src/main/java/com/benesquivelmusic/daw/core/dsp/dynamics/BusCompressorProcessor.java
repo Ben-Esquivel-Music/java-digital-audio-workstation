@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffect;
 import com.benesquivelmusic.daw.sdk.annotation.ProcessorParam;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor;
+import com.benesquivelmusic.daw.sdk.plugin.PluginMeterSnapshot;
 
 import java.util.Objects;
 
@@ -75,6 +76,10 @@ public final class BusCompressorProcessor implements SidechainAwareProcessor, Ga
     private double currentGainReductionDb;
     /** Low-pass of recent gain reduction; drives AUTO release. */
     private double grSlowDb;
+    /** Most-recent detection-source input peak level (dBFS). */
+    private double lastInputLevelDb   = Double.NEGATIVE_INFINITY;
+    /** Most-recent output peak level across channels (dBFS). */
+    private double lastOutputLevelDb  = Double.NEGATIVE_INFINITY;
 
     /**
      * Creates a bus compressor with SSL-style defaults (threshold -10 dB,
@@ -119,6 +124,8 @@ public final class BusCompressorProcessor implements SidechainAwareProcessor, Ga
         double dry = 1.0 - mix;
         int detCh = Math.min(channels, detectionBuffer.length);
         int outCh = Math.min(channels, inputBuffer.length);
+        double peakInLevel = 0.0;
+        double peakOutLevel = 0.0;
 
         for (int frame = 0; frame < numFrames; frame++) {
             // Peak-style detection across detection-source channels
@@ -127,6 +134,7 @@ public final class BusCompressorProcessor implements SidechainAwareProcessor, Ga
                 double s = Math.abs(detectionBuffer[ch][frame]);
                 if (s > level) level = s;
             }
+            if (level > peakInLevel) peakInLevel = level;
             double inputDb = (level > 0) ? 20.0 * Math.log10(level) : MIN_DB;
 
             // Log-domain envelope: fast attack when rising, release coefficient otherwise
@@ -163,9 +171,14 @@ public final class BusCompressorProcessor implements SidechainAwareProcessor, Ga
                 if (drive) {
                     processed = saturate(processed);
                 }
-                outputBuffer[ch][frame] = (float) (dry * in + wet * processed);
+                double out = dry * in + wet * processed;
+                outputBuffer[ch][frame] = (float) out;
+                double absOut = Math.abs(out);
+                if (absOut > peakOutLevel) peakOutLevel = absOut;
             }
         }
+        lastInputLevelDb  = (peakInLevel  > 0) ? 20.0 * Math.log10(peakInLevel)  : Double.NEGATIVE_INFINITY;
+        lastOutputLevelDb = (peakOutLevel > 0) ? 20.0 * Math.log10(peakOutLevel) : Double.NEGATIVE_INFINITY;
     }
 
     @RealTimeSafe
@@ -176,6 +189,8 @@ public final class BusCompressorProcessor implements SidechainAwareProcessor, Ga
         double dry = 1.0 - mix;
         int detCh = Math.min(channels, inputBuffer.length);
         int outCh = detCh;
+        double peakInLevel = 0.0;
+        double peakOutLevel = 0.0;
 
         for (int frame = 0; frame < numFrames; frame++) {
             double level = 0.0;
@@ -183,6 +198,7 @@ public final class BusCompressorProcessor implements SidechainAwareProcessor, Ga
                 double s = Math.abs(inputBuffer[ch][frame]);
                 if (s > level) level = s;
             }
+            if (level > peakInLevel) peakInLevel = level;
             double inputDb = (level > 0) ? 20.0 * Math.log10(level) : MIN_DB;
 
             double coeff;
@@ -210,9 +226,14 @@ public final class BusCompressorProcessor implements SidechainAwareProcessor, Ga
                 if (drive) {
                     processed = saturate(processed);
                 }
-                outputBuffer[ch][frame] = dry * in + wet * processed;
+                double out = dry * in + wet * processed;
+                outputBuffer[ch][frame] = out;
+                double absOut = Math.abs(out);
+                if (absOut > peakOutLevel) peakOutLevel = absOut;
             }
         }
+        lastInputLevelDb  = (peakInLevel  > 0) ? 20.0 * Math.log10(peakInLevel)  : Double.NEGATIVE_INFINITY;
+        lastOutputLevelDb = (peakOutLevel > 0) ? 20.0 * Math.log10(peakOutLevel) : Double.NEGATIVE_INFINITY;
     }
 
     /**
@@ -259,6 +280,23 @@ public final class BusCompressorProcessor implements SidechainAwareProcessor, Ga
         return currentGainReductionDb;
     }
 
+    /**
+     * Returns an immutable {@link PluginMeterSnapshot} capturing the current
+     * gain-reduction reading together with the most-recently-measured peak
+     * input and output levels. Intended for UI consumption (e.g., driving a
+     * needle-style VU meter in the plugin view).
+     *
+     * <p>This method is allocation-friendly: a single record is created per
+     * call and no audio-thread mutable state is allocated during processing.
+     * Call from the UI thread.</p>
+     */
+    public PluginMeterSnapshot getMeterSnapshot() {
+        return new PluginMeterSnapshot(
+                currentGainReductionDb,
+                lastInputLevelDb,
+                lastOutputLevelDb);
+    }
+
     // ── AudioProcessor housekeeping ─────────────────────────────────────────
 
     @Override
@@ -266,6 +304,8 @@ public final class BusCompressorProcessor implements SidechainAwareProcessor, Ga
         envelopeDb = MIN_DB;
         currentGainReductionDb = 0.0;
         grSlowDb = 0.0;
+        lastInputLevelDb  = Double.NEGATIVE_INFINITY;
+        lastOutputLevelDb = Double.NEGATIVE_INFINITY;
     }
 
     @Override

@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.dsp.dynamics.BusCompressorProcessor;
+import com.benesquivelmusic.daw.sdk.plugin.PluginMeterSnapshot;
 import javafx.animation.AnimationTimer;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -118,10 +119,10 @@ public final class BusCompressorPluginView extends VBox {
 
         getChildren().addAll(title, main);
 
-        drawMeter(0.0);
+        drawMeter(PluginMeterSnapshot.SILENT);
         meterTimer = new AnimationTimer() {
             @Override public void handle(long now) {
-                drawMeter(processor.getGainReductionDb());
+                drawMeter(processor.getMeterSnapshot());
             }
         };
         meterTimer.start();
@@ -147,7 +148,7 @@ public final class BusCompressorPluginView extends VBox {
         return box;
     }
 
-    private void drawMeter(double gainReductionDb) {
+    private void drawMeter(PluginMeterSnapshot snapshot) {
         GraphicsContext g = meterCanvas.getGraphicsContext2D();
         double w = meterCanvas.getWidth();
         double h = meterCanvas.getHeight();
@@ -156,7 +157,7 @@ public final class BusCompressorPluginView extends VBox {
         g.setStroke(Color.rgb(70, 70, 70));
         g.strokeRect(0.5, 0.5, w - 1, h - 1);
 
-        double gr = Math.max(-METER_MAX_DB, Math.min(0.0, gainReductionDb));
+        double gr = Math.max(-METER_MAX_DB, Math.min(0.0, snapshot.gainReductionDb()));
         double fraction = -gr / METER_MAX_DB;  // 0..1 (top-down fill)
         double barHeight = fraction * (h - 4);
         g.setFill(Color.rgb(230, 140, 50));  // classic VU amber

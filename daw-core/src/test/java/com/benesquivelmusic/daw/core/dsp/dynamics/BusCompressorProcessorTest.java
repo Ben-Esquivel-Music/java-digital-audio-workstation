@@ -195,6 +195,30 @@ class BusCompressorProcessorTest {
 
         c.reset();
         assertThat(c.getGainReductionDb()).isZero();
+        var snap = c.getMeterSnapshot();
+        assertThat(snap.gainReductionDb()).isZero();
+        assertThat(snap.inputLevelDb()).isEqualTo(Double.NEGATIVE_INFINITY);
+        assertThat(snap.outputLevelDb()).isEqualTo(Double.NEGATIVE_INFINITY);
+    }
+
+    @Test
+    void meterSnapshotCapturesInputAndOutputLevels() {
+        BusCompressorProcessor c = new BusCompressorProcessor(1, SAMPLE_RATE);
+        c.setThresholdDb(-20.0);
+        c.setRatio(4.0);
+        c.setAttackMs(0.1);
+
+        int n = 4096;
+        float[][] in = sineMono(1_000.0, dbToLinear(-10.0), n);
+        c.process(in, new float[1][n], n);
+
+        var snap = c.getMeterSnapshot();
+        assertThat(snap.gainReductionDb()).isLessThan(0.0);
+        assertThat(snap.inputLevelDb())
+                .as("input peak level should be close to -10 dBFS")
+                .isCloseTo(-10.0, org.assertj.core.data.Offset.offset(0.5));
+        // Output is compressed + (by default makeup=0) so it's below input.
+        assertThat(snap.outputLevelDb()).isLessThan(snap.inputLevelDb());
     }
 
     @Test
