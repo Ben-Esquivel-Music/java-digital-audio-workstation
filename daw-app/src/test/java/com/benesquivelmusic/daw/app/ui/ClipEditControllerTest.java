@@ -101,7 +101,7 @@ class ClipEditControllerTest {
     }
 
     @Test
-    void onSlipRightByFineShouldMoveByOneColumn() {
+    void onSlipRightByFineShouldMoveByOneSample() {
         DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
         Track track = new Track("Track 1", TrackType.AUDIO);
         project.addTrack(track);
@@ -117,10 +117,11 @@ class ClipEditControllerTest {
         TestHost host = new TestHost(project, undoManager, selectionModel);
         ClipEditController controller = new ClipEditController(host);
 
-        // Fine step = BEATS_PER_COLUMN = 0.25 beats.
+        double oneSampleInBeats =
+                project.getTransport().getTempo() / (60.0 * project.getFormat().sampleRate());
         controller.onSlipRightByFine();
 
-        assertThat(clip.getSourceOffsetBeats()).isCloseTo(4.75, within(1e-6));
+        assertThat(clip.getSourceOffsetBeats()).isCloseTo(5.0 - oneSampleInBeats, within(1e-6));
     }
 
     @Test
@@ -200,13 +201,13 @@ class ClipEditControllerTest {
     }
 
     @Test
-    void onSlipLeftByFineShouldClampMidiNotesAtColumnZero() {
+    void onSlipLeftByFineShouldBeNoOpForMidiWhenBelowColumnResolution() {
         DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
         Track track = new Track("MIDI Track", TrackType.MIDI);
         project.addTrack(track);
 
         MidiClip midiClip = track.getMidiClip();
-        // Earliest note already at column 0 → cannot slip left.
+        // Earliest note at column 0; one-sample slip is below MIDI column resolution.
         midiClip.addNote(MidiNoteData.of(60, 0, 2, 100));
         midiClip.addNote(MidiNoteData.of(62, 4, 2, 100));
 
@@ -222,7 +223,7 @@ class ClipEditControllerTest {
         List<MidiNoteData> notes = midiClip.getNotes();
         assertThat(notes.get(0).startColumn()).isEqualTo(0);
         assertThat(notes.get(1).startColumn()).isEqualTo(4);
-        assertThat(host.lastNotificationLevel).isEqualTo(NotificationLevel.INFO);
+        assertThat(host.lastNotificationLevel).isNull();
     }
 
     @Test

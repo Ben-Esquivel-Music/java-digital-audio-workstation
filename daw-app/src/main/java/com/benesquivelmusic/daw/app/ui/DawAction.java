@@ -70,11 +70,10 @@ public enum DawAction {
             new KeyCodeCombination(KeyCode.LEFT, KeyCombination.SHIFT_DOWN)),
     SLIP_RIGHT_GRID("Slip Right (Grid)", Category.EDITING,
             new KeyCodeCombination(KeyCode.RIGHT, KeyCombination.SHIFT_DOWN)),
-    // Slip by the finest quantum (one MIDI column = 0.25 beats) for fine
-    // positioning — the audio-world analogue of "one sample".
-    SLIP_LEFT_FINE("Slip Left (Fine)", Category.EDITING,
+    // Story 139 — sample-level slip nudge (Ctrl+Shift+Arrow).
+    SLIP_LEFT_FINE("Slip Left (Sample)", Category.EDITING,
             new KeyCodeCombination(KeyCode.LEFT, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
-    SLIP_RIGHT_FINE("Slip Right (Fine)", Category.EDITING,
+    SLIP_RIGHT_FINE("Slip Right (Sample)", Category.EDITING,
             new KeyCodeCombination(KeyCode.RIGHT, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
 
     // ── Session interchange ─────────────────────────────────────────────────
