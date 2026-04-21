@@ -41,6 +41,8 @@ final class PluginViewController {
     private TunerDisplayWindow tunerDisplayWindow;
     private Stage telemetryPluginStage;
     private TelemetryView telemetryPluginView;
+    private Stage busCompressorStage;
+    private BusCompressorPluginView busCompressorView;
 
     PluginViewController(Host host) {
         this.host = host;
@@ -101,6 +103,9 @@ final class PluginViewController {
         if (telemetryPluginStage != null) {
             telemetryPluginStage.hide();
         }
+        if (busCompressorStage != null) {
+            busCompressorStage.hide();
+        }
         try {
             for (BuiltInDawPlugin plugin : builtInPluginCache.values()) {
                 try {
@@ -122,6 +127,7 @@ final class PluginViewController {
             case SpectrumAnalyzerPlugin.PLUGIN_ID -> openSpectrumAnalyzerWindow((SpectrumAnalyzerPlugin) plugin);
             case TunerPlugin.PLUGIN_ID -> openTunerWindow((TunerPlugin) plugin);
             case SoundWaveTelemetryPlugin.PLUGIN_ID -> openSoundWaveTelemetryWindow((SoundWaveTelemetryPlugin) plugin);
+            case BusCompressorPlugin.PLUGIN_ID -> openBusCompressorWindow((BusCompressorPlugin) plugin);
             case ParametricEqPlugin.PLUGIN_ID,
                  CompressorPlugin.PLUGIN_ID,
                  ReverbPlugin.PLUGIN_ID -> host.switchToMasteringView();
@@ -217,5 +223,33 @@ final class PluginViewController {
         stage.show();
         stage.toFront();
         telemetryPluginStage = stage;
+    }
+
+    private void openBusCompressorWindow(BusCompressorPlugin plugin) {
+        if (busCompressorStage != null) {
+            busCompressorStage.show();
+            busCompressorStage.toFront();
+            return;
+        }
+
+        busCompressorView = new BusCompressorPluginView(plugin.getProcessor());
+
+        Stage stage = new Stage(StageStyle.UTILITY);
+        stage.setTitle("Bus Compressor");
+        stage.setScene(new Scene(busCompressorView));
+        DarkThemeHelper.applyTo(stage.getScene());
+        stage.setMinWidth(900);
+        stage.setMinHeight(260);
+        stage.setOnHidden(_ -> {
+            if (busCompressorView != null) {
+                busCompressorView.dispose();
+                busCompressorView = null;
+            }
+            plugin.deactivate();
+            busCompressorStage = null;
+        });
+        stage.show();
+        stage.toFront();
+        busCompressorStage = stage;
     }
 }
