@@ -140,14 +140,14 @@ final class ClipEditController {
         onSlipSelectionByBeats(host.gridStepBeats());
     }
 
-    /** Slips the selection by the finest quantum (one MIDI column) to the left. */
+    /** Slips the selection one sample to the left (Ctrl+Shift+Left). */
     void onSlipLeftByFine() {
-        onSlipSelectionByBeats(-EditorView.BEATS_PER_COLUMN);
+        onSlipSelectionByBeats(-sampleStepBeats());
     }
 
-    /** Slips the selection by the finest quantum (one MIDI column) to the right. */
+    /** Slips the selection one sample to the right (Ctrl+Shift+Right). */
     void onSlipRightByFine() {
-        onSlipSelectionByBeats(EditorView.BEATS_PER_COLUMN);
+        onSlipSelectionByBeats(sampleStepBeats());
     }
 
     /**
@@ -233,6 +233,26 @@ final class ClipEditController {
             return seconds * (bpm / 60.0);
         }
         return 0.0;
+    }
+
+    /**
+     * Returns one sample expressed in beats using the effective tempo at the
+     * current playhead position.
+     *
+     * <p>Using the playhead beat (rather than the initial tempo) ensures the
+     * step is accurate when the project has tempo-map changes — e.g. an
+     * accelerando that is active at the moment the user presses
+     * {@code Ctrl+Shift+Left/Right}.</p>
+     */
+    private double sampleStepBeats() {
+        var transport = host.project().getTransport();
+        double playheadBeat = transport.getPositionInBeats();
+        double bpm = transport.getTempoMap().getTempoAtBeat(playheadBeat);
+        double sampleRate = host.project().getFormat().sampleRate();
+        if (bpm <= 0.0 || sampleRate <= 0.0) {
+            return 0.0;
+        }
+        return bpm / (60.0 * sampleRate);
     }
 
     void onDeleteSelection() {
