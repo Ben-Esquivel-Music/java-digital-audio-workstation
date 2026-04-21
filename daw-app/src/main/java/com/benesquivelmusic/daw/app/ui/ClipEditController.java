@@ -158,15 +158,37 @@ final class ClipEditController {
         if (mode == RippleMode.OFF) {
             return new CutClipsAction(entries);
         }
+        SelectionBounds selection = rippleSelection(entries);
         try {
             return RippleEditService.buildRippleDelete(
                     entries, mode, host.project().getTracks(),
-                    OptionalDouble.empty(), OptionalDouble.empty());
+                    selection.start(), selection.end());
         } catch (RippleValidationException e) {
             host.showNotification(NotificationLevel.ERROR,
                     verb + " cancelled — ripple would overlap clips: " + e.getMessage());
             return null;
         }
+    }
+
+    private SelectionBounds rippleSelection(List<Map.Entry<Track, AudioClip>> entries) {
+        SelectionModel selectionModel = host.selectionModel();
+        if (!selectionModel.hasSelection()) {
+            return SelectionBounds.NONE;
+        }
+        double selStart = selectionModel.getStartBeat();
+        double selEnd = selectionModel.getEndBeat();
+        for (Map.Entry<Track, AudioClip> entry : entries) {
+            AudioClip clip = entry.getValue();
+            if (clip.getStartBeat() < selEnd && clip.getEndBeat() > selStart) {
+                return new SelectionBounds(OptionalDouble.of(selStart), OptionalDouble.of(selEnd));
+            }
+        }
+        return SelectionBounds.NONE;
+    }
+
+    private record SelectionBounds(OptionalDouble start, OptionalDouble end) {
+        private static final SelectionBounds NONE = new SelectionBounds(
+                OptionalDouble.empty(), OptionalDouble.empty());
     }
 
     // ── Editor audio handle actions ─────────────────────────────────────────
