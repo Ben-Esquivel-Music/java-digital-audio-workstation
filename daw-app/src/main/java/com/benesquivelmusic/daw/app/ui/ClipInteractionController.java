@@ -70,6 +70,9 @@ final class ClipInteractionController {
     private int dragSourceTrackIndex = -1;
     private double dragStartBeat;
     private boolean groupDrag;
+    // Time-selection snapshot captured at drag-start, before the click clears it.
+    private OptionalDouble dragSelectionStart = OptionalDouble.empty();
+    private OptionalDouble dragSelectionEnd = OptionalDouble.empty();
 
     // Time selection drag state
     private boolean selectionDragging;
@@ -645,6 +648,8 @@ final class ClipInteractionController {
         dragSourceTrack = null;
         dragSourceTrackIndex = -1;
         groupDrag = false;
+        dragSelectionStart = OptionalDouble.empty();
+        dragSelectionEnd = OptionalDouble.empty();
     }
 
     /**
@@ -661,16 +666,9 @@ final class ClipInteractionController {
             return;
         }
         try {
-            SelectionModel selectionModel = host.selectionModel();
-            OptionalDouble selectionStart = selectionModel.hasSelection()
-                    ? OptionalDouble.of(selectionModel.getStartBeat())
-                    : OptionalDouble.empty();
-            OptionalDouble selectionEnd = selectionModel.hasSelection()
-                    ? OptionalDouble.of(selectionModel.getEndBeat())
-                    : OptionalDouble.empty();
             host.undoManager().execute(RippleEditService.buildRippleMove(
                     clip, track, newStartBeat, mode, host.tracks(),
-                    selectionStart, selectionEnd));
+                    dragSelectionStart, dragSelectionEnd));
             host.refreshCanvas();
         } catch (RippleValidationException e) {
             host.showNotification(NotificationLevel.ERROR,
@@ -713,6 +711,13 @@ final class ClipInteractionController {
     private void handlePointerPress(Track track, int trackIndex, double beat, MouseEvent event) {
         AudioClip clip = clipAt(track, beat);
         if (clip != null) {
+            // Snapshot the time selection before clearing it so executeMove
+            // can still honour selection-gated ripple on mouse-release.
+            SelectionModel sm = host.selectionModel();
+            dragSelectionStart = sm.hasSelection()
+                    ? OptionalDouble.of(sm.getStartBeat()) : OptionalDouble.empty();
+            dragSelectionEnd = sm.hasSelection()
+                    ? OptionalDouble.of(sm.getEndBeat()) : OptionalDouble.empty();
             // Click on an audio clip
             clearTimeSelection();
             if (event.isShiftDown()) {
