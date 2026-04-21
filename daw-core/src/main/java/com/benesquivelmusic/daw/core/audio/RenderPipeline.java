@@ -87,6 +87,11 @@ public final class RenderPipeline {
     // Pre-allocated per-return-bus buffers for send routing: [returnBus][channel][frame]
     private final float[][][] returnBuffers;
 
+    // Pre-allocated scratch buffer for per-frame clip-gain envelope
+    // evaluation. Sized to the maximum block size so the audio thread
+    // never needs to allocate even when an envelope is present.
+    private final float[] gainScratch;
+
     // One-shot warning flag for exceeding return bus cap
     private boolean returnBusCapWarningLogged;
 
@@ -110,6 +115,7 @@ public final class RenderPipeline {
         this.mixBuffer = new float[channels][blockSize];
         this.trackBuffers = new float[maxTracks][channels][blockSize];
         this.returnBuffers = new float[Mixer.MAX_RETURN_BUSES][channels][blockSize];
+        this.gainScratch = new float[blockSize];
     }
 
     /**
@@ -530,7 +536,9 @@ public final class RenderPipeline {
                 int audioChannels = Math.min(audioData.length, trackBuffers[t].length);
                 // Resolve the per-sample gain: if the clip has a gain envelope,
                 // evaluate it per source-frame; otherwise use the scalar clip-gain.
-                ClipGainEnvelope envelope = clip.gainEnvelope().orElse(null);
+                // Use the non-allocating accessor so the audio thread does not
+                // allocate an Optional on every call.
+                ClipGainEnvelope envelope = clip.getGainEnvelope();
                 double scalarGain = (envelope == null) ? Math.pow(10.0, clip.getGainDb() / 20.0) : 1.0;
                 if (envelope == null && scalarGain == 1.0) {
                     for (int ch = 0; ch < audioChannels; ch++) {
@@ -546,17 +554,15 @@ public final class RenderPipeline {
                         }
                     }
                 } else {
-                    // Precompute the per-frame linear gain once for this copy
-                    // range so audio-thread work stays O(frames + points) and
-                    // each sample application is a single multiply.
-                    float[] gains = new float[copyLength];
-                    for (int f = 0; f < copyLength; f++) {
-                        gains[f] = (float) envelope.linearAtFrame((long) srcStart + f);
-                    }
+                    // Fill the preallocated scratch buffer in a single
+                    // segment-walk pass (no per-sample binary search), then
+                    // apply it across channels. Zero heap allocations on
+                    // the audio thread.
+                    envelope.fillLinearGains((long) srcStart, gainScratch, copyLength);
                     for (int ch = 0; ch < audioChannels; ch++) {
                         for (int f = 0; f < copyLength; f++) {
                             trackBuffers[t][ch][outStart + f]
-                                    += audioData[ch][srcStart + f] * gains[f];
+                                    += audioData[ch][srcStart + f] * gainScratch[f];
                         }
                     }
                 }

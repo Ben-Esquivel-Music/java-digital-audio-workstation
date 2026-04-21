@@ -123,6 +123,94 @@ public record ClipGainEnvelope(List<BreakpointDb> breakpoints) {
     }
 
     /**
+     * Fills a caller-supplied scratch buffer with linear amplitude gains
+     * for a contiguous range of clip-local source frames, using a single
+     * forward pass over the breakpoint list (segment-walk).
+     *
+     * <p>This is the real-time-safe evaluation path used by the render
+     * pipeline: it does zero allocations, replaces the per-sample binary
+     * search in {@link #dbAtFrame(long)} with a cursor that advances at
+     * most {@code breakpoints.size()} times over the whole range, and
+     * leaves the caller in control of buffer lifetime.</p>
+     *
+     * <p>{@code Math.pow} is still invoked per frame to preserve the dB
+     * semantics of the curve shapes; call sites that don't need dB-exact
+     * evaluation may interpolate {@code gains} further themselves.</p>
+     *
+     * @param startFrame the clip-local frame offset of {@code gains[0]}
+     * @param gains      the caller-owned buffer to fill; only indices
+     *                   {@code [0, count)} are written
+     * @param count      the number of gains to write (must be {@code >= 0}
+     *                   and {@code <= gains.length})
+     */
+    public void fillLinearGains(long startFrame, float[] gains, int count) {
+        Objects.requireNonNull(gains, "gains must not be null");
+        if (count < 0 || count > gains.length) {
+            throw new IllegalArgumentException("invalid count: " + count);
+        }
+        if (count == 0) {
+            return;
+        }
+
+        int size = breakpoints.size();
+        BreakpointDb first = breakpoints.getFirst();
+        BreakpointDb last = breakpoints.getLast();
+        long firstOffset = first.frameOffsetInClip();
+        long lastOffset = last.frameOffsetInClip();
+        double firstLin = Math.pow(10.0, first.dbGain() / 20.0);
+        double lastLin = Math.pow(10.0, last.dbGain() / 20.0);
+
+        // Locate the starting segment via one binary search, then walk
+        // forward with a cursor `i` pointing at the left breakpoint of the
+        // current segment. Segments are [breakpoints[i], breakpoints[i+1]).
+        int i = 0;
+        if (size >= 2 && startFrame > firstOffset) {
+            int lo = 0;
+            int hi = size - 1;
+            while (lo + 1 < hi) {
+                int mid = (lo + hi) >>> 1;
+                if (breakpoints.get(mid).frameOffsetInClip() <= startFrame) {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            i = lo;
+        }
+
+        for (int f = 0; f < count; f++) {
+            long frame = startFrame + f;
+
+            if (frame <= firstOffset) {
+                gains[f] = (float) firstLin;
+                continue;
+            }
+            if (frame >= lastOffset) {
+                gains[f] = (float) lastLin;
+                continue;
+            }
+
+            // Advance cursor so that breakpoints[i+1].frameOffset > frame.
+            while (i + 1 < size - 1
+                    && breakpoints.get(i + 1).frameOffsetInClip() <= frame) {
+                i++;
+            }
+
+            BreakpointDb a = breakpoints.get(i);
+            BreakpointDb b = breakpoints.get(i + 1);
+            long span = b.frameOffsetInClip() - a.frameOffsetInClip();
+            if (span <= 0L) {
+                gains[f] = (float) Math.pow(10.0, b.dbGain() / 20.0);
+                continue;
+            }
+            double t = (double) (frame - a.frameOffsetInClip()) / (double) span;
+            double w = a.curve().weight(t);
+            double db = a.dbGain() + (b.dbGain() - a.dbGain()) * w;
+            gains[f] = (float) Math.pow(10.0, db / 20.0);
+        }
+    }
+
+    /**
      * Returns a copy of this envelope with the given breakpoint added
      * (or replacing any existing breakpoint at the same frame offset).
      *

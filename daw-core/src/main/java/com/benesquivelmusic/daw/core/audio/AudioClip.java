@@ -335,6 +335,21 @@ public final class AudioClip implements TimelineRegion {
     }
 
     /**
+     * Real-time-safe accessor for the per-clip gain envelope that does
+     * not allocate an {@link Optional}.
+     *
+     * <p>Prefer this over {@link #gainEnvelope()} on the audio thread
+     * (e.g. inside {@code RenderPipeline.renderSegment}) to honor the
+     * zero-heap-allocation contract of
+     * {@code @RealTimeSafe}-annotated code paths.</p>
+     *
+     * @return the envelope, or {@code null} if none is set
+     */
+    public ClipGainEnvelope getGainEnvelope() {
+        return gainEnvelope;
+    }
+
+    /**
      * Sets (or clears, when {@code null}) the per-clip gain envelope.
      *
      * @param gainEnvelope the new envelope, or {@code null} to revert to

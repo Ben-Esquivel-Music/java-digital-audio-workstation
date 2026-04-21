@@ -130,4 +130,47 @@ class ClipGainEnvelopeTest {
         assertThat(CurveShape.EXPONENTIAL.weight(-0.5)).isEqualTo(0.0);
         assertThat(CurveShape.S_CURVE.weight(1.5)).isEqualTo(1.0);
     }
+
+    @Test
+    void fillLinearGains_matchesLinearAtFrame_acrossSegments() {
+        var env = new ClipGainEnvelope(List.of(
+                new ClipGainEnvelope.BreakpointDb(0L, 0.0, CurveShape.LINEAR),
+                new ClipGainEnvelope.BreakpointDb(100L, -6.0, CurveShape.S_CURVE),
+                new ClipGainEnvelope.BreakpointDb(250L, -12.0, CurveShape.EXPONENTIAL),
+                new ClipGainEnvelope.BreakpointDb(400L, 0.0, CurveShape.LINEAR)));
+        float[] gains = new float[500];
+        env.fillLinearGains(0L, gains, 500);
+        for (int i = 0; i < 500; i++) {
+            assertThat((double) gains[i])
+                    .as("frame %d", i)
+                    .isCloseTo(env.linearAtFrame(i), offset(1e-6));
+        }
+    }
+
+    @Test
+    void fillLinearGains_withOffset_matchesLinearAtFrame() {
+        var env = new ClipGainEnvelope(List.of(
+                new ClipGainEnvelope.BreakpointDb(0L, -12.0, CurveShape.LINEAR),
+                new ClipGainEnvelope.BreakpointDb(50L, 0.0, CurveShape.LINEAR),
+                new ClipGainEnvelope.BreakpointDb(150L, -6.0, CurveShape.LINEAR)));
+        float[] gains = new float[60];
+        // Start in the middle of the second segment to exercise the binary
+        // search cursor seed.
+        env.fillLinearGains(80L, gains, 60);
+        for (int i = 0; i < 60; i++) {
+            assertThat((double) gains[i])
+                    .as("frame offset %d", 80 + i)
+                    .isCloseTo(env.linearAtFrame(80L + i), offset(1e-6));
+        }
+    }
+
+    @Test
+    void fillLinearGains_rejectsInvalidCount() {
+        var env = ClipGainEnvelope.constant(0.0);
+        float[] gains = new float[4];
+        assertThatThrownBy(() -> env.fillLinearGains(0L, gains, -1))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> env.fillLinearGains(0L, gains, 5))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 }
