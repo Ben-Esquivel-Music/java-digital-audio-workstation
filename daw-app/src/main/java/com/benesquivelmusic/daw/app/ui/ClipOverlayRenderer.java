@@ -161,6 +161,70 @@ final class ClipOverlayRenderer {
         gc.strokeLine(x, drawY, x, drawBottom);
     }
 
+    /**
+     * Draws the slip-edit ghost overlay — a translucent rectangle offset
+     * horizontally by {@code beatDelta} from the clip's actual on-timeline
+     * position, plus a red tint when the drag has hit the source-window
+     * edge.
+     *
+     * <p>The ghost is clipped to the clip's original timeline bounds so it
+     * reads as "content sliding inside the clip window" rather than the
+     * clip itself moving.</p>
+     *
+     * <p>Story 139 — {@code docs/user-stories/139-slip-edit-within-clip.md}.</p>
+     *
+     * @param gc            the graphics context
+     * @param clipStartBeat the clip's on-timeline start beat
+     * @param durationBeats the clip's on-timeline duration in beats
+     * @param beatDelta     the in-progress slip delta (positive = content
+     *                      dragged right on the timeline)
+     * @param hitEdge       {@code true} to flash the ghost red
+     */
+    static void drawSlipGhost(GraphicsContext gc,
+                              double clipStartBeat, double durationBeats,
+                              double beatDelta, boolean hitEdge,
+                              double scrollXBeats, double pixelsPerBeat,
+                              double laneY, double trackHeight,
+                              double canvasWidth, double canvasHeight) {
+        double clipX = (clipStartBeat - scrollXBeats) * pixelsPerBeat;
+        double clipWidth = durationBeats * pixelsPerBeat;
+        if (clipX + clipWidth < 0 || clipX > canvasWidth) {
+            return;
+        }
+        double laneBottom = laneY + trackHeight;
+        if (laneBottom < 0 || laneY > canvasHeight) {
+            return;
+        }
+
+        double clipY = laneY + CLIP_INSET;
+        double clipHeight = trackHeight - 2 * CLIP_INSET;
+        double ghostX = clipX + beatDelta * pixelsPerBeat;
+
+        // Clip the ghost to the clip's original bounds so the overlay reads
+        // as content shifting inside a fixed window.
+        gc.save();
+        gc.beginPath();
+        gc.rect(clipX, clipY, clipWidth, clipHeight);
+        gc.clip();
+
+        Color ghostFill = hitEdge
+                ? Color.web("#ff5252", 0.45)
+                : Color.web("#ffffff", 0.25);
+        gc.setFill(ghostFill);
+        gc.fillRoundRect(ghostX, clipY, clipWidth, clipHeight,
+                CLIP_CORNER_RADIUS, CLIP_CORNER_RADIUS);
+
+        Color ghostBorder = hitEdge
+                ? Color.web("#ff1744", 0.9)
+                : Color.web("#ffffff", 0.7);
+        gc.setStroke(ghostBorder);
+        gc.setLineWidth(hitEdge ? 2.0 : 1.5);
+        gc.strokeRoundRect(ghostX, clipY, clipWidth, clipHeight,
+                CLIP_CORNER_RADIUS, CLIP_CORNER_RADIUS);
+
+        gc.restore();
+    }
+
     private static void fillClipBody(GraphicsContext gc, Color trackColor,
                                      double clipX, double clipY,
                                      double clipWidth, double clipHeight) {

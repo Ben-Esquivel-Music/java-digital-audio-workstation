@@ -73,6 +73,9 @@ final class ArrangementCanvasFactory {
                     @Override public void showNotification(NotificationLevel level, String message) {
                         host.showNotification(level, message);
                     }
+                    @Override public double projectTempoBpm() {
+                        return host.project().getTransport().getTempo();
+                    }
                 });
         clipInteraction.install();
 

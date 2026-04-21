@@ -468,6 +468,12 @@ public final class MainController {
             @Override public void showNotification(NotificationLevel level, String message) { notificationBar.show(level, message); }
             @Override public EditorView editorView() { return viewNavigationController.getEditorView(); }
             @Override public com.benesquivelmusic.daw.sdk.edit.RippleMode rippleMode() { return project.getRippleMode(); }
+            @Override public double gridStepBeats() {
+                GridResolution res = viewNavigationController != null
+                        ? viewNavigationController.getGridResolution() : gridResolution;
+                int beatsPerBar = project.getTransport().getTimeSignatureNumerator();
+                return res.beatsPerGrid(beatsPerBar);
+            }
         });
     }
 
@@ -575,6 +581,10 @@ public final class MainController {
                     @Override public void setRippleMode(com.benesquivelmusic.daw.sdk.edit.RippleMode mode) {
                         if (rippleModeController != null) { rippleModeController.setMode(mode); }
                     }
+                    @Override public void onSlipLeftByGrid() { clipEditController.onSlipLeftByGrid(); }
+                    @Override public void onSlipRightByGrid() { clipEditController.onSlipRightByGrid(); }
+                    @Override public void onSlipLeftByFine() { clipEditController.onSlipLeftByFine(); }
+                    @Override public void onSlipRightByFine() { clipEditController.onSlipRightByFine(); }
                 });
     }
 

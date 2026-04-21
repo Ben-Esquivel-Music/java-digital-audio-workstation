@@ -10,6 +10,7 @@ import com.benesquivelmusic.daw.core.automation.AutomationPoint;
 import com.benesquivelmusic.daw.core.automation.InterpolationMode;
 import com.benesquivelmusic.daw.core.dsp.CompressorProcessor;
 import com.benesquivelmusic.daw.core.dsp.ReverbProcessor;
+import com.benesquivelmusic.daw.core.audio.SlipClipAction;
 import com.benesquivelmusic.daw.core.marker.Marker;
 import com.benesquivelmusic.daw.core.marker.MarkerRange;
 import com.benesquivelmusic.daw.core.marker.MarkerType;
@@ -1028,5 +1029,69 @@ class ProjectSerializationRoundTripTest {
         DawProject restored = deserializer.deserialize(xml);
 
         assertThat(restored.getRippleMode()).isEqualTo(RippleMode.ALL_TRACKS);
+    }
+
+    // ── Story 139 — slip-edit sourceOffsetBeats persistence ─────────────────
+
+    @Test
+    void shouldRoundTripSourceOffsetBeatsAfterSlip() throws IOException {
+        DawProject original = new DawProject("Slip Persistence", AudioFormat.CD_QUALITY);
+        Track track = original.createAudioTrack("Loop Track");
+
+        AudioClip clip = new AudioClip("Loop", 0.0, 8.0, "/audio/loop.wav");
+        clip.setSourceOffsetBeats(3.5);
+        track.addClip(clip);
+
+        // Simulate a slip edit: move the source offset to 1.75 via SlipClipAction.
+        SlipClipAction slip = new SlipClipAction(clip, 1.75);
+        slip.execute();
+        assertThat(clip.getSourceOffsetBeats()).isCloseTo(1.75, within(1e-6));
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        AudioClip restoredClip = restored.getTracks().get(0).getClips().get(0);
+        // The post-slip source offset must survive the round-trip intact.
+        assertThat(restoredClip.getSourceOffsetBeats()).isCloseTo(1.75, within(1e-6));
+        // Clip position and duration are untouched by slip, as expected.
+        assertThat(restoredClip.getStartBeat()).isEqualTo(0.0);
+        assertThat(restoredClip.getDurationBeats()).isEqualTo(8.0);
+    }
+
+    @Test
+    void shouldRoundTripDefaultZeroSourceOffset() throws IOException {
+        DawProject original = new DawProject("Zero Offset", AudioFormat.CD_QUALITY);
+        Track track = original.createAudioTrack("Track");
+        // Source offset left at its default (0.0).
+        track.addClip(new AudioClip("Clip", 2.0, 4.0, null));
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        AudioClip restoredClip = restored.getTracks().get(0).getClips().get(0);
+        assertThat(restoredClip.getSourceOffsetBeats()).isEqualTo(0.0);
+    }
+
+    @Test
+    void slipAndUndoShouldLeaveSourceOffsetUnchangedAfterRoundTrip() throws IOException {
+        DawProject original = new DawProject("Slip Undo", AudioFormat.CD_QUALITY);
+        Track track = original.createAudioTrack("Track");
+
+        AudioClip clip = new AudioClip("Loop", 0.0, 4.0, "/audio/loop.wav");
+        clip.setSourceOffsetBeats(2.0);
+        track.addClip(clip);
+
+        // Execute slip, then undo — offset should be back to 2.0 before serializing.
+        SlipClipAction slip = new SlipClipAction(clip, 5.0);
+        slip.execute();
+        assertThat(clip.getSourceOffsetBeats()).isCloseTo(5.0, within(1e-6));
+        slip.undo();
+        assertThat(clip.getSourceOffsetBeats()).isCloseTo(2.0, within(1e-6));
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        AudioClip restoredClip = restored.getTracks().get(0).getClips().get(0);
+        assertThat(restoredClip.getSourceOffsetBeats()).isCloseTo(2.0, within(1e-6));
     }
 }

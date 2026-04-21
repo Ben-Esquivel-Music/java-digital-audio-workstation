@@ -58,6 +58,14 @@ final class KeyboardShortcutController {
         void onDuplicate();
         void onDeleteSelection();
         void setRippleMode(RippleMode mode);
+        /** Slip the selected clip one grid step to the left (Story 139). */
+        void onSlipLeftByGrid();
+        /** Slip the selected clip one grid step to the right (Story 139). */
+        void onSlipRightByGrid();
+        /** Slip the selected clip by the finest quantum to the left (Story 139). */
+        void onSlipLeftByFine();
+        /** Slip the selected clip by the finest quantum to the right (Story 139). */
+        void onSlipRightByFine();
     }
 
     private final KeyBindingManager keyBindingManager;
@@ -124,6 +132,10 @@ final class KeyboardShortcutController {
         actionHandlers.put(DawAction.RIPPLE_MODE_OFF, () -> host.setRippleMode(RippleMode.OFF));
         actionHandlers.put(DawAction.RIPPLE_MODE_PER_TRACK, () -> host.setRippleMode(RippleMode.PER_TRACK));
         actionHandlers.put(DawAction.RIPPLE_MODE_ALL_TRACKS, () -> host.setRippleMode(RippleMode.ALL_TRACKS));
+        actionHandlers.put(DawAction.SLIP_LEFT_GRID, host::onSlipLeftByGrid);
+        actionHandlers.put(DawAction.SLIP_RIGHT_GRID, host::onSlipRightByGrid);
+        actionHandlers.put(DawAction.SLIP_LEFT_FINE, host::onSlipLeftByFine);
+        actionHandlers.put(DawAction.SLIP_RIGHT_FINE, host::onSlipRightByFine);
 
         for (DawAction action : DawAction.values()) {
             Runnable handler = actionHandlers.get(action);

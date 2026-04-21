@@ -65,6 +65,17 @@ public enum DawAction {
             new KeyCodeCombination(KeyCode.DIGIT2, KeyCombination.SHIFT_DOWN)),
     RIPPLE_MODE_ALL_TRACKS("Ripple All Tracks", Category.EDITING,
             new KeyCodeCombination(KeyCode.DIGIT3, KeyCombination.SHIFT_DOWN)),
+    // Story 139 — slip the selected clip's content by the current grid step.
+    SLIP_LEFT_GRID("Slip Left (Grid)", Category.EDITING,
+            new KeyCodeCombination(KeyCode.LEFT, KeyCombination.SHIFT_DOWN)),
+    SLIP_RIGHT_GRID("Slip Right (Grid)", Category.EDITING,
+            new KeyCodeCombination(KeyCode.RIGHT, KeyCombination.SHIFT_DOWN)),
+    // Slip by the finest quantum (one MIDI column = 0.25 beats) for fine
+    // positioning — the audio-world analogue of "one sample".
+    SLIP_LEFT_FINE("Slip Left (Fine)", Category.EDITING,
+            new KeyCodeCombination(KeyCode.LEFT, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
+    SLIP_RIGHT_FINE("Slip Right (Fine)", Category.EDITING,
+            new KeyCodeCombination(KeyCode.RIGHT, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
 
     // ── Session interchange ─────────────────────────────────────────────────
     IMPORT_SESSION("Import Session", Category.EDITING,

@@ -330,6 +330,17 @@ public final class SelectionModel {
         return selectedMidiClips.containsKey(midiClip);
     }
 
+    /**
+     * Returns an unmodifiable snapshot of the currently selected MIDI clips
+     * mapped to their host tracks. Used by slip-edit and other clip-level
+     * operations that need to operate on the full MIDI clip selection.
+     *
+     * @return a map from MIDI clip to its host track (empty if nothing is selected)
+     */
+    public Map<MidiClip, Track> getSelectedMidiClips() {
+        return Collections.unmodifiableMap(new LinkedHashMap<>(selectedMidiClips));
+    }
+
     // ── MIDI clip beat bounds helpers ────────────────────────────────────────
 
     /**

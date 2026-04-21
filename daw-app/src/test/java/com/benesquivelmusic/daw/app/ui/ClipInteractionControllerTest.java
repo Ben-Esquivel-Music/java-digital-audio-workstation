@@ -24,6 +24,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 @ExtendWith(JavaFxToolkitExtension.class)
 class ClipInteractionControllerTest {
@@ -80,6 +81,7 @@ class ClipInteractionControllerTest {
             @Override public void showNotification(NotificationLevel level, String message) {
                 // no-op in tests
             }
+            @Override public double projectTempoBpm() { return 120.0; }
         };
     }
 
@@ -124,6 +126,41 @@ class ClipInteractionControllerTest {
                 x, y, x, y, MouseButton.PRIMARY, 1,
                 true, false, false, false,
                 true, false, false, false, false, false, null);
+    }
+
+    /**
+     * Creates a synthetic primary-button mouse-pressed event with Ctrl+Alt
+     * held. On Windows/Linux this satisfies {@link MouseEvent#isShortcutDown()}
+     * plus {@link MouseEvent#isAltDown()}, which is the slip-edit activation
+     * modifier combination (Story 139).
+     */
+    private static MouseEvent mousePressedCtrlAlt(double x, double y) {
+        return new MouseEvent(MouseEvent.MOUSE_PRESSED,
+                x, y, x, y, MouseButton.PRIMARY, 1,
+                false, true, true, false,
+                true, false, false, false, false, false, null);
+    }
+
+    /**
+     * Creates a synthetic primary-button mouse-dragged event with Ctrl+Alt
+     * held (the slip-edit drag modifier combination).
+     */
+    private static MouseEvent mouseDraggedCtrlAlt(double x, double y) {
+        return new MouseEvent(MouseEvent.MOUSE_DRAGGED,
+                x, y, x, y, MouseButton.PRIMARY, 1,
+                false, true, true, false,
+                true, false, false, false, false, false, null);
+    }
+
+    /**
+     * Creates a synthetic primary-button mouse-released event with Ctrl+Alt
+     * held (the slip-edit release modifier combination).
+     */
+    private static MouseEvent mouseReleasedCtrlAlt(double x, double y) {
+        return new MouseEvent(MouseEvent.MOUSE_RELEASED,
+                x, y, x, y, MouseButton.PRIMARY, 1,
+                false, true, true, false,
+                false, false, false, false, false, false, null);
     }
 
     // ── Hit testing ──────────────────────────────────────────────────────────
@@ -1466,6 +1503,220 @@ class ClipInteractionControllerTest {
         // Single undo should restore both clips
         undoManager.undo();
         assertThat(track.getClips()).hasSize(2);
+    }
+
+    // ── Slip edit (Ctrl+Alt+drag) — Story 139 ───────────────────────────────
+
+    @Test
+    void ctrlAltDragOnAudioClipShouldSlipSourceOffset() throws Exception {
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        // A 4-beat clip starting at beat 2 with an initial source offset of 10 beats.
+        AudioClip clip = new AudioClip("Loop", 2.0, 4.0, null);
+        clip.setSourceOffsetBeats(10.0);
+        track.addClip(clip);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Press inside the clip body with Ctrl+Alt held.
+                // pixelsPerBeat=40, scroll=0, so clip occupies x=[80, 240], y=[0, 80].
+                canvas.fireEvent(mousePressedCtrlAlt(120.0, 40.0));
+                // Drag 40 pixels right (= 1 beat at 40 px/beat).
+                canvas.fireEvent(mouseDraggedCtrlAlt(160.0, 40.0));
+                canvas.fireEvent(mouseReleasedCtrlAlt(160.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        // Content dragged right by 1 beat → source offset decreases by 1 beat (10 → 9).
+        assertThat(clip.getSourceOffsetBeats()).isCloseTo(9.0, within(1e-6));
+        // Timeline position and duration are untouched by slip.
+        assertThat(clip.getStartBeat()).isEqualTo(2.0);
+        assertThat(clip.getDurationBeats()).isEqualTo(4.0);
+    }
+
+    @Test
+    void ctrlAltDragOnAudioClipShouldBeUndoable() throws Exception {
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("Loop", 2.0, 4.0, null);
+        clip.setSourceOffsetBeats(10.0);
+        track.addClip(clip);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                canvas.fireEvent(mousePressedCtrlAlt(120.0, 40.0));
+                canvas.fireEvent(mouseDraggedCtrlAlt(200.0, 40.0));
+                canvas.fireEvent(mouseReleasedCtrlAlt(200.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        // 80 px drag right → 2 beat content slide → offset 10 - 2 = 8.
+        assertThat(clip.getSourceOffsetBeats()).isCloseTo(8.0, within(1e-6));
+
+        undoManager.undo();
+
+        assertThat(clip.getSourceOffsetBeats()).isCloseTo(10.0, within(1e-6));
+    }
+
+    @Test
+    void ctrlAltDragLeftShouldClampAtLowerSourceEdge() throws Exception {
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("Loop", 2.0, 4.0, null);
+        // Only 0.5 beats of headroom at the start of the source.
+        clip.setSourceOffsetBeats(0.5);
+        track.addClip(clip);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Press inside the clip body (x=160, clip spans 80..240 px).
+                canvas.fireEvent(mousePressedCtrlAlt(160.0, 40.0));
+                // Drag far left (−4 beats worth). Sign convention: dragging left
+                // slides content left on the timeline → source offset INCREASES.
+                // That direction is unbounded when source length is unknown, so
+                // we instead drag right to exercise the lower-clamp at offset 0.
+                canvas.fireEvent(mouseDraggedCtrlAlt(320.0, 40.0));
+                canvas.fireEvent(mouseReleasedCtrlAlt(320.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        // Dragged 160 px right = 4 beats content slide → requested offset 0.5 - 4 = -3.5,
+        // clamped to 0. Clip should land exactly at source offset 0.
+        assertThat(clip.getSourceOffsetBeats()).isCloseTo(0.0, within(1e-6));
+    }
+
+    @Test
+    void ctrlAltDragOnMidiClipShouldShiftAllNotesByTheSameDelta() throws Exception {
+        Track track = new Track("MIDI Track", TrackType.MIDI);
+        MidiClip midiClip = track.getMidiClip();
+        // Add three notes at columns 4, 8, 12 (= beats 1.0, 2.0, 3.0 at 0.25 beats/col).
+        midiClip.addNote(MidiNoteData.of(60, 4, 2, 100));
+        midiClip.addNote(MidiNoteData.of(62, 8, 2, 100));
+        midiClip.addNote(MidiNoteData.of(64, 12, 2, 100));
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // The MIDI clip spans beats 1..3.5 → pixels 40..140 at 40 px/beat.
+                // Press inside the clip, drag +1 beat (40 px) right.
+                canvas.fireEvent(mousePressedCtrlAlt(80.0, 40.0));
+                canvas.fireEvent(mouseDraggedCtrlAlt(120.0, 40.0));
+                canvas.fireEvent(mouseReleasedCtrlAlt(120.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        // +1 beat = +4 columns. Every note shifts by exactly 4 columns.
+        List<MidiNoteData> notes = midiClip.getNotes();
+        assertThat(notes).hasSize(3);
+        assertThat(notes.get(0).startColumn()).isEqualTo(8);
+        assertThat(notes.get(1).startColumn()).isEqualTo(12);
+        assertThat(notes.get(2).startColumn()).isEqualTo(16);
+    }
+
+    @Test
+    void ctrlAltDragOnMidiClipShouldClampAtColumnZero() throws Exception {
+        Track track = new Track("MIDI Track", TrackType.MIDI);
+        MidiClip midiClip = track.getMidiClip();
+        // Earliest note at column 2 — we can only slip left by 2 columns.
+        midiClip.addNote(MidiNoteData.of(60, 2, 2, 100));
+        midiClip.addNote(MidiNoteData.of(62, 6, 2, 100));
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // MIDI clip spans beats 0.5..2.0 → pixels 20..80 at 40 px/beat.
+                // Press at x=40 (inside), drag −4 beats left (off-screen but fine).
+                canvas.fireEvent(mousePressedCtrlAlt(40.0, 40.0));
+                canvas.fireEvent(mouseDraggedCtrlAlt(-120.0, 40.0));
+                canvas.fireEvent(mouseReleasedCtrlAlt(-120.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        // Requested delta = −16 columns, clamped to −2 so earliest note lands on column 0.
+        List<MidiNoteData> notes = midiClip.getNotes();
+        assertThat(notes.get(0).startColumn()).isEqualTo(0);
+        assertThat(notes.get(1).startColumn()).isEqualTo(4);
+    }
+
+    @Test
+    void pointerDragWithoutCtrlAltShouldNotSlip() throws Exception {
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        AudioClip clip = new AudioClip("Loop", 2.0, 4.0, null);
+        clip.setSourceOffsetBeats(10.0);
+        track.addClip(clip);
+        tracks.add(track);
+        activeTool = EditTool.POINTER;
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(tracks);
+                ClipInteractionController controller = new ClipInteractionController(canvas, createHost());
+                controller.install();
+
+                // Plain pointer drag (no modifiers) inside the clip body.
+                canvas.fireEvent(mousePressed(120.0, 40.0));
+                canvas.fireEvent(mouseDragged(160.0, 40.0));
+                canvas.fireEvent(mouseReleased(160.0, 40.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+
+        // A plain drag is a move, not a slip — source offset is unchanged.
+        assertThat(clip.getSourceOffsetBeats()).isCloseTo(10.0, within(1e-6));
     }
 
     @Test

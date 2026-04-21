@@ -56,12 +56,15 @@ final class ClipInteractionController {
         void updateStatusBar(String text);
         RippleMode rippleMode();
         void showNotification(NotificationLevel level, String message);
+        /** Returns the current project tempo in BPM, for slip-edit source-length math. */
+        double projectTempoBpm();
     }
 
     private final ArrangementCanvas canvas;
     private final Host host;
     private final ClipTrimHandler trimHandler;
     private final ClipFadeHandler fadeHandler;
+    private final SlipToolHandler slipHandler;
     private final Tooltip fadeTooltip = new Tooltip();
 
     // Drag state for pointer tool
@@ -132,6 +135,19 @@ final class ClipInteractionController {
             @Override public void refreshCanvas() { host.refreshCanvas(); }
             @Override public int trackIndexAtY(double y) { return canvas.trackIndexAtY(y); }
             @Override public double laneYForTrack(int trackIndex) { return canvas.computeLaneY(trackIndex); }
+        });
+        this.slipHandler = new SlipToolHandler(new SlipToolHandler.Host() {
+            @Override public double pixelsPerBeat() { return host.pixelsPerBeat(); }
+            @Override public UndoManager undoManager() { return host.undoManager(); }
+            @Override public double projectTempoBpm() { return host.projectTempoBpm(); }
+            @Override public void refreshCanvas() { host.refreshCanvas(); }
+            @Override public void showNotification(NotificationLevel level, String message) {
+                host.showNotification(level, message);
+            }
+            @Override public void setSlipPreview(AudioClip audioClip, MidiClip midiClip,
+                                                 double appliedBeatDelta, boolean hitEdge) {
+                canvas.setSlipPreview(audioClip, midiClip, appliedBeatDelta, hitEdge);
+            }
         });
     }
 
@@ -353,6 +369,26 @@ final class ClipInteractionController {
             return;
         }
 
+        // Check for slip-edit activation: Ctrl+Alt+drag inside a clip body.
+        // Slip must win over trim/fade so Ctrl+Alt near an edge still slips.
+        // Story 139 — docs/user-stories/139-slip-edit-within-clip.md.
+        if (host.activeTool() == EditTool.POINTER && trackIndex >= 0
+                && event.isShortcutDown() && event.isAltDown()) {
+            Track slipTrack = host.tracks().get(trackIndex);
+            AudioClip audioHit = clipAt(slipTrack, beat);
+            if (audioHit != null) {
+                slipHandler.beginAudioSlip(audioHit, event.getX());
+                canvas.setCursor(Cursor.H_RESIZE);
+                return;
+            }
+            MidiClip midiHit = midiClipAt(slipTrack, beat);
+            if (midiHit != null) {
+                slipHandler.beginMidiSlip(midiHit, event.getX());
+                canvas.setCursor(Cursor.H_RESIZE);
+                return;
+            }
+        }
+
         // Check for fade handle activation before trim edges
         if (host.activeTool() == EditTool.POINTER && trackIndex >= 0) {
             ClipFadeHandler.HandleHit fadeHit = fadeHandler.hitTestHandle(event.getX(), event.getY());
@@ -419,6 +455,11 @@ final class ClipInteractionController {
                 dragAutomationLane.sortPoints();
                 host.refreshCanvas();
             }
+            return;
+        }
+
+        if (slipHandler.isSlipping()) {
+            slipHandler.updateSlip(event.getX());
             return;
         }
 
@@ -503,6 +544,12 @@ final class ClipInteractionController {
             dragAutomationPoint = null;
             dragAutomationLane = null;
             dragAutomationTrackIndex = -1;
+            updateCursor();
+            return;
+        }
+
+        if (slipHandler.isSlipping()) {
+            slipHandler.completeSlip(event.getX());
             updateCursor();
             return;
         }

@@ -66,6 +66,15 @@ public final class ArrangementCanvas extends Pane {
     private double trimPreviewBeat = -1.0;
     private int trimPreviewTrackIndex = -1;
 
+    // Slip preview overlay state — set by SlipToolHandler during Ctrl+Alt drag.
+    // Exactly one of {@code slipAudioClip}, {@code slipMidiClip} is non-null
+    // when a slip preview is active; both null hides the overlay.
+    // Story 139 — docs/user-stories/139-slip-edit-within-clip.md.
+    private AudioClip slipAudioClip;
+    private MidiClip slipMidiClip;
+    private double slipBeatDelta;
+    private boolean slipHitEdge;
+
     // Loop region overlay state
     private boolean loopEnabled = false;
     private double loopStartBeat = 0.0;
@@ -238,6 +247,41 @@ public final class ArrangementCanvas extends Pane {
     void setTrimPreview(double beat, int trackIndex) {
         this.trimPreviewBeat = beat;
         this.trimPreviewTrackIndex = trackIndex;
+    }
+
+    /**
+     * Updates the slip preview overlay. Pass {@code (null, null, ...)} to
+     * hide the overlay. Exactly one of {@code audioClip} or {@code midiClip}
+     * should be non-null when a slip is in progress.
+     *
+     * <p>Story 139 — {@code docs/user-stories/139-slip-edit-within-clip.md}.</p>
+     */
+    void setSlipPreview(AudioClip audioClip, MidiClip midiClip,
+                        double appliedBeatDelta, boolean hitEdge) {
+        this.slipAudioClip = audioClip;
+        this.slipMidiClip = midiClip;
+        this.slipBeatDelta = appliedBeatDelta;
+        this.slipHitEdge = hitEdge;
+    }
+
+    /** Returns the audio clip currently being slipped, or {@code null}. */
+    AudioClip getSlipAudioClip() {
+        return slipAudioClip;
+    }
+
+    /** Returns the MIDI clip currently being slipped, or {@code null}. */
+    MidiClip getSlipMidiClip() {
+        return slipMidiClip;
+    }
+
+    /** Returns the current slip preview beat delta. */
+    double getSlipBeatDelta() {
+        return slipBeatDelta;
+    }
+
+    /** Returns whether the slip preview has hit the source window edge. */
+    boolean isSlipHitEdge() {
+        return slipHitEdge;
     }
 
     // ── Rubber-band selection overlay ──────────────────────────────────────
@@ -466,6 +510,7 @@ public final class ArrangementCanvas extends Pane {
                 rubberBandX1, rubberBandY1, rubberBandX2, rubberBandY2, w, h);
 
         drawTrimPreviewIfVisible(gc, w, h);
+        drawSlipPreviewIfVisible(gc, w, h);
 
         TransportOverlayRenderer.drawPlayhead(gc, playheadBeat,
                 scrollXBeats, pixelsPerBeat, w, h);
@@ -529,6 +574,58 @@ public final class ArrangementCanvas extends Pane {
         ClipOverlayRenderer.drawTrimPreview(gc, trimPreviewBeat, scrollXBeats,
                 pixelsPerBeat, laneYCache[trimPreviewTrackIndex], trackHeight,
                 canvasWidth, canvasHeight);
+    }
+
+    /**
+     * Draws the slip-edit preview overlay — a translucent ghost of the clip
+     * shifted by the in-progress beat delta, with a red flash when the drag
+     * has hit the source-window edge.
+     *
+     * <p>Story 139 — {@code docs/user-stories/139-slip-edit-within-clip.md}.</p>
+     */
+    private void drawSlipPreviewIfVisible(GraphicsContext gc,
+                                          double canvasWidth, double canvasHeight) {
+        if (slipAudioClip == null && slipMidiClip == null) {
+            return;
+        }
+        int trackIndex = findTrackIndexForSlipClip();
+        if (trackIndex < 0 || trackIndex >= laneYCache.length) {
+            return;
+        }
+        double laneY = laneYCache[trackIndex];
+        if (slipAudioClip != null) {
+            ClipOverlayRenderer.drawSlipGhost(gc,
+                    slipAudioClip.getStartBeat(), slipAudioClip.getDurationBeats(),
+                    slipBeatDelta, slipHitEdge,
+                    scrollXBeats, pixelsPerBeat, laneY, trackHeight,
+                    canvasWidth, canvasHeight);
+        } else {
+            double startBeat = SelectionModel.midiClipStartBeat(slipMidiClip);
+            double endBeat = SelectionModel.midiClipEndBeat(slipMidiClip);
+            ClipOverlayRenderer.drawSlipGhost(gc,
+                    startBeat, endBeat - startBeat,
+                    slipBeatDelta, slipHitEdge,
+                    scrollXBeats, pixelsPerBeat, laneY, trackHeight,
+                    canvasWidth, canvasHeight);
+        }
+    }
+
+    /**
+     * Resolves the track index that contains the clip currently being slipped,
+     * by scanning the arrangement's track list. Returns -1 if the clip cannot
+     * be located (e.g. it was removed mid-drag).
+     */
+    private int findTrackIndexForSlipClip() {
+        for (int i = 0; i < tracks.size(); i++) {
+            Track track = tracks.get(i);
+            if (slipAudioClip != null && track.getClips().contains(slipAudioClip)) {
+                return i;
+            }
+            if (slipMidiClip != null && track.getMidiClip() == slipMidiClip) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private Color parseTrackColor(Track track) {

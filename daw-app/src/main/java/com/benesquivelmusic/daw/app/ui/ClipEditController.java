@@ -5,11 +5,14 @@ import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.CutClipsAction;
 import com.benesquivelmusic.daw.core.audio.DuplicateClipsAction;
 import com.benesquivelmusic.daw.core.audio.PasteClipsAction;
+import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.project.edit.RippleEditService;
 import com.benesquivelmusic.daw.core.project.edit.RippleValidationException;
+import com.benesquivelmusic.daw.core.project.edit.SlipEditService;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata;
 import com.benesquivelmusic.daw.sdk.edit.RippleMode;
 
 import java.util.ArrayList;
@@ -40,6 +43,8 @@ final class ClipEditController {
         void showNotification(NotificationLevel level, String message);
         EditorView editorView();
         RippleMode rippleMode();
+        /** Returns the grid step in beats, used by keyboard slip shortcuts. */
+        double gridStepBeats();
     }
 
     private final Host host;
@@ -123,6 +128,111 @@ final class ClipEditController {
         host.updateUndoRedoState();
         host.updateStatusBar("Duplicated " + entries.size() + " clip(s)", null);
         host.markProjectDirty();
+    }
+
+    /** Slips the selection one grid step to the left. */
+    void onSlipLeftByGrid() {
+        onSlipSelectionByBeats(-host.gridStepBeats());
+    }
+
+    /** Slips the selection one grid step to the right. */
+    void onSlipRightByGrid() {
+        onSlipSelectionByBeats(host.gridStepBeats());
+    }
+
+    /** Slips the selection by the finest quantum (one MIDI column) to the left. */
+    void onSlipLeftByFine() {
+        onSlipSelectionByBeats(-EditorView.BEATS_PER_COLUMN);
+    }
+
+    /** Slips the selection by the finest quantum (one MIDI column) to the right. */
+    void onSlipRightByFine() {
+        onSlipSelectionByBeats(EditorView.BEATS_PER_COLUMN);
+    }
+
+    /**
+     * Slips the selected clip's content by the given beat delta. Audio clips
+     * use their source-offset range; MIDI clips shift every note's start
+     * column. Clamping and undo are delegated to {@link SlipEditService}.
+     *
+     * <p>If no clip is selected, or the delta collapses to zero after
+     * clamping, the call is a no-op. When the requested delta is clamped
+     * at an edge the user is notified.</p>
+     *
+     * <p>Story 139 — {@code docs/user-stories/139-slip-edit-within-clip.md}.</p>
+     *
+     * @param beatDelta the requested slip delta in beats (positive = slide
+     *                  content right on the timeline)
+     */
+    void onSlipSelectionByBeats(double beatDelta) {
+        if (beatDelta == 0.0) {
+            return;
+        }
+        SelectionModel sm = host.selectionModel();
+        List<ClipboardEntry> audioEntries = sm.getSelectedClips();
+        java.util.Map<MidiClip, Track> midiEntries = sm.getSelectedMidiClips();
+        if (audioEntries.isEmpty() && midiEntries.isEmpty()) {
+            return;
+        }
+
+        boolean anyHitEdge = false;
+        int applied = 0;
+        for (ClipboardEntry entry : audioEntries) {
+            AudioClip clip = entry.clip();
+            // Slip convention: +beatDelta slides CONTENT right on the timeline
+            // which means DECREASING the source offset.
+            double sourceLengthBeats = sourceLengthBeatsFor(clip);
+            SlipEditService.SlipResult result = SlipEditService.buildAudioSlip(
+                    clip, -beatDelta, sourceLengthBeats);
+            if (result.hasAction()) {
+                host.undoManager().execute(result.action());
+                applied++;
+            }
+            if (result.hitEdge()) {
+                anyHitEdge = true;
+            }
+        }
+        for (MidiClip clip : midiEntries.keySet()) {
+            int columnDelta = (int) Math.round(beatDelta / EditorView.BEATS_PER_COLUMN);
+            SlipEditService.SlipResult result = SlipEditService.buildMidiSlip(
+                    clip, columnDelta);
+            if (result.hasAction()) {
+                host.undoManager().execute(result.action());
+                applied++;
+            }
+            if (result.hitEdge()) {
+                anyHitEdge = true;
+            }
+        }
+        if (applied == 0 && !anyHitEdge) {
+            return;
+        }
+        if (anyHitEdge) {
+            host.showNotification(NotificationLevel.INFO,
+                    "Slip clamped at source-window edge");
+        }
+        host.refreshArrangementCanvas();
+        host.updateUndoRedoState();
+        host.markProjectDirty();
+    }
+
+    /**
+     * Computes the audio clip's total source length in beats from its native
+     * rate metadata and the project tempo. Returns {@code 0.0} when the
+     * length is unknown so {@link SlipEditService} treats the upper bound
+     * as unbounded.
+     */
+    private double sourceLengthBeatsFor(AudioClip clip) {
+        double bpm = host.project().getTransport().getTempo();
+        if (bpm <= 0) {
+            return 0.0;
+        }
+        SourceRateMetadata meta = clip.getSourceRateMetadata();
+        if (meta != null && meta.framesPerChannel() > 0 && meta.nativeRateHz() > 0) {
+            double seconds = (double) meta.framesPerChannel() / meta.nativeRateHz();
+            return seconds * (bpm / 60.0);
+        }
+        return 0.0;
     }
 
     void onDeleteSelection() {
