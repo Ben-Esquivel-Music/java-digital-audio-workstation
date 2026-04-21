@@ -89,4 +89,26 @@ class NativeAudioBufferPoolTest {
             assertThat(b.getSample(0, 0)).isEqualTo(-0.5f);
         }
     }
+
+    @Test
+    void releaseNullBufferThrowsNullPointerException() {
+        try (NativeAudioBufferPool pool = new NativeAudioBufferPool(1, 1, 4)) {
+            assertThatThrownBy(() -> pool.release(null))
+                    .isInstanceOf(NullPointerException.class);
+        }
+    }
+
+    @Test
+    void releaseForeignBufferReturnsFalse() {
+        try (NativeAudioBufferPool poolA = new NativeAudioBufferPool(1, 1, 4);
+             NativeAudioBufferPool poolB = new NativeAudioBufferPool(1, 1, 4)) {
+            NativeAudioBufferPool.PooledBuffer bufA = poolA.acquire();
+            assertThat(bufA).isNotNull();
+            // Returning a buffer from poolA into poolB must be rejected.
+            assertThat(poolB.release(bufA)).isFalse();
+            // poolB should still be full (nothing was returned).
+            assertThat(poolB.available()).isEqualTo(1);
+        }
+    }
 }
+
