@@ -119,6 +119,15 @@ public final class ProjectSerializer {
         buildRoomConfiguration(document, root, project.getRoomConfiguration());
         buildMixerSnapshots(document, root, project.getMixerSnapshotManager());
         buildRippleMode(document, root, project);
+        buildNudgeSettings(document, root, project);
+    }
+
+    private void buildNudgeSettings(Document document, Element root, DawProject project) {
+        com.benesquivelmusic.daw.core.project.edit.NudgeSettings ns = project.getNudgeSettings();
+        Element elem = document.createElement("nudge-settings");
+        elem.setAttribute("unit", ns.unit().name());
+        elem.setAttribute("amount", String.valueOf(ns.amount()));
+        root.appendChild(elem);
     }
 
     private void buildRippleMode(Document document, Element root, DawProject project) {

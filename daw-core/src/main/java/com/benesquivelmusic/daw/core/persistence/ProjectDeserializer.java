@@ -228,6 +228,27 @@ public final class ProjectDeserializer {
             }
         }
 
+        // Parse nudge settings (per-project UI preference, defaults to
+        // NudgeSettings.DEFAULT for projects saved before this element
+        // was introduced)
+        List<Element> nudgeElements = getDirectChildElements(root, "nudge-settings");
+        if (!nudgeElements.isEmpty()) {
+            Element nudge = nudgeElements.getFirst();
+            String unitAttr = nudge.getAttribute("unit");
+            String amountAttr = nudge.getAttribute("amount");
+            if (!unitAttr.isEmpty() && !amountAttr.isEmpty()) {
+                try {
+                    com.benesquivelmusic.daw.core.project.edit.NudgeUnit unit =
+                            com.benesquivelmusic.daw.core.project.edit.NudgeUnit.valueOf(unitAttr);
+                    double amount = Double.parseDouble(amountAttr);
+                    project.setNudgeSettings(
+                            new com.benesquivelmusic.daw.core.project.edit.NudgeSettings(unit, amount));
+                } catch (IllegalArgumentException ignored) {
+                    // Unknown unit or invalid amount — keep the default.
+                }
+            }
+        }
+
         return project;
     }
 

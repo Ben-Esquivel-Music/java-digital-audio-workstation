@@ -1031,6 +1031,33 @@ class ProjectSerializationRoundTripTest {
         assertThat(restored.getRippleMode()).isEqualTo(RippleMode.ALL_TRACKS);
     }
 
+    // ── Nudge settings — persistence ────────────────────────────────────────
+
+    @Test
+    void shouldDefaultNudgeSettingsForLegacyProjects() throws IOException {
+        DawProject original = new DawProject("Legacy", AudioFormat.CD_QUALITY);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getNudgeSettings())
+                .isEqualTo(com.benesquivelmusic.daw.core.project.edit.NudgeSettings.DEFAULT);
+    }
+
+    @Test
+    void shouldRoundTripCustomNudgeSettings() throws IOException {
+        DawProject original = new DawProject("Nudge", AudioFormat.CD_QUALITY);
+        original.setNudgeSettings(new com.benesquivelmusic.daw.core.project.edit.NudgeSettings(
+                com.benesquivelmusic.daw.core.project.edit.NudgeUnit.MILLISECONDS, 10.0));
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getNudgeSettings().unit())
+                .isEqualTo(com.benesquivelmusic.daw.core.project.edit.NudgeUnit.MILLISECONDS);
+        assertThat(restored.getNudgeSettings().amount()).isEqualTo(10.0);
+    }
+
     // ── Story 139 — slip-edit sourceOffsetBeats persistence ─────────────────
 
     @Test

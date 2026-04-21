@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshotManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
+import com.benesquivelmusic.daw.core.project.edit.NudgeSettings;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrackManager;
@@ -53,6 +54,7 @@ public final class DawProject {
     private final List<TrackGroup> trackGroups = new ArrayList<>();
     private int nextColorIndex;
     private RippleMode rippleMode = RippleMode.OFF;
+    private NudgeSettings nudgeSettings = NudgeSettings.DEFAULT;
 
     /**
      * Creates a new DAW project.
@@ -484,5 +486,31 @@ public final class DawProject {
      */
     public void setRippleMode(RippleMode rippleMode) {
         this.rippleMode = Objects.requireNonNull(rippleMode, "rippleMode must not be null");
+    }
+
+    // ── Nudge settings ──────────────────────────────────────────────────────
+
+    /**
+     * Returns the current {@link NudgeSettings} for this project — the
+     * unit and amount used by the {@code Ctrl+Left/Right} nudge
+     * keyboard shortcuts.
+     *
+     * <p>Defaults to {@link NudgeSettings#DEFAULT} (one grid step) for
+     * new or pre-existing projects.</p>
+     *
+     * @return the current nudge settings (never {@code null})
+     */
+    public NudgeSettings getNudgeSettings() {
+        return nudgeSettings;
+    }
+
+    /**
+     * Sets the nudge settings for this project.
+     *
+     * @param nudgeSettings the new nudge settings (must not be {@code null})
+     */
+    public void setNudgeSettings(NudgeSettings nudgeSettings) {
+        this.nudgeSettings = Objects.requireNonNull(nudgeSettings,
+                "nudgeSettings must not be null");
     }
 }
