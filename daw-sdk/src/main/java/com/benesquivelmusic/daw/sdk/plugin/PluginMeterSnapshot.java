@@ -5,9 +5,13 @@ package com.benesquivelmusic.daw.sdk.plugin;
  * UI consumption (e.g., driving a needle-style VU meter in a plugin view).
  *
  * <p>Plugins that expose metering output (dynamics processors, level meters,
- * etc.) can publish a {@code PluginMeterSnapshot} from the audio thread for
- * the UI thread to read without synchronisation: all fields are scalar and
- * the record is immutable.</p>
+ * etc.) can create a {@code PluginMeterSnapshot} on the audio thread and make
+ * it available to the UI thread. Because the record is immutable and all
+ * fields are scalar, it is well suited for cross-thread handoff; however,
+ * callers must still use safe publication when sharing instances between
+ * threads (for example, via a {@code volatile} field, an
+ * {@code java.util.concurrent.atomic.AtomicReference}, or another established
+ * thread-safe handoff mechanism).</p>
  *
  * @param gainReductionDb the current gain reduction in dB; typically a
  *                        non-positive value (&le; 0), where {@code 0.0} means

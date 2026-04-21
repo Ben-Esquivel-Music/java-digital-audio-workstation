@@ -34,7 +34,9 @@ import java.util.Objects;
  * <h2>Thread safety</h2>
  * <p>The {@code process} methods are annotated {@link RealTimeSafe} — they do
  * not allocate or take locks. Parameter setters are safe to call from a UI
- * thread: scalar writes are visible to the audio thread on the next buffer.</p>
+ * thread, but because they use plain scalar writes, updates are best-effort and
+ * become visible to the audio thread eventually rather than being guaranteed on
+ * the next buffer.</p>
  */
 @InsertEffect(type = "BUS_COMPRESSOR", displayName = "Bus Compressor")
 public final class BusCompressorProcessor implements SidechainAwareProcessor, GainReductionProvider {
