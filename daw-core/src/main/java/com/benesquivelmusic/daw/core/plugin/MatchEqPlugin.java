@@ -1,12 +1,17 @@
 package com.benesquivelmusic.daw.core.plugin;
 
+import com.benesquivelmusic.daw.core.audioimport.AudioReadResult;
+import com.benesquivelmusic.daw.core.audioimport.ReferenceFileLoader;
 import com.benesquivelmusic.daw.core.dsp.eq.MatchEqProcessor;
+import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 import com.benesquivelmusic.daw.sdk.plugin.PluginType;
 
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -107,5 +112,39 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
                 new PluginParameter(2, "Amount", 0.0, 1.0, 1.0),
                 new PluginParameter(3, "Phase Mode", 0.0, phaseMax,
                         MatchEqProcessor.PhaseMode.MINIMUM_PHASE.ordinal()));
+    }
+
+    /**
+     * Loads an audio file from disk and analyses it as the reference spectrum.
+     *
+     * <p>Provides the one-off direct audio-file loading path required by the
+     * Match EQ plugin's UI (outside the story 041 {@link ReferenceTrack}
+     * workflow). The file is decoded via the shared audio-import readers
+     * ({@link ReferenceFileLoader}), wrapped in a transient
+     * {@link ReferenceTrack}, and passed to
+     * {@link MatchEqProcessor#analyzeReference(ReferenceTrack)}.</p>
+     *
+     * @param file the audio file to load (WAV/FLAC/AIFF/OGG/MP3)
+     * @return the populated {@link ReferenceTrack} for further UI display
+     * @throws IllegalStateException    if the plugin has not been initialized
+     * @throws IllegalArgumentException if the file format is unsupported
+     * @throws IOException              if the file cannot be read
+     */
+    public ReferenceTrack loadReferenceFile(Path file) throws IOException {
+        Objects.requireNonNull(file, "file must not be null");
+        if (processor == null) {
+            throw new IllegalStateException("plugin has not been initialized");
+        }
+        AudioReadResult read = ReferenceFileLoader.read(file);
+        ReferenceTrack track = new ReferenceTrack(
+                file.getFileName().toString(), file.toString());
+        track.setAudioData(read.audioData());
+        processor.analyzeReference(track);
+        return track;
+    }
+
+    /** Returns whether the plugin is currently active (between activate/deactivate). */
+    public boolean isActive() {
+        return active;
     }
 }

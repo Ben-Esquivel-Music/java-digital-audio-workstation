@@ -452,6 +452,12 @@ public final class MatchEqProcessor implements AudioProcessor {
     @Override
     public int getOutputChannelCount() { return channels; }
 
+    /** Returns the sample rate this processor was constructed with, in Hz. */
+    public double getSampleRate() { return sampleRate; }
+
+    /** Returns the number of audio channels this processor was constructed with. */
+    public int getChannelCount() { return channels; }
+
     // ---- Internal helpers -------------------------------------------------
 
     /**
