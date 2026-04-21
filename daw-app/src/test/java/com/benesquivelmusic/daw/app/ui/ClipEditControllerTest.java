@@ -252,6 +252,178 @@ class ClipEditControllerTest {
         assertThat(undoManager.canUndo()).isFalse();
     }
 
+    // ── Nudge keyboard actions — Issue 566 ──────────────────────────────────
+
+    @Test
+    void onNudgeRightShouldShiftSelectedClipByOneGridStep() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        project.addTrack(track);
+
+        AudioClip clip = new AudioClip("c", 2.0, 4.0, null);
+        track.addClip(clip);
+
+        UndoManager undoManager = new UndoManager();
+        SelectionModel selectionModel = new SelectionModel();
+        selectionModel.selectClip(track, clip);
+
+        TestHost host = new TestHost(project, undoManager, selectionModel);
+        ClipEditController controller = new ClipEditController(host);
+
+        // Default NudgeSettings = 1 grid step; gridStepBeats() = 1.0 in TestHost.
+        controller.onNudgeRight();
+
+        assertThat(clip.getStartBeat()).isCloseTo(3.0, within(1e-6));
+
+        undoManager.undo();
+        assertThat(clip.getStartBeat()).isCloseTo(2.0, within(1e-6));
+    }
+
+    @Test
+    void onNudgeLeftLargeAppliesTenTimesMultiplier() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        project.addTrack(track);
+
+        AudioClip clip = new AudioClip("c", 20.0, 4.0, null);
+        track.addClip(clip);
+
+        UndoManager undoManager = new UndoManager();
+        SelectionModel selectionModel = new SelectionModel();
+        selectionModel.selectClip(track, clip);
+
+        TestHost host = new TestHost(project, undoManager, selectionModel);
+        ClipEditController controller = new ClipEditController(host);
+
+        controller.onNudgeLeftLarge(); // -10 * 1 grid step = -10 beats
+
+        assertThat(clip.getStartBeat()).isCloseTo(10.0, within(1e-6));
+    }
+
+    @Test
+    void onNudgeRightSampleAppliesOneSample() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        project.addTrack(track);
+
+        AudioClip clip = new AudioClip("c", 2.0, 4.0, null);
+        track.addClip(clip);
+
+        UndoManager undoManager = new UndoManager();
+        SelectionModel selectionModel = new SelectionModel();
+        selectionModel.selectClip(track, clip);
+
+        TestHost host = new TestHost(project, undoManager, selectionModel);
+        ClipEditController controller = new ClipEditController(host);
+
+        controller.onNudgeRightSample();
+
+        // 1 sample @ 44100Hz, 120 BPM = 120/60/44100 beats
+        double expectedDelta = 120.0 / 60.0 / 44100.0;
+        assertThat(clip.getStartBeat()).isCloseTo(2.0 + expectedDelta, within(1e-9));
+    }
+
+    @Test
+    void multiSelectionNudgeIsSingleUndoStep() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        project.addTrack(track);
+
+        AudioClip c1 = new AudioClip("a", 4.0, 2.0, null);
+        AudioClip c2 = new AudioClip("b", 8.0, 2.0, null);
+        AudioClip c3 = new AudioClip("c", 12.0, 2.0, null);
+        track.addClip(c1); track.addClip(c2); track.addClip(c3);
+
+        UndoManager undoManager = new UndoManager();
+        SelectionModel selectionModel = new SelectionModel();
+        selectionModel.selectClip(track, c1);
+        selectionModel.toggleClipSelection(track, c2);
+        selectionModel.toggleClipSelection(track, c3);
+
+        TestHost host = new TestHost(project, undoManager, selectionModel);
+        ClipEditController controller = new ClipEditController(host);
+
+        controller.onNudgeRight();
+
+        assertThat(c1.getStartBeat()).isCloseTo(5.0, within(1e-6));
+        assertThat(c2.getStartBeat()).isCloseTo(9.0, within(1e-6));
+        assertThat(c3.getStartBeat()).isCloseTo(13.0, within(1e-6));
+
+        // One undo step reverts ALL three clips.
+        undoManager.undo();
+        assertThat(c1.getStartBeat()).isCloseTo(4.0, within(1e-6));
+        assertThat(c2.getStartBeat()).isCloseTo(8.0, within(1e-6));
+        assertThat(c3.getStartBeat()).isCloseTo(12.0, within(1e-6));
+        assertThat(undoManager.canUndo()).isFalse();
+    }
+
+    @Test
+    void nudgeAppliesToTimeSelectionWhenNoClipSelected() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        project.addTrack(track);
+
+        AudioClip inside = new AudioClip("inside", 5.0, 1.0, null);
+        AudioClip outside = new AudioClip("outside", 20.0, 1.0, null);
+        track.addClip(inside); track.addClip(outside);
+
+        UndoManager undoManager = new UndoManager();
+        SelectionModel selectionModel = new SelectionModel();
+        // Time selection, no clip selection.
+        selectionModel.setSelection(4.0, 10.0);
+
+        TestHost host = new TestHost(project, undoManager, selectionModel);
+        ClipEditController controller = new ClipEditController(host);
+
+        controller.onNudgeRight();
+
+        assertThat(inside.getStartBeat()).isCloseTo(6.0, within(1e-6));
+        assertThat(outside.getStartBeat()).isCloseTo(20.0, within(1e-6));
+    }
+
+    @Test
+    void nudgeLeftIsBoundaryClampedAtBeatZero() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        project.addTrack(track);
+
+        AudioClip c = new AudioClip("c", 0.5, 1.0, null);
+        track.addClip(c);
+
+        UndoManager undoManager = new UndoManager();
+        SelectionModel selectionModel = new SelectionModel();
+        selectionModel.selectClip(track, c);
+
+        TestHost host = new TestHost(project, undoManager, selectionModel);
+        ClipEditController controller = new ClipEditController(host);
+
+        // 10× nudge left = -10 beats but must clamp at 0.
+        controller.onNudgeLeftLarge();
+
+        assertThat(c.getStartBeat()).isCloseTo(0.0, within(1e-6));
+    }
+
+    @Test
+    void nudgeWithNoSelectionIsNoOp() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        project.addTrack(track);
+        AudioClip c = new AudioClip("c", 4.0, 2.0, null);
+        track.addClip(c);
+
+        UndoManager undoManager = new UndoManager();
+        SelectionModel selectionModel = new SelectionModel();
+
+        TestHost host = new TestHost(project, undoManager, selectionModel);
+        ClipEditController controller = new ClipEditController(host);
+
+        controller.onNudgeRight();
+        controller.onNudgeLeftSample();
+
+        assertThat(c.getStartBeat()).isCloseTo(4.0, within(1e-6));
+        assertThat(undoManager.canUndo()).isFalse();
+    }
+
     private static final class TestHost implements ClipEditController.Host {
         private final DawProject project;
         private final UndoManager undoManager;

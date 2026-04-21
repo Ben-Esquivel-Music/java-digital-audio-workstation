@@ -66,6 +66,18 @@ final class KeyboardShortcutController {
         void onSlipLeftByFine();
         /** Slip the selected clip by the finest quantum to the right (Story 139). */
         void onSlipRightByFine();
+        /** Nudge the selection left by the configured NudgeSettings (Issue 566). */
+        void onNudgeLeft();
+        /** Nudge the selection right by the configured NudgeSettings (Issue 566). */
+        void onNudgeRight();
+        /** Nudge the selection left by 10× the configured NudgeSettings (Issue 566). */
+        void onNudgeLeftLarge();
+        /** Nudge the selection right by 10× the configured NudgeSettings (Issue 566). */
+        void onNudgeRightLarge();
+        /** Nudge the selection left by a single audio sample (Issue 566). */
+        void onNudgeLeftSample();
+        /** Nudge the selection right by a single audio sample (Issue 566). */
+        void onNudgeRightSample();
     }
 
     private final KeyBindingManager keyBindingManager;
@@ -136,6 +148,12 @@ final class KeyboardShortcutController {
         actionHandlers.put(DawAction.SLIP_RIGHT_GRID, host::onSlipRightByGrid);
         actionHandlers.put(DawAction.SLIP_LEFT_FINE, host::onSlipLeftByFine);
         actionHandlers.put(DawAction.SLIP_RIGHT_FINE, host::onSlipRightByFine);
+        actionHandlers.put(DawAction.NUDGE_LEFT, host::onNudgeLeft);
+        actionHandlers.put(DawAction.NUDGE_RIGHT, host::onNudgeRight);
+        actionHandlers.put(DawAction.NUDGE_LEFT_LARGE, host::onNudgeLeftLarge);
+        actionHandlers.put(DawAction.NUDGE_RIGHT_LARGE, host::onNudgeRightLarge);
+        actionHandlers.put(DawAction.NUDGE_LEFT_SAMPLE, host::onNudgeLeftSample);
+        actionHandlers.put(DawAction.NUDGE_RIGHT_SAMPLE, host::onNudgeRightSample);
 
         for (DawAction action : DawAction.values()) {
             Runnable handler = actionHandlers.get(action);

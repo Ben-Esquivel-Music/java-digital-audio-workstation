@@ -4,8 +4,12 @@ import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.CutClipsAction;
 import com.benesquivelmusic.daw.core.audio.DuplicateClipsAction;
+import com.benesquivelmusic.daw.core.audio.NudgeClipsAction;
 import com.benesquivelmusic.daw.core.audio.PasteClipsAction;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
+import com.benesquivelmusic.daw.core.project.edit.NudgeService;
+import com.benesquivelmusic.daw.core.project.edit.NudgeSettings;
+import com.benesquivelmusic.daw.core.project.edit.NudgeUnit;
 import com.benesquivelmusic.daw.core.project.edit.RippleEditService;
 import com.benesquivelmusic.daw.core.project.edit.RippleValidationException;
 import com.benesquivelmusic.daw.core.project.edit.SlipEditService;
@@ -253,6 +257,157 @@ final class ClipEditController {
             return 0.0;
         }
         return bpm / (60.0 * sampleRate);
+    }
+
+    // ── Nudge (Issue 566) ────────────────────────────────────────────────────
+
+    /** Nudge the current selection left by the configured {@link NudgeSettings}. */
+    void onNudgeLeft() { nudgeSelection(-1.0); }
+
+    /** Nudge the current selection right by the configured {@link NudgeSettings}. */
+    void onNudgeRight() { nudgeSelection(+1.0); }
+
+    /** Nudge the current selection left by 10× the configured nudge value. */
+    void onNudgeLeftLarge() { nudgeSelection(-10.0); }
+
+    /** Nudge the current selection right by 10× the configured nudge value. */
+    void onNudgeRightLarge() { nudgeSelection(+10.0); }
+
+    /** Nudge the current selection left by exactly one audio sample. */
+    void onNudgeLeftSample() { nudgeSelectionBySample(-1.0); }
+
+    /** Nudge the current selection right by exactly one audio sample. */
+    void onNudgeRightSample() { nudgeSelectionBySample(+1.0); }
+
+    /**
+     * Nudges every selected audio clip by {@code directionMultiplier} times
+     * the project's configured {@link NudgeSettings}. The whole group moves
+     * through a single {@link NudgeClipsAction} — so undo/redo treats a
+     * multi-clip nudge as one step (Issue 566 acceptance criterion).
+     */
+    private void nudgeSelection(double directionMultiplier) {
+        List<AudioClip> clips = resolveNudgeTargets();
+        if (clips.isEmpty()) {
+            return;
+        }
+        NudgeService.TimingContext ctx = buildTimingContext();
+        if (ctx == null) {
+            return;
+        }
+        NudgeSettings settings = host.project().getNudgeSettings();
+        double beatDelta = NudgeService.beatsFor(settings, ctx, directionMultiplier);
+        applyNudge(clips, beatDelta, settings, directionMultiplier);
+    }
+
+    /**
+     * Nudges every selected audio clip by exactly one sample, independent of
+     * the configured {@link NudgeSettings} — drives the {@code Alt+Left/Right}
+     * shortcut from Issue 566.
+     */
+    private void nudgeSelectionBySample(double directionMultiplier) {
+        List<AudioClip> clips = resolveNudgeTargets();
+        if (clips.isEmpty()) {
+            return;
+        }
+        NudgeService.TimingContext ctx = buildTimingContext();
+        if (ctx == null) {
+            return;
+        }
+        double beatDelta = NudgeService.beatsForOneSample(ctx, directionMultiplier);
+        applyNudge(clips, beatDelta,
+                new NudgeSettings(NudgeUnit.FRAMES, 1.0), directionMultiplier);
+    }
+
+    private void applyNudge(List<AudioClip> clips, double beatDelta,
+                            NudgeSettings settings, double directionMultiplier) {
+        NudgeClipsAction action = NudgeService.buildAction(clips, beatDelta);
+        if (action == null) {
+            return;
+        }
+        host.undoManager().execute(action);
+        host.refreshArrangementCanvas();
+        host.updateUndoRedoState();
+        host.markProjectDirty();
+
+        String dir = directionMultiplier >= 0 ? "right" : "left";
+        double mag = Math.abs(directionMultiplier);
+        String magDesc = mag == 1.0 ? "" : (mag == 10.0 ? "10× " : String.format("%.1f× ", mag));
+        host.updateStatusBar(
+                String.format("Nudged %d clip(s) %s%s by %s %s",
+                        clips.size(), magDesc, dir,
+                        formatAmount(settings.amount()),
+                        formatUnit(settings.unit(), settings.amount())),
+                null);
+    }
+
+    /**
+     * Resolves the current selection to the list of audio clips to nudge.
+     * Priority: explicit clip selection → clips contained in the current
+     * time selection. Returns an empty list if nothing is selectable.
+     */
+    private List<AudioClip> resolveNudgeTargets() {
+        SelectionModel sm = host.selectionModel();
+        List<ClipboardEntry> selected = sm.getSelectedClips();
+        if (!selected.isEmpty()) {
+            List<AudioClip> clips = new ArrayList<>(selected.size());
+            for (ClipboardEntry entry : selected) {
+                clips.add(entry.clip());
+            }
+            return clips;
+        }
+        // Fall back to clips contained within the current time selection
+        // (time-range shifts its contained clips — Issue 566).
+        if (sm.hasSelection()) {
+            double s = sm.getStartBeat();
+            double e = sm.getEndBeat();
+            if (s < e) {
+                List<AudioClip> clips = new ArrayList<>();
+                for (Track t : host.project().getTracks()) {
+                    for (AudioClip c : t.getClips()) {
+                        if (c.getStartBeat() >= s && c.getStartBeat() < e) {
+                            clips.add(c);
+                        }
+                    }
+                }
+                return clips;
+            }
+        }
+        return List.of();
+    }
+
+    /**
+     * Builds the {@link NudgeService.TimingContext} from the project's
+     * current transport state, or {@code null} if the context cannot be
+     * built (e.g. zero tempo).
+     */
+    private NudgeService.TimingContext buildTimingContext() {
+        var transport = host.project().getTransport();
+        double bpm = transport.getTempo();
+        double sampleRate = host.project().getFormat().sampleRate();
+        double gridStep = host.gridStepBeats();
+        double barBeats = transport.getTimeSignatureNumerator() * (4.0
+                / Math.max(1, transport.getTimeSignatureDenominator()));
+        if (bpm <= 0.0 || sampleRate <= 0.0 || gridStep <= 0.0 || barBeats <= 0.0) {
+            return null;
+        }
+        return new NudgeService.TimingContext(bpm, sampleRate, gridStep, barBeats);
+    }
+
+    private static String formatAmount(double amount) {
+        if (amount == Math.floor(amount) && !Double.isInfinite(amount)) {
+            return Long.toString((long) amount);
+        }
+        return String.format("%.3f", amount);
+    }
+
+    private static String formatUnit(NudgeUnit unit, double amount) {
+        boolean plural = amount != 1.0;
+        return switch (unit) {
+            case FRAMES        -> plural ? "samples" : "sample";
+            case MILLISECONDS  -> "ms";
+            case GRID_STEPS    -> plural ? "grid steps" : "grid step";
+            case BAR_FRACTION  -> plural ? "bars" : "bar";
+        };
     }
 
     void onDeleteSelection() {

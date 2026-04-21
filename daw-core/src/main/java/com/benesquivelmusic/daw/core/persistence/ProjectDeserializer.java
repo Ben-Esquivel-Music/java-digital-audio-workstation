@@ -17,6 +17,8 @@ import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshotManager;
 import com.benesquivelmusic.daw.core.mixer.snapshot.SendSnapshot;
 import com.benesquivelmusic.daw.core.preset.ReflectivePresetSerializer;
 import com.benesquivelmusic.daw.core.project.DawProject;
+import com.benesquivelmusic.daw.core.project.edit.NudgeSettings;
+import com.benesquivelmusic.daw.core.project.edit.NudgeUnit;
 import com.benesquivelmusic.daw.core.recording.ClickSound;
 import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
 import com.benesquivelmusic.daw.core.recording.Metronome;
@@ -238,11 +240,9 @@ public final class ProjectDeserializer {
             String amountAttr = nudge.getAttribute("amount");
             if (!unitAttr.isEmpty() && !amountAttr.isEmpty()) {
                 try {
-                    com.benesquivelmusic.daw.core.project.edit.NudgeUnit unit =
-                            com.benesquivelmusic.daw.core.project.edit.NudgeUnit.valueOf(unitAttr);
+                    NudgeUnit unit = NudgeUnit.valueOf(unitAttr);
                     double amount = Double.parseDouble(amountAttr);
-                    project.setNudgeSettings(
-                            new com.benesquivelmusic.daw.core.project.edit.NudgeSettings(unit, amount));
+                    project.setNudgeSettings(new NudgeSettings(unit, amount));
                 } catch (IllegalArgumentException ignored) {
                     // Unknown unit or invalid amount — keep the default.
                 }
