@@ -89,7 +89,12 @@ enforces that the audio thread performs **zero heap allocation** at steady
 state:
 
 * All audio buffers are acquired from `AudioBufferPoolRegistry`, keyed by
-  `(channelCount, blockSize, precision)`.
+  `(channelCount, blockSize, precision)`. The registry supports both
+  on-heap pools (`AudioBufferPool`) and **off-heap FFM-backed pools**
+  (`NativeAudioBufferPool`, JEP 454). FFM buffers live outside the GC
+  heap — ZGC does not scan them — and are freed deterministically when
+  the registry is `close()`d, eliminating both GC pressure and the
+  non-determinism of finalization / `Cleaner`.
 * All MIDI events are acquired from `MidiEventPool` (mutable `MidiEvent`
   holders are recycled, not re-allocated).
 * All `XrunEvent` and `LatencyTelemetry` snapshots are emitted through

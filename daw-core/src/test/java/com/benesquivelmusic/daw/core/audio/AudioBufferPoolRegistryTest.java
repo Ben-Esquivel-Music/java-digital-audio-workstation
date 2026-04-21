@@ -55,6 +55,64 @@ class AudioBufferPoolRegistryTest {
     }
 
     @Test
+    void shouldRegisterAndAcquireNativeFfmPools() {
+        AudioBufferPoolRegistry reg = new AudioBufferPoolRegistry();
+        try {
+            NativeAudioBufferPool stereo = reg.registerNative(2, 64, MixPrecision.FLOAT_32, 2);
+            assertThat(reg.nativeSize()).isEqualTo(1);
+            assertThat(reg.nativePool(2, 64, MixPrecision.FLOAT_32)).isSameAs(stereo);
+
+            NativeAudioBufferPool.PooledBuffer b = reg.acquireNative(2, 64, MixPrecision.FLOAT_32);
+            assertThat(b).isNotNull();
+            assertThat(b.channels()).isEqualTo(2);
+            assertThat(b.frames()).isEqualTo(64);
+            assertThat(b.segment().isNative()).isTrue();
+            assertThat(reg.releaseNative(2, 64, MixPrecision.FLOAT_32, b)).isTrue();
+        } finally {
+            reg.close();
+        }
+    }
+
+    @Test
+    void nativeAndHeapPoolsAreIndependent() {
+        AudioBufferPoolRegistry reg = new AudioBufferPoolRegistry();
+        try {
+            reg.register(2, 64, MixPrecision.FLOAT_32, 1);       // heap
+            reg.registerNative(2, 64, MixPrecision.FLOAT_32, 1); // off-heap
+            assertThat(reg.size()).isEqualTo(1);
+            assertThat(reg.nativeSize()).isEqualTo(1);
+            assertThat(reg.acquire(2, 64, MixPrecision.FLOAT_32)).isNotNull();
+            assertThat(reg.acquireNative(2, 64, MixPrecision.FLOAT_32)).isNotNull();
+        } finally {
+            reg.close();
+        }
+    }
+
+    @Test
+    void closeDeterministicallyReleasesAllNativeArenas() {
+        AudioBufferPoolRegistry reg = new AudioBufferPoolRegistry();
+        NativeAudioBufferPool a = reg.registerNative(1, 32, MixPrecision.FLOAT_32, 1);
+        NativeAudioBufferPool b = reg.registerNative(2, 32, MixPrecision.FLOAT_32, 1);
+        reg.close();
+        assertThat(a.isClosed()).isTrue();
+        assertThat(b.isClosed()).isTrue();
+        // Idempotent.
+        reg.close();
+    }
+
+    @Test
+    void rejectsDuplicateNativeShapeRegistration() {
+        AudioBufferPoolRegistry reg = new AudioBufferPoolRegistry();
+        try {
+            reg.registerNative(2, 64, MixPrecision.FLOAT_32, 1);
+            assertThatThrownBy(() -> reg.registerNative(2, 64, MixPrecision.FLOAT_32, 1))
+                    .isInstanceOf(IllegalStateException.class);
+        } finally {
+            reg.close();
+        }
+    }
+
+    @Test
     void shouldRejectDuplicateShapeRegistration() {
         AudioBufferPoolRegistry reg = new AudioBufferPoolRegistry();
         reg.register(2, 64, MixPrecision.FLOAT_32, 1);
