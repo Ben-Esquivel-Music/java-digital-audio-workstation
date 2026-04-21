@@ -54,6 +54,26 @@ final class ClipOverlayRenderer {
                               double pixelsPerBeat, double scrollXBeats,
                               double canvasWidth, double canvasHeight,
                               SelectionModel selectionModel) {
+        drawAudioClip(gc, clip, trackColor, laneY, trackHeight,
+                pixelsPerBeat, scrollXBeats, canvasWidth, canvasHeight,
+                selectionModel, 0.0);
+    }
+
+    /**
+     * Extended entry point that additionally renders the clip's per-clip
+     * gain envelope (if present) on top of the waveform. Pass
+     * {@code samplesPerBeat <= 0} to skip the envelope overlay.
+     *
+     * @param samplesPerBeat session sample rate divided by beats-per-second
+     *                       (sample rate &times; 60 / tempo); used to
+     *                       convert breakpoint frame offsets to pixels
+     */
+    static void drawAudioClip(GraphicsContext gc, AudioClip clip, Color trackColor,
+                              double laneY, double trackHeight,
+                              double pixelsPerBeat, double scrollXBeats,
+                              double canvasWidth, double canvasHeight,
+                              SelectionModel selectionModel,
+                              double samplesPerBeat) {
         double clipX = (clip.getStartBeat() - scrollXBeats) * pixelsPerBeat;
         double clipWidth = clip.getDurationBeats() * pixelsPerBeat;
 
@@ -89,6 +109,14 @@ final class ClipOverlayRenderer {
 
         ClipWaveformRenderer.draw(gc, clip.getAudioData(),
                 clipX, clipY, clipWidth, clipHeight, canvasWidth);
+
+        if (samplesPerBeat > 0.0) {
+            clip.gainEnvelope().ifPresent(env ->
+                    ClipGainEnvelopeRenderer.draw(gc, env,
+                            clipX, clipY, clipWidth, clipHeight,
+                            pixelsPerBeat, scrollXBeats, samplesPerBeat,
+                            clip.getStartBeat(), clip.getSourceOffsetBeats()));
+        }
 
         drawFadeHandles(gc, clip, clipX, clipY, clipWidth, pixelsPerBeat);
 

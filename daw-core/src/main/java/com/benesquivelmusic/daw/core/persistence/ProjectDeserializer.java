@@ -29,6 +29,8 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackColor;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import com.benesquivelmusic.daw.sdk.audio.ClipGainEnvelope;
+import com.benesquivelmusic.daw.sdk.audio.CurveShape;
 import com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy;
 import com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget;
 import com.benesquivelmusic.daw.sdk.edit.RippleMode;
@@ -409,7 +411,41 @@ public final class ProjectDeserializer {
 
         clip.setStretchQuality(parseStretchQuality(elem.getAttribute("stretch-quality")));
 
+        List<Element> envContainers = getDirectChildElements(elem, "gain-envelope");
+        if (!envContainers.isEmpty()) {
+            ClipGainEnvelope envelope = parseGainEnvelope(envContainers.getFirst());
+            if (envelope != null) {
+                clip.setGainEnvelope(envelope);
+            }
+        }
+
         return clip;
+    }
+
+    private ClipGainEnvelope parseGainEnvelope(Element envElem) {
+        List<Element> bps = getDirectChildElements(envElem, "breakpoint");
+        if (bps.isEmpty()) {
+            return null;
+        }
+        var points = new java.util.ArrayList<ClipGainEnvelope.BreakpointDb>(bps.size());
+        for (Element bp : bps) {
+            long frame = Math.max(0L, parseLongAttr(bp, "frame-offset", 0L));
+            double db = parseDoubleAttr(bp, "db-gain", 0.0);
+            CurveShape curve = parseCurveShape(bp.getAttribute("curve"));
+            points.add(new ClipGainEnvelope.BreakpointDb(frame, db, curve));
+        }
+        return new ClipGainEnvelope(points);
+    }
+
+    private CurveShape parseCurveShape(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return CurveShape.LINEAR;
+        }
+        try {
+            return CurveShape.valueOf(raw);
+        } catch (IllegalArgumentException e) {
+            return CurveShape.LINEAR;
+        }
     }
 
     private SoundFontAssignment parseSoundFontAssignment(Element elem) {

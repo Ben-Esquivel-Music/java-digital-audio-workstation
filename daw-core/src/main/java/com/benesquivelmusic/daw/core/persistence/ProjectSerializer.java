@@ -256,6 +256,18 @@ public final class ProjectSerializer {
         if (clip.getSourceFilePath() != null) {
             elem.setAttribute("source-file", clip.getSourceFilePath());
         }
+        clip.gainEnvelope().ifPresent(env -> {
+            Element envElem = document.createElement("gain-envelope");
+            for (com.benesquivelmusic.daw.sdk.audio.ClipGainEnvelope.BreakpointDb bp
+                    : env.breakpoints()) {
+                Element bpElem = document.createElement("breakpoint");
+                bpElem.setAttribute("frame-offset", String.valueOf(bp.frameOffsetInClip()));
+                bpElem.setAttribute("db-gain", String.valueOf(bp.dbGain()));
+                bpElem.setAttribute("curve", bp.curve().name());
+                envElem.appendChild(bpElem);
+            }
+            elem.appendChild(envElem);
+        });
         return elem;
     }
 
