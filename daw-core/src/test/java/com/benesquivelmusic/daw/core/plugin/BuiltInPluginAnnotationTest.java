@@ -27,6 +27,7 @@ class BuiltInPluginAnnotationTest {
             Map.entry(ParametricEqPlugin.class,      new String[] {"Parametric EQ",          "eq",               "EFFECT"}),
             Map.entry(GraphicEqPlugin.class,         new String[] {"Graphic EQ",             "eq",               "EFFECT"}),
             Map.entry(CompressorPlugin.class,        new String[] {"Compressor",             "compressor",       "EFFECT"}),
+            Map.entry(BusCompressorPlugin.class,     new String[] {"Bus Compressor",         "compressor",       "EFFECT"}),
             Map.entry(ReverbPlugin.class,            new String[] {"Reverb",                 "reverb",           "EFFECT"}),
             Map.entry(SpectrumAnalyzerPlugin.class,  new String[] {"Spectrum Analyzer",      "spectrum",         "ANALYZER"}),
             Map.entry(TunerPlugin.class,             new String[] {"Chromatic Tuner",        "spectrum",         "UTILITY"}),

@@ -36,6 +36,7 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
                 ParametricEqPlugin,
                 GraphicEqPlugin,
                 CompressorPlugin,
+                BusCompressorPlugin,
                 ReverbPlugin,
                 SpectrumAnalyzerPlugin,
                 TunerPlugin,
