@@ -11,7 +11,7 @@ import java.util.Base64;
 import java.util.Objects;
 
 /**
- * Serialises and deserialises the full runtime state of a
+ * Serializes and deserializes the full runtime state of a
  * {@link MatchEqProcessor} to/from a compact XML element so it can be
  * embedded under a project's plugin entry.
  *

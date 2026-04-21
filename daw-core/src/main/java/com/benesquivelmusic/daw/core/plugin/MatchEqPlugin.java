@@ -115,7 +115,7 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
     }
 
     /**
-     * Loads an audio file from disk and analyses it as the reference spectrum.
+     * Loads an audio file from disk and analyzes it as the reference spectrum.
      *
      * <p>Provides the one-off direct audio-file loading path required by the
      * Match EQ plugin's UI (outside the story 041 {@link ReferenceTrack}
