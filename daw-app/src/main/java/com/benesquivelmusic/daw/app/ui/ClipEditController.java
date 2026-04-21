@@ -236,11 +236,18 @@ final class ClipEditController {
     }
 
     /**
-     * Returns one sample expressed in beats at the project's current
-     * tempo/sample-rate.
+     * Returns one sample expressed in beats using the effective tempo at the
+     * current playhead position.
+     *
+     * <p>Using the playhead beat (rather than the initial tempo) ensures the
+     * step is accurate when the project has tempo-map changes — e.g. an
+     * accelerando that is active at the moment the user presses
+     * {@code Ctrl+Shift+Left/Right}.</p>
      */
     private double sampleStepBeats() {
-        double bpm = host.project().getTransport().getTempo();
+        var transport = host.project().getTransport();
+        double playheadBeat = transport.getPositionInBeats();
+        double bpm = transport.getTempoMap().getTempoAtBeat(playheadBeat);
         double sampleRate = host.project().getFormat().sampleRate();
         if (bpm <= 0.0 || sampleRate <= 0.0) {
             return 0.0;

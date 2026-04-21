@@ -118,7 +118,9 @@ class ClipEditControllerTest {
         ClipEditController controller = new ClipEditController(host);
 
         double oneSampleInBeats =
-                project.getTransport().getTempo() / (60.0 * project.getFormat().sampleRate());
+                project.getTransport().getTempoMap()
+                        .getTempoAtBeat(project.getTransport().getPositionInBeats())
+                        / (60.0 * project.getFormat().sampleRate());
         controller.onSlipRightByFine();
 
         assertThat(clip.getSourceOffsetBeats()).isCloseTo(5.0 - oneSampleInBeats, within(1e-6));
