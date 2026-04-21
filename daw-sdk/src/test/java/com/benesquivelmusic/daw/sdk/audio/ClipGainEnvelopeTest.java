@@ -108,4 +108,26 @@ class ClipGainEnvelopeTest {
         assertThatThrownBy(() -> env.withoutBreakpoint(0))
                 .isInstanceOf(IllegalStateException.class);
     }
+
+    @Test
+    void constructor_coalescesDuplicateFrameOffsets_keepingLast() {
+        var env = new ClipGainEnvelope(List.of(
+                new ClipGainEnvelope.BreakpointDb(0L, 0.0, CurveShape.LINEAR),
+                new ClipGainEnvelope.BreakpointDb(1000L, -6.0, CurveShape.LINEAR),
+                // duplicate offset — later entry wins
+                new ClipGainEnvelope.BreakpointDb(1000L, -12.0, CurveShape.S_CURVE),
+                new ClipGainEnvelope.BreakpointDb(2000L, -3.0, CurveShape.LINEAR)));
+        assertThat(env.breakpoints()).hasSize(3);
+        assertThat(env.breakpoints().get(1).dbGain()).isEqualTo(-12.0);
+        assertThat(env.breakpoints().get(1).curve()).isEqualTo(CurveShape.S_CURVE);
+    }
+
+    @Test
+    void curveWeight_clampsTOutsideUnitRange() {
+        // LINEAR: w(-1) should clamp to 0.0, w(2) should clamp to 1.0
+        assertThat(CurveShape.LINEAR.weight(-1.0)).isEqualTo(0.0);
+        assertThat(CurveShape.LINEAR.weight(2.0)).isEqualTo(1.0);
+        assertThat(CurveShape.EXPONENTIAL.weight(-0.5)).isEqualTo(0.0);
+        assertThat(CurveShape.S_CURVE.weight(1.5)).isEqualTo(1.0);
+    }
 }

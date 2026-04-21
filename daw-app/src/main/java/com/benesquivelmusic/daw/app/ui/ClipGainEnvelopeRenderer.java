@@ -256,12 +256,17 @@ final class ClipGainEnvelopeRenderer {
         long frame = xToFrame(x, samplesPerBeat, pixelsPerBeat, scrollXBeats,
                 clipStartBeat, sourceOffsetBeats);
         double db = yToDb(y, clipY, clipHeight);
-        ClipGainEnvelope base = (envelope == null)
-                ? ClipGainEnvelope.constant(0.0)
-                : envelope;
-        return base.withBreakpoint(
-                new ClipGainEnvelope.BreakpointDb(frame, db,
-                        curve == null ? CurveShape.LINEAR : curve));
+        CurveShape shape = (curve == null) ? CurveShape.LINEAR : curve;
+        ClipGainEnvelope.BreakpointDb bp =
+                new ClipGainEnvelope.BreakpointDb(frame, db, shape);
+        // When seeding a brand-new envelope, derive the baseline from the
+        // click's own dB rather than hard-coding 0 dB — otherwise a user who
+        // adds the first breakpoint at, say, -12 dB would still see a
+        // phantom 0 dB anchor at frame 0 and an unexpected gain jump.
+        if (envelope == null) {
+            return new ClipGainEnvelope(List.of(bp));
+        }
+        return envelope.withBreakpoint(bp);
     }
 
     // ── Internal drawing helpers ───────────────────────────────────────────

@@ -158,12 +158,21 @@ class ClipGainEnvelopeRendererTest {
     }
 
     @Test
-    void addBreakpointAt_nullEnvelope_createsOne() {
+    void addBreakpointAt_nullEnvelope_createsSingleBreakpointAtClickedDb() {
+        double clipY = 0.0, clipHeight = 60.0;
+        // Choose a y that corresponds to a specific non-zero dB value
+        double targetDb = -9.0;
+        double y = ClipGainEnvelopeRenderer.dbToY(targetDb, clipY, clipHeight);
+
         ClipGainEnvelope updated = ClipGainEnvelopeRenderer.addBreakpointAt(
-                null, 0.0, 30.0, 0.0, 60.0,
+                null, 0.0, y, clipY, clipHeight,
                 PIXELS_PER_BEAT, 0.0, SAMPLES_PER_BEAT, 0.0, 0.0,
                 null);
+
+        // Should seed exactly one breakpoint — no phantom 0 dB anchor.
         assertThat(updated).isNotNull();
-        assertThat(updated.breakpoints()).isNotEmpty();
+        assertThat(updated.breakpoints()).hasSize(1);
+        assertThat(updated.breakpoints().getFirst().dbGain())
+                .isCloseTo(targetDb, within(1e-9));
     }
 }

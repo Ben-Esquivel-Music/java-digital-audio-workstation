@@ -23,7 +23,7 @@ public enum CurveShape {
     /** Straight-line dB interpolation. */
     LINEAR {
         @Override
-        public double weight(double t) {
+        protected double weightRaw(double t) {
             return t;
         }
     },
@@ -31,7 +31,7 @@ public enum CurveShape {
     /** Exponential (quadratic) ease-in curve. */
     EXPONENTIAL {
         @Override
-        public double weight(double t) {
+        protected double weightRaw(double t) {
             return t * t;
         }
     },
@@ -39,17 +39,27 @@ public enum CurveShape {
     /** Smooth S-shaped interpolation (cubic smoothstep). */
     S_CURVE {
         @Override
-        public double weight(double t) {
+        protected double weightRaw(double t) {
             return t * t * (3.0 - 2.0 * t);
         }
     };
 
     /**
-     * Returns the blending weight for the given normalized progress.
+     * Returns the blending weight for the given normalized progress,
+     * clamping {@code t} to {@code [0, 1]} before evaluation so callers
+     * don't have to pre-clamp.
      *
-     * @param t normalized progress in {@code [0, 1]}; values outside this
-     *          range are clamped
-     * @return the blending weight used for interpolation
+     * @param t normalized progress; values outside {@code [0, 1]} are clamped
+     * @return the blending weight used for interpolation, in {@code [0, 1]}
      */
-    public abstract double weight(double t);
+    public final double weight(double t) {
+        return weightRaw(Math.clamp(t, 0.0, 1.0));
+    }
+
+    /**
+     * Shape-specific weight function evaluated on a pre-clamped {@code t}.
+     *
+     * @param t normalized progress, guaranteed to be in {@code [0, 1]}
+     */
+    protected abstract double weightRaw(double t);
 }

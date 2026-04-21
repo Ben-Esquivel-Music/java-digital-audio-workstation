@@ -546,10 +546,17 @@ public final class RenderPipeline {
                         }
                     }
                 } else {
+                    // Precompute the per-frame linear gain once for this copy
+                    // range so audio-thread work stays O(frames + points) and
+                    // each sample application is a single multiply.
+                    float[] gains = new float[copyLength];
+                    for (int f = 0; f < copyLength; f++) {
+                        gains[f] = (float) envelope.linearAtFrame((long) srcStart + f);
+                    }
                     for (int ch = 0; ch < audioChannels; ch++) {
                         for (int f = 0; f < copyLength; f++) {
-                            double g = envelope.linearAtFrame((long) (srcStart + f));
-                            trackBuffers[t][ch][outStart + f] += (float) (audioData[ch][srcStart + f] * g);
+                            trackBuffers[t][ch][outStart + f]
+                                    += audioData[ch][srcStart + f] * gains[f];
                         }
                     }
                 }

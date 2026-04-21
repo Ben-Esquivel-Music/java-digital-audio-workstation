@@ -37,7 +37,20 @@ public record ClipGainEnvelope(List<BreakpointDb> breakpoints) {
             Objects.requireNonNull(bp, "breakpoint must not be null");
         }
         copy.sort(Comparator.comparingLong(BreakpointDb::frameOffsetInClip));
-        breakpoints = List.copyOf(copy);
+        // Coalesce duplicates at the same frame offset by keeping the last
+        // occurrence (stable with respect to input order) so that callers
+        // observing a binary-searched segment never hit a zero-span segment
+        // and the UI never has to render an ambiguous vertical jump.
+        var deduped = new ArrayList<BreakpointDb>(copy.size());
+        for (BreakpointDb bp : copy) {
+            if (!deduped.isEmpty()
+                    && deduped.getLast().frameOffsetInClip() == bp.frameOffsetInClip()) {
+                deduped.set(deduped.size() - 1, bp);
+            } else {
+                deduped.add(bp);
+            }
+        }
+        breakpoints = List.copyOf(deduped);
     }
 
     /**
