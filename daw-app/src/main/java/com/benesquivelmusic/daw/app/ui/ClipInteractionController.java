@@ -662,12 +662,12 @@ final class ClipInteractionController {
         }
         try {
             SelectionModel selectionModel = host.selectionModel();
-            java.util.OptionalDouble selectionStart = selectionModel.hasSelection()
-                    ? java.util.OptionalDouble.of(selectionModel.getStartBeat())
-                    : java.util.OptionalDouble.empty();
-            java.util.OptionalDouble selectionEnd = selectionModel.hasSelection()
-                    ? java.util.OptionalDouble.of(selectionModel.getEndBeat())
-                    : java.util.OptionalDouble.empty();
+            OptionalDouble selectionStart = selectionModel.hasSelection()
+                    ? OptionalDouble.of(selectionModel.getStartBeat())
+                    : OptionalDouble.empty();
+            OptionalDouble selectionEnd = selectionModel.hasSelection()
+                    ? OptionalDouble.of(selectionModel.getEndBeat())
+                    : OptionalDouble.empty();
             host.undoManager().execute(RippleEditService.buildRippleMove(
                     clip, track, newStartBeat, mode, host.tracks(),
                     selectionStart, selectionEnd));

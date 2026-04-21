@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
+import com.benesquivelmusic.daw.sdk.edit.RippleMode;
 
 import javafx.application.Platform;
 import javafx.scene.input.MouseButton;
@@ -39,7 +40,7 @@ class ClipInteractionControllerTest {
     private double seekedPosition;
     private SelectionModel selectionModel;
     private String lastStatusBarText;
-    private com.benesquivelmusic.daw.sdk.edit.RippleMode rippleMode;
+    private RippleMode rippleMode;
 
     @BeforeEach
     void setUp() {
@@ -54,7 +55,7 @@ class ClipInteractionControllerTest {
         seekedPosition = -1.0;
         selectionModel = new SelectionModel();
         lastStatusBarText = null;
-        rippleMode = com.benesquivelmusic.daw.sdk.edit.RippleMode.OFF;
+        rippleMode = RippleMode.OFF;
     }
 
     private ClipInteractionController.Host createHost() {
@@ -73,7 +74,7 @@ class ClipInteractionControllerTest {
             @Override public void seekToPosition(double beat) { seekedPosition = beat; }
             @Override public SelectionModel selectionModel() { return selectionModel; }
             @Override public void updateStatusBar(String text) { lastStatusBarText = text; }
-            @Override public com.benesquivelmusic.daw.sdk.edit.RippleMode rippleMode() {
+            @Override public RippleMode rippleMode() {
                 return rippleMode;
             }
             @Override public void showNotification(NotificationLevel level, String message) {
@@ -410,7 +411,7 @@ class ClipInteractionControllerTest {
         track.addClip(later);
         tracks.add(track);
         activeTool = EditTool.POINTER;
-        rippleMode = com.benesquivelmusic.daw.sdk.edit.RippleMode.PER_TRACK;
+        rippleMode = RippleMode.PER_TRACK;
         selectionModel.setSelection(10.0, 18.0); // moved clip start (4.0) is outside
 
         CountDownLatch latch = new CountDownLatch(1);
