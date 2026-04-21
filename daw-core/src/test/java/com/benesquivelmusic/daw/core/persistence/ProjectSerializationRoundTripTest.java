@@ -24,6 +24,7 @@ import com.benesquivelmusic.daw.core.track.AutomationMode;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.track.TrackType;
+import com.benesquivelmusic.daw.sdk.edit.RippleMode;
 import com.benesquivelmusic.daw.sdk.transport.ClickOutput;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 import org.junit.jupiter.api.Test;
@@ -994,5 +995,38 @@ class ProjectSerializationRoundTripTest {
 
         assertThat(restored.getTransport().getPunchRegion()).isNull();
         assertThat(restored.getTransport().isPunchEnabled()).isFalse();
+    }
+
+    @Test
+    void shouldRoundTripRippleModeOff() throws IOException {
+        DawProject original = new DawProject("Ripple Off", AudioFormat.CD_QUALITY);
+        original.setRippleMode(RippleMode.OFF);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getRippleMode()).isEqualTo(RippleMode.OFF);
+    }
+
+    @Test
+    void shouldRoundTripRippleModePerTrack() throws IOException {
+        DawProject original = new DawProject("Ripple Per-Track", AudioFormat.CD_QUALITY);
+        original.setRippleMode(RippleMode.PER_TRACK);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getRippleMode()).isEqualTo(RippleMode.PER_TRACK);
+    }
+
+    @Test
+    void shouldRoundTripRippleModeAllTracks() throws IOException {
+        DawProject original = new DawProject("Ripple All-Tracks", AudioFormat.CD_QUALITY);
+        original.setRippleMode(RippleMode.ALL_TRACKS);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getRippleMode()).isEqualTo(RippleMode.ALL_TRACKS);
     }
 }

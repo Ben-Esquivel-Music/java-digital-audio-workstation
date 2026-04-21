@@ -16,6 +16,7 @@ import com.benesquivelmusic.daw.core.track.TrackColor;
 import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import com.benesquivelmusic.daw.sdk.edit.RippleMode;
 
 import java.util.*;
 
@@ -51,6 +52,7 @@ public final class DawProject {
     private final Map<String, MixerChannel> trackChannelMap = new LinkedHashMap<>();
     private final List<TrackGroup> trackGroups = new ArrayList<>();
     private int nextColorIndex;
+    private RippleMode rippleMode = RippleMode.OFF;
 
     /**
      * Creates a new DAW project.
@@ -457,5 +459,30 @@ public final class DawProject {
      */
     public List<TrackGroup> getTrackGroups() {
         return Collections.unmodifiableList(trackGroups);
+    }
+
+    // ── Ripple edit mode ────────────────────────────────────────────────────
+
+    /**
+     * Returns the current {@link RippleMode} for this project.
+     *
+     * <p>Ripple mode governs whether clip delete, cut, and move operations
+     * propagate a gap-closing shift across later clips on the same track
+     * ({@link RippleMode#PER_TRACK}), across every track
+     * ({@link RippleMode#ALL_TRACKS}), or not at all ({@link RippleMode#OFF}).</p>
+     *
+     * @return the current ripple mode (never {@code null})
+     */
+    public RippleMode getRippleMode() {
+        return rippleMode;
+    }
+
+    /**
+     * Sets the ripple mode for this project.
+     *
+     * @param rippleMode the new ripple mode (must not be {@code null})
+     */
+    public void setRippleMode(RippleMode rippleMode) {
+        this.rippleMode = Objects.requireNonNull(rippleMode, "rippleMode must not be null");
     }
 }

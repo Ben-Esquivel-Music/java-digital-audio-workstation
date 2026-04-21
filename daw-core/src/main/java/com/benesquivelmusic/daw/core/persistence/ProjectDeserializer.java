@@ -31,6 +31,7 @@ import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy;
 import com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget;
+import com.benesquivelmusic.daw.sdk.edit.RippleMode;
 import com.benesquivelmusic.daw.sdk.telemetry.*;
 import com.benesquivelmusic.daw.sdk.transport.ClickOutput;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
@@ -209,6 +210,20 @@ public final class ProjectDeserializer {
         List<Element> snapshotsContainers = getDirectChildElements(root, "mixer-snapshots");
         if (!snapshotsContainers.isEmpty()) {
             parseMixerSnapshots(snapshotsContainers.getFirst(), project);
+        }
+
+        // Parse ripple mode (per-project UI preference, defaults to OFF for
+        // projects saved before this element was introduced)
+        List<Element> rippleElements = getDirectChildElements(root, "ripple-mode");
+        if (!rippleElements.isEmpty()) {
+            String value = rippleElements.getFirst().getAttribute("value");
+            if (!value.isEmpty()) {
+                try {
+                    project.setRippleMode(RippleMode.valueOf(value));
+                } catch (IllegalArgumentException ignored) {
+                    // Unknown value — keep the default OFF.
+                }
+            }
         }
 
         return project;

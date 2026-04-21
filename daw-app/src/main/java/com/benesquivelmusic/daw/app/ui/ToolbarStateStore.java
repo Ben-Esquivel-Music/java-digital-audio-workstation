@@ -33,6 +33,8 @@ public final class ToolbarStateStore {
     static final String KEY_SNAP_ENABLED = "toolbar.snapEnabled";
     static final String KEY_GRID_RESOLUTION = "toolbar.gridResolution";
     static final String KEY_BROWSER_VISIBLE = "toolbar.browserVisible";
+    static final String KEY_RIPPLE_ALL_TRACKS_PROMPT_SUPPRESSED =
+            "toolbar.rippleAllTracksPromptSuppressed";
 
     static final DawView DEFAULT_ACTIVE_VIEW = DawView.ARRANGEMENT;
     static final EditTool DEFAULT_EDIT_TOOL = EditTool.POINTER;
@@ -166,5 +168,25 @@ public final class ToolbarStateStore {
      */
     public void saveBrowserVisible(boolean visible) {
         prefs.putBoolean(KEY_BROWSER_VISIBLE, visible);
+    }
+
+    /**
+     * Returns whether the user has suppressed the {@code ALL_TRACKS} ripple-mode
+     * confirmation prompt ("don't ask again").
+     *
+     * @return {@code true} if the prompt should be skipped
+     */
+    public boolean loadRippleAllTracksPromptSuppressed() {
+        return prefs.getBoolean(KEY_RIPPLE_ALL_TRACKS_PROMPT_SUPPRESSED, false);
+    }
+
+    /**
+     * Persists the "don't ask again" choice for the {@code ALL_TRACKS} ripple
+     * confirmation prompt.
+     *
+     * @param suppressed {@code true} to stop showing the prompt
+     */
+    public void saveRippleAllTracksPromptSuppressed(boolean suppressed) {
+        prefs.putBoolean(KEY_RIPPLE_ALL_TRACKS_PROMPT_SUPPRESSED, suppressed);
     }
 }

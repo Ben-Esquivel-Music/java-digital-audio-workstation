@@ -118,6 +118,16 @@ public final class ProjectSerializer {
         buildReferenceTrackManager(document, root, project.getReferenceTrackManager());
         buildRoomConfiguration(document, root, project.getRoomConfiguration());
         buildMixerSnapshots(document, root, project.getMixerSnapshotManager());
+        buildRippleMode(document, root, project);
+    }
+
+    private void buildRippleMode(Document document, Element root, DawProject project) {
+        // Always emit the element so that round-trip produces identical
+        // output regardless of mode. OFF is the default and harmless to
+        // preserve explicitly — it documents the user's intent.
+        Element elem = document.createElement("ripple-mode");
+        elem.setAttribute("value", project.getRippleMode().name());
+        root.appendChild(elem);
     }
 
     private void buildMetadata(Document document, Element root, DawProject project) {

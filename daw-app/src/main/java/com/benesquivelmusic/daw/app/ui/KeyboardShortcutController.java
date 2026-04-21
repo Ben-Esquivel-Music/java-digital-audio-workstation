@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.transport.TransportState;
+import com.benesquivelmusic.daw.sdk.edit.RippleMode;
 import javafx.collections.ObservableMap;
 import javafx.scene.Scene;
 import javafx.scene.input.KeyCombination;
@@ -56,6 +57,7 @@ final class KeyboardShortcutController {
         void onPaste();
         void onDuplicate();
         void onDeleteSelection();
+        void setRippleMode(RippleMode mode);
     }
 
     private final KeyBindingManager keyBindingManager;
@@ -119,6 +121,9 @@ final class KeyboardShortcutController {
         actionHandlers.put(DawAction.PASTE, host::onPaste);
         actionHandlers.put(DawAction.DUPLICATE, host::onDuplicate);
         actionHandlers.put(DawAction.DELETE_SELECTION, host::onDeleteSelection);
+        actionHandlers.put(DawAction.RIPPLE_MODE_OFF, () -> host.setRippleMode(RippleMode.OFF));
+        actionHandlers.put(DawAction.RIPPLE_MODE_PER_TRACK, () -> host.setRippleMode(RippleMode.PER_TRACK));
+        actionHandlers.put(DawAction.RIPPLE_MODE_ALL_TRACKS, () -> host.setRippleMode(RippleMode.ALL_TRACKS));
 
         for (DawAction action : DawAction.values()) {
             Runnable handler = actionHandlers.get(action);

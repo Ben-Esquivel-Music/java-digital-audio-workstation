@@ -84,6 +84,10 @@
                             styleClass="transport-button, plugin-button"/>
                 </HBox>
 
+                <!-- Ripple Edit Mode cycling button (Story 138) -->
+                <Button fx:id="rippleModeButton" text="Ripple: Off"
+                        styleClass="transport-button, ripple-mode-button, ripple-off"/>
+
                 <!-- REC indicator (visible only during recording) -->
                 <Label fx:id="recIndicator" text="● REC" styleClass="rec-indicator"
                        visible="false" managed="false"/>
@@ -161,6 +165,9 @@
                 <Label fx:id="checkpointLabel" text="Auto-save: ON"
                        styleClass="checkpoint-label"/>
                 <Separator orientation="VERTICAL"/>
+                <!-- Ripple-mode red banner (visible only when ripple is active) -->
+                <Label fx:id="rippleBannerLabel" text="" styleClass="ripple-banner"
+                       visible="false" managed="false"/>
                 <Label fx:id="statusBarLabel" text="Ready" styleClass="status-bar-label"/>
             </HBox>
         </VBox>

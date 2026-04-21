@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
+import com.benesquivelmusic.daw.sdk.edit.RippleMode;
 import javafx.scene.Parent;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
@@ -29,6 +30,8 @@ final class ArrangementCanvasFactory {
         void refreshCanvas();
         void seekToPosition(double beat);
         void updateStatusBar(String text);
+        RippleMode rippleMode();
+        void showNotification(NotificationLevel level, String message);
     }
 
     record Result(ArrangementCanvas canvas, TimelineRuler ruler, ClipInteractionController clipInteraction) {}
@@ -66,6 +69,10 @@ final class ArrangementCanvasFactory {
                     @Override public void seekToPosition(double beat) { host.seekToPosition(beat); }
                     @Override public SelectionModel selectionModel() { return host.selectionModel(); }
                     @Override public void updateStatusBar(String text) { host.updateStatusBar(text); }
+                    @Override public RippleMode rippleMode() { return host.rippleMode(); }
+                    @Override public void showNotification(NotificationLevel level, String message) {
+                        host.showNotification(level, message);
+                    }
                 });
         clipInteraction.install();
 

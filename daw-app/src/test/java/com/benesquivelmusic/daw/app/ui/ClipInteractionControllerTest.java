@@ -71,6 +71,12 @@ class ClipInteractionControllerTest {
             @Override public void seekToPosition(double beat) { seekedPosition = beat; }
             @Override public SelectionModel selectionModel() { return selectionModel; }
             @Override public void updateStatusBar(String text) { lastStatusBarText = text; }
+            @Override public com.benesquivelmusic.daw.sdk.edit.RippleMode rippleMode() {
+                return com.benesquivelmusic.daw.sdk.edit.RippleMode.OFF;
+            }
+            @Override public void showNotification(NotificationLevel level, String message) {
+                // no-op in tests
+            }
         };
     }
 

@@ -66,6 +66,8 @@ public final class MainController {
     @FXML private Button saveButton;
     @FXML private Button pluginsButton;
     @FXML private Button metronomeButton;
+    @FXML private Button rippleModeButton;
+    @FXML private Label rippleBannerLabel;
     @FXML private Label statusLabel;
     @FXML private Label tempoLabel;
     @FXML private Label timeDisplay;
@@ -129,6 +131,7 @@ public final class MainController {
     private DawMenuBarController menuBarController;
     private PluginViewController pluginViewController;
     private ClipEditController clipEditController;
+    private RippleModeController rippleModeController;
     private TrackCreationController trackCreationController;
     private KeyboardShortcutController keyboardShortcutController;
     private HistoryPanelController historyPanelController;
@@ -211,6 +214,7 @@ public final class MainController {
         viewNavigationController.initializeViewNavigation();
         createTrackStripController();
         createPluginViewController();
+        createRippleModeController();
         createClipEditController();
         createTrackCreationController();
         createAudioImportController();
@@ -389,6 +393,9 @@ public final class MainController {
         updateTempoDisplay();
         updateUndoRedoState();
         updateArrangementPlaceholder();
+        if (rippleModeController != null) {
+            rippleModeController.onProjectChanged();
+        }
         if (viewNavigationController.getActiveView() == DawView.MIXER) {
             rootPane.setCenter(newMixerView);
         }
@@ -458,8 +465,22 @@ public final class MainController {
             @Override public void markProjectDirty() { projectDirty = true; }
             @Override public void updateStatusBar(String text, DawIcon icon) { status(text, icon); }
             @Override public void showNotificationWithUndo(NotificationLevel level, String msg, Runnable undo) { notificationBar.showWithUndo(level, msg, undo); }
+            @Override public void showNotification(NotificationLevel level, String message) { notificationBar.show(level, message); }
             @Override public EditorView editorView() { return viewNavigationController.getEditorView(); }
+            @Override public com.benesquivelmusic.daw.sdk.edit.RippleMode rippleMode() { return project.getRippleMode(); }
         });
+    }
+
+    private void createRippleModeController() {
+        rippleModeController = new RippleModeController(
+                new RippleModeController.Host() {
+                    @Override public DawProject project() { return project; }
+                    @Override public void markProjectDirty() { projectDirty = true; }
+                    @Override public void showNotification(NotificationLevel level, String message) {
+                        notificationBar.show(level, message);
+                    }
+                },
+                toolbarStateStore, rippleModeButton, rippleBannerLabel);
     }
 
     private void createTrackCreationController() {
@@ -551,6 +572,9 @@ public final class MainController {
                     @Override public void onPaste() { clipEditController.onPaste(); }
                     @Override public void onDuplicate() { clipEditController.onDuplicate(); }
                     @Override public void onDeleteSelection() { clipEditController.onDeleteSelection(); }
+                    @Override public void setRippleMode(com.benesquivelmusic.daw.sdk.edit.RippleMode mode) {
+                        if (rippleModeController != null) { rippleModeController.setMode(mode); }
+                    }
                 });
     }
 
@@ -634,6 +658,12 @@ public final class MainController {
                     @Override public void refreshCanvas() { refreshArrangementCanvas(); }
                     @Override public void seekToPosition(double beat) { MainController.this.seekToPosition(beat); }
                     @Override public void updateStatusBar(String text) { statusBarLabel.setText(text); }
+                    @Override public com.benesquivelmusic.daw.sdk.edit.RippleMode rippleMode() {
+                        return project.getRippleMode();
+                    }
+                    @Override public void showNotification(NotificationLevel level, String message) {
+                        notificationBar.show(level, message);
+                    }
                 },
                 this::seekToPosition);
         arrangementCanvas = result.canvas();

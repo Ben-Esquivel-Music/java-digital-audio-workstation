@@ -5,13 +5,17 @@ import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.CutClipsAction;
 import com.benesquivelmusic.daw.core.audio.DuplicateClipsAction;
 import com.benesquivelmusic.daw.core.audio.PasteClipsAction;
+import com.benesquivelmusic.daw.core.project.edit.RippleEditService;
+import com.benesquivelmusic.daw.core.project.edit.RippleValidationException;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.edit.RippleMode;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalDouble;
 
 /**
  * Handles clip clipboard operations (copy, cut, paste, duplicate, delete)
@@ -33,7 +37,9 @@ final class ClipEditController {
         void markProjectDirty();
         void updateStatusBar(String text, DawIcon icon);
         void showNotificationWithUndo(NotificationLevel level, String message, Runnable undoCallback);
+        void showNotification(NotificationLevel level, String message);
         EditorView editorView();
+        RippleMode rippleMode();
     }
 
     private final Host host;
@@ -62,7 +68,11 @@ final class ClipEditController {
         for (ClipboardEntry entry : selected) {
             entries.add(Map.entry(entry.sourceTrack(), entry.clip()));
         }
-        host.undoManager().execute(new CutClipsAction(entries));
+        UndoableAction action = buildDeleteAction(entries, "Cut");
+        if (action == null) {
+            return; // ripple validation failed — notification already shown
+        }
+        host.undoManager().execute(action);
         host.selectionModel().clearClipSelection();
         host.refreshArrangementCanvas();
         host.updateUndoRedoState();
@@ -124,12 +134,39 @@ final class ClipEditController {
         for (ClipboardEntry entry : selected) {
             entries.add(Map.entry(entry.sourceTrack(), entry.clip()));
         }
-        host.undoManager().execute(new CutClipsAction(entries));
+        UndoableAction action = buildDeleteAction(entries, "Delete");
+        if (action == null) {
+            return; // ripple validation failed — notification already shown
+        }
+        host.undoManager().execute(action);
         host.selectionModel().clearClipSelection();
         host.refreshArrangementCanvas();
         host.updateUndoRedoState();
         host.updateStatusBar("Deleted " + entries.size() + " clip(s)", null);
         host.markProjectDirty();
+    }
+
+    /**
+     * Builds the undoable action for a delete/cut, routing through the
+     * {@link RippleEditService} when the project's {@link RippleMode} is
+     * active. Returns {@code null} if ripple validation rejects the edit;
+     * in that case the user has already been notified.
+     */
+    private UndoableAction buildDeleteAction(
+            List<Map.Entry<Track, AudioClip>> entries, String verb) {
+        RippleMode mode = host.rippleMode();
+        if (mode == RippleMode.OFF) {
+            return new CutClipsAction(entries);
+        }
+        try {
+            return RippleEditService.buildRippleDelete(
+                    entries, mode, host.project().getTracks(),
+                    OptionalDouble.empty(), OptionalDouble.empty());
+        } catch (RippleValidationException e) {
+            host.showNotification(NotificationLevel.ERROR,
+                    verb + " cancelled — ripple would overlap clips: " + e.getMessage());
+            return null;
+        }
     }
 
     // ── Editor audio handle actions ─────────────────────────────────────────

@@ -3,9 +3,12 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.core.audio.*;
 import com.benesquivelmusic.daw.core.automation.*;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
+import com.benesquivelmusic.daw.core.project.edit.RippleEditService;
+import com.benesquivelmusic.daw.core.project.edit.RippleValidationException;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
+import com.benesquivelmusic.daw.sdk.edit.RippleMode;
 import javafx.scene.Cursor;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.MenuItem;
@@ -51,6 +54,8 @@ final class ClipInteractionController {
         void seekToPosition(double beat);
         SelectionModel selectionModel();
         void updateStatusBar(String text);
+        RippleMode rippleMode();
+        void showNotification(NotificationLevel level, String message);
     }
 
     private final ArrangementCanvas canvas;
@@ -624,11 +629,12 @@ final class ClipInteractionController {
             if (targetTrack == dragSourceTrack) {
                 // Same track — only move the beat position
                 if (Math.abs(beatDelta) > 0.001) {
-                    host.undoManager().execute(new MoveClipAction(dragClip, snappedNewStart));
-                    host.refreshCanvas();
+                    executeMove(dragClip, dragSourceTrack, snappedNewStart);
                 }
             } else {
                 // Cross-track move: remove from source, update position, add to target
+                // (Ripple semantics do not apply to cross-track moves — the source
+                // track closes the gap only when an explicit delete occurs.)
                 host.undoManager().execute(new CrossTrackMoveAction(
                         dragSourceTrack, targetTrack, dragClip, snappedNewStart));
                 host.refreshCanvas();
@@ -639,6 +645,30 @@ final class ClipInteractionController {
         dragSourceTrack = null;
         dragSourceTrackIndex = -1;
         groupDrag = false;
+    }
+
+    /**
+     * Executes a same-track clip move, routing through the {@link RippleEditService}
+     * when the project's {@link RippleMode} is active. Falls back to a plain
+     * {@link MoveClipAction} when ripple is {@link RippleMode#OFF} or when
+     * ripple validation rejects the edit (the user is notified in that case).
+     */
+    private void executeMove(AudioClip clip, Track track, double newStartBeat) {
+        RippleMode mode = host.rippleMode();
+        if (mode == RippleMode.OFF) {
+            host.undoManager().execute(new MoveClipAction(clip, newStartBeat));
+            host.refreshCanvas();
+            return;
+        }
+        try {
+            host.undoManager().execute(RippleEditService.buildRippleMove(
+                    clip, track, newStartBeat, mode, host.tracks(),
+                    java.util.OptionalDouble.empty(), java.util.OptionalDouble.empty()));
+            host.refreshCanvas();
+        } catch (RippleValidationException e) {
+            host.showNotification(NotificationLevel.ERROR,
+                    "Move cancelled — ripple would overlap clips: " + e.getMessage());
+        }
     }
 
     private void onMouseMoved(MouseEvent event) {

@@ -59,6 +59,12 @@ public enum DawAction {
             new KeyCodeCombination(KeyCode.D, KeyCombination.SHORTCUT_DOWN)),
     DELETE_SELECTION("Delete Selection", Category.EDITING,
             new KeyCodeCombination(KeyCode.DELETE)),
+    RIPPLE_MODE_OFF("Ripple Off", Category.EDITING,
+            new KeyCodeCombination(KeyCode.DIGIT1, KeyCombination.SHIFT_DOWN)),
+    RIPPLE_MODE_PER_TRACK("Ripple Per Track", Category.EDITING,
+            new KeyCodeCombination(KeyCode.DIGIT2, KeyCombination.SHIFT_DOWN)),
+    RIPPLE_MODE_ALL_TRACKS("Ripple All Tracks", Category.EDITING,
+            new KeyCodeCombination(KeyCode.DIGIT3, KeyCombination.SHIFT_DOWN)),
 
     // ── Session interchange ─────────────────────────────────────────────────
     IMPORT_SESSION("Import Session", Category.EDITING,
