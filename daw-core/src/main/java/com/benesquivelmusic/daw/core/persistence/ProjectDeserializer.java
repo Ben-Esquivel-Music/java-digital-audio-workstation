@@ -29,6 +29,7 @@ import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
 import com.benesquivelmusic.daw.core.track.AutomationMode;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackColor;
+import com.benesquivelmusic.daw.core.track.TrackFoldState;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.audio.ClipGainEnvelope;
@@ -305,6 +306,28 @@ public final class ProjectDeserializer {
         track.setArmed(parseBooleanAttr(elem, "armed"));
         track.setPhaseInverted(parseBooleanAttr(elem, "phase-inverted"));
         track.setCollapsed(parseBooleanAttr(elem, "collapsed"));
+
+        // Per-track lane fold state (automation, takes, MIDI). Older
+        // projects predate this attribute set — default to UNFOLDED so
+        // those sessions render exactly as before.
+        if (elem.hasAttribute("automation-folded")
+                || elem.hasAttribute("takes-folded")
+                || elem.hasAttribute("midi-folded")
+                || elem.hasAttribute("header-height-override")) {
+            boolean automationFolded = parseBooleanAttr(elem, "automation-folded");
+            boolean takesFolded = parseBooleanAttr(elem, "takes-folded");
+            boolean midiFolded = parseBooleanAttr(elem, "midi-folded");
+            double headerOverride = parseDoubleAttr(elem, "header-height-override", 0.0);
+            if (!Double.isFinite(headerOverride) || headerOverride < 0.0) {
+                headerOverride = 0.0;
+            }
+            try {
+                track.setFoldState(new TrackFoldState(
+                        automationFolded, takesFolded, midiFolded, headerOverride));
+            } catch (IllegalArgumentException ignored) {
+                // keep default UNFOLDED on any invalid attribute combination
+            }
+        }
 
         String automationModeStr = elem.getAttribute("automation-mode");
         if (!automationModeStr.isEmpty()) {

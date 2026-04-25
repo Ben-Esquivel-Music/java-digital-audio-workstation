@@ -51,6 +51,7 @@ public final class Track {
     private SoundFontAssignment soundFontAssignment;
     private String midiInputDeviceName;
     private AutomationMode automationMode = AutomationMode.READ;
+    private TrackFoldState foldState = TrackFoldState.UNFOLDED;
 
     /**
      * Creates a new track with the given name and type.
@@ -501,6 +502,30 @@ public final class Track {
      */
     public void setCollapsed(boolean collapsed) {
         this.collapsed = collapsed;
+    }
+
+    /**
+     * Returns the per-track lane-fold state.
+     *
+     * <p>Controls whether automation lanes, take/comping lanes, and the
+     * MIDI editor lane are drawn at full height or collapsed to a thin
+     * summary strip. Toggling fold never modifies the underlying clip,
+     * take, or automation data — see {@link TrackFoldState}.</p>
+     *
+     * @return the fold state (never {@code null})
+     */
+    public TrackFoldState getFoldState() {
+        return foldState;
+    }
+
+    /**
+     * Sets the per-track lane-fold state. Use the {@code with*} methods
+     * on {@link TrackFoldState} to derive an updated state.
+     *
+     * @param foldState the new fold state (must not be {@code null})
+     */
+    public void setFoldState(TrackFoldState foldState) {
+        this.foldState = Objects.requireNonNull(foldState, "foldState must not be null");
     }
 
     // ── Track freeze support ────────────────────────────────────────────────
