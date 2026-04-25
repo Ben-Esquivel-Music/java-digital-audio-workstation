@@ -441,6 +441,21 @@ final class TrackStripController {
             }
         });
 
+        // ── Automation fold disclosure triangle (Issue 568) ─────────────────
+        // Pro-Tools-style triangle next to the automation toggle: ▼ when
+        // expanded, ▶ when folded. Clicking flips the fold flag — the
+        // automation envelope collapses to a 3 px summary strip without
+        // touching the underlying automation data.
+        Button foldBtn = new Button(track.getFoldState().automationFolded() ? "\u25B6" : "\u25BC");
+        foldBtn.getStyleClass().add("track-mute-button");
+        foldBtn.setTooltip(new Tooltip("Fold Automation Lane (Shift+F)"));
+        foldBtn.setOnAction(_ -> {
+            if (arrangementCanvas != null) {
+                arrangementCanvas.toggleAutomationFold(track);
+                foldBtn.setText(track.getFoldState().automationFolded() ? "\u25B6" : "\u25BC");
+            }
+        });
+
         // ── Automation parameter selector ───────────────────────────────────
         ComboBox<AutomationParameter> paramSelector = new ComboBox<>();
         paramSelector.getItems().addAll(AutomationParameter.values());
@@ -468,7 +483,7 @@ final class TrackStripController {
 
         trackItem.getChildren().addAll(
                 typeIcon, ioLabel, nameLabel, insertChain, volRow, panRow,
-                autoBtn, paramSelector, spacer, clipIndicatorSlot,
+                autoBtn, foldBtn, paramSelector, spacer, clipIndicatorSlot,
                 outputLabel, phaseBtn, muteBtn, soloBtn, armBtn, removeBtn);
         if (uiIndex >= 0 && uiIndex < trackListPanel.getChildren().size()) {
             trackListPanel.getChildren().add(uiIndex, trackItem);

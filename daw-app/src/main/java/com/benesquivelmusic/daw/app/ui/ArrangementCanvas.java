@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.automation.AutomationLane;
 import com.benesquivelmusic.daw.core.automation.AutomationParameter;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackFoldState;
 import com.benesquivelmusic.daw.core.track.TrackType;
 
 import javafx.scene.canvas.Canvas;
@@ -354,6 +355,65 @@ public final class ArrangementCanvas extends Pane {
         return automationLaneVisibility.get(track.getId());
     }
 
+    // ── Lane folding (Issue 568) ───────────────────────────────────────────
+
+    /**
+     * Toggles the {@code automationFolded} flag on the given track.
+     * When folded, the automation sub-lane (if visible) collapses to a
+     * thin summary strip but the underlying automation data is left
+     * untouched.
+     */
+    void toggleAutomationFold(Track track) {
+        TrackFoldState s = track.getFoldState();
+        track.setFoldState(s.withAutomationFolded(!s.automationFolded()));
+        invalidateLaneCache();
+        redraw();
+    }
+
+    /**
+     * Toggles every foldable lane group ({@code automation}, {@code takes},
+     * {@code midi}) on the given track. When already partly folded this
+     * collapses everything; when fully folded this expands everything.
+     * Used by the {@code Shift+F} per-track shortcut.
+     */
+    void toggleAllFoldsForTrack(Track track) {
+        TrackFoldState s = track.getFoldState();
+        boolean targetFolded = !s.isFullyFolded();
+        track.setFoldState(new TrackFoldState(
+                targetFolded, targetFolded, targetFolded, s.headerHeightOverride()));
+        invalidateLaneCache();
+        redraw();
+    }
+
+    /**
+     * Folds (or, when already folded, unfolds) the automation lane group
+     * on every track. Used by the master "Fold all automation" toolbar
+     * button. If at least one track is currently expanded, all are
+     * folded; otherwise all are unfolded.
+     */
+    void toggleFoldAllAutomation() {
+        boolean anyExpanded = tracks.stream()
+                .anyMatch(t -> !t.getFoldState().automationFolded());
+        for (Track t : tracks) {
+            t.setFoldState(t.getFoldState().withAutomationFolded(anyExpanded));
+        }
+        invalidateLaneCache();
+        redraw();
+    }
+
+    /**
+     * Forces the next layout query to rebuild {@link #laneYCache} and
+     * {@link #slotBottomCache}. Needed because fold-state changes alter
+     * lane heights but {@link #redraw()} short-circuits on a zero-size
+     * canvas (e.g. before the stage has laid out the canvas) without
+     * rebuilding the caches — leaving subsequent hit-tests stale.
+     */
+    private void invalidateLaneCache() {
+        laneYCache = new double[0];
+        effectiveHeightCache = new double[0];
+        slotBottomCache = new double[0];
+    }
+
     // ── Getters (for testing) ──────────────────────────────────────────────
 
     double getPixelsPerBeat() {
@@ -450,6 +510,18 @@ public final class ArrangementCanvas extends Pane {
         return computeLaneY(trackIndex) + trackHeight;
     }
 
+    /**
+     * Returns the rendered height in pixels of the automation sub-lane
+     * for the given track index, honouring fold state. Returns
+     * {@code 0} when the track has no visible automation lane.
+     */
+    double automationLaneHeight(int trackIndex) {
+        if (trackIndex < 0 || trackIndex >= tracks.size()) {
+            return 0.0;
+        }
+        return automationLaneRenderHeight(tracks.get(trackIndex));
+    }
+
     // ── Rendering ──────────────────────────────────────────────────────────
 
     /**
@@ -467,10 +539,7 @@ public final class ArrangementCanvas extends Pane {
         double cumulative = 0;
         for (int i = 0; i < n; i++) {
             laneYCache[i] = cumulative - scrollYPixels;
-            double effective = trackHeight;
-            if (automationLaneVisibility.containsKey(tracks.get(i).getId())) {
-                effective += AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
-            }
+            double effective = trackHeight + automationLaneRenderHeight(tracks.get(i));
             effectiveHeightCache[i] = effective;
             cumulative += effective;
             slotBottomCache[i] = cumulative;
@@ -485,11 +554,29 @@ public final class ArrangementCanvas extends Pane {
         double y = 0;
         for (int i = 0; i < trackIndex; i++) {
             y += trackHeight;
-            if (i < tracks.size() && automationLaneVisibility.containsKey(tracks.get(i).getId())) {
-                y += AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
+            if (i < tracks.size()) {
+                y += automationLaneRenderHeight(tracks.get(i));
             }
         }
         return y - scrollYPixels;
+    }
+
+    /**
+     * Returns the rendered height (pixels) of the automation sub-lane
+     * for the given track. Honours per-track {@link TrackFoldState}: a
+     * folded lane collapses to {@link TrackFoldState#SUMMARY_STRIP_HEIGHT_PX}
+     * (a 3 px summary strip) so the user still sees that automation
+     * data exists; an unfolded lane uses
+     * {@link AutomationLaneRenderer#AUTOMATION_LANE_HEIGHT}; a track
+     * whose automation lane is not currently visible contributes 0.
+     */
+    private double automationLaneRenderHeight(Track track) {
+        if (!automationLaneVisibility.containsKey(track.getId())) {
+            return 0.0;
+        }
+        boolean folded = track.getFoldState().automationFolded();
+        return TrackFoldState.effectiveLaneHeight(folded,
+                AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT);
     }
 
     private void redraw() {
@@ -561,8 +648,20 @@ public final class ArrangementCanvas extends Pane {
             }
 
             double autoLaneY = laneYCache[i] + trackHeight;
-            double autoLaneHeight = AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
-            if (autoLaneY + autoLaneHeight < 0 || autoLaneY > canvasHeight) {
+            double autoLaneHeight = automationLaneRenderHeight(track);
+            if (autoLaneHeight <= 0
+                    || autoLaneY + autoLaneHeight < 0
+                    || autoLaneY > canvasHeight) {
+                continue;
+            }
+
+            // When the automation lane group is folded, replace the full
+            // envelope render with a thin summary strip so the user can
+            // see that data exists without consuming vertical real estate.
+            // (Issue 568 — "the renderer collapses the lane's height to 0
+            // but keeps a 3 px summary strip showing 'N lanes folded'".)
+            if (track.getFoldState().automationFolded()) {
+                AutomationLaneSummaryRenderer.draw(gc, autoLaneY, canvasWidth, autoLaneHeight);
                 continue;
             }
 

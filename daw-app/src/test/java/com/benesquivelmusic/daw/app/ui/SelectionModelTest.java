@@ -650,4 +650,59 @@ class SelectionModelTest {
         track.addClip(clip);
         model.selectClip(track, clip); // should not throw
     }
+
+    // ── Track-level helpers (Issue 568) ────────────────────────────────────
+
+    @Test
+    void getFocusedTrackReturnsNullWhenNothingSelected() {
+        assertThat(new SelectionModel().getFocusedTrack()).isNull();
+    }
+
+    @Test
+    void getFocusedTrackReturnsTrackOfMostRecentlySelectedAudioClip() {
+        SelectionModel model = new SelectionModel();
+        Track t1 = new Track("T1", TrackType.AUDIO);
+        Track t2 = new Track("T2", TrackType.AUDIO);
+        AudioClip c1 = new AudioClip("c1.wav", 0.0, 1.0, null);
+        AudioClip c2 = new AudioClip("c2.wav", 1.0, 1.0, null);
+        t1.addClip(c1);
+        t2.addClip(c2);
+        model.selectClip(t1, c1);
+        model.toggleClipSelection(t2, c2);
+
+        assertThat(model.getFocusedTrack()).isSameAs(t2);
+    }
+
+    @Test
+    void getFocusedTrackFallsBackToMidiClipTrack() {
+        SelectionModel model = new SelectionModel();
+        Track t = new Track("M", TrackType.MIDI);
+        MidiClip clip = t.getMidiClip();
+        clip.addNote(MidiNoteData.of(60, 0, 4, 100));
+        model.selectMidiClip(t, clip);
+
+        assertThat(model.getFocusedTrack()).isSameAs(t);
+    }
+
+    @Test
+    void getTracksInClipSelectionReturnsDistinctTracksInOrder() {
+        SelectionModel model = new SelectionModel();
+        Track t1 = new Track("T1", TrackType.AUDIO);
+        Track t2 = new Track("T2", TrackType.AUDIO);
+        AudioClip a = new AudioClip("a.wav", 0, 1, null);
+        AudioClip b = new AudioClip("b.wav", 0, 1, null);
+        AudioClip c = new AudioClip("c.wav", 0, 1, null);
+        t1.addClip(a); t1.addClip(c); t2.addClip(b);
+        model.selectClip(t1, a);
+        model.toggleClipSelection(t2, b);
+        model.toggleClipSelection(t1, c); // second clip on t1 — track must not duplicate
+
+        List<Track> tracks = model.getTracksInClipSelection();
+        assertThat(tracks).containsExactly(t1, t2);
+    }
+
+    @Test
+    void getTracksInClipSelectionIsEmptyWhenNothingSelected() {
+        assertThat(new SelectionModel().getTracksInClipSelection()).isEmpty();
+    }
 }

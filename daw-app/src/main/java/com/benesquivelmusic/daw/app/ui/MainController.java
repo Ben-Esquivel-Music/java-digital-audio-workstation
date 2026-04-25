@@ -21,6 +21,7 @@ import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.recording.MetronomeSettingsStore;
 import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackFoldState;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
@@ -591,6 +592,9 @@ public final class MainController {
                     @Override public void onNudgeRightLarge() { clipEditController.onNudgeRightLarge(); }
                     @Override public void onNudgeLeftSample() { clipEditController.onNudgeLeftSample(); }
                     @Override public void onNudgeRightSample() { clipEditController.onNudgeRightSample(); }
+                    @Override public void onToggleFoldFocusedTrack() { MainController.this.onToggleFoldFocusedTrack(); }
+                    @Override public void onToggleFoldSelectedTracks() { MainController.this.onToggleFoldSelectedTracks(); }
+                    @Override public void onFoldAllAutomation() { MainController.this.onFoldAllAutomation(); }
                 });
     }
 
@@ -733,6 +737,9 @@ public final class MainController {
                     @Override public void onToggleHistory() { historyPanelController.toggleHistoryPanel(); }
                     @Override public void onToggleNotificationHistory() { historyPanelController.toggleNotificationHistoryPanel(); }
                     @Override public void onToggleVisualizations() { vizPanelController.toggleRowVisibility(); }
+                    @Override public void onToggleFoldFocusedTrack() { MainController.this.onToggleFoldFocusedTrack(); }
+                    @Override public void onToggleFoldSelectedTracks() { MainController.this.onToggleFoldSelectedTracks(); }
+                    @Override public void onFoldAllAutomation() { MainController.this.onFoldAllAutomation(); }
                     @Override public void onHelp() { MainController.this.onHelp(); }
                 },
                 keyBindingManager);
@@ -751,6 +758,54 @@ public final class MainController {
     @FXML private void onToggleMetronome() { metronomeController.onToggleMetronome(); }
     @FXML private void onAddAudioTrack() { trackCreationController.onAddAudioTrack(); }
     @FXML private void onAddMidiTrack() { trackCreationController.onAddMidiTrack(); }
+
+    // ── Lane folding (Issue 568) ────────────────────────────────────────────
+    private void onToggleFoldFocusedTrack() {
+        if (arrangementCanvas == null) {
+            return;
+        }
+        Track focused = selectionModel.getFocusedTrack();
+        if (focused == null) {
+            status("No focused track to fold", DawIcon.INFO_CIRCLE);
+            return;
+        }
+        arrangementCanvas.toggleAllFoldsForTrack(focused);
+        status((focused.getFoldState().isFullyFolded() ? "Folded: " : "Unfolded: ")
+                + focused.getName(), DawIcon.AUTOMATION);
+        projectDirty = true;
+    }
+
+    private void onToggleFoldSelectedTracks() {
+        if (arrangementCanvas == null) {
+            return;
+        }
+        var tracks = selectionModel.getTracksInClipSelection();
+        if (tracks.isEmpty()) {
+            status("No selected tracks to fold", DawIcon.INFO_CIRCLE);
+            return;
+        }
+        boolean allFullyFolded = tracks.stream()
+                .allMatch(t -> t.getFoldState().isFullyFolded());
+        boolean targetFolded = !allFullyFolded;
+        for (Track t : tracks) {
+            t.setFoldState(new TrackFoldState(
+                    targetFolded, targetFolded, targetFolded,
+                    t.getFoldState().headerHeightOverride()));
+        }
+        refreshArrangementCanvas();
+        status((targetFolded ? "Folded " : "Unfolded ")
+                + tracks.size() + " selected track(s)", DawIcon.AUTOMATION);
+        projectDirty = true;
+    }
+
+    private void onFoldAllAutomation() {
+        if (arrangementCanvas == null) {
+            return;
+        }
+        arrangementCanvas.toggleFoldAllAutomation();
+        status("Toggled fold for all automation lanes", DawIcon.AUTOMATION);
+        projectDirty = true;
+    }
 
     @FXML private void onSaveProject() {
         projectLifecycleController.onSaveProject();

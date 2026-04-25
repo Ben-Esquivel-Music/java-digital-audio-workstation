@@ -295,4 +295,106 @@ class AutomationLaneCanvasTest {
         assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
         assertThat(ref.get()).isEqualTo(-1.0);
     }
+
+    // ── Lane folding (Issue 568) ───────────────────────────────────────────
+
+    @Test
+    void foldedAutomationLaneCollapsesToSummaryStripHeight() throws Exception {
+        Track t1 = new Track("Track 1", TrackType.AUDIO);
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<Double> expandedH = new AtomicReference<>();
+        AtomicReference<Double> foldedH = new AtomicReference<>();
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(List.of(t1));
+                canvas.setTrackHeight(80.0);
+                canvas.toggleAutomationLane(t1);
+                expandedH.set(canvas.automationLaneHeight(0));
+                canvas.toggleAutomationFold(t1);
+                foldedH.set(canvas.automationLaneHeight(0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(expandedH.get()).isEqualTo(AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT);
+        assertThat(foldedH.get()).isEqualTo(
+                com.benesquivelmusic.daw.core.track.TrackFoldState.SUMMARY_STRIP_HEIGHT_PX);
+    }
+
+    @Test
+    void hiddenAutomationLaneRendersZeroHeightRegardlessOfFoldFlag() throws Exception {
+        // A track without a visible automation lane contributes 0 height
+        // even if its fold flag is set — we don't hallucinate a strip
+        // for data that does not exist.
+        Track t1 = new Track("Track 1", TrackType.AUDIO);
+        t1.setFoldState(t1.getFoldState().withAutomationFolded(true));
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<Double> ref = new AtomicReference<>();
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(List.of(t1));
+                canvas.setTrackHeight(80.0);
+                ref.set(canvas.automationLaneHeight(0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(ref.get()).isEqualTo(0.0);
+    }
+
+    @Test
+    void hitTestAfterFoldingMatchesCollapsedHeight() throws Exception {
+        Track t1 = new Track("Track 1", TrackType.AUDIO);
+        Track t2 = new Track("Track 2", TrackType.AUDIO);
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<Integer> indexBefore = new AtomicReference<>();
+        AtomicReference<Integer> indexAfter = new AtomicReference<>();
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(List.of(t1, t2));
+                canvas.setTrackHeight(80.0);
+                canvas.toggleAutomationLane(t1);
+                // Expanded: t1 occupies [0, 140); t2 starts at y=140.
+                indexBefore.set(canvas.trackIndexAtY(141.0));
+                canvas.toggleAutomationFold(t1);
+                // Folded: t1 occupies [0, 83); t2 starts at y=83.
+                indexAfter.set(canvas.trackIndexAtY(85.0));
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(indexBefore.get()).isEqualTo(1);
+        assertThat(indexAfter.get()).isEqualTo(1);
+    }
+
+    @Test
+    void toggleFoldAllAutomationFoldsThenUnfoldsEveryTrack() throws Exception {
+        Track t1 = new Track("T1", TrackType.AUDIO);
+        Track t2 = new Track("T2", TrackType.AUDIO);
+        CountDownLatch latch = new CountDownLatch(1);
+        boolean[] passes = {false, false};
+        Platform.runLater(() -> {
+            try {
+                ArrangementCanvas canvas = new ArrangementCanvas();
+                canvas.setTracks(List.of(t1, t2));
+                canvas.toggleFoldAllAutomation();
+                passes[0] = t1.getFoldState().automationFolded()
+                        && t2.getFoldState().automationFolded();
+                canvas.toggleFoldAllAutomation();
+                passes[1] = !t1.getFoldState().automationFolded()
+                        && !t2.getFoldState().automationFolded();
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue();
+        assertThat(passes[0]).isTrue();
+        assertThat(passes[1]).isTrue();
+    }
 }

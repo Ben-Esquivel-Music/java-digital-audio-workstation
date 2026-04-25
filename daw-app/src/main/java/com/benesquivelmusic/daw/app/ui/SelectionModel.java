@@ -262,6 +262,45 @@ public final class SelectionModel {
     }
 
     /**
+     * Returns the distinct tracks that contain at least one currently
+     * selected clip (audio or MIDI), in selection order.
+     *
+     * <p>Used by track-level shortcuts that should operate on every
+     * track touched by the current clip selection — e.g. the Issue 568
+     * {@code Alt+Shift+F} "toggle fold for every selected track"
+     * shortcut.</p>
+     *
+     * @return the set of tracks (possibly empty, never {@code null})
+     */
+    public List<Track> getTracksInClipSelection() {
+        LinkedHashSet<Track> ordered = new LinkedHashSet<>();
+        ordered.addAll(selectedClips.values());
+        ordered.addAll(selectedMidiClips.values());
+        return List.copyOf(ordered);
+    }
+
+    /**
+     * Returns the most recently selected clip's track (audio first,
+     * then MIDI). Used by per-track shortcuts that act on a single
+     * "focused" track. Returns {@code null} when no clip is selected.
+     *
+     * @return the focused track, or {@code null}
+     */
+    public Track getFocusedTrack() {
+        Track last = null;
+        for (Track t : selectedClips.values()) {
+            last = t;
+        }
+        if (last != null) {
+            return last;
+        }
+        for (Track t : selectedMidiClips.values()) {
+            last = t;
+        }
+        return last;
+    }
+
+    /**
      * Returns {@code true} if the given clip is currently selected.
      *
      * @param clip the clip to check

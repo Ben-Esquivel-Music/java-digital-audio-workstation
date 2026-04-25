@@ -78,6 +78,12 @@ final class KeyboardShortcutController {
         void onNudgeLeftSample();
         /** Nudge the selection right by a single audio sample (Issue 566). */
         void onNudgeRightSample();
+        /** Toggle lane fold on the focused track (Issue 568). */
+        void onToggleFoldFocusedTrack();
+        /** Toggle lane fold on every track containing a selected clip (Issue 568). */
+        void onToggleFoldSelectedTracks();
+        /** Master "Fold all automation" toggle (Issue 568). */
+        void onFoldAllAutomation();
     }
 
     private final KeyBindingManager keyBindingManager;
@@ -154,6 +160,9 @@ final class KeyboardShortcutController {
         actionHandlers.put(DawAction.NUDGE_RIGHT_LARGE, host::onNudgeRightLarge);
         actionHandlers.put(DawAction.NUDGE_LEFT_SAMPLE, host::onNudgeLeftSample);
         actionHandlers.put(DawAction.NUDGE_RIGHT_SAMPLE, host::onNudgeRightSample);
+        actionHandlers.put(DawAction.TOGGLE_FOLD_FOCUSED_TRACK, host::onToggleFoldFocusedTrack);
+        actionHandlers.put(DawAction.TOGGLE_FOLD_SELECTED_TRACKS, host::onToggleFoldSelectedTracks);
+        actionHandlers.put(DawAction.FOLD_ALL_AUTOMATION, host::onFoldAllAutomation);
 
         for (DawAction action : DawAction.values()) {
             Runnable handler = actionHandlers.get(action);
