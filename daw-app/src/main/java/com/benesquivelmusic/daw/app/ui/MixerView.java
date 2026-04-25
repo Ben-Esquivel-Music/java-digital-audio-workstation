@@ -99,6 +99,22 @@ public final class MixerView extends VBox {
         header.setGraphic(IconNode.of(DawIcon.MIXER, 16));
         header.setPadding(new Insets(0, 0, 6, 0));
 
+        // Mixer maintenance menu — currently exposes "Reset solo safe to
+        // defaults", which restores return buses to solo-safe and track /
+        // master channels to not solo-safe.
+        MenuButton mixerMenu = new MenuButton("⋮");
+        mixerMenu.setTooltip(new Tooltip("Mixer options"));
+        MenuItem resetSoloSafeItem = new MenuItem("Reset solo safe to defaults");
+        resetSoloSafeItem.setOnAction(_ -> {
+            project.getMixer().resetSoloSafeToDefaults();
+            refresh();
+        });
+        mixerMenu.getItems().add(resetSoloSafeItem);
+
+        HBox headerRow = new HBox(8, header, mixerMenu);
+        headerRow.setAlignment(Pos.CENTER_LEFT);
+        headerRow.setPadding(new Insets(0, 0, 6, 0));
+
         channelStrips = new HBox(6);
         channelStrips.setAlignment(Pos.TOP_LEFT);
 
@@ -124,7 +140,7 @@ public final class MixerView extends VBox {
         scrollPane.setStyle("-fx-background: transparent; -fx-background-color: transparent;");
         VBox.setVgrow(scrollPane, Priority.ALWAYS);
 
-        getChildren().addAll(header, scrollPane);
+        getChildren().addAll(headerRow, scrollPane);
         setPadding(new Insets(8));
 
         refresh();
@@ -332,18 +348,22 @@ public final class MixerView extends VBox {
                     ? "-fx-background-color: #ff9100; -fx-text-fill: #0d0d0d;" : "");
         });
 
-        // Solo button
+        // Solo button — right-click to toggle "solo safe" (solo-in-place
+        // defeat). When solo-safe is on, a yellow ring highlights the button
+        // so the engineer can see at a glance which channels stay audible
+        // during a solo (typically reverb/group returns).
         Button soloBtn = new Button("S");
         soloBtn.getStyleClass().add("track-solo-button");
-        soloBtn.setTooltip(new Tooltip("Solo"));
+        soloBtn.setTooltip(new Tooltip("Solo (right-click for Solo Safe)"));
         soloBtn.setGraphic(IconNode.of(DawIcon.SOLO, CONTROL_ICON_SIZE));
+        applySoloButtonStyle(soloBtn, mixerChannel);
         soloBtn.setOnAction(_ -> {
             boolean solo = !mixerChannel.isSolo();
             mixerChannel.setSolo(solo);
             track.setSolo(solo);
-            soloBtn.setStyle(solo
-                    ? "-fx-background-color: #00e676; -fx-text-fill: #0d0d0d;" : "");
+            applySoloButtonStyle(soloBtn, mixerChannel);
         });
+        installSoloSafeContextMenu(soloBtn, mixerChannel);
 
         // Arm button
         Button armBtn = new Button("R");
@@ -647,10 +667,23 @@ public final class MixerView extends VBox {
             refresh();
         });
 
-        HBox buttonRow = new HBox(2, muteBtn, removeBtn);
-        buttonRow.setAlignment(Pos.CENTER);
+        // Solo button — return buses don't usually solo, but they expose the
+        // same right-click "Solo Safe" toggle as track strips so users can
+        // turn off solo-safe on a return bus that they want to silence under
+        // solo (e.g. a parallel-compression bus they want to A/B).
+        Button soloBtn = new Button("S");
+        soloBtn.getStyleClass().add("track-solo-button");
+        soloBtn.setTooltip(new Tooltip("Solo (right-click for Solo Safe)"));
+        soloBtn.setGraphic(IconNode.of(DawIcon.SOLO, CONTROL_ICON_SIZE));
+        applySoloButtonStyle(soloBtn, returnBus);
+        soloBtn.setOnAction(_ -> {
+            returnBus.setSolo(!returnBus.isSolo());
+            applySoloButtonStyle(soloBtn, returnBus);
+        });
+        installSoloSafeContextMenu(soloBtn, returnBus);
 
-        // Insert effects rack for return bus
+        HBox buttonRow = new HBox(2, muteBtn, soloBtn, removeBtn);
+        buttonRow.setAlignment(Pos.CENTER);
         int channels = project.getFormat().channels();
         double sr = project.getFormat().sampleRate();
         int bs = project.getFormat().bufferSize();
@@ -857,5 +890,54 @@ public final class MixerView extends VBox {
             label.setText("");
             label.setTooltip(null);
         }
+    }
+
+    /**
+     * Applies the visual style to a solo button so that its colour conveys
+     * both the solo and the solo-safe state. A soloed channel paints the
+     * button green; the solo-safe (solo-in-place defeat) flag adds a yellow
+     * ring so the engineer can see at a glance which channels stay audible
+     * during a solo.
+     */
+    private static void applySoloButtonStyle(Button soloBtn, MixerChannel channel) {
+        StringBuilder style = new StringBuilder();
+        if (channel.isSolo()) {
+            style.append("-fx-background-color: #00e676; -fx-text-fill: #0d0d0d;");
+        }
+        if (channel.isSoloSafe()) {
+            // Yellow ring marks "safe" channels (returns and groups) — they
+            // remain audible regardless of any other channel's solo state.
+            style.append("-fx-border-color: #ffeb3b; -fx-border-width: 2;"
+                    + " -fx-border-radius: 3; -fx-background-radius: 3;");
+        }
+        soloBtn.setStyle(style.toString());
+        Tooltip tip = new Tooltip(channel.isSoloSafe()
+                ? "Solo (Solo Safe enabled — right-click to disable)"
+                : "Solo (right-click for Solo Safe)");
+        soloBtn.setTooltip(tip);
+    }
+
+    /**
+     * Installs a right-click context menu on the supplied solo button that
+     * toggles the channel's solo-safe flag through {@link SetSoloSafeAction}
+     * (so the change participates in undo/redo). Invoked on track and
+     * return-bus channel strips.
+     */
+    private void installSoloSafeContextMenu(Button soloBtn, MixerChannel channel) {
+        ContextMenu menu = new ContextMenu();
+        CheckMenuItem soloSafeItem = new CheckMenuItem("Solo safe");
+        soloSafeItem.setSelected(channel.isSoloSafe());
+        soloSafeItem.setOnAction(_ -> {
+            boolean target = soloSafeItem.isSelected();
+            SetSoloSafeAction action = new SetSoloSafeAction(channel, target);
+            if (undoManager != null) {
+                undoManager.execute(action);
+            } else {
+                action.execute();
+            }
+            applySoloButtonStyle(soloBtn, channel);
+        });
+        menu.getItems().add(soloSafeItem);
+        soloBtn.setContextMenu(menu);
     }
 }
