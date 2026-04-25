@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.project;
 
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.marker.MarkerManager;
+import com.benesquivelmusic.daw.core.mixer.ChannelLinkManager;
 import com.benesquivelmusic.daw.core.mixer.CueBusManager;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
@@ -43,6 +44,7 @@ public final class DawProject {
     private final MixerSnapshotManager mixerSnapshotManager = new MixerSnapshotManager();
     private final CueBusManager cueBusManager = new CueBusManager();
     private final VcaGroupManager vcaGroupManager = new VcaGroupManager();
+    private final ChannelLinkManager channelLinkManager = new ChannelLinkManager();
     private final BedBusManager bedBusManager = new BedBusManager();
     private RoomConfiguration roomConfiguration;
     private ProjectMetadata metadata;
@@ -291,6 +293,21 @@ public final class DawProject {
      */
     public VcaGroupManager getVcaGroupManager() {
         return vcaGroupManager;
+    }
+
+    /**
+     * Returns the manager for {@link com.benesquivelmusic.daw.core.mixer.ChannelLink
+     * channel links} — the model behind the "stereo pair" / "Link Channels"
+     * toggle that pairs two adjacent mono mixer channels so that their
+     * faders, pans, mutes/solos, inserts, and sends move together.
+     *
+     * <p>The manager is always present (never {@code null}); legacy projects
+     * that had no links simply load with an empty list.</p>
+     *
+     * @return the channel link manager
+     */
+    public ChannelLinkManager getChannelLinkManager() {
+        return channelLinkManager;
     }
 
     /**
