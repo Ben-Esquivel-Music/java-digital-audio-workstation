@@ -47,6 +47,8 @@ final class PluginViewController {
     private MultibandCompressorPluginView multibandCompressorView;
     private Stage deEsserStage;
     private DeEsserPluginView deEsserView;
+    private Stage truePeakLimiterStage;
+    private TruePeakLimiterPluginView truePeakLimiterView;
 
     PluginViewController(Host host) {
         this.host = host;
@@ -137,6 +139,7 @@ final class PluginViewController {
             case BusCompressorPlugin.PLUGIN_ID -> openBusCompressorWindow((BusCompressorPlugin) plugin);
             case MultibandCompressorPlugin.PLUGIN_ID -> openMultibandCompressorWindow((MultibandCompressorPlugin) plugin);
             case DeEsserPlugin.PLUGIN_ID -> openDeEsserWindow((DeEsserPlugin) plugin);
+            case TruePeakLimiterPlugin.PLUGIN_ID -> openTruePeakLimiterWindow((TruePeakLimiterPlugin) plugin);
             case ParametricEqPlugin.PLUGIN_ID,
                  CompressorPlugin.PLUGIN_ID,
                  ReverbPlugin.PLUGIN_ID -> host.switchToMasteringView();
@@ -316,5 +319,33 @@ final class PluginViewController {
         stage.show();
         stage.toFront();
         deEsserStage = stage;
+    }
+
+    private void openTruePeakLimiterWindow(TruePeakLimiterPlugin plugin) {
+        if (truePeakLimiterStage != null) {
+            truePeakLimiterStage.show();
+            truePeakLimiterStage.toFront();
+            return;
+        }
+
+        truePeakLimiterView = new TruePeakLimiterPluginView(plugin.getProcessor());
+
+        Stage stage = new Stage(StageStyle.UTILITY);
+        stage.setTitle("True-Peak Limiter");
+        stage.setScene(new Scene(truePeakLimiterView));
+        DarkThemeHelper.applyTo(stage.getScene());
+        stage.setMinWidth(820);
+        stage.setMinHeight(280);
+        stage.setOnHidden(_ -> {
+            if (truePeakLimiterView != null) {
+                truePeakLimiterView.dispose();
+                truePeakLimiterView = null;
+            }
+            plugin.deactivate();
+            truePeakLimiterStage = null;
+        });
+        stage.show();
+        stage.toFront();
+        truePeakLimiterStage = stage;
     }
 }

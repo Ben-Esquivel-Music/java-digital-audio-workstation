@@ -48,7 +48,8 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
                 BinauralMonitorPlugin,
                 WaveshaperPlugin,
                 MatchEqPlugin,
-                DeEsserPlugin {
+                DeEsserPlugin,
+                TruePeakLimiterPlugin {
 
     /**
      * Lightweight metadata record used by the menu layer to populate plugin
