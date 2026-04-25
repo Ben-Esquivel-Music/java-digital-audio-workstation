@@ -24,9 +24,9 @@ class BuiltInDawPluginTest {
     }
 
     @Test
-    void shouldPermitExactlySixteenSubclasses() {
+    void shouldPermitExactlySeventeenSubclasses() {
         Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
-        assertThat(permitted).hasSize(16);
+        assertThat(permitted).hasSize(17);
     }
 
     @Test
@@ -48,7 +48,8 @@ class BuiltInDawPluginTest {
                 AcousticReverbPlugin.class,
                 BinauralMonitorPlugin.class,
                 WaveshaperPlugin.class,
-                MatchEqPlugin.class
+                MatchEqPlugin.class,
+                DeEsserPlugin.class
         );
     }
 
