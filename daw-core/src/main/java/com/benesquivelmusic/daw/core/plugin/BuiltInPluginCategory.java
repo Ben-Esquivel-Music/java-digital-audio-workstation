@@ -15,7 +15,10 @@ public enum BuiltInPluginCategory {
     ANALYZER("Analyzers"),
 
     /** A utility plugin (e.g., tuner, metronome). */
-    UTILITY("Utilities");
+    UTILITY("Utilities"),
+
+    /** A mastering-stage processor (e.g., true-peak brickwall limiter, mastering EQ). */
+    MASTERING("Mastering");
 
     private final String displayName;
 

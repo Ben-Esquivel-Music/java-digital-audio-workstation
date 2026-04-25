@@ -7,8 +7,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class BuiltInPluginCategoryTest {
 
     @Test
-    void shouldHaveFourCategories() {
-        assertThat(BuiltInPluginCategory.values()).hasSize(4);
+    void shouldHaveFiveCategories() {
+        assertThat(BuiltInPluginCategory.values()).hasSize(5);
     }
 
     @Test
@@ -17,7 +17,8 @@ class BuiltInPluginCategoryTest {
                 BuiltInPluginCategory.INSTRUMENT,
                 BuiltInPluginCategory.EFFECT,
                 BuiltInPluginCategory.ANALYZER,
-                BuiltInPluginCategory.UTILITY
+                BuiltInPluginCategory.UTILITY,
+                BuiltInPluginCategory.MASTERING
         );
     }
 
@@ -27,6 +28,7 @@ class BuiltInPluginCategoryTest {
         assertThat(BuiltInPluginCategory.valueOf("EFFECT")).isEqualTo(BuiltInPluginCategory.EFFECT);
         assertThat(BuiltInPluginCategory.valueOf("ANALYZER")).isEqualTo(BuiltInPluginCategory.ANALYZER);
         assertThat(BuiltInPluginCategory.valueOf("UTILITY")).isEqualTo(BuiltInPluginCategory.UTILITY);
+        assertThat(BuiltInPluginCategory.valueOf("MASTERING")).isEqualTo(BuiltInPluginCategory.MASTERING);
     }
 
     @Test
@@ -35,6 +37,7 @@ class BuiltInPluginCategoryTest {
         assertThat(BuiltInPluginCategory.EFFECT.displayName()).isEqualTo("Effects");
         assertThat(BuiltInPluginCategory.ANALYZER.displayName()).isEqualTo("Analyzers");
         assertThat(BuiltInPluginCategory.UTILITY.displayName()).isEqualTo("Utilities");
+        assertThat(BuiltInPluginCategory.MASTERING.displayName()).isEqualTo("Mastering");
     }
 
     @Test
