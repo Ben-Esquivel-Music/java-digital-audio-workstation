@@ -45,6 +45,8 @@ final class PluginViewController {
     private BusCompressorPluginView busCompressorView;
     private Stage multibandCompressorStage;
     private MultibandCompressorPluginView multibandCompressorView;
+    private Stage deEsserStage;
+    private DeEsserPluginView deEsserView;
 
     PluginViewController(Host host) {
         this.host = host;
@@ -134,6 +136,7 @@ final class PluginViewController {
             case SoundWaveTelemetryPlugin.PLUGIN_ID -> openSoundWaveTelemetryWindow((SoundWaveTelemetryPlugin) plugin);
             case BusCompressorPlugin.PLUGIN_ID -> openBusCompressorWindow((BusCompressorPlugin) plugin);
             case MultibandCompressorPlugin.PLUGIN_ID -> openMultibandCompressorWindow((MultibandCompressorPlugin) plugin);
+            case DeEsserPlugin.PLUGIN_ID -> openDeEsserWindow((DeEsserPlugin) plugin);
             case ParametricEqPlugin.PLUGIN_ID,
                  CompressorPlugin.PLUGIN_ID,
                  ReverbPlugin.PLUGIN_ID -> host.switchToMasteringView();
@@ -285,5 +288,33 @@ final class PluginViewController {
         stage.show();
         stage.toFront();
         multibandCompressorStage = stage;
+    }
+
+    private void openDeEsserWindow(DeEsserPlugin plugin) {
+        if (deEsserStage != null) {
+            deEsserStage.show();
+            deEsserStage.toFront();
+            return;
+        }
+
+        deEsserView = new DeEsserPluginView(plugin.getProcessor());
+
+        Stage stage = new Stage(StageStyle.UTILITY);
+        stage.setTitle("De-Esser");
+        stage.setScene(new Scene(deEsserView));
+        DarkThemeHelper.applyTo(stage.getScene());
+        stage.setMinWidth(720);
+        stage.setMinHeight(260);
+        stage.setOnHidden(_ -> {
+            if (deEsserView != null) {
+                deEsserView.dispose();
+                deEsserView = null;
+            }
+            plugin.deactivate();
+            deEsserStage = null;
+        });
+        stage.show();
+        stage.toFront();
+        deEsserStage = stage;
     }
 }

@@ -44,55 +44,74 @@ public final class BiquadFilter {
      */
     public static BiquadFilter create(FilterType type, double sampleRate,
                                       double frequency, double q, double gainDb) {
+        BiquadFilter f = new BiquadFilter(0, 0, 0, 0, 0);
+        f.recalculate(type, sampleRate, frequency, q, gainDb);
+        return f;
+    }
+
+    /**
+     * Computes biquad coefficients in place without allocating, writing the
+     * normalized values directly into {@link #b0}, {@link #b1}, {@link #b2},
+     * {@link #a1}, {@link #a2}. Internal state ({@link #z1}, {@link #z2}) is
+     * preserved so coefficient updates can be applied mid-stream without
+     * audible discontinuities.
+     */
+    private void computeCoefficients(FilterType type, double sampleRate,
+                                     double frequency, double q, double gainDb) {
         double w0 = 2.0 * Math.PI * frequency / sampleRate;
         double cosW0 = Math.cos(w0);
         double sinW0 = Math.sin(w0);
         double alpha = sinW0 / (2.0 * q);
         double A = Math.pow(10.0, gainDb / 40.0);
 
-        record RawCoeffs(double b0, double b1, double b2, double a0, double a1, double a2) {}
-
-        RawCoeffs raw = switch (type) {
-            case LOW_PASS -> new RawCoeffs(
-                    (1.0 - cosW0) / 2.0, 1.0 - cosW0, (1.0 - cosW0) / 2.0,
-                    1.0 + alpha, -2.0 * cosW0, 1.0 - alpha);
-            case HIGH_PASS -> new RawCoeffs(
-                    (1.0 + cosW0) / 2.0, -(1.0 + cosW0), (1.0 + cosW0) / 2.0,
-                    1.0 + alpha, -2.0 * cosW0, 1.0 - alpha);
-            case BAND_PASS -> new RawCoeffs(
-                    alpha, 0.0, -alpha,
-                    1.0 + alpha, -2.0 * cosW0, 1.0 - alpha);
-            case PEAK_EQ -> new RawCoeffs(
-                    1.0 + alpha * A, -2.0 * cosW0, 1.0 - alpha * A,
-                    1.0 + alpha / A, -2.0 * cosW0, 1.0 - alpha / A);
+        double rb0, rb1, rb2, ra0, ra1, ra2;
+        switch (type) {
+            case LOW_PASS -> {
+                rb0 = (1.0 - cosW0) / 2.0; rb1 = 1.0 - cosW0; rb2 = (1.0 - cosW0) / 2.0;
+                ra0 = 1.0 + alpha;          ra1 = -2.0 * cosW0; ra2 = 1.0 - alpha;
+            }
+            case HIGH_PASS -> {
+                rb0 = (1.0 + cosW0) / 2.0; rb1 = -(1.0 + cosW0); rb2 = (1.0 + cosW0) / 2.0;
+                ra0 = 1.0 + alpha;          ra1 = -2.0 * cosW0;   ra2 = 1.0 - alpha;
+            }
+            case BAND_PASS -> {
+                rb0 = alpha;       rb1 = 0.0;          rb2 = -alpha;
+                ra0 = 1.0 + alpha; ra1 = -2.0 * cosW0; ra2 = 1.0 - alpha;
+            }
+            case PEAK_EQ -> {
+                rb0 = 1.0 + alpha * A; rb1 = -2.0 * cosW0; rb2 = 1.0 - alpha * A;
+                ra0 = 1.0 + alpha / A; ra1 = -2.0 * cosW0; ra2 = 1.0 - alpha / A;
+            }
             case LOW_SHELF -> {
                 double sqrtA2alpha = 2.0 * Math.sqrt(A) * alpha;
-                yield new RawCoeffs(
-                        A * ((A + 1) - (A - 1) * cosW0 + sqrtA2alpha),
-                        2.0 * A * ((A - 1) - (A + 1) * cosW0),
-                        A * ((A + 1) - (A - 1) * cosW0 - sqrtA2alpha),
-                        (A + 1) + (A - 1) * cosW0 + sqrtA2alpha,
-                        -2.0 * ((A - 1) + (A + 1) * cosW0),
-                        (A + 1) + (A - 1) * cosW0 - sqrtA2alpha);
+                rb0 = A * ((A + 1) - (A - 1) * cosW0 + sqrtA2alpha);
+                rb1 = 2.0 * A * ((A - 1) - (A + 1) * cosW0);
+                rb2 = A * ((A + 1) - (A - 1) * cosW0 - sqrtA2alpha);
+                ra0 = (A + 1) + (A - 1) * cosW0 + sqrtA2alpha;
+                ra1 = -2.0 * ((A - 1) + (A + 1) * cosW0);
+                ra2 = (A + 1) + (A - 1) * cosW0 - sqrtA2alpha;
             }
             case HIGH_SHELF -> {
                 double sqrtA2alpha = 2.0 * Math.sqrt(A) * alpha;
-                yield new RawCoeffs(
-                        A * ((A + 1) + (A - 1) * cosW0 + sqrtA2alpha),
-                        -2.0 * A * ((A - 1) + (A + 1) * cosW0),
-                        A * ((A + 1) + (A - 1) * cosW0 - sqrtA2alpha),
-                        (A + 1) - (A - 1) * cosW0 + sqrtA2alpha,
-                        2.0 * ((A - 1) - (A + 1) * cosW0),
-                        (A + 1) - (A - 1) * cosW0 - sqrtA2alpha);
+                rb0 = A * ((A + 1) + (A - 1) * cosW0 + sqrtA2alpha);
+                rb1 = -2.0 * A * ((A - 1) + (A + 1) * cosW0);
+                rb2 = A * ((A + 1) + (A - 1) * cosW0 - sqrtA2alpha);
+                ra0 = (A + 1) - (A - 1) * cosW0 + sqrtA2alpha;
+                ra1 = 2.0 * ((A - 1) - (A + 1) * cosW0);
+                ra2 = (A + 1) - (A - 1) * cosW0 - sqrtA2alpha;
             }
-            case NOTCH -> new RawCoeffs(
-                    1.0, -2.0 * cosW0, 1.0,
-                    1.0 + alpha, -2.0 * cosW0, 1.0 - alpha);
-        };
+            case NOTCH -> {
+                rb0 = 1.0;         rb1 = -2.0 * cosW0; rb2 = 1.0;
+                ra0 = 1.0 + alpha; ra1 = -2.0 * cosW0; ra2 = 1.0 - alpha;
+            }
+            default -> throw new IllegalArgumentException("Unsupported filter type: " + type);
+        }
 
-        return new BiquadFilter(
-                raw.b0 / raw.a0, raw.b1 / raw.a0, raw.b2 / raw.a0,
-                raw.a1 / raw.a0, raw.a2 / raw.a0);
+        this.b0 = rb0 / ra0;
+        this.b1 = rb1 / ra0;
+        this.b2 = rb2 / ra0;
+        this.a1 = ra1 / ra0;
+        this.a2 = ra2 / ra0;
     }
 
     /**
@@ -183,7 +202,12 @@ public final class BiquadFilter {
     }
 
     /**
-     * Recalculates the filter coefficients.
+     * Recalculates the filter coefficients in place without allocating.
+     *
+     * <p>Internal state ({@code z1}, {@code z2}) is preserved so this method
+     * is safe to call from a real-time audio thread between processing
+     * blocks (e.g. when a UI parameter change updates frequency/Q on a
+     * Direct Form II Transposed biquad).</p>
      *
      * @param type       the filter type
      * @param sampleRate the sample rate in Hz
@@ -193,11 +217,6 @@ public final class BiquadFilter {
      */
     public void recalculate(FilterType type, double sampleRate,
                             double frequency, double q, double gainDb) {
-        BiquadFilter temp = create(type, sampleRate, frequency, q, gainDb);
-        this.b0 = temp.b0;
-        this.b1 = temp.b1;
-        this.b2 = temp.b2;
-        this.a1 = temp.a1;
-        this.a2 = temp.a2;
+        computeCoefficients(type, sampleRate, frequency, q, gainDb);
     }
 }
