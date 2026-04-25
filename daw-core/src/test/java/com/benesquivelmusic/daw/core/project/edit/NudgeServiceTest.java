@@ -108,7 +108,7 @@ class NudgeServiceTest {
 
     @Test
     void directionMultiplierSupportsTenTimesShortcut() {
-        // Ctrl+Shift+Right — 10× multiplier
+        // 10× multiplier (large nudge shortcut)
         double beats = NudgeService.beatsFor(
                 new NudgeSettings(NudgeUnit.GRID_STEPS, 1.0), ctx(), +10);
         assertThat(beats).isEqualTo(2.5, within(EPS));

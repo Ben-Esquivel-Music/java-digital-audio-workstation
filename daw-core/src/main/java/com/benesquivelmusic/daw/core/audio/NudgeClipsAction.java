@@ -11,13 +11,12 @@ import java.util.Objects;
  * An undoable action that nudges a group of {@link AudioClip}s by a
  * common beat delta.
  *
- * <p>"Nudge" is the small, keyboard-driven movement produced by
- * {@code Ctrl+Left/Right}, {@code Ctrl+Shift+Left/Right}, and
- * {@code Alt+Left/Right}. Semantically it is a move by a tiny, precise
- * amount — mechanically identical to a group move — but it is recorded
- * as a dedicated action so the undo stack reads "Nudge Clips" rather
- * than "Move Clips" and so multi-selection nudges collapse into a
- * single undo step (the explicit requirement from the user story).</p>
+ * <p>"Nudge" is the small, keyboard-driven movement produced by the
+ * application's nudge shortcuts. Semantically it is a move by a tiny,
+ * precise amount — mechanically identical to a group move — but it is
+ * recorded as a dedicated action so the undo stack reads "Nudge Clips"
+ * rather than "Move Clips" and so multi-selection nudges collapse into
+ * a single undo step (the explicit requirement from the user story).</p>
  *
  * <p>To avoid negative timeline positions, the requested delta is
  * clamped at execution time by the distance from the earliest clip in

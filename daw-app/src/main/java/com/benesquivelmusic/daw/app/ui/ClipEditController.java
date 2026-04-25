@@ -332,12 +332,22 @@ final class ClipEditController {
         String dir = directionMultiplier >= 0 ? "right" : "left";
         double mag = Math.abs(directionMultiplier);
         String magDesc = mag == 1.0 ? "" : (mag == 10.0 ? "10× " : String.format("%.1f× ", mag));
-        host.updateStatusBar(
-                String.format("Nudged %d clip(s) %s%s by %s %s",
-                        clips.size(), magDesc, dir,
-                        formatAmount(settings.amount()),
-                        formatUnit(settings.unit(), settings.amount())),
-                null);
+        String statusText = String.format("Nudged %d clip(s) %s%s by %s %s",
+                clips.size(), magDesc, dir,
+                formatAmount(settings.amount()),
+                formatUnit(settings.unit(), settings.amount()));
+        double appliedBeatDelta = action.getAppliedBeatDelta();
+        if (Math.abs(Math.abs(appliedBeatDelta) - Math.abs(beatDelta)) > 1.0e-9) {
+            statusText += String.format(" (clamped to %s)", formatBeatDelta(appliedBeatDelta));
+        }
+        host.updateStatusBar(statusText, null);
+    }
+
+    private static String formatBeatDelta(double beatDelta) {
+        double absBeatDelta = Math.abs(beatDelta);
+        return String.format("%.3f %s",
+                absBeatDelta,
+                absBeatDelta == 1.0 ? "beat" : "beats");
     }
 
     /**
@@ -385,8 +395,7 @@ final class ClipEditController {
         double bpm = transport.getTempo();
         double sampleRate = host.project().getFormat().sampleRate();
         double gridStep = host.gridStepBeats();
-        double barBeats = transport.getTimeSignatureNumerator() * (4.0
-                / Math.max(1, transport.getTimeSignatureDenominator()));
+        double barBeats = transport.getTimeSignatureNumerator();
         if (bpm <= 0.0 || sampleRate <= 0.0 || gridStep <= 0.0 || barBeats <= 0.0) {
             return null;
         }

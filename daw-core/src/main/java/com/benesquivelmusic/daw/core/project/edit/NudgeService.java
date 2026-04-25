@@ -13,10 +13,9 @@ import java.util.Objects;
  * <p>This service is deliberately side-effect free: it computes the
  * exact beat-delta for a given unit, tempo, sample rate, and grid
  * context, and returns an undoable action that the caller pushes onto
- * the undo stack. The keyboard shortcuts {@code Ctrl+Left/Right},
- * {@code Ctrl+Shift+Left/Right} (10× multiplier), and
- * {@code Alt+Left/Right} (single-sample) described in the user story
- * are wired in the UI layer on top of this service.</p>
+ * the undo stack. The single-step, 10× multiplier, and single-sample
+ * nudge variants described in the user story are wired in the UI layer
+ * on top of this service.</p>
  *
  * <p>Unit conversion formulae (tempo is in BPM = beats per minute,
  * sample rate in frames per second):</p>
@@ -83,7 +82,7 @@ public final class NudgeService {
      *                  {@code -1} for "nudge left / earlier". Any
      *                  other finite value is accepted and treated as a
      *                  user-supplied multiplier (e.g. {@code 10} for
-     *                  the {@code Ctrl+Shift} 10× shortcut).
+     *                  the 10× nudge shortcut).
      * @return the signed beat delta corresponding to one nudge in the
      *         configured unit multiplied by {@code direction}
      */
@@ -109,9 +108,8 @@ public final class NudgeService {
 
     /**
      * Convenience overload: convert a single sample (frame) to beats.
-     * This backs the {@code Alt+Left/Right} "nudge by one sample"
-     * shortcut, which is independent of the user's configured
-     * {@link NudgeSettings}.
+     * This backs the "nudge by one sample" shortcut, which is
+     * independent of the user's configured {@link NudgeSettings}.
      *
      * @param context   timing context
      * @param direction {@code +1} or {@code -1}
@@ -128,7 +126,7 @@ public final class NudgeService {
      * exactly what the user story's "multi-selection nudge is a single
      * undo step" requirement asks for.
      *
-     * <p>If {@code beatDelta} rounds to zero or {@code clips} is empty,
+     * <p>If {@code beatDelta} is zero or {@code clips} is empty,
      * {@code null} is returned and the caller should skip the undo
      * push.</p>
      *
