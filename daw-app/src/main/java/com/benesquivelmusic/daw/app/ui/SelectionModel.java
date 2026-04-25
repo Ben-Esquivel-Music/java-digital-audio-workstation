@@ -27,6 +27,32 @@ public final class SelectionModel {
     private final Map<AudioClip, Track> selectedClips = new LinkedHashMap<>();
     private final Map<MidiClip, Track> selectedMidiClips = new LinkedHashMap<>();
 
+    /**
+     * Unified recency index for clip selection across both audio and MIDI
+     * maps. Keyed by the clip instance itself (audio or MIDI), valued by
+     * the owning track. {@link LinkedHashMap}'s insertion order is
+     * preserved, and every {@link #recencyTouch(Object, Track)} call
+     * removes the prior entry before re-inserting so the most recent
+     * selection is always the tail entry — regardless of clip type.
+     *
+     * <p>{@link #getFocusedTrack()} returns the value of the tail entry,
+     * giving true cross-type recency. Entries are removed by
+     * {@link #recencyForget(Object)} when the corresponding clip is
+     * deselected (so the focus correctly falls back to the next most
+     * recent surviving selection), and cleared wholesale by
+     * {@link #clearClipSelection()}.
+     */
+    private final LinkedHashMap<Object, Track> selectionRecency = new LinkedHashMap<>();
+
+    private void recencyTouch(Object clip, Track track) {
+        selectionRecency.remove(clip);
+        selectionRecency.put(clip, track);
+    }
+
+    private void recencyForget(Object clip) {
+        selectionRecency.remove(clip);
+    }
+
     /** Optional callback invoked whenever the clip selection changes. */
     private Runnable selectionChangeListener;
 
@@ -141,7 +167,9 @@ public final class SelectionModel {
         Objects.requireNonNull(clip, "clip must not be null");
         selectedClips.clear();
         selectedMidiClips.clear();
+        selectionRecency.clear();
         selectedClips.put(clip, track);
+        recencyTouch(clip, track);
         fireSelectionChanged();
     }
 
@@ -160,8 +188,10 @@ public final class SelectionModel {
         Objects.requireNonNull(clip, "clip must not be null");
         if (selectedClips.containsKey(clip)) {
             selectedClips.remove(clip);
+            recencyForget(clip);
         } else {
             selectedClips.put(clip, track);
+            recencyTouch(clip, track);
         }
         fireSelectionChanged();
     }
@@ -186,10 +216,12 @@ public final class SelectionModel {
         }
         selectedClips.clear();
         selectedMidiClips.clear();
+        selectionRecency.clear();
         for (Track track : tracks) {
             for (AudioClip clip : track.getClips()) {
                 if (clip.getStartBeat() < regionEnd && clip.getEndBeat() > regionStart) {
                     selectedClips.put(clip, track);
+                    recencyTouch(clip, track);
                 }
             }
             if (track.getType() == TrackType.MIDI) {
@@ -199,6 +231,7 @@ public final class SelectionModel {
                     double midiEnd = midiClipEndBeat(midiClip);
                     if (midiStart < regionEnd && midiEnd > regionStart) {
                         selectedMidiClips.put(midiClip, track);
+                        recencyTouch(midiClip, track);
                     }
                 }
             }
@@ -231,6 +264,7 @@ public final class SelectionModel {
             for (AudioClip clip : track.getClips()) {
                 if (clip.getStartBeat() < regionEnd && clip.getEndBeat() > regionStart) {
                     selectedClips.put(clip, track);
+                    recencyTouch(clip, track);
                 }
             }
             if (track.getType() == TrackType.MIDI) {
@@ -240,6 +274,7 @@ public final class SelectionModel {
                     double midiEnd = midiClipEndBeat(midiClip);
                     if (midiStart < regionEnd && midiEnd > regionStart) {
                         selectedMidiClips.put(midiClip, track);
+                        recencyTouch(midiClip, track);
                     }
                 }
             }
@@ -262,6 +297,50 @@ public final class SelectionModel {
     }
 
     /**
+     * Returns the distinct tracks that contain at least one currently
+     * selected clip (audio or MIDI), in selection order.
+     *
+     * <p>Used by track-level shortcuts that should operate on every
+     * track touched by the current clip selection — e.g. the Issue 568
+     * {@code Alt+Shift+F} "toggle fold for every selected track"
+     * shortcut.</p>
+     *
+     * @return the set of tracks (possibly empty, never {@code null})
+     */
+    public List<Track> getTracksInClipSelection() {
+        LinkedHashSet<Track> ordered = new LinkedHashSet<>();
+        ordered.addAll(selectedClips.values());
+        ordered.addAll(selectedMidiClips.values());
+        return List.copyOf(ordered);
+    }
+
+    /**
+     * Returns the track of the most recently selected clip — audio or
+     * MIDI, whichever was added/toggled last. Used by per-track shortcuts
+     * (e.g. {@code Shift+F}) that act on a single "focused" track.
+     *
+     * <p>A unified recency index is maintained across both clip-type
+     * maps, so a recently-toggled MIDI clip on track B beats an older
+     * audio selection on track A — and, when the focused clip is later
+     * deselected, focus falls back to the next-most-recent surviving
+     * selection regardless of clip type (not "MIDI first, then audio").
+     * </p>
+     *
+     * @return the focused track, or {@code null} when nothing is selected
+     */
+    public Track getFocusedTrack() {
+        // The tail entry of the recency map is the most recent surviving
+        // selection across both audio and MIDI maps. When a clip is
+        // deselected its recency entry is removed too, so the new tail
+        // is the correct focus fallback without preferring either type.
+        Track focused = null;
+        for (Track t : selectionRecency.values()) {
+            focused = t;
+        }
+        return focused;
+    }
+
+    /**
      * Returns {@code true} if the given clip is currently selected.
      *
      * @param clip the clip to check
@@ -277,6 +356,7 @@ public final class SelectionModel {
     public void clearClipSelection() {
         selectedClips.clear();
         selectedMidiClips.clear();
+        selectionRecency.clear();
         fireSelectionChanged();
     }
 
@@ -295,7 +375,9 @@ public final class SelectionModel {
         Objects.requireNonNull(midiClip, "midiClip must not be null");
         selectedClips.clear();
         selectedMidiClips.clear();
+        selectionRecency.clear();
         selectedMidiClips.put(midiClip, track);
+        recencyTouch(midiClip, track);
         fireSelectionChanged();
     }
 
@@ -314,8 +396,10 @@ public final class SelectionModel {
         Objects.requireNonNull(midiClip, "midiClip must not be null");
         if (selectedMidiClips.containsKey(midiClip)) {
             selectedMidiClips.remove(midiClip);
+            recencyForget(midiClip);
         } else {
             selectedMidiClips.put(midiClip, track);
+            recencyTouch(midiClip, track);
         }
         fireSelectionChanged();
     }

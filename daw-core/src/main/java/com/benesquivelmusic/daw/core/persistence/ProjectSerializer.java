@@ -23,6 +23,7 @@ import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrackManager;
 import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
 import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackFoldState;
 import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy;
@@ -218,6 +219,13 @@ public final class ProjectSerializer {
         elem.setAttribute("collapsed", String.valueOf(track.isCollapsed()));
         elem.setAttribute("automation-mode", track.getAutomationMode().name());
         elem.setAttribute("input-monitoring", track.getInputMonitoring().name());
+
+        TrackFoldState foldState = track.getFoldState();
+        elem.setAttribute("automation-folded", String.valueOf(foldState.automationFolded()));
+        elem.setAttribute("takes-folded", String.valueOf(foldState.takesFolded()));
+        elem.setAttribute("midi-folded", String.valueOf(foldState.midiFolded()));
+        elem.setAttribute("header-height-override",
+                String.valueOf(foldState.headerHeightOverride()));
 
         String midiInputDeviceName = track.getMidiInputDeviceName();
         if (midiInputDeviceName != null) {

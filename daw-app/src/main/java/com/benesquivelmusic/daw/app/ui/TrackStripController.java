@@ -441,6 +441,43 @@ final class TrackStripController {
             }
         });
 
+        // ── Automation fold disclosure triangle (Issue 568) ─────────────────
+        // Pro-Tools-style triangle next to the automation toggle: ▼ when
+        // expanded, ▶ when folded. Clicking flips the {@code automationFolded}
+        // flag for this track only; the envelope collapses to a 3 px summary
+        // strip without touching the underlying automation data. The icon
+        // is also refreshed on any external fold-state change (keyboard
+        // shortcuts, Tracks menu, "Fold all automation") so it never goes
+        // stale.
+        Button foldBtn = new Button();
+        foldBtn.getStyleClass().add("track-mute-button");
+        foldBtn.setTooltip(new Tooltip("Fold Automation Lane"));
+        Runnable refreshFoldGlyph = () ->
+                foldBtn.setText(track.getFoldState().automationFolded() ? "\u25B6" : "\u25BC");
+        refreshFoldGlyph.run();
+        foldBtn.setOnAction(_ -> {
+            if (arrangementCanvas != null) {
+                arrangementCanvas.toggleAutomationFold(track);
+                // No need to update the glyph here — the canvas's fold
+                // listener fires `refreshFoldGlyph` for us, which keeps a
+                // single source of truth for the icon.
+            }
+        });
+        if (arrangementCanvas != null) {
+            // Use parentProperty: when the trackItem is removed from the
+            // VBox (e.g. track deletion or undo of track creation), the
+            // parent transitions to null — that's our cue to release the
+            // listener so it doesn't pin the captured `foldBtn` (and the
+            // rest of this strip) in memory and inflate work on every
+            // future fold change.
+            Runnable unsubscribe = arrangementCanvas.addFoldChangeListener(refreshFoldGlyph);
+            trackItem.parentProperty().addListener((obs, oldParent, newParent) -> {
+                if (newParent == null) {
+                    unsubscribe.run();
+                }
+            });
+        }
+
         // ── Automation parameter selector ───────────────────────────────────
         ComboBox<AutomationParameter> paramSelector = new ComboBox<>();
         paramSelector.getItems().addAll(AutomationParameter.values());
@@ -468,7 +505,7 @@ final class TrackStripController {
 
         trackItem.getChildren().addAll(
                 typeIcon, ioLabel, nameLabel, insertChain, volRow, panRow,
-                autoBtn, paramSelector, spacer, clipIndicatorSlot,
+                autoBtn, foldBtn, paramSelector, spacer, clipIndicatorSlot,
                 outputLabel, phaseBtn, muteBtn, soloBtn, armBtn, removeBtn);
         if (uiIndex >= 0 && uiIndex < trackListPanel.getChildren().size()) {
             trackListPanel.getChildren().add(uiIndex, trackItem);

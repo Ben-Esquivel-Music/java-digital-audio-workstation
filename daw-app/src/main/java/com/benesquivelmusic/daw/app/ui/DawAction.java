@@ -107,6 +107,15 @@ public enum DawAction {
             new KeyCodeCombination(KeyCode.A, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
     ADD_MIDI_TRACK("Add MIDI Track", Category.TRACKS,
             new KeyCodeCombination(KeyCode.M, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
+    // Issue 568 — fold/unfold automation, take, and MIDI lane groups on
+    // the focused track (Shift+F) or every track that contains a
+    // selected clip (Alt+Shift+F).
+    TOGGLE_FOLD_FOCUSED_TRACK("Toggle Lane Fold (Focused Track)", Category.TRACKS,
+            new KeyCodeCombination(KeyCode.F, KeyCombination.SHIFT_DOWN)),
+    TOGGLE_FOLD_SELECTED_TRACKS("Toggle Lane Fold (Selected Tracks)", Category.TRACKS,
+            new KeyCodeCombination(KeyCode.F, KeyCombination.SHIFT_DOWN, KeyCombination.ALT_DOWN)),
+    FOLD_ALL_AUTOMATION("Toggle Fold All Automation Lanes", Category.TRACKS,
+            new KeyCodeCombination(KeyCode.F, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
 
     // ── Edit Tools ───────────────────────────────────────────────────────────
     TOOL_POINTER("Pointer Tool", Category.TOOLS,

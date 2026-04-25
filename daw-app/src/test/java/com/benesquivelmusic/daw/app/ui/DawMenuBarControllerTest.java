@@ -116,6 +116,9 @@ class DawMenuBarControllerTest {
         @Override public void onToggleHistory() { toggleHistoryCalls++; }
         @Override public void onToggleNotificationHistory() { toggleNotificationsCalls++; }
         @Override public void onToggleVisualizations() { toggleVisualizationsCalls++; }
+        @Override public void onToggleFoldFocusedTrack() { /* not used in these tests */ }
+        @Override public void onToggleFoldSelectedTracks() { /* not used in these tests */ }
+        @Override public void onFoldAllAutomation() { /* not used in these tests */ }
         @Override public void onHelp() { helpCalls++; }
     }
 

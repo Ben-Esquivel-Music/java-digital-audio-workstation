@@ -650,4 +650,160 @@ class SelectionModelTest {
         track.addClip(clip);
         model.selectClip(track, clip); // should not throw
     }
+
+    // ── Track-level helpers (Issue 568) ────────────────────────────────────
+
+    @Test
+    void getFocusedTrackReturnsNullWhenNothingSelected() {
+        assertThat(new SelectionModel().getFocusedTrack()).isNull();
+    }
+
+    @Test
+    void getFocusedTrackReturnsTrackOfMostRecentlySelectedAudioClip() {
+        SelectionModel model = new SelectionModel();
+        Track t1 = new Track("T1", TrackType.AUDIO);
+        Track t2 = new Track("T2", TrackType.AUDIO);
+        AudioClip c1 = new AudioClip("c1.wav", 0.0, 1.0, null);
+        AudioClip c2 = new AudioClip("c2.wav", 1.0, 1.0, null);
+        t1.addClip(c1);
+        t2.addClip(c2);
+        model.selectClip(t1, c1);
+        model.toggleClipSelection(t2, c2);
+
+        assertThat(model.getFocusedTrack()).isSameAs(t2);
+    }
+
+    @Test
+    void getFocusedTrackFallsBackToMidiClipTrack() {
+        SelectionModel model = new SelectionModel();
+        Track t = new Track("M", TrackType.MIDI);
+        MidiClip clip = t.getMidiClip();
+        clip.addNote(MidiNoteData.of(60, 0, 4, 100));
+        model.selectMidiClip(t, clip);
+
+        assertThat(model.getFocusedTrack()).isSameAs(t);
+    }
+
+    @Test
+    void getTracksInClipSelectionReturnsDistinctTracksInOrder() {
+        SelectionModel model = new SelectionModel();
+        Track t1 = new Track("T1", TrackType.AUDIO);
+        Track t2 = new Track("T2", TrackType.AUDIO);
+        AudioClip a = new AudioClip("a.wav", 0, 1, null);
+        AudioClip b = new AudioClip("b.wav", 0, 1, null);
+        AudioClip c = new AudioClip("c.wav", 0, 1, null);
+        t1.addClip(a); t1.addClip(c); t2.addClip(b);
+        model.selectClip(t1, a);
+        model.toggleClipSelection(t2, b);
+        model.toggleClipSelection(t1, c); // second clip on t1 — track must not duplicate
+
+        List<Track> tracks = model.getTracksInClipSelection();
+        assertThat(tracks).containsExactly(t1, t2);
+    }
+
+    @Test
+    void getTracksInClipSelectionIsEmptyWhenNothingSelected() {
+        assertThat(new SelectionModel().getTracksInClipSelection()).isEmpty();
+    }
+
+    @Test
+    void getFocusedTrackPrefersMostRecentRegardlessOfClipType() {
+        // Mixed audio + MIDI selection: the last-toggled clip's track wins
+        // even when an older audio clip would otherwise be returned.
+        SelectionModel model = new SelectionModel();
+        Track audioTrack = new Track("A", TrackType.AUDIO);
+        Track midiTrack = new Track("M", TrackType.MIDI);
+        AudioClip ac = new AudioClip("a.wav", 0, 1, null);
+        audioTrack.addClip(ac);
+        MidiClip mc = midiTrack.getMidiClip();
+        mc.addNote(MidiNoteData.of(60, 0, 4, 100));
+
+        model.selectClip(audioTrack, ac);
+        model.toggleMidiClipSelection(midiTrack, mc);
+
+        // MIDI was added last → focus must follow it, not the older audio.
+        assertThat(model.getFocusedTrack()).isSameAs(midiTrack);
+
+        // Toggling another audio clip on top brings focus back to audio.
+        Track audioTrack2 = new Track("A2", TrackType.AUDIO);
+        AudioClip ac2 = new AudioClip("a2.wav", 0, 1, null);
+        audioTrack2.addClip(ac2);
+        model.toggleClipSelection(audioTrack2, ac2);
+        assertThat(model.getFocusedTrack()).isSameAs(audioTrack2);
+    }
+
+    @Test
+    void getFocusedTrackFallsBackWhenFocusedClipDeselected() {
+        SelectionModel model = new SelectionModel();
+        Track t1 = new Track("T1", TrackType.AUDIO);
+        Track t2 = new Track("T2", TrackType.AUDIO);
+        AudioClip c1 = new AudioClip("c1.wav", 0, 1, null);
+        AudioClip c2 = new AudioClip("c2.wav", 1, 1, null);
+        t1.addClip(c1);
+        t2.addClip(c2);
+        model.toggleClipSelection(t1, c1);
+        model.toggleClipSelection(t2, c2);
+        // Now untoggle t2 — focus should fall back to t1's surviving entry.
+        model.toggleClipSelection(t2, c2);
+        assertThat(model.getFocusedTrack()).isSameAs(t1);
+    }
+
+    @Test
+    void clearClipSelectionResetsFocus() {
+        SelectionModel model = new SelectionModel();
+        Track t = new Track("T", TrackType.AUDIO);
+        AudioClip c = new AudioClip("c.wav", 0, 1, null);
+        t.addClip(c);
+        model.selectClip(t, c);
+        assertThat(model.getFocusedTrack()).isSameAs(t);
+
+        model.clearClipSelection();
+        assertThat(model.getFocusedTrack()).isNull();
+    }
+
+    @Test
+    void getFocusedTrackFallbackPrefersMostRecentSurvivingAudioOverOlderMidi() {
+        // Older MIDI selection followed by a more recent audio selection;
+        // when the audio clip is deselected, the surviving MIDI must take
+        // focus. This guards against a fallback that always prefers MIDI
+        // (or always prefers audio) regardless of true recency.
+        SelectionModel model = new SelectionModel();
+        Track midiTrack = new Track("M", TrackType.MIDI);
+        Track audioTrack = new Track("A", TrackType.AUDIO);
+        MidiClip mc = midiTrack.getMidiClip();
+        mc.addNote(MidiNoteData.of(60, 0, 4, 100));
+        AudioClip ac = new AudioClip("a.wav", 0, 1, null);
+        audioTrack.addClip(ac);
+
+        // MIDI first, then audio (audio is most recent).
+        model.toggleMidiClipSelection(midiTrack, mc);
+        model.toggleClipSelection(audioTrack, ac);
+        assertThat(model.getFocusedTrack()).isSameAs(audioTrack);
+
+        // Deselect the audio clip; the MIDI selection survives and must
+        // become the new focus — the fallback is true cross-type recency,
+        // not a hard-coded MIDI-first rule.
+        model.toggleClipSelection(audioTrack, ac);
+        assertThat(model.getFocusedTrack()).isSameAs(midiTrack);
+    }
+
+    @Test
+    void getFocusedTrackFallbackPrefersMostRecentSurvivingMidiOverOlderAudio() {
+        // The mirror case: older audio + newer MIDI; deselecting the MIDI
+        // must surface the surviving audio. Guards the "audio first" bug.
+        SelectionModel model = new SelectionModel();
+        Track audioTrack = new Track("A", TrackType.AUDIO);
+        Track midiTrack = new Track("M", TrackType.MIDI);
+        AudioClip ac = new AudioClip("a.wav", 0, 1, null);
+        audioTrack.addClip(ac);
+        MidiClip mc = midiTrack.getMidiClip();
+        mc.addNote(MidiNoteData.of(60, 0, 4, 100));
+
+        model.toggleClipSelection(audioTrack, ac);
+        model.toggleMidiClipSelection(midiTrack, mc);
+        assertThat(model.getFocusedTrack()).isSameAs(midiTrack);
+
+        model.toggleMidiClipSelection(midiTrack, mc);
+        assertThat(model.getFocusedTrack()).isSameAs(audioTrack);
+    }
 }

@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.automation.AutomationLane;
 import com.benesquivelmusic.daw.core.automation.AutomationParameter;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackFoldState;
 import com.benesquivelmusic.daw.core.track.TrackType;
 
 import javafx.scene.canvas.Canvas;
@@ -13,6 +14,7 @@ import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.layout.Pane;
 import javafx.scene.paint.Color;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -354,6 +356,143 @@ public final class ArrangementCanvas extends Pane {
         return automationLaneVisibility.get(track.getId());
     }
 
+    // ── Lane folding (Issue 568) ───────────────────────────────────────────
+
+    /**
+     * Listeners notified after any fold-state change applied through this
+     * canvas. Track-strip controllers use this to refresh their disclosure
+     * triangles when fold state is mutated by a shortcut, menu action, or
+     * "fold all" toggle (rather than by clicking the strip's own button).
+     */
+    private final List<Runnable> foldChangeListeners = new ArrayList<>();
+
+    /**
+     * Registers a callback fired whenever any fold-state change is
+     * applied through this canvas (single track, multi-track, or master
+     * toggle). Used to keep external UI such as track-header disclosure
+     * triangles in sync.
+     *
+     * @return an unsubscribe handle — callers <strong>must</strong> invoke
+     *         {@link Runnable#run()} when the dependent UI is disposed
+     *         (e.g. when its track strip is removed) so the listener and
+     *         the nodes it captures can be garbage-collected. Returns a
+     *         no-op handle when {@code listener} is {@code null}.
+     */
+    Runnable addFoldChangeListener(Runnable listener) {
+        if (listener == null) {
+            return () -> { };
+        }
+        foldChangeListeners.add(listener);
+        return () -> foldChangeListeners.remove(listener);
+    }
+
+    /**
+     * Explicitly unregisters a previously-added fold-change listener.
+     * Equivalent to invoking the handle returned by
+     * {@link #addFoldChangeListener(Runnable)}; provided for callers that
+     * prefer to hold a reference to the listener directly.
+     */
+    void removeFoldChangeListener(Runnable listener) {
+        if (listener != null) {
+            foldChangeListeners.remove(listener);
+        }
+    }
+
+    private void fireFoldChanged() {
+        for (Runnable r : foldChangeListeners) {
+            r.run();
+        }
+    }
+
+    /**
+     * Toggles the {@code automationFolded} flag on the given track.
+     * When folded, the automation sub-lane (if visible) collapses to a
+     * thin summary strip but the underlying automation data is left
+     * untouched.
+     */
+    void toggleAutomationFold(Track track) {
+        TrackFoldState s = track.getFoldState();
+        track.setFoldState(s.withAutomationFolded(!s.automationFolded()));
+        invalidateLaneCache();
+        redraw();
+        fireFoldChanged();
+    }
+
+    /**
+     * Toggles every foldable lane group ({@code automation}, {@code takes},
+     * {@code midi}) on the given track. When already partly folded this
+     * collapses everything; when fully folded this expands everything.
+     * Used by the {@code Shift+F} per-track shortcut.
+     */
+    void toggleAllFoldsForTrack(Track track) {
+        TrackFoldState s = track.getFoldState();
+        boolean targetFolded = !s.isFullyFolded();
+        track.setFoldState(new TrackFoldState(
+                targetFolded, targetFolded, targetFolded, s.headerHeightOverride()));
+        invalidateLaneCache();
+        redraw();
+        fireFoldChanged();
+    }
+
+    /**
+     * Toggles every foldable lane group on each given track. The target
+     * fold state mirrors {@link #toggleAllFoldsForTrack(Track)}: when all
+     * given tracks are already fully folded they unfold, otherwise they
+     * fold. Used by the {@code Alt+Shift+F} multi-track shortcut so the
+     * lane caches stay consistent with single-track toggles.
+     *
+     * @return {@code true} if the resulting state is "folded", {@code
+     *         false} if "unfolded"; {@code false} when {@code tracks} is
+     *         empty
+     */
+    boolean toggleAllFoldsForTracks(List<Track> tracks) {
+        if (tracks == null || tracks.isEmpty()) {
+            return false;
+        }
+        boolean allFullyFolded = tracks.stream()
+                .allMatch(t -> t.getFoldState().isFullyFolded());
+        boolean targetFolded = !allFullyFolded;
+        for (Track t : tracks) {
+            t.setFoldState(new TrackFoldState(
+                    targetFolded, targetFolded, targetFolded,
+                    t.getFoldState().headerHeightOverride()));
+        }
+        invalidateLaneCache();
+        redraw();
+        fireFoldChanged();
+        return targetFolded;
+    }
+
+    /**
+     * Folds (or, when already folded, unfolds) the automation lane group
+     * on every track. Used by the master "Fold all automation" toolbar
+     * button. If at least one track is currently expanded, all are
+     * folded; otherwise all are unfolded.
+     */
+    void toggleFoldAllAutomation() {
+        boolean anyExpanded = tracks.stream()
+                .anyMatch(t -> !t.getFoldState().automationFolded());
+        for (Track t : tracks) {
+            t.setFoldState(t.getFoldState().withAutomationFolded(anyExpanded));
+        }
+        invalidateLaneCache();
+        redraw();
+        fireFoldChanged();
+    }
+
+    /**
+     * Forces the next layout query to rebuild {@link #laneYCache} and
+     * {@link #slotBottomCache}. Needed because fold-state changes alter
+     * lane heights but {@link #redraw()} short-circuits on a zero-size
+     * canvas (e.g. before the stage has laid out the canvas) without
+     * rebuilding the caches — leaving subsequent hit-tests stale.
+     */
+    private void invalidateLaneCache() {
+        laneYCache = new double[0];
+        effectiveHeightCache = new double[0];
+        slotBottomCache = new double[0];
+    }
+
     // ── Getters (for testing) ──────────────────────────────────────────────
 
     double getPixelsPerBeat() {
@@ -450,6 +589,18 @@ public final class ArrangementCanvas extends Pane {
         return computeLaneY(trackIndex) + trackHeight;
     }
 
+    /**
+     * Returns the rendered height in pixels of the automation sub-lane
+     * for the given track index, honouring fold state. Returns
+     * {@code 0} when the track has no visible automation lane.
+     */
+    double automationLaneHeight(int trackIndex) {
+        if (trackIndex < 0 || trackIndex >= tracks.size()) {
+            return 0.0;
+        }
+        return automationLaneRenderHeight(tracks.get(trackIndex));
+    }
+
     // ── Rendering ──────────────────────────────────────────────────────────
 
     /**
@@ -467,10 +618,7 @@ public final class ArrangementCanvas extends Pane {
         double cumulative = 0;
         for (int i = 0; i < n; i++) {
             laneYCache[i] = cumulative - scrollYPixels;
-            double effective = trackHeight;
-            if (automationLaneVisibility.containsKey(tracks.get(i).getId())) {
-                effective += AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
-            }
+            double effective = trackHeight + automationLaneRenderHeight(tracks.get(i));
             effectiveHeightCache[i] = effective;
             cumulative += effective;
             slotBottomCache[i] = cumulative;
@@ -485,11 +633,29 @@ public final class ArrangementCanvas extends Pane {
         double y = 0;
         for (int i = 0; i < trackIndex; i++) {
             y += trackHeight;
-            if (i < tracks.size() && automationLaneVisibility.containsKey(tracks.get(i).getId())) {
-                y += AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
+            if (i < tracks.size()) {
+                y += automationLaneRenderHeight(tracks.get(i));
             }
         }
         return y - scrollYPixels;
+    }
+
+    /**
+     * Returns the rendered height (pixels) of the automation sub-lane
+     * for the given track. Honours per-track {@link TrackFoldState}: a
+     * folded lane collapses to {@link TrackFoldState#SUMMARY_STRIP_HEIGHT_PX}
+     * (a 3 px summary strip) so the user still sees that automation
+     * data exists; an unfolded lane uses
+     * {@link AutomationLaneRenderer#AUTOMATION_LANE_HEIGHT}; a track
+     * whose automation lane is not currently visible contributes 0.
+     */
+    private double automationLaneRenderHeight(Track track) {
+        if (!automationLaneVisibility.containsKey(track.getId())) {
+            return 0.0;
+        }
+        boolean folded = track.getFoldState().automationFolded();
+        return TrackFoldState.effectiveLaneHeight(folded,
+                AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT);
     }
 
     private void redraw() {
@@ -561,8 +727,21 @@ public final class ArrangementCanvas extends Pane {
             }
 
             double autoLaneY = laneYCache[i] + trackHeight;
-            double autoLaneHeight = AutomationLaneRenderer.AUTOMATION_LANE_HEIGHT;
-            if (autoLaneY + autoLaneHeight < 0 || autoLaneY > canvasHeight) {
+            double autoLaneHeight = automationLaneRenderHeight(track);
+            if (autoLaneHeight <= 0
+                    || autoLaneY + autoLaneHeight < 0
+                    || autoLaneY > canvasHeight) {
+                continue;
+            }
+
+            // When the automation lane group is folded, replace the full
+            // envelope render with a thin summary strip so the user can
+            // see that data exists without consuming vertical real estate.
+            // (Issue 568 — the renderer collapses the lane's height to
+            // SUMMARY_STRIP_HEIGHT_PX (3 px) and paints a tinted strip
+            // showing that folded automation data exists.)
+            if (track.getFoldState().automationFolded()) {
+                AutomationLaneSummaryRenderer.draw(gc, autoLaneY, canvasWidth, autoLaneHeight);
                 continue;
             }
 

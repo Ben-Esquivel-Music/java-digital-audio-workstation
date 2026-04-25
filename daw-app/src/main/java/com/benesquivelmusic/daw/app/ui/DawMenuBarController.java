@@ -77,6 +77,11 @@ public final class DawMenuBarController {
         void onToggleNotificationHistory();
         void onToggleVisualizations();
 
+        // Track actions (Issue 568 — lane folding)
+        void onToggleFoldFocusedTrack();
+        void onToggleFoldSelectedTracks();
+        void onFoldAllAutomation();
+
         // Help actions
         void onHelp();
     }
@@ -124,6 +129,7 @@ public final class DawMenuBarController {
         menuBar.getMenus().addAll(
                 buildFileMenu(),
                 buildEditMenu(),
+                buildTracksMenu(),
                 buildPluginsMenu(),
                 buildWindowMenu(),
                 buildHelpMenu()
@@ -248,6 +254,26 @@ public final class DawMenuBarController {
         );
 
         return editMenu;
+    }
+
+    // ── Tracks Menu ──────────────────────────────────────────────────────────
+
+    private Menu buildTracksMenu() {
+        Menu tracksMenu = new Menu("Tracks");
+        tracksMenu.getStyleClass().add("daw-menu");
+
+        // Issue 568 — lane folding for automation, take, and MIDI lane groups.
+        MenuItem foldFocused = menuItem("Toggle Lane Fold (Focused Track)", DawIcon.AUTOMATION,
+                DawAction.TOGGLE_FOLD_FOCUSED_TRACK, host::onToggleFoldFocusedTrack);
+        MenuItem foldSelected = menuItem("Toggle Lane Fold (Selected Tracks)", DawIcon.AUTOMATION,
+                DawAction.TOGGLE_FOLD_SELECTED_TRACKS, host::onToggleFoldSelectedTracks);
+        MenuItem foldAllAutomation = menuItem("Toggle Fold All Automation Lanes", DawIcon.AUTOMATION,
+                DawAction.FOLD_ALL_AUTOMATION, host::onFoldAllAutomation);
+
+        tracksMenu.getItems().addAll(foldFocused, foldSelected,
+                new SeparatorMenuItem(), foldAllAutomation);
+
+        return tracksMenu;
     }
 
     // ── Plugins Menu ─────────────────────────────────────────────────────────
