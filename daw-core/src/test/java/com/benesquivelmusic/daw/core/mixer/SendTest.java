@@ -85,7 +85,7 @@ class SendTest {
     void shouldRejectNullMode() {
         MixerChannel target = new MixerChannel("Bus");
 
-        assertThatThrownBy(() -> new Send(target, 0.5, null))
+        assertThatThrownBy(() -> new Send(target, 0.5, (SendMode) null))
                 .isInstanceOf(NullPointerException.class);
     }
 

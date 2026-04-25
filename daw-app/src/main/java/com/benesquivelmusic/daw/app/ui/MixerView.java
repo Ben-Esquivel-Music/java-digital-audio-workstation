@@ -395,6 +395,20 @@ public final class MixerView extends VBox {
             sendSlider.getStyleClass().add("mixer-fader");
             sendSlider.setTooltip(new Tooltip("Send to " + returnBus.getName()));
 
+            // Compact tap-point cycler ("P" pre-inserts / "F" pre-fader /
+            // "I" post-fader… we use a single letter that the user can click
+            // to cycle through the three tap positions). Tooltip explains all
+            // three states. The button reflects the current tap of the send
+            // (or the default POST_FADER when no send exists yet).
+            Button tapButton = new Button();
+            tapButton.getStyleClass().add("mixer-send-tap");
+            tapButton.setStyle("-fx-padding: 0 4 0 4; -fx-font-size: 10px;");
+            tapButton.setTooltip(new Tooltip(
+                    "Send tap point — click to cycle:\n"
+                            + "  I = pre-Inserts (before any insert effect)\n"
+                            + "  F = pre-Fader (after inserts, before fader)\n"
+                            + "  P = Post-fader (default)"));
+
             MixerChannel targetBus = returnBus;
             // Capture the send state before a drag starts so that undo restores
             // to the pre-drag state (the slider listener modifies the model live)
@@ -413,7 +427,7 @@ public final class MixerView extends VBox {
                 if (send != null) {
                     send.setLevel(value);
                 } else if (value > 0.0) {
-                    mixerChannel.addSend(new Send(targetBus, value, SendMode.POST_FADER));
+                    mixerChannel.addSend(new Send(targetBus, value, SendTap.POST_FADER));
                 }
                 sendIndicator.setFill(value > 0.0 ? Color.web("#00e676") : Color.web("#555555"));
             });
@@ -445,38 +459,62 @@ public final class MixerView extends VBox {
                 }
             });
 
-            // Right-click context menu to toggle pre/post fader
+            // Right-click context menu and tap-cycler button to choose the
+            // send tap point. Both delegate to SetSendTapAction so changes
+            // are undoable and consistent with the rest of the mixer.
+            Runnable refreshTapButton = () -> {
+                Send s = mixerChannel.getSendForTarget(targetBus);
+                SendTap currentTap = s != null ? s.getTap() : SendTap.POST_FADER;
+                tapButton.setText(switch (currentTap) {
+                    case PRE_INSERTS -> "I";
+                    case PRE_FADER   -> "F";
+                    case POST_FADER  -> "P";
+                });
+            };
+            refreshTapButton.run();
+
+            java.util.function.Consumer<SendTap> applyTap = newTap -> {
+                Send s = mixerChannel.getSendForTarget(targetBus);
+                if (s == null) {
+                    return; // nothing to update until the send exists
+                }
+                if (undoManager != null) {
+                    undoManager.execute(new SetSendTapAction(mixerChannel, targetBus, newTap));
+                } else {
+                    s.setTap(newTap);
+                }
+                refreshTapButton.run();
+            };
+
+            tapButton.setOnAction(_ -> {
+                Send s = mixerChannel.getSendForTarget(targetBus);
+                if (s == null) {
+                    // Auto-create a silent send so the cycler has something
+                    // to act on; the user can then raise the slider.
+                    mixerChannel.addSend(new Send(targetBus, 0.0, SendTap.POST_FADER));
+                    s = mixerChannel.getSendForTarget(targetBus);
+                }
+                SendTap next = switch (s.getTap()) {
+                    case POST_FADER  -> SendTap.PRE_FADER;
+                    case PRE_FADER   -> SendTap.PRE_INSERTS;
+                    case PRE_INSERTS -> SendTap.POST_FADER;
+                };
+                applyTap.accept(next);
+            });
+
             ContextMenu sendMenu = new ContextMenu();
+            MenuItem preInsertsItem = new MenuItem("Pre-Inserts");
+            preInsertsItem.setOnAction(_ -> applyTap.accept(SendTap.PRE_INSERTS));
             MenuItem preFaderItem = new MenuItem("Pre-Fader");
-            preFaderItem.setOnAction(_ -> {
-                Send send = mixerChannel.getSendForTarget(targetBus);
-                if (send != null) {
-                    if (undoManager != null) {
-                        SetSendRoutingAction action = new SetSendRoutingAction(
-                                mixerChannel, targetBus, send.getLevel(), SendMode.PRE_FADER);
-                        undoManager.execute(action);
-                    } else {
-                        send.setMode(SendMode.PRE_FADER);
-                    }
-                }
-            });
+            preFaderItem.setOnAction(_ -> applyTap.accept(SendTap.PRE_FADER));
             MenuItem postFaderItem = new MenuItem("Post-Fader");
-            postFaderItem.setOnAction(_ -> {
-                Send send = mixerChannel.getSendForTarget(targetBus);
-                if (send != null) {
-                    if (undoManager != null) {
-                        SetSendRoutingAction action = new SetSendRoutingAction(
-                                mixerChannel, targetBus, send.getLevel(), SendMode.POST_FADER);
-                        undoManager.execute(action);
-                    } else {
-                        send.setMode(SendMode.POST_FADER);
-                    }
-                }
-            });
-            sendMenu.getItems().addAll(preFaderItem, postFaderItem);
+            postFaderItem.setOnAction(_ -> applyTap.accept(SendTap.POST_FADER));
+            sendMenu.getItems().addAll(preInsertsItem, preFaderItem, postFaderItem);
             sendLabel.setContextMenu(sendMenu);
 
-            sendBox.getChildren().addAll(sendLabel, sendSlider);
+            HBox sliderRow = new HBox(2, sendSlider, tapButton);
+            sliderRow.setAlignment(Pos.CENTER_LEFT);
+            sendBox.getChildren().addAll(sendLabel, sliderRow);
         }
 
         // Legacy send level control (for backward compatibility)

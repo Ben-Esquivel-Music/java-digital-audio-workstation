@@ -436,6 +436,7 @@ public final class ProjectSerializer {
                 Element sendElem = document.createElement("send");
                 sendElem.setAttribute("level", String.valueOf(send.getLevel()));
                 sendElem.setAttribute("mode", send.getMode().name());
+                sendElem.setAttribute("tap", send.getTap().name());
                 int targetIndex = returnBuses.indexOf(send.getTarget());
                 sendElem.setAttribute("target-index", String.valueOf(targetIndex));
                 sendsElem.appendChild(sendElem);

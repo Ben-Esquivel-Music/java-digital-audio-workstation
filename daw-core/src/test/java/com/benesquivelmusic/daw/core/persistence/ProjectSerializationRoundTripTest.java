@@ -192,6 +192,32 @@ class ProjectSerializationRoundTripTest {
     }
 
     @Test
+    void shouldRoundTripSendTapPoints() throws IOException {
+        // All three SendTap values must round-trip through XML, including
+        // PRE_INSERTS (the new value introduced for cue/parallel sends).
+        DawProject original = new DawProject("Tap Test", AudioFormat.CD_QUALITY);
+        Track track = original.createAudioTrack("Drums");
+        MixerChannel channel = original.getMixerChannelForTrack(track);
+
+        MixerChannel reverbBus = original.getMixer().getAuxBus();
+        MixerChannel cueBus = original.getMixer().addReturnBus("Cue");
+        MixerChannel parallelBus = original.getMixer().addReturnBus("Parallel");
+
+        channel.addSend(new Send(reverbBus, 0.3, SendTap.POST_FADER));
+        channel.addSend(new Send(cueBus, 0.7, SendTap.PRE_FADER));
+        channel.addSend(new Send(parallelBus, 0.5, SendTap.PRE_INSERTS));
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        MixerChannel restoredChannel = restored.getMixer().getChannels().get(0);
+        assertThat(restoredChannel.getSends()).hasSize(3);
+        assertThat(restoredChannel.getSends().get(0).getTap()).isEqualTo(SendTap.POST_FADER);
+        assertThat(restoredChannel.getSends().get(1).getTap()).isEqualTo(SendTap.PRE_FADER);
+        assertThat(restoredChannel.getSends().get(2).getTap()).isEqualTo(SendTap.PRE_INSERTS);
+    }
+
+    @Test
     void shouldRoundTripSendRouting() throws IOException {
         DawProject original = new DawProject("Send Test", AudioFormat.CD_QUALITY);
         Track track = original.createAudioTrack("Vocals");

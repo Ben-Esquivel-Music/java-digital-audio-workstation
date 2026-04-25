@@ -126,7 +126,8 @@ public record MixerSnapshot(String name,
         for (Send send : channel.getSends()) {
             int targetIndex = returnBuses.indexOf(send.getTarget());
             if (targetIndex >= 0) {
-                sends.add(new SendSnapshot(targetIndex, send.getLevel(), send.getMode()));
+                sends.add(new SendSnapshot(targetIndex, send.getLevel(),
+                        send.getMode(), send.getTap()));
             }
         }
 
@@ -185,7 +186,7 @@ public record MixerSnapshot(String name,
             Send send = existingSends.get(i);
             if (snap.targetIndex() >= 0 && snap.targetIndex() < returnBuses.size()) {
                 send.setLevel(snap.level());
-                send.setMode(snap.mode());
+                send.setTap(snap.tap());
             }
         }
     }
