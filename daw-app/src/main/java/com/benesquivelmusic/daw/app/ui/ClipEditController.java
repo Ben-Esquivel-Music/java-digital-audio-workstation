@@ -365,8 +365,10 @@ final class ClipEditController {
             }
             return clips;
         }
-        // Fall back to clips contained within the current time selection
-        // (time-range shifts its contained clips — Issue 566).
+        // Fall back to clips that overlap the current time selection
+        // (time-range shifts its overlapping clips — Issue 566). Uses the
+        // same overlap semantics as SelectionModel.selectClipsInRegion so
+        // that "nudge clips in the time range" is consistent across the UI.
         if (sm.hasSelection()) {
             double s = sm.getStartBeat();
             double e = sm.getEndBeat();
@@ -374,7 +376,7 @@ final class ClipEditController {
                 List<AudioClip> clips = new ArrayList<>();
                 for (Track t : host.project().getTracks()) {
                     for (AudioClip c : t.getClips()) {
-                        if (c.getStartBeat() >= s && c.getStartBeat() < e) {
+                        if (c.getStartBeat() < e && c.getEndBeat() > s) {
                             clips.add(c);
                         }
                     }
@@ -392,7 +394,11 @@ final class ClipEditController {
      */
     private NudgeService.TimingContext buildTimingContext() {
         var transport = host.project().getTransport();
-        double bpm = transport.getTempo();
+        // Use the tempo at the current playhead beat so tempo-map changes
+        // (e.g. accelerando) affect FRAMES/MILLISECONDS nudges correctly,
+        // mirroring sampleStepBeats().
+        double playheadBeat = transport.getPositionInBeats();
+        double bpm = transport.getTempoMap().getTempoAtBeat(playheadBeat);
         double sampleRate = host.project().getFormat().sampleRate();
         double gridStep = host.gridStepBeats();
         double barBeats = transport.getTimeSignatureNumerator();

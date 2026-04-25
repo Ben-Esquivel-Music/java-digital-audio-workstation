@@ -1037,10 +1037,13 @@ class ProjectSerializationRoundTripTest {
     void shouldDefaultNudgeSettingsForLegacyProjects() throws IOException {
         DawProject original = new DawProject("Legacy", AudioFormat.CD_QUALITY);
 
-        // Strip the <nudge-settings/> element so the deserializer sees a
+        // Strip the <nudge-settings> element so the deserializer sees a
         // pre-feature project XML and must fall back to NudgeSettings.DEFAULT.
+        // Match both self-closing (<nudge-settings .../>) and explicit
+        // end-tag (<nudge-settings ...></nudge-settings>) forms in case
+        // the XML transformer ever switches representations.
         String xml = serializer.serialize(original)
-                .replaceAll("(?s)\\s*<nudge-settings[^/]*/>", "");
+                .replaceAll("(?s)\\s*<nudge-settings\\b[^>]*(?:/>|>.*?</nudge-settings>)", "");
         assertThat(xml).doesNotContain("<nudge-settings");
         DawProject restored = deserializer.deserialize(xml);
 

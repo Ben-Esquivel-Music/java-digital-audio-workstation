@@ -126,7 +126,9 @@ public final class NudgeService {
      * exactly what the user story's "multi-selection nudge is a single
      * undo step" requirement asks for.
      *
-     * <p>If {@code beatDelta} is zero or {@code clips} is empty,
+     * <p>If {@code beatDelta} is zero, {@code clips} is empty, or every
+     * requested move would be clamped away (negative delta against a
+     * selection whose earliest clip is already at beat {@code 0}),
      * {@code null} is returned and the caller should skip the undo
      * push.</p>
      *
@@ -140,6 +142,21 @@ public final class NudgeService {
         Objects.requireNonNull(clips, "clips must not be null");
         if (clips.isEmpty() || beatDelta == 0.0 || !Double.isFinite(beatDelta)) {
             return null;
+        }
+        // Pre-clamp negative deltas: if every clip in the selection is
+        // already at beat 0 (or the selection's earliest start beat is
+        // 0), a leftward nudge would clamp to 0 in NudgeClipsAction.execute()
+        // and produce a no-op undo step. Skip the push so the undo
+        // history stays clean.
+        if (beatDelta < 0.0) {
+            double earliestStartBeat = Double.POSITIVE_INFINITY;
+            for (AudioClip clip : clips) {
+                earliestStartBeat = Math.min(earliestStartBeat, clip.getStartBeat());
+            }
+            if (Double.isFinite(earliestStartBeat)
+                    && Math.max(beatDelta, -earliestStartBeat) == 0.0) {
+                return null;
+            }
         }
         return new NudgeClipsAction(clips, beatDelta);
     }
