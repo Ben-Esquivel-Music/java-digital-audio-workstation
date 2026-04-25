@@ -395,11 +395,11 @@ public final class MixerView extends VBox {
             sendSlider.getStyleClass().add("mixer-fader");
             sendSlider.setTooltip(new Tooltip("Send to " + returnBus.getName()));
 
-            // Compact tap-point cycler ("P" pre-inserts / "F" pre-fader /
-            // "I" post-fader… we use a single letter that the user can click
-            // to cycle through the three tap positions). Tooltip explains all
-            // three states. The button reflects the current tap of the send
-            // (or the default POST_FADER when no send exists yet).
+            // Compact tap-point cycler ("I" pre-inserts / "F" pre-fader /
+            // "P" post-fader) — a single letter the user can click to cycle
+            // through the three tap positions. Tooltip explains all three
+            // states. The button reflects the current tap of the send (or
+            // the default POST_FADER when no send exists yet).
             Button tapButton = new Button();
             tapButton.getStyleClass().add("mixer-send-tap");
             tapButton.setStyle("-fx-padding: 0 4 0 4; -fx-font-size: 10px;");
@@ -489,10 +489,10 @@ public final class MixerView extends VBox {
             tapButton.setOnAction(_ -> {
                 Send s = mixerChannel.getSendForTarget(targetBus);
                 if (s == null) {
-                    // Auto-create a silent send so the cycler has something
-                    // to act on; the user can then raise the slider.
-                    mixerChannel.addSend(new Send(targetBus, 0.0, SendTap.POST_FADER));
-                    s = mixerChannel.getSendForTarget(targetBus);
+                    // No send exists yet: don't auto-create one (that path is
+                    // not undoable) — the user must raise the slider first to
+                    // create a send, then cycle the tap point.
+                    return;
                 }
                 SendTap next = switch (s.getTap()) {
                     case POST_FADER  -> SendTap.PRE_FADER;

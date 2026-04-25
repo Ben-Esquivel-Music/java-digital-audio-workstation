@@ -52,7 +52,14 @@ public final class SetSendRoutingAction implements UndoableAction {
             previousLevel = existing.getLevel();
             previousMode = existing.getMode();
             existing.setLevel(newLevel);
-            existing.setMode(newMode);
+            // Only update the legacy mode when it actually changes. The
+            // {@link Send#setMode} call collapses {@link SendTap#PRE_INSERTS}
+            // back to {@link SendTap#PRE_FADER}, so skipping the call when
+            // the mode is unchanged preserves any PRE_INSERTS tap that may
+            // have been configured separately (e.g. by SetSendTapAction).
+            if (existing.getMode() != newMode) {
+                existing.setMode(newMode);
+            }
         } else {
             hadSendBefore = false;
             Send send = new Send(target, newLevel, newMode);
@@ -68,7 +75,12 @@ public final class SetSendRoutingAction implements UndoableAction {
         }
         if (hadSendBefore) {
             existing.setLevel(previousLevel);
-            existing.setMode(previousMode);
+            // Mirror execute(): only restore the mode when it actually
+            // differs to avoid trampling a PRE_INSERTS tap that survived
+            // because the mode was never changed in the first place.
+            if (existing.getMode() != previousMode) {
+                existing.setMode(previousMode);
+            }
         } else {
             channel.removeSend(existing);
         }

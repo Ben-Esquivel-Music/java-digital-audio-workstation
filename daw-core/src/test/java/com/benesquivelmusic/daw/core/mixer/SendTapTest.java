@@ -203,6 +203,50 @@ class SendTapTest {
         assertThat(ch.getSendForTarget(reverb)).isNull();
     }
 
+    @Test
+    void preInsertsSendIsCorrectWithParallelScheduler() {
+        // Regression: when AudioGraphScheduler runs the parallel insert
+        // pre-pass, channelBuffers may already be post-insert by the time
+        // the per-channel loop executes. The pre-insert capture must
+        // happen BEFORE the scheduler runs so PRE_INSERTS sends still
+        // tap a truly dry signal.
+        Mixer mixer = new Mixer();
+        mixer.prepareForPlayback(1, 4);
+        // Two channels so the scheduler's channelCount >= 2 gate triggers.
+        MixerChannel ch1 = new MixerChannel("Drums");
+        MixerChannel ch2 = new MixerChannel("Bass");
+        ch1.addInsert(new InsertSlot("Gain", new TestGain(0.5f)));
+        ch2.addInsert(new InsertSlot("Gain", new TestGain(0.5f)));
+        MixerChannel reverb = mixer.getAuxBus();
+        ch1.addSend(new Send(reverb, 1.0, SendTap.PRE_INSERTS));
+        ch2.addSend(new Send(reverb, 1.0, SendTap.PRE_INSERTS));
+        mixer.addChannel(ch1);
+        mixer.addChannel(ch2);
+
+        try (com.benesquivelmusic.daw.core.audio.AudioWorkerPool pool =
+                     new com.benesquivelmusic.daw.core.audio.AudioWorkerPool(2)) {
+            mixer.setGraphScheduler(
+                    new com.benesquivelmusic.daw.core.audio.AudioGraphScheduler(pool, 2));
+
+            float[] in1 = {0.2f, -0.6f, 0.4f, 1.0f};
+            float[] in2 = {0.1f,  0.3f, -0.2f, -0.5f};
+            float[][][] channelBuffers = {{in1.clone()}, {in2.clone()}};
+            float[][] out = new float[1][4];
+            float[][][] returnBuffers = {new float[1][4]};
+
+            mixer.mixDown(channelBuffers, out, returnBuffers, 4);
+
+            // Reverb return must equal the SUM of the two unprocessed inputs
+            // — i.e. PRE_INSERTS taps the dry signal even though the
+            // scheduler ran inserts in another thread.
+            for (int f = 0; f < 4; f++) {
+                assertThat(returnBuffers[0][0][f])
+                        .as("frame %d", f)
+                        .isEqualTo(in1[f] + in2[f]);
+            }
+        }
+    }
+
     // ── Test fixture ────────────────────────────────────────────────────────
 
     private record TestGain(float gain) implements AudioProcessor {

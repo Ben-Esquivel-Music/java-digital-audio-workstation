@@ -33,10 +33,10 @@ public record SendSnapshot(int targetIndex, double level, SendMode mode, SendTap
     }
 
     /**
-     * Legacy two-argument compatibility constructor: derives the tap point
-     * from the legacy {@link SendMode} (pre-fader stays pre-fader; post-fader
-     * stays post-fader). Use the canonical four-arg constructor to opt into
-     * {@link SendTap#PRE_INSERTS}.
+     * Legacy compatibility constructor that omits the {@link SendTap} and
+     * derives it from the legacy {@link SendMode} (pre-fader stays
+     * pre-fader; post-fader stays post-fader). Use the canonical
+     * four-argument constructor to opt into {@link SendTap#PRE_INSERTS}.
      */
     public SendSnapshot(int targetIndex, double level, SendMode mode) {
         this(targetIndex, level, mode,
