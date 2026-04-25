@@ -88,7 +88,7 @@ public final class AtmosSessionConfigDialog extends Dialog<AtmosSessionConfig> {
 
         // ── Layout/export settings ───────────────────────────────────────────
         layoutCombo = new ComboBox<>();
-        layoutCombo.getItems().addAll("7.1.4", "5.1.4", "5.1", "Stereo");
+        layoutCombo.getItems().addAll("9.1.6", "7.1.4", "5.1.4", "5.1", "Stereo");
         layoutCombo.setValue(config.getLayout().name());
         layoutCombo.setOnAction(event -> onLayoutChanged());
 
@@ -403,6 +403,7 @@ public final class AtmosSessionConfigDialog extends Dialog<AtmosSessionConfig> {
 
     private static SpeakerLayout resolveLayout(String name) {
         return switch (name) {
+            case "9.1.6" -> SpeakerLayout.LAYOUT_9_1_6;
             case "7.1.4" -> SpeakerLayout.LAYOUT_7_1_4;
             case "5.1.4" -> SpeakerLayout.LAYOUT_5_1_4;
             case "5.1" -> SpeakerLayout.LAYOUT_5_1;

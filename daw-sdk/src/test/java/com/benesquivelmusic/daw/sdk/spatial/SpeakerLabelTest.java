@@ -46,7 +46,8 @@ class SpeakerLabelTest {
     }
 
     @Test
-    void shouldHave12SpeakerLabels() {
-        assertThat(SpeakerLabel.values()).hasSize(12);
+    void shouldHave16SpeakerLabels() {
+        // 12 base 7.1.4 labels + LW/RW (9.1 wides) + LTS/RTS (9.1.6 height sides)
+        assertThat(SpeakerLabel.values()).hasSize(16);
     }
 }

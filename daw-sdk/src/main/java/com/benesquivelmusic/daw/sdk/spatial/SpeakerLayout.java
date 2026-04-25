@@ -40,6 +40,18 @@ public record SpeakerLayout(String name, List<SpeakerLabel> speakers) {
     public static final SpeakerLayout LAYOUT_MONO = new SpeakerLayout("Mono", List.of(
             SpeakerLabel.C));
 
+    /**
+     * 9.1.6 — Dolby Atmos wide layout (16 channels): nine ear-level speakers
+     * (L, R, C, LS, RS, LRS, RRS, LW, RW), one LFE, and six height speakers
+     * (LTF, RTF, LTS, RTS, LTR, RTR).
+     */
+    public static final SpeakerLayout LAYOUT_9_1_6 = new SpeakerLayout("9.1.6", List.of(
+            SpeakerLabel.L, SpeakerLabel.R, SpeakerLabel.C, SpeakerLabel.LFE,
+            SpeakerLabel.LS, SpeakerLabel.RS, SpeakerLabel.LRS, SpeakerLabel.RRS,
+            SpeakerLabel.LW, SpeakerLabel.RW,
+            SpeakerLabel.LTF, SpeakerLabel.RTF, SpeakerLabel.LTS, SpeakerLabel.RTS,
+            SpeakerLabel.LTR, SpeakerLabel.RTR));
+
     public SpeakerLayout {
         Objects.requireNonNull(name, "name must not be null");
         Objects.requireNonNull(speakers, "speakers must not be null");

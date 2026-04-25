@@ -220,6 +220,10 @@ public final class AdmBwfExporter {
             case RTF -> "U-045";
             case LTR -> "U+135";
             case RTR -> "U-135";
+            case LW -> "M+060";
+            case RW -> "M-060";
+            case LTS -> "U+090";
+            case RTS -> "U-090";
         };
     }
 
