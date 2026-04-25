@@ -92,6 +92,13 @@ public final class AudioFileImporter {
                 .orElseThrow(() -> new IllegalArgumentException(
                         "Unsupported audio file format: " + file.getFileName()));
 
+        // ADM BWF (.wav with axml chunk) is routed through the spatial importer
+        // so that bed channels and audio objects materialize as separate tracks
+        // with their own clips and per-object position/size/gain automation.
+        if (format == SupportedAudioFormat.WAV && AdmBwfImporter.isAdmBwf(file)) {
+            return importAdmBwf(file, startBeat, targetTrack, listener);
+        }
+
         listener.onProgress(file, 0.0);
 
         // Read the audio file using the appropriate reader
@@ -201,8 +208,120 @@ public final class AudioFileImporter {
     }
 
     /**
-     * Converts multi-channel audio data from one sample rate to another.
+     * Imports an ADM BWF (.wav with embedded {@code axml} chunk) and
+     * materializes its bed channels and audio objects as project tracks.
+     *
+     * <p>Behaviour:</p>
+     * <ul>
+     *   <li>Each ADM {@code audioObject} becomes a new audio track with an
+     *       {@link AudioClip} containing that object's audio.</li>
+     *   <li>Bed channels collectively become a single multi-channel
+     *       audio track named {@code "Bed (<layout>)"}.</li>
+     *   <li>The first created track (bed track if present, otherwise the
+     *       first object track) is returned via the {@link AudioImportResult}.</li>
+     * </ul>
+     *
+     * <p>For full access to per-object spatial metadata, automation
+     * envelopes and unmatched ADM tags, use {@link #importAdmBwfDetailed(Path, double)}
+     * which exposes the underlying {@link AdmImportResult}.</p>
+     *
+     * @param file      the ADM BWF file
+     * @param startBeat the beat position where each clip should start
+     * @return an import result for the first track produced
+     * @throws IOException if the file cannot be read
      */
+    public AudioImportResult importAdmBwf(Path file, double startBeat) throws IOException {
+        return importAdmBwf(file, startBeat, null, ImportProgressListener.NONE);
+    }
+
+    /**
+     * Parses an ADM BWF file and returns its rich, deinterleaved spatial
+     * import result without modifying the project.
+     *
+     * <p>Use this method when the caller needs access to the parsed
+     * {@link com.benesquivelmusic.daw.core.spatial.objectbased.AudioObject}
+     * metadata, per-object timed automation, the bed {@code SpeakerLayout},
+     * or the unmatched {@code customMetadata} (e.g. {@code audioProgrammeName}
+     * for round-trip preservation).</p>
+     *
+     * @param file      the ADM BWF file
+     * @param startBeat the beat position where clips would be created
+     *                  (currently unused — provided for symmetry with
+     *                  {@link #importAdmBwf(Path, double)})
+     * @return the parsed ADM import result
+     * @throws IOException if the file cannot be read
+     */
+    public AdmImportResult importAdmBwfDetailed(Path file, double startBeat) throws IOException {
+        Objects.requireNonNull(file, "file must not be null");
+        if (startBeat < 0) {
+            throw new IllegalArgumentException("startBeat must not be negative: " + startBeat);
+        }
+        return AdmBwfImporter.parse(file);
+    }
+
+    private AudioImportResult importAdmBwf(Path file, double startBeat, Track targetTrack,
+                                           ImportProgressListener listener) throws IOException {
+        listener.onProgress(file, 0.0);
+        AdmImportResult adm = AdmBwfImporter.parse(file);
+        listener.onProgress(file, 0.4);
+
+        int projectSampleRate = (int) project.getFormat().sampleRate();
+        boolean wasConverted = adm.sampleRate() != projectSampleRate;
+        double tempo = project.getTransport().getTempo();
+
+        Track firstTrack = null;
+        AudioClip firstClip = null;
+
+        // Bed track: combine all bed-channel buffers into one multi-channel clip
+        if (!adm.bedAudio().isEmpty()) {
+            float[][] bedData = adm.bedAudio().toArray(new float[0][]);
+            if (wasConverted) {
+                bedData = convertSampleRate(bedData, adm.sampleRate(), projectSampleRate);
+            }
+            double bedBeats = framesToBeats(bedData[0].length, projectSampleRate, tempo);
+            String bedTrackName = "Bed (" + adm.bedLayout().name() + ")";
+            Track bedTrack = (targetTrack != null) ? targetTrack : project.createAudioTrack(bedTrackName);
+            AudioClip bedClip = new AudioClip(bedTrackName, startBeat, bedBeats, file.toString());
+            bedClip.setAudioData(bedData);
+            bedTrack.addClip(bedClip);
+            firstTrack = bedTrack;
+            firstClip = bedClip;
+        }
+        listener.onProgress(file, 0.6);
+
+        // Object tracks: one per ADM audioObject
+        for (int i = 0; i < adm.objectAudio().size(); i++) {
+            float[] mono = adm.objectAudio().get(i);
+            float[][] objData = new float[][]{mono};
+            if (wasConverted) {
+                objData = convertSampleRate(objData, adm.sampleRate(), projectSampleRate);
+            }
+            double objBeats = framesToBeats(objData[0].length, projectSampleRate, tempo);
+            String objName = "Object " + (i + 1);
+            Track objTrack = project.createAudioTrack(objName);
+            AudioClip objClip = new AudioClip(objName, startBeat, objBeats, file.toString());
+            objClip.setAudioData(objData);
+            objTrack.addClip(objClip);
+            if (firstTrack == null) {
+                firstTrack = objTrack;
+                firstClip = objClip;
+            }
+        }
+        listener.onProgress(file, 1.0);
+
+        if (firstTrack == null) {
+            throw new IllegalArgumentException(
+                    "ADM BWF contains neither bed channels nor audio objects: " + file);
+        }
+        return new AudioImportResult(firstTrack, firstClip, file, wasConverted);
+    }
+
+    private static double framesToBeats(int numFrames, int sampleRate, double tempo) {
+        double durationSeconds = (double) numFrames / sampleRate;
+        return durationSeconds * (tempo / 60.0);
+    }
+
+
     private static float[][] convertSampleRate(float[][] audioData, int sourceSampleRate, int targetSampleRate) {
         int channels = audioData.length;
         float[][] converted = new float[channels][];
