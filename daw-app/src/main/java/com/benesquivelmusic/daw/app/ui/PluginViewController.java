@@ -43,6 +43,8 @@ final class PluginViewController {
     private TelemetryView telemetryPluginView;
     private Stage busCompressorStage;
     private BusCompressorPluginView busCompressorView;
+    private Stage multibandCompressorStage;
+    private MultibandCompressorPluginView multibandCompressorView;
 
     PluginViewController(Host host) {
         this.host = host;
@@ -106,6 +108,9 @@ final class PluginViewController {
         if (busCompressorStage != null) {
             busCompressorStage.hide();
         }
+        if (multibandCompressorStage != null) {
+            multibandCompressorStage.hide();
+        }
         try {
             for (BuiltInDawPlugin plugin : builtInPluginCache.values()) {
                 try {
@@ -128,6 +133,7 @@ final class PluginViewController {
             case TunerPlugin.PLUGIN_ID -> openTunerWindow((TunerPlugin) plugin);
             case SoundWaveTelemetryPlugin.PLUGIN_ID -> openSoundWaveTelemetryWindow((SoundWaveTelemetryPlugin) plugin);
             case BusCompressorPlugin.PLUGIN_ID -> openBusCompressorWindow((BusCompressorPlugin) plugin);
+            case MultibandCompressorPlugin.PLUGIN_ID -> openMultibandCompressorWindow((MultibandCompressorPlugin) plugin);
             case ParametricEqPlugin.PLUGIN_ID,
                  CompressorPlugin.PLUGIN_ID,
                  ReverbPlugin.PLUGIN_ID -> host.switchToMasteringView();
@@ -251,5 +257,33 @@ final class PluginViewController {
         stage.show();
         stage.toFront();
         busCompressorStage = stage;
+    }
+
+    private void openMultibandCompressorWindow(MultibandCompressorPlugin plugin) {
+        if (multibandCompressorStage != null) {
+            multibandCompressorStage.show();
+            multibandCompressorStage.toFront();
+            return;
+        }
+
+        multibandCompressorView = new MultibandCompressorPluginView(plugin);
+
+        Stage stage = new Stage(StageStyle.UTILITY);
+        stage.setTitle("Multiband Compressor");
+        stage.setScene(new Scene(multibandCompressorView));
+        DarkThemeHelper.applyTo(stage.getScene());
+        stage.setMinWidth(960);
+        stage.setMinHeight(540);
+        stage.setOnHidden(_ -> {
+            if (multibandCompressorView != null) {
+                multibandCompressorView.dispose();
+                multibandCompressorView = null;
+            }
+            plugin.deactivate();
+            multibandCompressorStage = null;
+        });
+        stage.show();
+        stage.toFront();
+        multibandCompressorStage = stage;
     }
 }

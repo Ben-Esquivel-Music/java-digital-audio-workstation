@@ -32,9 +32,10 @@ import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
  * <h2>Band Layout</h2>
  * <p>For N crossover frequencies, there are N+1 bands:
  * <pre>
- *   2-band: [low | high]                    — 1 crossover
- *   3-band: [low | mid | high]              — 2 crossovers
- *   4-band: [low | low-mid | high-mid | high] — 3 crossovers
+ *   2-band: [low | high]                                       — 1 crossover
+ *   3-band: [low | mid | high]                                 — 2 crossovers
+ *   4-band: [low | low-mid | high-mid | high]                  — 3 crossovers
+ *   5-band: [low | low-mid | mid | high-mid | high]            — 4 crossovers
  * </pre>
  *
  * <p>This is a pure-Java implementation — no JNI required.</p>
@@ -72,7 +73,7 @@ public final class MultibandCompressorProcessor implements AudioProcessor {
      *
      * <p>The number of bands equals {@code crossoverFrequencies.length + 1}.
      * Supported configurations are 2-band (1 crossover), 3-band (2 crossovers),
-     * and 4-band (3 crossovers).</p>
+     * 4-band (3 crossovers), and 5-band (4 crossovers).</p>
      *
      * @param channels             number of audio channels
      * @param sampleRate           the sample rate in Hz
@@ -88,9 +89,9 @@ public final class MultibandCompressorProcessor implements AudioProcessor {
             throw new IllegalArgumentException("sampleRate must be positive: " + sampleRate);
         }
         Objects.requireNonNull(crossoverFrequencies, "crossoverFrequencies must not be null");
-        if (crossoverFrequencies.length < 1 || crossoverFrequencies.length > 3) {
+        if (crossoverFrequencies.length < 1 || crossoverFrequencies.length > 4) {
             throw new IllegalArgumentException(
-                    "crossoverFrequencies must have 1 to 3 elements (2 to 4 bands): "
+                    "crossoverFrequencies must have 1 to 4 elements (2 to 5 bands): "
                             + crossoverFrequencies.length);
         }
         // Validate ascending order and Nyquist
@@ -199,7 +200,8 @@ public final class MultibandCompressorProcessor implements AudioProcessor {
      * <p>For a 2-band setup (1 crossover), the input is split into low and high.
      * For 3 bands (2 crossovers), the input is first split at crossover[0] into
      * low and rest; the rest is then split at crossover[1] into mid and high.
-     * For 4 bands (3 crossovers), an additional split is applied.</p>
+     * For 4 and 5 bands, additional cascaded splits are applied to the residual
+     * high band.</p>
      */
     private void splitBands(float[][] inputBuffer, int numFrames) {
         int numCrossovers = crossoverFrequencies.length;
@@ -218,7 +220,7 @@ public final class MultibandCompressorProcessor implements AudioProcessor {
                 crossovers[1][ch].process(tempHigh[ch],
                         bandBuffers[1][ch], bandBuffers[2][ch], 0, numFrames);
             }
-        } else {
+        } else if (numCrossovers == 3) {
             // 4-band: split at low, then mid from upper, then high-mid/high from upper
             for (int ch = 0; ch < channels; ch++) {
                 crossovers[0][ch].process(inputBuffer[ch],
@@ -227,6 +229,18 @@ public final class MultibandCompressorProcessor implements AudioProcessor {
                         bandBuffers[1][ch], tempLow[ch], 0, numFrames);
                 crossovers[2][ch].process(tempLow[ch],
                         bandBuffers[2][ch], bandBuffers[3][ch], 0, numFrames);
+            }
+        } else {
+            // 5-band: cascade four crossovers, each splitting the residual high band
+            for (int ch = 0; ch < channels; ch++) {
+                crossovers[0][ch].process(inputBuffer[ch],
+                        bandBuffers[0][ch], tempHigh[ch], 0, numFrames);
+                crossovers[1][ch].process(tempHigh[ch],
+                        bandBuffers[1][ch], tempLow[ch], 0, numFrames);
+                crossovers[2][ch].process(tempLow[ch],
+                        bandBuffers[2][ch], tempHigh[ch], 0, numFrames);
+                crossovers[3][ch].process(tempHigh[ch],
+                        bandBuffers[3][ch], bandBuffers[4][ch], 0, numFrames);
             }
         }
     }
@@ -251,7 +265,7 @@ public final class MultibandCompressorProcessor implements AudioProcessor {
     /**
      * Returns the number of frequency bands.
      *
-     * @return band count (2, 3, or 4)
+     * @return band count (2, 3, 4, or 5)
      */
     public int getBandCount() {
         return bandCount;
