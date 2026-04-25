@@ -89,6 +89,13 @@ class MultibandCompressorPluginTest {
     }
 
     @Test
+    void shouldRejectBandCountChangeBeforeInitialize() {
+        var plugin = new MultibandCompressorPlugin();
+        assertThatThrownBy(() -> plugin.setBandCount(3))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
     void shouldExposeAllBandParameters() {
         var plugin = new MultibandCompressorPlugin();
         var params = plugin.getParameters();
@@ -99,6 +106,21 @@ class MultibandCompressorPluginTest {
         assertThat(params.get(2).name()).startsWith("Crossover 1");
         assertThat(params.stream().map(p -> p.name()))
                 .anyMatch(n -> n.startsWith("Band 5"));
+    }
+
+    @Test
+    void crossoverParameterDefaultsShouldMatchDefaultBandLayout() {
+        var plugin = new MultibandCompressorPlugin();
+        plugin.initialize(stubContext());
+        double[] processorCrossovers = plugin.getProcessor().getCrossoverFrequencies();
+        var params = plugin.getParameters();
+        // The first DEFAULT_BAND_COUNT - 1 crossover defaults must match the
+        // processor's actual crossover layout in its initial (DEFAULT_BAND_COUNT) state.
+        for (int i = 0; i < processorCrossovers.length; i++) {
+            assertThat(params.get(2 + i).defaultValue())
+                    .as("Crossover %d default", i + 1)
+                    .isEqualTo(processorCrossovers[i]);
+        }
     }
 
     @Test

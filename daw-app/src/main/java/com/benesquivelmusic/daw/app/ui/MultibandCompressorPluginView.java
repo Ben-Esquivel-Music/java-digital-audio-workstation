@@ -256,7 +256,7 @@ public final class MultibandCompressorPluginView extends VBox {
         g.setStroke(Color.rgb(70, 70, 70));
         g.strokeRect(0.5, 0.5, w - 1, h - 1);
 
-        // Octave gridlines
+        // Decade gridlines (100 Hz, 1 kHz, 10 kHz)
         g.setStroke(Color.rgb(45, 45, 45));
         for (double f = 100; f <= MAX_FREQUENCY_HZ; f *= 10) {
             double x = freqToX(f, w);

@@ -140,6 +140,10 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
                     "bandCount must be in [" + MIN_BAND_COUNT + ", " + MAX_BAND_COUNT
                             + "]: " + bandCount);
         }
+        if (context == null) {
+            throw new IllegalStateException(
+                    "plugin must be initialized before changing the band count");
+        }
         if (this.bandCount == bandCount && processor != null) {
             return;
         }
@@ -180,8 +184,9 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
      *   <li><b>0</b>: {@code Band Count} (3..5)</li>
      *   <li><b>1</b>: {@code Linear Phase} (0/1)</li>
      *   <li><b>2..5</b>: {@code Crossover N (Hz)} for the four possible
-     *       crossover points (the 5-band layout uses all four; lower band
-     *       counts ignore the trailing crossovers)</li>
+     *       crossover points; defaults match the {@link #DEFAULT_BAND_COUNT}
+     *       layout, with any trailing slots populated with sensible
+     *       higher-frequency placeholders for use after a band-count up-shift.</li>
      *   <li><b>6 + 8*band + offset</b>: per-band parameters where {@code band}
      *       is in {@code 0..4} and {@code offset} is one of:
      *       0=Threshold (dB), 1=Ratio, 2=Attack (ms), 3=Release (ms),
@@ -197,9 +202,21 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
                 MIN_BAND_COUNT, MAX_BAND_COUNT, DEFAULT_BAND_COUNT));
         params.add(new PluginParameter(1, "Linear Phase", 0.0, 1.0, 0.0));
 
-        double[] defaultCrossovers = DEFAULT_CROSSOVERS[MAX_BAND_COUNT - MIN_BAND_COUNT];
+        // Defaults align with the processor's actual initial state
+        // (DEFAULT_BAND_COUNT crossovers); slots beyond DEFAULT_BAND_COUNT - 1
+        // fall back to high-frequency placeholders so the schema is still
+        // valid for users who later up-shift the band count.
+        double[] defaultCrossovers = DEFAULT_CROSSOVERS[DEFAULT_BAND_COUNT - MIN_BAND_COUNT];
+        double[] fallbackCrossovers = DEFAULT_CROSSOVERS[MAX_BAND_COUNT - MIN_BAND_COUNT];
         for (int i = 0; i < 4; i++) {
-            double def = i < defaultCrossovers.length ? defaultCrossovers[i] : 16000.0;
+            double def;
+            if (i < defaultCrossovers.length) {
+                def = defaultCrossovers[i];
+            } else if (i < fallbackCrossovers.length) {
+                def = fallbackCrossovers[i];
+            } else {
+                def = 16000.0;
+            }
             params.add(new PluginParameter(2 + i,
                     "Crossover " + (i + 1) + " (Hz)", 20.0, 20000.0, def));
         }
