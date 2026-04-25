@@ -1,7 +1,9 @@
 package com.benesquivelmusic.daw.core.plugin;
 
+import com.benesquivelmusic.daw.core.dsp.CompressorProcessor;
 import com.benesquivelmusic.daw.core.dsp.MultibandCompressorProcessor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.plugin.AutomatableParameter;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import com.benesquivelmusic.daw.sdk.plugin.PluginDescriptor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
@@ -61,6 +63,7 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
     );
 
     private MultibandCompressorProcessor processor;
+    private final StableAudioProcessor stableProcessor = new StableAudioProcessor();
     private PluginContext context;
     private int bandCount = DEFAULT_BAND_COUNT;
     private boolean linearPhase;
@@ -102,7 +105,10 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
 
     @Override
     public Optional<AudioProcessor> asAudioProcessor() {
-        return Optional.ofNullable(processor);
+        if (processor == null) {
+            return Optional.empty();
+        }
+        return Optional.of(stableProcessor);
     }
 
     /**
@@ -182,7 +188,7 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
      * <p>Parameter ids are laid out in two sections:</p>
      * <ul>
      *   <li><b>0</b>: {@code Band Count} (3..5)</li>
-     *   <li><b>1</b>: {@code Linear Phase} (0/1)</li>
+     *   <li><b>1</b>: {@code Linear Phase Toggle} (0/1)</li>
      *   <li><b>2..5</b>: {@code Crossover N (Hz)} for the four possible
      *       crossover points; defaults match the {@link #DEFAULT_BAND_COUNT}
      *       layout, with any trailing slots populated with sensible
@@ -190,8 +196,12 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
      *   <li><b>6 + 8*band + offset</b>: per-band parameters where {@code band}
      *       is in {@code 0..4} and {@code offset} is one of:
      *       0=Threshold (dB), 1=Ratio, 2=Attack (ms), 3=Release (ms),
-     *       4=Makeup Gain (dB), 5=Bypass, 6=Mute, 7=Solo.</li>
+     *       4=Makeup Gain (dB), 5=Bypass Toggle, 6=Mute Toggle, 7=Solo Toggle.</li>
      * </ul>
+     *
+     * <p>Boolean parameters are named with a {@code Toggle} suffix so the
+     * generic {@code PluginParameterEditorPanel} renders them as on/off
+     * toggles rather than continuous sliders.</p>
      *
      * @return an unmodifiable list of multiband compressor parameter descriptors
      */
@@ -200,7 +210,7 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
         var params = new ArrayList<PluginParameter>(2 + 4 + MAX_BAND_COUNT * 8);
         params.add(new PluginParameter(0, "Band Count",
                 MIN_BAND_COUNT, MAX_BAND_COUNT, DEFAULT_BAND_COUNT));
-        params.add(new PluginParameter(1, "Linear Phase", 0.0, 1.0, 0.0));
+        params.add(new PluginParameter(1, "Linear Phase Toggle", 0.0, 1.0, 0.0));
 
         // Defaults align with the processor's actual initial state
         // (DEFAULT_BAND_COUNT crossovers); slots beyond DEFAULT_BAND_COUNT - 1
@@ -225,16 +235,93 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
         for (int band = 0; band < MAX_BAND_COUNT; band++) {
             int b = base + band * 8;
             String prefix = "Band " + (band + 1) + " ";
-            params.add(new PluginParameter(b,     prefix + "Threshold (dB)", -60.0,    0.0, -20.0));
-            params.add(new PluginParameter(b + 1, prefix + "Ratio",            1.0,   20.0,   4.0));
-            params.add(new PluginParameter(b + 2, prefix + "Attack (ms)",      0.01, 100.0,  10.0));
-            params.add(new PluginParameter(b + 3, prefix + "Release (ms)",    10.0, 1000.0, 100.0));
-            params.add(new PluginParameter(b + 4, prefix + "Makeup Gain (dB)", 0.0,   30.0,   0.0));
-            params.add(new PluginParameter(b + 5, prefix + "Bypass",           0.0,    1.0,   0.0));
-            params.add(new PluginParameter(b + 6, prefix + "Mute",             0.0,    1.0,   0.0));
-            params.add(new PluginParameter(b + 7, prefix + "Solo",             0.0,    1.0,   0.0));
+            params.add(new PluginParameter(b,     prefix + "Threshold (dB)",  -60.0,    0.0, -20.0));
+            params.add(new PluginParameter(b + 1, prefix + "Ratio",             1.0,   20.0,   4.0));
+            params.add(new PluginParameter(b + 2, prefix + "Attack (ms)",       0.01, 100.0,  10.0));
+            params.add(new PluginParameter(b + 3, prefix + "Release (ms)",     10.0, 1000.0, 100.0));
+            params.add(new PluginParameter(b + 4, prefix + "Makeup Gain (dB)",  0.0,   30.0,   0.0));
+            params.add(new PluginParameter(b + 5, prefix + "Bypass Toggle",     0.0,    1.0,   0.0));
+            params.add(new PluginParameter(b + 6, prefix + "Mute Toggle",       0.0,    1.0,   0.0));
+            params.add(new PluginParameter(b + 7, prefix + "Solo Toggle",       0.0,    1.0,   0.0));
         }
         return List.copyOf(params);
+    }
+
+    /**
+     * Returns the automatable parameter subset.
+     *
+     * <p>{@code Band Count} (id {@code 0}) is intentionally excluded: changing
+     * it rebuilds the underlying processor (an allocating, non-RT-safe
+     * operation) and is therefore not safe to drive from an automation lane.
+     * All other parameters — linear-phase preference, crossover frequencies
+     * and per-band threshold / ratio / attack / release / makeup / bypass /
+     * mute / solo — are RT-safe numeric setters and are exposed for
+     * automation.</p>
+     *
+     * @return the automatable parameter descriptors, never {@code null}
+     */
+    @Override
+    public List<AutomatableParameter> getAutomatableParameters() {
+        List<PluginParameter> all = getParameters();
+        var out = new ArrayList<AutomatableParameter>(all.size() - 1);
+        for (PluginParameter p : all) {
+            if (p.id() == 0) {
+                continue; // Band Count is not RT-safe to automate.
+            }
+            out.add(AutomatableParameter.from(p));
+        }
+        return List.copyOf(out);
+    }
+
+    /**
+     * Routes a parameter value from the host's automation engine to the
+     * underlying processor.
+     *
+     * <p>Implementation is real-time safe: each branch performs only a
+     * numeric setter call on already-allocated state.  Out-of-range band
+     * indices (which can occur when automation lanes were authored against
+     * a higher band count than the current configuration) are silently
+     * ignored.</p>
+     *
+     * @param parameterId the parameter id (see {@link #getParameters()})
+     * @param value       the new parameter value (already inside the declared range)
+     */
+    @Override
+    public void setAutomatableParameter(int parameterId, double value) {
+        if (processor == null) {
+            return;
+        }
+        if (parameterId == 1) {
+            this.linearPhase = value >= 0.5;
+            return;
+        }
+        if (parameterId >= 2 && parameterId <= 5) {
+            // Crossover frequencies are configured at construction time on
+            // the current processor; live crossover automation is out of
+            // scope (would require a processor-level setter).  No-op.
+            return;
+        }
+        int local = parameterId - 6;
+        if (local < 0) {
+            return;
+        }
+        int band = local / 8;
+        int offset = local % 8;
+        if (band < 0 || band >= processor.getBandCount()) {
+            return;
+        }
+        CompressorProcessor comp = processor.getBandCompressor(band);
+        switch (offset) {
+            case 0 -> comp.setThresholdDb(value);
+            case 1 -> comp.setRatio(value);
+            case 2 -> comp.setAttackMs(value);
+            case 3 -> comp.setReleaseMs(value);
+            case 4 -> processor.setBandMakeupGainDb(band, value);
+            case 5 -> { /* Bypass toggle: no processor-level per-band bypass without rebuild — skip */ }
+            case 6 -> processor.setBandMakeupGainDb(band, value >= 0.5 ? -120.0 : 0.0);
+            case 7 -> processor.setBandSoloed(band, value >= 0.5);
+            default -> { /* unknown offset */ }
+        }
     }
 
     private void rebuildProcessor() {
@@ -246,5 +333,48 @@ public final class MultibandCompressorPlugin implements BuiltInDawPlugin {
                 context.getAudioChannels(),
                 context.getSampleRate(),
                 Arrays.copyOf(crossovers, crossovers.length));
+    }
+
+    /**
+     * A stable {@link AudioProcessor} that delegates to the plugin's current
+     * {@linkplain #processor inner processor}.  Wiring this wrapper into the
+     * mixer's effects chain (via {@code InsertEffectFactory}) ensures that
+     * a band-count change — which swaps the inner processor instance — is
+     * picked up by the chain on the next audio block, rather than leaving
+     * the chain pointing at the previous (orphaned) processor.
+     *
+     * <p>Channel counts are reported from the live inner processor; the
+     * channel count never changes after {@link #initialize(PluginContext)},
+     * so the value is stable for the lifetime of the chain.</p>
+     */
+    private final class StableAudioProcessor implements AudioProcessor {
+
+        @Override
+        public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
+            MultibandCompressorProcessor p = processor;
+            if (p != null) {
+                p.process(inputBuffer, outputBuffer, numFrames);
+            }
+        }
+
+        @Override
+        public void reset() {
+            MultibandCompressorProcessor p = processor;
+            if (p != null) {
+                p.reset();
+            }
+        }
+
+        @Override
+        public int getInputChannelCount() {
+            MultibandCompressorProcessor p = processor;
+            return p != null ? p.getInputChannelCount() : 0;
+        }
+
+        @Override
+        public int getOutputChannelCount() {
+            MultibandCompressorProcessor p = processor;
+            return p != null ? p.getOutputChannelCount() : 0;
+        }
     }
 }

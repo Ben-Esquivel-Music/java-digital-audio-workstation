@@ -52,7 +52,25 @@ class MultibandCompressorPluginTest {
         plugin.initialize(stubContext());
         assertThat(plugin.getProcessor()).isInstanceOf(MultibandCompressorProcessor.class);
         assertThat(plugin.asAudioProcessor()).isPresent();
-        assertThat(plugin.asAudioProcessor().orElseThrow()).isSameAs(plugin.getProcessor());
+    }
+
+    @Test
+    void asAudioProcessorShouldReturnStableInstanceAcrossRebuilds() {
+        var plugin = new MultibandCompressorPlugin();
+        plugin.initialize(stubContext());
+
+        var firstWrapper = plugin.asAudioProcessor().orElseThrow();
+        var firstInner = plugin.getProcessor();
+
+        plugin.setBandCount(5);
+
+        // The wrapper exposed to the mixer chain stays the same instance even
+        // though the underlying processor was swapped, so InsertSlot/EffectsChain
+        // continue routing audio through the live processor.
+        assertThat(plugin.asAudioProcessor()).isPresent();
+        assertThat(plugin.asAudioProcessor().orElseThrow()).isSameAs(firstWrapper);
+        assertThat(plugin.getProcessor()).isNotSameAs(firstInner);
+        assertThat(plugin.getProcessor().getBandCount()).isEqualTo(5);
     }
 
     @Test
@@ -102,10 +120,13 @@ class MultibandCompressorPluginTest {
         // 1 band-count + 1 linear-phase + 4 crossovers + 5 * 8 per-band = 46
         assertThat(params).hasSize(46);
         assertThat(params.get(0).name()).isEqualTo("Band Count");
-        assertThat(params.get(1).name()).isEqualTo("Linear Phase");
+        assertThat(params.get(1).name()).isEqualTo("Linear Phase Toggle");
         assertThat(params.get(2).name()).startsWith("Crossover 1");
         assertThat(params.stream().map(p -> p.name()))
-                .anyMatch(n -> n.startsWith("Band 5"));
+                .anyMatch(n -> n.startsWith("Band 5"))
+                .anyMatch(n -> n.equals("Band 1 Bypass Toggle"))
+                .anyMatch(n -> n.equals("Band 1 Mute Toggle"))
+                .anyMatch(n -> n.equals("Band 1 Solo Toggle"));
     }
 
     @Test
@@ -145,6 +166,53 @@ class MultibandCompressorPluginTest {
         assertThat(MultibandCompressorPlugin.PLUGIN_ID)
                 .isNotEqualTo(CompressorPlugin.PLUGIN_ID)
                 .isNotEqualTo(BusCompressorPlugin.PLUGIN_ID);
+    }
+
+    @Test
+    void automatableParametersShouldExcludeBandCount() {
+        var plugin = new MultibandCompressorPlugin();
+        var automatable = plugin.getAutomatableParameters();
+        // 46 - 1 (Band Count is excluded because rebuilding the processor
+        // is not real-time safe).
+        assertThat(automatable).hasSize(45);
+        assertThat(automatable).noneMatch(p -> p.id() == 0);
+        assertThat(automatable.get(0).displayName()).isEqualTo("Linear Phase Toggle");
+    }
+
+    @Test
+    void setAutomatableParameterShouldRouteToProcessorState() {
+        var plugin = new MultibandCompressorPlugin();
+        plugin.initialize(stubContext());
+
+        // Linear-phase toggle (id 1)
+        plugin.setAutomatableParameter(1, 1.0);
+        assertThat(plugin.isLinearPhase()).isTrue();
+        plugin.setAutomatableParameter(1, 0.0);
+        assertThat(plugin.isLinearPhase()).isFalse();
+
+        // Per-band threshold (id 6 = Band 1 Threshold (dB))
+        plugin.setAutomatableParameter(6, -33.0);
+        assertThat(plugin.getProcessor().getBandCompressor(0).getThresholdDb())
+                .isEqualTo(-33.0);
+
+        // Per-band makeup gain (id 10 = Band 1 Makeup Gain (dB))
+        plugin.setAutomatableParameter(10, 6.0);
+        assertThat(plugin.getProcessor().getBandMakeupGainDb(0)).isEqualTo(6.0);
+
+        // Solo toggle (id 13 = Band 1 Solo Toggle)
+        plugin.setAutomatableParameter(13, 1.0);
+        assertThat(plugin.getProcessor().isBandSoloed(0)).isTrue();
+        plugin.setAutomatableParameter(13, 0.0);
+        assertThat(plugin.getProcessor().isBandSoloed(0)).isFalse();
+
+        // Out-of-range band index for the current 4-band layout: must not throw
+        plugin.setAutomatableParameter(6 + 8 * 4, -10.0);
+
+        // Band Count (id 0) must not rebuild the processor via automation
+        var beforeProcessor = plugin.getProcessor();
+        plugin.setAutomatableParameter(0, 5.0);
+        assertThat(plugin.getProcessor()).isSameAs(beforeProcessor);
+        assertThat(plugin.getBandCount()).isEqualTo(4);
     }
 
     @Test
