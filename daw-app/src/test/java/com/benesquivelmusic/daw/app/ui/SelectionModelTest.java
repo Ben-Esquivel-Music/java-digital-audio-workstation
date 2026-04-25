@@ -760,4 +760,50 @@ class SelectionModelTest {
         model.clearClipSelection();
         assertThat(model.getFocusedTrack()).isNull();
     }
+
+    @Test
+    void getFocusedTrackFallbackPrefersMostRecentSurvivingAudioOverOlderMidi() {
+        // Older MIDI selection followed by a more recent audio selection;
+        // when the audio clip is deselected, the surviving MIDI must take
+        // focus. This guards against a fallback that always prefers MIDI
+        // (or always prefers audio) regardless of true recency.
+        SelectionModel model = new SelectionModel();
+        Track midiTrack = new Track("M", TrackType.MIDI);
+        Track audioTrack = new Track("A", TrackType.AUDIO);
+        MidiClip mc = midiTrack.getMidiClip();
+        mc.addNote(MidiNoteData.of(60, 0, 4, 100));
+        AudioClip ac = new AudioClip("a.wav", 0, 1, null);
+        audioTrack.addClip(ac);
+
+        // MIDI first, then audio (audio is most recent).
+        model.toggleMidiClipSelection(midiTrack, mc);
+        model.toggleClipSelection(audioTrack, ac);
+        assertThat(model.getFocusedTrack()).isSameAs(audioTrack);
+
+        // Deselect the audio clip; the MIDI selection survives and must
+        // become the new focus — the fallback is true cross-type recency,
+        // not a hard-coded MIDI-first rule.
+        model.toggleClipSelection(audioTrack, ac);
+        assertThat(model.getFocusedTrack()).isSameAs(midiTrack);
+    }
+
+    @Test
+    void getFocusedTrackFallbackPrefersMostRecentSurvivingMidiOverOlderAudio() {
+        // The mirror case: older audio + newer MIDI; deselecting the MIDI
+        // must surface the surviving audio. Guards the "audio first" bug.
+        SelectionModel model = new SelectionModel();
+        Track audioTrack = new Track("A", TrackType.AUDIO);
+        Track midiTrack = new Track("M", TrackType.MIDI);
+        AudioClip ac = new AudioClip("a.wav", 0, 1, null);
+        audioTrack.addClip(ac);
+        MidiClip mc = midiTrack.getMidiClip();
+        mc.addNote(MidiNoteData.of(60, 0, 4, 100));
+
+        model.toggleClipSelection(audioTrack, ac);
+        model.toggleMidiClipSelection(midiTrack, mc);
+        assertThat(model.getFocusedTrack()).isSameAs(midiTrack);
+
+        model.toggleMidiClipSelection(midiTrack, mc);
+        assertThat(model.getFocusedTrack()).isSameAs(audioTrack);
+    }
 }

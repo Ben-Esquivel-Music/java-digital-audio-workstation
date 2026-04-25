@@ -371,10 +371,30 @@ public final class ArrangementCanvas extends Pane {
      * applied through this canvas (single track, multi-track, or master
      * toggle). Used to keep external UI such as track-header disclosure
      * triangles in sync.
+     *
+     * @return an unsubscribe handle — callers <strong>must</strong> invoke
+     *         {@link Runnable#run()} when the dependent UI is disposed
+     *         (e.g. when its track strip is removed) so the listener and
+     *         the nodes it captures can be garbage-collected. Returns a
+     *         no-op handle when {@code listener} is {@code null}.
      */
-    void addFoldChangeListener(Runnable listener) {
+    Runnable addFoldChangeListener(Runnable listener) {
+        if (listener == null) {
+            return () -> { };
+        }
+        foldChangeListeners.add(listener);
+        return () -> foldChangeListeners.remove(listener);
+    }
+
+    /**
+     * Explicitly unregisters a previously-added fold-change listener.
+     * Equivalent to invoking the handle returned by
+     * {@link #addFoldChangeListener(Runnable)}; provided for callers that
+     * prefer to hold a reference to the listener directly.
+     */
+    void removeFoldChangeListener(Runnable listener) {
         if (listener != null) {
-            foldChangeListeners.add(listener);
+            foldChangeListeners.remove(listener);
         }
     }
 
@@ -717,8 +737,9 @@ public final class ArrangementCanvas extends Pane {
             // When the automation lane group is folded, replace the full
             // envelope render with a thin summary strip so the user can
             // see that data exists without consuming vertical real estate.
-            // (Issue 568 — "the renderer collapses the lane's height to 0
-            // but keeps a 3 px summary strip showing 'N lanes folded'".)
+            // (Issue 568 — the renderer collapses the lane's height to
+            // SUMMARY_STRIP_HEIGHT_PX (3 px) and paints a tinted strip
+            // showing that folded automation data exists.)
             if (track.getFoldState().automationFolded()) {
                 AutomationLaneSummaryRenderer.draw(gc, autoLaneY, canvasWidth, autoLaneHeight);
                 continue;

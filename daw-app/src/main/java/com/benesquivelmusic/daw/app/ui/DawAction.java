@@ -114,7 +114,7 @@ public enum DawAction {
             new KeyCodeCombination(KeyCode.F, KeyCombination.SHIFT_DOWN)),
     TOGGLE_FOLD_SELECTED_TRACKS("Toggle Lane Fold (Selected Tracks)", Category.TRACKS,
             new KeyCodeCombination(KeyCode.F, KeyCombination.SHIFT_DOWN, KeyCombination.ALT_DOWN)),
-    FOLD_ALL_AUTOMATION("Fold All Automation Lanes", Category.TRACKS,
+    FOLD_ALL_AUTOMATION("Toggle Fold All Automation Lanes", Category.TRACKS,
             new KeyCodeCombination(KeyCode.F, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
 
     // ── Edit Tools ───────────────────────────────────────────────────────────

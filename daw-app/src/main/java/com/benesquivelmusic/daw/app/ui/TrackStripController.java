@@ -464,7 +464,18 @@ final class TrackStripController {
             }
         });
         if (arrangementCanvas != null) {
-            arrangementCanvas.addFoldChangeListener(refreshFoldGlyph);
+            // Use parentProperty: when the trackItem is removed from the
+            // VBox (e.g. track deletion or undo of track creation), the
+            // parent transitions to null — that's our cue to release the
+            // listener so it doesn't pin the captured `foldBtn` (and the
+            // rest of this strip) in memory and inflate work on every
+            // future fold change.
+            Runnable unsubscribe = arrangementCanvas.addFoldChangeListener(refreshFoldGlyph);
+            trackItem.parentProperty().addListener((obs, oldParent, newParent) -> {
+                if (newParent == null) {
+                    unsubscribe.run();
+                }
+            });
         }
 
         // ── Automation parameter selector ───────────────────────────────────

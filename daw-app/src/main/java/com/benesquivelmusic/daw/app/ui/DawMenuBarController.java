@@ -267,7 +267,7 @@ public final class DawMenuBarController {
                 DawAction.TOGGLE_FOLD_FOCUSED_TRACK, host::onToggleFoldFocusedTrack);
         MenuItem foldSelected = menuItem("Toggle Lane Fold (Selected Tracks)", DawIcon.AUTOMATION,
                 DawAction.TOGGLE_FOLD_SELECTED_TRACKS, host::onToggleFoldSelectedTracks);
-        MenuItem foldAllAutomation = menuItem("Fold All Automation Lanes", DawIcon.AUTOMATION,
+        MenuItem foldAllAutomation = menuItem("Toggle Fold All Automation Lanes", DawIcon.AUTOMATION,
                 DawAction.FOLD_ALL_AUTOMATION, host::onFoldAllAutomation);
 
         tracksMenu.getItems().addAll(foldFocused, foldSelected,
