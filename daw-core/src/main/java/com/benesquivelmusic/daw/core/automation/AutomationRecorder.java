@@ -240,6 +240,8 @@ public final class AutomationRecorder {
                     automationData.getOrCreateLane(parameter);
             case PluginParameterTarget pluginTarget ->
                     automationData.getOrCreatePluginLane(pluginTarget);
+            case ObjectParameterTarget objectTarget ->
+                    automationData.getOrCreateObjectLane(objectTarget);
         };
     }
 
