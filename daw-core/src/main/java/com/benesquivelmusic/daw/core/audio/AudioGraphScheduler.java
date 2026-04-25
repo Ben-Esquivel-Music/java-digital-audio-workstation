@@ -172,7 +172,7 @@ public final class AudioGraphScheduler {
             if (channel.isMuted()) {
                 continue;
             }
-            if (anySolo && !channel.isSolo()) {
+            if (anySolo && !channel.isSolo() && !channel.isSoloSafe()) {
                 continue;
             }
             if (channel.getEffectsChain().isEmpty()) {

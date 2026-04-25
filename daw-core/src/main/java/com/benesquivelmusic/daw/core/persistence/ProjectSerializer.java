@@ -361,6 +361,7 @@ public final class ProjectSerializer {
         elem.setAttribute("pan", String.valueOf(channel.getPan()));
         elem.setAttribute("muted", String.valueOf(channel.isMuted()));
         elem.setAttribute("solo", String.valueOf(channel.isSolo()));
+        elem.setAttribute("solo-safe", String.valueOf(channel.isSoloSafe()));
         elem.setAttribute("send-level", String.valueOf(channel.getSendLevel()));
         elem.setAttribute("phase-inverted", String.valueOf(channel.isPhaseInverted()));
         if (!channel.getOutputRouting().isMaster()) {

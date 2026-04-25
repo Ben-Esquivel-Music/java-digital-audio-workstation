@@ -169,6 +169,63 @@ class ProjectDeserializerTest {
     }
 
     @Test
+    void shouldDeserializeSoloSafeFlag() throws IOException {
+        // Round-trip: track flagged as solo-safe stays solo-safe; reverb
+        // return whose default solo-safe is overridden to false stays off.
+        DawProject original = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = original.createAudioTrack("Vocal");
+        original.getMixerChannelForTrack(track).setSoloSafe(true);
+        original.getMixer().getAuxBus().setSoloSafe(false);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getMixer().getChannels().get(0).isSoloSafe()).isTrue();
+        assertThat(restored.getMixer().getAuxBus().isSoloSafe()).isFalse();
+    }
+
+    @Test
+    void legacyProjectsWithoutSoloSafeAttributeUseDefaults() throws IOException {
+        // A pre-issue-XXX project XML has no solo-safe attribute. The
+        // deserializer must keep the construction-time defaults (return bus
+        // = solo-safe, track channel = not solo-safe).
+        String legacyXml = """
+                <?xml version="1.0" encoding="UTF-8" standalone="no"?>
+                <project name="Legacy" sampleRate="44100.0" channels="2" bitDepth="16" bufferSize="512">
+                  <metadata>
+                    <name>Legacy</name>
+                    <createdAt>2024-01-01T00:00:00Z</createdAt>
+                    <lastModified>2024-01-01T00:00:00Z</lastModified>
+                  </metadata>
+                  <tracks>
+                    <track name="Vocal" type="AUDIO" volume="1.0" pan="0.0" muted="false" solo="false"/>
+                  </tracks>
+                  <mixer>
+                    <master name="Master" volume="1.0" pan="0.0" muted="false" solo="false" send-level="0.0" phase-inverted="false"/>
+                    <return-buses>
+                      <return-bus name="Reverb Return" volume="1.0" pan="0.0" muted="false" solo="false" send-level="0.0" phase-inverted="false"/>
+                    </return-buses>
+                    <channels>
+                      <channel name="Vocal" volume="1.0" pan="0.0" muted="false" solo="false" send-level="0.0" phase-inverted="false"/>
+                    </channels>
+                  </mixer>
+                </project>
+                """;
+
+        DawProject restored = deserializer.deserialize(legacyXml);
+
+        assertThat(restored.getMixer().getAuxBus().isSoloSafe())
+                .as("legacy reverb return defaults to solo-safe")
+                .isTrue();
+        assertThat(restored.getMixer().getChannels().get(0).isSoloSafe())
+                .as("legacy track channel defaults to not solo-safe")
+                .isFalse();
+        assertThat(restored.getMixer().getMasterChannel().isSoloSafe())
+                .as("legacy master defaults to not solo-safe")
+                .isFalse();
+    }
+
+    @Test
     void shouldDeserializeReturnBuses() throws IOException {
         DawProject original = new DawProject("Test", AudioFormat.CD_QUALITY);
         original.getMixer().getAuxBus().setVolume(0.6);

@@ -113,6 +113,7 @@ public final class Mixer {
     public Mixer() {
         this.masterChannel = new MixerChannel("Master");
         MixerChannel defaultReturn = new MixerChannel("Reverb Return");
+        defaultReturn.setSoloSafe(true);
         defaultReturn.setOnEffectsChainChanged(this::recalculateDelayCompensation);
         returnBuses.add(defaultReturn);
     }
@@ -258,6 +259,7 @@ public final class Mixer {
                     "cannot exceed " + MAX_RETURN_BUSES + " return buses");
         }
         MixerChannel returnBus = new MixerChannel(name);
+        returnBus.setSoloSafe(true);
         returnBus.setOnEffectsChainChanged(this::recalculateDelayCompensation);
         if (pluginSupervisor != null) {
             returnBus.setPluginSupervisor(pluginSupervisor);
@@ -314,6 +316,44 @@ public final class Mixer {
      */
     public int getReturnBusCount() {
         return returnBuses.size();
+    }
+
+    /**
+     * Returns {@code true} when any track channel <em>or</em> return bus is
+     * currently soloed. Used by {@link #mixDown} variants and
+     * {@link com.benesquivelmusic.daw.core.audio.AudioGraphScheduler} to
+     * decide when to apply the solo-mute predicate; soloing a return bus
+     * silences non-soloed, non-solo-safe tracks just like soloing a track.
+     */
+    @RealTimeSafe
+    boolean isAnySolo() {
+        for (MixerChannel channel : channels) {
+            if (channel.isSolo()) {
+                return true;
+            }
+        }
+        for (MixerChannel returnBus : returnBuses) {
+            if (returnBus.isSolo()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Resets the {@linkplain MixerChannel#isSoloSafe() solo-safe} flag of
+     * every channel back to its default: return buses become solo-safe, while
+     * regular track channels and the master are not. This is the maintenance
+     * action exposed by the mixer's "Reset solo safe to defaults" menu item.
+     */
+    public void resetSoloSafeToDefaults() {
+        for (MixerChannel channel : channels) {
+            channel.setSoloSafe(false);
+        }
+        for (MixerChannel returnBus : returnBuses) {
+            returnBus.setSoloSafe(true);
+        }
+        masterChannel.setSoloSafe(false);
     }
 
     /**
@@ -410,13 +450,7 @@ public final class Mixer {
             }
         }
 
-        boolean anySolo = false;
-        for (MixerChannel channel : channels) {
-            if (channel.isSolo()) {
-                anySolo = true;
-                break;
-            }
-        }
+        boolean anySolo = isAnySolo();
 
         int channelCount = Math.min(channels.size(), channelBuffers.length);
         for (int i = 0; i < channelCount; i++) {
@@ -424,7 +458,7 @@ public final class Mixer {
             if (channel.isMuted()) {
                 continue;
             }
-            if (anySolo && !channel.isSolo()) {
+            if (anySolo && !channel.isSolo() && !channel.isSoloSafe()) {
                 continue;
             }
 
@@ -503,13 +537,7 @@ public final class Mixer {
             Arrays.fill(ch, 0, numFrames, 0.0f);
         }
 
-        boolean anySolo = false;
-        for (MixerChannel channel : channels) {
-            if (channel.isSolo()) {
-                anySolo = true;
-                break;
-            }
-        }
+        boolean anySolo = isAnySolo();
 
         MixerChannel auxBus = getAuxBus();
 
@@ -520,7 +548,7 @@ public final class Mixer {
             if (channel.isMuted()) {
                 continue;
             }
-            if (anySolo && !channel.isSolo()) {
+            if (anySolo && !channel.isSolo() && !channel.isSoloSafe()) {
                 continue;
             }
 
@@ -603,13 +631,7 @@ public final class Mixer {
             }
         }
 
-        boolean anySolo = false;
-        for (MixerChannel channel : channels) {
-            if (channel.isSolo()) {
-                anySolo = true;
-                break;
-            }
-        }
+        boolean anySolo = isAnySolo();
 
         int channelCount = Math.min(channels.size(), channelBuffers.length);
 
@@ -635,7 +657,7 @@ public final class Mixer {
             if (channel.isMuted()) {
                 continue;
             }
-            if (anySolo && !channel.isSolo()) {
+            if (anySolo && !channel.isSolo() && !channel.isSoloSafe()) {
                 continue;
             }
 
@@ -712,7 +734,7 @@ public final class Mixer {
             float returnVolume = (float) returnBus.getVolume();
             int returnAudioChannels = Math.min(returnBuf.length, outputBuffer.length);
 
-            if (returnBus.isMuted()) {
+            if (returnBus.isMuted() || (anySolo && !returnBus.isSolo() && !returnBus.isSoloSafe())) {
                 for (float[] ch : returnBuf) {
                     Arrays.fill(ch, 0, numFrames, 0.0f);
                 }
@@ -820,13 +842,7 @@ public final class Mixer {
             }
         }
 
-        boolean anySolo = false;
-        for (MixerChannel channel : channels) {
-            if (channel.isSolo()) {
-                anySolo = true;
-                break;
-            }
-        }
+        boolean anySolo = isAnySolo();
 
         int channelCount = Math.min(channels.size(), channelBuffers.length);
         int trackListSize = tracks.size();
@@ -851,7 +867,7 @@ public final class Mixer {
             if (channel.isMuted()) {
                 continue;
             }
-            if (anySolo && !channel.isSolo()) {
+            if (anySolo && !channel.isSolo() && !channel.isSoloSafe()) {
                 continue;
             }
 
@@ -932,7 +948,7 @@ public final class Mixer {
 
             float returnVolume = (float) returnBus.getVolume();
             int returnAudioChannels = Math.min(returnBuf.length, outputBuffer.length);
-            if (returnBus.isMuted()) {
+            if (returnBus.isMuted() || (anySolo && !returnBus.isSolo() && !returnBus.isSoloSafe())) {
                 for (float[] ch : returnBuf) {
                     Arrays.fill(ch, 0, numFrames, 0.0f);
                 }
@@ -1059,7 +1075,7 @@ public final class Mixer {
 
         for (int i = 0; i < channelCount; i++) {
             MixerChannel channel = channels.get(i);
-            if (channel.isMuted() || (anySolo && !channel.isSolo())) {
+            if (channel.isMuted() || (anySolo && !channel.isSolo() && !channel.isSoloSafe())) {
                 continue;
             }
             if (!channelHasActivePreInsertSend(channel)) {
@@ -1309,13 +1325,7 @@ public final class Mixer {
     @RealTimeSafe
     public void renderDirectOutputs(float[][][] channelBuffers, float[][] hwOutputBuffer,
                                     int numFrames) {
-        boolean anySolo = false;
-        for (MixerChannel channel : channels) {
-            if (channel.isSolo()) {
-                anySolo = true;
-                break;
-            }
-        }
+        boolean anySolo = isAnySolo();
 
         int channelCount = Math.min(channels.size(), channelBuffers.length);
         for (int i = 0; i < channelCount; i++) {
@@ -1327,7 +1337,7 @@ public final class Mixer {
             if (channel.isMuted()) {
                 continue;
             }
-            if (anySolo && !channel.isSolo()) {
+            if (anySolo && !channel.isSolo() && !channel.isSoloSafe()) {
                 continue;
             }
 

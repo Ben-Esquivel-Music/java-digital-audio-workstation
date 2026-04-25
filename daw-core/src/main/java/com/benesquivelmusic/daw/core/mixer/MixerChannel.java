@@ -35,6 +35,7 @@ public final class MixerChannel {
     private double pan;
     private boolean muted;
     private boolean solo;
+    private boolean soloSafe;
     private double sendLevel;
     private boolean phaseInverted;
     private TrackColor color;
@@ -59,6 +60,7 @@ public final class MixerChannel {
         this.pan = 0.0;
         this.muted = false;
         this.solo = false;
+        this.soloSafe = false;
         this.sendLevel = 0.0;
         this.phaseInverted = false;
     }
@@ -112,6 +114,32 @@ public final class MixerChannel {
     /** Sets the solo state. */
     public void setSolo(boolean solo) {
         this.solo = solo;
+    }
+
+    /**
+     * Returns whether this channel is "solo safe" (a.k.a. solo-in-place
+     * defeat). When any channel is soloed, channels with solo-safe set to
+     * {@code true} remain audible in addition to the soloed channels.
+     *
+     * <p>This is the standard behaviour for reverb returns and group buses on
+     * professional consoles: soloing a vocal should still feed the vocal's
+     * reverb return rather than silencing it. By default, return buses are
+     * created as solo-safe and input track channels are not.</p>
+     *
+     * @return {@code true} if this channel ignores solo-mute
+     */
+    public boolean isSoloSafe() {
+        return soloSafe;
+    }
+
+    /**
+     * Sets the solo-safe (solo-in-place defeat) state for this channel.
+     *
+     * @param soloSafe {@code true} to keep this channel audible regardless of
+     *                 the project-wide solo state
+     */
+    public void setSoloSafe(boolean soloSafe) {
+        this.soloSafe = soloSafe;
     }
 
     /** Returns the send level (0.0 – 1.0). */

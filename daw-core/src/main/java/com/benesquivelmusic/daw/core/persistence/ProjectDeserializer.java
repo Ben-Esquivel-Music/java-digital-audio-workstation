@@ -609,6 +609,13 @@ public final class ProjectDeserializer {
 
         channel.setMuted(parseBooleanAttr(elem, "muted"));
         channel.setSolo(parseBooleanAttr(elem, "solo"));
+        // Restore solo-safe (solo-in-place defeat). Legacy projects predating
+        // this attribute keep the channel's construction-time default: return
+        // buses default to solo-safe = true, track and master channels to false.
+        String soloSafeAttr = elem.getAttribute("solo-safe");
+        if (!soloSafeAttr.isEmpty()) {
+            channel.setSoloSafe("true".equalsIgnoreCase(soloSafeAttr));
+        }
 
         double sendLevel = clampDouble(parseDoubleAttr(elem, "send-level", 0.0), 0.0, 1.0);
         channel.setSendLevel(sendLevel);
