@@ -47,7 +47,8 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
                 AcousticReverbPlugin,
                 BinauralMonitorPlugin,
                 WaveshaperPlugin,
-                MatchEqPlugin {
+                MatchEqPlugin,
+                DeEsserPlugin {
 
     /**
      * Lightweight metadata record used by the menu layer to populate plugin
