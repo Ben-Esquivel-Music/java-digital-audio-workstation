@@ -49,6 +49,8 @@ final class PluginViewController {
     private DeEsserPluginView deEsserView;
     private Stage truePeakLimiterStage;
     private TruePeakLimiterPluginView truePeakLimiterView;
+    private Stage transientShaperStage;
+    private TransientShaperPluginView transientShaperView;
 
     PluginViewController(Host host) {
         this.host = host;
@@ -115,6 +117,15 @@ final class PluginViewController {
         if (multibandCompressorStage != null) {
             multibandCompressorStage.hide();
         }
+        if (deEsserStage != null) {
+            deEsserStage.hide();
+        }
+        if (truePeakLimiterStage != null) {
+            truePeakLimiterStage.hide();
+        }
+        if (transientShaperStage != null) {
+            transientShaperStage.hide();
+        }
         try {
             for (BuiltInDawPlugin plugin : builtInPluginCache.values()) {
                 try {
@@ -140,6 +151,7 @@ final class PluginViewController {
             case MultibandCompressorPlugin.PLUGIN_ID -> openMultibandCompressorWindow((MultibandCompressorPlugin) plugin);
             case DeEsserPlugin.PLUGIN_ID -> openDeEsserWindow((DeEsserPlugin) plugin);
             case TruePeakLimiterPlugin.PLUGIN_ID -> openTruePeakLimiterWindow((TruePeakLimiterPlugin) plugin);
+            case TransientShaperPlugin.PLUGIN_ID -> openTransientShaperWindow((TransientShaperPlugin) plugin);
             case ParametricEqPlugin.PLUGIN_ID,
                  CompressorPlugin.PLUGIN_ID,
                  ReverbPlugin.PLUGIN_ID -> host.switchToMasteringView();
@@ -347,5 +359,33 @@ final class PluginViewController {
         stage.show();
         stage.toFront();
         truePeakLimiterStage = stage;
+    }
+
+    private void openTransientShaperWindow(TransientShaperPlugin plugin) {
+        if (transientShaperStage != null) {
+            transientShaperStage.show();
+            transientShaperStage.toFront();
+            return;
+        }
+
+        transientShaperView = new TransientShaperPluginView(plugin.getProcessor());
+
+        Stage stage = new Stage(StageStyle.UTILITY);
+        stage.setTitle("Transient Shaper");
+        stage.setScene(new Scene(transientShaperView));
+        DarkThemeHelper.applyTo(stage.getScene());
+        stage.setMinWidth(820);
+        stage.setMinHeight(280);
+        stage.setOnHidden(_ -> {
+            if (transientShaperView != null) {
+                transientShaperView.dispose();
+                transientShaperView = null;
+            }
+            plugin.deactivate();
+            transientShaperStage = null;
+        });
+        stage.show();
+        stage.toFront();
+        transientShaperStage = stage;
     }
 }
