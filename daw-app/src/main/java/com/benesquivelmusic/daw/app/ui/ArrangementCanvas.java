@@ -14,6 +14,7 @@ import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.layout.Pane;
 import javafx.scene.paint.Color;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -358,6 +359,32 @@ public final class ArrangementCanvas extends Pane {
     // ── Lane folding (Issue 568) ───────────────────────────────────────────
 
     /**
+     * Listeners notified after any fold-state change applied through this
+     * canvas. Track-strip controllers use this to refresh their disclosure
+     * triangles when fold state is mutated by a shortcut, menu action, or
+     * "fold all" toggle (rather than by clicking the strip's own button).
+     */
+    private final List<Runnable> foldChangeListeners = new ArrayList<>();
+
+    /**
+     * Registers a callback fired whenever any fold-state change is
+     * applied through this canvas (single track, multi-track, or master
+     * toggle). Used to keep external UI such as track-header disclosure
+     * triangles in sync.
+     */
+    void addFoldChangeListener(Runnable listener) {
+        if (listener != null) {
+            foldChangeListeners.add(listener);
+        }
+    }
+
+    private void fireFoldChanged() {
+        for (Runnable r : foldChangeListeners) {
+            r.run();
+        }
+    }
+
+    /**
      * Toggles the {@code automationFolded} flag on the given track.
      * When folded, the automation sub-lane (if visible) collapses to a
      * thin summary strip but the underlying automation data is left
@@ -368,6 +395,7 @@ public final class ArrangementCanvas extends Pane {
         track.setFoldState(s.withAutomationFolded(!s.automationFolded()));
         invalidateLaneCache();
         redraw();
+        fireFoldChanged();
     }
 
     /**
@@ -383,6 +411,36 @@ public final class ArrangementCanvas extends Pane {
                 targetFolded, targetFolded, targetFolded, s.headerHeightOverride()));
         invalidateLaneCache();
         redraw();
+        fireFoldChanged();
+    }
+
+    /**
+     * Toggles every foldable lane group on each given track. The target
+     * fold state mirrors {@link #toggleAllFoldsForTrack(Track)}: when all
+     * given tracks are already fully folded they unfold, otherwise they
+     * fold. Used by the {@code Alt+Shift+F} multi-track shortcut so the
+     * lane caches stay consistent with single-track toggles.
+     *
+     * @return {@code true} if the resulting state is "folded", {@code
+     *         false} if "unfolded"; {@code false} when {@code tracks} is
+     *         empty
+     */
+    boolean toggleAllFoldsForTracks(List<Track> tracks) {
+        if (tracks == null || tracks.isEmpty()) {
+            return false;
+        }
+        boolean allFullyFolded = tracks.stream()
+                .allMatch(t -> t.getFoldState().isFullyFolded());
+        boolean targetFolded = !allFullyFolded;
+        for (Track t : tracks) {
+            t.setFoldState(new TrackFoldState(
+                    targetFolded, targetFolded, targetFolded,
+                    t.getFoldState().headerHeightOverride()));
+        }
+        invalidateLaneCache();
+        redraw();
+        fireFoldChanged();
+        return targetFolded;
     }
 
     /**
@@ -399,6 +457,7 @@ public final class ArrangementCanvas extends Pane {
         }
         invalidateLaneCache();
         redraw();
+        fireFoldChanged();
     }
 
     /**

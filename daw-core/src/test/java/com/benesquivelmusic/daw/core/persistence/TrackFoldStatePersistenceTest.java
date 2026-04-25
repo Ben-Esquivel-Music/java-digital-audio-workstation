@@ -73,9 +73,12 @@ class TrackFoldStatePersistenceTest {
     }
 
     @Test
-    void shouldFallBackToUnfoldedOnInvalidHeaderOverride() throws IOException {
-        // A negative header override is invalid; rather than crashing
-        // the load, we silently coerce to the default.
+    void shouldPreserveFoldFlagsAndCoerceInvalidHeaderOverride() throws IOException {
+        // Invalid header overrides (negative / non-finite) cannot be
+        // honoured by the layout primitives, so they are silently coerced
+        // to the default (0.0). Valid fold flags on the same track are
+        // preserved — we don't throw away good data because one
+        // attribute is bad, and we don't fail the load either.
         String xml = """
                 <?xml version="1.0" encoding="UTF-8"?>
                 <project name="Bad">

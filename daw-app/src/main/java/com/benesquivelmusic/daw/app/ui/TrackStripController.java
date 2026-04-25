@@ -443,18 +443,29 @@ final class TrackStripController {
 
         // ── Automation fold disclosure triangle (Issue 568) ─────────────────
         // Pro-Tools-style triangle next to the automation toggle: ▼ when
-        // expanded, ▶ when folded. Clicking flips the fold flag — the
-        // automation envelope collapses to a 3 px summary strip without
-        // touching the underlying automation data.
-        Button foldBtn = new Button(track.getFoldState().automationFolded() ? "\u25B6" : "\u25BC");
+        // expanded, ▶ when folded. Clicking flips the {@code automationFolded}
+        // flag for this track only; the envelope collapses to a 3 px summary
+        // strip without touching the underlying automation data. The icon
+        // is also refreshed on any external fold-state change (keyboard
+        // shortcuts, Tracks menu, "Fold all automation") so it never goes
+        // stale.
+        Button foldBtn = new Button();
         foldBtn.getStyleClass().add("track-mute-button");
-        foldBtn.setTooltip(new Tooltip("Fold Automation Lane (Shift+F)"));
+        foldBtn.setTooltip(new Tooltip("Fold Automation Lane"));
+        Runnable refreshFoldGlyph = () ->
+                foldBtn.setText(track.getFoldState().automationFolded() ? "\u25B6" : "\u25BC");
+        refreshFoldGlyph.run();
         foldBtn.setOnAction(_ -> {
             if (arrangementCanvas != null) {
                 arrangementCanvas.toggleAutomationFold(track);
-                foldBtn.setText(track.getFoldState().automationFolded() ? "\u25B6" : "\u25BC");
+                // No need to update the glyph here — the canvas's fold
+                // listener fires `refreshFoldGlyph` for us, which keeps a
+                // single source of truth for the icon.
             }
         });
+        if (arrangementCanvas != null) {
+            arrangementCanvas.addFoldChangeListener(refreshFoldGlyph);
+        }
 
         // ── Automation parameter selector ───────────────────────────────────
         ComboBox<AutomationParameter> paramSelector = new ComboBox<>();

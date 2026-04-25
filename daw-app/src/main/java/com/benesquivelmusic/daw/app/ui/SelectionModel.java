@@ -27,6 +27,14 @@ public final class SelectionModel {
     private final Map<AudioClip, Track> selectedClips = new LinkedHashMap<>();
     private final Map<MidiClip, Track> selectedMidiClips = new LinkedHashMap<>();
 
+    /**
+     * The track of the most recently selected clip — audio or MIDI. Updated
+     * by every mutator that adds a clip to either selection map so
+     * {@link #getFocusedTrack()} reflects true recency regardless of clip
+     * type. Reset to {@code null} when both selections are cleared.
+     */
+    private Track lastFocusedTrack;
+
     /** Optional callback invoked whenever the clip selection changes. */
     private Runnable selectionChangeListener;
 
@@ -142,6 +150,7 @@ public final class SelectionModel {
         selectedClips.clear();
         selectedMidiClips.clear();
         selectedClips.put(clip, track);
+        lastFocusedTrack = track;
         fireSelectionChanged();
     }
 
@@ -162,6 +171,7 @@ public final class SelectionModel {
             selectedClips.remove(clip);
         } else {
             selectedClips.put(clip, track);
+            lastFocusedTrack = track;
         }
         fireSelectionChanged();
     }
@@ -186,10 +196,12 @@ public final class SelectionModel {
         }
         selectedClips.clear();
         selectedMidiClips.clear();
+        Track lastInRegion = null;
         for (Track track : tracks) {
             for (AudioClip clip : track.getClips()) {
                 if (clip.getStartBeat() < regionEnd && clip.getEndBeat() > regionStart) {
                     selectedClips.put(clip, track);
+                    lastInRegion = track;
                 }
             }
             if (track.getType() == TrackType.MIDI) {
@@ -199,9 +211,15 @@ public final class SelectionModel {
                     double midiEnd = midiClipEndBeat(midiClip);
                     if (midiStart < regionEnd && midiEnd > regionStart) {
                         selectedMidiClips.put(midiClip, track);
+                        lastInRegion = track;
                     }
                 }
             }
+        }
+        if (lastInRegion != null) {
+            lastFocusedTrack = lastInRegion;
+        } else if (selectedClips.isEmpty() && selectedMidiClips.isEmpty()) {
+            lastFocusedTrack = null;
         }
         fireSelectionChanged();
     }
@@ -231,6 +249,7 @@ public final class SelectionModel {
             for (AudioClip clip : track.getClips()) {
                 if (clip.getStartBeat() < regionEnd && clip.getEndBeat() > regionStart) {
                     selectedClips.put(clip, track);
+                    lastFocusedTrack = track;
                 }
             }
             if (track.getType() == TrackType.MIDI) {
@@ -240,6 +259,7 @@ public final class SelectionModel {
                     double midiEnd = midiClipEndBeat(midiClip);
                     if (midiStart < regionEnd && midiEnd > regionStart) {
                         selectedMidiClips.put(midiClip, track);
+                        lastFocusedTrack = track;
                     }
                 }
             }
@@ -280,24 +300,43 @@ public final class SelectionModel {
     }
 
     /**
-     * Returns the most recently selected clip's track (audio first,
-     * then MIDI). Used by per-track shortcuts that act on a single
-     * "focused" track. Returns {@code null} when no clip is selected.
+     * Returns the track of the most recently selected clip — audio or
+     * MIDI, whichever was added/toggled last. Used by per-track shortcuts
+     * (e.g. {@code Shift+F}) that act on a single "focused" track.
+     *
+     * <p>A single recency cursor is maintained across both clip-type
+     * maps, so a recently-toggled MIDI clip on track B beats an older
+     * audio selection on track A.</p>
+     *
+     * <p>Returns {@code null} when nothing is selected, or when the last
+     * focused track is no longer represented in either selection (e.g.
+     * after the focused clip was deselected and only older selections
+     * remain — in which case the most recent surviving entry across
+     * both maps is returned).</p>
      *
      * @return the focused track, or {@code null}
      */
     public Track getFocusedTrack() {
-        Track last = null;
-        for (Track t : selectedClips.values()) {
-            last = t;
+        if (lastFocusedTrack != null
+                && (selectedClips.containsValue(lastFocusedTrack)
+                        || selectedMidiClips.containsValue(lastFocusedTrack))) {
+            return lastFocusedTrack;
         }
-        if (last != null) {
-            return last;
-        }
+        // Fallback: return the most recent surviving entry across both
+        // selection maps. LinkedHashMap preserves insertion order, so the
+        // last value in each map is the more-recent one within its type.
+        Track lastMidi = null;
         for (Track t : selectedMidiClips.values()) {
-            last = t;
+            lastMidi = t;
         }
-        return last;
+        if (lastMidi != null) {
+            return lastMidi;
+        }
+        Track lastAudio = null;
+        for (Track t : selectedClips.values()) {
+            lastAudio = t;
+        }
+        return lastAudio;
     }
 
     /**
@@ -316,6 +355,7 @@ public final class SelectionModel {
     public void clearClipSelection() {
         selectedClips.clear();
         selectedMidiClips.clear();
+        lastFocusedTrack = null;
         fireSelectionChanged();
     }
 
@@ -335,6 +375,7 @@ public final class SelectionModel {
         selectedClips.clear();
         selectedMidiClips.clear();
         selectedMidiClips.put(midiClip, track);
+        lastFocusedTrack = track;
         fireSelectionChanged();
     }
 
@@ -355,6 +396,7 @@ public final class SelectionModel {
             selectedMidiClips.remove(midiClip);
         } else {
             selectedMidiClips.put(midiClip, track);
+            lastFocusedTrack = track;
         }
         fireSelectionChanged();
     }

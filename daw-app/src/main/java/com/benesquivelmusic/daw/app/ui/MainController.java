@@ -21,7 +21,6 @@ import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.recording.MetronomeSettingsStore;
 import com.benesquivelmusic.daw.core.track.Track;
-import com.benesquivelmusic.daw.core.track.TrackFoldState;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
@@ -784,15 +783,10 @@ public final class MainController {
             status("No selected tracks to fold", DawIcon.INFO_CIRCLE);
             return;
         }
-        boolean allFullyFolded = tracks.stream()
-                .allMatch(t -> t.getFoldState().isFullyFolded());
-        boolean targetFolded = !allFullyFolded;
-        for (Track t : tracks) {
-            t.setFoldState(new TrackFoldState(
-                    targetFolded, targetFolded, targetFolded,
-                    t.getFoldState().headerHeightOverride()));
-        }
-        refreshArrangementCanvas();
+        // Route through the canvas API so lane-Y caches are invalidated
+        // alongside the fold-state mutations — keeps multi-track folds
+        // consistent with single-track toggles.
+        boolean targetFolded = arrangementCanvas.toggleAllFoldsForTracks(tracks);
         status((targetFolded ? "Folded " : "Unfolded ")
                 + tracks.size() + " selected track(s)", DawIcon.AUTOMATION);
         projectDirty = true;
