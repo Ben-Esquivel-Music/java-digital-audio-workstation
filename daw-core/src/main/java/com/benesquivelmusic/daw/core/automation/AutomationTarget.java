@@ -12,6 +12,10 @@ package com.benesquivelmusic.daw.core.automation;
  *       plugin instance. Each plugin parameter has its own instance-specific
  *       identifier, so these targets are created on demand when a user adds a
  *       plugin-parameter automation lane.</li>
+ *   <li>{@link ObjectParameterTarget} — a per-object spatial-panner parameter
+ *       (X / Y / Z / SIZE / DIVERGENCE / GAIN) on a specific object panner
+ *       instance. Used by spatial tracks for sample-accurate trajectory
+ *       automation that feeds object-based renderers (Atmos, ADM BWF).</li>
  * </ul>
  *
  * <p>Giving both kinds of targets a common interface lets
@@ -25,7 +29,7 @@ package com.benesquivelmusic.daw.core.automation;
  * statements that dispatch on target kind.</p>
  */
 public sealed interface AutomationTarget
-        permits AutomationParameter, PluginParameterTarget {
+        permits AutomationParameter, PluginParameterTarget, ObjectParameterTarget {
 
     /** Returns a short human-readable label for UI display. */
     String displayName();
