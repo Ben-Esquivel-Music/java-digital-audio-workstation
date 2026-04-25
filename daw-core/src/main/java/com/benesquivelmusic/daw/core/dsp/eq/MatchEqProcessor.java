@@ -113,6 +113,12 @@ public final class MatchEqProcessor implements AudioProcessor {
     private long liveFrameCount;         // FFT frames accumulated
     private final float[][] liveInputBuffer; // ring buffer per channel
     private int liveWriteIndex;
+    // Pre-allocated scratch for the live-capture FFT. Allocated by
+    // startLiveCapture() (or setFftSize while capturing) so process() never
+    // allocates on the audio thread.
+    private double[] liveWindow;
+    private double[] liveFftRe;
+    private double[] liveFftIm;
 
     // Last-computed target curve (length fftSize/2 + 1).
     private double[] targetCurve;
@@ -159,6 +165,9 @@ public final class MatchEqProcessor implements AudioProcessor {
         this.liveAccumulator = null;
         this.liveFrameCount = 0;
         this.liveWriteIndex = 0;
+        this.liveWindow = null;
+        this.liveFftRe = null;
+        this.liveFftIm = null;
         for (int c = 0; c < channels; c++) {
             this.liveInputBuffer[c] = new float[size.value()];
         }
@@ -312,12 +321,20 @@ public final class MatchEqProcessor implements AudioProcessor {
         for (int c = 0; c < channels; c++) {
             Arrays.fill(this.liveInputBuffer[c], 0f);
         }
+        // Preallocate FFT scratch so accumulateLive() (called on the audio
+        // thread) never has to allocate.
+        this.liveWindow = hann(size);
+        this.liveFftRe = new double[size];
+        this.liveFftIm = new double[size];
     }
 
     /** Stops live capture and clears the running accumulator. */
     public void stopLiveCapture() {
         this.liveAccumulator = null;
         this.liveFrameCount = 0;
+        this.liveWindow = null;
+        this.liveFftRe = null;
+        this.liveFftIm = null;
     }
 
     // ---- Match curve + filter build --------------------------------------
@@ -504,9 +521,12 @@ public final class MatchEqProcessor implements AudioProcessor {
     private void accumulateLive(float[][] input, int nCh, int numFrames) {
         int size = fftSize.value();
         int half = size / 2 + 1;
-        double[] window = null;
-        double[] re = null;
-        double[] im = null;
+        // Scratch buffers are preallocated by startLiveCapture(); bail out if
+        // capture wasn't started (defensive, the caller already checks).
+        double[] window = liveWindow;
+        double[] re = liveFftRe;
+        double[] im = liveFftIm;
+        if (window == null || re == null || im == null) return;
 
         for (int frame = 0; frame < numFrames; frame++) {
             for (int c = 0; c < nCh; c++) {
@@ -515,11 +535,6 @@ public final class MatchEqProcessor implements AudioProcessor {
             liveWriteIndex++;
             if (liveWriteIndex >= size) {
                 // Full block captured — take FFT of each channel and accumulate.
-                if (window == null) {
-                    window = hann(size);
-                    re = new double[size];
-                    im = new double[size];
-                }
                 for (int c = 0; c < nCh; c++) {
                     Arrays.fill(im, 0.0);
                     for (int i = 0; i < size; i++) {

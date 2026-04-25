@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.plugin;
 import com.benesquivelmusic.daw.core.audioimport.AudioReadResult;
 import com.benesquivelmusic.daw.core.audioimport.ReferenceFileLoader;
 import com.benesquivelmusic.daw.core.dsp.eq.MatchEqProcessor;
+import com.benesquivelmusic.daw.core.export.SampleRateConverter;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
@@ -136,9 +137,22 @@ public final class MatchEqPlugin implements BuiltInDawPlugin {
             throw new IllegalStateException("plugin has not been initialized");
         }
         AudioReadResult read = ReferenceFileLoader.read(file);
+        float[][] audio = read.audioData();
+        int processorRate = (int) Math.round(processor.getSampleRate());
+        if (read.sampleRate() != processorRate) {
+            // Resample to the processor's sample rate so FFT bins map to the
+            // correct frequencies. Uses the same windowed-sinc converter as
+            // AudioFileImporter to keep import and reference paths consistent.
+            float[][] converted = new float[audio.length][];
+            for (int ch = 0; ch < audio.length; ch++) {
+                converted[ch] = SampleRateConverter.convert(
+                        audio[ch], read.sampleRate(), processorRate);
+            }
+            audio = converted;
+        }
         ReferenceTrack track = new ReferenceTrack(
                 file.getFileName().toString(), file.toString());
-        track.setAudioData(read.audioData());
+        track.setAudioData(audio);
         processor.analyzeReference(track);
         return track;
     }

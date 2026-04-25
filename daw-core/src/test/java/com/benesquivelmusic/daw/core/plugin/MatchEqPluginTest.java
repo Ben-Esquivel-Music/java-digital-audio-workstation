@@ -27,7 +27,7 @@ class MatchEqPluginTest {
         MatchEqPlugin plugin = new MatchEqPlugin();
         plugin.initialize(stubContext());
 
-        // Generate a short pink-ish tone and write it as a 16-bit WAV file.
+        // Generate a short 440 Hz sine tone and write it as a 16-bit WAV file.
         int sampleRate = 48_000;
         int numFrames = 8_192;
         float[][] audio = new float[2][numFrames];
@@ -44,6 +44,35 @@ class MatchEqPluginTest {
         assertThat(track).isNotNull();
         assertThat(track.getAudioData()).isNotNull();
         assertThat(track.getAudioData()[0].length).isEqualTo(numFrames);
+        assertThat(plugin.getProcessor().getReferenceSpectrum()).isNotNull();
+    }
+
+    @Test
+    void shouldResampleReferenceFileWhenSampleRatesDiffer() throws IOException {
+        MatchEqPlugin plugin = new MatchEqPlugin();
+        plugin.initialize(stubContext()); // processor sample rate = 48 000
+
+        // Reference file at 44.1 kHz — must be resampled to 48 kHz to keep
+        // FFT bins aligned with the processor's frequency grid.
+        int sourceRate = 44_100;
+        int numFrames = 22_050; // 0.5 s
+        float[][] audio = new float[2][numFrames];
+        for (int i = 0; i < numFrames; i++) {
+            float sample = (float) (0.25 * Math.sin(2.0 * Math.PI * 440.0 * i / sourceRate));
+            audio[0][i] = sample;
+            audio[1][i] = sample;
+        }
+        Path wav = tempDir.resolve("reference-44100.wav");
+        WavExporter.write(audio, sourceRate, 16, DitherType.NONE, AudioMetadata.EMPTY, wav);
+
+        ReferenceTrack track = plugin.loadReferenceFile(wav);
+
+        // Audio inside the track was resampled to 48 kHz: the new frame count
+        // should be approximately numFrames * 48000/44100 (allow a few-frame
+        // edge tolerance from the windowed-sinc converter).
+        int expected = (int) Math.round(numFrames * 48_000.0 / sourceRate);
+        assertThat(track.getAudioData()[0].length)
+                .isCloseTo(expected, org.assertj.core.data.Offset.offset(8));
         assertThat(plugin.getProcessor().getReferenceSpectrum()).isNotNull();
     }
 
