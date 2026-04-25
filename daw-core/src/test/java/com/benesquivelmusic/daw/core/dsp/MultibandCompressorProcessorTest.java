@@ -39,6 +39,14 @@ class MultibandCompressorProcessorTest {
         assertThat(mbc.getCrossoverFrequencies()).containsExactly(200.0, 2000.0, 8000.0);
     }
 
+    @Test
+    void shouldCreateFiveBandCompressor() {
+        MultibandCompressorProcessor mbc = new MultibandCompressorProcessor(2, SAMPLE_RATE,
+                new double[]{120.0, 500.0, 2500.0, 8000.0});
+        assertThat(mbc.getBandCount()).isEqualTo(5);
+        assertThat(mbc.getCrossoverFrequencies()).containsExactly(120.0, 500.0, 2500.0, 8000.0);
+    }
+
     // --- Pass-through behavior ---
 
     @Test
@@ -375,6 +383,36 @@ class MultibandCompressorProcessorTest {
         assertThat(outputRms).isCloseTo(inputRms, offset(inputRms * 0.2));
     }
 
+    // --- Five-band processing ---
+
+    @Test
+    void shouldProcessFiveBands() {
+        MultibandCompressorProcessor mbc = new MultibandCompressorProcessor(1, SAMPLE_RATE,
+                new double[]{120.0, 500.0, 2500.0, 8000.0});
+        for (int band = 0; band < 5; band++) {
+            mbc.getBandCompressor(band).setThresholdDb(0.0);
+        }
+
+        int numFrames = 16384;
+        float[][] input = new float[1][numFrames];
+        float[][] output = new float[1][numFrames];
+
+        for (int i = 0; i < numFrames; i++) {
+            input[0][i] = (float) (Math.sin(2 * Math.PI * 50 * i / SAMPLE_RATE)
+                    + Math.sin(2 * Math.PI * 300 * i / SAMPLE_RATE)
+                    + Math.sin(2 * Math.PI * 1500 * i / SAMPLE_RATE)
+                    + Math.sin(2 * Math.PI * 5000 * i / SAMPLE_RATE)
+                    + Math.sin(2 * Math.PI * 15000 * i / SAMPLE_RATE)) * 0.18f;
+        }
+
+        mbc.process(input, output, numFrames);
+
+        // Output RMS should approximate input RMS (energy conservation)
+        double inputRms = rms(input[0], 8192, numFrames);
+        double outputRms = rms(output[0], 8192, numFrames);
+        assertThat(outputRms).isCloseTo(inputRms, offset(inputRms * 0.25));
+    }
+
     // --- Validation ---
 
     @Test
@@ -409,7 +447,7 @@ class MultibandCompressorProcessorTest {
     void shouldRejectTooManyCrossoverFrequencies() {
         assertThatThrownBy(() ->
                 new MultibandCompressorProcessor(1, SAMPLE_RATE,
-                        new double[]{200, 500, 2000, 8000}))
+                        new double[]{200, 500, 2000, 8000, 16000}))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
