@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.track.TrackColor;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -77,15 +78,15 @@ public record VcaGroup(UUID id,
                             + "]: " + masterGainDb);
         }
         // Defensive snapshot so callers cannot mutate the backing list afterwards
-        // and any incoming nulls are rejected eagerly.
-        List<UUID> snapshot = new ArrayList<>(memberChannelIds.size());
+        // and any incoming nulls are rejected eagerly. LinkedHashSet de-duplicates
+        // in O(n) while preserving insertion order — important because the
+        // {@code withX} helpers reconstruct the record on every mutation.
+        LinkedHashSet<UUID> seen = new LinkedHashSet<>(memberChannelIds.size());
         for (UUID member : memberChannelIds) {
             Objects.requireNonNull(member, "memberChannelIds must not contain null");
-            if (!snapshot.contains(member)) {
-                snapshot.add(member);
-            }
+            seen.add(member);
         }
-        memberChannelIds = Collections.unmodifiableList(snapshot);
+        memberChannelIds = Collections.unmodifiableList(new ArrayList<>(seen));
     }
 
     /** Creates an empty VCA group at unity gain (0 dB) with the given label. */

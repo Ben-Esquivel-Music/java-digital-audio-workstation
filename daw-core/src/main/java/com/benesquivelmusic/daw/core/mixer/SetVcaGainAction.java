@@ -39,10 +39,11 @@ public final class SetVcaGainAction implements UndoableAction {
         if (group == null) {
             throw new IllegalStateException("vca group not registered: " + groupId);
         }
-        if (!executed) {
-            previousGainDb = group.masterGainDb();
-            executed = true;
-        }
+        // Capture the immediately-prior gain on every execute() so undo
+        // restores the value the user moved away from this time, even after
+        // an undo/redo cycle in which other code paths changed the gain.
+        previousGainDb = group.masterGainDb();
+        executed = true;
         manager.setMasterGainDb(groupId, newGainDb);
     }
 

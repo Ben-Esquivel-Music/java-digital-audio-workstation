@@ -551,6 +551,53 @@ public final class ProjectDeserializer {
                 applyMixerChannelAttrs(channelElements.get(i), existingChannels.get(i), project);
             }
         }
+
+        // Parse VCA groups. The element is optional: legacy projects predating
+        // VCA support load with no VCAs because the manager starts empty.
+        List<Element> vcaGroupsContainers = getDirectChildElements(mixerElem, "vca-groups");
+        if (!vcaGroupsContainers.isEmpty()) {
+            VcaGroupManager vcaManager = project.getVcaGroupManager();
+            for (Element groupElem : getDirectChildElements(vcaGroupsContainers.getFirst(), "vca-group")) {
+                String idAttr = groupElem.getAttribute("id");
+                if (idAttr.isEmpty()) {
+                    continue;
+                }
+                java.util.UUID id;
+                try {
+                    id = java.util.UUID.fromString(idAttr);
+                } catch (IllegalArgumentException e) {
+                    continue;
+                }
+                String label = groupElem.getAttribute("label");
+                if (label.isEmpty()) {
+                    label = "VCA";
+                }
+                double gainDb = parseDoubleAttr(groupElem, "master-gain-db", 0.0);
+                gainDb = Math.max(VcaGroup.MIN_GAIN_DB, Math.min(VcaGroup.MAX_GAIN_DB, gainDb));
+                TrackColor color = null;
+                String colorHex = groupElem.getAttribute("color");
+                if (!colorHex.isEmpty()) {
+                    try {
+                        color = TrackColor.fromHex(colorHex);
+                    } catch (RuntimeException ignored) {
+                        // Unknown color — leave null.
+                    }
+                }
+                List<java.util.UUID> members = new java.util.ArrayList<>();
+                for (Element memberElem : getDirectChildElements(groupElem, "vca-member")) {
+                    String channelIdAttr = memberElem.getAttribute("channel-id");
+                    if (channelIdAttr.isEmpty()) {
+                        continue;
+                    }
+                    try {
+                        members.add(java.util.UUID.fromString(channelIdAttr));
+                    } catch (IllegalArgumentException ignored) {
+                        // Skip malformed UUIDs rather than failing the whole load.
+                    }
+                }
+                vcaManager.addVcaGroup(new VcaGroup(id, label, gainDb, color, members));
+            }
+        }
     }
 
     private void applyMixerChannelAttrs(Element elem, MixerChannel channel, DawProject project) {

@@ -51,10 +51,11 @@ public final class AssignVcaMemberAction implements UndoableAction {
         if (group == null) {
             throw new IllegalStateException("vca group not registered: " + groupId);
         }
-        if (!executed) {
-            previouslyMember = group.hasMember(channelId);
-            executed = true;
-        }
+        // Capture the immediately-prior membership on every execute() so undo
+        // restores the state that existed right before this redo, even if
+        // other code paths toggled membership while the action was undone.
+        previouslyMember = group.hasMember(channelId);
+        executed = true;
         if (assign) {
             manager.addMember(groupId, channelId);
         } else {

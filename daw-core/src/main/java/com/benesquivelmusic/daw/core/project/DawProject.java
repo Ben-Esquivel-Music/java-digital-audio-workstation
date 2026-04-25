@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.marker.MarkerManager;
 import com.benesquivelmusic.daw.core.mixer.CueBusManager;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.mixer.VcaGroupManager;
 import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshotManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
 import com.benesquivelmusic.daw.core.project.edit.NudgeSettings;
@@ -40,8 +41,7 @@ public final class DawProject {
     private final Metronome metronome;
     private final MixerSnapshotManager mixerSnapshotManager = new MixerSnapshotManager();
     private final CueBusManager cueBusManager = new CueBusManager();
-    private final com.benesquivelmusic.daw.core.mixer.VcaGroupManager vcaGroupManager =
-            new com.benesquivelmusic.daw.core.mixer.VcaGroupManager();
+    private final VcaGroupManager vcaGroupManager = new VcaGroupManager();
     private RoomConfiguration roomConfiguration;
     private ProjectMetadata metadata;
     private boolean dirty;
@@ -287,7 +287,7 @@ public final class DawProject {
      *
      * @return the VCA group manager
      */
-    public com.benesquivelmusic.daw.core.mixer.VcaGroupManager getVcaGroupManager() {
+    public VcaGroupManager getVcaGroupManager() {
         return vcaGroupManager;
     }
 
