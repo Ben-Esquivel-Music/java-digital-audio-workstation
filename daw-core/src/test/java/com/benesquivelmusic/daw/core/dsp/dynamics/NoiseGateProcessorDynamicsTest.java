@@ -308,4 +308,105 @@ class NoiseGateProcessorDynamicsTest {
         gate.setSidechainFilterQ(99.0);
         assertThat(gate.getSidechainFilterQ()).isEqualTo(10.0);
     }
+
+    @Test
+    void getLatencySamplesShouldTrackLookahead() {
+        var gate = new NoiseGateProcessor(1, SR);
+        assertThat(gate.getLatencySamples()).isEqualTo(0);
+
+        gate.setLookaheadMs(2.0);
+        int expected = (int) Math.round(2.0 * 0.001 * SR);
+        assertThat(gate.getLatencySamples()).isEqualTo(expected);
+
+        gate.setLookaheadMs(0.0);
+        assertThat(gate.getLatencySamples()).isEqualTo(0);
+    }
+
+    @Test
+    void shouldAllowMaximumLookaheadDelay() {
+        var gate = new NoiseGateProcessor(1, SR);
+        gate.setThresholdDb(-60.0);
+        gate.setRangeDb(0.0);          // pass-through floor
+        gate.setLookaheadMs(10.0);     // max — must be reachable
+
+        int expectedDelay = (int) Math.round(10.0 * 0.001 * SR);
+        int n = expectedDelay + 32;
+        float[][] in  = new float[1][n];
+        float[][] out = new float[1][n];
+        in[0][0] = 1.0f;
+        gate.process(in, out, n);
+
+        assertThat((double) out[0][expectedDelay]).isCloseTo(1.0,
+                org.assertj.core.data.Offset.offset(0.001));
+    }
+
+    @Test
+    void shouldHandleOutputBufferWithFewerChannelsThanInput() {
+        var gate = new NoiseGateProcessor(2, SR);
+        gate.setThresholdDb(-60.0);
+        gate.setRangeDb(0.0);
+        int n = 64;
+        float[][] in  = new float[2][n];
+        float[][] out = new float[1][n];        // narrower than input
+        for (int i = 0; i < n; i++) {
+            in[0][i] = 0.5f;
+            in[1][i] = 0.5f;
+        }
+        // Must not throw ArrayIndexOutOfBoundsException.
+        gate.process(in, out, n);
+        assertThat((double) out[0][n - 1]).isCloseTo(0.5,
+                org.assertj.core.data.Offset.offset(0.01));
+    }
+
+    @Test
+    void filterCoefficientUpdatesShouldTakeEffectOnNextBuffer() {
+        var gate = new NoiseGateProcessor(1, SR);
+        gate.setThresholdDb(-20.0);
+        gate.setSidechainEnabled(true);
+        gate.setSidechainFilterEnabled(true);
+        gate.setSidechainFilterFreqHz(80.0);
+        gate.setSidechainFilterQ(0.7);
+
+        int n = 4096;
+        float[][] main = new float[1][n];
+        float[][] sc   = new float[1][n];
+        float[][] out  = new float[1][n];
+        for (int i = 0; i < n; i++) {
+            main[0][i] = 0.5f;
+            sc  [0][i] = (float) (0.9 * Math.sin(2.0 * Math.PI * 5000.0 * i / SR));
+        }
+        // First buffer: 80 Hz bandpass rejects 5 kHz → gate stays closed.
+        gate.processSidechain(main, sc, out, n);
+        assertThat(gate.getGateState()).isEqualTo(NoiseGateProcessor.GateState.CLOSED);
+
+        // Move bandpass to 5 kHz from the UI thread; recalculation happens
+        // on the audio thread at the next buffer boundary.
+        gate.setSidechainFilterFreqHz(5000.0);
+        gate.setSidechainFilterQ(2.0);
+        gate.processSidechain(main, sc, out, n);
+        assertThat(gate.getGateState()).isEqualTo(NoiseGateProcessor.GateState.OPEN);
+    }
+
+    @Test
+    void toPluginMeterSnapshotShouldDeriveGrFromIoLevels() {
+        var gate = new NoiseGateProcessor(1, SR);
+        gate.setThresholdDb(-10.0);  // very high threshold
+        gate.setRangeDb(-6.0);       // floor: −6 dB
+        gate.setAttackMs(0.01);
+        gate.setHoldMs(0.0);
+        gate.setReleaseMs(1.0);
+
+        // Drive a quiet signal that's well below threshold so the gate
+        // stays closed and applies the −6 dB floor.
+        int n = 8192;
+        float[][] in  = new float[1][n];
+        float[][] out = new float[1][n];
+        for (int i = 0; i < n; i++) in[0][i] = 0.001f;
+        gate.process(in, out, n);
+
+        var generic = gate.getMeterSnapshot().toPluginMeterSnapshot();
+        // GR should reflect the audible attenuation (≈ −6 dB), not −∞.
+        assertThat(generic.gainReductionDb()).isCloseTo(-6.0,
+                org.assertj.core.data.Offset.offset(0.5));
+    }
 }

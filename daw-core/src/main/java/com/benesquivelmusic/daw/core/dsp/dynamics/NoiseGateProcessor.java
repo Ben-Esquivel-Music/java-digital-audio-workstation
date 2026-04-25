@@ -5,8 +5,6 @@ import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.SidechainAwareProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.PluginMeterSnapshot;
 
-import java.util.concurrent.atomic.AtomicReference;
-
 /**
  * Feature-complete noise gate with hysteresis, lookahead, and a sidechain
  * bandpass filter.
@@ -57,6 +55,9 @@ public final class NoiseGateProcessor implements SidechainAwareProcessor {
     private final double sampleRate;
 
     // ── Parameters ────────────────────────────────────────────────────────
+    // Parameter setters write to these fields from any thread (typically UI).
+    // The audio thread reads them at buffer boundaries; scalar primitive
+    // writes are sufficient for the parameters here.
     private double thresholdDb     = -40.0;
     private double hysteresisDb    =   3.0;   // close threshold = open − hysteresis
     private double attackMs        =   1.0;
@@ -65,9 +66,16 @@ public final class NoiseGateProcessor implements SidechainAwareProcessor {
     private double rangeDb         = -80.0;
     private double lookaheadMs     =   0.0;
     private boolean sidechainEnabled       = false;
-    private double  sidechainFilterFreqHz  = 80.0;
-    private double  sidechainFilterQ       = 0.7;
+    private volatile double sidechainFilterFreqHz = 80.0;
+    private volatile double sidechainFilterQ      = 0.7;
     private boolean sidechainFilterEnabled = true;
+
+    // Coefficients last applied to the bandpass filter (audio-thread owned).
+    // The audio thread compares these with the volatile params at the start
+    // of each buffer and recalculates only when they change — keeping the
+    // BiquadFilter mutation single-threaded.
+    private double appliedFilterFreqHz;
+    private double appliedFilterQ;
 
     // ── State ─────────────────────────────────────────────────────────────
     private GateState state    = GateState.CLOSED;
@@ -86,9 +94,14 @@ public final class NoiseGateProcessor implements SidechainAwareProcessor {
     // Sidechain bandpass filter (single-channel: detection is mono-summed).
     private final BiquadFilter sidechainFilter;
 
-    // Cross-thread meter publication.
-    private final AtomicReference<MeterSnapshot> meterRef =
-            new AtomicReference<>(MeterSnapshot.SILENT);
+    // Cross-thread meter publication — primitive volatile fields written by
+    // the audio thread, read by the UI thread. The immutable
+    // {@link MeterSnapshot} record is allocated only when the UI calls
+    // {@link #getMeterSnapshot()}, keeping {@code process} allocation-free.
+    private volatile GateState publishedState = GateState.CLOSED;
+    private volatile double publishedEnvelope = 0.0;
+    private volatile double publishedInputDb  = Double.NEGATIVE_INFINITY;
+    private volatile double publishedOutputDb = Double.NEGATIVE_INFINITY;
 
     /**
      * Creates a noise gate.
@@ -105,11 +118,16 @@ public final class NoiseGateProcessor implements SidechainAwareProcessor {
         }
         this.channels = channels;
         this.sampleRate = sampleRate;
-        this.lookaheadCapacity = Math.max(1, (int) Math.ceil(MAX_LOOKAHEAD_MS * 0.001 * sampleRate));
+        // +1 so the maximum lookahead delay (MAX_LOOKAHEAD_MS) is reachable;
+        // the read index trails the write index by `delay` samples, so the
+        // ring buffer needs `maxDelay + 1` slots to keep them distinct.
+        this.lookaheadCapacity = Math.max(2, (int) Math.ceil(MAX_LOOKAHEAD_MS * 0.001 * sampleRate) + 1);
         this.lookaheadBuffer = new float[channels][lookaheadCapacity];
         this.sidechainFilter = BiquadFilter.create(
                 BiquadFilter.FilterType.BAND_PASS, sampleRate,
                 sidechainFilterFreqHz, sidechainFilterQ, 0.0);
+        this.appliedFilterFreqHz = sidechainFilterFreqHz;
+        this.appliedFilterQ      = sidechainFilterQ;
         recalculateCoefficients();
     }
 
@@ -132,6 +150,18 @@ public final class NoiseGateProcessor implements SidechainAwareProcessor {
     private void processInternal(float[][] inputBuffer, float[][] detectionBuffer,
                                  float[][] outputBuffer, int numFrames,
                                  boolean externalSidechain) {
+        // Refresh sidechain bandpass coefficients on the audio thread when
+        // UI-thread setters have changed the cached freq/Q. Mutating the
+        // BiquadFilter exclusively here keeps it single-threaded.
+        double freqHz = sidechainFilterFreqHz;
+        double qVal   = sidechainFilterQ;
+        if (freqHz != appliedFilterFreqHz || qVal != appliedFilterQ) {
+            sidechainFilter.recalculate(BiquadFilter.FilterType.BAND_PASS,
+                    sampleRate, freqHz, qVal, 0.0);
+            appliedFilterFreqHz = freqHz;
+            appliedFilterQ      = qVal;
+        }
+
         double thresholdLinear  = Math.pow(10.0,  thresholdDb / 20.0);
         double closeThresholdDb = thresholdDb - Math.max(0.0, hysteresisDb);
         double closeThresholdLin = Math.pow(10.0, closeThresholdDb / 20.0);
@@ -140,7 +170,10 @@ public final class NoiseGateProcessor implements SidechainAwareProcessor {
                 && (externalSidechain || sidechainEnabled);
 
         int detectionChannels = Math.min(channels, detectionBuffer.length);
-        int outputChannels    = Math.min(channels, inputBuffer.length);
+        // Output writes must respect *both* input and output buffer lengths
+        // — the AudioProcessor contract permits asymmetric buffers.
+        int outputChannels    = Math.min(channels,
+                Math.min(inputBuffer.length, outputBuffer.length));
         int delay             = Math.min(lookaheadDelaySamples, lookaheadCapacity - 1);
 
         double peakInput  = 0.0;
@@ -229,10 +262,13 @@ public final class NoiseGateProcessor implements SidechainAwareProcessor {
             }
         }
 
-        // Publish meter snapshot for the UI thread.
-        meterRef.lazySet(new MeterSnapshot(
-                state, envelope,
-                toDb(peakInput), toDb(peakOutput)));
+        // Publish meter readings to volatile primitives — no allocation here.
+        // The immutable {@link MeterSnapshot} is constructed only when the
+        // UI calls {@link #getMeterSnapshot()}.
+        publishedState    = state;
+        publishedEnvelope = envelope;
+        publishedInputDb  = toDb(peakInput);
+        publishedOutputDb = toDb(peakOutput);
     }
 
     private static double toDb(double linear) {
@@ -282,16 +318,17 @@ public final class NoiseGateProcessor implements SidechainAwareProcessor {
 
     public double getSidechainFilterFreqHz() { return sidechainFilterFreqHz; }
     public void setSidechainFilterFreqHz(double hz) {
+        // Stash the new value; the audio thread refreshes the BiquadFilter
+        // coefficients at the next buffer boundary to avoid concurrent
+        // coefficient mutation while {@link BiquadFilter#processSampleDouble}
+        // is running.
         this.sidechainFilterFreqHz = Math.max(20.0, Math.min(20000.0, hz));
-        sidechainFilter.recalculate(BiquadFilter.FilterType.BAND_PASS,
-                sampleRate, this.sidechainFilterFreqHz, sidechainFilterQ, 0.0);
     }
 
     public double getSidechainFilterQ() { return sidechainFilterQ; }
     public void setSidechainFilterQ(double q) {
+        // See {@link #setSidechainFilterFreqHz} — refresh deferred to audio thread.
         this.sidechainFilterQ = Math.max(0.1, Math.min(10.0, q));
-        sidechainFilter.recalculate(BiquadFilter.FilterType.BAND_PASS,
-                sampleRate, sidechainFilterFreqHz, this.sidechainFilterQ, 0.0);
     }
 
     public boolean isSidechainFilterEnabled() { return sidechainFilterEnabled; }
@@ -300,10 +337,18 @@ public final class NoiseGateProcessor implements SidechainAwareProcessor {
     }
 
     /** Returns the current gate state — reflects live audio-thread state. */
-    public GateState getGateState() { return state; }
+    public GateState getGateState() { return publishedState; }
 
-    /** Returns the latest published meter/state snapshot for the UI. */
-    public MeterSnapshot getMeterSnapshot() { return meterRef.get(); }
+    /**
+     * Builds an immutable snapshot of the latest published meter readings.
+     * Allocates on the calling (UI) thread; the audio thread itself never
+     * allocates a {@link MeterSnapshot}.
+     */
+    public MeterSnapshot getMeterSnapshot() {
+        return new MeterSnapshot(
+                publishedState, publishedEnvelope,
+                publishedInputDb, publishedOutputDb);
+    }
 
     @Override
     public void reset() {
@@ -315,13 +360,26 @@ public final class NoiseGateProcessor implements SidechainAwareProcessor {
             java.util.Arrays.fill(ch, 0f);
         }
         sidechainFilter.reset();
-        meterRef.set(MeterSnapshot.SILENT);
+        publishedState    = GateState.CLOSED;
+        publishedEnvelope = 0.0;
+        publishedInputDb  = Double.NEGATIVE_INFINITY;
+        publishedOutputDb = Double.NEGATIVE_INFINITY;
     }
 
     @Override
     public int getInputChannelCount()  { return channels; }
     @Override
     public int getOutputChannelCount() { return channels; }
+
+    /**
+     * Reports the current lookahead delay in samples so the host's plugin
+     * delay compensation (PDC) can keep parallel tracks aligned. The value
+     * tracks {@link #setLookaheadMs(double)}.
+     */
+    @Override
+    public int getLatencySamples() {
+        return lookaheadDelaySamples;
+    }
 
     private void recalculateCoefficients() {
         attackCoeff  = DynamicsCoefficients.envelope(attackMs,  sampleRate);
@@ -355,12 +413,17 @@ public final class NoiseGateProcessor implements SidechainAwareProcessor {
                 GateState.CLOSED, 0.0,
                 Double.NEGATIVE_INFINITY, Double.NEGATIVE_INFINITY);
 
-        /** Adapts this snapshot to the generic {@link PluginMeterSnapshot} format. */
+        /**
+         * Adapts this snapshot to the generic {@link PluginMeterSnapshot}
+         * format. Gain reduction is derived from the actual input/output
+         * level difference so the value reflects the audible attenuation
+         * (including the {@code range} floor) rather than the raw envelope.
+         */
         public PluginMeterSnapshot toPluginMeterSnapshot() {
-            // Gain reduction: how far below 0 dB the gate is currently attenuating.
-            double grDb = (envelope >= 1.0)
-                    ? 0.0
-                    : 20.0 * Math.log10(Math.max(1e-9, envelope));
+            double grDb = 0.0;
+            if (Double.isFinite(inputLevelDb) && Double.isFinite(outputLevelDb)) {
+                grDb = Math.min(0.0, outputLevelDb - inputLevelDb);
+            }
             return new PluginMeterSnapshot(grDb, inputLevelDb, outputLevelDb);
         }
 

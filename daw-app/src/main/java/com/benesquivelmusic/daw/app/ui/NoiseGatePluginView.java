@@ -139,9 +139,9 @@ public final class NoiseGatePluginView extends VBox {
         gateLed.setStroke(Color.rgb(110, 110, 110));
         gateStateLabel = new Label("CLOSED");
         gateStateLabel.setStyle("-fx-text-fill: #ccc; -fx-font-family: monospace;");
-        VBox ledBox = new VBox(6, new Label("Gate") {{
-            setStyle("-fx-text-fill: #ccc;");
-        }}, gateLed, gateStateLabel);
+        Label gateLabel = new Label("Gate");
+        gateLabel.setStyle("-fx-text-fill: #ccc;");
+        VBox ledBox = new VBox(6, gateLabel, gateLed, gateStateLabel);
         ledBox.setAlignment(Pos.CENTER);
 
         HBox main = new HBox(20, controls, meterBox, ledBox);
