@@ -785,7 +785,12 @@ public final class ProjectDeserializer {
         MixerChannel target = returnBuses.get(targetIndex);
         double level = clampDouble(parseDoubleAttr(sendElem, "level", 0.0), 0.0, 1.0);
         SendMode mode = parseSendMode(sendElem.getAttribute("mode"));
-        channel.addSend(new Send(target, level, mode));
+        // SendTap is the authoritative field; legacy projects without a "tap"
+        // attribute migrate by deriving the tap from the legacy mode (and
+        // ultimately default to POST_FADER per the migration spec).
+        SendTap tap = parseSendTap(sendElem.getAttribute("tap"), mode);
+        Send send = new Send(target, level, tap);
+        channel.addSend(send);
     }
 
     private void parseAutomationData(Element automationElem, Track track) {
@@ -1016,6 +1021,27 @@ public final class ProjectDeserializer {
             return SendMode.valueOf(value);
         } catch (IllegalArgumentException e) {
             return SendMode.POST_FADER;
+        }
+    }
+
+    /**
+     * Parses the {@code tap} attribute of a {@code <send>} element. Legacy
+     * projects (saved before per-send tap-point support) omit the attribute;
+     * we migrate them by deriving a tap from the legacy {@link SendMode}
+     * (and falling back to {@link SendTap#POST_FADER} as the spec mandates).
+     *
+     * @param value         the raw attribute value (may be {@code null}/empty)
+     * @param fallbackMode  the legacy mode to fall back to for migration
+     * @return the parsed or migrated tap point
+     */
+    private SendTap parseSendTap(String value, SendMode fallbackMode) {
+        if (value == null || value.isEmpty()) {
+            return fallbackMode == SendMode.PRE_FADER ? SendTap.PRE_FADER : SendTap.POST_FADER;
+        }
+        try {
+            return SendTap.valueOf(value);
+        } catch (IllegalArgumentException e) {
+            return SendTap.POST_FADER;
         }
     }
 
@@ -1423,8 +1449,9 @@ public final class ProjectDeserializer {
                     int targetIndex = parseIntAttr(se, "target-index", -1);
                     double level = clampDouble(parseDoubleAttr(se, "level", 0.0), 0.0, 1.0);
                     SendMode mode = parseSendMode(se.getAttribute("mode"));
+                    SendTap tap = parseSendTap(se.getAttribute("tap"), mode);
                     if (targetIndex >= 0) {
-                        sends.add(new SendSnapshot(targetIndex, level, mode));
+                        sends.add(new SendSnapshot(targetIndex, level, mode, tap));
                     }
                 }
             }

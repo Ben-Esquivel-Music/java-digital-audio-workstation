@@ -114,4 +114,57 @@ class SetSendRoutingActionTest {
         assertThat(channel.getSends()).hasSize(1);
         assertThat(channel.getSendForTarget(target).getLevel()).isEqualTo(0.5);
     }
+
+    @Test
+    void shouldPreservePreInsertsTapWhenOnlyLevelChanges() {
+        // Regression: SetSendRoutingAction used to call setMode() on every
+        // execute(), and Send.setMode(PRE_FADER) collapses PRE_INSERTS back
+        // to PRE_FADER. The action must skip the mode update when the
+        // existing mode already matches the requested one (which is what
+        // the slider's level-commit path always does).
+        MixerChannel channel = new MixerChannel("Vocals");
+        MixerChannel target = new MixerChannel("Cue");
+        Send existing = new Send(target, 0.3, SendTap.PRE_INSERTS);
+        channel.addSend(existing);
+
+        // The MixerView slider release path passes back the existing
+        // send.getMode() (which collapses PRE_INSERTS to PRE_FADER).
+        SetSendRoutingAction action = new SetSendRoutingAction(
+                channel, target, 0.7, existing.getMode());
+        action.execute();
+
+        Send updated = channel.getSendForTarget(target);
+        assertThat(updated.getLevel()).isEqualTo(0.7);
+        // The PRE_INSERTS tap must survive the level-only edit.
+        assertThat(updated.getTap()).isEqualTo(SendTap.PRE_INSERTS);
+
+        action.undo();
+        Send restored = channel.getSendForTarget(target);
+        assertThat(restored.getLevel()).isEqualTo(0.3);
+        assertThat(restored.getTap()).isEqualTo(SendTap.PRE_INSERTS);
+    }
+
+    @Test
+    void undoShouldRestorePreInsertsAfterModeFlipToPostFader() {
+        // Regression: previously we only captured the legacy SendMode on
+        // execute(), so flipping a PRE_INSERTS send to POST_FADER and
+        // undoing would restore PRE_FADER (the lossy SendMode view) rather
+        // than the original PRE_INSERTS tap. Capturing previousTap fixes
+        // this round-trip.
+        MixerChannel channel = new MixerChannel("Vocals");
+        MixerChannel target = new MixerChannel("Cue");
+        channel.addSend(new Send(target, 0.4, SendTap.PRE_INSERTS));
+
+        SetSendRoutingAction action = new SetSendRoutingAction(
+                channel, target, 0.4, SendMode.POST_FADER);
+        action.execute();
+
+        Send updated = channel.getSendForTarget(target);
+        assertThat(updated.getTap()).isEqualTo(SendTap.POST_FADER);
+
+        action.undo();
+        Send restored = channel.getSendForTarget(target);
+        assertThat(restored.getTap()).isEqualTo(SendTap.PRE_INSERTS);
+        assertThat(restored.getLevel()).isEqualTo(0.4);
+    }
 }

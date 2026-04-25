@@ -42,6 +42,29 @@ public final class Mixer {
     private float[][] scratchBufferA;
     private float[][] scratchBufferB;
     /**
+     * Pre-allocated per-channel scratch buffers used to capture each
+     * channel's <em>pre-insert</em> signal so that sends configured with
+     * {@link SendTap#PRE_INSERTS} can tap audio before the insert chain has
+     * run. The capture is performed in a sequential pre-pass (see
+     * {@link #capturePreInsertsForActiveChannels}) <em>before</em> the
+     * optional parallel insert pre-pass, so the captured signal remains
+     * pre-insert regardless of whether the
+     * {@link AudioGraphScheduler} ran inserts in parallel.
+     *
+     * <p>The outer array is grown lazily to {@code channelCount}; inner
+     * buffers are allocated on demand only for channels that actually have
+     * an active {@link SendTap#PRE_INSERTS} send (so channels without
+     * pre-insert sends pay no allocation cost).</p>
+     */
+    private float[][][] preInsertScratchPerChannel = new float[0][][];
+    /**
+     * Parallel array tracking which channels have a captured pre-insert
+     * buffer for the current block. Reset at the start of each
+     * {@link #mixDown} invocation. Allows {@link #routeSends} to look up
+     * the captured buffer without recomputing the gate.
+     */
+    private boolean[] preInsertCaptured = new boolean[0];
+    /**
      * Optional multi-core graph scheduler. When non-null and the block size
      * meets the scheduler's parallel threshold, per-channel insert chains
      * without sidechain routing are dispatched across worker threads; the
@@ -338,6 +361,9 @@ public final class Mixer {
         this.preparedAudioChannels = audioChannels;
         this.scratchBufferA = new float[audioChannels][blockSize];
         this.scratchBufferB = new float[audioChannels][blockSize];
+        // Lazily-grown per-channel pre-insert buffers; outer array sized in
+        // mixDown when the channel count is known. Keep the placeholders
+        // empty here so prepareForPlayback remains O(channels + returns).
         for (MixerChannel channel : channels) {
             channel.prepareEffectsChain(audioChannels, blockSize);
         }
@@ -587,6 +613,11 @@ public final class Mixer {
 
         int channelCount = Math.min(channels.size(), channelBuffers.length);
 
+        // Capture pre-insert signals BEFORE any insert processing runs (whether
+        // sequential below or via the optional parallel scheduler) so that
+        // SendTap.PRE_INSERTS sends always tap a truly dry signal.
+        capturePreInsertsForActiveChannels(channelBuffers, channelCount, anySolo, numFrames);
+
         // Parallel pre-pass: dispatch insert-chain processing for channels
         // without sidechain routing to worker threads. The scheduler itself
         // falls back to no-op when the pool size is 1 or the block size is
@@ -610,6 +641,9 @@ public final class Mixer {
 
             float[][] src = channelBuffers[i];
 
+            // The pre-insert signal was captured up front; look it up here.
+            float[][] preInsertSrc = preInsertSourceFor(i);
+
             if (!channel.getEffectsChain().isEmpty() && !insertsDone[i]) {
                 if (hasSidechainRouting(channel)) {
                     processInsertsWithSidechain(channel, src, channelBuffers, returnBuffers, numFrames);
@@ -622,46 +656,8 @@ public final class Mixer {
 
             // Route sends to return buses BEFORE applying delay compensation
             // so that return bus paths are compensated independently
-            List<Send> sends = channel.getSends();
-            for (int s = 0; s < sends.size(); s++) {
-                Send send = sends.get(s);
-                float sendLevel = (float) send.getLevel();
-                if (sendLevel <= 0.0f) {
-                    continue;
-                }
-
-                // Find the return bus index via identity comparison to avoid
-                // the O(n) equals()-based indexOf call per send per block
-                MixerChannel target = send.getTarget();
-                int returnIndex = -1;
-                for (int r = 0; r < returnBusCount; r++) {
-                    if (returnBuses.get(r) == target) {
-                        returnIndex = r;
-                        break;
-                    }
-                }
-                if (returnIndex < 0) {
-                    continue;
-                }
-
-                float[][] returnBuf = returnBuffers[returnIndex];
-                int returnAudioChannels = Math.min(src.length, returnBuf.length);
-
-                if (send.getMode() == SendMode.PRE_FADER) {
-                    for (int ch = 0; ch < returnAudioChannels; ch++) {
-                        for (int f = 0; f < numFrames; f++) {
-                            returnBuf[ch][f] += src[ch][f] * sendLevel;
-                        }
-                    }
-                } else {
-                    // Post-fader: apply channel volume to send
-                    for (int ch = 0; ch < returnAudioChannels; ch++) {
-                        for (int f = 0; f < numFrames; f++) {
-                            returnBuf[ch][f] += src[ch][f] * volume * sendLevel;
-                        }
-                    }
-                }
-            }
+            routeSends(channel, preInsertSrc, src, volume,
+                    returnBuffers, returnBusCount, numFrames);
 
             // Apply plugin delay compensation AFTER sends are tapped so
             // that the direct path is aligned at the summing bus
@@ -835,6 +831,11 @@ public final class Mixer {
         int channelCount = Math.min(channels.size(), channelBuffers.length);
         int trackListSize = tracks.size();
 
+        // Capture pre-insert signals BEFORE any insert processing runs so
+        // that SendTap.PRE_INSERTS sends always tap the truly dry signal,
+        // even when the parallel scheduler runs inserts in another thread.
+        capturePreInsertsForActiveChannels(channelBuffers, channelCount, anySolo, numFrames);
+
         // Parallel pre-pass: dispatch insert-chain processing for channels
         // without sidechain routing to worker threads, matching the
         // uninstrumented mixDown() behavior.
@@ -865,6 +866,9 @@ public final class Mixer {
 
             float[][] src = channelBuffers[i];
 
+            // Pre-insert signal was captured up front; look it up here.
+            float[][] preInsertSrc = preInsertSourceFor(i);
+
             if (!channel.getEffectsChain().isEmpty() && !insertsDone[i]) {
                 if (hasSidechainRouting(channel)) {
                     processInsertsWithSidechain(channel, src, channelBuffers, returnBuffers, numFrames);
@@ -875,40 +879,8 @@ public final class Mixer {
 
             float volume = (float) channel.getVolume();
 
-            List<Send> sends = channel.getSends();
-            for (int s = 0; s < sends.size(); s++) {
-                Send send = sends.get(s);
-                float sendLevel = (float) send.getLevel();
-                if (sendLevel <= 0.0f) {
-                    continue;
-                }
-                MixerChannel target = send.getTarget();
-                int returnIndex = -1;
-                for (int r = 0; r < returnBusCount; r++) {
-                    if (returnBuses.get(r) == target) {
-                        returnIndex = r;
-                        break;
-                    }
-                }
-                if (returnIndex < 0) {
-                    continue;
-                }
-                float[][] returnBuf = returnBuffers[returnIndex];
-                int returnAudioChannels = Math.min(src.length, returnBuf.length);
-                if (send.getMode() == SendMode.PRE_FADER) {
-                    for (int ch = 0; ch < returnAudioChannels; ch++) {
-                        for (int f = 0; f < numFrames; f++) {
-                            returnBuf[ch][f] += src[ch][f] * sendLevel;
-                        }
-                    }
-                } else {
-                    for (int ch = 0; ch < returnAudioChannels; ch++) {
-                        for (int f = 0; f < numFrames; f++) {
-                            returnBuf[ch][f] += src[ch][f] * volume * sendLevel;
-                        }
-                    }
-                }
-            }
+            routeSends(channel, preInsertSrc, src, volume,
+                    returnBuffers, returnBusCount, numFrames);
 
             delayCompensation.applyToChannel(i, src, numFrames);
 
@@ -1035,6 +1007,170 @@ public final class Mixer {
             this.returnBusScratchDouble = buf;
         }
         return buf;
+    }
+
+    /**
+     * Returns {@code true} if {@code channel} has at least one send whose
+     * tap point is {@link SendTap#PRE_INSERTS} <em>and</em> whose level is
+     * audible. This is a quick gate so we only copy the pre-insert signal
+     * into a scratch buffer when it will actually be consumed.
+     */
+    @RealTimeSafe
+    private static boolean channelHasActivePreInsertSend(MixerChannel channel) {
+        List<Send> sends = channel.getSends();
+        for (int s = 0, n = sends.size(); s < n; s++) {
+            Send send = sends.get(s);
+            if (send.getTap() == SendTap.PRE_INSERTS && send.getLevel() > 0.0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Pre-pass that captures each channel's pre-insert signal into
+     * {@link #preInsertScratchPerChannel} <em>before</em> any insert
+     * processing runs. Doing this up front (rather than inline in the
+     * per-channel mixing loop) is what makes {@link SendTap#PRE_INSERTS}
+     * correct even when the optional {@link AudioGraphScheduler} processes
+     * insert chains in parallel — by the time the parallel pre-pass runs
+     * and mutates {@code channelBuffers}, the dry signal has already been
+     * preserved.
+     *
+     * <p>Allocations are amortised: the outer array grows once to the
+     * channel count, and per-channel inner buffers are allocated only when
+     * a channel actually has an active {@link SendTap#PRE_INSERTS} send.
+     * After the first block at a given channel/block-size configuration
+     * the method is allocation-free.</p>
+     */
+    @RealTimeSafe
+    private void capturePreInsertsForActiveChannels(float[][][] channelBuffers,
+                                                    int channelCount,
+                                                    boolean anySolo,
+                                                    int numFrames) {
+        // Grow the per-channel slot arrays once when channel count grows,
+        // preserving any existing per-channel scratch buffers so capacity
+        // increases remain amortized and reusable on the RT thread.
+        if (preInsertScratchPerChannel.length < channelCount) {
+            preInsertScratchPerChannel = Arrays.copyOf(preInsertScratchPerChannel, channelCount);
+            preInsertCaptured = Arrays.copyOf(preInsertCaptured, channelCount);
+        }
+        Arrays.fill(preInsertCaptured, 0, channelCount, false);
+
+        for (int i = 0; i < channelCount; i++) {
+            MixerChannel channel = channels.get(i);
+            if (channel.isMuted() || (anySolo && !channel.isSolo())) {
+                continue;
+            }
+            if (!channelHasActivePreInsertSend(channel)) {
+                continue;
+            }
+            float[][] src = channelBuffers[i];
+            float[][] dst = preInsertScratchPerChannel[i];
+            // Allocate / grow the per-channel buffer on demand. Zero-alloc
+            // on subsequent blocks once the channel has been seen.
+            if (dst == null || dst.length < src.length
+                    || (dst.length > 0 && dst[0].length < numFrames)) {
+                dst = new float[src.length][numFrames];
+                preInsertScratchPerChannel[i] = dst;
+            }
+            for (int ch = 0; ch < src.length; ch++) {
+                System.arraycopy(src[ch], 0, dst[ch], 0, numFrames);
+            }
+            preInsertCaptured[i] = true;
+        }
+    }
+
+    /**
+     * Returns the pre-insert capture for {@code channelIndex} populated by
+     * {@link #capturePreInsertsForActiveChannels}, or {@code null} if no
+     * capture exists for this channel in the current block (i.e. the
+     * channel has no active {@link SendTap#PRE_INSERTS} send, or the
+     * capture pre-pass did not run).
+     */
+    @RealTimeSafe
+    private float[][] preInsertSourceFor(int channelIndex) {
+        if (channelIndex < 0 || channelIndex >= preInsertCaptured.length) {
+            return null;
+        }
+        return preInsertCaptured[channelIndex]
+                ? preInsertScratchPerChannel[channelIndex]
+                : null;
+    }
+
+    /**
+     * Routes every send on {@code channel} to its target return bus, picking
+     * the correct signal source according to each send's {@link SendTap}:
+     *
+     * <ul>
+     *   <li>{@link SendTap#PRE_INSERTS} reads from {@code preInsertSrc}
+     *       (the input captured before the insert chain ran). Falls back to
+     *       {@code postInsertSrc} when no pre-insert capture is available
+     *       (i.e. the channel had no active pre-inserts send at the start
+     *       of the block — that case is gated out before this method runs).</li>
+     *   <li>{@link SendTap#PRE_FADER} reads from {@code postInsertSrc}
+     *       (post-inserts, before the channel fader/pan).</li>
+     *   <li>{@link SendTap#POST_FADER} reads from {@code postInsertSrc}
+     *       and scales by the channel volume.</li>
+     * </ul>
+     *
+     * <p>This method is real-time safe: it allocates nothing and uses
+     * identity comparisons to locate the return bus index in
+     * {@code O(returnBusCount)} per send.</p>
+     */
+    @RealTimeSafe
+    private void routeSends(MixerChannel channel,
+                            float[][] preInsertSrc,
+                            float[][] postInsertSrc,
+                            float volume,
+                            float[][][] returnBuffers,
+                            int returnBusCount,
+                            int numFrames) {
+        List<Send> sends = channel.getSends();
+        for (int s = 0, n = sends.size(); s < n; s++) {
+            Send send = sends.get(s);
+            float sendLevel = (float) send.getLevel();
+            if (sendLevel <= 0.0f) {
+                continue;
+            }
+
+            // Find the return bus index via identity comparison to avoid
+            // the O(n) equals()-based indexOf call per send per block.
+            MixerChannel target = send.getTarget();
+            int returnIndex = -1;
+            for (int r = 0; r < returnBusCount; r++) {
+                if (returnBuses.get(r) == target) {
+                    returnIndex = r;
+                    break;
+                }
+            }
+            if (returnIndex < 0) {
+                continue;
+            }
+
+            float[][] returnBuf = returnBuffers[returnIndex];
+            SendTap tap = send.getTap();
+            // Choose the source bus and the gain applied while summing.
+            // Note: PRE_INSERTS gracefully falls back to postInsertSrc when
+            // the capture buffer is unavailable (e.g. mixer not prepared).
+            float[][] source = switch (tap) {
+                case PRE_INSERTS -> preInsertSrc != null ? preInsertSrc : postInsertSrc;
+                case PRE_FADER, POST_FADER -> postInsertSrc;
+            };
+            float gain = switch (tap) {
+                case PRE_INSERTS, PRE_FADER -> sendLevel;
+                case POST_FADER -> sendLevel * volume;
+            };
+
+            int returnAudioChannels = Math.min(source.length, returnBuf.length);
+            for (int ch = 0; ch < returnAudioChannels; ch++) {
+                float[] in = source[ch];
+                float[] out = returnBuf[ch];
+                for (int f = 0; f < numFrames; f++) {
+                    out[f] += in[f] * gain;
+                }
+            }
+        }
     }
 
     /**
