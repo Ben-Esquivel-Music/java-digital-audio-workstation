@@ -17,6 +17,7 @@ import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshotManager;
 import com.benesquivelmusic.daw.core.mixer.snapshot.SendSnapshot;
 import com.benesquivelmusic.daw.core.preset.ReflectivePresetSerializer;
 import com.benesquivelmusic.daw.core.project.DawProject;
+import com.benesquivelmusic.daw.core.project.edit.NudgeSettings;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrackManager;
@@ -119,6 +120,15 @@ public final class ProjectSerializer {
         buildRoomConfiguration(document, root, project.getRoomConfiguration());
         buildMixerSnapshots(document, root, project.getMixerSnapshotManager());
         buildRippleMode(document, root, project);
+        buildNudgeSettings(document, root, project);
+    }
+
+    private void buildNudgeSettings(Document document, Element root, DawProject project) {
+        NudgeSettings ns = project.getNudgeSettings();
+        Element elem = document.createElement("nudge-settings");
+        elem.setAttribute("unit", ns.unit().name());
+        elem.setAttribute("amount", String.valueOf(ns.amount()));
+        root.appendChild(elem);
     }
 
     private void buildRippleMode(Document document, Element root, DawProject project) {

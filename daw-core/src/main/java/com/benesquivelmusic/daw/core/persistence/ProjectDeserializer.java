@@ -17,6 +17,8 @@ import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshotManager;
 import com.benesquivelmusic.daw.core.mixer.snapshot.SendSnapshot;
 import com.benesquivelmusic.daw.core.preset.ReflectivePresetSerializer;
 import com.benesquivelmusic.daw.core.project.DawProject;
+import com.benesquivelmusic.daw.core.project.edit.NudgeSettings;
+import com.benesquivelmusic.daw.core.project.edit.NudgeUnit;
 import com.benesquivelmusic.daw.core.recording.ClickSound;
 import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
 import com.benesquivelmusic.daw.core.recording.Metronome;
@@ -224,6 +226,25 @@ public final class ProjectDeserializer {
                     project.setRippleMode(RippleMode.valueOf(value));
                 } catch (IllegalArgumentException ignored) {
                     // Unknown value — keep the default OFF.
+                }
+            }
+        }
+
+        // Parse nudge settings (per-project UI preference, defaults to
+        // NudgeSettings.DEFAULT for projects saved before this element
+        // was introduced)
+        List<Element> nudgeElements = getDirectChildElements(root, "nudge-settings");
+        if (!nudgeElements.isEmpty()) {
+            Element nudge = nudgeElements.getFirst();
+            String unitAttr = nudge.getAttribute("unit");
+            String amountAttr = nudge.getAttribute("amount");
+            if (!unitAttr.isEmpty() && !amountAttr.isEmpty()) {
+                try {
+                    NudgeUnit unit = NudgeUnit.valueOf(unitAttr);
+                    double amount = Double.parseDouble(amountAttr);
+                    project.setNudgeSettings(new NudgeSettings(unit, amount));
+                } catch (IllegalArgumentException ignored) {
+                    // Unknown unit or invalid amount — keep the default.
                 }
             }
         }

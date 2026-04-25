@@ -585,6 +585,12 @@ public final class MainController {
                     @Override public void onSlipRightByGrid() { clipEditController.onSlipRightByGrid(); }
                     @Override public void onSlipLeftByFine() { clipEditController.onSlipLeftByFine(); }
                     @Override public void onSlipRightByFine() { clipEditController.onSlipRightByFine(); }
+                    @Override public void onNudgeLeft() { clipEditController.onNudgeLeft(); }
+                    @Override public void onNudgeRight() { clipEditController.onNudgeRight(); }
+                    @Override public void onNudgeLeftLarge() { clipEditController.onNudgeLeftLarge(); }
+                    @Override public void onNudgeRightLarge() { clipEditController.onNudgeRightLarge(); }
+                    @Override public void onNudgeLeftSample() { clipEditController.onNudgeLeftSample(); }
+                    @Override public void onNudgeRightSample() { clipEditController.onNudgeRightSample(); }
                 });
     }
 

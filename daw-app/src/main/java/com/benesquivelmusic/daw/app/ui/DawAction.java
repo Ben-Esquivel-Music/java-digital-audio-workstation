@@ -75,6 +75,22 @@ public enum DawAction {
             new KeyCodeCombination(KeyCode.LEFT, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
     SLIP_RIGHT_FINE("Slip Right (Sample)", Category.EDITING,
             new KeyCodeCombination(KeyCode.RIGHT, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
+    // Issue 566 — nudge the selected clips on the timeline by the configured
+    // NudgeSettings. Ctrl+Arrow nudges by 1×; Ctrl+Alt+Arrow nudges by 10×
+    // (the issue's suggested Ctrl+Shift+Arrow is already taken by slip-fine);
+    // Alt+Arrow nudges by exactly one audio sample.
+    NUDGE_LEFT("Nudge Left", Category.EDITING,
+            new KeyCodeCombination(KeyCode.LEFT, KeyCombination.SHORTCUT_DOWN)),
+    NUDGE_RIGHT("Nudge Right", Category.EDITING,
+            new KeyCodeCombination(KeyCode.RIGHT, KeyCombination.SHORTCUT_DOWN)),
+    NUDGE_LEFT_LARGE("Nudge Left (10×)", Category.EDITING,
+            new KeyCodeCombination(KeyCode.LEFT, KeyCombination.SHORTCUT_DOWN, KeyCombination.ALT_DOWN)),
+    NUDGE_RIGHT_LARGE("Nudge Right (10×)", Category.EDITING,
+            new KeyCodeCombination(KeyCode.RIGHT, KeyCombination.SHORTCUT_DOWN, KeyCombination.ALT_DOWN)),
+    NUDGE_LEFT_SAMPLE("Nudge Left (Sample)", Category.EDITING,
+            new KeyCodeCombination(KeyCode.LEFT, KeyCombination.ALT_DOWN)),
+    NUDGE_RIGHT_SAMPLE("Nudge Right (Sample)", Category.EDITING,
+            new KeyCodeCombination(KeyCode.RIGHT, KeyCombination.ALT_DOWN)),
 
     // ── Session interchange ─────────────────────────────────────────────────
     IMPORT_SESSION("Import Session", Category.EDITING,

@@ -1031,6 +1031,40 @@ class ProjectSerializationRoundTripTest {
         assertThat(restored.getRippleMode()).isEqualTo(RippleMode.ALL_TRACKS);
     }
 
+    // ── Nudge settings — persistence ────────────────────────────────────────
+
+    @Test
+    void shouldDefaultNudgeSettingsForLegacyProjects() throws IOException {
+        DawProject original = new DawProject("Legacy", AudioFormat.CD_QUALITY);
+
+        // Strip the <nudge-settings> element so the deserializer sees a
+        // pre-feature project XML and must fall back to NudgeSettings.DEFAULT.
+        // Match both self-closing (<nudge-settings .../>) and explicit
+        // end-tag (<nudge-settings ...></nudge-settings>) forms in case
+        // the XML transformer ever switches representations.
+        String xml = serializer.serialize(original)
+                .replaceAll("(?s)\\s*<nudge-settings\\b[^>]*(?:/>|>.*?</nudge-settings>)", "");
+        assertThat(xml).doesNotContain("<nudge-settings");
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getNudgeSettings())
+                .isEqualTo(com.benesquivelmusic.daw.core.project.edit.NudgeSettings.DEFAULT);
+    }
+
+    @Test
+    void shouldRoundTripCustomNudgeSettings() throws IOException {
+        DawProject original = new DawProject("Nudge", AudioFormat.CD_QUALITY);
+        original.setNudgeSettings(new com.benesquivelmusic.daw.core.project.edit.NudgeSettings(
+                com.benesquivelmusic.daw.core.project.edit.NudgeUnit.MILLISECONDS, 10.0));
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getNudgeSettings().unit())
+                .isEqualTo(com.benesquivelmusic.daw.core.project.edit.NudgeUnit.MILLISECONDS);
+        assertThat(restored.getNudgeSettings().amount()).isEqualTo(10.0);
+    }
+
     // ── Story 139 — slip-edit sourceOffsetBeats persistence ─────────────────
 
     @Test
