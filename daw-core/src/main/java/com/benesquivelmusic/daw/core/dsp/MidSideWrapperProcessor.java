@@ -71,12 +71,12 @@ public final class MidSideWrapperProcessor implements AudioProcessor {
         return sideChain;
     }
 
-    /** Returns an unmodifiable snapshot of the mid chain. */
+    /** Returns an unmodifiable, live view of the mid chain (reflects future mutations). */
     public List<AudioProcessor> midChainView() {
         return Collections.unmodifiableList(midChain);
     }
 
-    /** Returns an unmodifiable snapshot of the side chain. */
+    /** Returns an unmodifiable, live view of the side chain (reflects future mutations). */
     public List<AudioProcessor> sideChainView() {
         return Collections.unmodifiableList(sideChain);
     }
@@ -145,6 +145,14 @@ public final class MidSideWrapperProcessor implements AudioProcessor {
         runChain(sideChain, sideBuf, numFrames);
 
         MidSideDecoder.decode(midBuf, sideBuf, outputBuffer[0], outputBuffer[1], numFrames);
+
+        // Pass any extra channels (e.g., a 5.1 host calling a stereo M/S
+        // insert) straight through so we don't leak stale audio left in the
+        // output buffer. Channels 0/1 were just written by decode above.
+        int extra = Math.min(inputBuffer.length, outputBuffer.length);
+        for (int ch = 2; ch < extra; ch++) {
+            System.arraycopy(inputBuffer[ch], 0, outputBuffer[ch], 0, numFrames);
+        }
     }
 
     @Override
@@ -182,16 +190,24 @@ public final class MidSideWrapperProcessor implements AudioProcessor {
         if (chain.isEmpty()) {
             return;
         }
-        // Reuse the [1][numFrames] views; every processor reads from
-        // monoIn[0] and writes into monoOut[0]. After each step we swap
-        // the produced output back into monoBuf so the following processor
-        // (and the final decode step) sees the latest data.
-        monoIn[0]  = monoBuf;
-        monoOut[0] = scratchMono;
+        // Ping-pong between monoBuf and scratchMono to avoid an arraycopy
+        // per processor: each iteration reads from `cur` and writes to
+        // `alt`, then we swap. After the loop the latest result is in
+        // `cur`; if that isn't the caller's monoBuf we copy back exactly
+        // once so the decode step (and the next runChain call, which also
+        // reuses scratchMono) sees the result in the expected place.
+        float[] cur = monoBuf;
+        float[] alt = scratchMono;
         for (AudioProcessor p : chain) {
+            monoIn[0]  = cur;
+            monoOut[0] = alt;
             p.process(monoIn, monoOut, numFrames);
-            // copy back into monoBuf so the next iteration / decode sees it
-            System.arraycopy(monoOut[0], 0, monoBuf, 0, numFrames);
+            float[] tmp = cur;
+            cur = alt;
+            alt = tmp;
+        }
+        if (cur != monoBuf) {
+            System.arraycopy(cur, 0, monoBuf, 0, numFrames);
         }
     }
 

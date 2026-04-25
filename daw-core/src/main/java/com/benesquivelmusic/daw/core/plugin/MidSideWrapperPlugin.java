@@ -25,8 +25,9 @@ import java.util.Optional;
  * (M = (L+R)·0.5) channel, the other on the Side (S = (L−R)·0.5) channel.
  * After each block the wrapper decodes back to L/R via {@link MidSideWrapperProcessor}.
  * Plugins inside the chains are unaware they are operating on M/S signals —
- * they see two mono channels (a documented simplification that covers 99% of
- * cases).</p>
+ * each chain receives a single mono channel (the Mid chain sees M, the Side
+ * chain sees S). This is a documented simplification that covers 99% of
+ * cases.</p>
  *
  * <h2>Use cases</h2>
  * <ul>
@@ -86,7 +87,12 @@ public final class MidSideWrapperPlugin implements BuiltInDawPlugin {
 
     @Override
     public void initialize(PluginContext context) {
-        this.context = Objects.requireNonNull(context, "context must not be null");
+        Objects.requireNonNull(context, "context must not be null");
+        // Inner plugins receive a single mono buffer per chain. Wrap the host
+        // context so getAudioChannels() reports 1 — otherwise built-ins would
+        // allocate stereo state and third-party plugins that trust the
+        // declared channel count could break.
+        this.context = new MonoChainContext(context);
         this.processor = new MidSideWrapperProcessor();
         // Initialize and wire any plugins added before initialize() was called
         // (e.g., via a preset factory).
@@ -119,6 +125,9 @@ public final class MidSideWrapperPlugin implements BuiltInDawPlugin {
         midChain.clear();
         sideChain.clear();
         processor = null;
+        // Drop the host context reference so a long-lived wrapper instance
+        // can't keep heavy host state alive after disposal.
+        context = null;
     }
 
     @Override
@@ -246,6 +255,22 @@ public final class MidSideWrapperPlugin implements BuiltInDawPlugin {
     }
 
     // ── Internal lightweight inner-chain plugins for presets ───────────────
+
+    /**
+     * Delegating {@link PluginContext} that overrides {@link #getAudioChannels()}
+     * to return {@code 1} so inner plugins know each chain is invoked with a
+     * single mono buffer (Mid chain → M, Side chain → S). All other host
+     * services (sample rate, buffer size, logging) are delegated unchanged.
+     */
+    private static final class MonoChainContext implements PluginContext {
+        private final PluginContext delegate;
+        MonoChainContext(PluginContext delegate) { this.delegate = delegate; }
+        @Override public double getSampleRate()  { return delegate.getSampleRate(); }
+        @Override public int    getBufferSize()  { return delegate.getBufferSize(); }
+        @Override public int    getAudioChannels() { return 1; }
+        @Override public void   log(String message) { delegate.log(message); }
+    }
+
 
     /**
      * Minimal mono gain plugin used by presets to apply a fixed dB boost to
