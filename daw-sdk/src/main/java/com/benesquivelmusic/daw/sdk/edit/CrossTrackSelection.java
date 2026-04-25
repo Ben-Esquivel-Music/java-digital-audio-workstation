@@ -190,14 +190,27 @@ public record CrossTrackSelection(long startFrames, long endFrames, Set<UUID> tr
      *                    non-negative
      * @return a translated {@code CrossTrackSelection}
      * @throws IllegalArgumentException if the translation would push
-     *                                  {@code startFrames} below zero
+     *                                  {@code startFrames} below zero, or if
+     *                                  the addition would overflow
+     *                                  {@code long} arithmetic
      */
     public CrossTrackSelection shiftedBy(long deltaFrames) {
-        long newStart = startFrames + deltaFrames;
+        final long newStart;
+        final long newEnd;
+        try {
+            newStart = Math.addExact(startFrames, deltaFrames);
+            newEnd = Math.addExact(endFrames, deltaFrames);
+        } catch (ArithmeticException ex) {
+            throw new IllegalArgumentException(
+                    "shiftedBy overflow: startFrames=" + startFrames
+                            + ", endFrames=" + endFrames
+                            + ", deltaFrames=" + deltaFrames,
+                    ex);
+        }
         if (newStart < 0) {
             throw new IllegalArgumentException(
                     "shiftedBy would produce negative startFrames: " + newStart);
         }
-        return new CrossTrackSelection(newStart, endFrames + deltaFrames, trackIds);
+        return new CrossTrackSelection(newStart, newEnd, trackIds);
     }
 }

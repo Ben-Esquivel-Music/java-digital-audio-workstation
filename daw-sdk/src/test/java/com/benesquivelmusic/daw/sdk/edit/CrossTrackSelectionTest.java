@@ -206,6 +206,16 @@ class CrossTrackSelectionTest {
     }
 
     @Test
+    void shiftedByShouldRejectOverflow() {
+        // endFrames + deltaFrames would overflow Long.MAX_VALUE.
+        CrossTrackSelection source = new CrossTrackSelection(0L, Long.MAX_VALUE - 10L, Set.of(T1));
+
+        assertThatThrownBy(() -> source.shiftedBy(100L))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("overflow");
+    }
+
+    @Test
     void recordEqualityIsByValue() {
         CrossTrackSelection a = new CrossTrackSelection(0L, 10L, Set.of(T1, T2));
         CrossTrackSelection b = new CrossTrackSelection(0L, 10L, Set.of(T2, T1));
