@@ -298,8 +298,11 @@ public final class DawProject {
     /**
      * Returns the manager for {@link com.benesquivelmusic.daw.core.mixer.ChannelLink
      * channel links} — the model behind the "stereo pair" / "Link Channels"
-     * toggle that pairs two adjacent mono mixer channels so that their
-     * faders, pans, mutes/solos, inserts, and sends move together.
+     * toggle that pairs two adjacent mono mixer channels so that core mixer
+     * controls such as faders, pans, and mutes/solos can move together.
+     * Insert and send link flags are also stored as part of the link
+     * configuration for downstream layers (UI and audio path) that perform
+     * the actual mirroring.
      *
      * <p>The manager is always present (never {@code null}); legacy projects
      * that had no links simply load with an empty list.</p>

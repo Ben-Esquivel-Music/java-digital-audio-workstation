@@ -357,7 +357,7 @@ public final class ProjectSerializer {
             vcaGroupsElem.appendChild(groupElem);
         }
 
-        // Channel links — write-only persistence, mirroring the vca-groups pattern.
+        // Channel links — persisted in project XML, mirroring the vca-groups pattern.
         // Legacy projects without this element simply load with no links because
         // the manager starts empty.
         Element channelLinksElem = document.createElement("channel-links");

@@ -141,9 +141,11 @@ public final class ChannelLinkManager {
                             + updated.leftChannelId() + " / " + updated.rightChannelId());
         }
         // Rebuild ordered list preserving insertion order with the updated entry in place.
+        // Match by stable channel-id pair rather than reference identity so this stays
+        // correct even if the snapshot ever reconstructs link records.
         List<ChannelLink> ordered = new ArrayList<>(current.ordered().size());
         for (ChannelLink l : current.ordered()) {
-            ordered.add(l == existing ? updated : l);
+            ordered.add(samePair(l, existing) ? updated : l);
         }
         snapshot.set(buildSnapshot(ordered));
     }
@@ -154,9 +156,12 @@ public final class ChannelLinkManager {
      * Propagates a volume edit on {@code source} to {@code partner} per the
      * link's mode. In {@link LinkMode#ABSOLUTE} mode the partner is set to
      * the source's new value. In {@link LinkMode#RELATIVE} mode the partner
-     * is shifted by the same delta the source moved (clamped to
-     * {@code [0.0, 1.0]} so the partner's offset is preserved as far as the
-     * fader range allows).
+     * is shifted by the same delta the source moved; the resulting value is
+     * clamped to the fader range {@code [0.0, 1.0]} so the partner's offset
+     * is preserved as far as the fader range allows. (The source's new
+     * value is assumed to already be within range — its caller validated
+     * it via {@link MixerChannel#setVolume(double)} — so no additional
+     * clamping is needed in {@code ABSOLUTE} mode.)
      *
      * <p>If {@link ChannelLink#linkFaders()} is {@code false} this method
      * is a no-op, mirroring the per-attribute toggle semantics described in
@@ -181,9 +186,13 @@ public final class ChannelLinkManager {
         }
         double next = switch (link.mode()) {
             case ABSOLUTE -> newSourceVolume;
-            case RELATIVE -> partner.getVolume() + (newSourceVolume - oldSourceVolume);
+            // RELATIVE: shift by the source's delta, then clamp so the partner
+            // stays within fader range when the offset would push it out.
+            case RELATIVE -> clamp(
+                    partner.getVolume() + (newSourceVolume - oldSourceVolume),
+                    0.0, 1.0);
         };
-        partner.setVolume(clamp(next, 0.0, 1.0));
+        partner.setVolume(next);
     }
 
     /**
@@ -243,12 +252,19 @@ public final class ChannelLinkManager {
 
     private static Snapshot withRemoved(Snapshot current, ChannelLink link) {
         List<ChannelLink> ordered = new ArrayList<>(current.ordered().size() - 1);
+        // Match by stable channel-id pair rather than reference identity so
+        // callers can pass in a freshly-constructed equivalent record.
         for (ChannelLink l : current.ordered()) {
-            if (l != link) {
+            if (!samePair(l, link)) {
                 ordered.add(l);
             }
         }
         return buildSnapshot(ordered);
+    }
+
+    private static boolean samePair(ChannelLink a, ChannelLink b) {
+        return a.leftChannelId().equals(b.leftChannelId())
+                && a.rightChannelId().equals(b.rightChannelId());
     }
 
     private static Snapshot buildSnapshot(List<ChannelLink> ordered) {

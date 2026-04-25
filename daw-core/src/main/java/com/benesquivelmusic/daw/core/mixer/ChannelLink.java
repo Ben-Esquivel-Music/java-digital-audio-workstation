@@ -10,11 +10,15 @@ import java.util.UUID;
  *
  * <p>Every major DAW exposes this concept (Pro Tools' "Track Link," Cubase's
  * "Link Channels," Logic's stereo/mono toggle). Once linked, edits to one
- * channel propagate to its partner: faders move together, pans mirror left
- * and right around centre, mute and solo states are kept in sync, and (when
- * enabled) inserts and sends are kept in sync as well. Unlinking is purely
- * informational — it removes the link record but leaves both channels'
- * current values untouched.</p>
+ * channel can propagate to its partner: faders move together, pans mirror
+ * left and right around centre, and mute/solo states are kept in sync.
+ * The {@link #linkInserts()} and {@link #linkSends()} flags signal the
+ * <em>intent</em> to mirror insert and send edits as well — they are
+ * persisted with the link and read by downstream layers (the application
+ * UI and audio path) that perform the actual mirroring; the core model
+ * itself only mirrors the controls for which it owns the state (volume,
+ * pan, mute, solo). Unlinking is purely informational — it removes the
+ * link record but leaves both channels' current values untouched.</p>
  *
  * <p>A link is identified by its {@link #leftChannelId() left} and
  * {@link #rightChannelId() right} channel UUIDs. The same UUIDs that
