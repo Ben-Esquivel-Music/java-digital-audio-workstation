@@ -54,8 +54,9 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginMeterSnapshot;
  * <h2>Thread safety</h2>
  * <p>{@link #process(float[][], float[][], int) process} is annotated
  * {@link RealTimeSafe} — it does not allocate. Parameter setters are safe to
- * invoke from a UI thread; updates become visible to the audio thread on the
- * next buffer.</p>
+ * invoke from a UI thread; the audio thread observes parameter changes
+ * asynchronously, with eventual visibility rather than a guaranteed specific
+ * buffer boundary.</p>
  */
 @InsertEffect(type = "TRANSIENT_SHAPER", displayName = "Transient Shaper")
 public final class TransientShaperProcessor implements AudioProcessor {
@@ -152,22 +153,25 @@ public final class TransientShaperProcessor implements AudioProcessor {
 
         double peakIn  = 0.0;
         double peakOut = 0.0;
-        double lastTrans = 0.0;
+        double peakTransientDb = 0.0;
 
         for (int frame = 0; frame < numFrames; frame++) {
-            // Compute summed (link) magnitude across active channels.
-            double summed = 0.0;
+            // Stereo-link source: per-frame max-absolute magnitude across
+            // active channels (peak-style linking — preserves transient
+            // peaks better than RMS or true sum on percussive material).
+            double linked = 0.0;
             for (int ch = 0; ch < chCount; ch++) {
                 double a = Math.abs(inputBuffer[ch][frame]);
-                if (a > summed) summed = a;
+                if (a > linked) linked = a;
                 if (a > peakIn) peakIn = a;
             }
 
             for (int ch = 0; ch < chCount; ch++) {
                 double in = inputBuffer[ch][frame];
                 double absLocal = Math.abs(in);
-                // Stereo-link: blend per-channel and summed magnitude for detection.
-                double det = (1.0 - link) * absLocal + link * summed;
+                // Channel link: 0 = independent per-channel detection,
+                // 1 = fully linked (uses cross-channel peak magnitude).
+                double det = (1.0 - link) * absLocal + link * linked;
                 if (det < LEVEL_FLOOR) det = LEVEL_FLOOR;
 
                 // Single envelope pair: fast/slow attack and release. During
@@ -185,7 +189,11 @@ public final class TransientShaperProcessor implements AudioProcessor {
                 double diffDb        = 20.0 * Math.log10(f / s);
                 double attackDiffDb  = Math.min(MAX_DIFF_DB, Math.max(0.0,  diffDb));
                 double sustainDiffDb = Math.min(MAX_DIFF_DB, Math.max(0.0, -diffDb));
-                lastTrans = attackDiffDb;
+                // Track the largest absolute differential observed across the
+                // whole block so the meter shows a meaningful value rather
+                // than a stale last-sample reading.
+                double absDiffDb = (attackDiffDb > sustainDiffDb) ? attackDiffDb : sustainDiffDb;
+                if (absDiffDb > peakTransientDb) peakTransientDb = absDiffDb;
 
                 double gainDb = attackKnob  * attackDiffDb  * KNOB_DB_SCALE
                               + sustainKnob * sustainDiffDb * KNOB_DB_SCALE;
@@ -201,9 +209,9 @@ public final class TransientShaperProcessor implements AudioProcessor {
                     out = sign * amp * outputLinear;
                 } else {
                     out = in * gainLinear;
-                    if (out >  1.0) out =  1.0;
-                    else if (out < -1.0) out = -1.0;
                 }
+                if (out >  1.0) out =  1.0;
+                else if (out < -1.0) out = -1.0;
                 outputBuffer[ch][frame] = (float) out;
                 double absOut = Math.abs(out);
                 if (absOut > peakOut) peakOut = absOut;
@@ -212,7 +220,7 @@ public final class TransientShaperProcessor implements AudioProcessor {
 
         lastInputLevelDb   = (peakIn  > 0) ? 20.0 * Math.log10(peakIn)  : Double.NEGATIVE_INFINITY;
         lastOutputLevelDb  = (peakOut > 0) ? 20.0 * Math.log10(peakOut) : Double.NEGATIVE_INFINITY;
-        lastTransientDb    = lastTrans;
+        lastTransientDb    = peakTransientDb;
     }
 
     /** One-pole envelope follower: rises with {@code attackCoeff}, falls with {@code releaseCoeff}. */

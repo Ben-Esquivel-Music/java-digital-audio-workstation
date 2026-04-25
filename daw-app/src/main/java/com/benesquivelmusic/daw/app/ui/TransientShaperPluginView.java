@@ -100,11 +100,6 @@ public final class TransientShaperPluginView extends VBox {
         inputMeter     = new Canvas(20, 180);
         outputMeter    = new Canvas(20, 180);
         transientMeter = new Canvas(20, 180);
-        VBox metersBox = new VBox(4,
-                meterRow("IN",   inputMeter),
-                meterRow("OUT",  outputMeter),
-                meterRow("TRANS", transientMeter));
-        metersBox.setAlignment(Pos.CENTER);
 
         HBox metersHbox = new HBox(8,
                 meterColumn("IN",    inputMeter),
@@ -148,14 +143,6 @@ public final class TransientShaperPluginView extends VBox {
         Label l = new Label(text);
         l.setStyle("-fx-text-fill: #ccc; -fx-font-weight: bold;");
         VBox box = new VBox(2, l, node);
-        box.setAlignment(Pos.CENTER_LEFT);
-        return box;
-    }
-
-    private static HBox meterRow(String text, Canvas c) {
-        Label l = new Label(text);
-        l.setStyle("-fx-text-fill: #ccc;");
-        HBox box = new HBox(4, l, c);
         box.setAlignment(Pos.CENTER_LEFT);
         return box;
     }
