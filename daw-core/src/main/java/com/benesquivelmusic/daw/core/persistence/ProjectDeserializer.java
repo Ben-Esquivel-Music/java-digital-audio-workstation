@@ -15,6 +15,9 @@ import com.benesquivelmusic.daw.core.mixer.snapshot.InsertSnapshot;
 import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshot;
 import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshotManager;
 import com.benesquivelmusic.daw.core.mixer.snapshot.SendSnapshot;
+import com.benesquivelmusic.daw.core.mixer.spatial.BedBus;
+import com.benesquivelmusic.daw.core.mixer.spatial.BedBusManager;
+import com.benesquivelmusic.daw.core.mixer.spatial.BedChannelRouting;
 import com.benesquivelmusic.daw.core.preset.ReflectivePresetSerializer;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.project.edit.NudgeSettings;
@@ -37,6 +40,7 @@ import com.benesquivelmusic.daw.sdk.audio.CurveShape;
 import com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy;
 import com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget;
 import com.benesquivelmusic.daw.sdk.edit.RippleMode;
+import com.benesquivelmusic.daw.sdk.spatial.ImmersiveFormat;
 import com.benesquivelmusic.daw.sdk.telemetry.*;
 import com.benesquivelmusic.daw.sdk.transport.ClickOutput;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
@@ -61,6 +65,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.function.BiConsumer;
 
 /**
@@ -215,6 +220,14 @@ public final class ProjectDeserializer {
         List<Element> snapshotsContainers = getDirectChildElements(root, "mixer-snapshots");
         if (!snapshotsContainers.isEmpty()) {
             parseMixerSnapshots(snapshotsContainers.getFirst(), project);
+        }
+
+        // Parse bed bus + per-track bed channel routings (legacy projects
+        // that pre-date this element simply load with the BedBusManager
+        // default of a unity-gain 7.1.4 bed bus and no routings).
+        List<Element> bedBusElements = getDirectChildElements(root, "bed-bus");
+        if (!bedBusElements.isEmpty()) {
+            parseBedBus(bedBusElements.getFirst(), project);
         }
 
         // Parse ripple mode (per-project UI preference, defaults to OFF for
@@ -1490,5 +1503,79 @@ public final class ProjectDeserializer {
             }
         }
         return new InsertSnapshot(effectType, bypassed, params);
+    }
+
+    private void parseBedBus(Element elem, DawProject project) {
+        BedBusManager manager = project.getBedBusManager();
+        String formatName = elem.getAttribute("format");
+        ImmersiveFormat format;
+        try {
+            format = formatName.isEmpty() ? ImmersiveFormat.FORMAT_7_1_4
+                    : ImmersiveFormat.valueOf(formatName);
+        } catch (IllegalArgumentException e) {
+            // Unknown / corrupt format — fall back to the project default
+            // and skip the rest of the bed bus block. Routings would not
+            // be valid against an unknown channel count.
+            return;
+        }
+
+        UUID busId;
+        try {
+            busId = UUID.fromString(elem.getAttribute("id"));
+        } catch (IllegalArgumentException e) {
+            busId = manager.getBedBus().id();
+        }
+
+        double[] busGains = parseGainCsv(elem.getAttribute("channel-gains-db"),
+                format.channelCount());
+        manager.setBedBus(new BedBus(busId, format, busGains));
+        manager.clearRoutings();
+
+        List<Element> routingsContainers = getDirectChildElements(elem, "bed-routings");
+        if (routingsContainers.isEmpty()) {
+            return;
+        }
+        for (Element re : getDirectChildElements(routingsContainers.getFirst(), "bed-routing")) {
+            UUID trackId;
+            try {
+                trackId = UUID.fromString(re.getAttribute("track-id"));
+            } catch (IllegalArgumentException e) {
+                continue;
+            }
+            // The routing element optionally carries its own format; if it
+            // disagrees with the bus, we skip it rather than silently
+            // mis-routing audio. This preserves the invariant that every
+            // routing in the manager matches the bus format.
+            String routingFormatName = re.getAttribute("format");
+            if (!routingFormatName.isEmpty() && !routingFormatName.equals(format.name())) {
+                continue;
+            }
+            double[] routingGains = parseGainCsv(re.getAttribute("channel-gains-db"),
+                    format.channelCount());
+            manager.setRouting(new BedChannelRouting(trackId, format, routingGains));
+        }
+    }
+
+    private static double[] parseGainCsv(String csv, int expectedLength) {
+        double[] gains = new double[expectedLength];
+        java.util.Arrays.fill(gains, BedChannelRouting.SILENT_DB);
+        if (csv == null || csv.isEmpty()) {
+            return gains;
+        }
+        String[] tokens = csv.split(",");
+        int n = Math.min(tokens.length, expectedLength);
+        for (int i = 0; i < n; i++) {
+            String token = tokens[i].trim();
+            if (token.equalsIgnoreCase("-inf") || token.equalsIgnoreCase("-Infinity")) {
+                gains[i] = BedChannelRouting.SILENT_DB;
+                continue;
+            }
+            try {
+                gains[i] = Double.parseDouble(token);
+            } catch (NumberFormatException e) {
+                gains[i] = BedChannelRouting.SILENT_DB;
+            }
+        }
+        return gains;
     }
 }

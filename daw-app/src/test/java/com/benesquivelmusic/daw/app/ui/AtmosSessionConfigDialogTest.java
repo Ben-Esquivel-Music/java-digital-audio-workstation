@@ -92,7 +92,8 @@ class AtmosSessionConfigDialogTest {
         AtmosSessionConfigDialog dialog = createOnFxThread();
 
         assertThat(dialog.getLayoutCombo()).isNotNull();
-        assertThat(dialog.getLayoutCombo().getItems()).hasSize(4);
+        assertThat(dialog.getLayoutCombo().getItems()).hasSize(5);
+        assertThat(dialog.getLayoutCombo().getItems()).contains("9.1.6", "7.1.4", "5.1.4", "5.1", "Stereo");
         assertThat(dialog.getLayoutCombo().getValue()).isEqualTo("7.1.4");
     }
 

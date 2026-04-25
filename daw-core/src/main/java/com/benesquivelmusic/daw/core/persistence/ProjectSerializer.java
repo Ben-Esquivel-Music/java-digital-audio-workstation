@@ -15,6 +15,9 @@ import com.benesquivelmusic.daw.core.mixer.snapshot.InsertSnapshot;
 import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshot;
 import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshotManager;
 import com.benesquivelmusic.daw.core.mixer.snapshot.SendSnapshot;
+import com.benesquivelmusic.daw.core.mixer.spatial.BedBus;
+import com.benesquivelmusic.daw.core.mixer.spatial.BedBusManager;
+import com.benesquivelmusic.daw.core.mixer.spatial.BedChannelRouting;
 import com.benesquivelmusic.daw.core.preset.ReflectivePresetSerializer;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.project.edit.NudgeSettings;
@@ -28,6 +31,7 @@ import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy;
 import com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget;
+import com.benesquivelmusic.daw.sdk.spatial.ImmersiveFormat;
 import com.benesquivelmusic.daw.sdk.telemetry.AcousticTreatment;
 import com.benesquivelmusic.daw.sdk.telemetry.AudienceMember;
 import com.benesquivelmusic.daw.sdk.telemetry.CeilingShape;
@@ -120,6 +124,7 @@ public final class ProjectSerializer {
         buildReferenceTrackManager(document, root, project.getReferenceTrackManager());
         buildRoomConfiguration(document, root, project.getRoomConfiguration());
         buildMixerSnapshots(document, root, project.getMixerSnapshotManager());
+        buildBedBus(document, root, project.getBedBusManager());
         buildRippleMode(document, root, project);
         buildNudgeSettings(document, root, project);
     }
@@ -826,5 +831,54 @@ public final class ProjectSerializer {
         }
 
         return elem;
+    }
+
+    private void buildBedBus(Document document, Element root, BedBusManager manager) {
+        BedBus bus = manager.getBedBus();
+        Element bedBusElem = document.createElement("bed-bus");
+        bedBusElem.setAttribute("id", bus.id().toString());
+        bedBusElem.setAttribute("format", bus.format().name());
+        double[] gains = bus.channelGainsDb();
+        StringBuilder gainCsv = new StringBuilder();
+        for (int i = 0; i < gains.length; i++) {
+            if (i > 0) gainCsv.append(',');
+            gainCsv.append(gains[i]);
+        }
+        bedBusElem.setAttribute("channel-gains-db", gainCsv.toString());
+
+        Element routingsElem = document.createElement("bed-routings");
+        for (BedChannelRouting routing : manager.getRoutings().values()) {
+            Element routingElem = document.createElement("bed-routing");
+            routingElem.setAttribute("track-id", routing.trackId().toString());
+            routingElem.setAttribute("format", routing.format().name());
+            double[] rGains = routing.channelGainsDb();
+            StringBuilder rcsv = new StringBuilder();
+            for (int i = 0; i < rGains.length; i++) {
+                if (i > 0) rcsv.append(',');
+                // Encode -inf as the literal token "-inf" — Double.toString
+                // produces "-Infinity" which is verbose and not symmetric
+                // with our parsing path; keep the encoding compact and
+                // self-documenting.
+                double db = rGains[i];
+                if (Double.isInfinite(db) && db < 0) {
+                    rcsv.append("-inf");
+                } else {
+                    rcsv.append(db);
+                }
+            }
+            routingElem.setAttribute("channel-gains-db", rcsv.toString());
+            routingsElem.appendChild(routingElem);
+        }
+        bedBusElem.appendChild(routingsElem);
+        root.appendChild(bedBusElem);
+    }
+
+    @SuppressWarnings("unused")
+    private static ImmersiveFormat parseFormat(String name) {
+        try {
+            return ImmersiveFormat.valueOf(name);
+        } catch (IllegalArgumentException e) {
+            return ImmersiveFormat.FORMAT_7_1_4;
+        }
     }
 }

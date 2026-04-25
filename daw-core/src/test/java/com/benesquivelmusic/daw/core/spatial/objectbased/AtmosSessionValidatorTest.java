@@ -39,7 +39,9 @@ class AtmosSessionValidatorTest {
     @Test
     void shouldRejectExcessiveTotalTracks() {
         ArrayList<BedChannel> beds = new ArrayList<BedChannel>();
-        for (SpeakerLabel label : SpeakerLabel.values()) {
+        // Use the 7.1.4 bed (12 channels) so the total below is deterministic
+        // even as new SpeakerLabel values are added for wider layouts.
+        for (SpeakerLabel label : SpeakerLayout.LAYOUT_7_1_4.speakers()) {
             beds.add(new BedChannel("bed-" + label, label));
         }
         ArrayList<AudioObject> objects = new ArrayList<AudioObject>();

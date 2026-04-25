@@ -44,7 +44,19 @@ public enum SpeakerLabel {
     LTR(135.0, 45.0),
 
     /** Right top rear (azimuth ≈ 225°, elevation ≈ 45°). */
-    RTR(225.0, 45.0);
+    RTR(225.0, 45.0),
+
+    /** Left wide (azimuth ≈ 60°, elevation 0°) — 9.1.6 ear-level wide. */
+    LW(60.0, 0.0),
+
+    /** Right wide (azimuth ≈ 300°, elevation 0°) — 9.1.6 ear-level wide. */
+    RW(300.0, 0.0),
+
+    /** Left top side (azimuth ≈ 90°, elevation ≈ 45°) — 9.1.6 height side. */
+    LTS(90.0, 45.0),
+
+    /** Right top side (azimuth ≈ 270°, elevation ≈ 45°) — 9.1.6 height side. */
+    RTS(270.0, 45.0);
 
     private final double azimuthDegrees;
     private final double elevationDegrees;

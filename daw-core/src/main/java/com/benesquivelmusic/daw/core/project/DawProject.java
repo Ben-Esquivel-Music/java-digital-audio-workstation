@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.mixer.VcaGroupManager;
 import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshotManager;
+import com.benesquivelmusic.daw.core.mixer.spatial.BedBusManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectMetadata;
 import com.benesquivelmusic.daw.core.project.edit.NudgeSettings;
 import com.benesquivelmusic.daw.core.recording.Metronome;
@@ -42,6 +43,7 @@ public final class DawProject {
     private final MixerSnapshotManager mixerSnapshotManager = new MixerSnapshotManager();
     private final CueBusManager cueBusManager = new CueBusManager();
     private final VcaGroupManager vcaGroupManager = new VcaGroupManager();
+    private final BedBusManager bedBusManager = new BedBusManager();
     private RoomConfiguration roomConfiguration;
     private ProjectMetadata metadata;
     private boolean dirty;
@@ -289,6 +291,20 @@ public final class DawProject {
      */
     public VcaGroupManager getVcaGroupManager() {
         return vcaGroupManager;
+    }
+
+    /**
+     * Returns the manager for the project's Dolby Atmos {@link
+     * com.benesquivelmusic.daw.core.mixer.spatial.BedBus bed bus} and the
+     * per-track bed-channel routings that feed it.
+     *
+     * <p>The manager defaults to a 7.1.4 unity-gain bed bus and no routings;
+     * legacy projects that lacked a bed bus simply load with this default.</p>
+     *
+     * @return the bed bus manager (never null)
+     */
+    public BedBusManager getBedBusManager() {
+        return bedBusManager;
     }
 
     /**

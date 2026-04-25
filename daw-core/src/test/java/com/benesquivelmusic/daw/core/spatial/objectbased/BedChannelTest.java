@@ -54,13 +54,16 @@ class BedChannelTest {
     @Test
     void shouldRouteBedChannelsToAll714Positions() {
         SpeakerLayout layout = SpeakerLayout.LAYOUT_7_1_4;
-        SpeakerLabel[] labels = SpeakerLabel.values();
 
-        for (int i = 0; i < labels.length; i++) {
-            BedChannel bed = new BedChannel("track-" + i, labels[i]);
+        // Iterate over the speakers that compose the 7.1.4 layout (rather
+        // than every SpeakerLabel value) so the test stays correct as new
+        // labels are added for wider formats like 9.1.6.
+        for (int i = 0; i < layout.channelCount(); i++) {
+            SpeakerLabel label = layout.speakers().get(i);
+            BedChannel bed = new BedChannel("track-" + i, label);
             int idx = layout.indexOf(bed.speakerLabel());
             assertThat(idx)
-                    .as("Speaker %s should be at index %d", labels[i], i)
+                    .as("Speaker %s should be at index %d", label, i)
                     .isEqualTo(i);
         }
     }
