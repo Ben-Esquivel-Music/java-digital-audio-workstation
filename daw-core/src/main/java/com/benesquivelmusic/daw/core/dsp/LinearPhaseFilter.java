@@ -78,6 +78,69 @@ public final class LinearPhaseFilter {
     }
 
     /**
+     * Creates a linear-phase FIR filter that matches an arbitrary magnitude
+     * frequency response specified at half-spectrum FFT bin resolution.
+     *
+     * <p>Used by higher-level EQ stages (e.g. match EQ) that already compute
+     * their target |H(e^{jω})| on a regular FFT grid — no biquad cascade is
+     * required. The input is interpreted as the magnitude response at
+     * {@code k = 0, 1, …, magnitudeHalfSpectrum.length - 1}, corresponding to
+     * FFT bins of a transform of size
+     * {@code 2 · (magnitudeHalfSpectrum.length - 1)}.</p>
+     *
+     * @param magnitudeHalfSpectrum magnitude response |H(e^{jωk})| at bin k,
+     *                              for k = 0..fftSize/2 (length fftSize/2+1)
+     * @param firOrder              the desired FIR order (will be made odd for
+     *                              Type I symmetry)
+     * @return a new linear-phase FIR filter approximating the given magnitudes
+     */
+    public static LinearPhaseFilter fromMagnitudeResponse(double[] magnitudeHalfSpectrum,
+                                                           int firOrder) {
+        if (magnitudeHalfSpectrum == null || magnitudeHalfSpectrum.length < 2) {
+            throw new IllegalArgumentException(
+                    "magnitudeHalfSpectrum must have length >= 2");
+        }
+        if (firOrder < 3) {
+            throw new IllegalArgumentException("firOrder must be >= 3: " + firOrder);
+        }
+        if (firOrder % 2 == 0) firOrder++;
+
+        int halfLen = magnitudeHalfSpectrum.length;
+        int inputFftSize = (halfLen - 1) * 2;
+        int fftSize = Math.max(inputFftSize, nextPowerOfTwo(Math.max(firOrder * 2, 4096)));
+
+        double[] real = new double[fftSize];
+        double[] imag = new double[fftSize];
+
+        // Resample the supplied half-spectrum magnitudes onto the design grid
+        // by linear interpolation in k-space.
+        for (int k = 0; k <= fftSize / 2; k++) {
+            double pos = (double) k * (halfLen - 1) / (fftSize / 2);
+            int lo = (int) Math.floor(pos);
+            int hi = Math.min(lo + 1, halfLen - 1);
+            double frac = pos - lo;
+            double m = magnitudeHalfSpectrum[lo] * (1.0 - frac)
+                     + magnitudeHalfSpectrum[hi] * frac;
+            if (!Double.isFinite(m) || m < 0.0) m = 0.0;
+            real[k] = m;
+        }
+        for (int k = 1; k < fftSize / 2; k++) {
+            real[fftSize - k] = real[k];
+        }
+
+        ifft(real, imag, fftSize);
+
+        int center = firOrder / 2;
+        float[] coeffs = new float[firOrder];
+        for (int i = 0; i < firOrder; i++) {
+            int offset = i - center;
+            int idx = ((offset % fftSize) + fftSize) % fftSize;
+            coeffs[i] = (float) (real[idx] * blackmanWindow(i, firOrder));
+        }
+        return new LinearPhaseFilter(coeffs);
+    }
+
+    /**
      * Creates a single-band linear-phase FIR filter from biquad parameters.
      *
      * @param type       the filter type
