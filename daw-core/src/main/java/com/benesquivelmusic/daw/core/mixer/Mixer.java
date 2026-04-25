@@ -1048,13 +1048,14 @@ public final class Mixer {
                                                     int channelCount,
                                                     boolean anySolo,
                                                     int numFrames) {
-        // Grow the per-channel slot arrays once when channel count changes.
+        // Grow the per-channel slot arrays once when channel count grows,
+        // preserving any existing per-channel scratch buffers so capacity
+        // increases remain amortized and reusable on the RT thread.
         if (preInsertScratchPerChannel.length < channelCount) {
-            preInsertScratchPerChannel = new float[channelCount][][];
-            preInsertCaptured = new boolean[channelCount];
-        } else {
-            Arrays.fill(preInsertCaptured, 0, channelCount, false);
+            preInsertScratchPerChannel = Arrays.copyOf(preInsertScratchPerChannel, channelCount);
+            preInsertCaptured = Arrays.copyOf(preInsertCaptured, channelCount);
         }
+        Arrays.fill(preInsertCaptured, 0, channelCount, false);
 
         for (int i = 0; i < channelCount; i++) {
             MixerChannel channel = channels.get(i);

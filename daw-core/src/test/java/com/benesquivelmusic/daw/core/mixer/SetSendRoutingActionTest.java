@@ -143,4 +143,28 @@ class SetSendRoutingActionTest {
         assertThat(restored.getLevel()).isEqualTo(0.3);
         assertThat(restored.getTap()).isEqualTo(SendTap.PRE_INSERTS);
     }
+
+    @Test
+    void undoShouldRestorePreInsertsAfterModeFlipToPostFader() {
+        // Regression: previously we only captured the legacy SendMode on
+        // execute(), so flipping a PRE_INSERTS send to POST_FADER and
+        // undoing would restore PRE_FADER (the lossy SendMode view) rather
+        // than the original PRE_INSERTS tap. Capturing previousTap fixes
+        // this round-trip.
+        MixerChannel channel = new MixerChannel("Vocals");
+        MixerChannel target = new MixerChannel("Cue");
+        channel.addSend(new Send(target, 0.4, SendTap.PRE_INSERTS));
+
+        SetSendRoutingAction action = new SetSendRoutingAction(
+                channel, target, 0.4, SendMode.POST_FADER);
+        action.execute();
+
+        Send updated = channel.getSendForTarget(target);
+        assertThat(updated.getTap()).isEqualTo(SendTap.POST_FADER);
+
+        action.undo();
+        Send restored = channel.getSendForTarget(target);
+        assertThat(restored.getTap()).isEqualTo(SendTap.PRE_INSERTS);
+        assertThat(restored.getLevel()).isEqualTo(0.4);
+    }
 }

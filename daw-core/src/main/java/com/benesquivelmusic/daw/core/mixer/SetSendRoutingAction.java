@@ -18,6 +18,12 @@ public final class SetSendRoutingAction implements UndoableAction {
     private final SendMode newMode;
     private double previousLevel;
     private SendMode previousMode;
+    /**
+     * Captured pre-execute {@link SendTap} so that {@link #undo()} can
+     * fully restore PRE_INSERTS — which the legacy {@link SendMode} view
+     * collapses to PRE_FADER and therefore cannot represent on its own.
+     */
+    private SendTap previousTap;
     private boolean hadSendBefore;
 
     /**
@@ -51,6 +57,10 @@ public final class SetSendRoutingAction implements UndoableAction {
             hadSendBefore = true;
             previousLevel = existing.getLevel();
             previousMode = existing.getMode();
+            // Capture the full tap (PRE_INSERTS / PRE_FADER / POST_FADER)
+            // so undo can restore PRE_INSERTS — the legacy SendMode view
+            // collapses PRE_INSERTS to PRE_FADER and is lossy.
+            previousTap = existing.getTap();
             existing.setLevel(newLevel);
             // Only update the legacy mode when it actually changes. The
             // {@link Send#setMode} call collapses {@link SendTap#PRE_INSERTS}
@@ -75,10 +85,17 @@ public final class SetSendRoutingAction implements UndoableAction {
         }
         if (hadSendBefore) {
             existing.setLevel(previousLevel);
-            // Mirror execute(): only restore the mode when it actually
-            // differs to avoid trampling a PRE_INSERTS tap that survived
-            // because the mode was never changed in the first place.
-            if (existing.getMode() != previousMode) {
+            // Restore the full tap (which may have been PRE_INSERTS — a
+            // value the legacy SendMode cannot represent). Only call
+            // setTap when it actually differs from the current value so
+            // we avoid an unnecessary write on the common no-op path.
+            if (previousTap != null && existing.getTap() != previousTap) {
+                existing.setTap(previousTap);
+            } else if (previousTap == null && existing.getMode() != previousMode) {
+                // Defensive: if previousTap was never captured (shouldn't
+                // happen post-execute, but keeps the action robust if
+                // someone calls undo() without a prior execute()), fall
+                // back to the legacy mode-based restore.
                 existing.setMode(previousMode);
             }
         } else {
