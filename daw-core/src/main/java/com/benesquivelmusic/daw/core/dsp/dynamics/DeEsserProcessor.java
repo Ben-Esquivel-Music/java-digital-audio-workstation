@@ -23,10 +23,13 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginMeterSnapshot;
  *       desired gain reduction, clamped to the user's <em>range</em> (max
  *       attenuation in dB) so the de-esser never overprocesses.</li>
  *   <li>In <b>split-band</b> mode the attenuation is applied <em>only</em> to
- *       the sibilant band (extracted again with a fresh band-pass on the main
- *       signal); the rest of the signal is reconstructed as
- *       {@code input − sibilantBand} so that when no reduction is happening,
- *       split-band output is identical to the input (bit-exact null test).</li>
+ *       the sibilant band. The same band-pass output drives both detection and
+ *       attenuation, and the algebraic identity
+ *       {@code out = in + sibilantBand · (g − 1)} (equivalent to
+ *       {@code (in − sibilantBand) + sibilantBand · g}) reconstructs the
+ *       non-sibilant portion of the signal without a second band-pass pass.
+ *       When no reduction is happening ({@code g == 1}) split-band output is
+ *       identical to the input (bit-exact null test).</li>
  *   <li>In <b>wideband</b> mode the attenuation is applied to the full signal,
  *       producing classic full-spectrum ducking similar to a side-chained
  *       compressor.</li>
@@ -37,8 +40,10 @@ import com.benesquivelmusic.daw.sdk.plugin.PluginMeterSnapshot;
  *
  * <h2>Thread safety</h2>
  * <p>{@code process} is annotated {@link RealTimeSafe}: it does not allocate
- * or take locks. Parameter setters are safe to call from a UI thread (scalar
- * writes); changes become visible to the audio thread on the next buffer.</p>
+ * or take locks. Parameter setters are safe to call from a UI thread, but
+ * because they use plain scalar writes, updates are best-effort and become
+ * visible to the audio thread eventually rather than being guaranteed on the
+ * next buffer.</p>
  */
 public final class DeEsserProcessor implements AudioProcessor, GainReductionProvider {
 
@@ -137,12 +142,10 @@ public final class DeEsserProcessor implements AudioProcessor, GainReductionProv
         for (int frame = 0; frame < numFrames; frame++) {
             // 1) Detection: peak across channels of the sibilant-band signal.
             double sibPeak = 0.0;
-            // We keep per-channel sibilant samples so we can re-use them for split-band /
-            // listen output (avoids running the band-pass twice).
-            // Process detector filters first; sibilantFilters are kept perfectly in sync
-            // by sharing the same coefficients (state differs because they see different
-            // call patterns, but the BAND_PASS magnitude is identical).
-            double[] sibilantNow = sibilantBuffer; // pre-allocated in init
+            // A single band-pass per channel produces the sibilant sample reused for
+            // both detection and (in split-band / listen modes) attenuation output —
+            // avoids running the band-pass twice.
+            double[] sibilantNow = sibilantBuffer;
             for (int ch = 0; ch < nCh; ch++) {
                 double in = inputBuffer[ch][frame];
                 double sib = detectorFilters[ch].processSampleDouble(in);

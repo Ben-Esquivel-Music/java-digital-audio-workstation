@@ -66,7 +66,7 @@ class DeEsserPluginTest {
         assertThat(plugin.getParameters()).hasSize(6);
         assertThat(plugin.getParameters().stream().map(p -> p.name()))
                 .containsExactly("Frequency (Hz)", "Q", "Threshold (dB)",
-                        "Range (dB)", "Mode", "Listen");
+                        "Range (dB)", "Mode", "Listen Toggle");
     }
 
     @Test
@@ -81,6 +81,36 @@ class DeEsserPluginTest {
         var classes = java.util.Arrays.stream(BuiltInDawPlugin.class.getPermittedSubclasses())
                 .toList();
         assertThat(classes).contains(DeEsserPlugin.class);
+    }
+
+    @Test
+    void shouldRouteAutomationValuesToProcessor() {
+        var plugin = new DeEsserPlugin();
+        plugin.initialize(stubContext());
+        plugin.setAutomatableParameter(0, 8000.0);
+        plugin.setAutomatableParameter(1, 2.5);
+        plugin.setAutomatableParameter(2, -20.0);
+        plugin.setAutomatableParameter(3, 6.0);
+        plugin.setAutomatableParameter(4, 0.0); // wideband
+        plugin.setAutomatableParameter(5, 1.0); // listen on
+        var p = plugin.getProcessor();
+        assertThat(p.getFrequencyHz()).isEqualTo(8000.0);
+        assertThat(p.getQ()).isEqualTo(2.5);
+        assertThat(p.getThresholdDb()).isEqualTo(-20.0);
+        assertThat(p.getRangeDb()).isEqualTo(6.0);
+        assertThat(p.getMode()).isEqualTo(DeEsserProcessor.Mode.WIDEBAND);
+        assertThat(p.isListen()).isTrue();
+
+        plugin.setAutomatableParameter(4, 1.0); // split-band
+        plugin.setAutomatableParameter(5, 0.0); // listen off
+        assertThat(p.getMode()).isEqualTo(DeEsserProcessor.Mode.SPLIT_BAND);
+        assertThat(p.isListen()).isFalse();
+    }
+
+    @Test
+    void setAutomatableParameterShouldBeNoOpBeforeInitialize() {
+        // Should not NPE when called before initialize().
+        new DeEsserPlugin().setAutomatableParameter(0, 5000.0);
     }
 
     private static PluginContext stubContext() {

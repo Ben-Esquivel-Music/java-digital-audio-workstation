@@ -81,10 +81,12 @@ class DeEsserProcessorTest {
         float[][] output = { new float[n] };
         d.process(input, output, n);
 
-        // Allow the first few samples to differ due to the band-pass filter's
-        // settling transient (which is harmless because gain reduction is 0).
-        // Once gainReduction == 0 (which it is throughout this test), the
-        // formula collapses to out = in regardless of the sibilant band.
+        // The threshold above is so high that gain reduction stays at 0 dB
+        // throughout the buffer, so the split-band formula
+        //   out = in + sibilantBand · (g − 1)
+        // collapses to out = in for every sample — including the band-pass
+        // settling transient at the start of the buffer (because the (g − 1)
+        // factor is exactly zero, the sibilant-band value is irrelevant).
         for (int i = 0; i < n; i++) {
             assertThat(output[0][i]).isEqualTo(input[0][i]);
         }

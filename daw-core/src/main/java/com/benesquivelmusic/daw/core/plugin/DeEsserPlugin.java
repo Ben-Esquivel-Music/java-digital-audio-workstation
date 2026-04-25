@@ -84,7 +84,10 @@ public final class DeEsserPlugin implements BuiltInDawPlugin {
      * Returns the parameter descriptors for this de-esser plugin.
      *
      * <p>Parameter ids correspond to: 0=frequency (Hz), 1=Q, 2=threshold (dB),
-     * 3=range (dB), 4=mode (0=Wideband, 1=Split-Band), 5=listen (0=off, 1=on).</p>
+     * 3=range (dB), 4=mode (0=Wideband, 1=Split-Band), 5=listen toggle
+     * (0=off, 1=on). The "Toggle" suffix on parameter 5 is significant: the
+     * generic parameter editor renders 0/1 parameters as on/off controls only
+     * when the parameter name contains "toggle".</p>
      */
     @Override
     public List<PluginParameter> getParameters() {
@@ -94,6 +97,35 @@ public final class DeEsserPlugin implements BuiltInDawPlugin {
                 new PluginParameter(2, "Threshold (dB)",   -60.0,     0.0,  -30.0),
                 new PluginParameter(3, "Range (dB)",         0.0,    20.0,   12.0),
                 new PluginParameter(4, "Mode",               0.0,     1.0,    1.0),
-                new PluginParameter(5, "Listen",             0.0,     1.0,    0.0));
+                new PluginParameter(5, "Listen Toggle",      0.0,     1.0,    0.0));
+    }
+
+    /**
+     * Routes an automation value to the underlying {@link DeEsserProcessor}.
+     *
+     * <p>Parameter ids match {@link #getParameters()}. Modes are decoded as
+     * {@code value &lt; 0.5 ⇒ WIDEBAND}, otherwise {@code SPLIT_BAND}; the
+     * listen toggle is decoded with the same threshold.</p>
+     */
+    @Override
+    public void setAutomatableParameter(int parameterId, double value) {
+        if (processor == null) {
+            return;
+        }
+        switch (parameterId) {
+            case 0 -> processor.setFrequencyHz(clamp(value, 2000.0, 12000.0));
+            case 1 -> processor.setQ(clamp(value, 0.5, 4.0));
+            case 2 -> processor.setThresholdDb(clamp(value, -60.0, 0.0));
+            case 3 -> processor.setRangeDb(clamp(value, 0.0, 20.0));
+            case 4 -> processor.setMode(value >= 0.5
+                    ? DeEsserProcessor.Mode.SPLIT_BAND
+                    : DeEsserProcessor.Mode.WIDEBAND);
+            case 5 -> processor.setListen(value >= 0.5);
+            default -> { /* unknown parameter id */ }
+        }
+    }
+
+    private static double clamp(double v, double lo, double hi) {
+        return Math.min(hi, Math.max(lo, v));
     }
 }
