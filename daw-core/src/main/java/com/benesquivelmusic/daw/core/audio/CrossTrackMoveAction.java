@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.clip.LockedClipException;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 
@@ -43,6 +44,7 @@ public final class CrossTrackMoveAction implements UndoableAction {
 
     @Override
     public void execute() {
+        LockedClipException.requireUnlocked("Cross-track move", clip);
         previousStartBeat = clip.getStartBeat();
         sourceTrack.removeClip(clip);
         clip.setStartBeat(newStartBeat);

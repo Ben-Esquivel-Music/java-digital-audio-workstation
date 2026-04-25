@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.clip.LockedClipException;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 
 import java.util.Objects;
@@ -47,6 +48,7 @@ public final class SlipClipAction implements UndoableAction {
 
     @Override
     public void execute() {
+        LockedClipException.requireUnlocked("Slip", clip);
         previousSourceOffsetBeats = clip.getSourceOffsetBeats();
         clip.setSourceOffsetBeats(newSourceOffsetBeats);
     }

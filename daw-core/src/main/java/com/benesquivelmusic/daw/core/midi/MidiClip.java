@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.midi;
 
+import com.benesquivelmusic.daw.core.clip.Clip;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -15,9 +17,10 @@ import java.util.Objects;
  * <p>All undoable note-editing actions ({@link AddMidiNoteAction},
  * {@link RemoveMidiNoteAction}, etc.) operate on a {@code MidiClip}.</p>
  */
-public final class MidiClip {
+public final class MidiClip implements Clip {
 
     private final List<MidiNoteData> notes = new ArrayList<>();
+    private boolean locked;
 
     /**
      * Creates an empty MIDI clip.
@@ -113,5 +116,33 @@ public final class MidiClip {
      */
     public void clear() {
         notes.clear();
+    }
+
+    /**
+     * Returns {@code true} when this clip is time-locked and refuses
+     * position-changing operations (slip, ripple, etc.).
+     *
+     * <p>Locked MIDI clips still allow note edits (add / remove / pitch /
+     * velocity changes) — lock is strictly about the timeline position
+     * of the clip's notes, not their pitches or values.</p>
+     */
+    @Override
+    public boolean isLocked() {
+        return locked;
+    }
+
+    /**
+     * Sets the time-lock flag directly. Prefer
+     * {@code SetClipLockedAction} for user-driven changes so the toggle
+     * lands on the undo stack.
+     */
+    @Override
+    public void setLocked(boolean locked) {
+        this.locked = locked;
+    }
+
+    @Override
+    public String getDisplayName() {
+        return "MIDI Clip";
     }
 }

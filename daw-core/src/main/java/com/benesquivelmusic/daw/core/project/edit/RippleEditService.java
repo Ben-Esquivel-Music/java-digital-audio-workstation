@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.core.project.edit;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.CutClipsAction;
 import com.benesquivelmusic.daw.core.audio.MoveClipAction;
+import com.benesquivelmusic.daw.core.clip.LockedClipException;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.CompoundUndoableAction;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
@@ -219,6 +220,9 @@ public final class RippleEditService {
         Objects.requireNonNull(selectionStart, "selectionStart must not be null");
         Objects.requireNonNull(selectionEnd, "selectionEnd must not be null");
 
+        // The moved clip itself must not be locked.
+        LockedClipException.requireUnlocked("Move", clip);
+
         double originalStart = clip.getStartBeat();
         double delta = newStartBeat - originalStart;
 
@@ -288,8 +292,12 @@ public final class RippleEditService {
         }
 
         // Refuse to shift any clip past the zero boundary — clips cannot have
-        // negative start beats.
+        // negative start beats. Also refuse to ripple-shift a locked clip.
+        int lockedShiftCount = 0;
         for (AudioClip c : toShift) {
+            if (c.isLocked()) {
+                lockedShiftCount++;
+            }
             double newStart = c.getStartBeat() + shift;
             if (newStart < -EPSILON) {
                 throw new RippleValidationException(
@@ -297,6 +305,9 @@ public final class RippleEditService {
                                 + "' on track '" + track.getName()
                                 + "' to a negative start beat (" + newStart + ")");
             }
+        }
+        if (lockedShiftCount > 0) {
+            throw new LockedClipException("Ripple", lockedShiftCount);
         }
 
         // Validate that shifted clips do not overlap stationary clips.

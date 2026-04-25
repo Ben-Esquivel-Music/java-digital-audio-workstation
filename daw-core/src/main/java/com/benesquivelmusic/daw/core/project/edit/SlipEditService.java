@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.project.edit;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.SlipClipAction;
+import com.benesquivelmusic.daw.core.clip.LockedClipException;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.midi.SlipMidiClipAction;
@@ -83,6 +84,7 @@ public final class SlipEditService {
                                             double requestedBeatDelta,
                                             double sourceLengthBeats) {
         Objects.requireNonNull(clip, "clip must not be null");
+        LockedClipException.requireUnlocked("Slip", clip);
 
         double currentOffset = clip.getSourceOffsetBeats();
         double requestedOffset = currentOffset + requestedBeatDelta;
@@ -122,6 +124,7 @@ public final class SlipEditService {
      */
     public static SlipResult buildMidiSlip(MidiClip clip, int requestedColumnDelta) {
         Objects.requireNonNull(clip, "clip must not be null");
+        LockedClipException.requireUnlocked("Slip", clip);
 
         if (clip.isEmpty() || requestedColumnDelta == 0) {
             return new SlipResult(null, 0.0, false);
