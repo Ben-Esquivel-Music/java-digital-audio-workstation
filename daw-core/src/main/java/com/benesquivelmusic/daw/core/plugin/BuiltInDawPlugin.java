@@ -51,6 +51,7 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
                 DeEsserPlugin,
                 TruePeakLimiterPlugin,
                 TransientShaperPlugin,
+                NoiseGatePlugin,
                 MidSideWrapperPlugin {
 
     /**
