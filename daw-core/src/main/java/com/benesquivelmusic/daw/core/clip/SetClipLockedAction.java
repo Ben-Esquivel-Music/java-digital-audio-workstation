@@ -8,9 +8,11 @@ import java.util.Objects;
  * An undoable action that toggles or sets the {@code locked} flag of a
  * {@link Clip}.
  *
- * <p>Wired to the "Lock selected" / "Unlock selected" context-menu items
- * and the {@code Ctrl+L} / {@code Ctrl+Shift+L} shortcuts. Setting the
- * flag through this action — rather than calling
+ * <p>Intended to back the "Lock selected" / "Unlock selected"
+ * context-menu items and the {@code Ctrl+L} / {@code Ctrl+Shift+L}
+ * shortcuts in the UI layer (the actual menu/shortcut wiring lives in
+ * {@code daw-app} and is not part of this core PR). Setting the flag
+ * through this action — rather than calling
  * {@link Clip#setLocked(boolean)} directly — places the toggle on the
  * undo stack so users can {@code Ctrl+Z} an accidental lock change.</p>
  */

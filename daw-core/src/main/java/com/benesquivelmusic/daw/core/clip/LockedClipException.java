@@ -4,11 +4,11 @@ package com.benesquivelmusic.daw.core.clip;
  * Thrown when a position-changing operation (move, nudge, slip, ripple,
  * cross-track drag) is attempted against a time-locked clip.
  *
- * <p>Callers should catch this exception and surface a status-bar message
- * such as "1 locked clip refused to move — unlock it (Ctrl+Shift+L) and try
- * again." Once caught, the model is guaranteed to be unchanged: the
- * affected actions perform an up-front lock check before mutating any
- * clip state.</p>
+ * <p>Callers should catch this exception and surface its
+ * {@link #getMessage() message} on the status bar — e.g. "Move refused: 1
+ * clip is time-locked. Unlock it (Ctrl+Shift+L) and try again." Once
+ * caught, the model is guaranteed to be unchanged: the affected actions
+ * perform an up-front lock check before mutating any clip state.</p>
  */
 public final class LockedClipException extends RuntimeException {
 
@@ -23,19 +23,24 @@ public final class LockedClipException extends RuntimeException {
      *                        {@code "Nudge"}, {@code "Slip"})
      * @param lockedClipCount the number of locked clips that blocked the
      *                        operation (must be {@code > 0})
+     * @throws IllegalArgumentException if {@code lockedClipCount <= 0}
      */
     public LockedClipException(String operation, int lockedClipCount) {
-        super(buildMessage(operation, lockedClipCount));
-        if (lockedClipCount <= 0) {
-            throw new IllegalArgumentException(
-                    "lockedClipCount must be positive: " + lockedClipCount);
-        }
+        super(validatedMessage(operation, lockedClipCount));
         this.lockedClipCount = lockedClipCount;
     }
 
     /** The number of locked clips that blocked the refused operation. */
     public int getLockedClipCount() {
         return lockedClipCount;
+    }
+
+    private static String validatedMessage(String operation, int count) {
+        if (count <= 0) {
+            throw new IllegalArgumentException(
+                    "lockedClipCount must be positive: " + count);
+        }
+        return buildMessage(operation, count);
     }
 
     private static String buildMessage(String operation, int count) {

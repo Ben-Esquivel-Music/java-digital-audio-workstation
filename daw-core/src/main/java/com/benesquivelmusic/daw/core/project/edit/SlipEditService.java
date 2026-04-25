@@ -84,7 +84,6 @@ public final class SlipEditService {
                                             double requestedBeatDelta,
                                             double sourceLengthBeats) {
         Objects.requireNonNull(clip, "clip must not be null");
-        LockedClipException.requireUnlocked("Slip", clip);
 
         double currentOffset = clip.getSourceOffsetBeats();
         double requestedOffset = currentOffset + requestedBeatDelta;
@@ -100,8 +99,11 @@ public final class SlipEditService {
         boolean hitEdge = Math.abs(clampedOffset - requestedOffset) > EPSILON;
 
         if (Math.abs(appliedDelta) <= EPSILON) {
+            // Slip would be a no-op — don't surface a lock refusal to the user
+            // when nothing would have changed anyway.
             return new SlipResult(null, 0.0, hitEdge);
         }
+        LockedClipException.requireUnlocked("Slip", clip);
         return new SlipResult(new SlipClipAction(clip, clampedOffset), appliedDelta, hitEdge);
     }
 
@@ -124,7 +126,6 @@ public final class SlipEditService {
      */
     public static SlipResult buildMidiSlip(MidiClip clip, int requestedColumnDelta) {
         Objects.requireNonNull(clip, "clip must not be null");
-        LockedClipException.requireUnlocked("Slip", clip);
 
         if (clip.isEmpty() || requestedColumnDelta == 0) {
             return new SlipResult(null, 0.0, false);
@@ -144,8 +145,11 @@ public final class SlipEditService {
         boolean hitEdge = clampedDelta != requestedColumnDelta;
 
         if (clampedDelta == 0) {
+            // Slip would be a no-op — don't surface a lock refusal when
+            // nothing would have changed anyway.
             return new SlipResult(null, 0.0, hitEdge);
         }
+        LockedClipException.requireUnlocked("Slip", clip);
         // 0.25 beats per column (1/16th at 4/4) — same constant used by the UI
         // layer (see {@code EditorView.BEATS_PER_COLUMN}). Hard-coded here to
         // avoid a reverse dependency from daw-core onto daw-app.
