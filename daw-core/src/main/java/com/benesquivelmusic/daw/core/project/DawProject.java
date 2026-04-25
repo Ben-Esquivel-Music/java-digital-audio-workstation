@@ -40,6 +40,8 @@ public final class DawProject {
     private final Metronome metronome;
     private final MixerSnapshotManager mixerSnapshotManager = new MixerSnapshotManager();
     private final CueBusManager cueBusManager = new CueBusManager();
+    private final com.benesquivelmusic.daw.core.mixer.VcaGroupManager vcaGroupManager =
+            new com.benesquivelmusic.daw.core.mixer.VcaGroupManager();
     private RoomConfiguration roomConfiguration;
     private ProjectMetadata metadata;
     private boolean dirty;
@@ -273,6 +275,20 @@ public final class DawProject {
      */
     public CueBusManager getCueBusManager() {
         return cueBusManager;
+    }
+
+    /**
+     * Returns the manager for {@link com.benesquivelmusic.daw.core.mixer.VcaGroup
+     * VCA groups} — phantom faders that proportionally scale the levels of
+     * member channels without introducing an additional summing point.
+     *
+     * <p>The manager is always present (never {@code null}); legacy projects
+     * that had no VCAs simply load with an empty list.</p>
+     *
+     * @return the VCA group manager
+     */
+    public com.benesquivelmusic.daw.core.mixer.VcaGroupManager getVcaGroupManager() {
+        return vcaGroupManager;
     }
 
     /**

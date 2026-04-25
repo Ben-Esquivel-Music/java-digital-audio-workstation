@@ -329,6 +329,28 @@ public final class ProjectSerializer {
             }
             cueBusesElem.appendChild(busElem);
         }
+
+        // VCA groups — write-only persistence, mirroring the cue-bus pattern.
+        // Legacy projects without this element simply load with no VCAs (the
+        // manager starts empty), satisfying the "legacy projects load with no
+        // VCAs" goal in the issue.
+        Element vcaGroupsElem = document.createElement("vca-groups");
+        mixerElem.appendChild(vcaGroupsElem);
+        for (VcaGroup group : project.getVcaGroupManager().getVcaGroups()) {
+            Element groupElem = document.createElement("vca-group");
+            groupElem.setAttribute("id", group.id().toString());
+            groupElem.setAttribute("label", group.label());
+            groupElem.setAttribute("master-gain-db", String.valueOf(group.masterGainDb()));
+            if (group.color() != null) {
+                groupElem.setAttribute("color", group.color().getHexColor());
+            }
+            for (java.util.UUID memberId : group.memberChannelIds()) {
+                Element memberElem = document.createElement("vca-member");
+                memberElem.setAttribute("channel-id", memberId.toString());
+                groupElem.appendChild(memberElem);
+            }
+            vcaGroupsElem.appendChild(groupElem);
+        }
     }
 
     private Element buildMixerChannelElement(Document document, String tagName,
