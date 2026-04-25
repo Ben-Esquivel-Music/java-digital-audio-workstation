@@ -49,7 +49,11 @@ final class ProcessorDiscoverabilityTest {
     private static final Set<String> KNOWN_NON_STANDARD_PROCESSORS = Set.of(
             "DitherProcessor",
             "MultibandCompressorProcessor",
-            "StereoImagerProcessor"
+            "StereoImagerProcessor",
+            // MidSideWrapperProcessor hosts two inner processor chains and is
+            // built up incrementally by MidSideWrapperPlugin — it has no
+            // (channels, sampleRate) constructor by design.
+            "MidSideWrapperProcessor"
     );
 
     @Test
