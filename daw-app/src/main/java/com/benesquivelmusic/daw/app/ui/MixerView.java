@@ -71,6 +71,20 @@ public final class MixerView extends VBox {
     private final VBox masterStrip;
     private final List<InsertEffectRack> activeInsertRacks = new ArrayList<>();
     private final List<InputMeterStrip> activeInputMeterStrips = new ArrayList<>();
+    /**
+     * Callbacks that re-sync solo-button visuals and the "Solo safe"
+     * {@code CheckMenuItem} from the model. Invoked after undo/redo so
+     * solo-safe changes round-trip through the UI even when the user did
+     * not initiate them via the context menu.
+     */
+    private final List<Runnable> soloSafeSyncCallbacks = new ArrayList<>();
+    /**
+     * History listener registered on the {@link UndoManager}. Runs every
+     * {@link #soloSafeSyncCallbacks} entry on the JavaFX thread so the solo
+     * ring and "Solo safe" checkmark always reflect the model after
+     * undo/redo (or any other history mutation).
+     */
+    private final com.benesquivelmusic.daw.core.undo.UndoHistoryListener undoHistoryListener;
     private PluginRegistry pluginRegistry;
     private InputLevelMonitorRegistry inputLevelMonitorRegistry;
 
@@ -93,6 +107,22 @@ public final class MixerView extends VBox {
         this.project = Objects.requireNonNull(project, "project must not be null");
         this.undoManager = undoManager;
         getStyleClass().add("mixer-panel");
+
+        // Refresh solo-safe button rings and "Solo safe" checkmarks after
+        // any undo/redo so the UI never shows a stale value when
+        // SetSoloSafeAction (or a snapshot recall, etc.) is undone or
+        // redone. The listener runs on whatever thread fired the event;
+        // hop to the FX application thread to mutate widgets safely.
+        this.undoHistoryListener = _ -> {
+            if (javafx.application.Platform.isFxApplicationThread()) {
+                runSoloSafeSyncCallbacks();
+            } else {
+                javafx.application.Platform.runLater(this::runSoloSafeSyncCallbacks);
+            }
+        };
+        if (this.undoManager != null) {
+            this.undoManager.addHistoryListener(this.undoHistoryListener);
+        }
 
         Label header = new Label("MIXER");
         header.getStyleClass().add("panel-header");
@@ -196,6 +226,9 @@ public final class MixerView extends VBox {
      * keep the mixer view synchronized with the project model.</p>
      */
     public void refresh() {
+        // Drop any stale solo-safe sync callbacks left over from the
+        // previous build of strips so we don't poke discarded widgets.
+        soloSafeSyncCallbacks.clear();
         // Dispose existing InsertEffectRack instances to prevent listener leaks
         for (InsertEffectRack rack : activeInsertRacks) {
             rack.dispose();
@@ -922,6 +955,10 @@ public final class MixerView extends VBox {
      * toggles the channel's solo-safe flag through {@link SetSoloSafeAction}
      * (so the change participates in undo/redo). Invoked on track and
      * return-bus channel strips.
+     *
+     * <p>Also registers a sync callback so the button ring and the
+     * {@code CheckMenuItem} selection reflect the model after any
+     * {@link UndoManager} history change (undo, redo, or recall).</p>
      */
     private void installSoloSafeContextMenu(Button soloBtn, MixerChannel channel) {
         ContextMenu menu = new ContextMenu();
@@ -939,5 +976,18 @@ public final class MixerView extends VBox {
         });
         menu.getItems().add(soloSafeItem);
         soloBtn.setContextMenu(menu);
+
+        // Keep the button ring + checkmark in sync with the model after
+        // undo/redo, snapshot recalls, or "Reset solo safe to defaults".
+        soloSafeSyncCallbacks.add(() -> {
+            soloSafeItem.setSelected(channel.isSoloSafe());
+            applySoloButtonStyle(soloBtn, channel);
+        });
+    }
+
+    private void runSoloSafeSyncCallbacks() {
+        for (Runnable r : soloSafeSyncCallbacks) {
+            r.run();
+        }
     }
 }

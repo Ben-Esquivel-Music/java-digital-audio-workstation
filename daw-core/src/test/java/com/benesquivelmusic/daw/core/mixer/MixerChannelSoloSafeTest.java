@@ -170,6 +170,80 @@ class MixerChannelSoloSafeTest {
         assertThat(mixer.getMasterChannel().isSoloSafe()).isFalse();
     }
 
+    @Test
+    void soloingTrackSilencesNonSoloSafeReturn() {
+        // Negative case for comment 4: when a return bus is NOT solo-safe,
+        // it should be silenced under solo. We solo the vocal and route its
+        // send to a non-solo-safe return bus — the send runs (vocal is the
+        // soloed channel) but the return must contribute nothing to the
+        // main output. Compare against the same setup with solo-safe ON to
+        // prove the flag is what's making the difference.
+        for (boolean returnIsSafe : new boolean[]{false, true}) {
+            Mixer mixer = new Mixer();
+            MixerChannel vocal = new MixerChannel("Vocal");
+            mixer.addChannel(vocal);
+            MixerChannel reverbReturn = mixer.getAuxBus();
+            reverbReturn.setSoloSafe(returnIsSafe);
+
+            vocal.addSend(new Send(reverbReturn, 0.5, SendMode.POST_FADER));
+
+            int frames = 4;
+            float[][][] channelBuffers = {
+                    {{0.5f, 0.5f, 0.5f, 0.5f}, {0.5f, 0.5f, 0.5f, 0.5f}}
+            };
+            float[][] output = new float[2][frames];
+            float[][][] returnBuffers = {{new float[frames], new float[frames]}};
+
+            vocal.setSolo(true);
+            mixer.mixDown(channelBuffers, output, returnBuffers, frames);
+
+            float returnSum = 0.0f;
+            for (float[] ch : returnBuffers[0]) {
+                for (float v : ch) {
+                    returnSum += v;
+                }
+            }
+
+            if (returnIsSafe) {
+                assertThat(returnSum)
+                        .as("solo-safe return should still receive the send")
+                        .isNotZero();
+            } else {
+                assertThat(returnSum)
+                        .as("non-solo-safe return must be silenced under solo")
+                        .isZero();
+            }
+        }
+    }
+
+    @Test
+    void soloingReturnBusSilencesOtherTracks() {
+        // Soloing a return bus should mute every non-soloed, non-solo-safe
+        // track channel — symmetrical to soloing a track.
+        Mixer mixer = new Mixer();
+        MixerChannel drums = new MixerChannel("Drums");
+        mixer.addChannel(drums);
+
+        int frames = 4;
+        float[][][] channelBuffers = {
+                {{0.5f, 0.5f, 0.5f, 0.5f}, {0.5f, 0.5f, 0.5f, 0.5f}}
+        };
+        float[][] output = new float[2][frames];
+        float[][][] returnBuffers = {{new float[frames], new float[frames]}};
+
+        // Solo the (silent) reverb return.
+        mixer.getAuxBus().setSolo(true);
+        mixer.mixDown(channelBuffers, output, returnBuffers, frames);
+
+        for (float[] ch : output) {
+            for (float v : ch) {
+                assertThat(v)
+                        .as("track channel must be silenced when a return bus is soloed")
+                        .isEqualTo(0.0f);
+            }
+        }
+    }
+
     private static float[][][] deepCopy(float[][][] src) {
         float[][][] copy = new float[src.length][][];
         for (int i = 0; i < src.length; i++) {
