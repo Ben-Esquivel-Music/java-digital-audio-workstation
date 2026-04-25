@@ -84,7 +84,7 @@ class TruePeakLimiterProcessorTest {
      * 0.1 dB after the lookahead transient.
      */
     @Test
-    void heldsOutputBelowCeilingOnIspSignal() {
+    void holdsOutputBelowCeilingOnIspSignal() {
         var l = new TruePeakLimiterProcessor(2, SAMPLE_RATE);
         l.setCeilingDb(-1.0);
         l.setIsr(4);

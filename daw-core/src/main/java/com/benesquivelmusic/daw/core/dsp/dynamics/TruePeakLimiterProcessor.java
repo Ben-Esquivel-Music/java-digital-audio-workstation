@@ -110,6 +110,14 @@ public final class TruePeakLimiterProcessor implements AudioProcessor, GainReduc
     // ── Output gain envelope ───────────────────────────────────────────────
     private double envelopeGain = 1.0;
 
+    // ── Sliding-window minimum cache ───────────────────────────────────────
+    /** Cached running minimum target gain across the lookahead window. */
+    private double cachedMinTarget = 1.0;
+    /** Logical frame at which {@link #cachedMinTarget} was written. */
+    private long cachedMinFrame = -1;
+    /** Logical (monotonically-increasing) frame counter, used for window expiry. */
+    private long currentFrame = 0;
+
     // ── Metering ───────────────────────────────────────────────────────────
     private double currentGainReductionDb;
     private double lastInputTruePeakDb  = Double.NEGATIVE_INFINITY;
@@ -158,22 +166,27 @@ public final class TruePeakLimiterProcessor implements AudioProcessor, GainReduc
     @RealTimeSafe
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
+        // Clamp to the smaller of input/output channel arrays to avoid
+        // ArrayIndexOutOfBoundsException when the host supplies mismatched
+        // buffer arities (matching other processors in this codebase).
+        final int chCount = Math.min(channels,
+                Math.min(inputBuffer.length, outputBuffer.length));
+
         if (bypass) {
             // Bit-exact passthrough — no delay, no metering side-effects.
-            for (int ch = 0; ch < Math.min(channels, inputBuffer.length); ch++) {
+            for (int ch = 0; ch < chCount; ch++) {
                 System.arraycopy(inputBuffer[ch], 0, outputBuffer[ch], 0, numFrames);
             }
             currentGainReductionDb = 0.0;
             return;
         }
 
-        final int chCount = Math.min(channels, inputBuffer.length);
-        final double kneeLow = ceilingDb - KNEE_DB;
+        final double halfKnee = KNEE_DB / 2.0;
+        final double kneeLow  = ceilingDb - halfKnee;
         final int ringSize = detectionLine.length;
         final int look = Math.min(lookaheadSamples, ringSize - 1);
 
         double peakIn  = 0.0;
-        double peakOut = 0.0;
 
         for (int frame = 0; frame < numFrames; frame++) {
             // 1. Per-channel oversampled true-peak detection. We feed a single
@@ -209,14 +222,35 @@ public final class TruePeakLimiterProcessor implements AudioProcessor, GainReduc
             }
             detectionLine[writeIndex] = targetGain;
 
-            // 4. Read delayed audio and the *minimum* target gain in the lookahead window.
-            int readIndex = (writeIndex - look + ringSize) % ringSize;
-            double minTargetInLookahead = targetGain;
-            for (int k = 0; k < look; k++) {
-                int idx = (readIndex + k) % ringSize;
-                double t = detectionLine[idx];
-                if (t < minTargetInLookahead) minTargetInLookahead = t;
+            // 4. Update the running minimum target gain across the lookahead
+            //    window. The window at frame f contains the targets written in
+            //    the previous {@code look} frames plus the current target.
+            //    Maintaining the minimum incrementally with lazy rescan on
+            //    expiry yields amortized O(1) per frame instead of the
+            //    O(lookaheadSamples) cost of a full rescan, which becomes
+            //    significant at high sample rates with maximum lookahead.
+            if (targetGain <= cachedMinTarget) {
+                cachedMinTarget = targetGain;
+                cachedMinFrame = currentFrame;
+            } else if (cachedMinFrame < currentFrame - look) {
+                // Cached minimum has slid out of the window — rescan once.
+                int readIndexRescan = (writeIndex - look + ringSize) % ringSize;
+                double newMin = targetGain;
+                long newMinFrame = currentFrame;
+                for (int k = 0; k < look; k++) {
+                    int idx = (readIndexRescan + k) % ringSize;
+                    double t = detectionLine[idx];
+                    // Frame at which the value at idx was written = currentFrame - look + k.
+                    if (t < newMin) {
+                        newMin = t;
+                        newMinFrame = currentFrame - look + k;
+                    }
+                }
+                cachedMinTarget = newMin;
+                cachedMinFrame = newMinFrame;
             }
+            int readIndex = (writeIndex - look + ringSize) % ringSize;
+            double minTargetInLookahead = cachedMinTarget;
 
             // 5. One-pole release; instantaneous attack (the lookahead supplies the ramp).
             if (minTargetInLookahead < envelopeGain) {
@@ -237,21 +271,28 @@ public final class TruePeakLimiterProcessor implements AudioProcessor, GainReduc
             //    peak is bounded by the ceiling without an additional sample
             //    clipping stage — clipping would inject harmonics that raise
             //    inter-sample peaks back above the ceiling.
-            double outFramePeak = 0.0;
             for (int ch = 0; ch < chCount; ch++) {
                 double in = delayLine[ch][readIndex];
-                double out = in * envelopeGain;
-                outputBuffer[ch][frame] = (float) out;
-                double abs = Math.abs(out);
-                if (abs > outFramePeak) outFramePeak = abs;
+                outputBuffer[ch][frame] = (float) (in * envelopeGain);
             }
-            if (outFramePeak > peakOut) peakOut = outFramePeak;
 
             writeIndex = (writeIndex + 1) % ringSize;
+            currentFrame++;
         }
 
-        lastInputTruePeakDb  = peakIn  > 0 ? 20.0 * Math.log10(peakIn)  : Double.NEGATIVE_INFINITY;
-        lastOutputTruePeakDb = peakOut > 0 ? 20.0 * Math.log10(peakOut) : Double.NEGATIVE_INFINITY;
+        lastInputTruePeakDb = peakIn > 0
+                ? 20.0 * Math.log10(peakIn) : Double.NEGATIVE_INFINITY;
+        // A per-sample output peak under-reports inter-sample (true) peaks,
+        // contradicting "true-peak I/O" metering. Since the limiter is
+        // attenuation-only, the output's true peak is bounded above by the
+        // input's true peak; the brickwall further caps it at the configured
+        // ceiling. Use that conservative bound so the meter actually
+        // reflects dBTP.
+        final double ceilingLinear = dbToLinear(ceilingDb);
+        final double outputTruePeakBound = Math.min(peakIn, ceilingLinear);
+        lastOutputTruePeakDb = outputTruePeakBound > 0
+                ? 20.0 * Math.log10(outputTruePeakBound)
+                : Double.NEGATIVE_INFINITY;
     }
 
     /**
@@ -263,23 +304,37 @@ public final class TruePeakLimiterProcessor implements AudioProcessor, GainReduc
     /**
      * Soft-knee gain-reduction curve. Returns a value in dB (≤ 0).
      *
-     * <p>Below {@code kneeLowDb} → 0 dB reduction.<br>
-     * Above {@code ceilingDb}   → {@code ceilingDb − inputDb} (1:∞ brickwall).<br>
-     * Within the knee width     → quadratic transition.</p>
+     * <p>The knee is centered around {@code ceilingDb}. Given
+     * {@code kneeLowDb = ceilingDb − W/2}, the knee spans
+     * {@code [kneeLowDb, ceilingDb + W/2]}.<br>
+     * Below {@code kneeLowDb}                  → 0 dB reduction.<br>
+     * Above the knee's upper bound             → {@code ceilingDb − inputDb} (1:∞ brickwall).<br>
+     * Within the knee region                   → quadratic transition that
+     * meets the hard-limiter line continuously at the knee's upper bound.</p>
      */
     private static double computeReductionDb(double inputDb, double ceilingDb, double kneeLowDb) {
+        double halfKnee = ceilingDb - kneeLowDb;
+        if (halfKnee <= 0.0) {
+            // Degenerate (zero-width) knee — pure brickwall.
+            return inputDb >= ceilingDb ? (ceilingDb - inputDb) : 0.0;
+        }
+
+        double kneeWidth  = 2.0 * halfKnee;
+        double kneeHighDb = ceilingDb + halfKnee;
+
         if (inputDb <= kneeLowDb) {
             return 0.0;
         }
-        if (inputDb >= ceilingDb) {
+        if (inputDb >= kneeHighDb) {
             return ceilingDb - inputDb;
         }
-        double x = inputDb - kneeLowDb;          // [0, KNEE_DB]
-        double width = ceilingDb - kneeLowDb;    // KNEE_DB
-        // Quadratic shaper: reduction grows from 0 at the knee toe to (input − ceiling)
-        // at the knee top, with continuous first derivative at the top.
-        double reduction = -(x * x) / (2.0 * width);
-        return reduction;
+
+        double x = inputDb - kneeLowDb; // [0, kneeWidth]
+        // Standard soft-knee limiter curve (ratio 1:∞), continuous with the
+        // hard-limiter line at the knee's upper bound. At inputDb == kneeHighDb
+        // this returns -kneeWidth/2 == -(inputDb - ceilingDb), matching the
+        // brickwall branch — and at inputDb == kneeLowDb it returns 0.
+        return -(x * x) / (2.0 * kneeWidth);
     }
 
     /**
@@ -294,8 +349,12 @@ public final class TruePeakLimiterProcessor implements AudioProcessor, GainReduc
         hist[hi] = sample;
         firHistoryIndex[channel] = (hi + 1) % POLY_LEN;
 
-        // Phase 0 corresponds to the original sample (identity row in polyphase
-        // form); compare every phase to find the inter-sample peak.
+        // Treat the raw sample as the on-grid (phase-0) value and compare every
+        // remaining polyphase row to estimate the inter-sample peak. Phase 0
+        // of the prototype FIR is *not* a delta — it would attenuate the input
+        // by the FIR's value at its centre — so we use the unfiltered sample
+        // directly for the on-grid position and reserve the polyphase rows for
+        // the inter-sample positions only.
         double peak = Math.abs(sample);
         // Phase index step so we use only `isr` of the MAX_ISR phases
         // (uniformly spaced — the polyphase decomposition of the same kernel).
@@ -317,9 +376,11 @@ public final class TruePeakLimiterProcessor implements AudioProcessor, GainReduc
 
     /**
      * Builds the polyphase decomposition of a windowed-sinc lowpass with cutoff
-     * {@code 1/(2·isr)} relative to the oversampled rate. Phase 0 is a delta
-     * (identity) so the original sample passes through; the remaining phases
-     * interpolate the inter-sample positions.
+     * {@code 1/(2·isr)} relative to the oversampled rate. All phases are
+     * computed from the same prototype FIR; this method does not force phase
+     * 0 to be a delta (identity). The caller treats the raw input sample as
+     * the original sample position and uses the polyphase rows to estimate
+     * inter-sample positions.
      */
     private static double[][] buildPolyphase(int maxIsr, int polyLen) {
         int taps = maxIsr * polyLen;
@@ -361,6 +422,9 @@ public final class TruePeakLimiterProcessor implements AudioProcessor, GainReduc
         java.util.Arrays.fill(detectionLine, 1.0);
         writeIndex = 0;
         envelopeGain = 1.0;
+        cachedMinTarget = 1.0;
+        cachedMinFrame = -1;
+        currentFrame = 0;
         currentGainReductionDb = 0.0;
         lastInputTruePeakDb  = Double.NEGATIVE_INFINITY;
         lastOutputTruePeakDb = Double.NEGATIVE_INFINITY;
