@@ -51,6 +51,8 @@ final class PluginViewController {
     private TruePeakLimiterPluginView truePeakLimiterView;
     private Stage transientShaperStage;
     private TransientShaperPluginView transientShaperView;
+    private Stage noiseGateStage;
+    private NoiseGatePluginView noiseGateView;
 
     PluginViewController(Host host) {
         this.host = host;
@@ -126,6 +128,9 @@ final class PluginViewController {
         if (transientShaperStage != null) {
             transientShaperStage.hide();
         }
+        if (noiseGateStage != null) {
+            noiseGateStage.hide();
+        }
         try {
             for (BuiltInDawPlugin plugin : builtInPluginCache.values()) {
                 try {
@@ -152,6 +157,7 @@ final class PluginViewController {
             case DeEsserPlugin.PLUGIN_ID -> openDeEsserWindow((DeEsserPlugin) plugin);
             case TruePeakLimiterPlugin.PLUGIN_ID -> openTruePeakLimiterWindow((TruePeakLimiterPlugin) plugin);
             case TransientShaperPlugin.PLUGIN_ID -> openTransientShaperWindow((TransientShaperPlugin) plugin);
+            case NoiseGatePlugin.PLUGIN_ID -> openNoiseGateWindow((NoiseGatePlugin) plugin);
             case ParametricEqPlugin.PLUGIN_ID,
                  CompressorPlugin.PLUGIN_ID,
                  ReverbPlugin.PLUGIN_ID -> host.switchToMasteringView();
@@ -387,5 +393,33 @@ final class PluginViewController {
         stage.show();
         stage.toFront();
         transientShaperStage = stage;
+    }
+
+    private void openNoiseGateWindow(NoiseGatePlugin plugin) {
+        if (noiseGateStage != null) {
+            noiseGateStage.show();
+            noiseGateStage.toFront();
+            return;
+        }
+
+        noiseGateView = new NoiseGatePluginView(plugin.getProcessor());
+
+        Stage stage = new Stage(StageStyle.UTILITY);
+        stage.setTitle("Noise Gate");
+        stage.setScene(new Scene(noiseGateView));
+        DarkThemeHelper.applyTo(stage.getScene());
+        stage.setMinWidth(960);
+        stage.setMinHeight(340);
+        stage.setOnHidden(_ -> {
+            if (noiseGateView != null) {
+                noiseGateView.dispose();
+                noiseGateView = null;
+            }
+            plugin.deactivate();
+            noiseGateStage = null;
+        });
+        stage.show();
+        stage.toFront();
+        noiseGateStage = stage;
     }
 }
