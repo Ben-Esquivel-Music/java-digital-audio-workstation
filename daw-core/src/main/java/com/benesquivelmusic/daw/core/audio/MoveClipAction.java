@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.clip.LockedClipException;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 
 import java.util.Objects;
@@ -34,6 +35,7 @@ public final class MoveClipAction implements UndoableAction {
 
     @Override
     public void execute() {
+        LockedClipException.requireUnlocked("Move", clip);
         previousStartBeat = clip.getStartBeat();
         clip.setStartBeat(newStartBeat);
     }

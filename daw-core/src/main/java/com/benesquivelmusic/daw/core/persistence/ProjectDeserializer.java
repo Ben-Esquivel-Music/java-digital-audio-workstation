@@ -438,6 +438,7 @@ public final class ProjectDeserializer {
         clip.setSourceOffsetBeats(parseDoubleAttr(elem, "source-offset", 0.0));
         clip.setGainDb(parseDoubleAttr(elem, "gain-db", 0.0));
         clip.setReversed(parseBooleanAttr(elem, "reversed"));
+        clip.setLocked(parseBooleanAttr(elem, "locked"));
         clip.setFadeInBeats(Math.max(0.0, parseDoubleAttr(elem, "fade-in-beats", 0.0)));
         clip.setFadeOutBeats(Math.max(0.0, parseDoubleAttr(elem, "fade-out-beats", 0.0)));
         clip.setFadeInCurveType(parseFadeCurveType(elem.getAttribute("fade-in-curve")));

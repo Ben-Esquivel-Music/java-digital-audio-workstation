@@ -264,6 +264,9 @@ public final class ProjectSerializer {
         elem.setAttribute("source-offset", String.valueOf(clip.getSourceOffsetBeats()));
         elem.setAttribute("gain-db", String.valueOf(clip.getGainDb()));
         elem.setAttribute("reversed", String.valueOf(clip.isReversed()));
+        if (clip.isLocked()) {
+            elem.setAttribute("locked", "true");
+        }
         elem.setAttribute("fade-in-beats", String.valueOf(clip.getFadeInBeats()));
         elem.setAttribute("fade-out-beats", String.valueOf(clip.getFadeOutBeats()));
         elem.setAttribute("fade-in-curve", clip.getFadeInCurveType().name());

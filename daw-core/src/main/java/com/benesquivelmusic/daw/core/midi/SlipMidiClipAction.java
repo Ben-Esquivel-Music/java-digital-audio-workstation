@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.midi;
 
+import com.benesquivelmusic.daw.core.clip.LockedClipException;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 
 import java.util.ArrayList;
@@ -51,6 +52,7 @@ public final class SlipMidiClipAction implements UndoableAction {
 
     @Override
     public void execute() {
+        LockedClipException.requireUnlocked("Slip", clip);
         shiftAllNotes(columnDelta);
     }
 

@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.project.edit;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.SlipClipAction;
+import com.benesquivelmusic.daw.core.clip.LockedClipException;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.midi.SlipMidiClipAction;
@@ -98,8 +99,11 @@ public final class SlipEditService {
         boolean hitEdge = Math.abs(clampedOffset - requestedOffset) > EPSILON;
 
         if (Math.abs(appliedDelta) <= EPSILON) {
+            // Slip would be a no-op — don't surface a lock refusal to the user
+            // when nothing would have changed anyway.
             return new SlipResult(null, 0.0, hitEdge);
         }
+        LockedClipException.requireUnlocked("Slip", clip);
         return new SlipResult(new SlipClipAction(clip, clampedOffset), appliedDelta, hitEdge);
     }
 
@@ -141,8 +145,11 @@ public final class SlipEditService {
         boolean hitEdge = clampedDelta != requestedColumnDelta;
 
         if (clampedDelta == 0) {
+            // Slip would be a no-op — don't surface a lock refusal when
+            // nothing would have changed anyway.
             return new SlipResult(null, 0.0, hitEdge);
         }
+        LockedClipException.requireUnlocked("Slip", clip);
         // 0.25 beats per column (1/16th at 4/4) — same constant used by the UI
         // layer (see {@code EditorView.BEATS_PER_COLUMN}). Hard-coded here to
         // avoid a reverse dependency from daw-core onto daw-app.

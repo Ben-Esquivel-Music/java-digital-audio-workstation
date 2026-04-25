@@ -266,6 +266,24 @@ class ProjectSerializationRoundTripTest {
     }
 
     @Test
+    void shouldRoundTripClipLockedFlag() throws IOException {
+        DawProject original = new DawProject("Lock Test", AudioFormat.CD_QUALITY);
+        Track track = original.createAudioTrack("Audio");
+
+        AudioClip locked = new AudioClip("Locked", 1.0, 4.0, "/audio/locked.wav");
+        locked.setLocked(true);
+        AudioClip free = new AudioClip("Free", 8.0, 4.0, "/audio/free.wav");
+        track.addClip(locked);
+        track.addClip(free);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        assertThat(restored.getTracks().get(0).getClips().get(0).isLocked()).isTrue();
+        assertThat(restored.getTracks().get(0).getClips().get(1).isLocked()).isFalse();
+    }
+
+    @Test
     void shouldRoundTripCompleteProject() throws IOException {
         DawProject original = new DawProject("Full Project", AudioFormat.STUDIO_QUALITY);
 

@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.clip.Clip;
 import com.benesquivelmusic.daw.sdk.audio.ClipGainEnvelope;
 import com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata;
 import com.benesquivelmusic.daw.sdk.audio.TimelineRegion;
@@ -14,7 +15,7 @@ import java.util.UUID;
  * <p>Each clip references a source audio file or buffer and is positioned
  * at a specific beat on the timeline with a given duration.</p>
  */
-public final class AudioClip implements TimelineRegion {
+public final class AudioClip implements TimelineRegion, Clip {
 
     private final String id;
     private String name;
@@ -24,6 +25,7 @@ public final class AudioClip implements TimelineRegion {
     private String sourceFilePath;
     private double gainDb;
     private boolean reversed;
+    private boolean locked;
     private double fadeInBeats;
     private double fadeOutBeats;
     private FadeCurveType fadeInCurveType;
@@ -58,6 +60,7 @@ public final class AudioClip implements TimelineRegion {
         this.sourceFilePath = sourceFilePath;
         this.gainDb = 0.0;
         this.reversed = false;
+        this.locked = false;
         this.fadeInBeats = 0.0;
         this.fadeOutBeats = 0.0;
         this.fadeInCurveType = FadeCurveType.LINEAR;
@@ -142,6 +145,34 @@ public final class AudioClip implements TimelineRegion {
     /** Sets whether this clip's audio is reversed. */
     public void setReversed(boolean reversed) {
         this.reversed = reversed;
+    }
+
+    /**
+     * Returns {@code true} when this clip is time-locked and refuses
+     * position-changing operations (move, nudge, slip, ripple,
+     * cross-track drag).
+     *
+     * <p>Locked clips still play, split, trim, and render normally —
+     * lock is strictly about timeline position.</p>
+     */
+    @Override
+    public boolean isLocked() {
+        return locked;
+    }
+
+    /**
+     * Sets the time-lock flag directly. Prefer
+     * {@code SetClipLockedAction} for user-driven changes so the toggle
+     * lands on the undo stack.
+     */
+    @Override
+    public void setLocked(boolean locked) {
+        this.locked = locked;
+    }
+
+    @Override
+    public String getDisplayName() {
+        return name;
     }
 
     /** Returns the fade-in duration in beats. */
@@ -404,6 +435,7 @@ public final class AudioClip implements TimelineRegion {
         copy.setSourceOffsetBeats(sourceOffsetBeats);
         copy.setGainDb(gainDb);
         copy.setReversed(reversed);
+        copy.setLocked(locked);
         copy.setFadeInBeats(fadeInBeats);
         copy.setFadeOutBeats(fadeOutBeats);
         copy.setFadeInCurveType(fadeInCurveType);
@@ -442,6 +474,7 @@ public final class AudioClip implements TimelineRegion {
         second.setSourceOffsetBeats(splitSourceOffset);
         second.setGainDb(gainDb);
         second.setReversed(reversed);
+        second.setLocked(locked);
         second.setFadeInBeats(0.0);
         second.setFadeOutBeats(fadeOutBeats);
         second.setFadeOutCurveType(fadeOutCurveType);

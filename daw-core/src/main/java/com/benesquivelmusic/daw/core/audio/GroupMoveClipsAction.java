@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.clip.LockedClipException;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 
@@ -68,6 +69,18 @@ public final class GroupMoveClipsAction implements UndoableAction {
 
     @Override
     public void execute() {
+        // Atomic lock check: refuse the entire group if any clip is
+        // locked, so the model is never half-mutated.
+        int lockedCount = 0;
+        for (Map.Entry<Track, AudioClip> entry : entries) {
+            if (entry.getValue().isLocked()) {
+                lockedCount++;
+            }
+        }
+        if (lockedCount > 0) {
+            throw new LockedClipException("Move", lockedCount);
+        }
+
         previousStartBeats.clear();
         previousTracks.clear();
         newTracks.clear();

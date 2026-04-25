@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.project.edit;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.NudgeClipsAction;
+import com.benesquivelmusic.daw.core.clip.LockedClipException;
 
 import java.util.List;
 import java.util.Objects;
@@ -143,6 +144,10 @@ public final class NudgeService {
         if (clips.isEmpty() || beatDelta == 0.0 || !Double.isFinite(beatDelta)) {
             return null;
         }
+        // Refuse the entire nudge if any selected clip is locked. Surfaced
+        // by the UI as a status-bar message — see story
+        // "Clip-Level Time Lock Preventing Accidental Movement".
+        LockedClipException.requireUnlocked("Nudge", clips);
         // Pre-clamp negative deltas: if every clip in the selection is
         // already at beat 0 (or the selection's earliest start beat is
         // 0), a leftward nudge would clamp to 0 in NudgeClipsAction.execute()

@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.clip.LockedClipException;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 
 import java.util.ArrayList;
@@ -83,6 +84,7 @@ public final class NudgeClipsAction implements UndoableAction {
 
     @Override
     public void execute() {
+        LockedClipException.requireUnlocked("Nudge", clips);
         double minimumStartBeat = Double.POSITIVE_INFINITY;
         for (AudioClip clip : clips) {
             minimumStartBeat = Math.min(minimumStartBeat, clip.getStartBeat());
