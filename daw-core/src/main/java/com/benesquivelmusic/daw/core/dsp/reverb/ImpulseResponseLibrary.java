@@ -190,12 +190,13 @@ public final class ImpulseResponseLibrary {
     /**
      * Minimal WAV reader/writer used for bundled and user-loaded IR files.
      *
-     * <p>Supports PCM 16-bit and 32-bit float WAVs (the two formats
-     * conventionally used for distributing IRs). For PCM-16 each sample
-     * scales to {@code [-1.0, 1.0]}. Mono WAVs are duplicated to stereo;
-     * stereo files are returned as-is. Sample-rate conversion is currently
-     * limited to a same-rate pass-through — the caller is expected to
-     * provide an IR matching the host sample rate.</p>
+     * <p>Supports PCM 16-bit, 24-bit, 32-bit, and 32-bit IEEE float WAVs
+     * (the formats conventionally used for distributing IRs). Integer PCM
+     * samples are converted to normalized {@code [-1.0, 1.0]} floats. Mono
+     * WAVs are duplicated to stereo; stereo files are returned as-is.
+     * When the WAV sample rate differs from {@code targetSampleRate}, the
+     * decoded audio is resampled to the requested rate using linear
+     * interpolation.</p>
      */
     static final class WavIo {
 
@@ -226,13 +227,19 @@ public final class ImpulseResponseLibrary {
                     buf.getInt(); // byte rate
                     buf.getShort(); // block align
                     bitsPerSample = buf.getShort();
-                    buf.position(start + chunkSize);
+                    buf.position(start + chunkSize + (chunkSize & 1));
                 } else if (chunkId == 0x61746164 /* "data" */) {
                     data = new byte[chunkSize];
                     buf.get(data);
+                    // RIFF chunks are word-aligned; skip the trailing pad byte
+                    // when chunkSize is odd so subsequent parsing stays in sync.
+                    if ((chunkSize & 1) != 0 && buf.remaining() > 0) {
+                        buf.position(buf.position() + 1);
+                    }
                     break;
                 } else {
-                    buf.position(buf.position() + chunkSize);
+                    // Word-align odd chunk sizes per the RIFF spec.
+                    buf.position(buf.position() + chunkSize + (chunkSize & 1));
                 }
             }
             if (data == null || numChannels <= 0 || bitsPerSample <= 0) {

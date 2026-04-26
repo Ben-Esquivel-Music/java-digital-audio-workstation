@@ -150,20 +150,49 @@ public final class ConvolutionReverbProcessor implements AudioProcessor {
         index = Math.max(0, Math.min(ImpulseResponseLibrary.ENTRIES.size() - 1, index));
         ImpulseResponseLibrary.Entry e = ImpulseResponseLibrary.ENTRIES.get(index);
         float[][] ir = ImpulseResponseLibrary.load(e.id(), sampleRate);
+        // Keep a pristine copy so trim/stretch can always re-prepare from source.
+        this.pristineIr = deepCopy(ir);
         applyImpulseResponse(ir, e.id());
         this.irSelection = index;
     }
 
+    /** Pristine (post-load, pre-trim/stretch) IR retained so reloadCurrentIr() can re-prepare. */
+    private float[][] pristineIr;
+    /** Path of the last user-loaded IR file, if any — used to reload after trim/stretch. */
+    private Path pristinePath;
+
+    private static float[][] deepCopy(float[][] ir) {
+        if (ir == null) return null;
+        float[][] out = new float[ir.length][];
+        for (int i = 0; i < ir.length; i++) {
+            out[i] = ir[i] == null ? null : ir[i].clone();
+        }
+        return out;
+    }
+
     /**
-     * Single-thread virtual-thread executor used for non-realtime IR
-     * preparation. {@code Thread.ofVirtual().start(task)} would also work,
-     * but using a real {@link Executor} integrates with
-     * {@link CompletableFuture#runAsync(Runnable, java.util.concurrent.Executor)}
-     * — and we explicitly create one virtual thread per task so the
-     * preparation cost is paid off the audio thread without blocking.
+     * Single-thread executor used for non-realtime IR preparation. Tasks
+     * are serialized so that the latest swap always wins. The worker
+     * thread is a virtual thread (Project Loom, JEP 444) and the executor
+     * is shut down with the JVM.
      */
-    private static final java.util.concurrent.Executor IR_PREP_EXECUTOR =
-            r -> Thread.ofVirtual().name("ConvolutionReverb-IR-Prep").start(r);
+    private static final java.util.concurrent.ExecutorService IR_PREP_EXECUTOR =
+            java.util.concurrent.Executors.newSingleThreadExecutor(
+                    r -> Thread.ofVirtual().name("ConvolutionReverb-IR-Prep").unstarted(r));
+
+    /**
+     * Waits for any pending IR-preparation work submitted via async
+     * setters to finish. Intended for tests; not for real-time use.
+     */
+    public void awaitIrPreparation() {
+        try {
+            IR_PREP_EXECUTOR.submit(() -> {}).get();
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        } catch (java.util.concurrent.ExecutionException ignored) {
+            // task is a no-op; nothing to surface
+        }
+    }
 
     /**
      * Replaces the impulse response. May allocate; must not be called from
@@ -173,6 +202,9 @@ public final class ConvolutionReverbProcessor implements AudioProcessor {
      * @param ir an IR with one or two channels; null clears the IR
      */
     public void setImpulseResponse(float[][] ir) {
+        validateIrShape(ir);
+        this.pristineIr = deepCopy(ir);
+        this.pristinePath = null;
         applyImpulseResponse(ir, null);
     }
 
@@ -186,7 +218,12 @@ public final class ConvolutionReverbProcessor implements AudioProcessor {
      * @return a future that completes when the IR is installed
      */
     public CompletableFuture<Void> setImpulseResponseAsync(float[][] ir) {
-        return CompletableFuture.runAsync(() -> applyImpulseResponse(ir, null), IR_PREP_EXECUTOR);
+        validateIrShape(ir);
+        return CompletableFuture.runAsync(() -> {
+            this.pristineIr = deepCopy(ir);
+            this.pristinePath = null;
+            applyImpulseResponse(ir, null);
+        }, IR_PREP_EXECUTOR);
     }
 
     /**
@@ -200,6 +237,8 @@ public final class ConvolutionReverbProcessor implements AudioProcessor {
         return CompletableFuture.runAsync(() -> {
             try {
                 float[][] ir = ImpulseResponseLibrary.loadFromFile(path, sampleRate);
+                this.pristineIr = deepCopy(ir);
+                this.pristinePath = path;
                 applyImpulseResponse(ir, path.toString());
             } catch (Exception ex) {
                 throw new RuntimeException("Failed to load IR: " + path, ex);
@@ -207,10 +246,41 @@ public final class ConvolutionReverbProcessor implements AudioProcessor {
         }, IR_PREP_EXECUTOR);
     }
 
+    /**
+     * Validates that the IR has a usable shape. {@code null} or empty is
+     * treated as "clear the IR" by {@link #applyImpulseResponse}, but a
+     * non-empty IR with mismatched / null channel rows is rejected.
+     */
+    private static void validateIrShape(float[][] ir) {
+        if (ir == null || ir.length == 0) return;
+        if (ir[0] == null) {
+            throw new IllegalArgumentException("IR channel 0 is null");
+        }
+        int n = ir[0].length;
+        for (int c = 1; c < ir.length; c++) {
+            if (ir[c] == null) {
+                throw new IllegalArgumentException("IR channel " + c + " is null");
+            }
+            if (ir[c].length != n) {
+                throw new IllegalArgumentException(
+                        "IR channels have mismatched length: ch0=" + n + " ch" + c + "=" + ir[c].length);
+            }
+        }
+    }
+
     private void applyImpulseResponse(float[][] ir, String sourceId) {
-        if (ir == null || ir.length == 0 || ir[0].length == 0) {
+        if (ir == null || ir.length == 0 || ir[0] == null || ir[0].length == 0) {
             kernel.set(Kernel.EMPTY);
             return;
+        }
+        // Defensive validation: every channel must be non-null and the same length.
+        int n = ir[0].length;
+        for (int c = 1; c < ir.length; c++) {
+            if (ir[c] == null || ir[c].length != n) {
+                throw new IllegalArgumentException(
+                        "IR channel arrays must be non-null and same length (ch0=" + n
+                        + ", ch" + c + "=" + (ir[c] == null ? "null" : ir[c].length) + ")");
+            }
         }
         // Apply trim and stretch off the audio thread (allocations OK here)
         float[][] processed = applyTrimAndStretch(ir);
@@ -478,25 +548,39 @@ public final class ConvolutionReverbProcessor implements AudioProcessor {
     @ProcessorParam(id = 0, name = "IR", min = 0.0, max = 7.0, defaultValue = 0.0)
     public double getIrSelection() { return irSelection; }
 
-    /** Selects a bundled IR by integer index (truncated). */
+    /**
+     * Selects a bundled IR by integer index (truncated).
+     *
+     * <p>Heavy work — IR decode/synthesis and FFT-partitioning — is
+     * dispatched to {@link #IR_PREP_EXECUTOR} so the setter remains safe
+     * to call from any thread (including via reflective automation).
+     * The previous IR continues to play until the new kernel is ready.</p>
+     */
     public void setIrSelection(double value) {
+        // Clamp into valid range — the annotation's [0, 7] should match,
+        // but be tolerant of slightly out-of-range automation values.
         int idx = (int) Math.round(value);
-        if (idx < 0 || idx >= ImpulseResponseLibrary.ENTRIES.size()) {
-            throw new IllegalArgumentException("ir selection out of range: " + value);
+        idx = Math.max(0, Math.min(ImpulseResponseLibrary.ENTRIES.size() - 1, idx));
+        if (idx == (int) Math.round(this.irSelection) && pristineIr != null) {
+            // Already loaded — nothing to do.
+            this.irSelection = idx;
+            return;
         }
-        loadBundled(idx);
+        this.irSelection = idx;
+        final int finalIdx = idx;
+        IR_PREP_EXECUTOR.execute(() -> loadBundled(finalIdx));
     }
 
     @ProcessorParam(id = 1, name = "Stretch", min = 0.5, max = 2.0, defaultValue = 1.0)
     public double getStretch() { return stretch; }
 
     public void setStretch(double v) {
-        if (v < 0.5 || v > 2.0) {
-            throw new IllegalArgumentException("stretch must be in [0.5, 2.0]: " + v);
-        }
+        // Clamp into valid range so automation feeding endpoints never throws.
+        v = Math.max(0.5, Math.min(2.0, v));
+        if (v == this.stretch) return;
         this.stretch = v;
-        // Re-prepare the current IR so the change takes effect
-        reloadCurrentIr();
+        // Re-prepare the current IR off the audio thread.
+        IR_PREP_EXECUTOR.execute(this::reloadCurrentIr);
     }
 
     @ProcessorParam(id = 2, name = "Predelay", min = 0.0, max = 200.0, defaultValue = 0.0, unit = "ms")
@@ -553,49 +637,66 @@ public final class ConvolutionReverbProcessor implements AudioProcessor {
     public double getTrimStart() { return trimStart; }
 
     public void setTrimStart(double v) {
-        if (v < 0.0 || v >= 1.0) {
-            throw new IllegalArgumentException("trimStart must be in [0, 1): " + v);
-        }
+        // Clamp to annotation range and ensure ordering with trimEnd.
+        v = Math.max(0.0, Math.min(1.0, v));
         if (v >= trimEnd) {
-            throw new IllegalArgumentException("trimStart must be < trimEnd");
+            v = Math.max(0.0, trimEnd - 1e-6);
         }
+        if (v == this.trimStart) return;
         this.trimStart = v;
-        reloadCurrentIr();
+        IR_PREP_EXECUTOR.execute(this::reloadCurrentIr);
     }
 
     @ProcessorParam(id = 8, name = "Trim End", min = 0.0, max = 1.0, defaultValue = 1.0)
     public double getTrimEnd() { return trimEnd; }
 
     public void setTrimEnd(double v) {
-        if (v <= 0.0 || v > 1.0) {
-            throw new IllegalArgumentException("trimEnd must be in (0, 1]: " + v);
-        }
+        // Clamp to annotation range and ensure ordering with trimStart.
+        v = Math.max(0.0, Math.min(1.0, v));
         if (v <= trimStart) {
-            throw new IllegalArgumentException("trimEnd must be > trimStart");
+            v = Math.min(1.0, trimStart + 1e-6);
         }
+        if (v == this.trimEnd) return;
         this.trimEnd = v;
-        reloadCurrentIr();
+        IR_PREP_EXECUTOR.execute(this::reloadCurrentIr);
     }
 
     private void reloadCurrentIr() {
-        // Re-prepare the current IR with new trim/stretch settings.
+        // Re-prepare from the pristine cached IR if available — this works for
+        // bundled, programmatically-set, and file-loaded IRs alike.
+        if (pristineIr != null) {
+            applyImpulseResponse(pristineIr,
+                    pristinePath != null ? pristinePath.toString() : currentBundledId());
+            return;
+        }
+        // Fallback: empty kernel + a fresh bundled load.
         Kernel k = kernel.get();
         if (k == null || k == Kernel.EMPTY) {
-            // Re-load from bundled selection
             int idx = (int) Math.round(irSelection);
             idx = Math.max(0, Math.min(ImpulseResponseLibrary.ENTRIES.size() - 1, idx));
             ImpulseResponseLibrary.Entry e = ImpulseResponseLibrary.ENTRIES.get(idx);
-            applyImpulseResponse(ImpulseResponseLibrary.load(e.id(), sampleRate), e.id());
+            float[][] ir = ImpulseResponseLibrary.load(e.id(), sampleRate);
+            this.pristineIr = deepCopy(ir);
+            applyImpulseResponse(ir, e.id());
             return;
         }
-        // For bundled IRs reload from library so trim/stretch always operate on the
-        // pristine source. Custom user IRs cannot be recovered without keeping a copy.
+        // For bundled IRs we can recover by id; for path-backed IRs we re-read.
         if (k.sourceId != null) {
             ImpulseResponseLibrary.Entry e = ImpulseResponseLibrary.findById(k.sourceId);
             if (e != null) {
-                applyImpulseResponse(ImpulseResponseLibrary.load(e.id(), sampleRate), e.id());
+                float[][] ir = ImpulseResponseLibrary.load(e.id(), sampleRate);
+                this.pristineIr = deepCopy(ir);
+                applyImpulseResponse(ir, e.id());
             }
         }
+    }
+
+    private String currentBundledId() {
+        int idx = (int) Math.round(irSelection);
+        if (idx >= 0 && idx < ImpulseResponseLibrary.ENTRIES.size()) {
+            return ImpulseResponseLibrary.ENTRIES.get(idx).id();
+        }
+        return null;
     }
 
     // ── Kernel ─────────────────────────────────────────────────────────

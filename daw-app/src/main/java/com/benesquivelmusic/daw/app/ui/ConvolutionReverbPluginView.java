@@ -175,9 +175,17 @@ public final class ConvolutionReverbPluginView extends VBox {
         return box;
     }
 
+    /** Cached downsampled (min, max) pairs per pixel column, recomputed only when the IR changes. */
+    private float[] cachedMinPerColumn;
+    private float[] cachedMaxPerColumn;
+    private int cachedIrLength = -1;
+    private String cachedIrSourceId;
+
     /**
      * Renders the current IR's waveform onto the canvas with the trim
-     * markers overlaid as draggable vertical lines.
+     * markers overlaid as draggable vertical lines. Reuses a cached
+     * min/max-per-pixel-column buffer; only refreshes the cache when the
+     * IR itself changes (length or source id), not on every drag/slider.
      */
     void drawWaveform() {
         GraphicsContext g = waveform.getGraphicsContext2D();
@@ -188,28 +196,48 @@ public final class ConvolutionReverbPluginView extends VBox {
         g.setStroke(Color.rgb(70, 70, 70));
         g.strokeRect(0.5, 0.5, w - 1, h - 1);
 
-        float[][] ir = processor.getImpulseResponseSnapshot();
-        if (ir.length > 0 && ir[0].length > 0) {
-            float[] ch = ir[0];
-            int len = ch.length;
+        int len = processor.getImpulseResponseLength();
+        String sourceId = processor.getImpulseResponseSourceId();
+        int pixels = (int) w;
+        boolean cacheValid = cachedMinPerColumn != null
+                && cachedMinPerColumn.length == pixels
+                && cachedIrLength == len
+                && java.util.Objects.equals(cachedIrSourceId, sourceId);
+        if (!cacheValid && len > 0) {
+            float[][] ir = processor.getImpulseResponseSnapshot();
+            if (ir.length > 0 && ir[0].length > 0) {
+                float[] ch = ir[0];
+                int n = ch.length;
+                cachedMinPerColumn = new float[pixels];
+                cachedMaxPerColumn = new float[pixels];
+                for (int x = 0; x < pixels; x++) {
+                    int srcStart = (int) ((double) x * n / pixels);
+                    int srcEnd = Math.max(srcStart + 1, (int) ((double) (x + 1) * n / pixels));
+                    float min = 0, max = 0;
+                    for (int i = srcStart; i < srcEnd && i < n; i++) {
+                        if (ch[i] < min) min = ch[i];
+                        if (ch[i] > max) max = ch[i];
+                    }
+                    cachedMinPerColumn[x] = min;
+                    cachedMaxPerColumn[x] = max;
+                }
+                cachedIrLength = len;
+                cachedIrSourceId = sourceId;
+            }
+        }
+
+        if (cachedMaxPerColumn != null && cachedMaxPerColumn.length == pixels) {
             float peak = 1f;
-            for (float v : ch) {
-                if (Math.abs(v) > peak) peak = Math.abs(v);
+            for (int x = 0; x < pixels; x++) {
+                if (Math.abs(cachedMaxPerColumn[x]) > peak) peak = Math.abs(cachedMaxPerColumn[x]);
+                if (Math.abs(cachedMinPerColumn[x]) > peak) peak = Math.abs(cachedMinPerColumn[x]);
             }
             double mid = h * 0.5;
             g.setStroke(Color.rgb(110, 200, 130));
             g.setLineWidth(1.0);
-            int pixels = (int) w;
             for (int x = 0; x < pixels; x++) {
-                int srcStart = (int) ((double) x * len / pixels);
-                int srcEnd = Math.max(srcStart + 1, (int) ((double) (x + 1) * len / pixels));
-                float min = 0, max = 0;
-                for (int i = srcStart; i < srcEnd && i < len; i++) {
-                    if (ch[i] < min) min = ch[i];
-                    if (ch[i] > max) max = ch[i];
-                }
-                double y0 = mid - (max / peak) * (h * 0.45);
-                double y1 = mid - (min / peak) * (h * 0.45);
+                double y0 = mid - (cachedMaxPerColumn[x] / peak) * (h * 0.45);
+                double y1 = mid - (cachedMinPerColumn[x] / peak) * (h * 0.45);
                 g.strokeLine(x + 0.5, y0, x + 0.5, y1);
             }
         }
@@ -221,6 +249,14 @@ public final class ConvolutionReverbPluginView extends VBox {
         double xe = trimEndFraction * w;
         g.strokeLine(xs, 0, xs, h);
         g.strokeLine(xe, 0, xe, h);
+    }
+
+    /** Invalidates the cached waveform so the next {@link #drawWaveform} re-samples from the processor. */
+    private void invalidateWaveformCache() {
+        cachedMinPerColumn = null;
+        cachedMaxPerColumn = null;
+        cachedIrLength = -1;
+        cachedIrSourceId = null;
     }
 
     /** Releases UI resources. Currently a no-op — present for symmetry with other views. */

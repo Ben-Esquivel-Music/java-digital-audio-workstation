@@ -49,10 +49,26 @@ class ConvolutionReverbProcessorTest {
     }
 
     @Test
+    void parametersClampOutOfRangeValuesInsteadOfThrowing() {
+        // Annotation ranges are the source of truth — automation feeding
+        // edge values must never throw on the audio thread.
+        ConvolutionReverbProcessor r = new ConvolutionReverbProcessor(1, SR);
+        r.setStretch(0.4); // clamped to 0.5
+        assertThat(r.getStretch()).isEqualTo(0.5);
+        r.setStretch(2.1); // clamped to 2.0
+        assertThat(r.getStretch()).isEqualTo(2.0);
+        r.setTrimStart(0.0);
+        r.setTrimEnd(1.0);
+        assertThat(r.getTrimStart()).isEqualTo(0.0);
+        assertThat(r.getTrimEnd()).isEqualTo(1.0);
+    }
+
+    @Test
     void shouldRejectOutOfRangeParameters() {
         ConvolutionReverbProcessor r = new ConvolutionReverbProcessor(1, SR);
-        assertThatThrownBy(() -> r.setStretch(0.4)).isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> r.setStretch(2.1)).isInstanceOf(IllegalArgumentException.class);
+        // The non-IR parameters that are not "annotation-clamping" still
+        // throw, since they are not subject to the same RT-thread automation
+        // pressure as IR / stretch / trim.
         assertThatThrownBy(() -> r.setPredelayMs(-1)).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> r.setPredelayMs(201)).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> r.setMix(-0.1)).isInstanceOf(IllegalArgumentException.class);
@@ -112,10 +128,12 @@ class ConvolutionReverbProcessorTest {
         // IR length ~ 2× the unstretched length (with the 10 s cap).
         ConvolutionReverbProcessor reverb = new ConvolutionReverbProcessor(1, SR);
         reverb.setIrSelection(0); // small-room
+        reverb.awaitIrPreparation();
         int baseLen = reverb.getImpulseResponseLength();
         assertThat(baseLen).isGreaterThan(0);
 
         reverb.setStretch(2.0);
+        reverb.awaitIrPreparation();
         int stretchedLen = reverb.getImpulseResponseLength();
         int cap = (int) (ConvolutionReverbProcessor.MAX_IR_LENGTH_SECONDS * SR);
         int expected = Math.min(baseLen * 2, cap);
@@ -229,8 +247,10 @@ class ConvolutionReverbProcessorTest {
     void irSelectionLoadsDifferentBundledIrs() {
         ConvolutionReverbProcessor r = new ConvolutionReverbProcessor(1, SR);
         r.setIrSelection(0);
+        r.awaitIrPreparation();
         int smallLen = r.getImpulseResponseLength();
         r.setIrSelection(4); // cathedral
+        r.awaitIrPreparation();
         int cathedralLen = r.getImpulseResponseLength();
         assertThat(cathedralLen).isGreaterThan(smallLen);
     }
@@ -249,9 +269,11 @@ class ConvolutionReverbProcessorTest {
     void trimReducesEffectiveIrLength() {
         ConvolutionReverbProcessor r = new ConvolutionReverbProcessor(1, SR);
         r.setIrSelection(2); // large-room
+        r.awaitIrPreparation();
         int baseLen = r.getImpulseResponseLength();
         r.setTrimStart(0.25);
         r.setTrimEnd(0.75);
+        r.awaitIrPreparation();
         // Half the IR length, with stretch=1.0
         int trimmed = r.getImpulseResponseLength();
         assertThat(trimmed).isLessThan(baseLen);
