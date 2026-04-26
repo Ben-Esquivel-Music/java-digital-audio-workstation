@@ -356,6 +356,24 @@ public final class ProjectSerializer {
             }
             vcaGroupsElem.appendChild(groupElem);
         }
+
+        // Channel links — persisted in project XML, mirroring the vca-groups pattern.
+        // Legacy projects without this element simply load with no links because
+        // the manager starts empty.
+        Element channelLinksElem = document.createElement("channel-links");
+        mixerElem.appendChild(channelLinksElem);
+        for (ChannelLink link : project.getChannelLinkManager().getLinks()) {
+            Element linkElem = document.createElement("channel-link");
+            linkElem.setAttribute("left-channel-id", link.leftChannelId().toString());
+            linkElem.setAttribute("right-channel-id", link.rightChannelId().toString());
+            linkElem.setAttribute("mode", link.mode().name());
+            linkElem.setAttribute("link-faders", String.valueOf(link.linkFaders()));
+            linkElem.setAttribute("link-pans", String.valueOf(link.linkPans()));
+            linkElem.setAttribute("link-mute-solo", String.valueOf(link.linkMuteSolo()));
+            linkElem.setAttribute("link-inserts", String.valueOf(link.linkInserts()));
+            linkElem.setAttribute("link-sends", String.valueOf(link.linkSends()));
+            channelLinksElem.appendChild(linkElem);
+        }
     }
 
     private Element buildMixerChannelElement(Document document, String tagName,

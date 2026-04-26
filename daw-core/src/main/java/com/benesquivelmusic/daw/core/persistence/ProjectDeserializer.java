@@ -611,6 +611,51 @@ public final class ProjectDeserializer {
                 vcaManager.addVcaGroup(new VcaGroup(id, label, gainDb, color, members));
             }
         }
+
+        // Parse channel links. The element is optional: legacy projects predating
+        // channel-link support load with no links because the manager starts empty.
+        List<Element> channelLinksContainers = getDirectChildElements(mixerElem, "channel-links");
+        if (!channelLinksContainers.isEmpty()) {
+            ChannelLinkManager linkManager = project.getChannelLinkManager();
+            for (Element linkElem : getDirectChildElements(channelLinksContainers.getFirst(), "channel-link")) {
+                String leftAttr = linkElem.getAttribute("left-channel-id");
+                String rightAttr = linkElem.getAttribute("right-channel-id");
+                if (leftAttr.isEmpty() || rightAttr.isEmpty()) {
+                    continue;
+                }
+                java.util.UUID leftId;
+                java.util.UUID rightId;
+                try {
+                    leftId = java.util.UUID.fromString(leftAttr);
+                    rightId = java.util.UUID.fromString(rightAttr);
+                } catch (IllegalArgumentException e) {
+                    continue;
+                }
+                if (leftId.equals(rightId)) {
+                    continue;
+                }
+                LinkMode mode = LinkMode.RELATIVE;
+                String modeAttr = linkElem.getAttribute("mode");
+                if (!modeAttr.isEmpty()) {
+                    try {
+                        mode = LinkMode.valueOf(modeAttr);
+                    } catch (IllegalArgumentException ignored) {
+                        // Unknown mode — fall back to RELATIVE.
+                    }
+                }
+                boolean linkFaders = parseBooleanAttr(linkElem, "link-faders", true);
+                boolean linkPans = parseBooleanAttr(linkElem, "link-pans", true);
+                boolean linkMuteSolo = parseBooleanAttr(linkElem, "link-mute-solo", true);
+                boolean linkInserts = parseBooleanAttr(linkElem, "link-inserts", true);
+                boolean linkSends = parseBooleanAttr(linkElem, "link-sends", true);
+                try {
+                    linkManager.link(new ChannelLink(leftId, rightId, mode,
+                            linkFaders, linkPans, linkMuteSolo, linkInserts, linkSends));
+                } catch (IllegalStateException ignored) {
+                    // A duplicate link in the file is malformed — skip rather than fail the whole load.
+                }
+            }
+        }
     }
 
     private void applyMixerChannelAttrs(Element elem, MixerChannel channel, DawProject project) {
@@ -1152,6 +1197,20 @@ public final class ProjectDeserializer {
     private static boolean parseBooleanAttr(Element element, String attr) {
         String value = element.getAttribute(attr);
         return "true".equalsIgnoreCase(value);
+    }
+
+    private static boolean parseBooleanAttr(Element element, String attr, boolean defaultValue) {
+        String value = element.getAttribute(attr);
+        if (value.isEmpty()) {
+            return defaultValue;
+        }
+        if ("true".equalsIgnoreCase(value)) {
+            return true;
+        }
+        if ("false".equalsIgnoreCase(value)) {
+            return false;
+        }
+        return defaultValue;
     }
 
     private void parseRoomConfiguration(Element elem, DawProject project) {
