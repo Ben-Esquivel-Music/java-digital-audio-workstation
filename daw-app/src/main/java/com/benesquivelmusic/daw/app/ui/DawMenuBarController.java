@@ -1,29 +1,30 @@
 package com.benesquivelmusic.daw.app.ui;
 
-import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
-import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin;
-import com.benesquivelmusic.daw.core.plugin.BuiltInPluginCategory;
 import com.benesquivelmusic.daw.core.project.DawProject;
-import javafx.scene.control.Menu;
 import javafx.scene.control.MenuBar;
-import javafx.scene.control.MenuItem;
-import javafx.scene.control.SeparatorMenuItem;
-import javafx.scene.input.KeyCombination;
 
-import java.util.*;
+import java.util.Objects;
 import java.util.logging.Logger;
 
 /**
- * Builds and manages a traditional DAW menu bar with File, Edit, Plugins,
- * Window, and Help menus.
+ * Builds and manages a traditional DAW menu bar with File, Edit, Tracks,
+ * Plugins, Window, and Help menus.
  *
- * <p>Menu items are synchronized to the current project state so that
- * un-actionable items (e.g., Undo when the history is empty, or Save
- * when the project is not dirty) are disabled automatically.</p>
+ * <p>Decomposed into three focused collaborators (issue: "Decompose
+ * Remaining God-Class Controllers into Focused Services"):</p>
+ * <ul>
+ *   <li>{@link MenuConstructionService} — builds the menu hierarchy
+ *       (geometry, ordering, icons, accelerators).</li>
+ *   <li>{@link MenuEnablementPolicy} — pure-logic mapping from project
+ *       state to menu item enable/disable flags.</li>
+ *   <li>{@link Host} callback — owns action dispatch and project state
+ *       queries.</li>
+ * </ul>
  *
- * <p>Dark-theme styling is achieved via the {@code .daw-menu-bar} CSS class
- * and its children.</p>
+ * <p>This controller is now a thin facade that wires those collaborators
+ * together. Dark-theme styling is achieved via the
+ * {@code .daw-menu-bar} CSS class and its children.</p>
  */
 public final class DawMenuBarController {
 
@@ -87,33 +88,21 @@ public final class DawMenuBarController {
     }
 
     private final Host host;
-    private final KeyBindingManager keyBindingManager;
+    private final MenuConstructionService constructionService;
     private final MenuBar menuBar;
 
-    // File menu items needing state sync
-    private MenuItem saveItem;
-    private MenuItem exportSessionItem;
-    private MenuItem importAudioFileItem;
-
-    // Edit menu items needing state sync
-    private MenuItem undoItem;
-    private MenuItem redoItem;
-    private MenuItem copyItem;
-    private MenuItem cutItem;
-    private MenuItem pasteItem;
-    private MenuItem duplicateItem;
-    private MenuItem deleteItem;
+    private MenuConstructionService.SyncableItems syncableItems;
 
     /**
      * Creates a new menu bar controller.
      *
-     * @param host            the host providing actions and state queries
+     * @param host              the host providing actions and state queries
      * @param keyBindingManager the key binding manager for shortcut display
      */
     public DawMenuBarController(Host host, KeyBindingManager keyBindingManager) {
         this.host = Objects.requireNonNull(host, "host must not be null");
-        this.keyBindingManager = Objects.requireNonNull(keyBindingManager,
-                "keyBindingManager must not be null");
+        this.constructionService = new MenuConstructionService(host,
+                Objects.requireNonNull(keyBindingManager, "keyBindingManager must not be null"));
         this.menuBar = new MenuBar();
         this.menuBar.getStyleClass().add("daw-menu-bar");
         this.menuBar.setUseSystemMenuBar(false);
@@ -125,17 +114,11 @@ public final class DawMenuBarController {
      * @return the menu bar ready to be added to the scene graph
      */
     public MenuBar build() {
-        menuBar.getMenus().clear();
-        menuBar.getMenus().addAll(
-                buildFileMenu(),
-                buildEditMenu(),
-                buildTracksMenu(),
-                buildPluginsMenu(),
-                buildWindowMenu(),
-                buildHelpMenu()
-        );
+        MenuConstructionService.Result result = constructionService.build();
+        this.syncableItems = result.syncableItems();
+        menuBar.getMenus().setAll(result.menus());
         syncMenuState();
-        LOG.fine("DAW menu bar built with File, Edit, Plugins, Window, Help menus");
+        LOG.fine("DAW menu bar built with File, Edit, Tracks, Plugins, Window, Help menus");
         return menuBar;
     }
 
@@ -154,241 +137,27 @@ public final class DawMenuBarController {
      * (e.g., after undo/redo, save, selection change).
      */
     public void syncMenuState() {
-        boolean dirty = host.isProjectDirty();
-        boolean canUndo = host.canUndo();
-        boolean canRedo = host.canRedo();
-        boolean hasClipboard = host.hasClipboardContent();
-        boolean hasSel = host.hasSelection();
-        boolean hasTracks = !host.project().getTracks().isEmpty();
-
-        saveItem.setDisable(!dirty);
-        exportSessionItem.setDisable(!hasTracks);
-
-        undoItem.setDisable(!canUndo);
-        redoItem.setDisable(!canRedo);
-        copyItem.setDisable(!hasSel);
-        cutItem.setDisable(!hasSel);
-        pasteItem.setDisable(!hasClipboard);
-        duplicateItem.setDisable(!hasSel);
-        deleteItem.setDisable(!hasSel);
-    }
-
-    // ── File Menu ────────────────────────────────────────────────────────────
-
-    private Menu buildFileMenu() {
-        Menu fileMenu = new Menu("File");
-        fileMenu.getStyleClass().add("daw-menu");
-
-        MenuItem newProject = menuItem("New Project", DawIcon.FOLDER,
-                DawAction.NEW_PROJECT, host::onNewProject);
-        MenuItem openProject = menuItem("Open Project\u2026", DawIcon.FOLDER,
-                DawAction.OPEN_PROJECT, host::onOpenProject);
-        MenuItem recentProjects = menuItem("Recent Projects", DawIcon.HISTORY,
-                null, host::onRecentProjects);
-
-        saveItem = menuItem("Save Project", DawIcon.DOWNLOAD,
-                DawAction.SAVE, host::onSaveProject);
-
-        MenuItem importSession = menuItem("Import Session\u2026", DawIcon.DOWNLOAD,
-                DawAction.IMPORT_SESSION, host::onImportSession);
-        exportSessionItem = menuItem("Export Session\u2026", DawIcon.UPLOAD,
-                DawAction.EXPORT_SESSION, host::onExportSession);
-
-        importAudioFileItem = menuItem("Import Audio File\u2026", DawIcon.WAVEFORM,
-                DawAction.IMPORT_AUDIO_FILE, host::onImportAudioFile);
-
-        fileMenu.getItems().addAll(
-                newProject, openProject, recentProjects,
-                new SeparatorMenuItem(),
-                saveItem,
-                new SeparatorMenuItem(),
-                importSession, exportSessionItem,
-                new SeparatorMenuItem(),
-                importAudioFileItem
-        );
-
-        return fileMenu;
-    }
-
-    // ── Edit Menu ────────────────────────────────────────────────────────────
-
-    private Menu buildEditMenu() {
-        Menu editMenu = new Menu("Edit");
-        editMenu.getStyleClass().add("daw-menu");
-
-        undoItem = menuItem("Undo", DawIcon.UNDO,
-                DawAction.UNDO, host::onUndo);
-        redoItem = menuItem("Redo", DawIcon.REDO,
-                DawAction.REDO, host::onRedo);
-
-        copyItem = menuItem("Copy", DawIcon.COPY,
-                DawAction.COPY, host::onCopy);
-        cutItem = menuItem("Cut", DawIcon.CUT,
-                DawAction.CUT, host::onCut);
-        pasteItem = menuItem("Paste", DawIcon.PASTE,
-                DawAction.PASTE, host::onPaste);
-        duplicateItem = menuItem("Duplicate", null,
-                DawAction.DUPLICATE, host::onDuplicate);
-        deleteItem = menuItem("Delete Selection", DawIcon.DELETE,
-                DawAction.DELETE_SELECTION, host::onDeleteSelection);
-
-        MenuItem toggleSnap = menuItem("Toggle Snap", DawIcon.SNAP,
-                DawAction.TOGGLE_SNAP, host::onToggleSnap);
-
-        MenuItem settings = menuItem("Settings\u2026", DawIcon.SETTINGS,
-                DawAction.OPEN_SETTINGS, host::onOpenSettings);
-        MenuItem audioSettings = menuItem("Audio Settings\u2026", DawIcon.HEADPHONES,
-                null, host::onOpenAudioSettings);
-
-        editMenu.getItems().addAll(
-                undoItem, redoItem,
-                new SeparatorMenuItem(),
-                copyItem, cutItem, pasteItem, duplicateItem,
-                new SeparatorMenuItem(),
-                deleteItem,
-                new SeparatorMenuItem(),
-                toggleSnap,
-                new SeparatorMenuItem(),
-                settings,
-                audioSettings
-        );
-
-        return editMenu;
-    }
-
-    // ── Tracks Menu ──────────────────────────────────────────────────────────
-
-    private Menu buildTracksMenu() {
-        Menu tracksMenu = new Menu("Tracks");
-        tracksMenu.getStyleClass().add("daw-menu");
-
-        // Issue 568 — lane folding for automation, take, and MIDI lane groups.
-        MenuItem foldFocused = menuItem("Toggle Lane Fold (Focused Track)", DawIcon.AUTOMATION,
-                DawAction.TOGGLE_FOLD_FOCUSED_TRACK, host::onToggleFoldFocusedTrack);
-        MenuItem foldSelected = menuItem("Toggle Lane Fold (Selected Tracks)", DawIcon.AUTOMATION,
-                DawAction.TOGGLE_FOLD_SELECTED_TRACKS, host::onToggleFoldSelectedTracks);
-        MenuItem foldAllAutomation = menuItem("Toggle Fold All Automation Lanes", DawIcon.AUTOMATION,
-                DawAction.FOLD_ALL_AUTOMATION, host::onFoldAllAutomation);
-
-        tracksMenu.getItems().addAll(foldFocused, foldSelected,
-                new SeparatorMenuItem(), foldAllAutomation);
-
-        return tracksMenu;
-    }
-
-    // ── Plugins Menu ─────────────────────────────────────────────────────────
-
-    private Menu buildPluginsMenu() {
-        Menu pluginsMenu = new Menu("Plugins");
-        pluginsMenu.getStyleClass().add("daw-menu");
-
-        // Discover built-in plugin metadata and group by category (preserving enum order)
-        List<BuiltInDawPlugin.MenuEntry> entries = BuiltInDawPlugin.menuEntries();
-        Map<BuiltInPluginCategory, List<BuiltInDawPlugin.MenuEntry>> grouped = new LinkedHashMap<>();
-        for (BuiltInPluginCategory cat : BuiltInPluginCategory.values()) {
-            List<BuiltInDawPlugin.MenuEntry> inCategory = entries.stream()
-                    .filter(e -> e.category() == cat)
-                    .toList();
-            if (!inCategory.isEmpty()) {
-                grouped.put(cat, inCategory);
-            }
+        if (syncableItems == null) {
+            return;
         }
+        MenuEnablementPolicy.MenuEnablement enablement = MenuEnablementPolicy.compute(
+                new MenuEnablementPolicy.MenuState(
+                        host.isProjectDirty(),
+                        host.canUndo(),
+                        host.canRedo(),
+                        host.hasClipboardContent(),
+                        host.hasSelection(),
+                        !host.project().getTracks().isEmpty()));
 
-        boolean firstGroup = true;
-        for (var entry : grouped.entrySet()) {
-            if (!firstGroup) {
-                pluginsMenu.getItems().add(new SeparatorMenuItem());
-            }
-            firstGroup = false;
-            for (BuiltInDawPlugin.MenuEntry menuEntry : entry.getValue()) {
-                DawIcon icon = DawIcon.fromFileName(menuEntry.icon()).orElse(null);
-                MenuItem item = menuItem(menuEntry.label(), icon,
-                        null, () -> host.onActivateBuiltInPlugin(menuEntry.pluginClass()));
-                pluginsMenu.getItems().add(item);
-            }
-        }
+        syncableItems.saveItem().setDisable(enablement.saveDisabled());
+        syncableItems.exportSessionItem().setDisable(enablement.exportSessionDisabled());
 
-        if (!entries.isEmpty()) {
-            pluginsMenu.getItems().add(new SeparatorMenuItem());
-        }
-
-        MenuItem managePlugins = menuItem("Plugin Manager\u2026", DawIcon.EQ,
-                null, host::onManagePlugins);
-        pluginsMenu.getItems().add(managePlugins);
-
-        return pluginsMenu;
-    }
-
-    // ── Window Menu ──────────────────────────────────────────────────────────
-
-    private Menu buildWindowMenu() {
-        Menu windowMenu = new Menu("Window");
-        windowMenu.getStyleClass().add("daw-menu");
-
-        MenuItem arrangement = menuItem("Arrangement", DawIcon.TIMELINE,
-                DawAction.VIEW_ARRANGEMENT, () -> host.onSwitchView(DawView.ARRANGEMENT));
-        MenuItem mixer = menuItem("Mixer", DawIcon.MIXER,
-                DawAction.VIEW_MIXER, () -> host.onSwitchView(DawView.MIXER));
-        MenuItem editor = menuItem("Editor", DawIcon.WAVEFORM,
-                DawAction.VIEW_EDITOR, () -> host.onSwitchView(DawView.EDITOR));
-        MenuItem mastering = menuItem("Mastering", DawIcon.LIMITER,
-                DawAction.VIEW_MASTERING, () -> host.onSwitchView(DawView.MASTERING));
-
-        MenuItem toggleBrowser = menuItem("Toggle Browser", DawIcon.LIBRARY,
-                DawAction.TOGGLE_BROWSER, host::onToggleBrowser);
-        MenuItem toggleHistory = menuItem("Toggle Undo History", DawIcon.HISTORY,
-                DawAction.TOGGLE_HISTORY, host::onToggleHistory);
-        MenuItem toggleNotifications = menuItem("Toggle Notifications", DawIcon.BELL_RING,
-                DawAction.TOGGLE_NOTIFICATION_HISTORY, host::onToggleNotificationHistory);
-        MenuItem toggleViz = menuItem("Toggle Visualizations", DawIcon.SPECTRUM,
-                DawAction.TOGGLE_VISUALIZATIONS, host::onToggleVisualizations);
-
-        windowMenu.getItems().addAll(
-                arrangement, mixer, editor, mastering,
-                new SeparatorMenuItem(),
-                toggleBrowser, toggleHistory, toggleNotifications, toggleViz
-        );
-
-        return windowMenu;
-    }
-
-    // ── Help Menu ────────────────────────────────────────────────────────────
-
-    private Menu buildHelpMenu() {
-        Menu helpMenu = new Menu("Help");
-        helpMenu.getStyleClass().add("daw-menu");
-
-        MenuItem helpItem = menuItem("Help\u2026", DawIcon.INFO,
-                null, host::onHelp);
-
-        helpMenu.getItems().addAll(helpItem);
-
-        return helpMenu;
-    }
-
-    // ── Menu item factory ────────────────────────────────────────────────────
-
-    /**
-     * Creates a styled {@link MenuItem} with an optional icon, optional
-     * accelerator resolved from the key binding manager, and an action handler.
-     *
-     * @param text   the menu item text
-     * @param icon   the icon to display (may be {@code null})
-     * @param action the {@link DawAction} for shortcut lookup (may be {@code null})
-     * @param handler the action handler
-     * @return the configured menu item
-     */
-    private MenuItem menuItem(String text, DawIcon icon,
-                              DawAction action, Runnable handler) {
-        MenuItem item = new MenuItem(text);
-        if (icon != null) {
-            item.setGraphic(IconNode.of(icon, MENU_ICON_SIZE));
-        }
-        if (action != null) {
-            Optional<KeyCombination> binding = keyBindingManager.getBinding(action);
-            binding.ifPresent(item::setAccelerator);
-        }
-        item.setOnAction(_ -> handler.run());
-        return item;
+        syncableItems.undoItem().setDisable(enablement.undoDisabled());
+        syncableItems.redoItem().setDisable(enablement.redoDisabled());
+        syncableItems.copyItem().setDisable(enablement.copyDisabled());
+        syncableItems.cutItem().setDisable(enablement.cutDisabled());
+        syncableItems.pasteItem().setDisable(enablement.pasteDisabled());
+        syncableItems.duplicateItem().setDisable(enablement.duplicateDisabled());
+        syncableItems.deleteItem().setDisable(enablement.deleteDisabled());
     }
 }
