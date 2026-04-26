@@ -89,8 +89,12 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
      * typically refresh at ~10 Hz so that human eyes can track motion.
      */
     private static final double SNAPSHOT_INTERVAL_SECONDS = 0.1;
+    // Use the SubmissionPublisher default (async) executor so audio-thread
+    // callers of process() never run subscriber code inline. Subscribers
+    // still must avoid blocking — but the default executor protects the
+    // RT audio thread from a slow listener.
     private final SubmissionPublisher<LoudnessSnapshot> snapshotPublisher
-            = new SubmissionPublisher<>(Runnable::run, Flow.defaultBufferSize());
+            = new SubmissionPublisher<>();
     private final long snapshotIntervalSamples;
     private long samplesSinceLastSnapshot;
 
@@ -356,7 +360,10 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
 
     /**
      * Returns the latest measurements as a {@link LoudnessSnapshot} —
-     * the SDK-level data carrier that bundles M, S, I, LRA, and TP.
+     * the SDK-level data carrier that bundles M, S, I, LRA, and the
+     * sample-domain peak (dBFS). Note that the peak is a sample peak,
+     * not an oversampled true peak; see {@link LoudnessSnapshot} for
+     * details.
      *
      * @return a snapshot of the most recent measurements
      */
@@ -377,9 +384,14 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
      * downstream subscribers (UI, telemetry, logging) can drive
      * meters without being flooded by the audio block rate.
      *
-     * <p>Subscribers should respect back-pressure; the underlying
-     * {@link SubmissionPublisher} drops items if the subscriber
-     * cannot keep up.</p>
+     * <p><b>Threading:</b> the publisher uses the default
+     * {@link SubmissionPublisher} executor, so subscriber {@code onNext}
+     * callbacks do not run on the thread that calls {@link #process};
+     * this keeps the real-time audio thread free of subscriber work.
+     * Subscribers must still be non-blocking and should hand off to
+     * their own thread (e.g. {@code Platform.runLater} for JavaFX
+     * meters). The underlying {@link SubmissionPublisher} drops items
+     * if a subscriber cannot keep up.</p>
      *
      * @return the snapshot publisher
      */

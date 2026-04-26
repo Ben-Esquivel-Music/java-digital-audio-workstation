@@ -502,7 +502,7 @@ class LoudnessMeterTest {
         assertThat(s.shortTermLufs()).isEqualTo(d.shortTermLufs());
         assertThat(s.integratedLufs()).isEqualTo(d.integratedLufs());
         assertThat(s.loudnessRangeLu()).isEqualTo(d.loudnessRange());
-        assertThat(s.truePeakDbtp()).isEqualTo(d.truePeakDbfs());
+        assertThat(s.samplePeakDbfs()).isEqualTo(d.truePeakDbfs());
     }
 
     @Test
@@ -522,14 +522,27 @@ class LoudnessMeterTest {
         };
         meter.snapshotPublisher().subscribe(subscriber);
 
-        // Process exactly 1.0 second of audio (synchronous executor in
-        // SubmissionPublisher delivers items inline).
+        // Process exactly 1.0 second of audio. The publisher delivers
+        // asynchronously on its default executor, so close() blocks
+        // until the queue drains and all subscribers have been notified.
         float[] signal = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
         int blocks = (int) (SAMPLE_RATE / BLOCK_SIZE); // 100 blocks @ 480 spb
         for (int i = 0; i < blocks; i++) {
             meter.process(signal, signal, BLOCK_SIZE);
         }
         meter.close();
+
+        // Wait for asynchronous delivery to drain. close() flushes the
+        // queue, but onNext callbacks run on the publisher's executor;
+        // poll briefly until the count stabilises (or the timeout hits).
+        long deadlineMs = System.currentTimeMillis() + 2_000L;
+        int previous = -1;
+        while (System.currentTimeMillis() < deadlineMs) {
+            int now = received.size();
+            if (now == previous && now >= 9) break;
+            previous = now;
+            Thread.sleep(50);
+        }
 
         // 1 second / 100 ms = 10 expected snapshots (allow ±1 for rounding).
         assertThat(received.size()).isBetween(9, 11);

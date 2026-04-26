@@ -13,7 +13,7 @@ class LoudnessSnapshotTest {
         assertThat(s.shortTermLufs()).isEqualTo(Double.NEGATIVE_INFINITY);
         assertThat(s.integratedLufs()).isEqualTo(Double.NEGATIVE_INFINITY);
         assertThat(s.loudnessRangeLu()).isEqualTo(0.0);
-        assertThat(s.truePeakDbtp()).isEqualTo(Double.NEGATIVE_INFINITY);
+        assertThat(s.samplePeakDbfs()).isEqualTo(Double.NEGATIVE_INFINITY);
     }
 
     @Test
@@ -29,7 +29,20 @@ class LoudnessSnapshotTest {
 
     @Test
     void targetDeltaShouldBeNanWhenIntegratedNotMeasurable() {
-        LoudnessSnapshot s = LoudnessSnapshot.SILENCE;
-        assertThat(s.targetDeltaLu(-14.0)).isNaN();
+        // Negative infinity (no signal at all).
+        assertThat(LoudnessSnapshot.SILENCE.targetDeltaLu(-14.0)).isNaN();
+
+        // Below or at the EBU R128 absolute gating threshold (no gated
+        // blocks accumulated yet — the meter reports a finite floor like
+        // -120 LUFS in that case).
+        LoudnessSnapshot belowGate = new LoudnessSnapshot(-90.0, -90.0, -120.0, 0.0, -90.0);
+        assertThat(belowGate.targetDeltaLu(-14.0)).isNaN();
+
+        LoudnessSnapshot atGate = new LoudnessSnapshot(-70.0, -70.0, -70.0, 0.0, -70.0);
+        assertThat(atGate.targetDeltaLu(-14.0)).isNaN();
+
+        // Just above the gate is measurable.
+        LoudnessSnapshot aboveGate = new LoudnessSnapshot(-65.0, -65.0, -65.0, 0.5, -60.0);
+        assertThat(aboveGate.targetDeltaLu(-14.0)).isEqualTo(-65.0 - -14.0);
     }
 }
