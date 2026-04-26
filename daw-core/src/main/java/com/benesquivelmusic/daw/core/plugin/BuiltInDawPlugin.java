@@ -52,7 +52,8 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
                 TruePeakLimiterPlugin,
                 TransientShaperPlugin,
                 NoiseGatePlugin,
-                MidSideWrapperPlugin {
+                MidSideWrapperPlugin,
+                ConvolutionReverbPlugin {
 
     /**
      * Lightweight metadata record used by the menu layer to populate plugin

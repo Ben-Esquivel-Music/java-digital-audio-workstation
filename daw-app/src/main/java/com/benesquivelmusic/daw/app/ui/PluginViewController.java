@@ -53,6 +53,8 @@ final class PluginViewController {
     private TransientShaperPluginView transientShaperView;
     private Stage noiseGateStage;
     private NoiseGatePluginView noiseGateView;
+    private Stage convolutionReverbStage;
+    private ConvolutionReverbPluginView convolutionReverbView;
 
     PluginViewController(Host host) {
         this.host = host;
@@ -158,6 +160,7 @@ final class PluginViewController {
             case TruePeakLimiterPlugin.PLUGIN_ID -> openTruePeakLimiterWindow((TruePeakLimiterPlugin) plugin);
             case TransientShaperPlugin.PLUGIN_ID -> openTransientShaperWindow((TransientShaperPlugin) plugin);
             case NoiseGatePlugin.PLUGIN_ID -> openNoiseGateWindow((NoiseGatePlugin) plugin);
+            case ConvolutionReverbPlugin.PLUGIN_ID -> openConvolutionReverbWindow((ConvolutionReverbPlugin) plugin);
             case ParametricEqPlugin.PLUGIN_ID,
                  CompressorPlugin.PLUGIN_ID,
                  ReverbPlugin.PLUGIN_ID -> host.switchToMasteringView();
@@ -421,5 +424,33 @@ final class PluginViewController {
         stage.show();
         stage.toFront();
         noiseGateStage = stage;
+    }
+
+    private void openConvolutionReverbWindow(ConvolutionReverbPlugin plugin) {
+        if (convolutionReverbStage != null) {
+            convolutionReverbStage.show();
+            convolutionReverbStage.toFront();
+            return;
+        }
+
+        convolutionReverbView = new ConvolutionReverbPluginView(plugin.getProcessor());
+
+        Stage stage = new Stage(StageStyle.UTILITY);
+        stage.setTitle("Convolution Reverb");
+        stage.setScene(new Scene(convolutionReverbView));
+        DarkThemeHelper.applyTo(stage.getScene());
+        stage.setMinWidth(720);
+        stage.setMinHeight(360);
+        stage.setOnHidden(_ -> {
+            if (convolutionReverbView != null) {
+                convolutionReverbView.dispose();
+                convolutionReverbView = null;
+            }
+            plugin.deactivate();
+            convolutionReverbStage = null;
+        });
+        stage.show();
+        stage.toFront();
+        convolutionReverbStage = stage;
     }
 }

@@ -20,6 +20,7 @@ import com.benesquivelmusic.daw.core.dsp.StereoImagerProcessor;
 import com.benesquivelmusic.daw.core.dsp.TimeStretchProcessor;
 import com.benesquivelmusic.daw.core.dsp.VelvetNoiseReverbProcessor;
 import com.benesquivelmusic.daw.core.dsp.WaveshaperProcessor;
+import com.benesquivelmusic.daw.core.dsp.reverb.ConvolutionReverbProcessor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
 import java.lang.invoke.MethodHandle;
@@ -87,7 +88,8 @@ public final class ProcessorRegistry {
             SpringReverbProcessor.class,
             TimeStretchProcessor.class,
             VelvetNoiseReverbProcessor.class,
-            WaveshaperProcessor.class);
+            WaveshaperProcessor.class,
+            ConvolutionReverbProcessor.class);
 
     /** Lazy holder idiom: initialized on first access, thread-safe via JLS. */
     private static final class Holder {
