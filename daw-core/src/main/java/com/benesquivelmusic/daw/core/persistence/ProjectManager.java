@@ -39,9 +39,12 @@ public final class ProjectManager {
     private final RecentProjectsStore recentProjectsStore;
     private final ProjectSerializer serializer = new ProjectSerializer();
     private final ProjectDeserializer deserializer = new ProjectDeserializer();
+    private final ProjectLockManager lockManager;
 
     private ProjectMetadata currentProject;
     private DawProject currentDawProject;
+    private LockConflictHandler lockConflictHandler;
+    private boolean readOnly;
 
     /**
      * Creates a project manager with the given checkpoint manager.
@@ -60,9 +63,43 @@ public final class ProjectManager {
      * @param recentProjectsStore the store for persisting recent project paths (may be {@code null})
      */
     public ProjectManager(CheckpointManager checkpointManager, RecentProjectsStore recentProjectsStore) {
+        this(checkpointManager, recentProjectsStore, new ProjectLockManager());
+    }
+
+    /**
+     * Creates a project manager with explicit lock manager injection — primarily
+     * for tests that simulate two sessions against the same project directory.
+     *
+     * @param checkpointManager   the checkpoint manager to use for auto-saves
+     * @param recentProjectsStore the store for persisting recent project paths (may be {@code null})
+     * @param lockManager         the project lock manager (must not be {@code null})
+     */
+    public ProjectManager(CheckpointManager checkpointManager,
+                          RecentProjectsStore recentProjectsStore,
+                          ProjectLockManager lockManager) {
         this.checkpointManager = Objects.requireNonNull(checkpointManager,
                 "checkpointManager must not be null");
         this.recentProjectsStore = recentProjectsStore;
+        this.lockManager = Objects.requireNonNull(lockManager, "lockManager must not be null");
+    }
+
+    /**
+     * Sets the handler invoked when an open() call discovers another session
+     * already holds the project lock. If {@code null} (the default), conflicts
+     * resolve to {@link LockConflictResolution#CANCEL}.
+     */
+    public void setLockConflictHandler(LockConflictHandler handler) {
+        this.lockConflictHandler = handler;
+    }
+
+    /** Returns the project lock manager backing this {@code ProjectManager}. */
+    public ProjectLockManager getLockManager() {
+        return lockManager;
+    }
+
+    /** Returns whether the current project was opened read-only because of a lock conflict. */
+    public boolean isReadOnly() {
+        return readOnly;
     }
 
     /**
@@ -86,8 +123,12 @@ public final class ProjectManager {
 
         currentProject = metadata;
         currentDawProject = null;
+        readOnly = false;
         recentProjects.put(projectDir.toString(), metadata);
         recordRecentProject(projectDir);
+        // A brand-new project directory cannot already be in use, so unconditionally take the lock.
+        lockManager.forceAcquire(projectDir);
+        lockManager.startHeartbeat();
         checkpointManager.start(projectDir);
         return metadata;
     }
@@ -111,6 +152,30 @@ public final class ProjectManager {
             throw new IOException("Project file not found: " + projectFile);
         }
 
+        // Resolve any pre-existing lock before reading the project file so the
+        // user can cancel the open without side effects.
+        ProjectLockManager.AcquisitionResult result = lockManager.tryAcquire(projectDirectory);
+        boolean openedReadOnly = false;
+        if (!result.wasAcquired()) {
+            LockConflictHandler handler = lockConflictHandler;
+            LockConflictResolution decision = (handler != null && result.existingLock() != null)
+                    ? handler.resolve(result.existingLock(), result.stale())
+                    : LockConflictResolution.CANCEL;
+            switch (decision) {
+                case CANCEL -> throw new ProjectLockedException(
+                        "Project is already open by " + describe(result.existingLock()),
+                        result.existingLock(), result.stale());
+                case OPEN_READ_ONLY -> {
+                    lockManager.openReadOnly(projectDirectory);
+                    openedReadOnly = true;
+                }
+                case TAKE_OVER -> lockManager.forceAcquire(projectDirectory);
+            }
+        }
+        if (!openedReadOnly && lockManager.status() == LockStatus.HELD) {
+            lockManager.startHeartbeat();
+        }
+
         String content = Files.readString(projectFile);
 
         if (content.strip().startsWith("<?xml") || content.strip().startsWith("<daw-project")) {
@@ -126,10 +191,18 @@ public final class ProjectManager {
             currentDawProject = null;
         }
 
+        readOnly = openedReadOnly;
         recentProjects.put(projectDirectory.toString(), currentProject);
         recordRecentProject(projectDirectory);
         checkpointManager.start(projectDirectory);
         return currentProject;
+    }
+
+    private static String describe(ProjectLock lock) {
+        if (lock == null) {
+            return "another session";
+        }
+        return lock.user() + "@" + lock.hostname() + " (pid " + lock.pid() + ")";
     }
 
     /**
@@ -144,6 +217,10 @@ public final class ProjectManager {
         if (currentProject == null) {
             throw new IllegalStateException("No project is currently open");
         }
+        if (readOnly) {
+            throw new IOException("Project was opened read-only; use Save As to a new location");
+        }
+        lockManager.verifyOurs();
         currentProject = currentProject.touch();
         if (currentDawProject != null) {
             currentDawProject.setMetadata(currentProject);
@@ -168,6 +245,10 @@ public final class ProjectManager {
         if (currentProject == null) {
             throw new IllegalStateException("No project is currently open");
         }
+        if (readOnly) {
+            throw new IOException("Project was opened read-only; use Save As to a new location");
+        }
+        lockManager.verifyOurs();
         currentDawProject = dawProject;
         currentProject = currentProject.touch();
         dawProject.setMetadata(currentProject);
@@ -185,10 +266,23 @@ public final class ProjectManager {
         if (currentProject == null) {
             return;
         }
-        saveProject();
+        if (!readOnly) {
+            try {
+                saveProject();
+            } catch (LockStolenException e) {
+                // Lock was stolen — preserve user data by skipping the final save;
+                // the UI is expected to have already prompted Save As.
+            }
+        }
         checkpointManager.stop();
+        try {
+            lockManager.release();
+        } catch (IOException ignored) {
+            // best-effort cleanup
+        }
         currentProject = null;
         currentDawProject = null;
+        readOnly = false;
     }
 
     /**
@@ -200,8 +294,14 @@ public final class ProjectManager {
             return;
         }
         checkpointManager.stop();
+        try {
+            lockManager.release();
+        } catch (IOException ignored) {
+            // best-effort cleanup
+        }
         currentProject = null;
         currentDawProject = null;
+        readOnly = false;
     }
 
     /**
