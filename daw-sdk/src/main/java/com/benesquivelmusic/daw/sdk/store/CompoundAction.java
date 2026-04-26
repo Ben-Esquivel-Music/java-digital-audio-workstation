@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.sdk.store;
 
 import com.benesquivelmusic.daw.sdk.model.Project;
 
+import java.util.Objects;
 import java.util.function.UnaryOperator;
 
 /**
@@ -33,6 +34,7 @@ public interface CompoundAction extends UnaryOperator<Project> {
 
     /** Returns a composed action that first applies {@code this} then {@code after}. */
     default CompoundAction andThen(CompoundAction after) {
+        Objects.requireNonNull(after, "after must not be null");
         return current -> after.apply(this.apply(current));
     }
 

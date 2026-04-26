@@ -5,9 +5,14 @@ import com.benesquivelmusic.daw.sdk.model.Project;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Flow;
 import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Authoritative holder of the immutable
@@ -15,36 +20,53 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <p>The store keeps the current snapshot in an {@link AtomicReference}, so
  * concurrent reads via {@link #project()} are lock-free and always observe
- * a fully constructed value. Writes are channeled through
- * {@link #apply(CompoundAction)}, which:</p>
+ * a fully constructed value. Writes ({@link #apply(CompoundAction)},
+ * {@link #replace(Project)}) are serialized by an internal
+ * {@link ReentrantLock writeLock}, which guarantees:</p>
  *
- * <ol>
- *   <li>computes the next snapshot by applying the supplied action to the
- *       current one;</li>
- *   <li>installs it atomically via compare-and-set;</li>
- *   <li>computes the per-entity {@link ProjectChange} list by diffing the
- *       previous and next snapshots; and</li>
- *   <li>submits each change to a {@link Flow.Publisher Flow.Publisher} for
- *       interested subscribers.</li>
- * </ol>
+ * <ul>
+ *   <li>commit order is well-defined — no two writers can interleave the
+ *       compute / install / publish steps;</li>
+ *   <li>{@link ProjectChange} events are submitted to subscribers in the
+ *       same order in which their corresponding transitions were
+ *       committed.</li>
+ * </ul>
  *
- * <p>If a competing thread updates the snapshot between steps 1 and 2 the
- * action is re-applied to the latest value (optimistic retry). Actions
- * therefore must be idempotent in their reasoning about the input
- * snapshot — typically true since they are pure reducers.</p>
+ * <h2>Subscriber threading and backpressure</h2>
  *
  * <p>Subscribers are notified on a private, daemon-backed
- * {@link SubmissionPublisher} executor, so a slow subscriber will not
- * block writers.</p>
+ * {@link ExecutorService} configured into the
+ * {@link SubmissionPublisher}. Daemon threads do not prevent JVM exit and
+ * are not shared with the {@link java.util.concurrent.ForkJoinPool#commonPool()
+ * common pool}, so a misbehaving subscriber cannot starve unrelated
+ * parallel workloads.</p>
+ *
+ * <p>Events are delivered with {@link SubmissionPublisher#offer(Object,
+ * java.util.function.BiPredicate) offer(item, onDrop)}. If a subscriber's
+ * buffer is full the item is dropped for that subscriber and a warning is
+ * logged — writers are never blocked by a slow subscriber. Subscribers
+ * that need lossless delivery are responsible for keeping up with the
+ * publisher.</p>
  */
 public final class ProjectStore implements AutoCloseable {
 
+    private static final Logger LOG = Logger.getLogger(ProjectStore.class.getName());
+
     private final AtomicReference<Project> current;
     private final SubmissionPublisher<ProjectChange> publisher;
+    private final ExecutorService publisherExecutor;
+    private final ReentrantLock writeLock = new ReentrantLock();
 
     public ProjectStore(Project initial) {
         this.current = new AtomicReference<>(Objects.requireNonNull(initial, "initial must not be null"));
-        this.publisher = new SubmissionPublisher<>();
+        // Private daemon-backed executor so subscribers run on threads that
+        // do not block JVM shutdown and are isolated from the common pool.
+        this.publisherExecutor = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "daw-project-store-publisher");
+            t.setDaemon(true);
+            return t;
+        });
+        this.publisher = new SubmissionPublisher<>(publisherExecutor, Flow.defaultBufferSize());
     }
 
     /** Returns the current immutable snapshot. Lock-free. */
@@ -65,24 +87,43 @@ public final class ProjectStore implements AutoCloseable {
      * @return the new project snapshot after the action has been applied
      */
     public Project apply(CompoundAction action) {
+        return applyForTransition(action).after();
+    }
+
+    /**
+     * Applies the supplied action atomically and returns the
+     * {@link Transition} (the {@code before} and {@code after} snapshots).
+     *
+     * <p>This is the preferred entry point for callers that need to record
+     * the transition (e.g. {@link UndoManager}). Because the entire
+     * compute / install / publish sequence is performed under the
+     * write-lock, the returned {@code before} is guaranteed to be the
+     * snapshot the action was actually applied to — no other writer can
+     * have interleaved between the read of the current snapshot and the
+     * commit.</p>
+     *
+     * @param action the reducer to apply (must not be {@code null})
+     * @return the transition that was committed
+     */
+    public Transition applyForTransition(CompoundAction action) {
         Objects.requireNonNull(action, "action must not be null");
-        Project before;
-        Project after;
-        do {
-            before = current.get();
-            after = Objects.requireNonNull(action.apply(before),
+        writeLock.lock();
+        try {
+            Project before = current.get();
+            Project after = Objects.requireNonNull(action.apply(before),
                     "CompoundAction must not return null");
-        } while (!current.compareAndSet(before, after));
+            current.set(after);
 
-        if (before == after || before.equals(after)) {
-            return after;
+            if (before == after || before.equals(after)) {
+                return new Transition(before, after);
+            }
+            for (ProjectChange event : ProjectDiff.diff(before, after)) {
+                publish(event);
+            }
+            return new Transition(before, after);
+        } finally {
+            writeLock.unlock();
         }
-
-        List<ProjectChange> events = ProjectDiff.diff(before, after);
-        for (ProjectChange event : events) {
-            publisher.submit(event);
-        }
-        return after;
     }
 
     /**
@@ -93,19 +134,51 @@ public final class ProjectStore implements AutoCloseable {
      */
     public Project replace(Project snapshot) {
         Objects.requireNonNull(snapshot, "snapshot must not be null");
-        Project before = current.getAndSet(snapshot);
-        if (before.equals(snapshot)) {
+        writeLock.lock();
+        try {
+            Project before = current.get();
+            current.set(snapshot);
+            if (before.equals(snapshot)) {
+                return snapshot;
+            }
+            publish(new ProjectChange.ProjectReplaced(before, snapshot));
+            for (ProjectChange event : ProjectDiff.diff(before, snapshot)) {
+                publish(event);
+            }
             return snapshot;
+        } finally {
+            writeLock.unlock();
         }
-        publisher.submit(new ProjectChange.ProjectReplaced(before, snapshot));
-        for (ProjectChange event : ProjectDiff.diff(before, snapshot)) {
-            publisher.submit(event);
-        }
-        return snapshot;
+    }
+
+    /**
+     * Non-blocking publish. Drops the event for any subscriber whose
+     * buffer is full and logs a warning so writers are never stalled by a
+     * slow consumer.
+     */
+    private void publish(ProjectChange event) {
+        publisher.offer(event, (subscriber, item) -> {
+            LOG.log(Level.WARNING,
+                    () -> "ProjectStore: dropping change event for slow subscriber "
+                            + subscriber + ": " + item);
+            return false; // do not retry
+        });
     }
 
     @Override
     public void close() {
         publisher.close();
+        publisherExecutor.shutdown();
+    }
+
+    /**
+     * A successfully committed transition — the {@code before} and
+     * {@code after} immutable project snapshots.
+     */
+    public record Transition(Project before, Project after) {
+        public Transition {
+            Objects.requireNonNull(before, "before must not be null");
+            Objects.requireNonNull(after, "after must not be null");
+        }
     }
 }

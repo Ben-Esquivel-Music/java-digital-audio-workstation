@@ -71,14 +71,19 @@ public final class UndoManager {
      * Convenience: applies {@code action} to the {@link ProjectStore} and
      * records the resulting transition for undo.
      *
+     * <p>The transition is captured atomically via
+     * {@link ProjectStore#applyForTransition(CompoundAction)} so the
+     * recorded {@code (before, after)} pair is guaranteed to represent
+     * the actual commit, even if other writers contend on the store
+     * concurrently.</p>
+     *
      * @return the new snapshot
      */
     public Project applyAndRecord(CompoundAction action) {
         Objects.requireNonNull(action, "action must not be null");
-        Project before = store.project();
-        Project after = store.apply(action);
-        record(before, after);
-        return after;
+        ProjectStore.Transition transition = store.applyForTransition(action);
+        record(transition.before(), transition.after());
+        return transition.after();
     }
 
     public boolean canUndo() {

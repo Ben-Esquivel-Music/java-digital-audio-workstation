@@ -90,6 +90,117 @@ class ProjectStoreTest {
         }
     }
 
+    @Test
+    void compoundAction_andThen_rejectsNullAfter() {
+        CompoundAction a = CompoundAction.identity();
+        assertThatThrownBy(() -> a.andThen(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("after");
+    }
+
+    @Test
+    void applyForTransition_returnsExactSnapshotPair() {
+        try (ProjectStore store = new ProjectStore(Project.empty("s"))) {
+            Track t = Track.of("X", TrackType.AUDIO);
+            ProjectStore.Transition tr = store.applyForTransition(p -> p.putTrack(t));
+            assertThat(tr.before().tracks()).isEmpty();
+            assertThat(tr.after().tracks()).containsKey(t.id());
+            assertThat(store.project()).isEqualTo(tr.after());
+        }
+    }
+
+    @Test
+    void concurrentWriters_eventOrderMatchesCommitOrder() throws Exception {
+        // With the write-lock in place, the per-entity event sequence must
+        // describe the snapshots produced by each commit. We commit a
+        // strictly increasing volume on the same track from many threads
+        // and assert that the published TrackUpdated events form a chain
+        // where each event's previous equals the prior event's next.
+        try (ProjectStore store = new ProjectStore(Project.empty("s"))) {
+            List<ProjectChange> received = subscribe(store);
+
+            Track t = Track.of("X", TrackType.AUDIO);
+            store.apply(p -> p.putTrack(t));
+            waitFor(() -> received.size() == 1);
+
+            int writers = 8;
+            int perWriter = 25;
+            Thread[] threads = new Thread[writers];
+            java.util.concurrent.atomic.AtomicInteger seq = new java.util.concurrent.atomic.AtomicInteger();
+            for (int w = 0; w < writers; w++) {
+                threads[w] = new Thread(() -> {
+                    for (int i = 0; i < perWriter; i++) {
+                        int s = seq.incrementAndGet();
+                        double vol = s / 1000.0;
+                        store.apply(p -> {
+                            Track cur = p.tracks().get(t.id());
+                            return p.putTrack(cur.withVolume(vol));
+                        });
+                    }
+                });
+            }
+            for (Thread th : threads) th.start();
+            for (Thread th : threads) th.join();
+
+            int total = 1 + writers * perWriter;
+            waitFor(() -> received.size() == total);
+
+            // Walk the TrackUpdated chain and verify continuity.
+            Track lastNext = ((ProjectChange.TrackAdded) received.get(0)).next();
+            for (int i = 1; i < received.size(); i++) {
+                ProjectChange.TrackUpdated u = (ProjectChange.TrackUpdated) received.get(i);
+                assertThat(u.previous())
+                        .as("event %d previous must equal preceding next", i)
+                        .isEqualTo(lastNext);
+                lastNext = u.next();
+            }
+            assertThat(store.project().tracks().get(t.id())).isEqualTo(lastNext);
+        }
+    }
+
+    @Test
+    void diffEventsAreDeterministicallyOrderedByUuid() {
+        try (ProjectStore store = new ProjectStore(Project.empty("s"))) {
+            List<ProjectChange> received = subscribe(store);
+
+            // Force a fixed UUID ordering so we can assert the sequence.
+            java.util.UUID idA = java.util.UUID.fromString("00000000-0000-0000-0000-000000000001");
+            java.util.UUID idB = java.util.UUID.fromString("00000000-0000-0000-0000-000000000002");
+            java.util.UUID idC = java.util.UUID.fromString("00000000-0000-0000-0000-000000000003");
+            Track a = Track.of("A", TrackType.AUDIO).withId(idA);
+            Track b = Track.of("B", TrackType.AUDIO).withId(idB);
+            Track c = Track.of("C", TrackType.AUDIO).withId(idC);
+
+            // Insert in reverse order; emitted events must still be A, B, C.
+            store.apply(p -> p.putTrack(c).putTrack(b).putTrack(a));
+            waitFor(() -> received.size() == 3);
+
+            assertThat(received.get(0)).isInstanceOfSatisfying(ProjectChange.TrackAdded.class,
+                    e -> assertThat(e.id()).isEqualTo(idA));
+            assertThat(received.get(1)).isInstanceOfSatisfying(ProjectChange.TrackAdded.class,
+                    e -> assertThat(e.id()).isEqualTo(idB));
+            assertThat(received.get(2)).isInstanceOfSatisfying(ProjectChange.TrackAdded.class,
+                    e -> assertThat(e.id()).isEqualTo(idC));
+        }
+    }
+
+    @Test
+    void changeEventIdAlwaysMatchesCarriedEntity() {
+        Track t = Track.of("T", TrackType.AUDIO);
+        ProjectChange.TrackAdded added = new ProjectChange.TrackAdded(t);
+        ProjectChange.TrackUpdated updated = new ProjectChange.TrackUpdated(t, t.withVolume(0.5));
+        ProjectChange.TrackRemoved removed = new ProjectChange.TrackRemoved(t);
+        assertThat(added.id()).isEqualTo(t.id());
+        assertThat(updated.id()).isEqualTo(t.id());
+        assertThat(removed.id()).isEqualTo(t.id());
+
+        // Mismatched ids on Updated must be rejected.
+        Track other = Track.of("Other", TrackType.AUDIO);
+        assertThatThrownBy(() -> new ProjectChange.TrackUpdated(t, other))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must match");
+    }
+
     private static List<ProjectChange> subscribe(ProjectStore store) {
         List<ProjectChange> received = new CopyOnWriteArrayList<>();
         AtomicBoolean done = new AtomicBoolean();

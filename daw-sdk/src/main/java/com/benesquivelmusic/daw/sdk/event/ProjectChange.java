@@ -17,13 +17,23 @@ import java.util.UUID;
  * a successful project mutation.
  *
  * <p>Sealed over a closed set of record permits, one pair (added / updated
- * / removed) per addressable entity. Use a Java 21+ exhaustive
+ * / removed) per addressable entity. Each event derives its {@link #id()}
+ * directly from the carried entity record(s) — there is no independent
+ * {@code id} field that could drift out of sync. Use a Java 21+ exhaustive
  * {@code switch} expression on the change to handle every event without
  * forgetting a case.</p>
  */
 public sealed interface ProjectChange {
 
-    /** Returns the id of the entity that changed (or the project id for {@link ProjectReplaced}). */
+    /**
+     * Returns the id of the entity that changed.
+     *
+     * <p>For {@link ProjectReplaced} this is the project id; for every other
+     * variant it is the id of the carried entity (the {@code next} value
+     * for added/updated events, the {@code previous} value for removed
+     * events). The implementation derives the id from the carried record
+     * so {@code change.id().equals(change.entity().id())} always holds.</p>
+     */
     UUID id();
 
     // ----- Project ------------------------------------------------------------------------------
@@ -40,145 +50,169 @@ public sealed interface ProjectChange {
 
     // ----- Track --------------------------------------------------------------------------------
 
-    record TrackAdded(UUID id, Track next) implements ProjectChange {
+    record TrackAdded(Track next) implements ProjectChange {
         public TrackAdded {
-            Objects.requireNonNull(id, "id must not be null");
             Objects.requireNonNull(next, "next must not be null");
         }
+        @Override public UUID id() { return next.id(); }
     }
 
-    record TrackUpdated(UUID id, Track previous, Track next) implements ProjectChange {
+    record TrackUpdated(Track previous, Track next) implements ProjectChange {
         public TrackUpdated {
-            Objects.requireNonNull(id, "id must not be null");
             Objects.requireNonNull(previous, "previous must not be null");
             Objects.requireNonNull(next, "next must not be null");
+            if (!previous.id().equals(next.id())) {
+                throw new IllegalArgumentException(
+                        "previous.id and next.id must match: " + previous.id() + " vs " + next.id());
+            }
         }
+        @Override public UUID id() { return next.id(); }
     }
 
-    record TrackRemoved(UUID id, Track previous) implements ProjectChange {
+    record TrackRemoved(Track previous) implements ProjectChange {
         public TrackRemoved {
-            Objects.requireNonNull(id, "id must not be null");
             Objects.requireNonNull(previous, "previous must not be null");
         }
+        @Override public UUID id() { return previous.id(); }
     }
 
     // ----- AudioClip ----------------------------------------------------------------------------
 
-    record AudioClipAdded(UUID id, AudioClip next) implements ProjectChange {
+    record AudioClipAdded(AudioClip next) implements ProjectChange {
         public AudioClipAdded {
-            Objects.requireNonNull(id, "id must not be null");
             Objects.requireNonNull(next, "next must not be null");
         }
+        @Override public UUID id() { return next.id(); }
     }
 
-    record AudioClipUpdated(UUID id, AudioClip previous, AudioClip next) implements ProjectChange {
+    record AudioClipUpdated(AudioClip previous, AudioClip next) implements ProjectChange {
         public AudioClipUpdated {
-            Objects.requireNonNull(id, "id must not be null");
             Objects.requireNonNull(previous, "previous must not be null");
             Objects.requireNonNull(next, "next must not be null");
+            if (!previous.id().equals(next.id())) {
+                throw new IllegalArgumentException(
+                        "previous.id and next.id must match: " + previous.id() + " vs " + next.id());
+            }
         }
+        @Override public UUID id() { return next.id(); }
     }
 
-    record AudioClipRemoved(UUID id, AudioClip previous) implements ProjectChange {
+    record AudioClipRemoved(AudioClip previous) implements ProjectChange {
         public AudioClipRemoved {
-            Objects.requireNonNull(id, "id must not be null");
             Objects.requireNonNull(previous, "previous must not be null");
         }
+        @Override public UUID id() { return previous.id(); }
     }
 
     // ----- MidiClip -----------------------------------------------------------------------------
 
-    record MidiClipAdded(UUID id, MidiClip next) implements ProjectChange {
+    record MidiClipAdded(MidiClip next) implements ProjectChange {
         public MidiClipAdded {
-            Objects.requireNonNull(id, "id must not be null");
             Objects.requireNonNull(next, "next must not be null");
         }
+        @Override public UUID id() { return next.id(); }
     }
 
-    record MidiClipUpdated(UUID id, MidiClip previous, MidiClip next) implements ProjectChange {
+    record MidiClipUpdated(MidiClip previous, MidiClip next) implements ProjectChange {
         public MidiClipUpdated {
-            Objects.requireNonNull(id, "id must not be null");
             Objects.requireNonNull(previous, "previous must not be null");
             Objects.requireNonNull(next, "next must not be null");
+            if (!previous.id().equals(next.id())) {
+                throw new IllegalArgumentException(
+                        "previous.id and next.id must match: " + previous.id() + " vs " + next.id());
+            }
         }
+        @Override public UUID id() { return next.id(); }
     }
 
-    record MidiClipRemoved(UUID id, MidiClip previous) implements ProjectChange {
+    record MidiClipRemoved(MidiClip previous) implements ProjectChange {
         public MidiClipRemoved {
-            Objects.requireNonNull(id, "id must not be null");
             Objects.requireNonNull(previous, "previous must not be null");
         }
+        @Override public UUID id() { return previous.id(); }
     }
 
     // ----- MixerChannel -------------------------------------------------------------------------
 
-    record MixerChannelAdded(UUID id, MixerChannel next) implements ProjectChange {
+    record MixerChannelAdded(MixerChannel next) implements ProjectChange {
         public MixerChannelAdded {
-            Objects.requireNonNull(id, "id must not be null");
             Objects.requireNonNull(next, "next must not be null");
         }
+        @Override public UUID id() { return next.id(); }
     }
 
-    record MixerChannelUpdated(UUID id, MixerChannel previous, MixerChannel next) implements ProjectChange {
+    record MixerChannelUpdated(MixerChannel previous, MixerChannel next) implements ProjectChange {
         public MixerChannelUpdated {
-            Objects.requireNonNull(id, "id must not be null");
             Objects.requireNonNull(previous, "previous must not be null");
             Objects.requireNonNull(next, "next must not be null");
+            if (!previous.id().equals(next.id())) {
+                throw new IllegalArgumentException(
+                        "previous.id and next.id must match: " + previous.id() + " vs " + next.id());
+            }
         }
+        @Override public UUID id() { return next.id(); }
     }
 
-    record MixerChannelRemoved(UUID id, MixerChannel previous) implements ProjectChange {
+    record MixerChannelRemoved(MixerChannel previous) implements ProjectChange {
         public MixerChannelRemoved {
-            Objects.requireNonNull(id, "id must not be null");
             Objects.requireNonNull(previous, "previous must not be null");
         }
+        @Override public UUID id() { return previous.id(); }
     }
 
     // ----- Return -------------------------------------------------------------------------------
 
-    record ReturnAdded(UUID id, Return next) implements ProjectChange {
+    record ReturnAdded(Return next) implements ProjectChange {
         public ReturnAdded {
-            Objects.requireNonNull(id, "id must not be null");
             Objects.requireNonNull(next, "next must not be null");
         }
+        @Override public UUID id() { return next.id(); }
     }
 
-    record ReturnUpdated(UUID id, Return previous, Return next) implements ProjectChange {
+    record ReturnUpdated(Return previous, Return next) implements ProjectChange {
         public ReturnUpdated {
-            Objects.requireNonNull(id, "id must not be null");
             Objects.requireNonNull(previous, "previous must not be null");
             Objects.requireNonNull(next, "next must not be null");
+            if (!previous.id().equals(next.id())) {
+                throw new IllegalArgumentException(
+                        "previous.id and next.id must match: " + previous.id() + " vs " + next.id());
+            }
         }
+        @Override public UUID id() { return next.id(); }
     }
 
-    record ReturnRemoved(UUID id, Return previous) implements ProjectChange {
+    record ReturnRemoved(Return previous) implements ProjectChange {
         public ReturnRemoved {
-            Objects.requireNonNull(id, "id must not be null");
             Objects.requireNonNull(previous, "previous must not be null");
         }
+        @Override public UUID id() { return previous.id(); }
     }
 
     // ----- AutomationLane -----------------------------------------------------------------------
 
-    record AutomationLaneAdded(UUID id, AutomationLane next) implements ProjectChange {
+    record AutomationLaneAdded(AutomationLane next) implements ProjectChange {
         public AutomationLaneAdded {
-            Objects.requireNonNull(id, "id must not be null");
             Objects.requireNonNull(next, "next must not be null");
         }
+        @Override public UUID id() { return next.id(); }
     }
 
-    record AutomationLaneUpdated(UUID id, AutomationLane previous, AutomationLane next) implements ProjectChange {
+    record AutomationLaneUpdated(AutomationLane previous, AutomationLane next) implements ProjectChange {
         public AutomationLaneUpdated {
-            Objects.requireNonNull(id, "id must not be null");
             Objects.requireNonNull(previous, "previous must not be null");
             Objects.requireNonNull(next, "next must not be null");
+            if (!previous.id().equals(next.id())) {
+                throw new IllegalArgumentException(
+                        "previous.id and next.id must match: " + previous.id() + " vs " + next.id());
+            }
         }
+        @Override public UUID id() { return next.id(); }
     }
 
-    record AutomationLaneRemoved(UUID id, AutomationLane previous) implements ProjectChange {
+    record AutomationLaneRemoved(AutomationLane previous) implements ProjectChange {
         public AutomationLaneRemoved {
-            Objects.requireNonNull(id, "id must not be null");
             Objects.requireNonNull(previous, "previous must not be null");
         }
+        @Override public UUID id() { return previous.id(); }
     }
 }
