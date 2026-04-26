@@ -1002,6 +1002,40 @@ public final class ProjectDeserializer {
                 refTrack.setLoopRegion(loopStart, loopEnd);
             }
             refTrack.setIntegratedLufs(parseDoubleAttr(refTrackElem, "integrated-lufs", -120.0));
+            // Story 042 — Atmos A/B comparison: restore optional immersive
+            // format and per-channel trims (silently ignore malformed values
+            // so older / hand-edited files keep loading).
+            String formatName = refTrackElem.getAttribute("immersive-format");
+            if (formatName != null && !formatName.isEmpty()) {
+                try {
+                    refTrack.setImmersiveFormat(
+                            com.benesquivelmusic.daw.sdk.spatial.ImmersiveFormat
+                                    .valueOf(formatName));
+                } catch (IllegalArgumentException ignored) {
+                    // Unknown format — leave as null (stereo).
+                }
+            }
+            String trimAttr = refTrackElem.getAttribute("per-channel-trim-db");
+            if (trimAttr != null && !trimAttr.isEmpty()) {
+                String[] parts = trimAttr.split(",");
+                double[] trims = new double[parts.length];
+                boolean ok = true;
+                for (int i = 0; i < parts.length; i++) {
+                    try {
+                        trims[i] = Double.parseDouble(parts[i].trim());
+                    } catch (NumberFormatException nfe) {
+                        ok = false;
+                        break;
+                    }
+                }
+                if (ok) {
+                    try {
+                        refTrack.setPerChannelTrimDb(trims);
+                    } catch (IllegalArgumentException ignored) {
+                        // Length mismatch with declared format — drop trim.
+                    }
+                }
+            }
             manager.addReferenceTrack(refTrack);
         }
 

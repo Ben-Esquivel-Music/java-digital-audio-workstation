@@ -622,6 +622,23 @@ public final class ProjectSerializer {
             trackElem.setAttribute("loop-start", String.valueOf(ref.getLoopStartInBeats()));
             trackElem.setAttribute("loop-end", String.valueOf(ref.getLoopEndInBeats()));
             trackElem.setAttribute("integrated-lufs", String.valueOf(ref.getIntegratedLufs()));
+            // Story 042 — Atmos A/B comparison: persist optional immersive
+            // bed format and per-channel trim values discovered by the
+            // AtmosAbComparator's auto-trim feature. Both attributes are
+            // omitted for stereo references so older files stay clean.
+            if (ref.getImmersiveFormat() != null) {
+                trackElem.setAttribute("immersive-format",
+                        ref.getImmersiveFormat().name());
+            }
+            double[] trims = ref.getPerChannelTrimDb();
+            if (trims != null && trims.length > 0) {
+                StringBuilder sb = new StringBuilder();
+                for (int i = 0; i < trims.length; i++) {
+                    if (i > 0) sb.append(',');
+                    sb.append(trims[i]);
+                }
+                trackElem.setAttribute("per-channel-trim-db", sb.toString());
+            }
             refElem.appendChild(trackElem);
         }
     }

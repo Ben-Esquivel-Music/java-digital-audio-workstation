@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.reference;
 
+import com.benesquivelmusic.daw.sdk.spatial.ImmersiveFormat;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.*;
@@ -144,5 +145,58 @@ class ReferenceTrackTest {
         ReferenceTrack ref1 = new ReferenceTrack("Ref1", "/audio/ref1.wav");
         ReferenceTrack ref2 = new ReferenceTrack("Ref2", "/audio/ref2.wav");
         assertThat(ref1.getId()).isNotEqualTo(ref2.getId());
+    }
+
+    // --- Story 042: Atmos A/B comparison ---
+
+    @Test
+    void shouldDefaultToNoImmersiveFormatAndNoTrim() {
+        ReferenceTrack ref = new ReferenceTrack("Ref", "/audio/ref.wav");
+        assertThat(ref.getImmersiveFormat()).isNull();
+        assertThat(ref.getPerChannelTrimDb()).isNull();
+        assertThat(ref.getChannelCount()).isZero();
+    }
+
+    @Test
+    void channelCountReportsImmersiveFormatChannelCountWhenAudioMissing() {
+        ReferenceTrack ref = new ReferenceTrack("Ref", "/audio/ref.wav");
+        ref.setImmersiveFormat(ImmersiveFormat.FORMAT_7_1_4);
+        assertThat(ref.getChannelCount()).isEqualTo(12);
+    }
+
+    @Test
+    void channelCountReportsAudioDataChannelCountWhenLoaded() {
+        ReferenceTrack ref = new ReferenceTrack("Ref", "/audio/ref.wav");
+        ref.setAudioData(new float[10][16]);
+        assertThat(ref.getChannelCount()).isEqualTo(10);
+    }
+
+    @Test
+    void shouldStorePerChannelTrimMatchingFormat() {
+        ReferenceTrack ref = new ReferenceTrack("Ref", "/audio/ref.wav");
+        ref.setImmersiveFormat(ImmersiveFormat.FORMAT_5_1_4);
+        double[] trim = {0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0};
+        ref.setPerChannelTrimDb(trim);
+        assertThat(ref.getPerChannelTrimDb()).containsExactly(trim);
+        // Returned array is a defensive copy.
+        ref.getPerChannelTrimDb()[0] = 99.0;
+        assertThat(ref.getPerChannelTrimDb()[0]).isZero();
+    }
+
+    @Test
+    void shouldRejectMismatchedTrimLength() {
+        ReferenceTrack ref = new ReferenceTrack("Ref", "/audio/ref.wav");
+        ref.setImmersiveFormat(ImmersiveFormat.FORMAT_7_1_4);  // 12 channels
+        assertThatThrownBy(() -> ref.setPerChannelTrimDb(new double[3]))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void shouldClearTrimWhenSetToNull() {
+        ReferenceTrack ref = new ReferenceTrack("Ref", "/audio/ref.wav");
+        ref.setImmersiveFormat(ImmersiveFormat.FORMAT_5_1);
+        ref.setPerChannelTrimDb(new double[6]);
+        ref.setPerChannelTrimDb(null);
+        assertThat(ref.getPerChannelTrimDb()).isNull();
     }
 }

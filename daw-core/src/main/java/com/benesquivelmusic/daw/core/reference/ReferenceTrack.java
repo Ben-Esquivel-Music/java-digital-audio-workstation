@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.reference;
 
+import com.benesquivelmusic.daw.sdk.spatial.ImmersiveFormat;
+
 import java.util.Objects;
 import java.util.UUID;
 
@@ -23,6 +25,8 @@ public final class ReferenceTrack {
     private double loopStartInBeats;
     private double loopEndInBeats;
     private double integratedLufs;
+    private ImmersiveFormat immersiveFormat;
+    private double[] perChannelTrimDb;
 
     /**
      * Creates a new reference track.
@@ -168,5 +172,81 @@ public final class ReferenceTrack {
      */
     public void setIntegratedLufs(double integratedLufs) {
         this.integratedLufs = integratedLufs;
+    }
+
+    /**
+     * Returns the immersive (multi-channel) format this reference track was
+     * recorded in, or {@code null} if this is a stereo / unspecified reference.
+     *
+     * <p>This metadata is used by the Atmos A/B comparator to verify that the
+     * reference and current mix share a channel layout before computing
+     * per-channel deltas.</p>
+     *
+     * @return the immersive bed format, or {@code null} for stereo references
+     */
+    public ImmersiveFormat getImmersiveFormat() {
+        return immersiveFormat;
+    }
+
+    /**
+     * Sets the immersive bed format for this reference track. Pass
+     * {@code null} for a stereo reference.
+     *
+     * @param immersiveFormat the immersive format, or {@code null}
+     */
+    public void setImmersiveFormat(ImmersiveFormat immersiveFormat) {
+        this.immersiveFormat = immersiveFormat;
+    }
+
+    /**
+     * Returns the channel count reported by the loaded audio data, or by the
+     * declared immersive format when no audio is loaded yet.
+     *
+     * @return the channel count, or {@code 0} if neither audio nor format is set
+     */
+    public int getChannelCount() {
+        if (audioData != null) {
+            return audioData.length;
+        }
+        return immersiveFormat == null ? 0 : immersiveFormat.channelCount();
+    }
+
+    /**
+     * Returns a defensive copy of the per-channel trim values in dB, or
+     * {@code null} if no per-channel trim has been configured.
+     *
+     * <p>Per-channel trim is applied <em>in addition to</em>
+     * {@link #getGainOffsetDb()} (which is the overall level-match offset)
+     * and is typically derived from
+     * {@link com.benesquivelmusic.daw.core.spatial.qc.AtmosAbComparator#estimateAutoTrim
+     * AtmosAbComparator.estimateAutoTrim}.</p>
+     *
+     * @return per-channel trims in dB, or {@code null}
+     */
+    public double[] getPerChannelTrimDb() {
+        return perChannelTrimDb == null ? null : perChannelTrimDb.clone();
+    }
+
+    /**
+     * Sets the per-channel trim values in dB. The array length must match
+     * {@link #getChannelCount()} when audio data or an immersive format is
+     * configured. Pass {@code null} to clear any existing trim.
+     *
+     * @param trimDb per-channel trim values in dB, or {@code null}
+     * @throws IllegalArgumentException if the array length disagrees with the
+     *                                  declared channel count
+     */
+    public void setPerChannelTrimDb(double[] trimDb) {
+        if (trimDb == null) {
+            this.perChannelTrimDb = null;
+            return;
+        }
+        int expected = getChannelCount();
+        if (expected > 0 && trimDb.length != expected) {
+            throw new IllegalArgumentException(
+                    "per-channel trim length " + trimDb.length
+                            + " does not match channel count " + expected);
+        }
+        this.perChannelTrimDb = trimDb.clone();
     }
 }
