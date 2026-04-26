@@ -297,7 +297,7 @@ public final class ProjectArchiver {
             if (srcAbs.startsWith(projectDirAbs)) {
                 continue; // already inside project tree
             }
-            String hash = sha256Hex(Files.readAllBytes(src));
+            String hash = sha256Hex(src);
             Path consolidated = hashToConsolidated.get(hash);
             if (consolidated == null) {
                 String safeName = hash + "_" + sanitize(srcAbs.getFileName().toString());
@@ -360,7 +360,7 @@ public final class ProjectArchiver {
                 // openArchive will hand it to the missing-asset resolver.
                 continue;
             }
-            String hash = sha256Hex(Files.readAllBytes(abs));
+            String hash = sha256Hex(abs);
             String archiveName = hashToArchiveName.get(hash);
             if (archiveName == null) {
                 archiveName = hash + "_" + sanitize(abs.getFileName().toString());
@@ -404,21 +404,38 @@ public final class ProjectArchiver {
             }
         }
 
+        Path extractedAbs = extractedDir.toAbsolutePath().normalize();
         for (AssetRef ref : collectRefs(project, ArchiveOptions.defaults())) {
             String stored = ref.currentPath();
             if (stored == null || stored.isBlank()) {
                 continue;
             }
-            Path candidate = extractedDir.resolve(stored).normalize();
-            if (Files.isRegularFile(candidate)) {
+            // Try interpreting the stored path as relative to the extracted dir.
+            // A corrupt or malicious project document might contain a string
+            // that isn't a valid path on this OS, or one that escapes the
+            // extracted root via "..". Both are treated as missing-with-resolver.
+            Path candidate = null;
+            try {
+                Path c = extractedAbs.resolve(stored).normalize();
+                if (c.startsWith(extractedAbs)) {
+                    candidate = c;
+                }
+            } catch (RuntimeException ignored) {
+                // InvalidPathException (or similar) — fall through to resolver.
+            }
+            if (candidate != null && Files.isRegularFile(candidate)) {
                 ref.update(candidate.toAbsolutePath().toString());
                 continue;
             }
             // Try absolute interpretation for paths archived from a non-relocatable project.
-            Path direct = Paths.get(stored);
-            if (direct.isAbsolute() && Files.isRegularFile(direct)) {
-                ref.update(direct.toAbsolutePath().toString());
-                continue;
+            try {
+                Path direct = Paths.get(stored);
+                if (direct.isAbsolute() && Files.isRegularFile(direct)) {
+                    ref.update(direct.toAbsolutePath().toString());
+                    continue;
+                }
+            } catch (RuntimeException ignored) {
+                // InvalidPathException — fall through to resolver.
             }
             Optional<Path> resolved = resolver.resolve(stored, hints);
             if (resolved.isEmpty()) {
@@ -460,8 +477,10 @@ public final class ProjectArchiver {
              ZipInputStream zin = new ZipInputStream(raw)) {
             ZipEntry e;
             while ((e = zin.getNextEntry()) != null) {
-                Path target = destDir.resolve(e.getName()).normalize();
-                // Defend against ZIP path-traversal ("zip slip").
+                // Resolve against the absolute, normalized destination so the
+                // zip-slip check works regardless of whether the caller passed
+                // a relative or absolute destDir.
+                Path target = destAbs.resolve(e.getName()).normalize();
                 if (!target.startsWith(destAbs)) {
                     throw new IOException("Archive entry escapes target directory: " + e.getName());
                 }
@@ -537,15 +556,40 @@ public final class ProjectArchiver {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] digest = md.digest(bytes);
-            StringBuilder sb = new StringBuilder(digest.length * 2);
-            for (byte b : digest) {
-                sb.append(Character.forDigit((b >>> 4) & 0xF, 16));
-                sb.append(Character.forDigit(b & 0xF, 16));
-            }
-            return sb.toString();
+            return toHex(digest);
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 unavailable", e);
         }
+    }
+
+    /**
+     * Streams the contents of {@code file} through a SHA-256 digest without
+     * loading the whole file into memory — important for multi-gigabyte
+     * recordings.
+     */
+    static String sha256Hex(Path file) throws IOException {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            try (InputStream in = Files.newInputStream(file)) {
+                byte[] buf = new byte[COPY_BUFFER_SIZE];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    md.update(buf, 0, n);
+                }
+            }
+            return toHex(md.digest());
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
+    }
+
+    private static String toHex(byte[] digest) {
+        StringBuilder sb = new StringBuilder(digest.length * 2);
+        for (byte b : digest) {
+            sb.append(Character.forDigit((b >>> 4) & 0xF, 16));
+            sb.append(Character.forDigit(b & 0xF, 16));
+        }
+        return sb.toString();
     }
 
     private static String sanitize(String name) {
@@ -663,7 +707,7 @@ public final class ProjectArchiver {
             if (p == null || !Files.isRegularFile(p)) {
                 continue;
             }
-            String hash = sha256Hex(Files.readAllBytes(p));
+            String hash = sha256Hex(p);
             if (seen.putIfAbsent(hash, Boolean.TRUE) == null) {
                 sizes.put(hash, Files.size(p));
             }

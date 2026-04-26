@@ -5,9 +5,8 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Strategy invoked when {@link ProjectArchiver#openArchive} or
- * {@link ProjectArchiver#consolidateInPlace} encounters an asset path that
- * cannot be resolved on disk.
+ * Strategy invoked when {@link ProjectArchiver#openArchive} encounters an
+ * asset path that cannot be resolved on disk.
  *
  * <p>Implementations typically present a "Locate…" dialog to the user. A
  * default smart-search implementation is provided by

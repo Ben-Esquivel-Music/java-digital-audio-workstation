@@ -187,13 +187,6 @@ class ProjectArchiverTest {
 
         // Now corrupt: drop the assets folder, re-open with a resolver that
         // points at the original media directory.
-        Path extractDir2 = tmp.resolve("extracted2");
-        Files.createDirectories(extractDir2);
-        // Manually unzip just the project + header so the archive looks "broken".
-        Files.copy(extractDir.resolve("archive.properties"),
-                extractDir2.resolve("archive.properties"));
-        Files.copy(extractDir.resolve("project.daw"),
-                extractDir2.resolve("project.daw"));
         // Provide a resolver that finds the file in mediaDir.
         MissingAssetResolver resolver = MissingAssetResolver.smartSiblingSearch(List.of(mediaDir));
         // Build a separate archive whose 'assets/' is empty so resolver fires.
@@ -269,6 +262,85 @@ class ProjectArchiverTest {
         assertThatThrownBy(() -> archiver.openArchive(malicious, tmp.resolve("dest"), null))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("escapes target directory");
+    }
+
+    @Test
+    void shouldExtractIntoRelativeTargetDirectory() throws IOException {
+        // Reviewer-flagged bug: extractZip used to compare a relative resolved
+        // path to an absolute destAbs, rejecting all entries. Verify a relative
+        // destDir works.
+        Path mediaDir = Files.createDirectories(tmp.resolve("media"));
+        Path src = Files.write(mediaDir.resolve("a.wav"), new byte[]{1, 2, 3});
+        DawProject project = new DawProject("RelDir", AudioFormat.CD_QUALITY);
+        project.createAudioTrack("T").addClip(new AudioClip("A", 0, 4, src.toString()));
+        ProjectArchiver archiver = new ProjectArchiver();
+        Path archive = tmp.resolve("rel.dawz");
+        archiver.saveAsArchive(project, archive);
+
+        // Build a relative path to a directory under the working dir.
+        Path cwd = Path.of(".").toAbsolutePath().normalize();
+        Path absTarget = tmp.resolve("rel-extract");
+        Path relTarget;
+        try {
+            relTarget = cwd.relativize(absTarget);
+        } catch (IllegalArgumentException ex) {
+            // Different roots on Windows — skip the relative leg cleanly.
+            return;
+        }
+        ArchivedProject opened = archiver.openArchive(archive, relTarget, null);
+        assertThat(opened.missingAssets()).isEmpty();
+    }
+
+    @Test
+    void shouldNotResolveAssetPathsThatEscapeExtractedRoot() throws IOException {
+        // Plant a sensitive file outside the extracted dir; verify a project
+        // document referencing it via "../" is treated as missing rather than
+        // happily handed back to the caller.
+        Path outside = Files.write(tmp.resolve("secret.wav"), new byte[]{9});
+        Path mediaDir = Files.createDirectories(tmp.resolve("media"));
+        Path src = Files.write(mediaDir.resolve("k.wav"), new byte[]{1});
+        DawProject project = new DawProject("Escape", AudioFormat.CD_QUALITY);
+        project.createAudioTrack("K").addClip(new AudioClip("K", 0, 4, src.toString()));
+        ProjectArchiver archiver = new ProjectArchiver();
+        Path archive = tmp.resolve("e.dawz");
+        archiver.saveAsArchive(project, archive);
+
+        // Hand-build a tampered archive: keep header (so SHA matches the
+        // legitimate doc we copy in), but rewrite project.daw so the asset
+        // path inside it points to "../secret.wav" — an escape attempt.
+        Path scratch = tmp.resolve("scratch");
+        archiver.openArchive(archive, scratch, null);
+        String headerProps = Files.readString(scratch.resolve("archive.properties"));
+        String origDoc = Files.readString(scratch.resolve("project.daw"));
+        // Replace the assets/.. reference with ../secret.wav.
+        String tamperedDoc = origDoc.replaceAll("assets/[^\"<&]+", "../secret.wav");
+        // Update header SHA so the integrity check passes; the security check
+        // we want to verify is the escape guard, not the integrity guard.
+        String newSha = ProjectArchiver.sha256Hex(tamperedDoc.getBytes());
+        String newHeader = headerProps.replaceAll(
+                "projectDocSha256=.*", "projectDocSha256=" + newSha);
+
+        Path tampered = tmp.resolve("escape.dawz");
+        try (var out = Files.newOutputStream(tampered);
+             var zip = new java.util.zip.ZipOutputStream(out)) {
+            zip.putNextEntry(new java.util.zip.ZipEntry("archive.properties"));
+            zip.write(newHeader.getBytes());
+            zip.closeEntry();
+            zip.putNextEntry(new java.util.zip.ZipEntry("project.daw"));
+            zip.write(tamperedDoc.getBytes());
+            zip.closeEntry();
+        }
+        ArchivedProject opened = archiver.openArchive(
+                tampered, tmp.resolve("e-extract"), MissingAssetResolver.none());
+        // The escaping path must NOT be resolved to the secret file: the
+        // restored clip path is either left as the stored relative form or
+        // listed missing — never the absolute path of the outside file.
+        AudioClip restored = opened.project().getTracks().get(0).getClips().get(0);
+        assertThat(Path.of(restored.getSourceFilePath()).toAbsolutePath().normalize())
+                .isNotEqualTo(outside.toAbsolutePath().normalize());
+        assertThat(opened.missingAssets()).isNotEmpty();
+        // And the secret file is still on disk, just not pointed at.
+        assertThat(outside).exists();
     }
 
     @Test
