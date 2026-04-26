@@ -669,6 +669,26 @@ class ProjectSerializationRoundTripTest {
     }
 
     @Test
+    void shouldRoundTripImmersiveFormatAndPerChannelTrim() throws IOException {
+        DawProject original = new DawProject("Atmos AB", AudioFormat.CD_QUALITY);
+        ReferenceTrack ref = new ReferenceTrack("Atmos Ref", "/audio/atmos_ref.wav");
+        ref.setImmersiveFormat(
+                com.benesquivelmusic.daw.sdk.spatial.ImmersiveFormat.FORMAT_7_1_4);
+        double[] trim = {0.0, 0.5, -1.25, 0.0, 0.0, -3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        ref.setPerChannelTrimDb(trim);
+        original.addReferenceTrack(ref);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+        ReferenceTrack restoredRef = restored.getReferenceTrackManager()
+                .getReferenceTracks().get(0);
+
+        assertThat(restoredRef.getImmersiveFormat())
+                .isEqualTo(com.benesquivelmusic.daw.sdk.spatial.ImmersiveFormat.FORMAT_7_1_4);
+        assertThat(restoredRef.getPerChannelTrimDb()).containsExactly(trim);
+    }
+
+    @Test
     void shouldDetectMissingAudioFiles() throws IOException {
         DawProject original = new DawProject("Missing Files", AudioFormat.CD_QUALITY);
         Track track = original.createAudioTrack("Audio");
