@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.analysis;
 
+import com.benesquivelmusic.daw.sdk.mastering.LoudnessSnapshot;
 import com.benesquivelmusic.daw.sdk.visualization.ExportValidationResult;
 import com.benesquivelmusic.daw.sdk.visualization.LoudnessData;
 import com.benesquivelmusic.daw.sdk.visualization.LoudnessHistoryPoint;
@@ -8,6 +9,8 @@ import com.benesquivelmusic.daw.sdk.visualization.LoudnessTarget;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Flow;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -484,5 +487,79 @@ class LoudnessMeterTest {
             samples[i] = (float) (0.5 * Math.sin(2.0 * Math.PI * frequency * i / sampleRate));
         }
         return samples;
+    }
+
+    @Test
+    void latestSnapshotShouldMirrorLatestData() {
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        float[] signal = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
+        for (int i = 0; i < 50; i++) {
+            meter.process(signal, signal, BLOCK_SIZE);
+        }
+        LoudnessData d = meter.getLatestData();
+        LoudnessSnapshot s = meter.latestSnapshot();
+        assertThat(s.momentaryLufs()).isEqualTo(d.momentaryLufs());
+        assertThat(s.shortTermLufs()).isEqualTo(d.shortTermLufs());
+        assertThat(s.integratedLufs()).isEqualTo(d.integratedLufs());
+        assertThat(s.loudnessRangeLu()).isEqualTo(d.loudnessRange());
+        assertThat(s.samplePeakDbfs()).isEqualTo(d.truePeakDbfs());
+    }
+
+    @Test
+    void snapshotPublisherShouldEmitAtTenHertz() throws InterruptedException {
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+
+        List<LoudnessSnapshot> received = new CopyOnWriteArrayList<>();
+        Flow.Subscriber<LoudnessSnapshot> subscriber = new Flow.Subscriber<>() {
+            private Flow.Subscription subscription;
+            @Override public void onSubscribe(Flow.Subscription s) {
+                this.subscription = s;
+                s.request(Long.MAX_VALUE);
+            }
+            @Override public void onNext(LoudnessSnapshot snap) { received.add(snap); }
+            @Override public void onError(Throwable t) { /* ignore in test */ }
+            @Override public void onComplete() { /* ignore in test */ }
+        };
+        meter.snapshotPublisher().subscribe(subscriber);
+
+        // Process exactly 1.0 second of audio. The publisher delivers
+        // asynchronously on its default executor, so close() blocks
+        // until the queue drains and all subscribers have been notified.
+        float[] signal = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
+        int blocks = (int) (SAMPLE_RATE / BLOCK_SIZE); // 100 blocks @ 480 spb
+        for (int i = 0; i < blocks; i++) {
+            meter.process(signal, signal, BLOCK_SIZE);
+        }
+        meter.close();
+
+        // Wait for asynchronous delivery to drain. close() flushes the
+        // queue, but onNext callbacks run on the publisher's executor;
+        // poll briefly until the count stabilises (or the timeout hits).
+        long deadlineMs = System.currentTimeMillis() + 2_000L;
+        int previous = -1;
+        while (System.currentTimeMillis() < deadlineMs) {
+            int now = received.size();
+            if (now == previous && now >= 9) break;
+            previous = now;
+            Thread.sleep(50);
+        }
+
+        // 1 second / 100 ms = 10 expected snapshots (allow ±1 for rounding).
+        assertThat(received.size()).isBetween(9, 11);
+        assertThat(received).allSatisfy(snap ->
+                assertThat(snap).isNotNull());
+    }
+
+    @Test
+    void snapshotPublisherShouldNotEmitBeforeSubscriber() {
+        LoudnessMeter meter = new LoudnessMeter(SAMPLE_RATE, BLOCK_SIZE);
+        // Without a subscriber, processing must not throw and must not
+        // accumulate undelivered items in memory.
+        float[] signal = generateSineWave(1000.0, SAMPLE_RATE, BLOCK_SIZE);
+        for (int i = 0; i < 200; i++) {
+            meter.process(signal, signal, BLOCK_SIZE);
+        }
+        assertThat(meter.latestSnapshot()).isNotNull();
+        meter.close();
     }
 }

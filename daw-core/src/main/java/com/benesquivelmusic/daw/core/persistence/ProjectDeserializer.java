@@ -44,6 +44,7 @@ import com.benesquivelmusic.daw.sdk.spatial.ImmersiveFormat;
 import com.benesquivelmusic.daw.sdk.telemetry.*;
 import com.benesquivelmusic.daw.sdk.transport.ClickOutput;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
+import com.benesquivelmusic.daw.sdk.visualization.LoudnessTarget;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
@@ -259,6 +260,21 @@ public final class ProjectDeserializer {
                     project.setNudgeSettings(new NudgeSettings(unit, amount));
                 } catch (IllegalArgumentException ignored) {
                     // Unknown unit or invalid amount — keep the default.
+                }
+            }
+        }
+
+        // Parse loudness target (per-project mastering preference,
+        // defaults to LoudnessTarget.SPOTIFY for projects saved before
+        // this element was introduced).
+        List<Element> loudnessTargetElements = getDirectChildElements(root, "loudness-target");
+        if (!loudnessTargetElements.isEmpty()) {
+            String value = loudnessTargetElements.getFirst().getAttribute("value");
+            if (!value.isEmpty()) {
+                try {
+                    project.setLoudnessTarget(LoudnessTarget.valueOf(value));
+                } catch (IllegalArgumentException ignored) {
+                    // Unknown value — keep the default SPOTIFY.
                 }
             }
         }

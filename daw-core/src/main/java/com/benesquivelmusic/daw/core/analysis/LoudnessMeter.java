@@ -1,10 +1,13 @@
 package com.benesquivelmusic.daw.core.analysis;
 
+import com.benesquivelmusic.daw.sdk.mastering.LoudnessSnapshot;
 import com.benesquivelmusic.daw.sdk.visualization.*;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.Flow;
+import java.util.concurrent.SubmissionPublisher;
 
 /**
  * ITU-R BS.1770-compliant loudness meter for LUFS measurement.
@@ -81,6 +84,21 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
     private volatile LoudnessData latestData;
 
     /**
+     * Target publication interval, in seconds, for the
+     * {@link #snapshotPublisher() snapshot publisher}. EBU R128 meters
+     * typically refresh at ~10 Hz so that human eyes can track motion.
+     */
+    private static final double SNAPSHOT_INTERVAL_SECONDS = 0.1;
+    // Use the SubmissionPublisher default (async) executor so audio-thread
+    // callers of process() never run subscriber code inline. Subscribers
+    // still must avoid blocking — but the default executor protects the
+    // RT audio thread from a slow listener.
+    private final SubmissionPublisher<LoudnessSnapshot> snapshotPublisher
+            = new SubmissionPublisher<>();
+    private final long snapshotIntervalSamples;
+    private long samplesSinceLastSnapshot;
+
+    /**
      * Creates a loudness meter for the given sample rate and block size.
      *
      * @param sampleRate the audio sample rate in Hz
@@ -109,6 +127,9 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
         // exact bilinear transform coefficients per sample rate)
         kw1Coeffs = computeHighShelfCoeffs(sampleRate);
         kw2Coeffs = computeHighPassCoeffs(sampleRate);
+
+        this.snapshotIntervalSamples = Math.max(1L,
+                (long) Math.round(SNAPSHOT_INTERVAL_SECONDS * sampleRate));
 
         latestData = LoudnessData.SILENCE;
     }
@@ -196,6 +217,20 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
 
         latestData = new LoudnessData(momentaryLufs, shortTermLufs, integratedLufs,
                 loudnessRange, truePeakDb);
+
+        // Publish a LoudnessSnapshot at most ~10 Hz so subscribers
+        // (UI meters, telemetry sinks) get smooth, throttled updates
+        // independent of the audio block size.
+        samplesSinceLastSnapshot += numFrames;
+        if (samplesSinceLastSnapshot >= snapshotIntervalSamples
+                && !snapshotPublisher.isClosed()
+                && snapshotPublisher.hasSubscribers()) {
+            samplesSinceLastSnapshot = 0;
+            snapshotPublisher.offer(
+                    new LoudnessSnapshot(momentaryLufs, shortTermLufs, integratedLufs,
+                            loudnessRange, truePeakDb),
+                    null);
+        }
     }
 
     /**
@@ -221,6 +256,7 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
         shortTermLufsReadings.clear();
         history.clear();
         latestData = LoudnessData.SILENCE;
+        samplesSinceLastSnapshot = 0;
     }
 
     /**
@@ -320,6 +356,56 @@ public final class LoudnessMeter implements VisualizationProvider<LoudnessData> 
     @Override
     public boolean hasData() {
         return latestData != null;
+    }
+
+    /**
+     * Returns the latest measurements as a {@link LoudnessSnapshot} —
+     * the SDK-level data carrier that bundles M, S, I, LRA, and the
+     * sample-domain peak (dBFS). Note that the peak is a sample peak,
+     * not an oversampled true peak; see {@link LoudnessSnapshot} for
+     * details.
+     *
+     * @return a snapshot of the most recent measurements
+     */
+    public LoudnessSnapshot latestSnapshot() {
+        LoudnessData d = latestData;
+        return new LoudnessSnapshot(
+                d.momentaryLufs(),
+                d.shortTermLufs(),
+                d.integratedLufs(),
+                d.loudnessRange(),
+                d.truePeakDbfs());
+    }
+
+    /**
+     * Returns the {@link Flow.Publisher} of {@link LoudnessSnapshot}
+     * updates produced by this meter. The publisher emits at most
+     * ~10 Hz (one snapshot every 100 ms of processed audio) so
+     * downstream subscribers (UI, telemetry, logging) can drive
+     * meters without being flooded by the audio block rate.
+     *
+     * <p><b>Threading:</b> the publisher uses the default
+     * {@link SubmissionPublisher} executor, so subscriber {@code onNext}
+     * callbacks do not run on the thread that calls {@link #process};
+     * this keeps the real-time audio thread free of subscriber work.
+     * Subscribers must still be non-blocking and should hand off to
+     * their own thread (e.g. {@code Platform.runLater} for JavaFX
+     * meters). The underlying {@link SubmissionPublisher} drops items
+     * if a subscriber cannot keep up.</p>
+     *
+     * @return the snapshot publisher
+     */
+    public Flow.Publisher<LoudnessSnapshot> snapshotPublisher() {
+        return snapshotPublisher;
+    }
+
+    /**
+     * Closes the snapshot publisher and releases any associated
+     * resources. Subsequent calls to {@link #process} will not
+     * publish further snapshots.
+     */
+    public void close() {
+        snapshotPublisher.close();
     }
 
     // ----------------------------------------------------------------

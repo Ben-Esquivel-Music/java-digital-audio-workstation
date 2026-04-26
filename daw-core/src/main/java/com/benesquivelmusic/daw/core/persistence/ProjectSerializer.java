@@ -46,6 +46,7 @@ import com.benesquivelmusic.daw.sdk.telemetry.SourceDirectivity;
 import com.benesquivelmusic.daw.sdk.telemetry.SurfaceMaterialMap;
 import com.benesquivelmusic.daw.sdk.telemetry.TreatmentKind;
 import com.benesquivelmusic.daw.sdk.telemetry.WallAttachment;
+import com.benesquivelmusic.daw.sdk.visualization.LoudnessTarget;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 
@@ -127,6 +128,14 @@ public final class ProjectSerializer {
         buildBedBus(document, root, project.getBedBusManager());
         buildRippleMode(document, root, project);
         buildNudgeSettings(document, root, project);
+        buildLoudnessTarget(document, root, project);
+    }
+
+    private void buildLoudnessTarget(Document document, Element root, DawProject project) {
+        LoudnessTarget target = project.getLoudnessTarget();
+        Element elem = document.createElement("loudness-target");
+        elem.setAttribute("value", target.name());
+        root.appendChild(elem);
     }
 
     private void buildNudgeSettings(Document document, Element root, DawProject project) {
