@@ -21,6 +21,7 @@ import com.benesquivelmusic.daw.core.track.TrackGroup;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.edit.RippleMode;
+import com.benesquivelmusic.daw.sdk.visualization.LoudnessTarget;
 
 import java.util.*;
 
@@ -61,6 +62,7 @@ public final class DawProject {
     private int nextColorIndex;
     private RippleMode rippleMode = RippleMode.OFF;
     private NudgeSettings nudgeSettings = NudgeSettings.DEFAULT;
+    private LoudnessTarget loudnessTarget = LoudnessTarget.SPOTIFY;
 
     /**
      * Creates a new DAW project.
@@ -564,5 +566,33 @@ public final class DawProject {
     public void setNudgeSettings(NudgeSettings nudgeSettings) {
         this.nudgeSettings = Objects.requireNonNull(nudgeSettings,
                 "nudgeSettings must not be null");
+    }
+
+    // ── Loudness target ─────────────────────────────────────────────────────
+
+    /**
+     * Returns the active platform/genre {@link LoudnessTarget} for this
+     * project — used to drive the EBU R128 meter's target line, the
+     * numeric readout's target-delta, and {@link
+     * com.benesquivelmusic.daw.core.analysis.LoudnessMeter#validateForExport}
+     * during export.
+     *
+     * <p>Defaults to {@link LoudnessTarget#SPOTIFY} for new projects.</p>
+     *
+     * @return the active loudness target (never {@code null})
+     */
+    public LoudnessTarget getLoudnessTarget() {
+        return loudnessTarget;
+    }
+
+    /**
+     * Sets the active platform/genre {@link LoudnessTarget} for this
+     * project. The selection is persisted via {@code ProjectSerializer}.
+     *
+     * @param loudnessTarget the new loudness target (must not be {@code null})
+     */
+    public void setLoudnessTarget(LoudnessTarget loudnessTarget) {
+        this.loudnessTarget = Objects.requireNonNull(loudnessTarget,
+                "loudnessTarget must not be null");
     }
 }

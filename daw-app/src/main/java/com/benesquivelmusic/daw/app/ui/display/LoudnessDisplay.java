@@ -137,6 +137,30 @@ public final class LoudnessDisplay extends Region {
     }
 
     /**
+     * Returns the current target integrated loudness in LUFS.
+     *
+     * @return the target loudness
+     */
+    public double getTargetLufs() {
+        return targetLufs;
+    }
+
+    /**
+     * Returns the signed delta between the most recent integrated
+     * loudness and the active target, in loudness units (LU). Returns
+     * {@link Double#NaN} if no integrated loudness has been measured
+     * yet.
+     *
+     * @return signed delta in LU, or {@code NaN} if not measurable
+     */
+    public double getTargetDeltaLu() {
+        if (integratedLufs <= MIN_LUFS) {
+            return Double.NaN;
+        }
+        return integratedLufs - targetLufs;
+    }
+
+    /**
      * Renders the loudness display.
      */
     private void render() {
@@ -264,11 +288,22 @@ public final class LoudnessDisplay extends Region {
         gc.setTextAlign(TextAlignment.RIGHT);
         gc.fillText(tpText, w - 5, row2Y);
 
-        // --- Row 3: Target label ---
+        // --- Row 3: Target label + delta ---
         double row3Y = h - 6;
         gc.setTextAlign(TextAlignment.LEFT);
         gc.setFill(TARGET_COLOR);
         gc.fillText(String.format("%s: %.0f LUFS", targetName, targetLufs), 35, row3Y);
+
+        // Show signed integrated-vs-target delta in LU when measurable —
+        // engineers use this readout to know how much gain or attenuation
+        // is required to hit the active platform target.
+        if (integratedLufs > MIN_LUFS) {
+            double deltaLu = integratedLufs - targetLufs;
+            String deltaText = String.format("\u0394 %+.1f LU", deltaLu);
+            gc.setFill(getComplianceColor());
+            gc.setTextAlign(TextAlignment.RIGHT);
+            gc.fillText(deltaText, w - 5, row3Y);
+        }
     }
 
     /**
