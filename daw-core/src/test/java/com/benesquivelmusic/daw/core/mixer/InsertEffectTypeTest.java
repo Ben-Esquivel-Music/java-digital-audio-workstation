@@ -7,8 +7,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class InsertEffectTypeTest {
 
     @Test
-    void shouldHaveTenTypes() {
-        assertThat(InsertEffectType.values()).hasSize(21);
+    void shouldHaveTwentyTwoTypes() {
+        assertThat(InsertEffectType.values()).hasSize(22);
     }
 
     @Test

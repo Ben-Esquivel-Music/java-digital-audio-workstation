@@ -28,6 +28,7 @@ public enum InsertEffectType {
     SPRING_REVERB("Spring Reverb"),
     TIME_STRETCH("Time Stretch"),
     VELVET_NOISE_REVERB("Velvet Noise Reverb"),
+    CONVOLUTION_REVERB("Convolution Reverb"),
     WAVESHAPER("Waveshaper"),
     CLAP_PLUGIN("CLAP Plugin");
 
