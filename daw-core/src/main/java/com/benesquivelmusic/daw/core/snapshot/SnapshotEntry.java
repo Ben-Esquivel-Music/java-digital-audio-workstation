@@ -46,7 +46,13 @@ public record SnapshotEntry(
     /**
      * Loads the serialised project state for this snapshot.
      *
-     * @return the serialised content, or {@code null} if it could not be loaded
+     * <p>For in-memory entries (user checkpoints, undo points) the
+     * content is captured eagerly and is always returned. For autosave
+     * entries the file is read lazily, and an {@link
+     * java.io.UncheckedIOException} may be thrown if the underlying file
+     * has since been moved, deleted, or become unreadable.</p>
+     *
+     * @return the serialised content
      */
     public String loadContent() {
         return contentSupplier.get();

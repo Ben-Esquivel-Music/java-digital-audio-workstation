@@ -46,6 +46,15 @@ public final class SnapshotBrowserService {
     /** Default rolling retention for autosaves: 7 days. */
     public static final Duration DEFAULT_AUTOSAVE_RETENTION = Duration.ofDays(7);
 
+    /**
+     * Filename glob applied to autosave directories. Restricts the service
+     * to files matching the DAW's own autosave / checkpoint naming
+     * conventions so that registering a misconfigured directory cannot
+     * cause unrelated user files to appear in the browser or be deleted by
+     * the cleanup actions.
+     */
+    private static final String AUTOSAVE_GLOB = "{autosave*,checkpoint*,*.daw}";
+
     private final List<SnapshotEntry> userCheckpoints = new ArrayList<>();
     private final List<SnapshotEntry> undoSnapshots = new ArrayList<>();
     private final List<Path> autosaveDirectories = new CopyOnWriteArrayList<>();
@@ -165,17 +174,18 @@ public final class SnapshotBrowserService {
 
     /**
      * Permanently deletes autosave files older than the configured
-     * retention. Files in directories the service does not control are
-     * left untouched.
+     * retention. Only files matching the DAW's autosave / checkpoint
+     * naming pattern are touched, so registering a directory containing
+     * unrelated files is safe.
      *
-     * @return the number of files deleted
+     * @return the number of files actually deleted
      */
     public int purgeExpiredAutosaves() {
         int deleted = 0;
         Instant cutoff = Instant.now(clock).minus(autosaveRetention);
         for (Path dir : autosaveDirectories) {
             if (!Files.isDirectory(dir)) continue;
-            try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir, AUTOSAVE_GLOB)) {
                 for (Path file : stream) {
                     if (!Files.isRegularFile(file)) continue;
                     BasicFileAttributes attr =
@@ -183,8 +193,9 @@ public final class SnapshotBrowserService {
                     Instant t = attr.lastModifiedTime().toInstant();
                     if (t.isBefore(cutoff)) {
                         try {
-                            Files.deleteIfExists(file);
-                            deleted++;
+                            if (Files.deleteIfExists(file)) {
+                                deleted++;
+                            }
                         } catch (IOException ignored) {
                             // best-effort cleanup
                         }
@@ -199,20 +210,23 @@ public final class SnapshotBrowserService {
 
     /**
      * Deletes <em>all</em> autosave files in registered directories
-     * regardless of age. Used by the cleanup UI's "purge globally" action.
+     * regardless of age. Used by the cleanup UI's "purge all" action.
+     * Only files matching the autosave / checkpoint naming pattern are
+     * touched.
      *
-     * @return the number of files deleted
+     * @return the number of files actually deleted
      */
     public int purgeAllAutosaves() {
         int deleted = 0;
         for (Path dir : autosaveDirectories) {
             if (!Files.isDirectory(dir)) continue;
-            try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir, AUTOSAVE_GLOB)) {
                 for (Path file : stream) {
                     if (!Files.isRegularFile(file)) continue;
                     try {
-                        Files.deleteIfExists(file);
-                        deleted++;
+                        if (Files.deleteIfExists(file)) {
+                            deleted++;
+                        }
                     } catch (IOException ignored) {
                         // best-effort cleanup
                     }
@@ -248,7 +262,7 @@ public final class SnapshotBrowserService {
         Instant cutoff = Instant.now(clock).minus(autosaveRetention);
         for (Path dir : autosaveDirectories) {
             if (!Files.isDirectory(dir)) continue;
-            try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir, AUTOSAVE_GLOB)) {
                 for (Path file : stream) {
                     if (!Files.isRegularFile(file)) continue;
                     BasicFileAttributes attr;
@@ -260,8 +274,13 @@ public final class SnapshotBrowserService {
                     Instant t = attr.lastModifiedTime().toInstant();
                     if (t.isBefore(cutoff)) continue;
                     Path filePath = file;
+                    // Include the absolute path hash so entries from
+                    // different directories with the same filename
+                    // (e.g. checkpoint-001-...) get distinct IDs.
+                    String idSuffix = Integer.toHexString(
+                            filePath.toAbsolutePath().toString().hashCode());
                     list.add(new SnapshotEntry(
-                            "autosave-" + filePath.getFileName(),
+                            "autosave-" + idSuffix + "-" + filePath.getFileName(),
                             t,
                             SnapshotKind.AUTOSAVE,
                             filePath.getFileName().toString(),

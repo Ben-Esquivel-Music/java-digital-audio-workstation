@@ -17,8 +17,10 @@ import java.util.Objects;
  * <p>The diff used by the snapshot browser is intentionally coarse: it
  * lists tracks and clips that were added, removed, or modified, along with
  * per-track mixer parameter changes (volume / pan / mute / solo /
- * insert plug-in count). It is sufficient to power the "Compare with
- * current" view and the per-row notable changes summary
+ * insert plug-in count). Tracks and clips are matched by their stable
+ * IDs (so renames are reported as modifications, not as add+remove). It
+ * is sufficient to power the "Compare with current" view and the per-row
+ * notable changes summary
  * ("+3 clips, -1 track, 14 edits") shown in the timeline.</p>
  *
  * <p>This is <em>not</em> a precise audio-content diff and intentionally
@@ -96,22 +98,23 @@ public final class SnapshotDiff {
                     "Renamed: '" + from.getName() + "' → '" + to.getName() + "'"));
         }
 
-        Map<String, Track> fromTracks = byName(from.getTracks());
-        Map<String, Track> toTracks = byName(to.getTracks());
+        Map<String, Track> fromTracks = byId(from.getTracks());
+        Map<String, Track> toTracks = byId(to.getTracks());
 
         for (Map.Entry<String, Track> e : fromTracks.entrySet()) {
             if (!toTracks.containsKey(e.getKey())) {
-                entries.add(new Entry("track", e.getKey(),
+                entries.add(new Entry("track", e.getValue().getName(),
                         ChangeType.REMOVED, "Track removed"));
             }
         }
         for (Map.Entry<String, Track> e : toTracks.entrySet()) {
             if (!fromTracks.containsKey(e.getKey())) {
-                entries.add(new Entry("track", e.getKey(),
+                Track added = e.getValue();
+                entries.add(new Entry("track", added.getName(),
                         ChangeType.ADDED, "Track added"));
-                for (AudioClip clip : e.getValue().getClips()) {
+                for (AudioClip clip : added.getClips()) {
                     entries.add(new Entry("clip",
-                            e.getKey() + "/" + clip.getName(),
+                            added.getName() + "/" + clip.getName(),
                             ChangeType.ADDED, "Clip added"));
                 }
             }
@@ -120,6 +123,11 @@ public final class SnapshotDiff {
             Track ft = e.getValue();
             Track tt = toTracks.get(e.getKey());
             if (tt != null) {
+                if (!Objects.equals(ft.getName(), tt.getName())) {
+                    entries.add(new Entry("track", tt.getName(),
+                            ChangeType.MODIFIED,
+                            "Track renamed: '" + ft.getName() + "' → '" + tt.getName() + "'"));
+                }
                 diffTrack(ft, tt, from, to, entries);
             }
         }
@@ -127,57 +135,66 @@ public final class SnapshotDiff {
         return new SnapshotDiff(entries);
     }
 
-    private static Map<String, Track> byName(List<Track> tracks) {
+    private static Map<String, Track> byId(List<Track> tracks) {
         Map<String, Track> map = new HashMap<>();
         for (Track t : tracks) {
-            map.putIfAbsent(t.getName(), t);
+            map.putIfAbsent(trackKey(t), t);
         }
         return map;
+    }
+
+    private static String trackKey(Track t) {
+        String id = t.getId();
+        return (id != null && !id.isBlank()) ? id : "name:" + t.getName();
     }
 
     private static void diffTrack(Track ft, Track tt,
                                   DawProject from, DawProject to,
                                   List<Entry> entries) {
-        Map<String, AudioClip> fromClips = clipsByName(ft.getClips());
-        Map<String, AudioClip> toClips = clipsByName(tt.getClips());
+        Map<String, AudioClip> fromClips = clipsById(ft.getClips());
+        Map<String, AudioClip> toClips = clipsById(tt.getClips());
 
         for (Map.Entry<String, AudioClip> e : fromClips.entrySet()) {
             if (!toClips.containsKey(e.getKey())) {
                 entries.add(new Entry("clip",
-                        ft.getName() + "/" + e.getKey(),
+                        ft.getName() + "/" + e.getValue().getName(),
                         ChangeType.REMOVED, "Clip removed"));
             }
         }
         for (Map.Entry<String, AudioClip> e : toClips.entrySet()) {
+            AudioClip b = e.getValue();
             if (!fromClips.containsKey(e.getKey())) {
                 entries.add(new Entry("clip",
-                        tt.getName() + "/" + e.getKey(),
+                        tt.getName() + "/" + b.getName(),
                         ChangeType.ADDED, "Clip added"));
             } else {
                 AudioClip a = fromClips.get(e.getKey());
-                AudioClip b = e.getValue();
-                if (a.getStartBeat() != b.getStartBeat()
-                        || a.getDurationBeats() != b.getDurationBeats()
+                if (Double.compare(a.getStartBeat(), b.getStartBeat()) != 0
+                        || Double.compare(a.getDurationBeats(), b.getDurationBeats()) != 0
                         || Double.compare(a.getGainDb(), b.getGainDb()) != 0) {
                     entries.add(new Entry("clip",
-                            tt.getName() + "/" + e.getKey(),
+                            tt.getName() + "/" + b.getName(),
                             ChangeType.MODIFIED,
                             "Clip parameters changed"));
                 }
             }
         }
 
-        if (ft.getVolume() != tt.getVolume()) {
-            entries.add(new Entry("mixer", ft.getName(), ChangeType.MODIFIED,
+        if (Double.compare(ft.getVolume(), tt.getVolume()) != 0) {
+            entries.add(new Entry("mixer", tt.getName(), ChangeType.MODIFIED,
                     "Volume " + ft.getVolume() + " → " + tt.getVolume()));
         }
-        if (ft.getPan() != tt.getPan()) {
-            entries.add(new Entry("mixer", ft.getName(), ChangeType.MODIFIED,
+        if (Double.compare(ft.getPan(), tt.getPan()) != 0) {
+            entries.add(new Entry("mixer", tt.getName(), ChangeType.MODIFIED,
                     "Pan " + ft.getPan() + " → " + tt.getPan()));
         }
         if (ft.isMuted() != tt.isMuted()) {
-            entries.add(new Entry("mixer", ft.getName(), ChangeType.MODIFIED,
+            entries.add(new Entry("mixer", tt.getName(), ChangeType.MODIFIED,
                     "Mute " + ft.isMuted() + " → " + tt.isMuted()));
+        }
+        if (ft.isSolo() != tt.isSolo()) {
+            entries.add(new Entry("mixer", tt.getName(), ChangeType.MODIFIED,
+                    "Solo " + ft.isSolo() + " → " + tt.isSolo()));
         }
 
         MixerChannel fc = from.getMixerChannelForTrack(ft);
@@ -186,17 +203,18 @@ public final class SnapshotDiff {
             int fInserts = fc.getInsertCount();
             int tInserts = tc.getInsertCount();
             if (fInserts != tInserts) {
-                entries.add(new Entry("plugin", ft.getName(),
+                entries.add(new Entry("plugin", tt.getName(),
                         ChangeType.MODIFIED,
                         "Insert plug-ins " + fInserts + " → " + tInserts));
             }
         }
     }
 
-    private static Map<String, AudioClip> clipsByName(List<AudioClip> clips) {
+    private static Map<String, AudioClip> clipsById(List<AudioClip> clips) {
         Map<String, AudioClip> map = new HashMap<>();
         for (AudioClip c : clips) {
-            map.putIfAbsent(c.getName(), c);
+            String id = c.getId();
+            map.putIfAbsent((id != null && !id.isBlank()) ? id : "name:" + c.getName(), c);
         }
         return map;
     }

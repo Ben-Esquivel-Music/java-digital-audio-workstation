@@ -28,7 +28,9 @@ class SnapshotBrowserTest {
                 latch.countDown();
             }
         });
-        latch.await(5, TimeUnit.SECONDS);
+        assertThat(latch.await(5, TimeUnit.SECONDS))
+                .as("JavaFX runLater(create) should complete within 5s")
+                .isTrue();
         return ref.get();
     }
 
@@ -41,7 +43,9 @@ class SnapshotBrowserTest {
                 latch.countDown();
             }
         });
-        latch.await(5, TimeUnit.SECONDS);
+        assertThat(latch.await(5, TimeUnit.SECONDS))
+                .as("JavaFX runLater task should complete within 5s")
+                .isTrue();
     }
 
     @Test

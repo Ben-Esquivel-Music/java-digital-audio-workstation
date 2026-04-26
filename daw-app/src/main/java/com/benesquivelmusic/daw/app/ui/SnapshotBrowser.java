@@ -50,9 +50,9 @@ import java.util.function.Consumer;
  *   <li>The <em>Compare with current</em> button asks the host to display
  *       a diff of tracks, clips, and plugin parameters that differ between
  *       the selected snapshot and the current project.</li>
- *   <li>The <em>Purge old autosaves</em> button removes all autosave
- *       files older than the service's retention window for the project
- *       (and globally if the user chose the global cleanup mode).</li>
+ *   <li>The <em>Purge old autosaves</em> button removes autosave files
+ *       older than the service's retention window in directories
+ *       registered with the {@link SnapshotBrowserService}.</li>
  * </ul>
  */
 public final class SnapshotBrowser extends VBox {
