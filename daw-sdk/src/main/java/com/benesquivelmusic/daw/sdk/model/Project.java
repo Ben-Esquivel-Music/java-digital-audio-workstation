@@ -1,6 +1,6 @@
 package com.benesquivelmusic.daw.sdk.model;
 
-import java.util.HashMap;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -10,10 +10,11 @@ import java.util.UUID;
  * The full immutable session state of a DAW project.
  *
  * <p>A {@code Project} is a value: every collection it carries is a
- * defensively-copied immutable {@link Map} keyed by {@link UUID}. Mutations
- * are expressed through {@code withX(...)} methods that return a new
- * {@code Project} with the requested change applied via
- * {@link Map#copyOf(Map)} so the original snapshot remains untouched.</p>
+ * defensively-copied unmodifiable {@link Map} keyed by {@link UUID}, and
+ * the maps preserve insertion order so iteration is stable across copies.
+ * Mutations are expressed through {@code withX(...)} methods that return
+ * a new {@code Project} with the requested change applied so the
+ * original snapshot remains untouched.</p>
  *
  * <p>This design makes concurrent reads lock-free, structural equality
  * automatic, and undo/redo trivial: an action is just {@code (before, after)}
@@ -41,12 +42,15 @@ public record Project(
     public Project {
         Objects.requireNonNull(id, "id must not be null");
         Objects.requireNonNull(name, "name must not be null");
-        tracks          = Map.copyOf(Objects.requireNonNull(tracks, "tracks must not be null"));
-        audioClips      = Map.copyOf(Objects.requireNonNull(audioClips, "audioClips must not be null"));
-        midiClips       = Map.copyOf(Objects.requireNonNull(midiClips, "midiClips must not be null"));
-        mixerChannels   = Map.copyOf(Objects.requireNonNull(mixerChannels, "mixerChannels must not be null"));
-        returns         = Map.copyOf(Objects.requireNonNull(returns, "returns must not be null"));
-        automationLanes = Map.copyOf(Objects.requireNonNull(automationLanes, "automationLanes must not be null"));
+        // Defensive copies into LinkedHashMap-backed unmodifiable views so
+        // iteration order is stable (Map.copyOf does not guarantee any
+        // particular iteration order).
+        tracks          = orderedCopy(Objects.requireNonNull(tracks, "tracks must not be null"));
+        audioClips      = orderedCopy(Objects.requireNonNull(audioClips, "audioClips must not be null"));
+        midiClips       = orderedCopy(Objects.requireNonNull(midiClips, "midiClips must not be null"));
+        mixerChannels   = orderedCopy(Objects.requireNonNull(mixerChannels, "mixerChannels must not be null"));
+        returns         = orderedCopy(Objects.requireNonNull(returns, "returns must not be null"));
+        automationLanes = orderedCopy(Objects.requireNonNull(automationLanes, "automationLanes must not be null"));
     }
 
     /** Creates a freshly-identified, empty project with the given name. */
@@ -141,21 +145,31 @@ public record Project(
 
     // ----- helpers ------------------------------------------------------------------------------
 
+    private static <K, V> Map<K, V> orderedCopy(Map<K, V> source) {
+        if (source.isEmpty()) {
+            return Map.of();
+        }
+        return Collections.unmodifiableMap(new LinkedHashMap<>(source));
+    }
+
     private static <K, V> Map<K, V> plus(Map<K, V> source, K key, V value) {
         Objects.requireNonNull(key, "key must not be null");
         Objects.requireNonNull(value, "value must not be null");
-        // Preserve insertion order for stable iteration in views and tests.
-        Map<K, V> next = new LinkedHashMap<>(source);
+        // LinkedHashMap + unmodifiableMap preserves insertion order for
+        // stable iteration in views and tests; Map.copyOf does not
+        // guarantee iteration order so it would silently lose ordering.
+        LinkedHashMap<K, V> next = new LinkedHashMap<>(source);
         next.put(key, value);
-        return Map.copyOf(next);
+        return Collections.unmodifiableMap(next);
     }
 
     private static <K, V> Map<K, V> minus(Map<K, V> source, K key) {
+        Objects.requireNonNull(key, "key must not be null");
         if (!source.containsKey(key)) {
             return source;
         }
-        Map<K, V> next = new HashMap<>(source);
+        LinkedHashMap<K, V> next = new LinkedHashMap<>(source);
         next.remove(key);
-        return Map.copyOf(next);
+        return Collections.unmodifiableMap(next);
     }
 }

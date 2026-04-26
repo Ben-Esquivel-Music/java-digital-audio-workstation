@@ -43,19 +43,29 @@ import java.util.logging.Logger;
  *
  * <p>Events are delivered with {@link SubmissionPublisher#offer(Object,
  * java.util.function.BiPredicate) offer(item, onDrop)}. If a subscriber's
- * buffer is full the item is dropped for that subscriber and a warning is
- * logged — writers are never blocked by a slow subscriber. Subscribers
- * that need lossless delivery are responsible for keeping up with the
- * publisher.</p>
+ * buffer is full the item is dropped for that subscriber — writers are
+ * never blocked by a slow subscriber. The cumulative drop count is
+ * exposed via {@link #droppedEventCount()}, and a single warning per
+ * subscriber-and-second is logged so sustained backpressure does not
+ * create a log storm. Subscribers that need lossless delivery are
+ * responsible for keeping up with the publisher.</p>
  */
 public final class ProjectStore implements AutoCloseable {
 
     private static final Logger LOG = Logger.getLogger(ProjectStore.class.getName());
 
+    /** Minimum spacing between drop-warning log lines (nanoseconds). */
+    private static final long DROP_LOG_INTERVAL_NANOS =
+            java.util.concurrent.TimeUnit.SECONDS.toNanos(1);
+
     private final AtomicReference<Project> current;
     private final SubmissionPublisher<ProjectChange> publisher;
     private final ExecutorService publisherExecutor;
     private final ReentrantLock writeLock = new ReentrantLock();
+    private final java.util.concurrent.atomic.AtomicLong droppedEvents =
+            new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong nextDropLogNanos =
+            new java.util.concurrent.atomic.AtomicLong();
 
     public ProjectStore(Project initial) {
         this.current = new AtomicReference<>(Objects.requireNonNull(initial, "initial must not be null"));
@@ -153,16 +163,31 @@ public final class ProjectStore implements AutoCloseable {
 
     /**
      * Non-blocking publish. Drops the event for any subscriber whose
-     * buffer is full and logs a warning so writers are never stalled by a
-     * slow consumer.
+     * buffer is full so writers are never stalled by a slow consumer.
+     *
+     * <p>Drops are counted in {@link #droppedEvents} and a single warning
+     * (carrying the rolling drop count and the offending subscriber's
+     * identity, but not the event payload) is emitted at most once per
+     * second to avoid log storms under sustained backpressure. Use
+     * {@link #droppedEventCount()} to observe the cumulative count.</p>
      */
     private void publish(ProjectChange event) {
         publisher.offer(event, (subscriber, item) -> {
-            LOG.log(Level.WARNING,
-                    () -> "ProjectStore: dropping change event for slow subscriber "
-                            + subscriber + ": " + item);
+            long total = droppedEvents.incrementAndGet();
+            long now = System.nanoTime();
+            long next = nextDropLogNanos.get();
+            if (now >= next && nextDropLogNanos.compareAndSet(next, now + DROP_LOG_INTERVAL_NANOS)) {
+                LOG.log(Level.WARNING,
+                        "ProjectStore: dropping change events for slow subscriber {0} (total dropped so far: {1})",
+                        new Object[] { subscriber, total });
+            }
             return false; // do not retry
         });
+    }
+
+    /** Returns the cumulative number of change events dropped because subscribers' buffers were full. */
+    public long droppedEventCount() {
+        return droppedEvents.get();
     }
 
     @Override

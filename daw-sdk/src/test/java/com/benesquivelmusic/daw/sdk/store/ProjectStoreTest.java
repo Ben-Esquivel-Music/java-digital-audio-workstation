@@ -9,7 +9,6 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Flow;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -43,13 +42,20 @@ class ProjectStoreTest {
     }
 
     @Test
-    void apply_withNoChange_emitsNothing() {
+    void apply_withNoChange_emitsNothing() throws Exception {
         try (ProjectStore store = new ProjectStore(Project.empty("s"))) {
-            List<ProjectChange> received = subscribe(store);
+            java.util.concurrent.CountDownLatch anyEvent = new java.util.concurrent.CountDownLatch(1);
+            store.changes().subscribe(new Flow.Subscriber<>() {
+                @Override public void onSubscribe(Flow.Subscription s) { s.request(Long.MAX_VALUE); }
+                @Override public void onNext(ProjectChange item) { anyEvent.countDown(); }
+                @Override public void onError(Throwable throwable) { }
+                @Override public void onComplete() { }
+            });
             store.apply(CompoundAction.identity());
-            // Give the publisher a beat — it must not deliver anything.
-            try { Thread.sleep(150); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-            assertThat(received).isEmpty();
+            // Bounded wait — must not be tripped at all.
+            assertThat(anyEvent.await(200, java.util.concurrent.TimeUnit.MILLISECONDS))
+                    .as("no-op apply must not emit any event")
+                    .isFalse();
         }
     }
 
@@ -203,15 +209,14 @@ class ProjectStoreTest {
 
     private static List<ProjectChange> subscribe(ProjectStore store) {
         List<ProjectChange> received = new CopyOnWriteArrayList<>();
-        AtomicBoolean done = new AtomicBoolean();
         store.changes().subscribe(new Flow.Subscriber<>() {
             @Override
             public void onSubscribe(Flow.Subscription subscription) {
                 subscription.request(Long.MAX_VALUE);
             }
             @Override public void onNext(ProjectChange item) { received.add(item); }
-            @Override public void onError(Throwable throwable) { done.set(true); }
-            @Override public void onComplete() { done.set(true); }
+            @Override public void onError(Throwable throwable) { }
+            @Override public void onComplete() { }
         });
         return received;
     }
