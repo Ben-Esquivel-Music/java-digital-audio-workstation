@@ -43,6 +43,14 @@ public enum DawAction {
             new KeyCodeCombination(KeyCode.Z, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
     SAVE("Save", Category.EDITING,
             new KeyCodeCombination(KeyCode.S, KeyCombination.SHORTCUT_DOWN)),
+    /**
+     * Snapshot history browser — explicit checkpoint creation.
+     * Bound to {@code Ctrl+Alt+S} per the issue
+     * <em>Snapshot History Browser with Visual Diff Preview</em>.
+     */
+    CREATE_CHECKPOINT("Create Checkpoint", Category.EDITING,
+            new KeyCodeCombination(KeyCode.S,
+                    KeyCombination.SHORTCUT_DOWN, KeyCombination.ALT_DOWN)),
     NEW_PROJECT("New Project", Category.EDITING,
             new KeyCodeCombination(KeyCode.N, KeyCombination.SHORTCUT_DOWN)),
     OPEN_PROJECT("Open Project", Category.EDITING,
