@@ -111,7 +111,8 @@ public final class ProjectSerializer {
 
     private void buildDocument(Document document, DawProject project) {
         Element root = document.createElement("daw-project");
-        root.setAttribute("version", "1");
+        root.setAttribute("version", Integer.toString(
+                com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION));
         document.appendChild(root);
 
         buildMetadata(document, root, project);

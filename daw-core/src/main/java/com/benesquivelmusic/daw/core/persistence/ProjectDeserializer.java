@@ -10,6 +10,8 @@ import com.benesquivelmusic.daw.core.marker.MarkerRange;
 import com.benesquivelmusic.daw.core.marker.MarkerType;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.mixer.*;
+import com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry;
+import com.benesquivelmusic.daw.core.persistence.migration.MigrationReport;
 import com.benesquivelmusic.daw.core.mixer.snapshot.ChannelSnapshot;
 import com.benesquivelmusic.daw.core.mixer.snapshot.InsertSnapshot;
 import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshot;
@@ -82,6 +84,38 @@ public final class ProjectDeserializer {
     private static final double MAX_AZIMUTH_EXCLUSIVE = Math.nextDown(360.0);
 
     private final List<String> missingFiles = new ArrayList<>();
+    private final MigrationRegistry migrationRegistry;
+    private MigrationReport lastMigrationReport = MigrationReport.noOp(MigrationRegistry.CURRENT_VERSION);
+
+    /**
+     * Creates a deserializer backed by the production
+     * {@link MigrationRegistry#defaultRegistry()}.
+     */
+    public ProjectDeserializer() {
+        this(MigrationRegistry.defaultRegistry());
+    }
+
+    /**
+     * Creates a deserializer backed by the given migration registry.
+     * Used by tests to exercise alternate migration chains without
+     * mutating global state.
+     *
+     * @param migrationRegistry registry to consult on every load
+     */
+    public ProjectDeserializer(MigrationRegistry migrationRegistry) {
+        this.migrationRegistry = java.util.Objects.requireNonNull(
+                migrationRegistry, "migrationRegistry");
+    }
+
+    /**
+     * Returns the report produced by the most recent
+     * {@link #deserialize(String)} call. Always non-null; use
+     * {@link MigrationReport#wasMigrated()} to test whether any
+     * migrations actually ran.
+     */
+    public MigrationReport getLastMigrationReport() {
+        return lastMigrationReport;
+    }
 
     /**
      * Returns a list of audio file paths referenced by the project that were
@@ -107,6 +141,7 @@ public final class ProjectDeserializer {
      */
     public DawProject deserialize(String xml) throws IOException {
         missingFiles.clear();
+        lastMigrationReport = MigrationReport.noOp(migrationRegistry.currentVersion());
         try {
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
@@ -114,6 +149,13 @@ public final class ProjectDeserializer {
             Document document = builder.parse(
                     new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
             document.getDocumentElement().normalize();
+
+            // Apply any registered schema migrations before parsing so the
+            // rest of the deserializer always sees a current-version DOM.
+            MigrationRegistry.MigrationResult migrated = migrationRegistry.migrate(document);
+            document = migrated.document();
+            lastMigrationReport = migrated.report();
+
             return parseDocument(document);
         } catch (ParserConfigurationException | SAXException e) {
             throw new IOException("Failed to deserialize project XML", e);
