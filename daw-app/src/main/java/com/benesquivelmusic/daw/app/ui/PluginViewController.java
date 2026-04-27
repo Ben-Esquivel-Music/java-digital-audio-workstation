@@ -55,6 +55,8 @@ final class PluginViewController {
     private NoiseGatePluginView noiseGateView;
     private Stage convolutionReverbStage;
     private ConvolutionReverbPluginView convolutionReverbView;
+    private Stage exciterStage;
+    private ExciterPluginView exciterView;
 
     PluginViewController(Host host) {
         this.host = host;
@@ -161,6 +163,7 @@ final class PluginViewController {
             case TransientShaperPlugin.PLUGIN_ID -> openTransientShaperWindow((TransientShaperPlugin) plugin);
             case NoiseGatePlugin.PLUGIN_ID -> openNoiseGateWindow((NoiseGatePlugin) plugin);
             case ConvolutionReverbPlugin.PLUGIN_ID -> openConvolutionReverbWindow((ConvolutionReverbPlugin) plugin);
+            case ExciterPlugin.PLUGIN_ID -> openExciterWindow((ExciterPlugin) plugin);
             case ParametricEqPlugin.PLUGIN_ID,
                  CompressorPlugin.PLUGIN_ID,
                  ReverbPlugin.PLUGIN_ID -> host.switchToMasteringView();
@@ -452,5 +455,33 @@ final class PluginViewController {
         stage.show();
         stage.toFront();
         convolutionReverbStage = stage;
+    }
+
+    private void openExciterWindow(ExciterPlugin plugin) {
+        if (exciterStage != null) {
+            exciterStage.show();
+            exciterStage.toFront();
+            return;
+        }
+
+        exciterView = new ExciterPluginView(plugin.getProcessor());
+
+        Stage stage = new Stage(StageStyle.UTILITY);
+        stage.setTitle("Harmonic Exciter");
+        stage.setScene(new Scene(exciterView));
+        DarkThemeHelper.applyTo(stage.getScene());
+        stage.setMinWidth(640);
+        stage.setMinHeight(320);
+        stage.setOnHidden(_ -> {
+            if (exciterView != null) {
+                exciterView.dispose();
+                exciterView = null;
+            }
+            plugin.deactivate();
+            exciterStage = null;
+        });
+        stage.show();
+        stage.toFront();
+        exciterStage = stage;
     }
 }

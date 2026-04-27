@@ -53,7 +53,8 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
                 TransientShaperPlugin,
                 NoiseGatePlugin,
                 MidSideWrapperPlugin,
-                ConvolutionReverbPlugin {
+                ConvolutionReverbPlugin,
+                ExciterPlugin {
 
     /**
      * Lightweight metadata record used by the menu layer to populate plugin
