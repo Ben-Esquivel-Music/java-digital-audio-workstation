@@ -56,7 +56,7 @@ class IdleVisualizationAnimatorTest {
     @Test
     void levelDataRmsAndPeakStayWithinDocumentedBreathingRange() {
         // Sweep through several phases — the breathing values must remain
-        // within the documented [0.06, 0.30] (RMS) and (0, 0.85] (peak)
+        // within the documented [0.18, 0.30] (RMS) and (0, 0.85] (peak)
         // ranges.
         double minRms = Double.MAX_VALUE;
         double maxRms = -Double.MAX_VALUE;

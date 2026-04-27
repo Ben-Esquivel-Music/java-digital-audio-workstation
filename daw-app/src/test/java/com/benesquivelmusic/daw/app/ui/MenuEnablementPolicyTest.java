@@ -15,7 +15,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class MenuEnablementPolicyTest {
 
     @Test
-    void cleanProjectWithNoSelectionDisablesEverythingExceptUndoRedo() {
+    void cleanProjectWithNoSelectionDisablesEverything() {
         var enablement = MenuEnablementPolicy.compute(new MenuEnablementPolicy.MenuState(
                 /* projectDirty */ false,
                 /* canUndo     */ false,

@@ -28,7 +28,7 @@ class TransportGlowAnimatorTest {
 
     @Test
     void recordBlinkOpacityStaysWithinDocumentedRange() {
-        // The blink envelope is 0.4 + sin(...) * 0.6 → range [0.4, 1.0].
+        // The blink envelope is 0.4 + (0.5 + 0.5 * sin(...)) * 0.6 → range [0.4, 1.0].
         for (int i = 0; i < 1000; i++) {
             double phase = i * 0.01;
             double opacity = TransportGlowAnimator.recordBlinkOpacity(phase);
