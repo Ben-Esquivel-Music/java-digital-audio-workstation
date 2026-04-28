@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.sdk.audio;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.Flow;
 
 /**
@@ -78,6 +79,33 @@ public final class AsioBackend implements AudioBackend {
     @Override
     public boolean isOpen() {
         return support.isOpen();
+    }
+
+    /**
+     * Do not advertise control-panel support until the native ASIO
+     * control-panel bridge is actually wired. Returning an empty
+     * {@link Optional} allows the UI to disable the action instead of
+     * exposing a button that can only fail at runtime.
+     *
+     * <p>When the FFM downcall to {@code ASIOControlPanel()} is wired
+     * by the implementation layer that ships the Steinberg ASIO SDK
+     * shim (see {@code daw-core/native/asio/}), this method should
+     * return {@code Optional.of(this::invokeAsioControlPanel)}.</p>
+     */
+    @Override
+    public Optional<Runnable> openControlPanel() {
+        return Optional.empty();
+    }
+
+    /**
+     * Placeholder for a future bridge to the FFM-bound
+     * {@code ASIOControlPanel()} symbol from the native shim under
+     * {@code daw-core/native/asio/}. This backend does not currently
+     * expose the control panel.
+     */
+    private void invokeAsioControlPanel() {
+        throw new AudioBackendException(
+                "ASIO control panel is not implemented in this build.");
     }
 
     @Override

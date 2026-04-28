@@ -113,6 +113,20 @@ class MockAudioBackendTest {
     }
 
     @Test
+    void openControlPanelReturnsRunnableThatRecordsInvocations() {
+        MockAudioBackend b = new MockAudioBackend();
+        assertEquals(0, b.controlPanelInvocationCount());
+
+        var action = b.openControlPanel();
+        assertTrue(action.isPresent(),
+                "MockAudioBackend should expose a control-panel runnable for tests");
+
+        action.get().run();
+        action.get().run();
+        assertEquals(2, b.controlPanelInvocationCount());
+    }
+
+    @Test
     void sinkBeforeOpenIsNoOp() {
         MockAudioBackend b = new MockAudioBackend();
         b.sink(new AudioBlock(44_100.0, 2, 1, new float[2]));

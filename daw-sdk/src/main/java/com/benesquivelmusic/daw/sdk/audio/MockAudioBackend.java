@@ -6,8 +6,10 @@ import java.nio.ShortBuffer;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Flow;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Deterministic {@link AudioBackend} implementation for offline tests.
@@ -33,6 +35,7 @@ public final class MockAudioBackend implements AudioBackend {
     private final java.io.ByteArrayOutputStream outputPcm = new java.io.ByteArrayOutputStream();
     private final Map<Integer, java.io.ByteArrayOutputStream> directChannelOutput =
             new ConcurrentHashMap<>();
+    private final AtomicInteger controlPanelInvocations = new AtomicInteger();
     private int inputCursor;
 
     /**
@@ -130,6 +133,27 @@ public final class MockAudioBackend implements AudioBackend {
     @Override
     public boolean isOpen() {
         return support.isOpen();
+    }
+
+    /**
+     * Returns a runnable that records the invocation. Tests can assert
+     * the count via {@link #controlPanelInvocationCount()} and verify
+     * that the dialog re-queries device capabilities after the panel
+     * closes.
+     */
+    @Override
+    public Optional<Runnable> openControlPanel() {
+        return Optional.of(controlPanelInvocations::incrementAndGet);
+    }
+
+    /**
+     * Number of times the runnable returned by {@link #openControlPanel()}
+     * has been invoked since this backend was constructed.
+     *
+     * @return invocation count (never negative)
+     */
+    public int controlPanelInvocationCount() {
+        return controlPanelInvocations.get();
     }
 
     @Override

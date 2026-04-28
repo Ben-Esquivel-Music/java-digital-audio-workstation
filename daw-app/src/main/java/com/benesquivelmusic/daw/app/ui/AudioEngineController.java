@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 import com.benesquivelmusic.daw.sdk.audio.XrunEvent;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.Flow;
 
 /**
@@ -128,6 +129,31 @@ public interface AudioEngineController {
      * @throws RuntimeException if the tone cannot be played
      */
     void playTestTone(String outputDeviceName);
+
+    /**
+     * Returns an action that launches the active backend's native
+     * driver control panel, or {@link Optional#empty()} when the
+     * active backend has no native panel (for example {@code JACK} or
+     * the test {@code Mock} backend).
+     *
+     * <p>{@link AudioSettingsDialog} uses this to enable or disable
+     * the "Open Driver Control Panel" button. The returned runnable
+     * may throw {@link RuntimeException} (typically
+     * {@link com.benesquivelmusic.daw.sdk.audio.AudioBackendException})
+     * when the panel cannot be launched; callers should surface the
+     * failure as a notification rather than letting the stack trace
+     * escape.</p>
+     *
+     * <p>The default implementation returns
+     * {@link Optional#empty()}, which is safe for test stubs that do
+     * not have a real backend.</p>
+     *
+     * @return an optional action that opens the native panel; never
+     *         {@code null}
+     */
+    default Optional<Runnable> openControlPanel() {
+        return Optional.empty();
+    }
 
     /**
      * Returns a {@link Flow.Publisher} that emits {@link XrunEvent}s

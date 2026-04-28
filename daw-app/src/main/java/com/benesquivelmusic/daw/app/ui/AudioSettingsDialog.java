@@ -21,14 +21,17 @@ import javafx.scene.control.ComboBox;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
 import javafx.scene.control.Separator;
+import javafx.scene.control.Tooltip;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.util.Duration;
 
+import java.awt.GraphicsEnvironment;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -72,6 +75,7 @@ public final class AudioSettingsDialog extends Dialog<Void> {
     private final Label cpuLoadLabel;
     private final Label activeBackendLabel;
     private final Button testToneButton;
+    private final Button openControlPanelButton;
     private final Timeline cpuPollTimer;
 
     /** Most-recently enumerated device list for the active backend selection. */
@@ -113,6 +117,10 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         activeBackendLabel = new Label();
         testToneButton = new Button("Test Tone");
         testToneButton.setGraphic(IconNode.of(DawIcon.PLAY, 12));
+        openControlPanelButton = new Button("Open Driver Control Panel");
+        openControlPanelButton.setGraphic(IconNode.of(DawIcon.HEADPHONES, 12));
+        openControlPanelButton.setVisible(!GraphicsEnvironment.isHeadless());
+        openControlPanelButton.setManaged(!GraphicsEnvironment.isHeadless());
 
         getDialogPane().setContent(buildContent());
         getDialogPane().getButtonTypes().addAll(ButtonType.APPLY, ButtonType.CANCEL);
@@ -165,7 +173,8 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         row++;
 
         grid.add(new Label("Output Device:"), 0, row);
-        grid.add(outputDeviceCombo, 1, row, 2, 1);
+        grid.add(outputDeviceCombo, 1, row);
+        grid.add(openControlPanelButton, 2, row);
         row++;
 
         grid.add(new Label("Sample Rate (Hz):"), 0, row);
@@ -230,6 +239,7 @@ public final class AudioSettingsDialog extends Dialog<Void> {
             mixPrecisionCombo.setValue(model.getMixPrecision());
 
             refreshDevicesForBackend(backendCombo.getValue());
+            refreshControlPanelButton();
 
             refreshLatencyLabels();
             refreshCpuLoad();
@@ -252,6 +262,7 @@ public final class AudioSettingsDialog extends Dialog<Void> {
                 return;
             }
             refreshDevicesForBackend(newVal);
+            refreshControlPanelButton();
             refreshLatencyLabels();
         });
 
@@ -263,6 +274,7 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         });
 
         testToneButton.setOnAction(_ -> onTestTone());
+        openControlPanelButton.setOnAction(_ -> onOpenControlPanel());
     }
 
     // ── Behaviour ────────────────────────────────────────────────────────────
@@ -400,6 +412,56 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         }
     }
 
+    private void refreshControlPanelButton() {
+        Optional<Runnable> panel = controller == null
+                ? Optional.empty()
+                : controller.openControlPanel();
+        boolean enabled = panel.isPresent();
+        openControlPanelButton.setDisable(!enabled);
+        openControlPanelButton.setTooltip(new Tooltip(enabled
+                ? "Launches the active driver's native control panel "
+                + "(USB streaming mode, routing matrix, vendor mixer)."
+                : "The active backend has no native control panel."));
+    }
+
+    /**
+     * Launches the active backend's native driver control panel on a
+     * non-audio thread, then immediately re-queries device
+     * capabilities so the dialog picks up any change the user may
+     * have already applied. Note: some implementations (WASAPI,
+     * CoreAudio) launch an external process and return before the
+     * user closes the panel, so this refresh is best-effort. The
+     * dialog will also re-query devices on the next backend-combo
+     * change or dialog reopen.
+     */
+    private void onOpenControlPanel() {
+        if (controller == null) {
+            return;
+        }
+        Optional<Runnable> action = controller.openControlPanel();
+        if (action.isEmpty()) {
+            return;
+        }
+        Runnable runnable = action.get();
+        // Run on a background virtual thread so blocking native UI calls
+        // never stall the JavaFX application thread or the audio render
+        // callback. After the runnable returns, refresh device capabilities
+        // on the FX thread. Some implementations return immediately after
+        // spawning the panel process, so this refresh is best-effort.
+        Thread.ofVirtual().name("audio-control-panel").start(() -> {
+            try {
+                runnable.run();
+                Platform.runLater(() ->
+                        refreshDevicesForBackend(backendCombo.getValue()));
+            } catch (RuntimeException e) {
+                LOG.log(Level.WARNING, "Driver control panel launch failed", e);
+                showError("Driver Control Panel Failed",
+                        "Could not open the driver control panel: "
+                                + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+            }
+        });
+    }
+
     private void applyAndReconfigure() {
         Integer sampleRate = sampleRateCombo.getValue();
         Integer bufferFrames = bufferSizeCombo.getValue();
@@ -534,6 +596,31 @@ public final class AudioSettingsDialog extends Dialog<Void> {
     /** Test hook — fires the test-tone button action. */
     void fireTestTone() {
         testToneButton.fire();
+    }
+
+    /** Test hook — returns the "Open Driver Control Panel" button. */
+    Button getOpenControlPanelButton() {
+        return openControlPanelButton;
+    }
+
+    /**
+     * Test hook — synchronously invokes the active backend's control
+     * panel runnable on the calling thread (no virtual thread, no
+     * dialogs) and refreshes device capabilities, so tests can assert
+     * the re-query happened. Returns {@code true} if a runnable was
+     * available and ran, {@code false} otherwise.
+     */
+    boolean fireOpenControlPanelSync() {
+        if (controller == null) {
+            return false;
+        }
+        Optional<Runnable> action = controller.openControlPanel();
+        if (action.isEmpty()) {
+            return false;
+        }
+        action.get().run();
+        refreshDevicesForBackend(backendCombo.getValue());
+        return true;
     }
 
     /** Test hook — read-only snapshot of the filtered sample rate options. */
