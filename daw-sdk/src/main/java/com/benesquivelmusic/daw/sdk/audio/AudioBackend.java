@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.sdk.audio;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.Flow;
 
 /**
@@ -217,6 +218,95 @@ public sealed interface AudioBackend extends AutoCloseable
      */
     default Optional<Runnable> openControlPanel() {
         return Optional.empty();
+    }
+
+    /**
+     * Returns the discrete set of buffer sizes the given device will
+     * accept, expressed as a {@link BufferSizeRange} four-tuple
+     * {@code (min, max, preferred, granularity)} — the same shape
+     * Steinberg's {@code ASIOGetBufferSize} reports. The Audio Settings
+     * dialog (story 098) consults this method instead of inventing its
+     * own buffer-size menu, so users only ever see frame counts the
+     * driver will actually accept.
+     *
+     * <p>Per-backend conventions:</p>
+     * <ul>
+     *   <li>{@link AsioBackend} — calls {@code ASIOGetBufferSize}.</li>
+     *   <li>{@link WasapiBackend} — exclusive mode reads
+     *       {@code IAudioClient::GetDevicePeriod} for the (min,max)
+     *       range; shared mode reports
+     *       {@code BufferSizeRange.singleton(mixerPeriodFrames)} since
+     *       the OS mixer period is fixed.</li>
+     *   <li>{@link CoreAudioBackend} — reads
+     *       {@code kAudioDevicePropertyBufferFrameSizeRange} for
+     *       (min,max) and
+     *       {@code kAudioDevicePropertyBufferFrameSize} for preferred;
+     *       granularity is {@code 1}.</li>
+     *   <li>{@link JackBackend} — returns
+     *       {@code BufferSizeRange.singleton(jackBufferSize)} since the
+     *       JACK server picks one server-wide buffer size.</li>
+     *   <li>{@link JavaxSoundBackend} — returns the historical
+     *       power-of-two ladder so persisted settings keep working;
+     *       the JDK mixer does not expose a query API.</li>
+     *   <li>{@link MockAudioBackend} — returns whatever the test
+     *       fixture has configured; defaults to a generic ladder.</li>
+     * </ul>
+     *
+     * <p>The default implementation returns
+     * {@link BufferSizeRange#DEFAULT_RANGE}, which preserves the
+     * historical menu for backends that have not yet overridden it.</p>
+     *
+     * @param device target device id; {@link DeviceId#isDefault() default}
+     *               asks the backend to query its own default device
+     * @return the range of buffer sizes the device accepts; never null
+     */
+    default BufferSizeRange bufferSizeRange(DeviceId device) {
+        return BufferSizeRange.DEFAULT_RANGE;
+    }
+
+    /**
+     * Returns the set of sample rates (in Hz) the given device will
+     * accept — i.e. the drivers that today reject
+     * {@code ASIOSetSampleRate()} for any rate not in their
+     * {@code ASIOCanSampleRate()} whitelist.
+     *
+     * <p>The Audio Settings dialog (story 098) shows the union of the
+     * canonical rate list ({@link SampleRate}) and this set, with rates
+     * the device does not support visually disabled and tooltipped
+     * "not supported by current device" — exactly the way Pro Tools,
+     * Cubase and Reaper present unsupported rates.</p>
+     *
+     * <p>Per-backend conventions:</p>
+     * <ul>
+     *   <li>{@link AsioBackend} — probes
+     *       {@code ASIOCanSampleRate} across the canonical rate list.</li>
+     *   <li>{@link WasapiBackend} — shared mode returns the singleton
+     *       OS-mixer rate (the only rate the WASAPI mixer accepts);
+     *       exclusive mode probes
+     *       {@code IAudioClient::IsFormatSupported} across the
+     *       canonical rate list.</li>
+     *   <li>{@link CoreAudioBackend} — reads
+     *       {@code kAudioDevicePropertyAvailableNominalSampleRates}.</li>
+     *   <li>{@link JackBackend} — returns the singleton
+     *       {@code jack_get_sample_rate(client)} since the JACK
+     *       server picks one server-wide rate.</li>
+     *   <li>{@link JavaxSoundBackend} — returns the historical
+     *       canonical list; the JDK mixer accepts whatever the
+     *       underlying OS driver accepts.</li>
+     *   <li>{@link MockAudioBackend} — returns whatever the test
+     *       fixture has configured.</li>
+     * </ul>
+     *
+     * <p>The default implementation returns the canonical rate set
+     * (44.1 / 48 / 88.2 / 96 / 176.4 / 192 kHz) so backends that have
+     * not yet overridden it preserve historical behaviour.</p>
+     *
+     * @param device target device id; {@link DeviceId#isDefault() default}
+     *               asks the backend to query its own default device
+     * @return an immutable set of supported sample rates in Hz; never null
+     */
+    default Set<Integer> supportedSampleRates(DeviceId device) {
+        return Set.of(44_100, 48_000, 88_200, 96_000, 176_400, 192_000);
     }
 
     /**

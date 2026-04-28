@@ -2,7 +2,6 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
-import com.benesquivelmusic.daw.sdk.audio.BufferSize;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 
 import org.junit.jupiter.api.Test;
@@ -65,7 +64,7 @@ class DefaultAudioEngineControllerTest {
                 "",
                 "",
                 SampleRate.HZ_48000,
-                BufferSize.SAMPLES_128,
+                128,
                 16);
         controller.applyConfiguration(request);
 

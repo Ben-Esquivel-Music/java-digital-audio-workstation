@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.sdk.audio;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.Flow;
 
 /**
@@ -74,5 +75,35 @@ public final class JackBackend implements AudioBackend {
     @Override
     public void close() {
         support.close();
+    }
+
+    /**
+     * Reports the JACK server's single, server-wide buffer size as a
+     * singleton range. JACK clients cannot pick their own buffer size
+     * — the server's {@code -p N} command-line flag fixes one frame
+     * count for every connected client, so the dropdown collapses to a
+     * single entry.
+     *
+     * <p>The default 1024 frames mirrors {@code jackd}'s out-of-the-box
+     * configuration; the implementation layer that ships the FFM
+     * bindings to {@code libjack} replaces it with
+     * {@code jack_get_buffer_size(client)} at runtime.</p>
+     */
+    @Override
+    public BufferSizeRange bufferSizeRange(DeviceId device) {
+        Objects.requireNonNull(device, "device must not be null");
+        return BufferSizeRange.singleton(1024);
+    }
+
+    /**
+     * Reports the JACK server's single, server-wide sample rate as a
+     * singleton set. JACK clients cannot change the sample rate — it
+     * is fixed by the {@code jackd -r N} flag for the lifetime of the
+     * server — so the dropdown collapses to a single entry.
+     */
+    @Override
+    public Set<Integer> supportedSampleRates(DeviceId device) {
+        Objects.requireNonNull(device, "device must not be null");
+        return Set.of(48_000);
     }
 }

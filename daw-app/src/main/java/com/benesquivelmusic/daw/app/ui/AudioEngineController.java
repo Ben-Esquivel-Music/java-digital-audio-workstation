@@ -1,13 +1,14 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
-import com.benesquivelmusic.daw.sdk.audio.BufferSize;
+import com.benesquivelmusic.daw.sdk.audio.BufferSizeRange;
 import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 import com.benesquivelmusic.daw.sdk.audio.XrunEvent;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.Flow;
 
 /**
@@ -33,7 +34,9 @@ public interface AudioEngineController {
      * @param inputDeviceName    name of the input device, or empty for default
      * @param outputDeviceName   name of the output device, or empty for default
      * @param sampleRate         desired sample rate
-     * @param bufferSize         desired buffer size
+     * @param bufferFrames       desired buffer size in sample frames (must be positive);
+     *                           may be any driver-reported value, not limited to the
+     *                           power-of-two {@link BufferSize} enum
      * @param bitDepth           desired bit depth (for new-project defaults)
      */
     record Request(
@@ -41,7 +44,7 @@ public interface AudioEngineController {
             String inputDeviceName,
             String outputDeviceName,
             SampleRate sampleRate,
-            BufferSize bufferSize,
+            int bufferFrames,
             int bitDepth) {
 
         public Request {
@@ -57,8 +60,8 @@ public interface AudioEngineController {
             if (sampleRate == null) {
                 throw new IllegalArgumentException("sampleRate must not be null");
             }
-            if (bufferSize == null) {
-                throw new IllegalArgumentException("bufferSize must not be null");
+            if (bufferFrames <= 0) {
+                throw new IllegalArgumentException("bufferFrames must be positive: " + bufferFrames);
             }
             if (bitDepth <= 0) {
                 throw new IllegalArgumentException("bitDepth must be positive: " + bitDepth);
@@ -175,5 +178,45 @@ public interface AudioEngineController {
                 @Override public void cancel() { /* no-op */ }
             });
         };
+    }
+
+    /**
+     * Returns the buffer-size range the active backend allows for the
+     * named output device. The Audio Settings dialog (story 098 +
+     * story 213) uses this to populate the buffer-size dropdown with
+     * driver-allowed values only.
+     *
+     * <p>The default implementation returns
+     * {@link BufferSizeRange#DEFAULT_RANGE} so test stubs that have no
+     * real backend continue to work.</p>
+     *
+     * @param backendName       backend name (e.g. "ASIO", "WASAPI",
+     *                          "PortAudio", "Java Sound")
+     * @param outputDeviceName  output device name; empty for the
+     *                          default device
+     * @return the driver-allowed buffer-size range; never {@code null}
+     */
+    default BufferSizeRange bufferSizeRange(String backendName, String outputDeviceName) {
+        return BufferSizeRange.DEFAULT_RANGE;
+    }
+
+    /**
+     * Returns the set of sample rates (in Hz) the active backend's
+     * named output device can operate at. The Audio Settings dialog
+     * uses this to grey out unsupported rates in the canonical menu
+     * and to fall back to the device's preferred rate when a
+     * persisted setting is no longer supported.
+     *
+     * <p>The default implementation returns the canonical rate set so
+     * test stubs that have no real backend continue to work.</p>
+     *
+     * @param backendName       backend name
+     * @param outputDeviceName  output device name; empty for the
+     *                          default device
+     * @return an immutable set of supported sample rates in Hz; never
+     *         {@code null}
+     */
+    default Set<Integer> supportedSampleRates(String backendName, String outputDeviceName) {
+        return Set.of(44_100, 48_000, 88_200, 96_000, 176_400, 192_000);
     }
 }

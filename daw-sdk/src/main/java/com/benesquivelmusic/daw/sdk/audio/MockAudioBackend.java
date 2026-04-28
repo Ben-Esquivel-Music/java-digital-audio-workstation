@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -37,6 +38,9 @@ public final class MockAudioBackend implements AudioBackend {
             new ConcurrentHashMap<>();
     private final AtomicInteger controlPanelInvocations = new AtomicInteger();
     private int inputCursor;
+    private volatile BufferSizeRange bufferSizeRange = BufferSizeRange.DEFAULT_RANGE;
+    private volatile Set<Integer> supportedSampleRates =
+            Set.of(44_100, 48_000, 88_200, 96_000, 176_400, 192_000);
 
     /**
      * Creates a new mock backend with no pre-canned input audio. Useful when
@@ -154,6 +158,58 @@ public final class MockAudioBackend implements AudioBackend {
      */
     public int controlPanelInvocationCount() {
         return controlPanelInvocations.get();
+    }
+
+    /**
+     * Returns the buffer-size range configured via
+     * {@link #setBufferSizeRange(BufferSizeRange)}, defaulting to
+     * {@link BufferSizeRange#DEFAULT_RANGE}. Tests use this to verify
+     * the dialog correctly expands a driver-reported four-tuple into
+     * a discrete dropdown menu.
+     */
+    @Override
+    public BufferSizeRange bufferSizeRange(DeviceId device) {
+        Objects.requireNonNull(device, "device must not be null");
+        return bufferSizeRange;
+    }
+
+    /**
+     * Returns the sample-rate set configured via
+     * {@link #setSupportedSampleRates(Set)}, defaulting to the
+     * canonical rate list. Tests use this to verify the dialog shows
+     * the union of canonical and device-reported rates, with
+     * unsupported entries greyed out and tooltipped.
+     */
+    @Override
+    public Set<Integer> supportedSampleRates(DeviceId device) {
+        Objects.requireNonNull(device, "device must not be null");
+        return supportedSampleRates;
+    }
+
+    /**
+     * Configures the {@link BufferSizeRange} this mock will report
+     * from {@link #bufferSizeRange(DeviceId)}. Tests use this to drive
+     * the Audio Settings dialog through the same code paths it would
+     * exercise against a real driver reporting non-power-of-two
+     * granularity.
+     *
+     * @param range the range to report (must not be null)
+     */
+    public void setBufferSizeRange(BufferSizeRange range) {
+        this.bufferSizeRange = Objects.requireNonNull(range, "range must not be null");
+    }
+
+    /**
+     * Configures the sample-rate set this mock will report from
+     * {@link #supportedSampleRates(DeviceId)}. Tests use this to drive
+     * the Audio Settings dialog's persisted-rate-fallback path.
+     *
+     * @param rates the rates (in Hz) to report (must not be null;
+     *              defensively copied)
+     */
+    public void setSupportedSampleRates(Set<Integer> rates) {
+        this.supportedSampleRates =
+                Set.copyOf(Objects.requireNonNull(rates, "rates must not be null"));
     }
 
     @Override

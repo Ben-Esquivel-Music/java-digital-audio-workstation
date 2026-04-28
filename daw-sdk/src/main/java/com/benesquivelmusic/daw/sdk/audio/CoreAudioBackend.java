@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.sdk.audio;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.Flow;
 
 /**
@@ -103,6 +104,38 @@ public final class CoreAudioBackend implements AudioBackend {
     @Override
     public void close() {
         support.close();
+    }
+
+    /**
+     * Reads the device's buffer-size capabilities from CoreAudio's
+     * {@code kAudioDevicePropertyBufferFrameSizeRange} (min/max) and
+     * {@code kAudioDevicePropertyBufferFrameSize} (preferred). While
+     * CoreAudio accepts any frame count in the reported range, a
+     * coarser granularity is used here to keep the dropdown menu
+     * practical (a handful of entries instead of thousands).
+     *
+     * <p>The defaults below match what the built-in audio device
+     * reports on a typical Apple Silicon Mac; the implementation layer
+     * that ships the FFM bindings (story 130) replaces them with the
+     * actual property values at runtime.</p>
+     */
+    @Override
+    public BufferSizeRange bufferSizeRange(DeviceId device) {
+        Objects.requireNonNull(device, "device must not be null");
+        return new BufferSizeRange(32, 4096, 512, 32);
+    }
+
+    /**
+     * Reads the device's available sample rates from CoreAudio's
+     * {@code kAudioDevicePropertyAvailableNominalSampleRates}. The
+     * default implementation returns the canonical rate set; the
+     * implementation layer that ships the FFM bindings replaces it with
+     * the actual property values at runtime.
+     */
+    @Override
+    public Set<Integer> supportedSampleRates(DeviceId device) {
+        Objects.requireNonNull(device, "device must not be null");
+        return Set.of(44_100, 48_000, 88_200, 96_000, 176_400, 192_000);
     }
 
     private static boolean isMac() {
