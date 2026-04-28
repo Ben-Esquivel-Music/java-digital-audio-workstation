@@ -38,8 +38,6 @@ final class ProcessorDiscoverabilityTest {
      * their own hand-written test classes.
      *
      * <ul>
-     *   <li>{@code DitherProcessor(int channels, int targetBitDepth)} — second
-     *       argument is the target bit depth, an integer, not a sample rate.</li>
      *   <li>{@code MultibandCompressorProcessor(int, double, double[])} — requires
      *       crossover frequencies, so no meaningful default via (int, double).</li>
      *   <li>{@code StereoImagerProcessor(double sampleRate)} — stereo-only
@@ -47,7 +45,6 @@ final class ProcessorDiscoverabilityTest {
      * </ul>
      */
     private static final Set<String> KNOWN_NON_STANDARD_PROCESSORS = Set.of(
-            "DitherProcessor",
             "MultibandCompressorProcessor",
             "StereoImagerProcessor",
             // MidSideWrapperProcessor hosts two inner processor chains and is

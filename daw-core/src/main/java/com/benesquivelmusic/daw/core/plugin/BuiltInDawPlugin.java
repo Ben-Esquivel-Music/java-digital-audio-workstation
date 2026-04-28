@@ -55,6 +55,7 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
                 MidSideWrapperPlugin,
                 ConvolutionReverbPlugin,
                 ExciterPlugin,
+                DitherPlugin,
                 MidiEffectPlugin {
 
     /**

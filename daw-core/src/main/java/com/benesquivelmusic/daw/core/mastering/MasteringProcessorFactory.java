@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.mastering;
 
 import com.benesquivelmusic.daw.core.dsp.*;
+import com.benesquivelmusic.daw.core.dsp.mastering.DitherProcessor;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringStageConfig;
 import com.benesquivelmusic.daw.sdk.mastering.MasteringStageType;
@@ -121,6 +122,28 @@ public final class MasteringProcessorFactory {
         int bitDepth = params.containsKey("bitDepth")
                 ? params.get("bitDepth").intValue()
                 : 16;
-        return new DitherProcessor(channels, bitDepth);
+        DitherProcessor.DitherType type = params.containsKey("type")
+                ? toDitherType(params.get("type").intValue())
+                : DitherProcessor.DitherType.TPDF;
+        DitherProcessor.NoiseShape shape = params.containsKey("shape")
+                ? toNoiseShape(params.get("shape").intValue())
+                : DitherProcessor.NoiseShape.FLAT;
+        return new DitherProcessor(channels, bitDepth, type, shape);
+    }
+
+    private static DitherProcessor.DitherType toDitherType(int ordinal) {
+        DitherProcessor.DitherType[] values = DitherProcessor.DitherType.values();
+        if (ordinal < 0 || ordinal >= values.length) {
+            return DitherProcessor.DitherType.TPDF;
+        }
+        return values[ordinal];
+    }
+
+    private static DitherProcessor.NoiseShape toNoiseShape(int ordinal) {
+        DitherProcessor.NoiseShape[] values = DitherProcessor.NoiseShape.values();
+        if (ordinal < 0 || ordinal >= values.length) {
+            return DitherProcessor.NoiseShape.FLAT;
+        }
+        return values[ordinal];
     }
 }
