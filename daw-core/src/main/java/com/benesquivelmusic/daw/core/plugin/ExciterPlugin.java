@@ -113,4 +113,41 @@ public final class ExciterPlugin implements BuiltInDawPlugin {
                 new PluginParameter(4, "Mode", 0.0, modeMax,
                         ExciterProcessor.Mode.CLASS_A_TUBE.ordinal()));
     }
+
+    /**
+     * Routes automation values to the underlying processor. Parameter ids
+     * match {@link #getParameters()}: {@code 0} frequency, {@code 1} drive,
+     * {@code 2} mix, {@code 3} output, {@code 4} mode (enum ordinal — values
+     * outside the enum range are clamped to the nearest valid ordinal).
+     */
+    @Override
+    public void setAutomatableParameter(int parameterId, double value) {
+        if (processor == null) {
+            return;
+        }
+        switch (parameterId) {
+            case 0 -> processor.setFrequencyHz(clamp(value,
+                    ExciterProcessor.MIN_FREQUENCY_HZ,
+                    ExciterProcessor.MAX_FREQUENCY_HZ));
+            case 1 -> processor.setDrivePercent(clamp(value,
+                    ExciterProcessor.MIN_DRIVE_PERCENT,
+                    ExciterProcessor.MAX_DRIVE_PERCENT));
+            case 2 -> processor.setMixPercent(clamp(value,
+                    ExciterProcessor.MIN_MIX_PERCENT,
+                    ExciterProcessor.MAX_MIX_PERCENT));
+            case 3 -> processor.setOutputGainDb(clamp(value,
+                    ExciterProcessor.MIN_OUTPUT_GAIN_DB,
+                    ExciterProcessor.MAX_OUTPUT_GAIN_DB));
+            case 4 -> {
+                ExciterProcessor.Mode[] modes = ExciterProcessor.Mode.values();
+                int idx = (int) Math.round(clamp(value, 0.0, modes.length - 1.0));
+                processor.setMode(modes[idx]);
+            }
+            default -> { /* unknown parameter id */ }
+        }
+    }
+
+    private static double clamp(double v, double lo, double hi) {
+        return Math.min(hi, Math.max(lo, v));
+    }
 }

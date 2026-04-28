@@ -103,13 +103,10 @@ class ExciterProcessorTest {
         // Test fundamental sits well inside the high-passed band. Choose 4 kHz
         // — H2 = 8 kHz, H3 = 12 kHz, both below Nyquist (24 kHz @ 48k SR).
         double freq = 4_000.0;
-        double[] inDouble = new double[n];
         float[][] in = new float[1][n];
         float[][] out = new float[1][n];
         for (int i = 0; i < n; i++) {
-            double v = 0.4 * Math.sin(2.0 * Math.PI * freq * i / SAMPLE_RATE);
-            in[0][i] = (float) v;
-            inDouble[i] = v;
+            in[0][i] = (float) (0.4 * Math.sin(2.0 * Math.PI * freq * i / SAMPLE_RATE));
         }
         ex.process(in, out, n);
 

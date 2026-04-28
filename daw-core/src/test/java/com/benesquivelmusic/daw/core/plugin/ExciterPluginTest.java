@@ -87,7 +87,7 @@ class ExciterPluginTest {
     }
 
     @Test
-    void frequencyParameterShouldExposeIssueRangeOf1To16Khz() {
+    void frequencyParameterShouldExposeRangeOf1To16kHz() {
         var plugin = new ExciterPlugin();
         var freqParam = plugin.getParameters().stream()
                 .filter(p -> p.id() == 0).findFirst().orElseThrow();
@@ -101,6 +101,47 @@ class ExciterPluginTest {
         boolean found = BuiltInDawPlugin.discoverAll().stream()
                 .anyMatch(p -> p instanceof ExciterPlugin);
         assertThat(found).isTrue();
+    }
+
+    @Test
+    void automationShouldRouteToProcessor() {
+        var plugin = new ExciterPlugin();
+        plugin.initialize(stubContext());
+        plugin.setAutomatableParameter(0, 4_000.0);
+        plugin.setAutomatableParameter(1, 80.0);
+        plugin.setAutomatableParameter(2, 60.0);
+        plugin.setAutomatableParameter(3, 6.0);
+        plugin.setAutomatableParameter(4, 1.0); // TRANSFORMER
+
+        var p = plugin.getProcessor();
+        assertThat(p.getFrequencyHz()).isEqualTo(4_000.0);
+        assertThat(p.getDrivePercent()).isEqualTo(80.0);
+        assertThat(p.getMixPercent()).isEqualTo(60.0);
+        assertThat(p.getOutputGainDb()).isEqualTo(6.0);
+        assertThat(p.getMode()).isEqualTo(ExciterProcessor.Mode.TRANSFORMER);
+    }
+
+    @Test
+    void automationShouldClampOutOfRangeValues() {
+        var plugin = new ExciterPlugin();
+        plugin.initialize(stubContext());
+        // Out-of-range values must be clamped, not throw.
+        plugin.setAutomatableParameter(0, 999_999.0);
+        plugin.setAutomatableParameter(1, -50.0);
+        plugin.setAutomatableParameter(3, 999.0);
+        plugin.setAutomatableParameter(4, 999.0);
+
+        var p = plugin.getProcessor();
+        assertThat(p.getFrequencyHz()).isEqualTo(ExciterProcessor.MAX_FREQUENCY_HZ);
+        assertThat(p.getDrivePercent()).isEqualTo(0.0);
+        assertThat(p.getOutputGainDb()).isEqualTo(ExciterProcessor.MAX_OUTPUT_GAIN_DB);
+        assertThat(p.getMode()).isEqualTo(ExciterProcessor.Mode.TAPE);
+    }
+
+    @Test
+    void automationOnUninitializedPluginShouldBeNoOp() {
+        // Must not NPE before initialize().
+        new ExciterPlugin().setAutomatableParameter(0, 4_000.0);
     }
 
     private static PluginContext stubContext() {

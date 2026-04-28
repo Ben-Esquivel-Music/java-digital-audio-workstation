@@ -15,7 +15,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ExciterPluginViewTest {
 
     @Test
-    void shouldShowAtLeastEightHarmonicBins() {
+    void shouldShowAtLeastFundamentalAndSecondAndThirdHarmonicBins() {
         // The static FFT display must show at least the fundamental + 2nd
         // and 3rd harmonics (the harmonics emphasised by the issue).
         assertThat(ExciterPluginView.FFT_DISPLAY_HARMONICS).isGreaterThanOrEqualTo(3);

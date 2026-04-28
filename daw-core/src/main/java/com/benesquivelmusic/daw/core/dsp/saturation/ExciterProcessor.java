@@ -142,10 +142,24 @@ public final class ExciterProcessor implements AudioProcessor {
 
     @Override
     public void process(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
-        int activeCh = Math.min(channels, inputBuffer.length);
+        int activeCh = Math.min(channels, Math.min(inputBuffer.length, outputBuffer.length));
         double driveLinear = (drivePercent / 100.0) * MAX_DRIVE_LINEAR;
         double mix = mixPercent / 100.0;
         double outputGainLinear = Math.pow(10.0, outputGainDb / 20.0);
+
+        // Bypass fast-path: when drive=0 or mix=0 the wet sideband is identically
+        // zero, so we skip the high-pass + oversampled waveshaper chain entirely
+        // and just apply the output trim. This makes drive=0%/mix=0% true bypass
+        // (modulo output gain) and is consistent with bypass fast-paths in other
+        // DSP processors (e.g. BassExtensionProcessor).
+        if (driveLinear == 0.0 || mix == 0.0) {
+            for (int ch = 0; ch < activeCh; ch++) {
+                for (int frame = 0; frame < numFrames; frame++) {
+                    outputBuffer[ch][frame] = (float) (inputBuffer[ch][frame] * outputGainLinear);
+                }
+            }
+            return;
+        }
 
         for (int ch = 0; ch < activeCh; ch++) {
             BiquadFilter hp = highPass[ch];
