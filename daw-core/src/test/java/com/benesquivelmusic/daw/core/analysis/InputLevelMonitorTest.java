@@ -89,26 +89,18 @@ class InputLevelMonitorTest {
     /**
      * Story requirement #1: a signal whose true peak is {@code +0.5 dBTP}
      * (i.e., {@code 1.0593} linear, {@code +0.5 dB} above full scale) must
-     * trip the clip latch.
+     * trip the clip latch, even when every individual sample is strictly
+     * below {@code 0 dBFS}.
      *
-     * <p>Construction: a sinusoid at {@code fs/4} with amplitude {@code A =
-     * +0.5 dBFS} is sampled on a phase lattice that includes a sample at
-     * the positive peak (phase {@code π/2}). The reconstructed true peak
-     * is {@code A ≈ 1.0593} — well above {@code 0 dBFS}. The monitor's
-     * {@link com.benesquivelmusic.daw.core.dsp.TruePeakDetector} reports
-     * this peak and the {@code tp >= threshold} comparison inside the
-     * processing loop latches the clip flag.</p>
-     *
-     * <p><b>Filter-reconstruction caveat:</b> earlier drafts of this test
-     * used a phase offset of {@code π/4} so that every sample landed on
-     * {@code ±A/√2 ≈ ±0.749} and the clip decision depended exclusively
-     * on the 4× oversampled inter-sample path. The polyphase FIR currently
-     * shipped in {@link com.benesquivelmusic.daw.core.dsp.TruePeakDetector}
-     * does not boost such signals sufficiently to reveal the true peak
-     * above {@code 1.0} linear, so the test now samples the sine on a
-     * lattice that includes the peak and verifies the broader
-     * end-to-end clip-detection pipeline instead. The monitor's code path
-     * remains unchanged; only the test fixture was tightened.</p>
+     * <p>Construction: a sinusoid at {@code fs/4} with amplitude {@code A}
+     * sampled on phase {@code π/4} so the sample lattice lands on
+     * {@code ±A/√2}. Choosing {@code A = +0.5 dBFS} makes the
+     * <em>continuous</em> peak {@code +0.5 dBTP} while sample peaks are
+     * {@code A/√2 ≈ −2.51 dBFS} — well below {@code 0 dBFS}. With the
+     * BS.1770-4 4× oversampler in
+     * {@link com.benesquivelmusic.daw.core.dsp.TruePeakDetector} the
+     * inter-sample peak is recovered and the {@code tp >= threshold} check
+     * inside {@link InputLevelMonitor} latches the clip flag.</p>
      */
     @Test
     void shouldFlagInterSamplePeakAtPositiveHalfDbTp() {
@@ -116,31 +108,32 @@ class InputLevelMonitorTest {
 
         // Long enough to exercise many full cycles of the sinusoid.
         int numSamples = 2048;
-        double amplitude = PLUS_0_5_DBFS_LINEAR; // +0.5 dB peak, 1.0593 linear
+        // Continuous amplitude = +0.5 dBFS (1.0593). Sampling at phase π/4
+        // makes every sample land on ±A/√2 ≈ ±0.749 (≈ −2.51 dBFS), so the
+        // clip detection MUST go through the inter-sample peak path.
+        double continuousAmplitude = PLUS_0_5_DBFS_LINEAR;
         float[] samples = new float[numSamples];
-        // fs/4 sinusoid: phase advances by π/2 per sample, starting at 0 so
-        // samples land on {0, A, 0, −A, 0, A, …}. The peak sample value is
-        // exactly +0.5 dBFS ≈ 1.0593, which is at/above the 1.0 threshold.
         for (int i = 0; i < numSamples; i++) {
-            double phase = i * (Math.PI / 2.0);
-            samples[i] = (float) (amplitude * Math.sin(phase));
+            double phase = i * (Math.PI / 2.0) + Math.PI / 4.0;
+            samples[i] = (float) (continuousAmplitude * Math.sin(phase));
         }
 
-        // Fixture sanity: the positive-peak samples must reach at least
-        // +0.5 dBFS so the clip detector has something above threshold to
-        // latch on. If this ever fails, the fixture no longer exercises
-        // the clip-detection pipeline.
+        // Fixture sanity: every sample must stay strictly below 0 dBFS so
+        // this genuinely tests the inter-sample-peak path (not a sample-
+        // peak short-circuit).
         float maxAbs = 0.0f;
         for (float s : samples) {
             if (Math.abs(s) > maxAbs) maxAbs = Math.abs(s);
         }
-        assertThat((double) maxAbs).isGreaterThanOrEqualTo(1.0);
+        assertThat((double) maxAbs)
+                .as("fixture sanity: sample peaks must be below 0 dBFS")
+                .isLessThan(1.0);
 
         monitor.process(samples);
 
         InputLevelMeter snap = monitor.snapshot();
         assertThat(snap.clippedSinceReset())
-                .as("+0.5 dBTP signal must latch the clip flag")
+                .as("+0.5 dBTP signal must latch the clip flag via the inter-sample peak path")
                 .isTrue();
         assertThat(snap.lastClipFrameIndex())
                 .as("last-clip frame index must be non-negative once a clip has been detected")
