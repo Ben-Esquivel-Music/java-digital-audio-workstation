@@ -176,8 +176,9 @@ public final class MockAudioBackend implements AudioBackend {
     /**
      * Returns the sample-rate set configured via
      * {@link #setSupportedSampleRates(Set)}, defaulting to the
-     * canonical rate list. Tests use this to verify the dialog
-     * filters rates to the driver-reported set.
+     * canonical rate list. Tests use this to verify the dialog shows
+     * the union of canonical and device-reported rates, with
+     * unsupported entries greyed out and tooltipped.
      */
     @Override
     public Set<Integer> supportedSampleRates(DeviceId device) {

@@ -136,8 +136,8 @@ public final class WasapiBackend implements AudioBackend {
      * <p>WASAPI <b>shared</b> mode is fixed at the OS mixer's period
      * (typically 10&nbsp;ms ≈ 480 frames at 48 kHz) — the mixer cannot
      * be reconfigured per-application — so the singleton range is
-     * returned. <b>Exclusive</b> mode lets the application pick any
-     * power-of-two between the device's minimum and default periods, so
+     * returned. <b>Exclusive</b> mode lets the application pick buffer
+     * sizes in granularity steps within the device's period range, so
      * a granular range is reported.</p>
      *
      * <p>The values below are conservative defaults that match what

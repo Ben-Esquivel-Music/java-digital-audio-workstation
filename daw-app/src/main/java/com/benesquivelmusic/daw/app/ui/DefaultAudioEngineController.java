@@ -134,7 +134,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
                 request.sampleRate().getHz(),
                 previous.channels(),
                 request.bitDepth(),
-                request.bufferSize().getFrames());
+                request.bufferFrames());
         audioEngine.setFormat(updated);
 
         // Buffer size or sample rate may have changed — rebuild the

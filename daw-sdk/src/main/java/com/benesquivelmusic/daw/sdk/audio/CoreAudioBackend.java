@@ -109,9 +109,10 @@ public final class CoreAudioBackend implements AudioBackend {
     /**
      * Reads the device's buffer-size capabilities from CoreAudio's
      * {@code kAudioDevicePropertyBufferFrameSizeRange} (min/max) and
-     * {@code kAudioDevicePropertyBufferFrameSize} (preferred). CoreAudio
-     * accepts any frame count in the reported range so {@code granularity}
-     * is {@code 1}.
+     * {@code kAudioDevicePropertyBufferFrameSize} (preferred). While
+     * CoreAudio accepts any frame count in the reported range, a
+     * coarser granularity is used here to keep the dropdown menu
+     * practical (a handful of entries instead of thousands).
      *
      * <p>The defaults below match what the built-in audio device
      * reports on a typical Apple Silicon Mac; the implementation layer
@@ -121,7 +122,7 @@ public final class CoreAudioBackend implements AudioBackend {
     @Override
     public BufferSizeRange bufferSizeRange(DeviceId device) {
         Objects.requireNonNull(device, "device must not be null");
-        return new BufferSizeRange(14, 4096, 512, 1);
+        return new BufferSizeRange(32, 4096, 512, 32);
     }
 
     /**

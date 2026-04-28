@@ -3,7 +3,6 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
-import com.benesquivelmusic.daw.sdk.audio.BufferSize;
 import com.benesquivelmusic.daw.sdk.audio.BufferSizeRange;
 import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
@@ -139,9 +138,8 @@ public final class AudioSettingsDialog extends Dialog<Void> {
     private Set<Integer> currentSupportedRates =
             new LinkedHashSet<>(SAMPLE_RATE_OPTIONS);
 
-    /** Optional notification sink (set by callers; defaults to a logger-only no-op). */
-    private NotificationListener notificationListener = msg ->
-            LOG.log(Level.INFO, msg);
+    /** Optional notification sink (set by callers; defaults to no-op). */
+    private NotificationListener notificationListener = _ -> { };
 
     /** Guards combo-box value changes triggered by refresh, not user edits. */
     private boolean suppressChangeEvents;
@@ -460,14 +458,7 @@ public final class AudioSettingsDialog extends Dialog<Void> {
      *                            rate
      */
     private void refreshDeviceCapabilities(int desiredBufferFrames, int desiredSampleRate) {
-        String backendName = backendCombo.getValue();
-        // Use the WASAPI exclusive-mode label form so the controller
-        // can route to the right WasapiBackend instance when the
-        // checkbox is toggled.
-        if (isWasapiBackend(backendName) && wasapiExclusiveCheck.isSelected()
-                && !backendName.contains("Exclusive")) {
-            backendName = backendName + " (Exclusive)";
-        }
+        String backendName = effectiveBackendName();
         String outputDevice = unwrapDefault(outputDeviceCombo.getValue());
 
         BufferSizeRange range = controller != null
@@ -560,6 +551,23 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         return 48_000;
     }
 
+    /**
+     * Returns the effective backend name that accounts for the WASAPI
+     * exclusive-mode checkbox. Used consistently for capability queries,
+     * persistence, and the apply/reconfigure request so that a ticked
+     * "Exclusive mode" checkbox is always reflected in the backend name.
+     *
+     * @return the effective backend name (may include " (Exclusive)" suffix)
+     */
+    private String effectiveBackendName() {
+        String backendName = backendCombo.getValue();
+        if (isWasapiBackend(backendName) && wasapiExclusiveCheck.isSelected()
+                && !backendName.contains("Exclusive")) {
+            return backendName + " (Exclusive)";
+        }
+        return backendName;
+    }
+
     private static boolean isWasapiBackend(String backendName) {
         return backendName != null && backendName.startsWith(WASAPI_BACKEND_PREFIX);
     }
@@ -572,16 +580,15 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         boolean show = isWasapiBackend(backendName);
         wasapiExclusiveCheck.setVisible(show);
         wasapiExclusiveCheck.setManaged(show);
-        // Pre-tick the checkbox if the backend name carries the
-        // exclusive-mode marker (e.g., a controller that exposes
-        // shared and exclusive as separate entries).
-        if (show && backendName != null && backendName.contains("Exclusive")) {
-            suppressChangeEvents = true;
-            try {
-                wasapiExclusiveCheck.setSelected(true);
-            } finally {
-                suppressChangeEvents = false;
-            }
+        // Derive checkbox state deterministically from the backend name:
+        // ticked when the name carries the " (Exclusive)" marker, unticked
+        // otherwise (including when switching away from WASAPI entirely).
+        suppressChangeEvents = true;
+        try {
+            wasapiExclusiveCheck.setSelected(
+                    show && backendName != null && backendName.contains("Exclusive"));
+        } finally {
+            suppressChangeEvents = false;
         }
     }
 
@@ -719,6 +726,8 @@ public final class AudioSettingsDialog extends Dialog<Void> {
             return;
         }
 
+        String effectiveBackend = effectiveBackendName();
+
         // Persist user choices first so a crash in the reconfigure does not lose them
         model.setSampleRate(sampleRate);
         model.setBufferSize(bufferFrames);
@@ -727,9 +736,8 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         if (mixPrecision != null) {
             model.setMixPrecision(mixPrecision);
         }
-        String backend = backendCombo.getValue();
-        if (backend != null) {
-            model.setAudioBackend(backend);
+        if (effectiveBackend != null) {
+            model.setAudioBackend(effectiveBackend);
         }
         String inputDevice = inputDeviceCombo.getValue();
         if (inputDevice != null) {
@@ -752,11 +760,11 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         }
 
         AudioEngineController.Request request = new AudioEngineController.Request(
-                backend == null ? controller.getActiveBackendName() : backend,
+                effectiveBackend == null ? controller.getActiveBackendName() : effectiveBackend,
                 model.getAudioInputDevice(),
                 model.getAudioOutputDevice(),
                 SampleRate.fromHz(sampleRate),
-                BufferSize.fromFrames(bufferFrames),
+                bufferFrames,
                 bitDepth);
 
         try {

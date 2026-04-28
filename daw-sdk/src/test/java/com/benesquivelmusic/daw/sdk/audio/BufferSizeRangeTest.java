@@ -30,7 +30,7 @@ class BufferSizeRangeTest {
     }
 
     @Test
-    void shouldExpandPowerOfTwoLadder() {
+    void shouldExpandGranularRangeWithStepIncrements() {
         BufferSizeRange range = new BufferSizeRange(64, 512, 128, 64);
         assertThat(range.expandedSizes()).containsExactly(64, 128, 192, 256, 320, 384, 448, 512);
     }
@@ -54,15 +54,22 @@ class BufferSizeRangeTest {
         // hit the highest buffer the driver accepts.
         BufferSizeRange range = new BufferSizeRange(100, 250, 200, 100);
         assertThat(range.expandedSizes()).containsExactly(100, 200, 250);
+        // accepts() must agree with expandedSizes() — max is accepted
+        // even when it is not on the regular granularity ladder.
+        assertThat(range.accepts(250)).isTrue();
     }
 
     @Test
-    void defaultRangeShouldExpandToHistoricalLadder() {
-        // The DEFAULT_RANGE preserves the historical {32, 64, 128, …, 2048}
-        // menu so backends that have not overridden bufferSizeRange()
-        // keep the original behaviour.
+    void defaultRangeShouldExpandToHistoricalPowerOfTwoLadder() {
+        // The DEFAULT_RANGE must return exactly the historical power-of-two
+        // menu {32, 64, 128, 256, 512, 1024, 2048} so that:
+        //  (a) persisted settings keep working
+        //  (b) BufferSize.fromFrames() does not throw for dropdown values
         assertThat(BufferSizeRange.DEFAULT_RANGE.expandedSizes())
-                .contains(32, 64, 128, 256, 512, 1024, 2048);
+                .containsExactly(32, 64, 128, 256, 512, 1024, 2048);
+        // accepts() must agree with the expanded list.
+        assertThat(BufferSizeRange.DEFAULT_RANGE.accepts(128)).isTrue();
+        assertThat(BufferSizeRange.DEFAULT_RANGE.accepts(96)).isFalse();
     }
 
     @Test

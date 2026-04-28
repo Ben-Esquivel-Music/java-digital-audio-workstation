@@ -43,16 +43,26 @@ import java.util.List;
 public record BufferSizeRange(int min, int max, int preferred, int granularity) {
 
     /**
+     * The historical power-of-two buffer-size ladder that the dialog
+     * showed before story 213 introduced driver-reported ranges. Used
+     * by {@link #DEFAULT_RANGE} to preserve backwards compatibility for
+     * backends that have not yet overridden
+     * {@link AudioBackend#bufferSizeRange(DeviceId)}.
+     */
+    private static final List<Integer> HISTORICAL_POWER_OF_TWO =
+            List.of(32, 64, 128, 256, 512, 1024, 2048);
+
+    /**
      * A safe, OS-independent default used when a backend cannot report
      * buffer-size capabilities (for example because it is not yet wired
-     * to its native driver, or because the device is not opened). The
-     * traditional power-of-two ladder {@code 32..2048} is expressed as
-     * a granular range; the dialog's {@link #expandedSizes()} call still
-     * yields the historical menu so behaviour is unchanged for backends
-     * that do not override the API.
+     * to its native driver, or because the device is not opened).
+     * {@link #expandedSizes()} returns exactly the historical
+     * power-of-two ladder {@code {32, 64, 128, 256, 512, 1024, 2048}}
+     * so persisted settings and any code still using
+     * {@link BufferSize#fromFrames(int)} continue to work.
      */
     public static final BufferSizeRange DEFAULT_RANGE =
-            new BufferSizeRange(32, 2048, 256, 32);
+            new BufferSizeRange(32, 2048, 256, 0);
 
     /**
      * Compact constructor that validates the four-tuple invariants
@@ -94,15 +104,29 @@ public record BufferSizeRange(int min, int max, int preferred, int granularity) 
      * Returns the discrete set of buffer sizes the dropdown should
      * present to the user, in ascending order.
      *
+     * <p>When this is the {@link #DEFAULT_RANGE} the returned list is
+     * the historical power-of-two ladder
+     * {@code {32, 64, 128, 256, 512, 1024, 2048}} so persisted
+     * settings and code using {@link BufferSize#fromFrames(int)}
+     * continue to work.</p>
+     *
      * <p>When {@code granularity == 0} the returned list contains only
      * {@code preferred}. Otherwise it contains every multiple of
      * {@code granularity} starting at {@code min} and ending at
      * {@code max} inclusive — exactly the menu a user expects from a
-     * driver that reports e.g. {@code BufferSizeRange(64, 512, 128, 64)}.</p>
+     * driver that reports e.g. {@code BufferSizeRange(64, 512, 128, 64)}.
+     * If {@code max} is not on the regular ladder it is appended so the
+     * user can always reach the maximum the driver supports.</p>
      *
      * @return an unmodifiable list of allowed buffer sizes (never empty)
      */
     public List<Integer> expandedSizes() {
+        // The DEFAULT_RANGE uses granularity=0 but returns the historical
+        // power-of-two ladder instead of a singleton, because multiple
+        // values are valid yet they don't follow a uniform step.
+        if (this.equals(DEFAULT_RANGE)) {
+            return HISTORICAL_POWER_OF_TWO;
+        }
         if (granularity == 0) {
             return List.of(preferred);
         }
@@ -119,20 +143,28 @@ public record BufferSizeRange(int min, int max, int preferred, int granularity) 
 
     /**
      * Returns {@code true} if the given frame count is one of the
-     * driver-allowed buffer sizes — i.e. it equals {@code preferred}
-     * when the range is a singleton, or it falls within {@code [min, max]}
-     * and is a multiple of {@code granularity} measured from {@code min}.
+     * driver-allowed buffer sizes — i.e. it appears in the list
+     * returned by {@link #expandedSizes()}. For granular ranges this
+     * means the value falls within {@code [min, max]} and is either on
+     * the regular {@code min + n*granularity} ladder <b>or</b> equals
+     * {@code max} (which {@link #expandedSizes()} includes even when
+     * it is not on the regular ladder).
      *
      * @param frames a candidate buffer size in sample frames
      * @return true when the driver would accept {@code frames}
      */
     public boolean accepts(int frames) {
+        if (this.equals(DEFAULT_RANGE)) {
+            return HISTORICAL_POWER_OF_TWO.contains(frames);
+        }
         if (granularity == 0) {
             return frames == preferred;
         }
         if (frames < min || frames > max) {
             return false;
         }
-        return ((frames - min) % granularity) == 0;
+        // Accept both the regular ladder and the max value (which
+        // expandedSizes() appends when max is not on the ladder).
+        return ((frames - min) % granularity) == 0 || frames == max;
     }
 }

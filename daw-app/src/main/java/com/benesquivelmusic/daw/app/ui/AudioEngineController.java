@@ -1,7 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
-import com.benesquivelmusic.daw.sdk.audio.BufferSize;
 import com.benesquivelmusic.daw.sdk.audio.BufferSizeRange;
 import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
@@ -35,7 +34,9 @@ public interface AudioEngineController {
      * @param inputDeviceName    name of the input device, or empty for default
      * @param outputDeviceName   name of the output device, or empty for default
      * @param sampleRate         desired sample rate
-     * @param bufferSize         desired buffer size
+     * @param bufferFrames       desired buffer size in sample frames (must be positive);
+     *                           may be any driver-reported value, not limited to the
+     *                           power-of-two {@link BufferSize} enum
      * @param bitDepth           desired bit depth (for new-project defaults)
      */
     record Request(
@@ -43,7 +44,7 @@ public interface AudioEngineController {
             String inputDeviceName,
             String outputDeviceName,
             SampleRate sampleRate,
-            BufferSize bufferSize,
+            int bufferFrames,
             int bitDepth) {
 
         public Request {
@@ -59,8 +60,8 @@ public interface AudioEngineController {
             if (sampleRate == null) {
                 throw new IllegalArgumentException("sampleRate must not be null");
             }
-            if (bufferSize == null) {
-                throw new IllegalArgumentException("bufferSize must not be null");
+            if (bufferFrames <= 0) {
+                throw new IllegalArgumentException("bufferFrames must be positive: " + bufferFrames);
             }
             if (bitDepth <= 0) {
                 throw new IllegalArgumentException("bitDepth must be positive: " + bitDepth);

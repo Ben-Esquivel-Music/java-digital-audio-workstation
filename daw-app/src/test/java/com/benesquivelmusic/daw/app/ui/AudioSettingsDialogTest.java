@@ -1,7 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
-import com.benesquivelmusic.daw.sdk.audio.BufferSize;
 import com.benesquivelmusic.daw.sdk.audio.BufferSizeRange;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 
@@ -121,7 +120,7 @@ class AudioSettingsDialogTest {
         assertThat(model.getBufferSize()).isEqualTo(256);
         assertThat(stub.applyCount).isEqualTo(1);
         assertThat(stub.lastRequest.sampleRate()).isEqualTo(SampleRate.HZ_48000);
-        assertThat(stub.lastRequest.bufferSize()).isEqualTo(BufferSize.SAMPLES_256);
+        assertThat(stub.lastRequest.bufferFrames()).isEqualTo(256);
     }
 
     @Test
