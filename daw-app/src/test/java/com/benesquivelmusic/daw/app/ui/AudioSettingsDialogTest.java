@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.BufferSize;
+import com.benesquivelmusic.daw.sdk.audio.BufferSizeRange;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 
 import javafx.application.Platform;
@@ -10,8 +11,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -65,11 +71,20 @@ class AudioSettingsDialogTest {
     }
 
     @Test
-    void shouldFilterSampleRatesByDeviceSupport() throws Exception {
+    void shouldShowUnionOfCanonicalAndDeviceSupportedRates() throws Exception {
+        // Story 213: the dropdown is the *union* of canonical rates and
+        // the device's supported rates, with unsupported rates greyed out
+        // and tooltipped (rather than filtered out entirely).
         AudioSettingsDialog dialog = onFxThread(() -> new AudioSettingsDialog(model, stub));
         runOnFxAndWait(() -> dialog.getOutputDeviceCombo().setValue("Main Out"));
-        // Main Out supports only 44.1 and 48 kHz in the stub
-        assertThat(dialog.getFilteredSampleRates()).containsExactly(44_100, 48_000);
+        // Main Out reports support only for 44.1 / 48 kHz; the menu still
+        // shows every canonical rate so the user can see them all.
+        assertThat(dialog.getFilteredSampleRates())
+                .containsExactly(44_100, 48_000, 88_200, 96_000, 176_400, 192_000);
+        // But only the device-supported subset is in currentSupportedRates,
+        // which the cell factory uses to grey unsupported rows.
+        assertThat(dialog.getCurrentSupportedSampleRates())
+                .containsExactlyInAnyOrder(44_100, 48_000);
     }
 
     @Test
@@ -183,6 +198,105 @@ class AudioSettingsDialogTest {
         assertThat(dialog.getOpenControlPanelButton().isManaged()).isFalse();
     }
 
+    // ── Story 213: driver-reported buffer size + sample-rate enumeration ─────
+
+    @Test
+    void bufferSizeDropdownShouldExpandFromDriverReportedRange() throws Exception {
+        // Story 213 requirement: a fake backend exposing
+        // BufferSizeRange(96, 384, 192, 96) produces a dropdown of
+        // {96, 192, 288, 384}, with 192 (preferred) preselected.
+        stub.bufferRanges.put("Main Out", new BufferSizeRange(96, 384, 192, 96));
+        AudioSettingsDialog dialog = onFxThread(() -> new AudioSettingsDialog(model, stub));
+        runOnFxAndWait(() -> dialog.getOutputDeviceCombo().setValue("Main Out"));
+        assertThat(dialog.getBufferSizeOptions()).containsExactly(96, 192, 288, 384);
+        assertThat(dialog.getBufferSizeCombo().getValue()).isEqualTo(192);
+    }
+
+    @Test
+    void persistedUnsupportedSampleRateShouldFallBackWithNotification() throws Exception {
+        // Story 213: if a persisted setting is no longer in the supported
+        // set (e.g. user changed driver mode), fall back to preferred and
+        // notify via NotificationManager.
+        //
+        // Same strategy as the buffer-size test: construct with a
+        // permissive set, attach the listener, then narrow the set and
+        // re-trigger via a device toggle.
+        model.setAudioOutputDevice("Main Out");
+
+        CopyOnWriteArrayList<String> notifications = new CopyOnWriteArrayList<>();
+        AudioSettingsDialog dialog = onFxThread(() -> {
+            AudioSettingsDialog d = new AudioSettingsDialog(model, stub);
+            d.setNotificationListener(notifications::add);
+            return d;
+        });
+        // User picks 96 kHz while the device still reports support for it.
+        stub.supportedRates.put("Main Out", Set.of(44_100, 48_000, 96_000));
+        runOnFxAndWait(() -> {
+            dialog.getOutputDeviceCombo().setValue("(default)");
+            dialog.getOutputDeviceCombo().setValue("Main Out");
+            dialog.getSampleRateCombo().setValue(96_000);
+        });
+        // Now driver mode changes (e.g. user returns from control panel)
+        // and 96 kHz is no longer accepted — dialog must fall back.
+        stub.supportedRates.put("Main Out", Set.of(44_100, 48_000));
+        runOnFxAndWait(() -> {
+            dialog.getOutputDeviceCombo().setValue("(default)");
+            dialog.getOutputDeviceCombo().setValue("Main Out");
+        });
+        assertThat(stub.supportedRates.get("Main Out"))
+                .contains(dialog.getSampleRateCombo().getValue());
+        assertThat(notifications).anyMatch(s -> s.contains("not supported"));
+    }
+
+    @Test
+    void persistedUnsupportedBufferSizeShouldFallBackToPreferred() throws Exception {
+        // Story 213: an unsupported persisted buffer size must fall back
+        // to the BufferSizeRange's preferred value with a notification.
+        //
+        // Strategy: construct the dialog while the device reports the
+        // default range (so the persisted 256-frame buffer is accepted
+        // and the constructor's first refresh emits no notification),
+        // attach the listener, then narrow the range to one that does
+        // not accept 256 frames and re-trigger via a device-toggle —
+        // simulating the user returning from the native control panel
+        // after changing the driver's buffer-size table.
+        model.setAudioOutputDevice("Main Out");
+
+        CopyOnWriteArrayList<String> notifications = new CopyOnWriteArrayList<>();
+        AudioSettingsDialog dialog = onFxThread(() -> {
+            AudioSettingsDialog d = new AudioSettingsDialog(model, stub);
+            d.setNotificationListener(notifications::add);
+            return d;
+        });
+        // Now narrow the driver-reported range so 256 (the persisted
+        // value) is no longer accepted and the dialog must fall back.
+        stub.bufferRanges.put("Main Out", new BufferSizeRange(96, 384, 192, 96));
+        runOnFxAndWait(() -> {
+            dialog.getOutputDeviceCombo().setValue("(default)");
+            dialog.getOutputDeviceCombo().setValue("Main Out");
+        });
+        assertThat(dialog.getBufferSizeOptions()).containsExactly(96, 192, 288, 384);
+        assertThat(dialog.getBufferSizeCombo().getValue()).isEqualTo(192);
+        assertThat(notifications).anyMatch(s -> s.contains("not supported"));
+    }
+
+    @Test
+    void wasapiCheckboxShouldRefreshDeviceCapabilitiesWhenToggled() throws Exception {
+        // Story 213: the dialog refreshes both lists when the WASAPI
+        // mode toggle changes. We simulate that by registering different
+        // supported-rate sets for the different "backend names" the
+        // checkbox produces.
+        stub.availableBackends = List.of("WASAPI", "Java Sound");
+        AudioSettingsDialog dialog = onFxThread(() -> new AudioSettingsDialog(model, stub));
+        runOnFxAndWait(() -> dialog.getBackendCombo().setValue("WASAPI"));
+        // Checkbox is visible for WASAPI backends.
+        assertThat(dialog.getWasapiExclusiveCheck().isVisible()).isTrue();
+        int beforeToggle = stub.bufferSizeRangeCalls;
+        runOnFxAndWait(() -> dialog.getWasapiExclusiveCheck().setSelected(true));
+        // Toggling triggered another query for the buffer-size range.
+        assertThat(stub.bufferSizeRangeCalls).isGreaterThan(beforeToggle);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static <T> T onFxThread(java.util.function.Supplier<T> supplier) throws Exception {
@@ -241,10 +355,17 @@ class AudioSettingsDialogTest {
         int applyCount;
         int toneCount;
         int listDevicesCalls;
+        int bufferSizeRangeCalls;
         Optional<Runnable> controlPanelAction = Optional.empty();
         AtomicInteger controlPanelInvocations = new AtomicInteger();
         Request lastRequest;
         String lastToneDevice;
+        List<String> availableBackends = List.of("PortAudio", "Java Sound");
+
+        /** Per-device buffer-size range overrides (story 213). */
+        final Map<String, BufferSizeRange> bufferRanges = new HashMap<>();
+        /** Per-device supported sample-rate overrides (story 213). */
+        final Map<String, Set<Integer>> supportedRates = new HashMap<>();
 
         @Override
         public String getActiveBackendName() {
@@ -253,7 +374,7 @@ class AudioSettingsDialogTest {
 
         @Override
         public List<String> getAvailableBackendNames() {
-            return List.of("PortAudio", "Java Sound");
+            return availableBackends;
         }
 
         @Override
@@ -288,6 +409,37 @@ class AudioSettingsDialogTest {
         public void playTestTone(String outputDeviceName) {
             toneCount++;
             lastToneDevice = outputDeviceName;
+        }
+
+        @Override
+        public BufferSizeRange bufferSizeRange(String backendName, String outputDeviceName) {
+            bufferSizeRangeCalls++;
+            BufferSizeRange override = bufferRanges.get(keyOf(outputDeviceName));
+            return override != null ? override : AudioEngineController.super.bufferSizeRange(backendName, outputDeviceName);
+        }
+
+        @Override
+        public Set<Integer> supportedSampleRates(String backendName, String outputDeviceName) {
+            Set<Integer> override = supportedRates.get(keyOf(outputDeviceName));
+            if (override != null) {
+                return override;
+            }
+            // Fall back to a per-device list derived from AudioDeviceInfo
+            // so existing test setup keeps working without explicit overrides.
+            for (AudioDeviceInfo info : devices) {
+                if (info.name().equals(outputDeviceName)) {
+                    Set<Integer> rates = new LinkedHashSet<>();
+                    for (SampleRate r : info.supportedSampleRates()) {
+                        rates.add(r.getHz());
+                    }
+                    return rates;
+                }
+            }
+            return AudioEngineController.super.supportedSampleRates(backendName, outputDeviceName);
+        }
+
+        private static String keyOf(String outputDeviceName) {
+            return outputDeviceName == null ? "" : outputDeviceName;
         }
     }
 }

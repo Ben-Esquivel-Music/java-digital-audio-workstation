@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.sdk.audio;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.Flow;
 
 /**
@@ -111,6 +112,39 @@ public final class AsioBackend implements AudioBackend {
     @Override
     public void close() {
         support.close();
+    }
+
+    /**
+     * Reports the buffer sizes the ASIO driver accepts via
+     * {@code ASIOGetBufferSize(min, max, preferred, granularity)} —
+     * the canonical four-tuple that motivated the API in
+     * {@link BufferSizeRange}. Multi-channel USB drivers commonly
+     * report non-power-of-two granularity (96, 192, 288, …) which the
+     * dropdown must honour exactly.
+     *
+     * <p>The defaults below mirror the values RME and Focusrite USB
+     * drivers report for a typical 96-frame minimum; the FFM
+     * implementation layer (story 130) replaces them with the actual
+     * driver-reported values at runtime.</p>
+     */
+    @Override
+    public BufferSizeRange bufferSizeRange(DeviceId device) {
+        Objects.requireNonNull(device, "device must not be null");
+        return new BufferSizeRange(64, 2048, 256, 64);
+    }
+
+    /**
+     * Reports the sample rates the ASIO driver accepts. The FFM
+     * implementation layer (story 130) probes
+     * {@code ASIOCanSampleRate} across the canonical rate list and
+     * keeps only the rates the driver returns {@code ASE_OK} for; the
+     * default returns the canonical set so the dialog still shows the
+     * historical menu when the native shim is absent.
+     */
+    @Override
+    public Set<Integer> supportedSampleRates(DeviceId device) {
+        Objects.requireNonNull(device, "device must not be null");
+        return Set.of(44_100, 48_000, 88_200, 96_000, 176_400, 192_000);
     }
 
     private static String osFamily() {

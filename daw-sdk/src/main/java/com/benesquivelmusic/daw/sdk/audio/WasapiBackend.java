@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.sdk.audio;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.Flow;
 
 /**
@@ -127,6 +128,53 @@ public final class WasapiBackend implements AudioBackend {
     @Override
     public void close() {
         support.close();
+    }
+
+    /**
+     * Reports the buffer-size range allowed by the WASAPI client mode.
+     *
+     * <p>WASAPI <b>shared</b> mode is fixed at the OS mixer's period
+     * (typically 10&nbsp;ms ≈ 480 frames at 48 kHz) — the mixer cannot
+     * be reconfigured per-application — so the singleton range is
+     * returned. <b>Exclusive</b> mode lets the application pick any
+     * power-of-two between the device's minimum and default periods, so
+     * a granular range is reported.</p>
+     *
+     * <p>The values below are conservative defaults that match what
+     * {@code IAudioClient::GetDevicePeriod} returns for typical USB
+     * Audio Class 2 devices; the implementation layer that ships the
+     * native FFM bindings (story 130) replaces them with the actual
+     * device-reported values at runtime.</p>
+     */
+    @Override
+    public BufferSizeRange bufferSizeRange(DeviceId device) {
+        Objects.requireNonNull(device, "device must not be null");
+        if (exclusive) {
+            // Exclusive mode: power-of-two ladder from min device period
+            // (~3 ms / 144 frames at 48 kHz) up to a generous max.
+            return new BufferSizeRange(64, 2048, 256, 64);
+        }
+        // Shared mode: fixed at the OS mixer period; ~10 ms at 48 kHz.
+        return BufferSizeRange.singleton(480);
+    }
+
+    /**
+     * Reports supported sample rates per WASAPI mode.
+     *
+     * <p><b>Shared</b> mode is fixed at the OS mixer's nominal rate
+     * (typically 48 kHz) — the mixer rejects any other rate — so the
+     * singleton set is returned. <b>Exclusive</b> mode probes
+     * {@code IAudioClient::IsFormatSupported}; the default
+     * implementation here returns the canonical set since the FFM
+     * binding is wired in story 130.</p>
+     */
+    @Override
+    public Set<Integer> supportedSampleRates(DeviceId device) {
+        Objects.requireNonNull(device, "device must not be null");
+        if (exclusive) {
+            return Set.of(44_100, 48_000, 88_200, 96_000, 176_400, 192_000);
+        }
+        return Set.of(48_000);
     }
 
     private static boolean isWindows() {
