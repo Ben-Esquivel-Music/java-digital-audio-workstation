@@ -43,13 +43,19 @@ public final class MasteringChain implements AudioProcessor {
         private final MasteringStageType type;
         private final String name;
         private final AudioProcessor processor;
+        private final boolean terminal;
         private boolean bypassed;
         private boolean solo;
 
         Stage(MasteringStageType type, String name, AudioProcessor processor) {
+            this(type, name, processor, type == MasteringStageType.DITHERING);
+        }
+
+        Stage(MasteringStageType type, String name, AudioProcessor processor, boolean terminal) {
             this.type = Objects.requireNonNull(type, "type must not be null");
             this.name = Objects.requireNonNull(name, "name must not be null");
             this.processor = Objects.requireNonNull(processor, "processor must not be null");
+            this.terminal = terminal;
         }
 
         /** Returns the stage type. */
@@ -60,6 +66,14 @@ public final class MasteringChain implements AudioProcessor {
 
         /** Returns the audio processor for this stage. */
         public AudioProcessor getProcessor() { return processor; }
+
+        /**
+         * Returns whether this stage is <em>terminal</em> — must always be the
+         * last node of the chain. The {@link MasteringChain} forbids inserting
+         * non-terminal stages after a terminal stage and forbids appending a
+         * second terminal stage.
+         */
+        public boolean isTerminal() { return terminal; }
 
         /** Returns whether this stage is bypassed. */
         public boolean isBypassed() { return bypassed; }
@@ -118,7 +132,31 @@ public final class MasteringChain implements AudioProcessor {
      * @param processor the audio processor
      */
     public void addStage(MasteringStageType type, String name, AudioProcessor processor) {
-        stages.add(new Stage(type, name, processor));
+        addStage(type, name, processor, type == MasteringStageType.DITHERING);
+    }
+
+    /**
+     * Adds a stage with an explicit terminal flag.
+     *
+     * <p>If a terminal stage already exists in the chain, this method throws
+     * {@link IllegalStateException} — terminal stages must always be the last
+     * node and there can be only one. If {@code terminal} is {@code true} and
+     * the chain already contains any stage of type
+     * {@link MasteringStageType#DITHERING DITHERING}, the existing stage is
+     * already terminal and the new addition is rejected.</p>
+     *
+     * @param type      the mastering stage type
+     * @param name      the display name
+     * @param processor the audio processor
+     * @param terminal  whether this stage is terminal (must be the last stage)
+     * @throws IllegalStateException if appending would place a non-terminal
+     *                               stage after an existing terminal stage,
+     *                               or if a second terminal stage is added
+     */
+    public void addStage(MasteringStageType type, String name,
+                         AudioProcessor processor, boolean terminal) {
+        ensureCanAppend(terminal);
+        stages.add(new Stage(type, name, processor, terminal));
         reallocateMeteringArrays();
         resizeIntermediateBuffers();
     }
@@ -135,7 +173,26 @@ public final class MasteringChain implements AudioProcessor {
      */
     public void insertStage(int index, MasteringStageType type, String name,
                             AudioProcessor processor) {
-        stages.add(index, new Stage(type, name, processor));
+        insertStage(index, type, name, processor, type == MasteringStageType.DITHERING);
+    }
+
+    /**
+     * Inserts a stage at the specified index with an explicit terminal flag.
+     *
+     * @param index     the insertion index
+     * @param type      the mastering stage type
+     * @param name      the display name
+     * @param processor the audio processor
+     * @param terminal  whether this stage is terminal (must be the last stage)
+     * @throws IllegalStateException if the insertion would violate terminal
+     *                               ordering — e.g. inserting a non-terminal
+     *                               stage at or after the terminal index, or
+     *                               inserting a second terminal stage
+     */
+    public void insertStage(int index, MasteringStageType type, String name,
+                            AudioProcessor processor, boolean terminal) {
+        ensureCanInsert(index, terminal);
+        stages.add(index, new Stage(type, name, processor, terminal));
         reallocateMeteringArrays();
         resizeIntermediateBuffers();
     }
@@ -464,6 +521,71 @@ public final class MasteringChain implements AudioProcessor {
     }
 
     // --- Private helpers ---
+
+    /**
+     * Returns the index of the (single) terminal stage if any is currently in
+     * the chain, or {@code -1} if none exists. Terminal stages must always be
+     * the final stage of the chain.
+     */
+    private int terminalIndex() {
+        for (int i = 0; i < stages.size(); i++) {
+            if (stages.get(i).isTerminal()) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Validates that a new stage may be appended.
+     *
+     * <p>The {@code terminal} flag of the incoming stage is intentionally
+     * unused for append: the only constraint at append time is that no
+     * existing stage is already terminal (since a terminal stage must always
+     * be the last). A second terminal append is therefore caught by the same
+     * check — there is no ordering issue if the new stage simply becomes the
+     * new last stage.</p>
+     *
+     * @throws IllegalStateException if the chain already contains a terminal
+     *         stage — no stage of any kind may be appended after it.
+     */
+    @SuppressWarnings("unused") // 'terminal' param documents the call site's intent
+    private void ensureCanAppend(boolean terminal) {
+        int term = terminalIndex();
+        if (term >= 0) {
+            throw new IllegalStateException(
+                    "Cannot add a stage after the terminal stage at index " + term
+                            + " — the mastering chain forbids any stage after a terminal "
+                            + "stage (e.g. dithering must always be last).");
+        }
+    }
+
+    /**
+     * Validates that a stage may be inserted at the given index.
+     *
+     * @throws IllegalStateException if inserting a non-terminal stage at or
+     *         after the terminal stage's index, or inserting a second terminal
+     *         stage anywhere other than the end.
+     */
+    private void ensureCanInsert(int index, boolean terminal) {
+        int term = terminalIndex();
+        if (term >= 0) {
+            if (terminal) {
+                throw new IllegalStateException(
+                        "Cannot insert a second terminal stage — the chain already "
+                                + "contains a terminal stage at index " + term + ".");
+            }
+            if (index > term) {
+                throw new IllegalStateException(
+                        "Cannot insert a stage at index " + index + " after the "
+                                + "terminal stage at index " + term + ".");
+            }
+        } else if (terminal && index != stages.size()) {
+            throw new IllegalStateException(
+                    "A terminal stage must be inserted at the end of the chain "
+                            + "(index " + stages.size() + "), got index " + index + ".");
+        }
+    }
 
     private static void copyBuffer(float[][] src, float[][] dst, int numFrames) {
         int channels = Math.min(src.length, dst.length);

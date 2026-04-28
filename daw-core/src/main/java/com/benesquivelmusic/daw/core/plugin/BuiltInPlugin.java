@@ -57,4 +57,18 @@ public @interface BuiltInPlugin {
      * @return the plugin category
      */
     BuiltInPluginCategory category();
+
+    /**
+     * Whether this plugin is a <em>terminal</em> stage in its host signal chain.
+     *
+     * <p>Terminal plugins (such as {@code DitherPlugin}, the dithered bit-depth
+     * reducer) must be the last node of the chain they are inserted into —
+     * the host (e.g. {@link com.benesquivelmusic.daw.core.mastering.MasteringChain})
+     * forbids inserting any non-terminal stage <em>after</em> a terminal stage.
+     * The default is {@code false}: most plugins can be freely re-ordered.</p>
+     *
+     * @return {@code true} if this plugin must always be the last stage of its
+     *         host chain, {@code false} otherwise
+     */
+    boolean terminal() default false;
 }
