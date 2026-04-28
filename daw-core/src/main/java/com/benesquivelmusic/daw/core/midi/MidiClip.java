@@ -20,6 +20,7 @@ import java.util.Objects;
 public final class MidiClip implements Clip {
 
     private final List<MidiNoteData> notes = new ArrayList<>();
+    private final List<MidiCcLane> ccLanes = new ArrayList<>();
     private boolean locked;
 
     /**
@@ -144,5 +145,47 @@ public final class MidiClip implements Clip {
     @Override
     public String getDisplayName() {
         return "MIDI Clip";
+    }
+
+    // ── CC editing lanes ───────────────────────────────────────────────────
+    //
+    // Lanes are the per-clip configuration that drives the piano-roll
+    // editor's bottom pane: which CCs are visible, their stacking order,
+    // and the breakpoints inside each lane. Persisted by ProjectSerializer.
+
+    /**
+     * Adds a CC editing lane to this clip.
+     *
+     * @param lane the lane to add
+     * @throws NullPointerException if {@code lane} is {@code null}
+     */
+    public void addCcLane(MidiCcLane lane) {
+        Objects.requireNonNull(lane, "lane must not be null");
+        ccLanes.add(lane);
+    }
+
+    /**
+     * Removes a CC editing lane from this clip.
+     *
+     * @param lane the lane to remove
+     * @return {@code true} if the lane was found and removed
+     */
+    public boolean removeCcLane(MidiCcLane lane) {
+        return ccLanes.remove(lane);
+    }
+
+    /**
+     * Returns an unmodifiable view of the CC editing lanes shown
+     * underneath the piano roll for this clip.
+     *
+     * @return the lane list (never {@code null})
+     */
+    public List<MidiCcLane> getCcLanes() {
+        return Collections.unmodifiableList(ccLanes);
+    }
+
+    /** Removes all CC lanes. */
+    public void clearCcLanes() {
+        ccLanes.clear();
     }
 }

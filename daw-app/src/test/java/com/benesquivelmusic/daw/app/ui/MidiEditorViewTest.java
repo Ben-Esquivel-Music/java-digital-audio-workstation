@@ -1,5 +1,8 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.core.midi.MidiCcEvent;
+import com.benesquivelmusic.daw.core.midi.MidiCcLane;
+import com.benesquivelmusic.daw.core.midi.MidiCcLaneType;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
@@ -404,5 +407,51 @@ class MidiEditorViewTest {
     @Test
     void beatsPerColumnShouldBeSixteenthNote() {
         assertThat(MidiEditorView.BEATS_PER_COLUMN).isEqualTo(0.25);
+    }
+
+    // ── CC lane tests (issue: Velocity & CC editing lanes) ──────────────────
+
+    @Test
+    void shouldDefaultToVelocityLane() throws Exception {
+        MidiEditorView view = createOnFxThread();
+        assertThat(view.getActiveLaneType()).isEqualTo(MidiCcLaneType.VELOCITY);
+        assertThat(view.getLaneTypeCombo().getItems())
+                .contains(MidiCcLaneType.MOD_WHEEL, MidiCcLaneType.PITCH_BEND);
+    }
+
+    @Test
+    void shouldSwitchActiveLaneType() throws Exception {
+        MidiEditorView view = createOnFxThread();
+        runOnFxThread(() -> view.setActiveLaneType(MidiCcLaneType.MOD_WHEEL));
+        assertThat(view.getActiveLaneType()).isEqualTo(MidiCcLaneType.MOD_WHEEL);
+    }
+
+    @Test
+    void rampHelperInsertsBreakpointsBetweenSelectedColumns() throws Exception {
+        MidiEditorView view = createOnFxThread();
+        UndoManager undo = new UndoManager();
+        runOnFxThread(() -> view.setUndoManager(undo));
+
+        // Build a clip with a mod-wheel lane containing two breakpoints
+        // and load it into the editor.
+        MidiClip clip = new MidiClip();
+        MidiCcLane lane = MidiCcLane.preset(MidiCcLaneType.MOD_WHEEL, false);
+        lane.addEvent(new MidiCcEvent(0, 0));
+        lane.addEvent(new MidiCcEvent(8, 80));
+        clip.addCcLane(lane);
+        runOnFxThread(() -> {
+            view.loadFromMidiClip(clip);
+            view.setActiveLaneType(MidiCcLaneType.MOD_WHEEL);
+            view.setRampSelectionForTest(0, 8);
+        });
+
+        AtomicReference<Integer> inserted = new AtomicReference<>();
+        runOnFxThread(() -> inserted.set(view.insertRampBetweenSelection(2)));
+
+        // Step=2 between cols 0 and 8 → cols 2, 4, 6 → 3 breakpoints
+        assertThat(inserted.get()).isEqualTo(3);
+        assertThat(lane.getEvents()).hasSize(5);
+        assertThat(lane.getEvents().get(1).column()).isEqualTo(2);
+        assertThat(lane.getEvents().get(1).value()).isEqualTo(20);
     }
 }

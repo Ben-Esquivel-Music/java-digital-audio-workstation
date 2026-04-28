@@ -2,16 +2,23 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.core.midi.MidiCcEvent;
+import com.benesquivelmusic.daw.core.midi.MidiCcLane;
+import com.benesquivelmusic.daw.core.midi.MidiCcLaneType;
+import com.benesquivelmusic.daw.core.midi.MidiCcRamp;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
+import com.benesquivelmusic.daw.core.midi.SetCcValueAction;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import javafx.geometry.Insets;
 import javafx.scene.Cursor;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
+import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
@@ -58,6 +65,17 @@ final class MidiEditorView extends VBox {
 
     private final Canvas pianoRollCanvas;
     private final Canvas velocityCanvas;
+    private final Label velocityLabel;
+    private final ComboBox<MidiCcLaneType> laneTypeCombo;
+
+    // ── CC lane state (issue: piano-roll Velocity/CC lanes) ────────────────
+    /** The clip currently displayed; used to look up CC lane configuration. */
+    private MidiClip currentClip;
+    /** The active bottom-pane lane type. Defaults to per-note velocity. */
+    private MidiCcLaneType activeLaneType = MidiCcLaneType.VELOCITY;
+    /** Last-selected breakpoint columns, used by the ramp helper (R key). */
+    private int rampSelectionLeftColumn = -1;
+    private int rampSelectionRightColumn = -1;
 
     // ── Note state ───────────────────────────────────────────────────────────
     private final List<MidiNote> notes = new ArrayList<>();
@@ -107,16 +125,33 @@ final class MidiEditorView extends VBox {
         scrollPane.setStyle("-fx-background: transparent; -fx-background-color: transparent;");
         VBox.setVgrow(scrollPane, Priority.ALWAYS);
 
-        Label velocityLabel = new Label("Velocity");
-        velocityLabel.getStyleClass().add("panel-header");
-        velocityLabel.setPadding(new Insets(4, 0, 2, 0));
+        Label velLabel = new Label("Velocity");
+        velLabel.getStyleClass().add("panel-header");
+        velLabel.setPadding(new Insets(4, 0, 2, 0));
+        this.velocityLabel = velLabel;
+
+        // Lane-type selector — switches the bottom pane between per-note
+        // velocity bars and breakpoint-based CC lanes (mod wheel,
+        // expression, sustain, pitch bend, or any arbitrary CC).
+        laneTypeCombo = new ComboBox<>();
+        laneTypeCombo.getItems().addAll(MidiCcLaneType.values());
+        laneTypeCombo.setValue(MidiCcLaneType.VELOCITY);
+        laneTypeCombo.valueProperty().addListener((obs, oldT, newT) -> {
+            if (newT != null) {
+                setActiveLaneType(newT);
+            }
+        });
+
+        HBox laneHeader = new HBox(8, velLabel, laneTypeCombo);
+        laneHeader.setPadding(new Insets(4, 0, 2, 0));
 
         velocityCanvas = new Canvas();
         velocityCanvas.setHeight(VELOCITY_BAR_HEIGHT);
         velocityCanvas.setWidth(PIANO_KEY_WIDTH + GRID_COLUMNS * BASE_COL_WIDTH);
         velocityCanvas.setOnMousePressed(event -> onVelocityLaneClicked(event.getX(), event.getY()));
+        velocityCanvas.setOnMouseDragged(event -> onVelocityLaneClicked(event.getX(), event.getY()));
 
-        getChildren().addAll(midiLabel, scrollPane, velocityLabel, velocityCanvas);
+        getChildren().addAll(midiLabel, scrollPane, laneHeader, velocityCanvas);
         setSpacing(4);
     }
 
@@ -186,6 +221,7 @@ final class MidiEditorView extends VBox {
     // ── MIDI clip sync API ──────────────────────────────────────────────────
 
     void loadFromMidiClip(MidiClip midiClip) {
+        this.currentClip = midiClip;
         notes.clear();
         selectedNoteIndex = -1;
         if (midiClip != null) {
@@ -401,8 +437,62 @@ final class MidiEditorView extends VBox {
         gc.setLineWidth(0.5);
         gc.strokeLine(gridStartX, height / 2, width, height / 2);
 
-        // Draw velocity bars for placed notes
-        renderVelocityBars(gc, gridStartX, colWidth, height);
+        if (activeLaneType == MidiCcLaneType.VELOCITY) {
+            renderVelocityBars(gc, gridStartX, colWidth, height);
+        } else {
+            renderCcBreakpoints(gc, gridStartX, colWidth, height);
+        }
+    }
+
+    /**
+     * Renders the active CC lane (mod wheel, expression, sustain, pitch
+     * bend, or arbitrary CC) as a poly-line of breakpoints with line-segment
+     * interpolation, matching the look of an automation lane.
+     */
+    private void renderCcBreakpoints(GraphicsContext gc, double gridStartX,
+                                     double colWidth, double laneHeight) {
+        MidiCcLane lane = findActiveCcLane();
+        if (lane == null) {
+            return;
+        }
+        int maxValue = lane.isHighResolution() || activeLaneType == MidiCcLaneType.PITCH_BEND
+                ? MidiCcEvent.MAX_14BIT
+                : MidiCcEvent.MAX_7BIT;
+        List<MidiCcEvent> events = lane.getEvents();
+        if (events.isEmpty()) {
+            return;
+        }
+        gc.setStroke(VELOCITY_BAR_COLOR);
+        gc.setLineWidth(1.5);
+        double prevX = -1, prevY = -1;
+        for (MidiCcEvent ev : events) {
+            double x = gridStartX + ev.column() * colWidth;
+            double ratio = maxValue == 0 ? 0 : ev.value() / (double) maxValue;
+            double y = laneHeight - ratio * laneHeight;
+            if (prevX >= 0) {
+                gc.strokeLine(prevX, prevY, x, y);
+            }
+            gc.setFill(VELOCITY_BAR_COLOR);
+            gc.fillOval(x - 3, y - 3, 6, 6);
+            prevX = x;
+            prevY = y;
+        }
+    }
+
+    /**
+     * Locates the {@link MidiCcLane} on the current clip whose type
+     * matches {@link #activeLaneType}, or {@code null} when none exists.
+     */
+    private MidiCcLane findActiveCcLane() {
+        if (currentClip == null || activeLaneType == MidiCcLaneType.VELOCITY) {
+            return null;
+        }
+        for (MidiCcLane lane : currentClip.getCcLanes()) {
+            if (lane.getType() == activeLaneType) {
+                return lane;
+            }
+        }
+        return null;
     }
 
     private void renderNotes(GraphicsContext gc, double gridStartX, double colWidth) {
@@ -650,6 +740,11 @@ final class MidiEditorView extends VBox {
             return;
         }
 
+        if (activeLaneType != MidiCcLaneType.VELOCITY) {
+            onCcLaneClicked(column, y, laneHeight);
+            return;
+        }
+
         // Find the note at this column
         int noteIndex = -1;
         for (int i = 0; i < notes.size(); i++) {
@@ -664,13 +759,137 @@ final class MidiEditorView extends VBox {
             return;
         }
 
-        // Calculate new velocity from click position (bottom = 0, top = 127)
+        // Calculate new velocity from click position (bottom = 0, top = 127).
+        // Using a continuous mouse-drag handler lets the user "drag the top
+        // of the bar" to reshape the velocity, satisfying the issue's
+        // velocity-lane editing requirement.
         double ratio = 1.0 - (y / laneHeight);
         ratio = Math.max(0.0, Math.min(1.0, ratio));
         int newVelocity = (int) Math.round(ratio * MidiNote.MAX_VELOCITY);
 
         selectedNoteIndex = noteIndex;
         setSelectedNoteVelocity(newVelocity);
+    }
+
+    /**
+     * Handles a click/drag on the bottom pane while a CC lane is active.
+     * Adds (or replaces) a breakpoint at the clicked column and value,
+     * remembering the column for later use by the ramp helper.
+     */
+    private void onCcLaneClicked(int column, double y, double laneHeight) {
+        MidiCcLane lane = findActiveCcLane();
+        if (lane == null) {
+            // Auto-create the lane on first interaction so that switching
+            // the dropdown and clicking actually edits something.
+            if (currentClip == null) {
+                return;
+            }
+            lane = (activeLaneType == MidiCcLaneType.ARBITRARY_CC)
+                    ? new MidiCcLane(activeLaneType, 20, false, 0)
+                    : MidiCcLane.preset(activeLaneType, false);
+            currentClip.addCcLane(lane);
+        }
+
+        int maxValue = lane.isHighResolution()
+                || activeLaneType == MidiCcLaneType.PITCH_BEND
+                ? MidiCcEvent.MAX_14BIT
+                : MidiCcEvent.MAX_7BIT;
+        double ratio = 1.0 - (y / laneHeight);
+        ratio = Math.max(0.0, Math.min(1.0, ratio));
+        int newValue = (int) Math.round(ratio * maxValue);
+        MidiCcEvent ev = new MidiCcEvent(column, newValue);
+        if (undoManager != null) {
+            undoManager.execute(new SetCcValueAction(lane, ev));
+        } else {
+            // Fall through: insert directly when no undo manager is wired.
+            new SetCcValueAction(lane, ev).execute();
+        }
+
+        // Remember this column for the R-key ramp helper.
+        rampSelectionLeftColumn = rampSelectionRightColumn;
+        rampSelectionRightColumn = column;
+
+        renderVelocityLane();
+    }
+
+    /**
+     * Public hook used by the editor's keyboard shortcut handler to insert
+     * a linear ramp of breakpoints between the two most recently clicked
+     * breakpoints in the active CC lane.
+     *
+     * <p>This implements the issue's "select two breakpoints, R inserts a
+     * line between them at configurable density" feature.</p>
+     *
+     * @param stepColumns spacing between generated breakpoints (≥ 1)
+     * @return the number of breakpoints inserted
+     */
+    int insertRampBetweenSelection(int stepColumns) {
+        MidiCcLane lane = findActiveCcLane();
+        if (lane == null
+                || rampSelectionLeftColumn < 0
+                || rampSelectionRightColumn < 0
+                || rampSelectionLeftColumn == rampSelectionRightColumn) {
+            return 0;
+        }
+        int leftCol = Math.min(rampSelectionLeftColumn, rampSelectionRightColumn);
+        int rightCol = Math.max(rampSelectionLeftColumn, rampSelectionRightColumn);
+        MidiCcEvent left = null;
+        MidiCcEvent right = null;
+        for (MidiCcEvent ev : lane.getEvents()) {
+            if (ev.column() == leftCol) left = ev;
+            if (ev.column() == rightCol) right = ev;
+        }
+        if (left == null || right == null) {
+            return 0;
+        }
+        List<MidiCcEvent> ramp = MidiCcRamp.generate(left, right, stepColumns);
+        for (MidiCcEvent r : ramp) {
+            if (undoManager != null) {
+                undoManager.execute(new SetCcValueAction(lane, r));
+            } else {
+                new SetCcValueAction(lane, r).execute();
+            }
+        }
+        renderVelocityLane();
+        return ramp.size();
+    }
+
+    /**
+     * Switches the bottom pane between Velocity and the various CC lane
+     * types. Updates the lane title and re-renders.
+     *
+     * @param type the new active lane type
+     */
+    void setActiveLaneType(MidiCcLaneType type) {
+        this.activeLaneType = type;
+        velocityLabel.setText(switch (type) {
+            case VELOCITY     -> "Velocity";
+            case MOD_WHEEL    -> "Mod Wheel (CC 1)";
+            case EXPRESSION   -> "Expression (CC 11)";
+            case SUSTAIN      -> "Sustain (CC 64)";
+            case PITCH_BEND   -> "Pitch Bend";
+            case ARBITRARY_CC -> "CC";
+        });
+        rampSelectionLeftColumn = -1;
+        rampSelectionRightColumn = -1;
+        if (laneTypeCombo.getValue() != type) {
+            laneTypeCombo.setValue(type);
+        }
+        renderVelocityLane();
+    }
+
+    MidiCcLaneType getActiveLaneType() {
+        return activeLaneType;
+    }
+
+    ComboBox<MidiCcLaneType> getLaneTypeCombo() {
+        return laneTypeCombo;
+    }
+
+    /** Test-only hook used by unit tests to seed the ramp selection. */
+    void setRampSelectionForTest(int leftColumn, int rightColumn) {
+        this.rampSelectionLeftColumn = leftColumn;
+        this.rampSelectionRightColumn = rightColumn;
     }
 
     // ── Utility: MIDI note number ↔ piano roll row ──────────────────────────
