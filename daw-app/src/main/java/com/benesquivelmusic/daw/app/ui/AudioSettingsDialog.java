@@ -426,8 +426,13 @@ public final class AudioSettingsDialog extends Dialog<Void> {
 
     /**
      * Launches the active backend's native driver control panel on a
-     * non-audio thread, then re-queries device capabilities so the
-     * dialog reflects any change the user made there.
+     * non-audio thread, then immediately re-queries device
+     * capabilities so the dialog picks up any change the user may
+     * have already applied. Note: some implementations (WASAPI,
+     * CoreAudio) launch an external process and return before the
+     * user closes the panel, so this refresh is best-effort. The
+     * dialog will also re-query devices on the next backend-combo
+     * change or dialog reopen.
      */
     private void onOpenControlPanel() {
         if (controller == null) {
@@ -440,8 +445,9 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         Runnable runnable = action.get();
         // Run on a background virtual thread so blocking native UI calls
         // never stall the JavaFX application thread or the audio render
-        // callback. After the panel closes (the runnable returns), refresh
-        // device capabilities on the FX thread.
+        // callback. After the runnable returns, refresh device capabilities
+        // on the FX thread. Some implementations return immediately after
+        // spawning the panel process, so this refresh is best-effort.
         Thread.ofVirtual().name("audio-control-panel").start(() -> {
             try {
                 runnable.run();

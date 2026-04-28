@@ -38,17 +38,12 @@ class AudioBackendControlPanelTest {
     }
 
     @Test
-    void asioBackendIsEmptyWhenAsioShimNotInstalled() {
-        // The Steinberg licence forbids redistributing the ASIO SDK,
-        // so the shim is opt-in. CI runners and macOS / Linux
-        // developer machines never have it loaded, so the panel
-        // hook must report empty rather than throwing on construction.
+    void asioBackendIsAlwaysEmptyUntilNativeBridgeWired() {
+        // The native ASIOControlPanel() bridge is not yet wired, so the
+        // backend must always return empty regardless of platform. When
+        // the FFM downcall is implemented this test should be updated.
         AsioBackend asio = new AsioBackend();
-        if (!asio.isAvailable()) {
-            assertTrue(asio.openControlPanel().isEmpty());
-        } else {
-            assertTrue(asio.openControlPanel().isPresent());
-        }
+        assertTrue(asio.openControlPanel().isEmpty());
     }
 
     @Test

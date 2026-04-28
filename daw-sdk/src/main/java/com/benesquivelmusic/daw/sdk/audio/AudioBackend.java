@@ -179,8 +179,11 @@ public sealed interface AudioBackend extends AutoCloseable
      * Windows. The DAW is responsible for invoking the returned
      * {@link Runnable} on a non-audio thread; implementations must
      * never block the render callback. The DAW is also responsible for
-     * re-querying {@link #listDevices()} after the panel closes so the
-     * UI reflects any change the user made in the driver UI.</p>
+     * re-querying {@link #listDevices()} after the returned
+     * {@link Runnable} finishes so the UI can reflect any change the
+     * user made in the driver UI. Some implementations launch an
+     * external process and may therefore return before the user closes
+     * the native panel.</p>
      *
      * <p>Per-backend conventions:</p>
      * <ul>

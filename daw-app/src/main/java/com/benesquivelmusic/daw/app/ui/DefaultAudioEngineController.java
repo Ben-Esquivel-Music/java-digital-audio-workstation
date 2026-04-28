@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.Flow;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -192,6 +193,18 @@ final class DefaultAudioEngineController implements AudioEngineController {
     @Override
     public Flow.Publisher<XrunEvent> xrunEvents() {
         return xrunDetector.xrunEvents();
+    }
+
+    /**
+     * The production audio engine uses {@link NativeAudioBackend}
+     * (PortAudio or Java Sound), neither of which exposes a native
+     * control panel. When ASIO/WASAPI/CoreAudio support is added to
+     * the engine, this method should delegate to the active backend's
+     * panel action.
+     */
+    @Override
+    public Optional<Runnable> openControlPanel() {
+        return Optional.empty();
     }
 
     /**

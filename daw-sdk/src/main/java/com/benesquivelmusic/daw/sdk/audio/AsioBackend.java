@@ -82,44 +82,30 @@ public final class AsioBackend implements AudioBackend {
     }
 
     /**
-     * Returns an action that invokes the driver-provided
-     * {@code ASIOControlPanel()} entry point via the existing FFM
-     * binding. Returns {@link Optional#empty()} when the ASIO shim
-     * is not built on this host (the Steinberg licence forbids
-     * redistributing the SDK headers, so the shim is opt-in — see
-     * {@link #isAvailable()}).
+     * Do not advertise control-panel support until the native ASIO
+     * control-panel bridge is actually wired. Returning an empty
+     * {@link Optional} allows the UI to disable the action instead of
+     * exposing a button that can only fail at runtime.
      *
-     * <p>The runnable must be invoked on a non-audio thread. When the
-     * native call returns {@code ASE_NotPresent} or any other
-     * non-{@code ASE_OK} status, the runnable throws
-     * {@link AudioBackendException} so the caller can surface a
-     * notification rather than letting a stack trace escape.</p>
+     * <p>When the FFM downcall to {@code ASIOControlPanel()} is wired
+     * by the implementation layer that ships the Steinberg ASIO SDK
+     * shim (see {@code daw-core/native/asio/}), this method should
+     * return {@code Optional.of(this::invokeAsioControlPanel)}.</p>
      */
     @Override
     public Optional<Runnable> openControlPanel() {
-        if (!AVAILABLE) {
-            return Optional.empty();
-        }
-        return Optional.of(this::invokeAsioControlPanel);
+        return Optional.empty();
     }
 
     /**
-     * Bridge to the FFM-bound {@code ASIOControlPanel()} symbol from
-     * the native shim under {@code daw-core/native/asio/}. Throws
-     * {@link AudioBackendException} when the driver responds with
-     * {@code ASE_NotPresent} or the symbol cannot be resolved.
+     * Placeholder for a future bridge to the FFM-bound
+     * {@code ASIOControlPanel()} symbol from the native shim under
+     * {@code daw-core/native/asio/}. This backend does not currently
+     * expose the control panel.
      */
     private void invokeAsioControlPanel() {
-        // The FFM downcall handle for ASIOControlPanel is wired by the
-        // implementation layer that ships the Steinberg ASIO SDK shim
-        // (see daw-core/native/asio/). When the shim is loaded the
-        // call returns ASE_OK; when it is missing or the driver does
-        // not implement the panel we surface ASE_NotPresent uniformly
-        // through AudioBackendException so AudioSettingsDialog can
-        // notify the user instead of crashing.
         throw new AudioBackendException(
-                "ASIO control panel is not available — the ASIO SDK shim was not "
-                        + "loaded or the active driver returned ASE_NotPresent.");
+                "ASIO control panel is not implemented in this build.");
     }
 
     @Override

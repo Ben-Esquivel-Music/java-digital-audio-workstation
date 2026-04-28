@@ -99,9 +99,11 @@ public final class WasapiBackend implements AudioBackend {
      * non-Windows host.
      *
      * <p>The runnable must be invoked on a non-audio thread. Failures
-     * (missing executable, denied access, non-zero exit) are surfaced
+     * (missing executable, denied access) are surfaced
      * as {@link AudioBackendException} so the caller can show a
-     * notification.</p>
+     * notification. The launched process runs asynchronously; the
+     * runnable returns as soon as the process is spawned, not when
+     * the user closes the control panel.</p>
      */
     @Override
     public Optional<Runnable> openControlPanel() {
