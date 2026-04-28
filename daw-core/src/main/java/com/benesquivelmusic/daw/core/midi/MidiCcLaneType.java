@@ -27,7 +27,7 @@ public enum MidiCcLaneType {
     /** Sustain pedal — control change number 64. Switch (on/off) controller. */
     SUSTAIN,
 
-    /** Pitch bend — 14-bit channel-voice message (-8192..+8191). */
+    /** Pitch bend — 14-bit channel-voice message (0..16383, centre at 8192). */
     PITCH_BEND,
 
     /** Any other CC number, configured on the {@link MidiCcLane}. */
@@ -70,10 +70,14 @@ public enum MidiCcLaneType {
      * Whether this lane type natively supports 14-bit high-resolution
      * values (pitch bend always; CC pairs for MSBs in range 0–31).
      *
+     * <p>For {@link #ARBITRARY_CC} the answer depends on the actual CC
+     * number configured on the {@link MidiCcLane}, so this method returns
+     * {@code false} — the lane constructor validates 14-bit eligibility
+     * based on the concrete CC number.</p>
+     *
      * @return {@code true} if 14-bit values are meaningful for this lane
      */
     public boolean supportsHighResolution() {
-        return this == PITCH_BEND || defaultLsbCcNumber() >= 0
-                || this == ARBITRARY_CC;
+        return this == PITCH_BEND || defaultLsbCcNumber() >= 0;
     }
 }

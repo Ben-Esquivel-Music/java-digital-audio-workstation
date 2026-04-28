@@ -1079,48 +1079,60 @@ public final class ProjectSerializer {
             for (int i = 0; i < noteNodes.getLength(); i++) {
                 Node node = noteNodes.item(i);
                 if (!(node instanceof Element ne)) continue;
-                int noteNumber = Integer.parseInt(ne.getAttribute("note-number"));
-                int start = Integer.parseInt(ne.getAttribute("start-column"));
-                int dur = Integer.parseInt(ne.getAttribute("duration-columns"));
-                int vel = Integer.parseInt(ne.getAttribute("velocity"));
-                int ch = ne.hasAttribute("channel")
-                        ? Integer.parseInt(ne.getAttribute("channel"))
-                        : MidiNoteData.DEFAULT_CHANNEL;
-                clip.addNote(new MidiNoteData(noteNumber, start, dur, vel, ch));
+                try {
+                    int noteNumber = Integer.parseInt(ne.getAttribute("note-number"));
+                    int start = Integer.parseInt(ne.getAttribute("start-column"));
+                    int dur = Integer.parseInt(ne.getAttribute("duration-columns"));
+                    int vel = Integer.parseInt(ne.getAttribute("velocity"));
+                    int ch = ne.hasAttribute("channel")
+                            ? Integer.parseInt(ne.getAttribute("channel"))
+                            : MidiNoteData.DEFAULT_CHANNEL;
+                    clip.addNote(new MidiNoteData(noteNumber, start, dur, vel, ch));
+                } catch (RuntimeException e) {
+                    throw new IOException("Failed to parse note element at index " + i, e);
+                }
             }
 
             NodeList laneNodes = root.getElementsByTagName("cc-lane");
             for (int i = 0; i < laneNodes.getLength(); i++) {
                 Node node = laneNodes.item(i);
                 if (!(node instanceof Element le)) continue;
-                MidiCcLaneType type = MidiCcLaneType.valueOf(le.getAttribute("type"));
-                int ccNumber = le.hasAttribute("cc-number")
-                        ? Integer.parseInt(le.getAttribute("cc-number"))
-                        : -1;
-                boolean hi = Boolean.parseBoolean(le.getAttribute("high-resolution"));
-                int channel = le.hasAttribute("channel")
-                        ? Integer.parseInt(le.getAttribute("channel"))
-                        : 0;
-                MidiCcLane lane = (type == MidiCcLaneType.ARBITRARY_CC)
-                        ? new MidiCcLane(type, ccNumber, hi, channel)
-                        : MidiCcLane.preset(type, hi);
-                if (le.hasAttribute("height-ratio")) {
-                    try {
-                        double hr = Double.parseDouble(le.getAttribute("height-ratio"));
-                        lane.setHeightRatio(hr);
-                    } catch (IllegalArgumentException ignore) {
-                        // keep default
+                try {
+                    MidiCcLaneType type = MidiCcLaneType.valueOf(le.getAttribute("type"));
+                    int ccNumber;
+                    if (le.hasAttribute("cc-number")) {
+                        ccNumber = Integer.parseInt(le.getAttribute("cc-number"));
+                    } else if (type == MidiCcLaneType.ARBITRARY_CC) {
+                        throw new IOException(
+                                "cc-number attribute is required for ARBITRARY_CC lane at index " + i);
+                    } else {
+                        ccNumber = type.defaultCcNumber();
                     }
+                    boolean hi = Boolean.parseBoolean(le.getAttribute("high-resolution"));
+                    int channel = le.hasAttribute("channel")
+                            ? Integer.parseInt(le.getAttribute("channel"))
+                            : 0;
+                    MidiCcLane lane = new MidiCcLane(type, ccNumber, hi, channel);
+                    if (le.hasAttribute("height-ratio")) {
+                        try {
+                            double hr = Double.parseDouble(le.getAttribute("height-ratio"));
+                            lane.setHeightRatio(hr);
+                        } catch (IllegalArgumentException ignore) {
+                            // keep default
+                        }
+                    }
+                    NodeList eventNodes = le.getElementsByTagName("event");
+                    for (int j = 0; j < eventNodes.getLength(); j++) {
+                        Node enode = eventNodes.item(j);
+                        if (!(enode instanceof Element ee)) continue;
+                        int col = Integer.parseInt(ee.getAttribute("column"));
+                        int val = Integer.parseInt(ee.getAttribute("value"));
+                        lane.addEvent(new MidiCcEvent(col, val));
+                    }
+                    clip.addCcLane(lane);
+                } catch (RuntimeException e) {
+                    throw new IOException("Failed to parse cc-lane element at index " + i, e);
                 }
-                NodeList eventNodes = le.getElementsByTagName("event");
-                for (int j = 0; j < eventNodes.getLength(); j++) {
-                    Node enode = eventNodes.item(j);
-                    if (!(enode instanceof Element ee)) continue;
-                    int col = Integer.parseInt(ee.getAttribute("column"));
-                    int val = Integer.parseInt(ee.getAttribute("value"));
-                    lane.addEvent(new MidiCcEvent(col, val));
-                }
-                clip.addCcLane(lane);
             }
             return clip;
         } catch (ParserConfigurationException | SAXException e) {

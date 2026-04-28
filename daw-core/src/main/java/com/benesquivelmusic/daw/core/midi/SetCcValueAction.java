@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.midi;
 
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -50,8 +51,9 @@ public final class SetCcValueAction implements UndoableAction {
         // Find any existing event at the same column.
         replaced = null;
         wasInsert = true;
-        for (int i = 0; i < lane.getEvents().size(); i++) {
-            MidiCcEvent e = lane.getEvents().get(i);
+        List<MidiCcEvent> events = lane.getEvents();
+        for (int i = 0; i < events.size(); i++) {
+            MidiCcEvent e = events.get(i);
             if (e.column() == newEvent.column()) {
                 replaced = e;
                 wasInsert = false;

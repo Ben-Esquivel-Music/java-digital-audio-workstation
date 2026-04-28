@@ -57,6 +57,12 @@ public final class MidiCcLane {
                         "ccNumber must be 0–127 for ARBITRARY_CC: " + ccNumber);
             }
             this.ccNumber = ccNumber;
+            // Per the MIDI 1.0 spec, only CCs 0–31 have 14-bit LSB pairs
+            // at ccNumber + 32. CCs above 31 cannot be high-resolution.
+            if (highResolution && ccNumber > 31) {
+                throw new IllegalArgumentException(
+                        "14-bit high-resolution requires ccNumber 0–31, got: " + ccNumber);
+            }
         } else {
             int dflt = type.defaultCcNumber();
             this.ccNumber = dflt; // -1 for VELOCITY / PITCH_BEND
@@ -193,7 +199,8 @@ public final class MidiCcLane {
      * breakpoint it holds at the last value. Between breakpoints values
      * are linearly interpolated and rounded to the nearest integer.</p>
      *
-     * @param column the query column (any non-negative integer)
+     * @param column the query column (any integer; negative columns hold
+     *               at the first breakpoint value)
      * @return the value at {@code column}, or {@code 0} when empty
      */
     public int valueAt(int column) {

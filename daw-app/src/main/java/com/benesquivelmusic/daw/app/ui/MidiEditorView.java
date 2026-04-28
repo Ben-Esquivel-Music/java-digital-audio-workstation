@@ -99,6 +99,13 @@ final class MidiEditorView extends VBox {
     private int dragStartNoteRow;
     private MidiNote dragOriginalNote;
 
+    // ── Velocity-drag coalescing state ──────────────────────────────────────
+    // Captures the original note on mouse-press so that a continuous drag
+    // produces only a single undo step (captured original → final value),
+    // matching how note move/resize already works.
+    private int velocityDragNoteIndex = -1;
+    private MidiNote velocityDragOriginal;
+
     /**
      * Creates a new MIDI editor view with piano roll and velocity lane.
      */
@@ -148,8 +155,9 @@ final class MidiEditorView extends VBox {
         velocityCanvas = new Canvas();
         velocityCanvas.setHeight(VELOCITY_BAR_HEIGHT);
         velocityCanvas.setWidth(PIANO_KEY_WIDTH + GRID_COLUMNS * BASE_COL_WIDTH);
-        velocityCanvas.setOnMousePressed(event -> onVelocityLaneClicked(event.getX(), event.getY()));
-        velocityCanvas.setOnMouseDragged(event -> onVelocityLaneClicked(event.getX(), event.getY()));
+        velocityCanvas.setOnMousePressed(event -> onVelocityLanePressed(event.getX(), event.getY()));
+        velocityCanvas.setOnMouseDragged(event -> onVelocityLaneDragged(event.getX(), event.getY()));
+        velocityCanvas.setOnMouseReleased(event -> onVelocityLaneReleased());
 
         getChildren().addAll(midiLabel, scrollPane, laneHeader, velocityCanvas);
         setSpacing(4);
@@ -726,49 +734,92 @@ final class MidiEditorView extends VBox {
 
     // ── Velocity lane interaction ────────────────────────────────────────────
 
-    private void onVelocityLaneClicked(double x, double y) {
-        if (x < PIANO_KEY_WIDTH) {
-            return;
-        }
+    // ── Velocity lane mouse handlers (coalesced undo) ──────────────────────
+
+    /**
+     * Converts a velocity-canvas x/y into a column, or returns {@code -1}
+     * when outside the grid area.
+     */
+    private int velocityCanvasColumn(double x) {
+        if (x < PIANO_KEY_WIDTH) return -1;
         double gridStartX = PIANO_KEY_WIDTH;
         double gridWidth = velocityCanvas.getWidth() - gridStartX;
         double colWidth = gridWidth / GRID_COLUMNS;
-        double laneHeight = velocityCanvas.getHeight();
-
         int column = (int) ((x - gridStartX) / colWidth);
-        if (column < 0 || column >= GRID_COLUMNS) {
-            return;
-        }
+        return (column < 0 || column >= GRID_COLUMNS) ? -1 : column;
+    }
+
+    private void onVelocityLanePressed(double x, double y) {
+        int column = velocityCanvasColumn(x);
+        if (column < 0) return;
+        double laneHeight = velocityCanvas.getHeight();
 
         if (activeLaneType != MidiCcLaneType.VELOCITY) {
             onCcLaneClicked(column, y, laneHeight);
             return;
         }
 
-        // Find the note at this column
-        int noteIndex = -1;
+        // Find the note at this column and capture its original velocity
+        // so a drag produces only one undo step.
+        velocityDragNoteIndex = -1;
+        velocityDragOriginal = null;
         for (int i = 0; i < notes.size(); i++) {
             MidiNote n = notes.get(i);
             if (column >= n.startColumn()
                     && column < n.startColumn() + n.durationColumns()) {
-                noteIndex = i;
+                velocityDragNoteIndex = i;
+                velocityDragOriginal = n;
                 break;
             }
         }
-        if (noteIndex < 0) {
+        if (velocityDragNoteIndex < 0) return;
+
+        double ratio = Math.max(0.0, Math.min(1.0, 1.0 - (y / laneHeight)));
+        int newVelocity = (int) Math.round(ratio * MidiNote.MAX_VELOCITY);
+        selectedNoteIndex = velocityDragNoteIndex;
+        // During drag, update visually without recording undo steps.
+        MidiNote current = notes.get(velocityDragNoteIndex);
+        notes.set(velocityDragNoteIndex,
+                new MidiNote(current.note(), current.startColumn(),
+                        current.durationColumns(), newVelocity));
+        renderPianoRoll();
+        renderVelocityLane();
+    }
+
+    private void onVelocityLaneDragged(double x, double y) {
+        if (activeLaneType != MidiCcLaneType.VELOCITY) {
+            int column = velocityCanvasColumn(x);
+            if (column >= 0) {
+                onCcLaneClicked(column, y, velocityCanvas.getHeight());
+            }
             return;
         }
+        if (velocityDragNoteIndex < 0 || velocityDragOriginal == null) return;
 
-        // Calculate new velocity from click position (bottom = 0, top = 127).
-        // Using a continuous mouse-drag handler lets the user "drag the top
-        // of the bar" to reshape the velocity, satisfying the issue's
-        // velocity-lane editing requirement.
-        double ratio = 1.0 - (y / laneHeight);
-        ratio = Math.max(0.0, Math.min(1.0, ratio));
+        double laneHeight = velocityCanvas.getHeight();
+        double ratio = Math.max(0.0, Math.min(1.0, 1.0 - (y / laneHeight)));
         int newVelocity = (int) Math.round(ratio * MidiNote.MAX_VELOCITY);
+        MidiNote current = notes.get(velocityDragNoteIndex);
+        notes.set(velocityDragNoteIndex,
+                new MidiNote(current.note(), current.startColumn(),
+                        current.durationColumns(), newVelocity));
+        renderPianoRoll();
+        renderVelocityLane();
+    }
 
-        selectedNoteIndex = noteIndex;
-        setSelectedNoteVelocity(newVelocity);
+    private void onVelocityLaneReleased() {
+        if (velocityDragNoteIndex < 0 || velocityDragOriginal == null) {
+            return;
+        }
+        MidiNote finalNote = notes.get(velocityDragNoteIndex);
+        if (finalNote.velocity() != velocityDragOriginal.velocity()) {
+            // Revert to original, then apply as a single undo step.
+            notes.set(velocityDragNoteIndex, velocityDragOriginal);
+            selectedNoteIndex = velocityDragNoteIndex;
+            setSelectedNoteVelocity(finalNote.velocity());
+        }
+        velocityDragNoteIndex = -1;
+        velocityDragOriginal = null;
     }
 
     /**
@@ -781,12 +832,12 @@ final class MidiEditorView extends VBox {
         if (lane == null) {
             // Auto-create the lane on first interaction so that switching
             // the dropdown and clicking actually edits something.
-            if (currentClip == null) {
+            // For ARBITRARY_CC, don't auto-create — a proper CC number
+            // must be configured first (via a future UI dialog).
+            if (currentClip == null || activeLaneType == MidiCcLaneType.ARBITRARY_CC) {
                 return;
             }
-            lane = (activeLaneType == MidiCcLaneType.ARBITRARY_CC)
-                    ? new MidiCcLane(activeLaneType, 20, false, 0)
-                    : MidiCcLane.preset(activeLaneType, false);
+            lane = MidiCcLane.preset(activeLaneType, false);
             currentClip.addCcLane(lane);
         }
 
@@ -824,6 +875,9 @@ final class MidiEditorView extends VBox {
      * @return the number of breakpoints inserted
      */
     int insertRampBetweenSelection(int stepColumns) {
+        if (stepColumns < 1) {
+            return 0;
+        }
         MidiCcLane lane = findActiveCcLane();
         if (lane == null
                 || rampSelectionLeftColumn < 0
