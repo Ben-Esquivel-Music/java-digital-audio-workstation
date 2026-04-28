@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui.export;
 import com.benesquivelmusic.daw.core.export.RenderQueue;
 import com.benesquivelmusic.daw.sdk.export.JobProgress;
 import javafx.application.Platform;
+import javafx.beans.binding.Bindings;
 import javafx.beans.property.SimpleDoubleProperty;
 import javafx.beans.property.SimpleObjectProperty;
 import javafx.beans.property.SimpleStringProperty;
@@ -38,6 +39,9 @@ import java.util.concurrent.Flow;
  * <p>This class is intentionally lightweight (no FXML) so it can be
  * embedded inside any container — for example as a tab in the main
  * window or as a standalone tool window.</p>
+ *
+ * <p>Call {@link #dispose()} when the view is removed from the scene
+ * graph to cancel the subscription and allow garbage collection.</p>
  */
 public final class RenderQueueView extends VBox {
 
@@ -45,6 +49,7 @@ public final class RenderQueueView extends VBox {
     private final ObservableList<JobRow> rows = FXCollections.observableArrayList();
     private final Map<String, JobRow> rowsById = new HashMap<>();
     private final ListView<JobRow> listView = new ListView<>(rows);
+    private volatile Flow.Subscription subscription;
 
     public RenderQueueView(RenderQueue queue) {
         this.queue = queue;
@@ -57,7 +62,10 @@ public final class RenderQueueView extends VBox {
         getChildren().add(listView);
 
         queue.progressPublisher().subscribe(new Flow.Subscriber<>() {
-            @Override public void onSubscribe(Flow.Subscription s) { s.request(Long.MAX_VALUE); }
+            @Override public void onSubscribe(Flow.Subscription s) {
+                subscription = s;
+                s.request(Long.MAX_VALUE);
+            }
             @Override public void onNext(JobProgress p) { Platform.runLater(() -> applyUpdate(p)); }
             @Override public void onError(Throwable t) { /* ignore */ }
             @Override public void onComplete() { /* ignore */ }
@@ -70,6 +78,19 @@ public final class RenderQueueView extends VBox {
             row.stage.set(snap.lastStage());
             rowsById.put(snap.jobId(), row);
             rows.add(row);
+        }
+    }
+
+    /**
+     * Cancel the progress subscription and release references. Call when
+     * this view is removed from the scene graph to avoid leaking the
+     * subscriber (and this view) inside the {@code SubmissionPublisher}.
+     */
+    public void dispose() {
+        Flow.Subscription sub = subscription;
+        if (sub != null) {
+            sub.cancel();
+            subscription = null;
         }
     }
 
@@ -140,15 +161,16 @@ public final class RenderQueueView extends VBox {
                 if (getItem() == null) return;
                 String draggedId = ev.getDragboard().getString();
                 if (draggedId != null && !draggedId.equals(getItem().jobId)) {
-                    queue.moveBefore(draggedId, getItem().jobId);
-                    // Reflect in UI
-                    rows.stream().filter(r -> r.jobId.equals(draggedId)).findFirst()
-                            .ifPresent(dragged -> {
-                                rows.remove(dragged);
-                                int idx = rows.indexOf(getItem());
-                                rows.add(idx < 0 ? rows.size() : idx, dragged);
-                            });
-                    ev.setDropCompleted(true);
+                    boolean moved = queue.moveBefore(draggedId, getItem().jobId);
+                    if (moved) {
+                        rows.stream().filter(r -> r.jobId.equals(draggedId)).findFirst()
+                                .ifPresent(dragged -> {
+                                    rows.remove(dragged);
+                                    int idx = rows.indexOf(getItem());
+                                    rows.add(idx < 0 ? rows.size() : idx, dragged);
+                                });
+                    }
+                    ev.setDropCompleted(moved);
                 } else {
                     ev.setDropCompleted(false);
                 }
@@ -159,6 +181,14 @@ public final class RenderQueueView extends VBox {
         @Override
         protected void updateItem(JobRow item, boolean empty) {
             super.updateItem(item, empty);
+            // Unbind previous bindings
+            nameLabel.textProperty().unbind();
+            bar.progressProperty().unbind();
+            stageLabel.textProperty().unbind();
+            pauseBtn.disableProperty().unbind();
+            resumeBtn.disableProperty().unbind();
+            cancelBtn.disableProperty().unbind();
+
             if (empty || item == null) {
                 setGraphic(null);
                 setText(null);
@@ -167,11 +197,22 @@ public final class RenderQueueView extends VBox {
             nameLabel.textProperty().bind(item.displayName);
             bar.progressProperty().bind(item.percent);
             stageLabel.textProperty().bind(item.stage);
-            JobProgress.Phase ph = item.phase.get();
-            boolean terminal = ph != null && ph.isTerminal();
-            pauseBtn.setDisable(terminal || ph == JobProgress.Phase.PAUSED);
-            resumeBtn.setDisable(terminal || ph != JobProgress.Phase.PAUSED);
-            cancelBtn.setDisable(terminal);
+            // Bind button disable to phase so they react to live phase changes.
+            pauseBtn.disableProperty().bind(Bindings.createBooleanBinding(
+                    () -> {
+                        var ph = item.phase.get();
+                        return ph != null && (ph.isTerminal() || ph == JobProgress.Phase.PAUSED);
+                    }, item.phase));
+            resumeBtn.disableProperty().bind(Bindings.createBooleanBinding(
+                    () -> {
+                        var ph = item.phase.get();
+                        return ph == null || ph.isTerminal() || ph != JobProgress.Phase.PAUSED;
+                    }, item.phase));
+            cancelBtn.disableProperty().bind(Bindings.createBooleanBinding(
+                    () -> {
+                        var ph = item.phase.get();
+                        return ph != null && ph.isTerminal();
+                    }, item.phase));
             setGraphic(box);
             setText(null);
         }

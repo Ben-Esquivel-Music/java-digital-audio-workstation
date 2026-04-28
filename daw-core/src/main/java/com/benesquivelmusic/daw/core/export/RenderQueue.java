@@ -176,21 +176,41 @@ public final class RenderQueue implements AutoCloseable {
      * {@code jobId} is moved to the head of the queue. Only affects jobs
      * that have not yet started running.
      *
+     * <p>The implementation drains the deque into a local list under the
+     * queue lock (which is also held by any concurrent {@link #cancel}
+     * calls), reorders, and re-adds. No concurrent {@code takeFirst}
+     * can interleave because the lock is held for the entire operation
+     * and the deque is only empty transiently while under the lock.</p>
+     *
      * @return {@code true} if the move succeeded
      */
     public boolean moveBefore(String jobId, String beforeJobId) {
         queueLock.lock();
         try {
-            RenderJob target = findInPending(jobId);
-            if (target == null) return false;
-            pending.remove(target);
+            // Drain into local list under the lock.
+            List<RenderJob> jobs = new ArrayList<>();
+            pending.drainTo(jobs);
+            // Find and remove the target job.
+            RenderJob target = null;
+            for (var it = jobs.iterator(); it.hasNext(); ) {
+                RenderJob j = it.next();
+                if (j.jobId().equals(jobId)) {
+                    target = j;
+                    it.remove();
+                    break;
+                }
+            }
+            if (target == null) {
+                // Not found — put everything back and report failure.
+                jobs.forEach(pending::addLast);
+                return false;
+            }
             if (beforeJobId == null) {
-                pending.addFirst(target);
+                pending.addLast(target);
+                jobs.forEach(pending::addLast);
             } else {
-                List<RenderJob> snapshot = new ArrayList<>(pending);
-                pending.clear();
                 boolean inserted = false;
-                for (RenderJob j : snapshot) {
+                for (RenderJob j : jobs) {
                     if (!inserted && j.jobId().equals(beforeJobId)) {
                         pending.addLast(target);
                         inserted = true;
@@ -208,12 +228,38 @@ public final class RenderQueue implements AutoCloseable {
         }
     }
 
-    /** @return immutable snapshot of all known jobs in submission order. */
+    /**
+     * Return an immutable snapshot of all known jobs. Running and queued
+     * jobs appear in their current execution/pending order; completed jobs
+     * follow in submission order. This ensures that reorders performed via
+     * {@link #moveBefore(String, String)} are reflected in both the UI and
+     * in the persisted state.
+     */
     public List<JobSnapshot> snapshot() {
-        return states.values().stream()
-                .sorted(Comparator.comparingLong(s -> s.sequenceNumber))
-                .map(JobState::toSnapshot)
-                .toList();
+        queueLock.lock();
+        try {
+            List<JobSnapshot> result = new ArrayList<>();
+            // Running jobs first (in submission order among themselves)
+            states.values().stream()
+                    .filter(s -> s.phase == JobProgress.Phase.RUNNING || s.phase == JobProgress.Phase.PAUSED)
+                    .sorted(Comparator.comparingLong(s -> s.sequenceNumber))
+                    .map(JobState::toSnapshot)
+                    .forEach(result::add);
+            // Queued jobs in their current pending-deque order
+            for (RenderJob job : pending) {
+                JobState state = states.get(job.jobId());
+                if (state != null) result.add(state.toSnapshot());
+            }
+            // Terminal jobs last, in submission order
+            states.values().stream()
+                    .filter(s -> s.phase.isTerminal())
+                    .sorted(Comparator.comparingLong(s -> s.sequenceNumber))
+                    .map(JobState::toSnapshot)
+                    .forEach(result::add);
+            return List.copyOf(result);
+        } finally {
+            queueLock.unlock();
+        }
     }
 
     /**
@@ -247,7 +293,12 @@ public final class RenderQueue implements AutoCloseable {
     public List<JobSnapshot> loadPersisted() throws IOException {
         Path path = persistencePath;
         if (!Files.isRegularFile(path)) return List.of();
-        return RenderQueuePersistence.fromJson(Files.readString(path));
+        String json = Files.readString(path);
+        try {
+            return RenderQueuePersistence.fromJson(json);
+        } catch (RuntimeException e) {
+            return List.of();
+        }
     }
 
     /** Clear the persisted queue file (used for "clear" on restart). */
@@ -297,15 +348,15 @@ public final class RenderQueue implements AutoCloseable {
         RenderJob job = state.job;
         state.phase = JobProgress.Phase.RUNNING;
         emit(new JobProgress(job.jobId(), JobProgress.Phase.RUNNING, "Starting", 0.0));
+        persistQuietly();
         ControlImpl control = new ControlImpl(state);
         try {
+            control.checkpoint();
             runner.run(job, control);
-            if (state.cancelRequested) {
-                cleanup(state);
-                finishJob(state, JobProgress.Phase.CANCELLED, "Cancelled", null);
-            } else {
-                finishJob(state, JobProgress.Phase.COMPLETED, "Completed", null);
-            }
+            // Normal return is always COMPLETED — if cancel was requested
+            // near completion but the runner returned normally, the output is
+            // intact and should not be deleted.
+            finishJob(state, JobProgress.Phase.COMPLETED, "Completed", null);
         } catch (InterruptedException e) {
             // Cooperative cancellation
             cleanup(state);
@@ -320,7 +371,8 @@ public final class RenderQueue implements AutoCloseable {
     private void finishJob(JobState state, JobProgress.Phase phase, String stage, Throwable error) {
         state.phase = phase;
         state.error = error;
-        emit(new JobProgress(state.job.jobId(), phase, stage, 1.0));
+        double terminalPercent = phase == JobProgress.Phase.COMPLETED ? 1.0 : state.lastPercent;
+        emit(new JobProgress(state.job.jobId(), phase, stage, terminalPercent));
         try {
             completionNotifier.accept(new JobOutcome(state.job, phase, error));
         } catch (RuntimeException ignored) {
@@ -363,7 +415,8 @@ public final class RenderQueue implements AutoCloseable {
             state.lastStage = progress.stage();
             state.lastPercent = progress.percent();
         }
-        publisher.submit(progress);
+        // Never block render workers on slow/backpressured subscribers.
+        publisher.offer(progress, (subscriber, dropped) -> false);
     }
 
     private void persistQuietly() {
@@ -372,13 +425,6 @@ public final class RenderQueue implements AutoCloseable {
         } catch (IOException ignored) {
             // Persistence is best-effort; failures must not break the queue.
         }
-    }
-
-    private RenderJob findInPending(String jobId) {
-        for (RenderJob j : pending) {
-            if (j.jobId().equals(jobId)) return j;
-        }
-        return null;
     }
 
     // ---- inner types ------------------------------------------------------
@@ -449,6 +495,7 @@ public final class RenderQueue implements AutoCloseable {
             if (state.pauseRequested) {
                 emit(new JobProgress(state.job.jobId(), JobProgress.Phase.PAUSED,
                         "Paused", state.lastPercent));
+                persistQuietly();
                 state.lock.lock();
                 try {
                     while (state.pauseRequested && !state.cancelRequested) {
@@ -462,6 +509,7 @@ public final class RenderQueue implements AutoCloseable {
                 }
                 emit(new JobProgress(state.job.jobId(), JobProgress.Phase.RUNNING,
                         "Resumed", state.lastPercent));
+                persistQuietly();
             }
         }
 

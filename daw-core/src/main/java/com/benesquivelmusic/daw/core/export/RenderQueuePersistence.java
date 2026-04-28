@@ -61,31 +61,47 @@ final class RenderQueuePersistence {
             int objEnd = matchingBrace(json, i);
             if (objEnd < 0) break;
             String obj = json.substring(i, objEnd + 1);
-            result.add(parseObject(obj));
+            RenderQueue.JobSnapshot snapshot = parseObject(obj);
+            if (snapshot != null) {
+                result.add(snapshot);
+            }
             i = objEnd + 1;
         }
         return result;
     }
 
     private static RenderQueue.JobSnapshot parseObject(String obj) {
-        String jobId = readString(obj, "jobId");
-        String displayName = readString(obj, "displayName");
-        String jobType = readString(obj, "jobType");
-        String primary = readString(obj, "primaryOutput");
-        String phaseStr = readString(obj, "phase");
-        String lastStage = readString(obj, "lastStage");
-        double lastPercent = readNumber(obj, "lastPercent", 0.0);
-        long seq = (long) readNumber(obj, "sequenceNumber", 0.0);
-        JobProgress.Phase phase;
         try {
-            phase = JobProgress.Phase.valueOf(phaseStr == null ? "QUEUED" : phaseStr);
-        } catch (IllegalArgumentException e) {
-            phase = JobProgress.Phase.QUEUED;
+            String jobId = readString(obj, "jobId");
+            String displayName = readString(obj, "displayName");
+            String jobType = readString(obj, "jobType");
+            String primary = readString(obj, "primaryOutput");
+            String phaseStr = readString(obj, "phase");
+            String lastStage = readString(obj, "lastStage");
+            double lastPercent = readNumber(obj, "lastPercent", 0.0);
+            long seq = (long) readNumber(obj, "sequenceNumber", 0.0);
+            JobProgress.Phase phase;
+            try {
+                phase = JobProgress.Phase.valueOf(phaseStr == null ? "QUEUED" : phaseStr);
+            } catch (IllegalArgumentException e) {
+                phase = JobProgress.Phase.QUEUED;
+            }
+            return new RenderQueue.JobSnapshot(
+                    nullSafe(jobId), nullSafe(displayName), nullSafe(jobType),
+                    parsePathSafely(primary),
+                    phase, nullSafe(lastStage), lastPercent, seq);
+        } catch (RuntimeException e) {
+            return null;
         }
-        return new RenderQueue.JobSnapshot(
-                nullSafe(jobId), nullSafe(displayName), nullSafe(jobType),
-                primary == null ? null : Path.of(primary),
-                phase, nullSafe(lastStage), lastPercent, seq);
+    }
+
+    private static Path parsePathSafely(String value) {
+        if (value == null) return null;
+        try {
+            return Path.of(value);
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     private static String nullSafe(String s) { return s == null ? "" : s; }
