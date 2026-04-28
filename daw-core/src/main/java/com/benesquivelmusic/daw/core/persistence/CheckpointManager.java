@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.core.persistence;
 
+import com.benesquivelmusic.daw.core.persistence.backup.BackupRetentionService;
 import com.benesquivelmusic.daw.sdk.event.AutoSaveListener;
+import com.benesquivelmusic.daw.sdk.persistence.BackupRetentionPolicy;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -48,6 +50,7 @@ public final class CheckpointManager {
     private final AtomicInteger checkpointCounter = new AtomicInteger(0);
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final List<Path> checkpointFiles = new ArrayList<>();
+    private volatile BackupRetentionPolicy retentionPolicy;
 
     private ScheduledExecutorService scheduler;
     private Path projectDirectory;
@@ -202,6 +205,27 @@ public final class CheckpointManager {
     }
 
     /**
+     * Sets a {@link BackupRetentionPolicy} to apply on every autosave in
+     * addition to the simple {@code maxCheckpoints} cap. When non-{@code null}
+     * the grandfather-father-son rotation from
+     * {@link BackupRetentionService} is run on the checkpoint directory after
+     * each successful checkpoint, so older snapshots are kept as
+     * hourly / daily / weekly milestones.
+     *
+     * @param policy the policy to apply, or {@code null} to disable
+     *               retention-based pruning (legacy {@code maxCheckpoints}
+     *               behaviour only)
+     */
+    public void setRetentionPolicy(BackupRetentionPolicy policy) {
+        this.retentionPolicy = policy;
+    }
+
+    /** Returns the active retention policy, or {@code null} if not set. */
+    public BackupRetentionPolicy getRetentionPolicy() {
+        return retentionPolicy;
+    }
+
+    /**
      * Performs a single checkpoint. Called automatically by the scheduler,
      * but may also be invoked manually for an explicit save.
      */
@@ -264,6 +288,21 @@ public final class CheckpointManager {
             Path oldest = checkpointFiles.removeFirst();
             try {
                 Files.deleteIfExists(oldest);
+            } catch (IOException ignored) {
+                // best-effort cleanup
+            }
+        }
+        BackupRetentionPolicy policy = this.retentionPolicy;
+        if (policy != null && projectDirectory != null) {
+            try {
+                Path checkpointDir = projectDirectory.resolve(CHECKPOINT_DIR_NAME);
+                BackupRetentionService.Plan plan =
+                        new BackupRetentionService(policy).prune(checkpointDir);
+                java.util.Set<Path> kept = new java.util.HashSet<>();
+                for (BackupRetentionService.Snapshot s : plan.kept()) {
+                    kept.add(s.path());
+                }
+                checkpointFiles.removeIf(p -> !kept.contains(p));
             } catch (IOException ignored) {
                 // best-effort cleanup
             }
