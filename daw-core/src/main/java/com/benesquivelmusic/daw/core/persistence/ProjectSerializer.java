@@ -267,8 +267,40 @@ public final class ProjectSerializer {
         }
 
         buildAutomationData(document, elem, track.getAutomationData());
+        buildMidiEffectChain(document, elem, track);
 
         return elem;
+    }
+
+    /**
+     * Writes the per-track {@code <midi-effect-chain>} element with one child
+     * per built-in MIDI effect plugin in declaration order. Each plugin's
+     * parameter values are persisted as attributes so the chain can be
+     * round-tripped without losing user-tweaked settings.
+     *
+     * <p>Legacy projects without this element load with an empty chain
+     * because {@link Track#getMidiEffectChain()} is initialized empty.</p>
+     */
+    private void buildMidiEffectChain(Document document, Element trackElem, Track track) {
+        var chain = track.getMidiEffectChain();
+        if (chain == null || chain.isEmpty()) {
+            return;
+        }
+        Element chainElem = document.createElement("midi-effect-chain");
+        for (var plugin : chain) {
+            Element pluginElem = document.createElement("midi-effect");
+            pluginElem.setAttribute("class", plugin.getClass().getName());
+            if (plugin instanceof com.benesquivelmusic.daw.core.plugin.builtin.midi.ArpeggiatorPlugin arp) {
+                pluginElem.setAttribute("rate", arp.getRate().name());
+                pluginElem.setAttribute("pattern", arp.getPattern().name());
+                pluginElem.setAttribute("octave-range", String.valueOf(arp.getOctaveRange()));
+                pluginElem.setAttribute("gate", String.valueOf(arp.getGate()));
+                pluginElem.setAttribute("swing", String.valueOf(arp.getSwing()));
+                pluginElem.setAttribute("latch", String.valueOf(arp.isLatch()));
+            }
+            chainElem.appendChild(pluginElem);
+        }
+        trackElem.appendChild(chainElem);
     }
 
     private Element buildClipElement(Document document, AudioClip clip) {

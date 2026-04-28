@@ -50,6 +50,8 @@ public final class Track {
     private final Map<UUID, TakeGroup> takeGroups = new LinkedHashMap<>();
     private SoundFontAssignment soundFontAssignment;
     private String midiInputDeviceName;
+    private final List<com.benesquivelmusic.daw.core.plugin.MidiEffectPlugin> midiEffectChain
+            = new ArrayList<>();
     private AutomationMode automationMode = AutomationMode.READ;
     private TrackFoldState foldState = TrackFoldState.UNFOLDED;
 
@@ -393,6 +395,28 @@ public final class Track {
      */
     public void setMidiInputDeviceName(String midiInputDeviceName) {
         this.midiInputDeviceName = midiInputDeviceName;
+    }
+
+    // ── MIDI-effect chain ────────────────────────────────────────────────────
+
+    /**
+     * Returns the ordered list of MIDI-effect plugins applied to incoming MIDI
+     * before it reaches the instrument.
+     *
+     * <p>Plugins in this list run in declaration order — the first plugin
+     * receives the raw MIDI from the user (or clip), each subsequent plugin
+     * receives the previous plugin's output, and the final plugin's output
+     * is fed to the instrument. The list is mutable; callers can add and
+     * remove plugins directly.</p>
+     *
+     * <p>Legacy projects that did not persist a chain start with an empty
+     * list — backward-compatible by construction.</p>
+     *
+     * @return the live, mutable MIDI-effect chain (never {@code null})
+     */
+    public List<com.benesquivelmusic.daw.core.plugin.MidiEffectPlugin>
+            getMidiEffectChain() {
+        return midiEffectChain;
     }
 
     // ── Automation mode support ──────────────────────────────────────────────

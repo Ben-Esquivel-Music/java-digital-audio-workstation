@@ -18,7 +18,10 @@ public enum BuiltInPluginCategory {
     UTILITY("Utilities"),
 
     /** A mastering-stage processor (e.g., true-peak brickwall limiter, mastering EQ). */
-    MASTERING("Mastering");
+    MASTERING("Mastering"),
+
+    /** A MIDI effect that transforms incoming MIDI before it reaches an instrument. */
+    MIDI_EFFECT("MIDI Effects");
 
     private final String displayName;
 
