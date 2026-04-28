@@ -29,6 +29,13 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 128 | [Crash-Safe Audio Thread Isolation](128-crash-safe-audio-thread-isolation.md) | 🟠 High | Audio Engine |
 | 129 | [Per-Track CPU Budget Enforcement](129-per-track-cpu-budget.md) | 🟡 Medium | Audio Engine |
 | 130 | [Audio Backend Selection (ASIO / CoreAudio / WASAPI / JACK)](130-backend-selection-asio-coreaudio-wasapi-jack.md) | 🟠 High | Audio Engine |
+| 212 | [Native Driver Control Panel Launch](212-native-driver-control-panel-launch.md) | 🟠 High | Audio Engine |
+| 213 | [Driver-Reported Buffer Size and Sample-Rate Enumeration](213-driver-reported-buffer-size-and-rate-enumeration.md) | 🟠 High | Audio Engine |
+| 214 | [Audio Device Hot-Plug Detection and Reconnect](214-audio-device-hot-plug-detection-and-reconnect.md) | 🟠 High | Audio Engine |
+| 215 | [Driver-Reported Channel Names in Routing UI](215-driver-reported-channel-names-in-routing-ui.md) | 🟠 High | Audio Engine |
+| 216 | [Hardware Clock Source Selection](216-hardware-clock-source-selection.md) | 🟡 Medium | Audio Engine |
+| 217 | [Driver-Reported Round-Trip Latency Compensation](217-driver-reported-roundtrip-latency-recording-compensation.md) | 🟠 High | Audio Engine |
+| 218 | [Driver-Initiated Reset Request Handling](218-driver-initiated-reset-request-handling.md) | 🟠 High | Audio Engine |
 
 ## Recording & Monitoring
 
