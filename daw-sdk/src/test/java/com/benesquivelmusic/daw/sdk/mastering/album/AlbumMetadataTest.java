@@ -43,6 +43,18 @@ class AlbumMetadataTest {
     }
 
     @Test
+    void shouldRejectBlankTitleOrArtist() {
+        assertThatThrownBy(() ->
+                new AlbumMetadata("   ", "A", 0, null, null, Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("blank");
+        assertThatThrownBy(() ->
+                new AlbumMetadata("T", "  ", 0, null, null, Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("blank");
+    }
+
+    @Test
     void shouldRejectOutOfRangeYear() {
         assertThatThrownBy(() ->
                 new AlbumMetadata("T", "A", 1700, null, null, Optional.empty()))

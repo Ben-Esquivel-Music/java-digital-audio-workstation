@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.mastering;
 
+import com.benesquivelmusic.daw.sdk.mastering.AlbumTrackEntry;
 import com.benesquivelmusic.daw.sdk.mastering.album.AlbumMetadata;
 import com.benesquivelmusic.daw.sdk.mastering.album.AlbumTrackMetadata;
 import com.benesquivelmusic.daw.sdk.mastering.album.CdText;
@@ -204,7 +205,16 @@ public final class AlbumMetadataSerializer {
                     continue;
                 }
                 Element t = (Element) n;
-                int idx = parseInt(t.getAttribute("index"));
+                String indexAttr = t.getAttribute("index");
+                if (indexAttr == null || indexAttr.isBlank()) {
+                    continue;
+                }
+                int idx;
+                try {
+                    idx = Integer.parseInt(indexAttr);
+                } catch (NumberFormatException ex) {
+                    continue;
+                }
                 if (idx < 0 || idx >= sequence.size()) {
                     continue; // ignore stale entries
                 }
@@ -234,6 +244,14 @@ public final class AlbumMetadataSerializer {
                 }
                 sequence.setTrackMetadata(idx,
                         new AlbumTrackMetadata(title, artist, composer, isrc, cdText, extra));
+                // Mirror key fields back into AlbumTrackEntry so legacy
+                // callers (cue sheet, PQ sheet) see the deserialized values.
+                AlbumTrackEntry oldEntry = sequence.getTracks().get(idx);
+                AlbumTrackEntry mirrored = new AlbumTrackEntry(
+                        title, artist, isrc,
+                        oldEntry.durationSeconds(), oldEntry.preGapSeconds(),
+                        oldEntry.crossfadeDuration(), oldEntry.crossfadeCurve());
+                sequence.setTrack(idx, mirrored);
             }
         }
     }
@@ -258,6 +276,7 @@ public final class AlbumMetadataSerializer {
         Transformer t = tf.newTransformer();
         t.setOutputProperty(OutputKeys.INDENT, "yes");
         t.setOutputProperty(OutputKeys.OMIT_XML_DECLARATION, "no");
+        t.setOutputProperty(OutputKeys.ENCODING, "UTF-8");
         StringWriter w = new StringWriter();
         t.transform(new DOMSource(doc), new StreamResult(w));
         return w.toString();

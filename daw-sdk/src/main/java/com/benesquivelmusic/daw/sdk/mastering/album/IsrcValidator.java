@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.sdk.mastering.album;
 
+import java.util.Locale;
 import java.util.Objects;
 import java.util.regex.Pattern;
 
@@ -49,7 +50,7 @@ public final class IsrcValidator {
         if (isrc == null) {
             return false;
         }
-        String upper = isrc.toUpperCase();
+        String upper = isrc.toUpperCase(Locale.ROOT);
         return HYPHENATED.matcher(upper).matches()
                 || TIGHT.matcher(upper).matches();
     }
@@ -69,7 +70,7 @@ public final class IsrcValidator {
      */
     public static String normalize(String isrc) {
         Objects.requireNonNull(isrc, "isrc must not be null");
-        String compact = isrc.replace("-", "").replace(" ", "").toUpperCase();
+        String compact = isrc.replaceAll("[\\s-]", "").toUpperCase(Locale.ROOT);
         if (!TIGHT.matcher(compact).matches()) {
             throw new IllegalArgumentException(
                     "Invalid ISRC: '" + isrc + "' — expected CC-XXX-YY-NNNNN (ISO 3901)");
@@ -96,7 +97,7 @@ public final class IsrcValidator {
         if (partial == null || partial.isEmpty()) {
             return "";
         }
-        String compact = partial.replace("-", "").replace(" ", "").toUpperCase();
+        String compact = partial.replaceAll("[\\s-]", "").toUpperCase(Locale.ROOT);
         if (compact.length() > 12) {
             compact = compact.substring(0, 12);
         }

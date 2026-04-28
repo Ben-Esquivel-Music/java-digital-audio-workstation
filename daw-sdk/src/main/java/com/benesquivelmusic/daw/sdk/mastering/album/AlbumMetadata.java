@@ -46,12 +46,12 @@ public record AlbumMetadata(
 
     public AlbumMetadata {
         Objects.requireNonNull(title, "title must not be null");
-        if (title.isEmpty()) {
-            throw new IllegalArgumentException("title must not be empty");
+        if (title.isBlank()) {
+            throw new IllegalArgumentException("title must not be blank");
         }
         Objects.requireNonNull(artist, "artist must not be null");
-        if (artist.isEmpty()) {
-            throw new IllegalArgumentException("artist must not be empty");
+        if (artist.isBlank()) {
+            throw new IllegalArgumentException("artist must not be blank");
         }
         if (year != 0 && (year < MIN_YEAR || year > MAX_YEAR)) {
             throw new IllegalArgumentException(

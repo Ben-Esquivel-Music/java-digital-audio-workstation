@@ -38,6 +38,14 @@ class AlbumTrackMetadataTest {
     }
 
     @Test
+    void shouldRejectBlankTitle() {
+        assertThatThrownBy(() -> new AlbumTrackMetadata(
+                "   ", null, null, null, Optional.empty(), Map.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("blank");
+    }
+
+    @Test
     void shouldRejectInvalidIsrc() {
         assertThatThrownBy(() -> new AlbumTrackMetadata(
                 "Track 1", null, null, "BAD-ISRC", Optional.empty(), Map.of()))
@@ -49,6 +57,14 @@ class AlbumTrackMetadataTest {
     void shouldAcceptValidIsrc() {
         AlbumTrackMetadata m = new AlbumTrackMetadata(
                 "Track 1", null, null, "US-RC1-26-00042", Optional.empty(), Map.of());
+
+        assertThat(m.isrc()).isEqualTo("US-RC1-26-00042");
+    }
+
+    @Test
+    void constructorShouldNormalizeTightIsrc() {
+        AlbumTrackMetadata m = new AlbumTrackMetadata(
+                "Track 1", null, null, "USRC12600042", Optional.empty(), Map.of());
 
         assertThat(m.isrc()).isEqualTo("US-RC1-26-00042");
     }

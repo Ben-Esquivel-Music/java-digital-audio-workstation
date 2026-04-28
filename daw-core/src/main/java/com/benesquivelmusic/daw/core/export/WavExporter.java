@@ -251,8 +251,7 @@ public final class WavExporter {
         // ISRC: there is no canonical RIFF INFO tag, but the de-facto convention
         // adopted by Sound Forge / Apple Compressor / Adobe Audition is the
         // four-character "ISRC" tag, which we emit here so that the codes
-        // round-trip through the LIST/INFO chunk (issue #N — ISRC and CD-Text
-        // metadata for album assembly).
+        // round-trip through the LIST/INFO chunk for album assembly metadata.
         addInfoEntry(entries, "ISRC", metadata.isrc());
 
         if (entries.isEmpty()) {

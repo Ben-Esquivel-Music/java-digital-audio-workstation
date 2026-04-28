@@ -172,15 +172,25 @@ public final class AlbumAssemblyView extends VBox {
         AlbumMetadata initialAlbum = albumSequence.getAlbumMetadata();
 
         Label yearLabel = labelOf("Year:");
-        albumYearSpinner = new Spinner<>(
+        SpinnerValueFactory.IntegerSpinnerValueFactory albumYearValueFactory =
                 new SpinnerValueFactory.IntegerSpinnerValueFactory(
-                        0, AlbumMetadata.MAX_YEAR,
-                        initialAlbum.year() == 0 ? LocalDate.now().getYear() : initialAlbum.year()));
+                        0, AlbumMetadata.MAX_YEAR, initialAlbum.year());
+        albumYearSpinner = new Spinner<>(albumYearValueFactory);
         albumYearSpinner.setEditable(true);
         albumYearSpinner.setPrefWidth(90);
         albumYearSpinner.valueProperty().addListener((obs, oldV, newV) -> {
-            if (newV != null) {
+            if (newV == null) {
+                return;
+            }
+            if (newV == 0 || newV >= AlbumMetadata.MIN_YEAR) {
+                albumYearSpinner.getEditor().setStyle("");
                 applyToAlbumMetadata(m -> m.withYear(newV));
+            } else {
+                albumYearSpinner.getEditor().setStyle("-fx-border-color: #ff5252;");
+                Integer revertValue = oldV != null ? oldV : 0;
+                if (!Objects.equals(albumYearValueFactory.getValue(), revertValue)) {
+                    albumYearValueFactory.setValue(revertValue);
+                }
             }
         });
 

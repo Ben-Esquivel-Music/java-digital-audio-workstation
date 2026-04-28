@@ -65,6 +65,14 @@ class AlbumMetadataSerializerTest {
         assertThat(m1.isrc()).isEqualTo("US-RC1-26-00043");
         assertThat(m1.cdText()).isEmpty();
         assertThat(m1.extra()).isEmpty();
+
+        // Verify fields are mirrored back into AlbumTrackEntry (legacy accessors).
+        AlbumTrackEntry e0 = restored.getTracks().get(0);
+        assertThat(e0.title()).isEqualTo("Track 1");
+        assertThat(e0.artist()).isEqualTo("Solo Artist");
+        assertThat(e0.isrc()).isEqualTo("US-RC1-26-00042");
+        AlbumTrackEntry e1 = restored.getTracks().get(1);
+        assertThat(e1.isrc()).isEqualTo("US-RC1-26-00043");
     }
 
     @Test

@@ -48,13 +48,13 @@ public record AlbumTrackMetadata(
 
     public AlbumTrackMetadata {
         Objects.requireNonNull(title, "title must not be null");
-        if (title.isEmpty()) {
-            throw new IllegalArgumentException("title must not be empty");
+        if (title.isBlank()) {
+            throw new IllegalArgumentException("title must not be blank");
         }
         Objects.requireNonNull(cdText, "cdText must not be null (use Optional.empty())");
-        if (isrc != null && !isrc.isEmpty() && !IsrcValidator.isValid(isrc)) {
-            throw new IllegalArgumentException(
-                    "Invalid ISRC: '" + isrc + "' — expected CC-XXX-YY-NNNNN (ISO 3901)");
+        // Normalize non-empty ISRCs to canonical CC-XXX-YY-NNNNN form.
+        if (isrc != null && !isrc.isEmpty()) {
+            isrc = IsrcValidator.normalize(isrc);
         }
         // Defensive copy so callers cannot mutate the backing map.
         extra = (extra == null || extra.isEmpty())
