@@ -71,6 +71,10 @@ public final class DspRegressionHarness {
         Objects.requireNonNull(spec, "spec");
         AudioProcessor processor = unwrap(processorOrPlugin);
 
+        // Reset any state carried over from a previous run before configuring
+        // this regression case.
+        processor.reset();
+
         // Apply the preset.
         DspRegressionPreset.apply(processor, spec.preset());
 
@@ -78,9 +82,13 @@ public final class DspRegressionHarness {
         WavFile.Audio signal = loadTestSignal(spec.testSignal());
         float[][] inputBlock = broadcastInput(signal, processor.getInputChannelCount());
 
-        // Process the entire signal in fixed-size blocks.
+        // Process the entire signal in fixed-size blocks, accounting for
+        // processor-reported latency (linear-phase EQ, lookahead dynamics,
+        // convolution reverb, etc.).
         int outChannels = processor.getOutputChannelCount();
-        float[][] output = process(processor, inputBlock, outChannels);
+        int latency = Math.max(0, processor.getLatencySamples());
+        float[][] output = processWithLatencyAlignment(
+                processor, inputBlock, outChannels, latency);
 
         // Resolve golden path and compare (or write).
         String goldenResource = resolveGoldenResource(processor, spec);
@@ -152,25 +160,47 @@ public final class DspRegressionHarness {
         return full;
     }
 
-    /** Process {@code input} block-by-block, returning a same-length output buffer. */
-    private static float[][] process(AudioProcessor processor, float[][] input, int outChannels) {
+    /**
+     * Processes {@code input} block-by-block, compensating for the processor's
+     * reported latency so the golden file is aligned to the input signal.
+     *
+     * <p>When {@code latency > 0} the harness feeds {@code frames + latency}
+     * samples through the processor (padding the input with trailing zeros),
+     * then drops the first {@code latency} output samples. The resulting output
+     * buffer has the same length as the original input — properly aligned.</p>
+     */
+    private static float[][] processWithLatencyAlignment(
+            AudioProcessor processor, float[][] input, int outChannels, int latency) {
         int inChannels = input.length;
         int frames = input[0].length;
-        float[][] output = new float[outChannels][frames];
+        int totalFrames = frames + latency;
+        // Full-length output that includes the latency-offset leading samples.
+        float[][] rawOutput = new float[outChannels][totalFrames];
         float[][] inBlock = new float[inChannels][BLOCK_SIZE];
         float[][] outBlock = new float[outChannels][BLOCK_SIZE];
-        for (int pos = 0; pos < frames; pos += BLOCK_SIZE) {
-            int n = Math.min(BLOCK_SIZE, frames - pos);
+        for (int pos = 0; pos < totalFrames; pos += BLOCK_SIZE) {
+            int n = Math.min(BLOCK_SIZE, totalFrames - pos);
             for (int c = 0; c < inChannels; c++) {
-                System.arraycopy(input[c], pos, inBlock[c], 0, n);
+                for (int i = 0; i < n; i++) {
+                    int srcIdx = pos + i;
+                    inBlock[c][i] = (srcIdx < frames) ? input[c][srcIdx] : 0f;
+                }
                 if (n < BLOCK_SIZE) {
                     java.util.Arrays.fill(inBlock[c], n, BLOCK_SIZE, 0f);
                 }
             }
             processor.process(inBlock, outBlock, n);
             for (int c = 0; c < outChannels; c++) {
-                System.arraycopy(outBlock[c], 0, output[c], pos, n);
+                System.arraycopy(outBlock[c], 0, rawOutput[c], pos, n);
             }
+        }
+        // Drop the first `latency` samples so the output is aligned with the input.
+        if (latency == 0) {
+            return rawOutput;
+        }
+        float[][] output = new float[outChannels][frames];
+        for (int c = 0; c < outChannels; c++) {
+            System.arraycopy(rawOutput[c], latency, output[c], 0, frames);
         }
         return output;
     }

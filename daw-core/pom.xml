@@ -70,8 +70,9 @@
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration>
-                            <argLine>--enable-native-access=ALL-UNNAMED -Djava.library.path=${native.libs.dir} -Ddsp.rebaseline=true</argLine>
-                            <!-- Run the regression suite even when individual cases would otherwise pass -->
+                            <systemPropertyVariables>
+                                <dsp.rebaseline>true</dsp.rebaseline>
+                            </systemPropertyVariables>
                             <forkedProcessTimeoutInSeconds>600</forkedProcessTimeoutInSeconds>
                         </configuration>
                     </plugin>
@@ -97,7 +98,9 @@
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration>
-                            <argLine>--enable-native-access=ALL-UNNAMED -Djava.library.path=${native.libs.dir} -Ddsp.regression.strict=true</argLine>
+                            <systemPropertyVariables>
+                                <dsp.regression.strict>true</dsp.regression.strict>
+                            </systemPropertyVariables>
                             <forkedProcessTimeoutInSeconds>1200</forkedProcessTimeoutInSeconds>
                         </configuration>
                     </plugin>

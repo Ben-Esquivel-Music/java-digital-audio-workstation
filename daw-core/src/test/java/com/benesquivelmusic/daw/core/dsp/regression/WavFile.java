@@ -120,6 +120,14 @@ public final class WavFile {
         if (channels <= 0 || sampleRate <= 0) {
             throw new IOException("Invalid channel/sample-rate header");
         }
+        if (dataOffset + dataLen > all.length) {
+            throw new IOException("Data chunk extends past end of file (offset="
+                    + dataOffset + ", len=" + dataLen + ", fileLen=" + all.length + ")");
+        }
+        if (dataLen % (2 * channels) != 0) {
+            throw new IOException("Data chunk length (" + dataLen
+                    + ") is not a multiple of frame size (" + (2 * channels) + ")");
+        }
         int frames = dataLen / (2 * channels);
         float[][] out = new float[channels][frames];
         int p = dataOffset;
@@ -127,7 +135,8 @@ public final class WavFile {
             for (int c = 0; c < channels; c++) {
                 short s = bb.getShort(p);
                 p += 2;
-                out[c][f] = s / INT16_SCALE;
+                float decoded = s / INT16_SCALE;
+                out[c][f] = Math.max(-1.0f, Math.min(1.0f, decoded));
             }
         }
         return new Audio(out, sampleRate);
@@ -149,8 +158,22 @@ public final class WavFile {
         if (samples == null || samples.length == 0) {
             throw new IllegalArgumentException("samples must be non-empty");
         }
+        if (sampleRate <= 0) {
+            throw new IllegalArgumentException("sampleRate must be > 0");
+        }
+        if (samples[0] == null) {
+            throw new IllegalArgumentException("samples[0] must be non-null");
+        }
         int channels = samples.length;
         int frames = samples[0].length;
+        for (int c = 1; c < channels; c++) {
+            if (samples[c] == null) {
+                throw new IllegalArgumentException("samples[" + c + "] must be non-null");
+            }
+            if (samples[c].length != frames) {
+                throw new IllegalArgumentException("all channels must have the same frame count");
+            }
+        }
         int dataLen = frames * channels * 2;
         ByteBuffer bb = ByteBuffer.allocate(44 + dataLen).order(ByteOrder.LITTLE_ENDIAN);
         bb.putInt(0x46464952);                   // "RIFF"

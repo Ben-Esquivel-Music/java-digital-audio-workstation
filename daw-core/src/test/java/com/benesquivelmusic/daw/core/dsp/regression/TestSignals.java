@@ -83,7 +83,7 @@ public final class TestSignals {
     }
 
     /** Single 200 Hz exponentially-decaying transient at frame 4 410 (100 ms). */
-    public static float[] transient_() {
+    public static float[] generateTransient() {
         float[] out = new float[FRAMES];
         int onset = 4_410;
         double freq = 200.0;
@@ -143,7 +143,7 @@ public final class TestSignals {
         return switch (name) {
             case "sine-sweep"   -> sineSweep();
             case "white-noise"  -> whiteNoise();
-            case "transient"    -> transient_();
+            case "transient"    -> generateTransient();
             case "speech-like"  -> speechLike();
             case "music-like"   -> musicLike();
             default -> throw new IllegalArgumentException("Unknown test signal: " + name);
