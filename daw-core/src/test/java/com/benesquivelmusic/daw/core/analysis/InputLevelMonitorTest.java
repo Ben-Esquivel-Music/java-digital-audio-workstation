@@ -94,10 +94,10 @@ class InputLevelMonitorTest {
      *
      * <p>Construction: a sinusoid at {@code fs/4} with amplitude {@code A}
      * sampled on phase {@code π/4} so the sample lattice lands on
-     * {@code ±A/√2}. Choosing {@code A = +0.5 dBFS · √2} makes the
-     * <em>continuous</em> peak {@code +0.5 dBTP} while sample peaks stay at
-     * {@code −2.51 dBFS} — well below {@code 0 dBFS}. With the BS.1770-4
-     * 4× oversampler in
+     * {@code ±A/√2}. Choosing {@code A = +0.5 dBFS} makes the
+     * <em>continuous</em> peak {@code +0.5 dBTP} while sample peaks are
+     * {@code A/√2 ≈ −2.51 dBFS} — well below {@code 0 dBFS}. With the
+     * BS.1770-4 4× oversampler in
      * {@link com.benesquivelmusic.daw.core.dsp.TruePeakDetector} the
      * inter-sample peak is recovered and the {@code tp >= threshold} check
      * inside {@link InputLevelMonitor} latches the clip flag.</p>

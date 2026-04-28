@@ -119,8 +119,8 @@ class TruePeakDetectorTest {
      * {@code ±A/√2}. The continuous peak of the underlying signal is {@code
      * A}, i.e. 3.01 dB above the sample peak, and a properly-designed 4×
      * reconstruction filter must reveal it. With a sample peak of
-     * {@code −0.3 dBFS} the detected true peak must be at least
-     * {@code +0.3 dBTP}.
+     * {@code −0.3 dBFS} the continuous amplitude is {@code +2.71 dBFS};
+     * the detected true peak must be at least {@code +2.71 dBTP}.
      */
     @Test
     void fsOver4SineAtPiOverFourReconstructsAboveSamplePeak() {
@@ -135,8 +135,8 @@ class TruePeakDetectorTest {
         }
 
         assertThat(detector.getTruePeakDbtp())
-                .as("fs/4 sine at -0.3 dBFS sample peak (phase π/4) must reconstruct to >= +0.3 dBTP")
-                .isGreaterThanOrEqualTo(0.3);
+                .as("fs/4 sine at -0.3 dBFS sample peak (phase π/4) must reconstruct to >= +2.71 dBTP")
+                .isGreaterThanOrEqualTo(2.71);
     }
 
     /**
@@ -157,10 +157,10 @@ class TruePeakDetectorTest {
         }
 
         // Sample lattice misses the continuous peak — the oversampler must
-        // recover at least 0.5 dB of headroom that the sample peak hides.
-        assertThat(detector.getTruePeakLinear() - samplePeak)
-                .as("oversampled true peak must exceed sample peak for an off-lattice sine")
-                .isGreaterThan(0.005);
+        // recover at least 0.5 dB above the sample peak for this off-lattice sine.
+        assertThat(detector.getTruePeakLinear())
+                .as("oversampled true peak must be at least 0.5 dB above the sample peak for an off-lattice sine")
+                .isGreaterThan(samplePeak * Math.pow(10.0, 0.5 / 20.0));
         // And the true peak must approach the continuous amplitude (within 0.1 dB).
         assertThat(detector.getTruePeakLinear())
                 .isGreaterThanOrEqualTo(continuousAmplitude * Math.pow(10.0, -0.1 / 20.0));
@@ -172,7 +172,7 @@ class TruePeakDetectorTest {
      * equal the sample value within {@code ±0.05 dB}.
      */
     @Test
-    void dcSignalIsReconstructedWithinHalfDbOfSamplePeak() {
+    void dcSignalIsReconstructedWithinPointZeroFiveDbOfSamplePeak() {
         TruePeakDetector detector = new TruePeakDetector();
         // Long enough to flush any startup transient through the 12-tap
         // sub-filters; the per-call return value reflects the true peak

@@ -37,7 +37,7 @@ public final class TruePeakDetector {
      * </ul>
      *
      * <p>The polyphase decomposition stores {@code COEFFICIENTS[p][k] =
-     * h[4·k + p]} so that, for an input history where {@code h[n−1]} is the
+     * h[4·k + p]} so that, for an input history where {@code x[n−1]} is the
      * most recent sample, the {@code p}-th interpolated output between
      * consecutive input samples is {@code y_p = Σ_k COEFFICIENTS[p][k] ·
      * x[n−1−k]}. The prototype is symmetric ({@code h[n] == h[N−1−n]}),
@@ -149,9 +149,13 @@ public final class TruePeakDetector {
 
     // ── Package-private accessors for tests ────────────────────────────────
 
-    /** Returns the polyphase coefficient table (phase × tap). For tests. */
+    /** Returns a defensive copy of the polyphase coefficient table (phase × tap). For tests. */
     static double[][] coefficients() {
-        return COEFFICIENTS;
+        double[][] copy = new double[COEFFICIENTS.length][];
+        for (int phase = 0; phase < COEFFICIENTS.length; phase++) {
+            copy[phase] = java.util.Arrays.copyOf(COEFFICIENTS[phase], COEFFICIENTS[phase].length);
+        }
+        return copy;
     }
 
     /** Number of polyphase branches (oversampling factor). For tests. */
