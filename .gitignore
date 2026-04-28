@@ -54,3 +54,4 @@ buildNumber.properties
 
 # Native library build artifacts (CMake) are under target/build/,
 # already covered by the target/ rule above.
+*.bak

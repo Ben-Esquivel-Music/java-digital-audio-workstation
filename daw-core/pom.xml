@@ -49,6 +49,64 @@
                 <skipNoticesGeneration>true</skipNoticesGeneration>
             </properties>
         </profile>
+
+        <!--
+            DSP regression rebaseline profile.
+
+            Enabled with `mvn test -Pdsp-rebaseline`. Sets the
+            `dsp.rebaseline=true` system property which switches
+            DspRegressionHarness from "compare to golden" mode to
+            "regenerate golden" mode. New WAV files are written under
+            src/test/resources/dsp-goldens/ and a verbose diff summary
+            is printed to stdout. Review and commit the new goldens
+            manually — that's the entire point of the manual rebaseline
+            ceremony.
+        -->
+        <profile>
+            <id>dsp-rebaseline</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <systemPropertyVariables>
+                                <dsp.rebaseline>true</dsp.rebaseline>
+                            </systemPropertyVariables>
+                            <forkedProcessTimeoutInSeconds>600</forkedProcessTimeoutInSeconds>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+            Long-running test suite profile (story 209).
+
+            Enabled with `mvn verify -Plong-tests`. Sets
+            `dsp.regression.strict=true` to enable the strict coverage
+            check in DspRegressionCoverageTest, which fails the build
+            if any built-in EFFECT/MASTERING plugin is missing a
+            @DspRegression test or any covered processor is missing a
+            canonical preset.
+        -->
+        <profile>
+            <id>long-tests</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <systemPropertyVariables>
+                                <dsp.regression.strict>true</dsp.regression.strict>
+                            </systemPropertyVariables>
+                            <forkedProcessTimeoutInSeconds>1200</forkedProcessTimeoutInSeconds>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
     </profiles>
 
     <build>
