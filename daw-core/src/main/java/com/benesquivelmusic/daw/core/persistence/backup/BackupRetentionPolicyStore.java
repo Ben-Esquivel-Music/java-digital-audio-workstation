@@ -18,8 +18,9 @@ import java.util.Optional;
  * <p>The store handles two locations:</p>
  * <ul>
  *   <li><b>Global default</b> — {@code ~/.daw/backup-retention.json}.
- *       Created with {@link BackupRetentionPolicy#DEFAULT} the first time the
- *       file is missing.</li>
+ *       When this file is missing, the store falls back to
+ *       {@link BackupRetentionPolicy#DEFAULT} in memory until a global policy
+ *       is explicitly written via {@link #saveGlobal(BackupRetentionPolicy)}.</li>
  *   <li><b>Per-project override</b> — {@code <project-dir>/backup-retention.json}.
  *       When present this file overrides the global default for that
  *       project.</li>
@@ -74,7 +75,7 @@ public final class BackupRetentionPolicyStore {
     public BackupRetentionPolicy loadGlobalOrDefault() {
         try {
             return load(globalPath).orElse(BackupRetentionPolicy.DEFAULT);
-        } catch (IOException e) {
+        } catch (IOException | IllegalArgumentException e) {
             return BackupRetentionPolicy.DEFAULT;
         }
     }
@@ -97,8 +98,8 @@ public final class BackupRetentionPolicyStore {
             if (projectPolicy.isPresent()) {
                 return projectPolicy.get();
             }
-        } catch (IOException ignored) {
-            // fall through to global
+        } catch (IOException | IllegalArgumentException ignored) {
+            // malformed or unreadable override — fall through to global default
         }
         return loadGlobalOrDefault();
     }

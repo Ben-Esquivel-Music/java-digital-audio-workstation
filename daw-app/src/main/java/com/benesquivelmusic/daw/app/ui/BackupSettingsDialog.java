@@ -5,8 +5,10 @@ import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.persistence.backup.BackupRetentionService;
 import com.benesquivelmusic.daw.core.persistence.backup.ProjectDiskUsage;
 import com.benesquivelmusic.daw.sdk.persistence.BackupRetentionPolicy;
+import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
+import javafx.concurrent.Task;
 import javafx.geometry.Insets;
 import javafx.scene.Node;
 import javafx.scene.chart.PieChart;
@@ -64,7 +66,7 @@ public final class BackupSettingsDialog extends Dialog<BackupRetentionPolicy> {
     private final Label previewSummary;
     private final PieChart diskPie;
 
-    private final List<BackupRetentionService.Snapshot> snapshots;
+    private final List<BackupRetentionService.Snapshot> snapshots = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     /**
      * Creates a dialog pre-populated from {@code current}.
@@ -130,9 +132,8 @@ public final class BackupSettingsDialog extends Dialog<BackupRetentionPolicy> {
         diskPie.setLabelsVisible(false);
         diskPie.setPrefSize(260, 200);
 
-        snapshots = scanSnapshots(checkpointDir);
-        refreshPreview();
-        refreshDiskUsage(projectDirectory);
+        previewSummary.setText("Scanning autosave directory…");
+        loadSnapshotsAndUsageInBackground(projectDirectory, checkpointDir);
 
         recentSpinner.valueProperty().addListener((_, _, _) -> refreshPreview());
         hourlySpinner.valueProperty().addListener((_, _, _) -> refreshPreview());
@@ -226,23 +227,63 @@ public final class BackupSettingsDialog extends Dialog<BackupRetentionPolicy> {
                         + "Total kept bytes  : " + formatBytes(plan.keptBytes()));
     }
 
-    private void refreshDiskUsage(Path projectDirectory) {
-        ProjectDiskUsage usage;
-        try {
-            usage = projectDirectory == null
-                    ? new ProjectDiskUsage(0, 0, 0)
-                    : ProjectDiskUsage.compute(projectDirectory);
-        } catch (IOException e) {
-            usage = new ProjectDiskUsage(0, 0, 0);
+    /**
+     * Loads autosave snapshots and project disk-usage in a JavaFX
+     * {@link Task} so the dialog opens immediately on the FX thread without
+     * blocking on filesystem IO. UI fields are updated on the FX thread when
+     * the task succeeds.
+     */
+    private void loadSnapshotsAndUsageInBackground(Path projectDirectory, Path checkpointDir) {
+        Task<LoadResult> task = new Task<>() {
+            @Override
+            protected LoadResult call() {
+                List<BackupRetentionService.Snapshot> scanned = scanSnapshots(checkpointDir);
+                ProjectDiskUsage usage;
+                try {
+                    usage = projectDirectory == null
+                            ? new ProjectDiskUsage(0, 0, 0)
+                            : ProjectDiskUsage.compute(projectDirectory);
+                } catch (IOException e) {
+                    usage = new ProjectDiskUsage(0, 0, 0);
+                }
+                return new LoadResult(scanned, usage);
+            }
+        };
+        task.setOnSucceeded(e -> {
+            LoadResult r = task.getValue();
+            snapshots.clear();
+            snapshots.addAll(r.snapshots());
+            applyUsageToPie(r.usage());
+            refreshPreview();
+        });
+        task.setOnFailed(e -> {
+            applyUsageToPie(new ProjectDiskUsage(0, 0, 0));
+            refreshPreview();
+        });
+        Thread t = new Thread(task, "backup-settings-loader");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private record LoadResult(List<BackupRetentionService.Snapshot> snapshots,
+                              ProjectDiskUsage usage) { }
+
+    private void applyUsageToPie(ProjectDiskUsage usage) {
+        Runnable apply = () -> {
+            ObservableList<PieChart.Data> data = FXCollections.observableArrayList();
+            data.add(new PieChart.Data("Autosaves (" + formatBytes(usage.autosavesBytes()) + ")",
+                    usage.autosavesBytes()));
+            data.add(new PieChart.Data("Archives ("  + formatBytes(usage.archivesBytes())  + ")",
+                    usage.archivesBytes()));
+            data.add(new PieChart.Data("Assets ("    + formatBytes(usage.assetsBytes())    + ")",
+                    usage.assetsBytes()));
+            diskPie.setData(data);
+        };
+        if (Platform.isFxApplicationThread()) {
+            apply.run();
+        } else {
+            Platform.runLater(apply);
         }
-        ObservableList<PieChart.Data> data = FXCollections.observableArrayList();
-        data.add(new PieChart.Data("Autosaves (" + formatBytes(usage.autosavesBytes()) + ")",
-                usage.autosavesBytes()));
-        data.add(new PieChart.Data("Archives ("  + formatBytes(usage.archivesBytes())  + ")",
-                usage.archivesBytes()));
-        data.add(new PieChart.Data("Assets ("    + formatBytes(usage.assetsBytes())    + ")",
-                usage.assetsBytes()));
-        diskPie.setData(data);
     }
 
     private static List<BackupRetentionService.Snapshot> scanSnapshots(Path checkpointDir) {

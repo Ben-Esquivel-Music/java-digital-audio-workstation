@@ -137,11 +137,16 @@ public final class BackupRetentionService {
 
     /**
      * Scans {@code snapshotDirectory} for files, applies the policy, and
-     * deletes any snapshots that are not retained.
+     * attempts to delete any snapshots that are not retained.
+     *
+     * <p>Deletion is best-effort: failures to delete individual discarded
+     * snapshots are ignored and do not prevent the plan from being returned.
+     * An {@code IOException} is only thrown if the directory listing or the
+     * snapshot metadata reads fail.</p>
      *
      * @param snapshotDirectory directory containing snapshot files (non-recursive)
      * @return the plan that was applied
-     * @throws IOException if directory listing or deletion fails
+     * @throws IOException if directory listing or snapshot metadata reads fail
      */
     public Plan prune(Path snapshotDirectory) throws IOException {
         Objects.requireNonNull(snapshotDirectory, "snapshotDirectory must not be null");

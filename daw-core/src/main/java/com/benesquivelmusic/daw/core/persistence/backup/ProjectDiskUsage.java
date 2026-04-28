@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.persistence.backup;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.Objects;
 import java.util.stream.Stream;
@@ -61,12 +62,23 @@ public record ProjectDiskUsage(long autosavesBytes, long archivesBytes, long ass
     }
 
     private static long sizeOf(Path root) throws IOException {
-        if (!Files.exists(root)) return 0L;
-        if (Files.isRegularFile(root)) return Files.size(root);
+        if (!Files.exists(root, LinkOption.NOFOLLOW_LINKS)) return 0L;
+        if (Files.isRegularFile(root, LinkOption.NOFOLLOW_LINKS)) {
+            return Files.size(root);
+        }
+        // Files.walk without FOLLOW_LINKS does not traverse symlinked
+        // subdirectories, and the NOFOLLOW_LINKS check below excludes
+        // symlinked files — so the total is bounded by the project tree.
         try (Stream<Path> walk = Files.walk(root)) {
-            return walk.filter(Files::isRegularFile).mapToLong(p -> {
-                try { return Files.size(p); } catch (IOException e) { return 0L; }
-            }).sum();
+            return walk
+                    .filter(p -> Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS))
+                    .mapToLong(p -> {
+                        try {
+                            return Files.size(p);
+                        } catch (IOException e) {
+                            return 0L;
+                        }
+                    }).sum();
         }
     }
 }

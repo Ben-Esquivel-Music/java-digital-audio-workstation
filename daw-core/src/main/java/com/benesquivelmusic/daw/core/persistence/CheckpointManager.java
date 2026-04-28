@@ -252,6 +252,7 @@ public final class CheckpointManager {
                 checkpointFiles.add(checkpointFile);
                 pruneOldCheckpoints();
             }
+            applyRetentionPolicy();
 
             notifyAfter(checkpointId);
         } catch (IOException e) {
@@ -292,20 +293,35 @@ public final class CheckpointManager {
                 // best-effort cleanup
             }
         }
+    }
+
+    /**
+     * Applies the optional {@link BackupRetentionPolicy} grandfather-father-son
+     * rotation. Performs the directory scan and file deletions <em>outside</em>
+     * the {@code checkpointFiles} monitor so concurrent
+     * {@link #getCheckpointFiles()} callers (e.g. UI threads) are not blocked
+     * by filesystem IO. The {@code checkpointFiles} list is then reconciled
+     * with the kept set under the lock.
+     */
+    private void applyRetentionPolicy() {
         BackupRetentionPolicy policy = this.retentionPolicy;
-        if (policy != null && projectDirectory != null) {
-            try {
-                Path checkpointDir = projectDirectory.resolve(CHECKPOINT_DIR_NAME);
-                BackupRetentionService.Plan plan =
-                        new BackupRetentionService(policy).prune(checkpointDir);
-                java.util.Set<Path> kept = new java.util.HashSet<>();
-                for (BackupRetentionService.Snapshot s : plan.kept()) {
-                    kept.add(s.path());
-                }
-                checkpointFiles.removeIf(p -> !kept.contains(p));
-            } catch (IOException ignored) {
-                // best-effort cleanup
-            }
+        if (policy == null || projectDirectory == null) {
+            return;
+        }
+        Path checkpointDir = projectDirectory.resolve(CHECKPOINT_DIR_NAME);
+        BackupRetentionService.Plan plan;
+        try {
+            plan = new BackupRetentionService(policy).prune(checkpointDir);
+        } catch (IOException ignored) {
+            // best-effort cleanup
+            return;
+        }
+        java.util.Set<Path> kept = new java.util.HashSet<>();
+        for (BackupRetentionService.Snapshot s : plan.kept()) {
+            kept.add(s.path());
+        }
+        synchronized (checkpointFiles) {
+            checkpointFiles.removeIf(p -> !kept.contains(p));
         }
     }
 

@@ -206,8 +206,9 @@ class BackupRetentionServiceTest {
     }
 
     @Test
-    void hourlyBucketReachesFullCapacityWhenRecentDoesNotSteal() {
-        // With keepRecent=1 and one snapshot per hour, HOURLY must fill all 24 slots.
+    void hourlyBucketLeavesOneSlotUnavailableWhenRecentConsumesCurrentHour() {
+        // With keepRecent=1 and one snapshot per hour, RECENT consumes hour
+        // slot 0, leaving 23 of the 24 HOURLY slots fillable.
         Instant now = Instant.parse("2026-06-15T12:00:00Z");
         List<BackupRetentionService.Snapshot> snaps = new ArrayList<>();
         for (int h = 0; h < 48; h++) {

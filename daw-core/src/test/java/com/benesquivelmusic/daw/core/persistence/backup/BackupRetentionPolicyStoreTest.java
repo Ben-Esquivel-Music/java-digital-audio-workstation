@@ -86,4 +86,29 @@ class BackupRetentionPolicyStoreTest {
         BackupRetentionPolicyStore store = new BackupRetentionPolicyStore(globalFile);
         assertThat(store.loadGlobalOrDefault()).isEqualTo(BackupRetentionPolicy.DEFAULT);
     }
+
+    @Test
+    void resolveForProjectFallsBackWhenOverrideIsMalformed(@TempDir Path tempDir) throws IOException {
+        Path globalFile = tempDir.resolve(".daw").resolve("backup-retention.json");
+        BackupRetentionPolicyStore.save(globalFile, BackupRetentionPolicy.DEFAULT.withKeepRecent(5));
+
+        Path projectDir = tempDir.resolve("proj");
+        Files.createDirectories(projectDir);
+        // Override with a negative bucket count — parse() will produce an
+        // IllegalArgumentException via the BackupRetentionPolicy compact
+        // constructor. resolveForProject must swallow it and fall back.
+        Files.writeString(projectDir.resolve(BackupRetentionPolicyStore.FILE_NAME),
+                "{ \"keepRecent\": -1 }");
+
+        BackupRetentionPolicyStore store = new BackupRetentionPolicyStore(globalFile);
+        assertThat(store.resolveForProject(projectDir).keepRecent()).isEqualTo(5);
+    }
+
+    @Test
+    void loadGlobalOrDefaultFallsBackWhenJsonIsInvalid(@TempDir Path tempDir) throws IOException {
+        Path globalFile = tempDir.resolve("backup-retention.json");
+        Files.writeString(globalFile, "{ \"keepDaily\": -3 }");
+        BackupRetentionPolicyStore store = new BackupRetentionPolicyStore(globalFile);
+        assertThat(store.loadGlobalOrDefault()).isEqualTo(BackupRetentionPolicy.DEFAULT);
+    }
 }
