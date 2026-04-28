@@ -164,11 +164,18 @@ public final class SofaFileReader {
         // Resampling can yield slightly different per-row lengths if the input
         // happened to vary; pad/truncate to the shortest common length so the
         // record's per-measurement length invariant holds.
-        int n = left[0].length;
+        int n = Math.min(left[0].length, right[0].length);
         for (int i = 1; i < m; i++) {
             n = Math.min(n, Math.min(left[i].length, right[i].length));
         }
-        if (n != left[0].length) {
+        boolean needsTrim = false;
+        for (int i = 0; i < m; i++) {
+            if (left[i].length != n || right[i].length != n) {
+                needsTrim = true;
+                break;
+            }
+        }
+        if (needsTrim) {
             for (int i = 0; i < m; i++) {
                 if (left[i].length != n) {
                     float[] trimmed = new float[n];
@@ -239,10 +246,10 @@ public final class SofaFileReader {
             else if (pos[1] < -0.5) lower = true;
         }
         if (!upper) {
-            warnings.add("No upper-hemisphere measurements (elevation > 0°); height cues may be inaccurate.");
+            warnings.add("No upper-hemisphere measurements (elevation > 0.5°); height cues may be inaccurate.");
         }
         if (!lower) {
-            warnings.add("No lower-hemisphere measurements (elevation < 0°); below-ear cues may be inaccurate.");
+            warnings.add("No lower-hemisphere measurements (elevation < -0.5°); below-ear cues may be inaccurate.");
         }
 
         if (Double.compare(sourceRate, sessionRate) != 0) {

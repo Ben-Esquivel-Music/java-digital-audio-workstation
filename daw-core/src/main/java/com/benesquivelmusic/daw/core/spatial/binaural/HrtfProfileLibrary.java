@@ -100,6 +100,14 @@ public final class HrtfProfileLibrary {
                     .map(p -> p.getFileName().toString())
                     .filter(n -> n.endsWith(PROFILE_EXTENSION))
                     .map(n -> n.substring(0, n.length() - PROFILE_EXTENSION.length()))
+                    .filter(stem -> {
+                        try {
+                            profileFile(stem);
+                            return true;
+                        } catch (IllegalArgumentException ex) {
+                            return false;
+                        }
+                    })
                     .forEach(names::add);
             Collections.sort(names);
             return names;
@@ -137,9 +145,19 @@ public final class HrtfProfileLibrary {
                 throw new IOException("Unsupported personalized HRTF profile version: " + version);
             }
             String storedName = in.readUTF();
+            if (!storedName.equals(name)) {
+                throw new IOException("Personalized HRTF profile name mismatch for file " + file
+                        + ": expected '" + name + "' but found '" + storedName + "'");
+            }
             double sampleRate = in.readDouble();
             int m = in.readInt();
             int n = in.readInt();
+            if (m <= 0 || m > 100_000) {
+                throw new IOException("Invalid measurement count in profile file " + file + ": " + m);
+            }
+            if (n <= 0 || n > 1_000_000) {
+                throw new IOException("Invalid impulse length in profile file " + file + ": " + n);
+            }
             float[][] left = new float[m][n];
             float[][] right = new float[m][n];
             double[][] positions = new double[m][3];
