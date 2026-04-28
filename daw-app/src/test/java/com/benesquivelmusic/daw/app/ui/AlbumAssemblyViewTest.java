@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.mastering.AlbumSequence;
 import com.benesquivelmusic.daw.sdk.mastering.AlbumExportType;
 import com.benesquivelmusic.daw.sdk.mastering.AlbumTrackEntry;
 import com.benesquivelmusic.daw.sdk.mastering.CrossfadeCurve;
+import com.benesquivelmusic.daw.sdk.mastering.album.AlbumTrackMetadata;
 
 import javafx.application.Platform;
 
@@ -217,5 +218,95 @@ class AlbumAssemblyViewTest {
 
         // 2 cards + 1 transition = 3
         assertThat(view.getTrackContainer().getChildren()).hasSize(3);
+    }
+
+    @Test
+    void shouldExposeAlbumLevelMetadataFields() throws Exception {
+        AlbumAssemblyView view = createOnFxThread();
+
+        // The constructor wires these up unconditionally — they must be live
+        // even before any tracks are added.
+        assertThat(view.getAlbumYearSpinner()).isNotNull();
+        assertThat(view.getAlbumGenreField()).isNotNull();
+        assertThat(view.getAlbumUpcEanField()).isNotNull();
+        assertThat(view.getAlbumReleaseDatePicker()).isNotNull();
+        assertThat(view.getPropagateArtistButton()).isNotNull();
+        assertThat(view.getAutoIsrcButton()).isNotNull();
+        assertThat(view.getFirstIsrcField()).isNotNull();
+    }
+
+    @Test
+    void editingGenreShouldUpdateAlbumMetadata() throws Exception {
+        AlbumAssemblyView view = createOnFxThread();
+
+        runOnFxThread(() -> view.getAlbumGenreField().setText("Indie"));
+
+        assertThat(view.getAlbumSequence().getAlbumMetadata().genre())
+                .isEqualTo("Indie");
+    }
+
+    @Test
+    void propagateArtistButtonShouldOverwriteEveryTrack() throws Exception {
+        AlbumSequence sequence = new AlbumSequence("Album", "New Album Artist");
+        sequence.addTrack(AlbumTrackEntry.of("T1", 100.0));
+        sequence.addTrack(AlbumTrackEntry.of("T2", 200.0));
+        AlbumAssemblyView view = createOnFxThread(sequence);
+
+        runOnFxThread(view::refresh);
+        runOnFxThread(() -> view.getPropagateArtistButton().fire());
+
+        assertThat(view.getAlbumSequence().getTracks())
+                .extracting(AlbumTrackEntry::artist)
+                .containsExactly("New Album Artist", "New Album Artist");
+        // Per-track metadata mirrors the change.
+        AlbumTrackMetadata m0 = view.getAlbumSequence().getTrackMetadata(0).orElseThrow();
+        assertThat(m0.artist()).isEqualTo("New Album Artist");
+    }
+
+    @Test
+    void autoIsrcButtonShouldSequenceAcrossTracks() throws Exception {
+        AlbumSequence sequence = new AlbumSequence("Album", "Artist");
+        sequence.addTrack(AlbumTrackEntry.of("T1", 100.0));
+        sequence.addTrack(AlbumTrackEntry.of("T2", 200.0));
+        sequence.addTrack(AlbumTrackEntry.of("T3", 300.0));
+        AlbumAssemblyView view = createOnFxThread(sequence);
+
+        runOnFxThread(view::refresh);
+        runOnFxThread(() -> {
+            view.getFirstIsrcField().setText("US-RC1-26-00100");
+            view.getAutoIsrcButton().fire();
+        });
+
+        assertThat(view.getAlbumSequence().getTracks())
+                .extracting(AlbumTrackEntry::isrc)
+                .containsExactly("US-RC1-26-00100", "US-RC1-26-00101", "US-RC1-26-00102");
+        assertThat(view.getAlbumSequence().getTrackMetadata(0).orElseThrow().isrc())
+                .isEqualTo("US-RC1-26-00100");
+    }
+
+    @Test
+    void autoIsrcButtonShouldRejectInvalidFirstIsrc() throws Exception {
+        AlbumSequence sequence = new AlbumSequence("Album", "Artist");
+        sequence.addTrack(AlbumTrackEntry.of("T1", 100.0));
+        AlbumAssemblyView view = createOnFxThread(sequence);
+
+        runOnFxThread(view::refresh);
+        runOnFxThread(() -> {
+            view.getFirstIsrcField().setText("BAD");
+            view.getAutoIsrcButton().fire();
+        });
+
+        // Track ISRCs left unchanged.
+        assertThat(view.getAlbumSequence().getTracks().get(0).isrc()).isNull();
+        assertThat(view.getStatusLabel().getText()).contains("valid first ISRC");
+    }
+
+    @Test
+    void firstIsrcFieldShouldAutoHyphenate() throws Exception {
+        AlbumAssemblyView view = createOnFxThread();
+
+        runOnFxThread(() -> view.getFirstIsrcField().setText("USRC12600042"));
+
+        assertThat(view.getFirstIsrcField().getText()).isEqualTo("US-RC1-26-00042");
     }
 }

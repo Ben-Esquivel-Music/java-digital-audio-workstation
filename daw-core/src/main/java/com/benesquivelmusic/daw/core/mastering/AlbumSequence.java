@@ -1,11 +1,16 @@
 package com.benesquivelmusic.daw.core.mastering;
 
 import com.benesquivelmusic.daw.sdk.mastering.AlbumTrackEntry;
+import com.benesquivelmusic.daw.sdk.mastering.album.AlbumMetadata;
+import com.benesquivelmusic.daw.sdk.mastering.album.AlbumTrackMetadata;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * An ordered sequence of tracks for album assembly.
@@ -22,6 +27,8 @@ public final class AlbumSequence {
     private String albumTitle;
     private String artist;
     private final List<AlbumTrackEntry> tracks = new ArrayList<>();
+    private AlbumMetadata albumMetadata;
+    private final Map<Integer, AlbumTrackMetadata> trackMetadata = new HashMap<>();
 
     /**
      * Creates an empty album sequence.
@@ -32,22 +39,78 @@ public final class AlbumSequence {
     public AlbumSequence(String albumTitle, String artist) {
         this.albumTitle = Objects.requireNonNull(albumTitle, "albumTitle must not be null");
         this.artist = Objects.requireNonNull(artist, "artist must not be null");
+        this.albumMetadata = AlbumMetadata.of(albumTitle, artist);
     }
 
     /** Returns the album title. */
     public String getAlbumTitle() { return albumTitle; }
 
-    /** Sets the album title. */
+    /** Sets the album title. The change is mirrored in {@link #getAlbumMetadata()}. */
     public void setAlbumTitle(String albumTitle) {
         this.albumTitle = Objects.requireNonNull(albumTitle, "albumTitle must not be null");
+        this.albumMetadata = this.albumMetadata.withTitle(albumTitle);
     }
 
     /** Returns the artist name. */
     public String getArtist() { return artist; }
 
-    /** Sets the artist name. */
+    /** Sets the artist name. The change is mirrored in {@link #getAlbumMetadata()}. */
     public void setArtist(String artist) {
         this.artist = Objects.requireNonNull(artist, "artist must not be null");
+        this.albumMetadata = this.albumMetadata.withArtist(artist);
+    }
+
+    /**
+     * Returns the album-level metadata (title, artist, year, genre, UPC/EAN, release date).
+     *
+     * @return the album metadata (never {@code null})
+     */
+    public AlbumMetadata getAlbumMetadata() {
+        return albumMetadata;
+    }
+
+    /**
+     * Replaces the album-level metadata. The {@code title} and {@code artist}
+     * fields of {@code metadata} are also written back to the legacy
+     * {@link #setAlbumTitle(String)} / {@link #setArtist(String)} accessors so
+     * that older callers stay consistent.
+     *
+     * @param metadata the new album metadata
+     */
+    public void setAlbumMetadata(AlbumMetadata metadata) {
+        this.albumMetadata = Objects.requireNonNull(metadata, "metadata must not be null");
+        this.albumTitle = metadata.title();
+        this.artist = metadata.artist();
+    }
+
+    /**
+     * Returns the optional per-track metadata for the track at {@code index}.
+     *
+     * @param index the track index
+     * @return the metadata, or empty if none has been assigned
+     */
+    public Optional<AlbumTrackMetadata> getTrackMetadata(int index) {
+        if (index < 0 || index >= tracks.size()) {
+            throw new IndexOutOfBoundsException("index: " + index);
+        }
+        return Optional.ofNullable(trackMetadata.get(index));
+    }
+
+    /**
+     * Assigns per-track metadata for the track at {@code index}.
+     *
+     * @param index    the track index
+     * @param metadata the metadata to associate (or {@code null} to clear)
+     */
+    public void setTrackMetadata(int index, AlbumTrackMetadata metadata) {
+        if (index < 0 || index >= tracks.size()) {
+            throw new IndexOutOfBoundsException("index: " + index);
+        }
+        if (metadata == null) {
+            trackMetadata.remove(index);
+        } else {
+            trackMetadata.put(index, metadata);
+        }
     }
 
     /**
@@ -60,23 +123,31 @@ public final class AlbumSequence {
     }
 
     /**
-     * Inserts a track at the specified index.
+     * Inserts a track at the specified index. Existing per-track metadata
+     * at and after {@code index} is shifted up by one to keep references
+     * aligned with the new track positions.
      *
      * @param index the insertion index
      * @param entry the album track entry
      */
     public void insertTrack(int index, AlbumTrackEntry entry) {
         tracks.add(index, Objects.requireNonNull(entry, "entry must not be null"));
+        shiftMetadata(index, +1);
     }
 
     /**
-     * Removes the track at the specified index.
+     * Removes the track at the specified index. The associated per-track
+     * metadata (if any) is removed and any later metadata entries are
+     * shifted down by one.
      *
      * @param index the index of the track to remove
      * @return the removed track entry
      */
     public AlbumTrackEntry removeTrack(int index) {
-        return tracks.remove(index);
+        AlbumTrackEntry removed = tracks.remove(index);
+        trackMetadata.remove(index);
+        shiftMetadata(index + 1, -1);
+        return removed;
     }
 
     /**
@@ -104,6 +175,34 @@ public final class AlbumSequence {
         }
         AlbumTrackEntry entry = tracks.remove(fromIndex);
         tracks.add(toIndex, entry);
+        AlbumTrackMetadata movedMeta = trackMetadata.remove(fromIndex);
+        // Shift the rest to fill the gap, then insert the moved metadata at toIndex.
+        shiftMetadata(fromIndex + 1, -1);
+        shiftMetadata(toIndex, +1);
+        if (movedMeta != null) {
+            trackMetadata.put(toIndex, movedMeta);
+        }
+    }
+
+    /**
+     * Shifts every per-track metadata entry whose index is {@code >= fromIndex}
+     * by {@code delta}.
+     */
+    private void shiftMetadata(int fromIndex, int delta) {
+        if (delta == 0 || trackMetadata.isEmpty()) {
+            return;
+        }
+        Map<Integer, AlbumTrackMetadata> shifted = new HashMap<>();
+        for (Map.Entry<Integer, AlbumTrackMetadata> e : trackMetadata.entrySet()) {
+            int idx = e.getKey();
+            if (idx >= fromIndex) {
+                shifted.put(idx + delta, e.getValue());
+            } else {
+                shifted.put(idx, e.getValue());
+            }
+        }
+        trackMetadata.clear();
+        trackMetadata.putAll(shifted);
     }
 
     /**

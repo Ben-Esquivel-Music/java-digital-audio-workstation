@@ -131,6 +131,23 @@ class WavExporterTest {
     }
 
     @Test
+    void shouldEmbedIsrcInListInfoChunk() throws IOException {
+        float[][] audio = new float[1][100];
+        AudioMetadata metadata = new AudioMetadata(
+                "Track 1", "Artist", "Album", "US-RC1-26-00042");
+        Path outputPath = tempDir.resolve("isrc.wav");
+
+        WavExporter.write(audio, 44100, 16, DitherType.NONE, metadata, outputPath);
+
+        byte[] data = Files.readAllBytes(outputPath);
+        String fileContent = new String(data, java.nio.charset.StandardCharsets.US_ASCII);
+
+        // The ISRC tag should be present alongside the standard text tags.
+        assertThat(fileContent).contains("ISRC");
+        assertThat(fileContent).contains("US-RC1-26-00042");
+    }
+
+    @Test
     void shouldWrite8BitWav() throws IOException {
         float[][] audio = new float[1][100];
         for (int i = 0; i < 100; i++) {

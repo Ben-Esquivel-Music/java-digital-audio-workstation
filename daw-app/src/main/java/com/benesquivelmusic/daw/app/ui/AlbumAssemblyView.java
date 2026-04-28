@@ -7,19 +7,28 @@ import com.benesquivelmusic.daw.core.mastering.AlbumSequence;
 import com.benesquivelmusic.daw.sdk.mastering.AlbumExportType;
 import com.benesquivelmusic.daw.sdk.mastering.AlbumTrackEntry;
 import com.benesquivelmusic.daw.sdk.mastering.CrossfadeCurve;
+import com.benesquivelmusic.daw.sdk.mastering.album.AlbumMetadata;
+import com.benesquivelmusic.daw.sdk.mastering.album.AlbumTrackMetadata;
+import com.benesquivelmusic.daw.sdk.mastering.album.CdText;
+import com.benesquivelmusic.daw.sdk.mastering.album.IsrcValidator;
 import javafx.collections.FXCollections;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.*;
+import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 
+import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Album assembly view for sequencing and assembling tracks into an album.
@@ -51,6 +60,13 @@ public final class AlbumAssemblyView extends VBox {
     private final ComboBox<String> exportTypeSelector;
     private final TextField albumTitleField;
     private final TextField albumArtistField;
+    private final Spinner<Integer> albumYearSpinner;
+    private final TextField albumGenreField;
+    private final TextField albumUpcEanField;
+    private final DatePicker albumReleaseDatePicker;
+    private final Button propagateArtistButton;
+    private final Button autoIsrcButton;
+    private final TextField firstIsrcField;
 
     /**
      * Creates a new album assembly view with a default empty album sequence.
@@ -152,6 +168,99 @@ public final class AlbumAssemblyView extends VBox {
         metadataBar.setAlignment(Pos.CENTER_LEFT);
         metadataBar.setPadding(new Insets(4, 10, 4, 10));
 
+        // ── Extended album metadata: year, genre, UPC/EAN, release date ─────
+        AlbumMetadata initialAlbum = albumSequence.getAlbumMetadata();
+
+        Label yearLabel = labelOf("Year:");
+        SpinnerValueFactory.IntegerSpinnerValueFactory albumYearValueFactory =
+                new SpinnerValueFactory.IntegerSpinnerValueFactory(
+                        0, AlbumMetadata.MAX_YEAR, initialAlbum.year());
+        albumYearSpinner = new Spinner<>(albumYearValueFactory);
+        albumYearSpinner.setEditable(true);
+        albumYearSpinner.setPrefWidth(90);
+        albumYearSpinner.valueProperty().addListener((obs, oldV, newV) -> {
+            if (newV == null) {
+                return;
+            }
+            if (newV == 0 || newV >= AlbumMetadata.MIN_YEAR) {
+                albumYearSpinner.getEditor().setStyle("");
+                applyToAlbumMetadata(m -> m.withYear(newV));
+            } else {
+                albumYearSpinner.getEditor().setStyle("-fx-border-color: #ff5252;");
+                Integer revertValue = oldV != null ? oldV : 0;
+                if (!Objects.equals(albumYearValueFactory.getValue(), revertValue)) {
+                    albumYearValueFactory.setValue(revertValue);
+                }
+            }
+        });
+
+        Label genreLabel = labelOf("Genre:");
+        albumGenreField = new TextField(initialAlbum.genre() != null ? initialAlbum.genre() : "");
+        albumGenreField.setPromptText("Genre");
+        albumGenreField.setPrefWidth(120);
+        albumGenreField.textProperty().addListener((obs, oldV, newV) ->
+                applyToAlbumMetadata(m -> m.withGenre((newV == null || newV.isEmpty()) ? null : newV)));
+
+        Label upcLabel = labelOf("UPC/EAN:");
+        albumUpcEanField = new TextField(initialAlbum.upcEan() != null ? initialAlbum.upcEan() : "");
+        albumUpcEanField.setPromptText("12 or 13 digits");
+        albumUpcEanField.setPrefWidth(140);
+        albumUpcEanField.textProperty().addListener((obs, oldV, newV) -> {
+            if (newV == null || newV.isEmpty()) {
+                applyToAlbumMetadata(m -> m.withUpcEan(null));
+                albumUpcEanField.setStyle("");
+            } else if (newV.matches("\\d{12,13}")) {
+                applyToAlbumMetadata(m -> m.withUpcEan(newV));
+                albumUpcEanField.setStyle("");
+            } else {
+                albumUpcEanField.setStyle("-fx-border-color: #ff5252;");
+            }
+        });
+
+        Label releaseLabel = labelOf("Release:");
+        albumReleaseDatePicker = new DatePicker(initialAlbum.releaseDate().orElse(null));
+        albumReleaseDatePicker.setPrefWidth(140);
+        albumReleaseDatePicker.valueProperty().addListener((obs, oldV, newV) ->
+                applyToAlbumMetadata(m -> m.withReleaseDate(Optional.ofNullable(newV))));
+
+        HBox albumDetailsBar = new HBox(8, yearLabel, albumYearSpinner,
+                genreLabel, albumGenreField,
+                upcLabel, albumUpcEanField,
+                releaseLabel, albumReleaseDatePicker);
+        albumDetailsBar.setAlignment(Pos.CENTER_LEFT);
+        albumDetailsBar.setPadding(new Insets(4, 10, 4, 10));
+
+        // ── Auto-fill helpers row ───────────────────────────────────────────
+        propagateArtistButton = new Button("Propagate artist to all tracks");
+        propagateArtistButton.setTooltip(new Tooltip(
+                "Set every track's artist to the album artist"));
+        propagateArtistButton.setOnAction(e -> propagateAlbumArtist());
+
+        firstIsrcField = new TextField();
+        firstIsrcField.setPromptText("First ISRC (CC-XXX-YY-NNNNN)");
+        firstIsrcField.setPrefWidth(190);
+        firstIsrcField.textProperty().addListener((obs, oldV, newV) -> {
+            String formatted = IsrcValidator.autoHyphenate(newV);
+            if (!formatted.equals(newV)) {
+                int caret = firstIsrcField.getCaretPosition();
+                firstIsrcField.setText(formatted);
+                firstIsrcField.positionCaret(Math.min(caret, formatted.length()));
+            }
+            firstIsrcField.setStyle(IsrcValidator.isValid(formatted) || formatted.isEmpty()
+                    ? "" : "-fx-border-color: #ff5252;");
+        });
+
+        autoIsrcButton = new Button("Auto-generate ISRC sequence");
+        autoIsrcButton.setTooltip(new Tooltip(
+                "Assign the first ISRC and increment the designation code on every track"));
+        autoIsrcButton.setOnAction(e -> autoGenerateIsrcSequence());
+
+        HBox helpersBar = new HBox(8, propagateArtistButton,
+                new Separator(javafx.geometry.Orientation.VERTICAL),
+                firstIsrcField, autoIsrcButton);
+        helpersBar.setAlignment(Pos.CENTER_LEFT);
+        helpersBar.setPadding(new Insets(4, 10, 4, 10));
+
         // ── Track listing area ──────────────────────────────────────────────
         trackContainer = new HBox(8);
         trackContainer.setAlignment(Pos.TOP_LEFT);
@@ -165,6 +274,7 @@ public final class AlbumAssemblyView extends VBox {
         VBox.setVgrow(trackScroll, Priority.ALWAYS);
 
         getChildren().addAll(headerBar, new Separator(), metadataBar,
+                albumDetailsBar, helpersBar,
                 new Separator(), trackScroll, statusLabel);
     }
 
@@ -256,6 +366,41 @@ public final class AlbumAssemblyView extends VBox {
         return albumArtistField;
     }
 
+    /** Visible for testing. */
+    Spinner<Integer> getAlbumYearSpinner() {
+        return albumYearSpinner;
+    }
+
+    /** Visible for testing. */
+    TextField getAlbumGenreField() {
+        return albumGenreField;
+    }
+
+    /** Visible for testing. */
+    TextField getAlbumUpcEanField() {
+        return albumUpcEanField;
+    }
+
+    /** Visible for testing. */
+    DatePicker getAlbumReleaseDatePicker() {
+        return albumReleaseDatePicker;
+    }
+
+    /** Visible for testing. */
+    Button getPropagateArtistButton() {
+        return propagateArtistButton;
+    }
+
+    /** Visible for testing. */
+    Button getAutoIsrcButton() {
+        return autoIsrcButton;
+    }
+
+    /** Visible for testing. */
+    TextField getFirstIsrcField() {
+        return firstIsrcField;
+    }
+
     /**
      * Returns the selected export type.
      *
@@ -305,16 +450,54 @@ public final class AlbumAssemblyView extends VBox {
             }
         });
 
-        // ISRC field
-        TextField isrcField = new TextField(entry.isrc() != null ? entry.isrc() : "");
+        // ISRC field — now with real-time auto-hyphenation and validation styling.
+        TextField isrcField = new TextField(initialIsrc(index, entry));
         isrcField.setPromptText("ISRC");
         isrcField.setPrefWidth(TRACK_CARD_WIDTH - 16);
         isrcField.setStyle("-fx-font-size: 10px;");
+        isrcField.textProperty().addListener((obs, oldV, newV) -> {
+            String formatted = IsrcValidator.autoHyphenate(newV);
+            if (!formatted.equals(newV)) {
+                int caret = isrcField.getCaretPosition();
+                isrcField.setText(formatted);
+                isrcField.positionCaret(Math.min(caret, formatted.length()));
+                return;
+            }
+            isrcField.setStyle("-fx-font-size: 10px;"
+                    + (formatted.isEmpty() || IsrcValidator.isValid(formatted)
+                        ? "" : " -fx-border-color: #ff5252;"));
+        });
         isrcField.focusedProperty().addListener((observable, oldValue, newValue) -> {
             if (!newValue) {
                 updateTrackIsrc(capturedIndex, isrcField.getText());
             }
         });
+
+        // Composer field (CD-Text COMPOSER pack).
+        TextField composerField = new TextField(initialComposer(index));
+        composerField.setPromptText("Composer");
+        composerField.setPrefWidth(TRACK_CARD_WIDTH - 16);
+        composerField.setStyle("-fx-font-size: 11px;");
+        composerField.focusedProperty().addListener((observable, oldValue, newValue) -> {
+            if (!newValue) {
+                updateTrackComposer(capturedIndex, composerField.getText());
+            }
+        });
+
+        // CD-Text and Extra-tags entry buttons open a dialog (kept off the
+        // card to avoid clutter; the data is held by AlbumTrackMetadata).
+        Button cdTextButton = new Button("CD-Text…");
+        cdTextButton.setStyle("-fx-font-size: 9px; -fx-padding: 2 4 2 4;");
+        cdTextButton.setTooltip(new Tooltip("Edit CD-Text fields (songwriter, arranger, message, UPC/EAN)"));
+        cdTextButton.setOnAction(e -> openCdTextDialog(capturedIndex));
+
+        Button extraTagsButton = new Button("Extra…");
+        extraTagsButton.setStyle("-fx-font-size: 9px; -fx-padding: 2 4 2 4;");
+        extraTagsButton.setTooltip(new Tooltip("Edit distributor-specific key/value tags"));
+        extraTagsButton.setOnAction(e -> openExtraTagsDialog(capturedIndex));
+
+        HBox metaRow = new HBox(4, cdTextButton, extraTagsButton);
+        metaRow.setAlignment(Pos.CENTER_LEFT);
 
         // Waveform preview
         WaveformDisplay waveform = new WaveformDisplay();
@@ -391,9 +574,34 @@ public final class AlbumAssemblyView extends VBox {
             moveRow.getChildren().add(moveRight);
         }
 
-        card.getChildren().addAll(trackNumLabel, titleField, artistField, isrcField,
-                waveform, durationLabel, gapRow, xfadeRow, curveRow, moveRow);
+        card.getChildren().addAll(trackNumLabel, titleField, artistField, composerField, isrcField,
+                waveform, durationLabel, gapRow, xfadeRow, curveRow, metaRow, moveRow);
         return card;
+    }
+
+    /**
+     * Returns the initial ISRC text for a track card. Prefers a value
+     * stored in {@link AlbumTrackMetadata} over the legacy
+     * {@link AlbumTrackEntry#isrc()} field.
+     */
+    private String initialIsrc(int index, AlbumTrackEntry entry) {
+        return albumSequence.getTrackMetadata(index)
+                .map(AlbumTrackMetadata::isrc)
+                .filter(Objects::nonNull)
+                .orElseGet(() -> entry.isrc() != null ? entry.isrc() : "");
+    }
+
+    /** Returns the composer string from {@link AlbumTrackMetadata}, or empty. */
+    private String initialComposer(int index) {
+        return albumSequence.getTrackMetadata(index)
+                .map(AlbumTrackMetadata::composer)
+                .orElse("");
+    }
+
+    private static Label labelOf(String text) {
+        Label l = new Label(text);
+        l.setStyle("-fx-text-fill: #b0b0b0; -fx-font-size: 11px;");
+        return l;
     }
 
     private static Node buildTransitionIndicator(AlbumTrackEntry nextEntry) {
@@ -429,18 +637,188 @@ public final class AlbumAssemblyView extends VBox {
         AlbumTrackEntry updated = new AlbumTrackEntry(newTitle, old.artist(), old.isrc(),
                 old.durationSeconds(), old.preGapSeconds(), old.crossfadeDuration(), old.crossfadeCurve());
         albumSequence.setTrack(index, updated);
+        applyToTrackMetadata(index, m -> new AlbumTrackMetadata(
+                newTitle, m.artist(), m.composer(), m.isrc(), m.cdText(), m.extra()));
     }
 
     private void updateTrackArtist(int index, String newArtist) {
         AlbumTrackEntry old = albumSequence.getTracks().get(index);
         String artist = (newArtist != null && !newArtist.isEmpty()) ? newArtist : null;
         albumSequence.setTrack(index, old.withArtist(artist));
+        applyToTrackMetadata(index, m -> m.withArtist(artist));
     }
 
     private void updateTrackIsrc(int index, String newIsrc) {
         AlbumTrackEntry old = albumSequence.getTracks().get(index);
         String isrc = (newIsrc != null && !newIsrc.isEmpty()) ? newIsrc : null;
+        if (isrc != null && !IsrcValidator.isValid(isrc)) {
+            statusLabel.setText("Invalid ISRC: " + isrc + " (expected CC-XXX-YY-NNNNN)");
+            return;
+        }
         albumSequence.setTrack(index, old.withIsrc(isrc));
+        applyToTrackMetadata(index, m -> m.withIsrc(isrc));
+    }
+
+    private void updateTrackComposer(int index, String newComposer) {
+        String composer = (newComposer != null && !newComposer.isEmpty()) ? newComposer : null;
+        applyToTrackMetadata(index, m -> m.withComposer(composer));
+    }
+
+    /**
+     * Reads, transforms, and writes back the {@link AlbumTrackMetadata}
+     * record at {@code index}. The track title falls back to the
+     * {@link AlbumTrackEntry#title()} when no metadata record exists yet.
+     */
+    private void applyToTrackMetadata(
+            int index, java.util.function.UnaryOperator<AlbumTrackMetadata> op) {
+        AlbumTrackEntry entry = albumSequence.getTracks().get(index);
+        AlbumTrackMetadata current = albumSequence.getTrackMetadata(index)
+                .orElseGet(() -> AlbumTrackMetadata.ofTitle(entry.title())
+                        .withArtist(entry.artist())
+                        .withIsrc(entry.isrc() != null && IsrcValidator.isValid(entry.isrc())
+                                ? entry.isrc() : null));
+        albumSequence.setTrackMetadata(index, op.apply(current));
+    }
+
+    /** Reads, transforms, and writes back the album-level metadata. */
+    private void applyToAlbumMetadata(java.util.function.UnaryOperator<AlbumMetadata> op) {
+        albumSequence.setAlbumMetadata(op.apply(albumSequence.getAlbumMetadata()));
+    }
+
+    /** Propagates the album artist to every track. */
+    private void propagateAlbumArtist() {
+        String artist = albumSequence.getArtist();
+        for (int i = 0; i < albumSequence.size(); i++) {
+            AlbumTrackEntry old = albumSequence.getTracks().get(i);
+            albumSequence.setTrack(i, old.withArtist(artist));
+            int idx = i;
+            applyToTrackMetadata(idx, m -> m.withArtist(artist));
+        }
+        refresh();
+        statusLabel.setText("Propagated artist '" + artist + "' to "
+                + albumSequence.size() + " track(s)");
+    }
+
+    /**
+     * Auto-generates ISRCs for every track starting from the value entered in
+     * {@link #firstIsrcField}, incrementing the designation code per track.
+     */
+    private void autoGenerateIsrcSequence() {
+        String first = firstIsrcField.getText();
+        if (first == null || first.isEmpty() || !IsrcValidator.isValid(first)) {
+            statusLabel.setText("Enter a valid first ISRC (CC-XXX-YY-NNNNN) before auto-generating");
+            return;
+        }
+        try {
+            String current = IsrcValidator.normalize(first);
+            for (int i = 0; i < albumSequence.size(); i++) {
+                final String nextIsrc = current;
+                AlbumTrackEntry old = albumSequence.getTracks().get(i);
+                albumSequence.setTrack(i, old.withIsrc(nextIsrc));
+                int idx = i;
+                applyToTrackMetadata(idx, m -> m.withIsrc(nextIsrc));
+                if (i < albumSequence.size() - 1) {
+                    current = IsrcValidator.next(current);
+                }
+            }
+            refresh();
+            statusLabel.setText("Assigned " + albumSequence.size() + " sequential ISRC(s) starting at " + first);
+        } catch (IllegalArgumentException ex) {
+            statusLabel.setText("ISRC sequence error: " + ex.getMessage());
+        }
+    }
+
+    /** Opens a small dialog to edit the CD-Text fields for a track. */
+    private void openCdTextDialog(int index) {
+        AlbumTrackEntry entry = albumSequence.getTracks().get(index);
+        AlbumTrackMetadata current = albumSequence.getTrackMetadata(index)
+                .orElseGet(() -> AlbumTrackMetadata.ofTitle(entry.title()));
+        CdText existing = current.cdText().orElse(CdText.EMPTY);
+
+        Dialog<CdText> dialog = new Dialog<>();
+        dialog.setTitle("CD-Text — Track " + (index + 1));
+        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+
+        TextField songwriter = new TextField(existing.songwriter() != null ? existing.songwriter() : "");
+        TextField arranger = new TextField(existing.arranger() != null ? existing.arranger() : "");
+        TextField message = new TextField(existing.message() != null ? existing.message() : "");
+        TextField upcEan = new TextField(existing.upcEan() != null ? existing.upcEan() : "");
+
+        GridPane grid = new GridPane();
+        grid.setHgap(8);
+        grid.setVgap(6);
+        grid.setPadding(new Insets(10));
+        grid.add(labelOf("Songwriter:"), 0, 0); grid.add(songwriter, 1, 0);
+        grid.add(labelOf("Arranger:"),   0, 1); grid.add(arranger,   1, 1);
+        grid.add(labelOf("Message:"),    0, 2); grid.add(message,    1, 2);
+        grid.add(labelOf("UPC/EAN:"),    0, 3); grid.add(upcEan,     1, 3);
+        dialog.getDialogPane().setContent(grid);
+
+        dialog.setResultConverter(button -> {
+            if (button != ButtonType.OK) return null;
+            return new CdText(
+                    nullIfBlank(songwriter.getText()),
+                    nullIfBlank(arranger.getText()),
+                    nullIfBlank(message.getText()),
+                    nullIfBlank(upcEan.getText()));
+        });
+
+        dialog.showAndWait().ifPresent(cdt -> {
+            Optional<CdText> stored = cdt.isEmpty() ? Optional.empty() : Optional.of(cdt);
+            applyToTrackMetadata(index, m -> m.withCdText(stored));
+            statusLabel.setText("Updated CD-Text for track " + (index + 1));
+        });
+    }
+
+    /**
+     * Opens a dialog letting the user edit the free-form distributor-specific
+     * key/value tags for a track.
+     */
+    private void openExtraTagsDialog(int index) {
+        AlbumTrackEntry entry = albumSequence.getTracks().get(index);
+        AlbumTrackMetadata current = albumSequence.getTrackMetadata(index)
+                .orElseGet(() -> AlbumTrackMetadata.ofTitle(entry.title()));
+
+        Dialog<Map<String, String>> dialog = new Dialog<>();
+        dialog.setTitle("Extra tags — Track " + (index + 1));
+        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+
+        // Two-column editable text area: "key=value" lines.
+        TextArea editor = new TextArea();
+        editor.setPrefRowCount(8);
+        editor.setPrefColumnCount(40);
+        StringBuilder initial = new StringBuilder();
+        for (Map.Entry<String, String> e : current.extra().entrySet()) {
+            initial.append(e.getKey()).append('=').append(e.getValue()).append('\n');
+        }
+        editor.setText(initial.toString());
+        editor.setPromptText("key=value\nlanguage=en\nexplicit=false");
+
+        VBox box = new VBox(6, labelOf("One key=value pair per line:"), editor);
+        box.setPadding(new Insets(10));
+        dialog.getDialogPane().setContent(box);
+
+        dialog.setResultConverter(button -> {
+            if (button != ButtonType.OK) return null;
+            Map<String, String> map = new LinkedHashMap<>();
+            for (String line : editor.getText().split("\\R")) {
+                String trimmed = line.trim();
+                if (trimmed.isEmpty()) continue;
+                int eq = trimmed.indexOf('=');
+                if (eq <= 0) continue;
+                map.put(trimmed.substring(0, eq).trim(), trimmed.substring(eq + 1).trim());
+            }
+            return map;
+        });
+
+        dialog.showAndWait().ifPresent(map -> {
+            applyToTrackMetadata(index, m -> m.withExtra(map));
+            statusLabel.setText("Updated extra tags for track " + (index + 1));
+        });
+    }
+
+    private static String nullIfBlank(String s) {
+        return (s == null || s.isEmpty()) ? null : s;
     }
 
     private void updateTrackGap(int index, double newGap) {
