@@ -1,11 +1,14 @@
 package com.benesquivelmusic.daw.core.persistence;
 
+import com.benesquivelmusic.daw.core.persistence.migration.MigrationReport;
 import com.benesquivelmusic.daw.core.project.DawProject;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Instant;
+import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.*;
 
@@ -38,13 +41,30 @@ public final class ProjectManager {
     private final CheckpointManager checkpointManager;
     private final RecentProjectsStore recentProjectsStore;
     private final ProjectSerializer serializer = new ProjectSerializer();
-    private final ProjectDeserializer deserializer = new ProjectDeserializer();
+    private final ProjectDeserializer deserializer;
     private final ProjectLockManager lockManager;
 
     private ProjectMetadata currentProject;
     private DawProject currentDawProject;
     private LockConflictHandler lockConflictHandler;
     private boolean readOnly;
+
+    /**
+     * Migration report from the most recent {@link #openProject(Path)} call.
+     * When {@link MigrationReport#wasMigrated()} is true, the next save
+     * will first back up the original on-disk file (see
+     * {@link #saveProject()} / {@link #saveDawProject(DawProject)}) so the
+     * user can roll back to the pre-migration version.
+     */
+    private MigrationReport lastMigrationReport = MigrationReport.noOp(
+            com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION);
+
+    /**
+     * {@code true} when the currently open project was migrated and its
+     * pre-migration backup has not yet been written. Cleared by the
+     * first successful save (the backup happens exactly once per load).
+     */
+    private boolean migrationBackupPending;
 
     /**
      * Creates a project manager with the given checkpoint manager.
@@ -77,10 +97,24 @@ public final class ProjectManager {
     public ProjectManager(CheckpointManager checkpointManager,
                           RecentProjectsStore recentProjectsStore,
                           ProjectLockManager lockManager) {
+        this(checkpointManager, recentProjectsStore, lockManager, new ProjectDeserializer());
+    }
+
+    /**
+     * Creates a project manager with explicit deserializer injection — used
+     * by tests that need to drive an alternate
+     * {@link com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry}
+     * through the manager.
+     */
+    public ProjectManager(CheckpointManager checkpointManager,
+                          RecentProjectsStore recentProjectsStore,
+                          ProjectLockManager lockManager,
+                          ProjectDeserializer deserializer) {
         this.checkpointManager = Objects.requireNonNull(checkpointManager,
                 "checkpointManager must not be null");
         this.recentProjectsStore = recentProjectsStore;
         this.lockManager = Objects.requireNonNull(lockManager, "lockManager must not be null");
+        this.deserializer = Objects.requireNonNull(deserializer, "deserializer must not be null");
     }
 
     /**
@@ -185,10 +219,15 @@ public final class ProjectManager {
             dawProject.markClean();
             currentDawProject = dawProject;
             currentProject = metadata;
+            lastMigrationReport = deserializer.getLastMigrationReport();
+            migrationBackupPending = lastMigrationReport.wasMigrated();
         } else {
             ProjectMetadata metadata = parseProjectFile(content, projectDirectory);
             currentProject = metadata;
             currentDawProject = null;
+            lastMigrationReport = MigrationReport.noOp(
+                    com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION);
+            migrationBackupPending = false;
         }
 
         readOnly = openedReadOnly;
@@ -283,6 +322,9 @@ public final class ProjectManager {
         currentProject = null;
         currentDawProject = null;
         readOnly = false;
+        migrationBackupPending = false;
+        lastMigrationReport = MigrationReport.noOp(
+                com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION);
     }
 
     /**
@@ -302,6 +344,22 @@ public final class ProjectManager {
         currentProject = null;
         currentDawProject = null;
         readOnly = false;
+        migrationBackupPending = false;
+        lastMigrationReport = MigrationReport.noOp(
+                com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION);
+    }
+
+    /**
+     * Returns the migration report produced when the currently open
+     * project was loaded. Always non-null; if no project is open, or no
+     * migrations were applied, {@link MigrationReport#wasMigrated()}
+     * returns {@code false}.
+     *
+     * <p>The UI layer consults this report to decide whether to show
+     * the {@code MigrationReportDialog} after a load.</p>
+     */
+    public MigrationReport getLastMigrationReport() {
+        return lastMigrationReport;
     }
 
     /**
@@ -386,8 +444,35 @@ public final class ProjectManager {
             return;
         }
         Path projectFile = projectDir.resolve(PROJECT_FILE_NAME);
+        // If the project was opened from a legacy schema and migrated in
+        // memory, the user's choice to save is the commit point — preserve
+        // the original file as a sibling backup before overwriting it. The
+        // backup is taken at most once per load (cleared once written) and
+        // never overwrites an existing backup so repeated saves remain
+        // idempotent.
+        if (migrationBackupPending && Files.exists(projectFile)) {
+            writeMigrationBackup(projectFile);
+            migrationBackupPending = false;
+        }
         String xml = serializer.serialize(dawProject);
         Files.writeString(projectFile, xml);
+    }
+
+    private void writeMigrationBackup(Path projectFile) throws IOException {
+        String stamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
+                .withZone(java.time.ZoneOffset.UTC)
+                .format(Instant.now());
+        int fromVersion = lastMigrationReport.fromVersion();
+        Path backup = projectFile.resolveSibling(
+                projectFile.getFileName() + ".v" + fromVersion + "." + stamp + ".bak");
+        // Never clobber an existing backup (e.g. two opens within a second).
+        int n = 0;
+        while (Files.exists(backup)) {
+            n++;
+            backup = projectFile.resolveSibling(
+                    projectFile.getFileName() + ".v" + fromVersion + "." + stamp + "-" + n + ".bak");
+        }
+        Files.copy(projectFile, backup, StandardCopyOption.COPY_ATTRIBUTES);
     }
 
     private void writeProjectFile(ProjectMetadata metadata) throws IOException {
