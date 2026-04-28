@@ -196,6 +196,18 @@ public final class BinauralMonitorController {
     }
 
     /**
+     * Loads a personalized HRTF profile (typically previously imported from a
+     * SOFA file via {@link HrtfProfileLibrary#importSofa}) into the binaural
+     * renderer. Clears any previously selected built-in profile.
+     *
+     * @param profile the personalized profile (must not be null)
+     */
+    public void selectPersonalizedProfile(PersonalizedHrtfProfile profile) {
+        Objects.requireNonNull(profile, "profile must not be null");
+        loadCustomHrtfData(profile.toHrtfData());
+    }
+
+    /**
      * Loads a pre-constructed custom HRTF dataset.
      *
      * <p>Useful for loading HRTFs from non-SOFA sources or for testing.
