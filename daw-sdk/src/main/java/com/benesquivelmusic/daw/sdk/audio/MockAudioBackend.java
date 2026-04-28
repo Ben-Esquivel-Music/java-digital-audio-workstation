@@ -139,6 +139,51 @@ public final class MockAudioBackend implements AudioBackend {
         return support.isOpen();
     }
 
+    @Override
+    public Flow.Publisher<AudioDeviceEvent> deviceEvents() {
+        return support.deviceEvents();
+    }
+
+    /**
+     * Simulates the host OS reporting that {@code device} has just
+     * appeared, so tests can drive
+     * {@link AudioBackend#deviceEvents()} subscribers through the
+     * "device returned, auto-reconnect" flow without real hardware.
+     *
+     * @param device the device whose arrival to publish; must not be null
+     */
+    public void simulateDeviceArrived(DeviceId device) {
+        Objects.requireNonNull(device, "device must not be null");
+        support.publishDeviceEvent(new AudioDeviceEvent.DeviceArrived(device));
+    }
+
+    /**
+     * Simulates the host OS reporting that {@code device} has just gone
+     * away (USB unplug, driver crash, device disabled). Tests use this
+     * to drive the {@code DEVICE_LOST} transition in
+     * {@code AudioEngineController} without real hardware.
+     *
+     * @param device the device whose removal to publish; must not be null
+     */
+    public void simulateDeviceRemoved(DeviceId device) {
+        Objects.requireNonNull(device, "device must not be null");
+        support.publishDeviceEvent(new AudioDeviceEvent.DeviceRemoved(device));
+    }
+
+    /**
+     * Simulates the driver renegotiating the device's native format
+     * (sample rate / channel count / buffer size change) mid-session.
+     *
+     * @param device    the affected device id; must not be null
+     * @param newFormat the device's new native format; must not be null
+     */
+    public void simulateDeviceFormatChanged(DeviceId device, AudioFormat newFormat) {
+        Objects.requireNonNull(device, "device must not be null");
+        Objects.requireNonNull(newFormat, "newFormat must not be null");
+        support.publishDeviceEvent(
+                new AudioDeviceEvent.DeviceFormatChanged(device, newFormat));
+    }
+
     /**
      * Returns a runnable that records the invocation. Tests can assert
      * the count via {@link #controlPanelInvocationCount()} and verify

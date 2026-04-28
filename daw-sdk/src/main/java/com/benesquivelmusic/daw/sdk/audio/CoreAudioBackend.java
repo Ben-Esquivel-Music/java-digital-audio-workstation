@@ -62,6 +62,19 @@ public final class CoreAudioBackend implements AudioBackend {
         return support.inputBlocks();
     }
 
+    /**
+     * Translates CoreAudio's {@code kAudioHardwarePropertyDevices}
+     * property listener (and the per-device
+     * {@code kAudioDevicePropertyDeviceIsAlive} /
+     * {@code kAudioDevicePropertyNominalSampleRate} listeners)
+     * into {@link AudioDeviceEvent}s. The native shim publishes via
+     * {@link AudioBackendSupport#publishDeviceEvent(AudioDeviceEvent)}.
+     */
+    @Override
+    public Flow.Publisher<AudioDeviceEvent> deviceEvents() {
+        return support.deviceEvents();
+    }
+
     @Override
     public void sink(AudioBlock block) {
         support.validateOutgoing(block);

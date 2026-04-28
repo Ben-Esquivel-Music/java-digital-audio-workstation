@@ -310,6 +310,61 @@ public sealed interface AudioBackend extends AutoCloseable
     }
 
     /**
+     * Returns a {@link Flow.Publisher} that emits an
+     * {@link AudioDeviceEvent} every time the host OS or vendor driver
+     * reports that a device has arrived, gone away, or changed its
+     * native format.
+     *
+     * <p>USB audio interfaces enumerate and unenumerate freely: a yanked
+     * cable, a sleeping laptop, a powered USB hub cycling, or a driver
+     * crash all surface as the device "going away" mid-session. Each OS
+     * gives us a structured signal for that, and this publisher unifies
+     * all of them so the application layer can transition the engine to
+     * {@code DEVICE_LOST}, halt the render thread, persist any in-flight
+     * recording take, and automatically reopen the stream when the
+     * device returns.</p>
+     *
+     * <p>Per-backend conventions:</p>
+     * <ul>
+     *   <li>{@link AsioBackend} — translates {@code kAsioResetRequest},
+     *       {@code kAsioBufferSizeChange}, and
+     *       {@code kAsioResyncRequest} from the ASIO callback set
+     *       installed on driver open.</li>
+     *   <li>{@link WasapiBackend} — subscribes to
+     *       {@code IMMNotificationClient::OnDeviceStateChanged} and
+     *       {@code OnDefaultDeviceChanged}.</li>
+     *   <li>{@link CoreAudioBackend} — installs a property listener
+     *       on {@code kAudioHardwarePropertyDevices}.</li>
+     *   <li>{@link JackBackend} — watches for JACK server shutdown
+     *       (registered shutdown callback) and port-registration
+     *       changes.</li>
+     *   <li>{@link JavaxSoundBackend} — emits no events; the JDK mixer
+     *       does not expose a hot-plug notification API.</li>
+     *   <li>{@link MockAudioBackend} — exposes
+     *       {@code simulateDeviceArrived/Removed/FormatChanged} so
+     *       tests can drive the device-event flow deterministically.</li>
+     * </ul>
+     *
+     * <p>Events are delivered on a backend-owned thread (the OS
+     * notification thread, never the audio callback thread).
+     * Subscribers must not block.</p>
+     *
+     * <p>The default implementation returns an empty publisher that
+     * never emits, which is safe for backends that have no hot-plug
+     * notification source.</p>
+     *
+     * @return a publisher of device events; never {@code null}
+     */
+    default Flow.Publisher<AudioDeviceEvent> deviceEvents() {
+        return subscriber -> {
+            subscriber.onSubscribe(new Flow.Subscription() {
+                @Override public void request(long n) { /* no-op */ }
+                @Override public void cancel() { /* no-op */ }
+            });
+        };
+    }
+
+    /**
      * Closes any open stream and releases native resources. Idempotent.
      */
     @Override

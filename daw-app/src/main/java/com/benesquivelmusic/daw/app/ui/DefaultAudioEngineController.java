@@ -8,17 +8,23 @@ import com.benesquivelmusic.daw.core.audio.performance.XrunDetector;
 import com.benesquivelmusic.daw.core.audio.portaudio.PortAudioBackend;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
+import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
+import com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
+import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.XrunEvent;
 
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.Flow;
+import java.util.concurrent.SubmissionPublisher;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -39,12 +45,34 @@ final class DefaultAudioEngineController implements AudioEngineController {
     private final AudioEngine audioEngine;
     private final TestTonePlayer tonePlayer;
     private final Runnable postReconfigureCallback;
+    private final NotificationManager notifications;
+    private final IncompleteTakeStore incompleteTakeStore;
+    private final SubmissionPublisher<EngineState> engineStatePublisher = new SubmissionPublisher<>();
     private volatile XrunDetector xrunDetector;
+    private volatile EngineState engineState = EngineState.STOPPED;
+    /** Backend whose deviceEvents() we are currently subscribed to. */
+    private final AtomicReference<AudioBackend> boundBackend = new AtomicReference<>();
+    /** Currently-opened device — if it disappears we transition to DEVICE_LOST. */
+    private final AtomicReference<DeviceId> activeDevice = new AtomicReference<>();
+    /** Subscription to the bound backend's device-event publisher. */
+    private final AtomicReference<Flow.Subscription> deviceEventSubscription = new AtomicReference<>();
 
     DefaultAudioEngineController(AudioEngine audioEngine, Runnable postReconfigureCallback) {
+        this(audioEngine, postReconfigureCallback,
+                NotificationManager.noop(),
+                new IncompleteTakeStore(Paths.get(System.getProperty("user.dir"))));
+    }
+
+    DefaultAudioEngineController(AudioEngine audioEngine,
+                                 Runnable postReconfigureCallback,
+                                 NotificationManager notifications,
+                                 IncompleteTakeStore incompleteTakeStore) {
         this.audioEngine = Objects.requireNonNull(audioEngine, "audioEngine must not be null");
         this.tonePlayer = new TestTonePlayer();
         this.postReconfigureCallback = postReconfigureCallback;
+        this.notifications = Objects.requireNonNull(notifications, "notifications must not be null");
+        this.incompleteTakeStore = Objects.requireNonNull(
+                incompleteTakeStore, "incompleteTakeStore must not be null");
         this.xrunDetector = createDetectorFor(audioEngine.getFormat());
     }
 
@@ -195,6 +223,184 @@ final class DefaultAudioEngineController implements AudioEngineController {
         return xrunDetector.xrunEvents();
     }
 
+    @Override
+    public EngineState engineState() {
+        return engineState;
+    }
+
+    @Override
+    public Flow.Publisher<EngineState> engineStateEvents() {
+        return engineStatePublisher;
+    }
+
+    /**
+     * Subscribes to {@code backend.deviceEvents()} so the controller
+     * can transition to {@link EngineState#DEVICE_LOST} when
+     * {@code activeDevice} disappears, persist the in-flight recording
+     * take, notify the user, and automatically reopen the stream when
+     * the matching device returns.
+     *
+     * <p>Calling this method again replaces any previously bound
+     * backend; the previous subscription is cancelled.</p>
+     */
+    @Override
+    public void bindBackendDeviceEvents(AudioBackend backend, DeviceId activeDevice) {
+        Objects.requireNonNull(backend, "backend must not be null");
+        Objects.requireNonNull(activeDevice, "activeDevice must not be null");
+        Flow.Subscription previous = deviceEventSubscription.getAndSet(null);
+        if (previous != null) {
+            try { previous.cancel(); } catch (RuntimeException ignored) { /* best-effort */ }
+        }
+        boundBackend.set(backend);
+        this.activeDevice.set(activeDevice);
+        backend.deviceEvents().subscribe(new DeviceEventSubscriber());
+    }
+
+    /** Returns the device this controller is currently watching, or empty when none is bound. */
+    Optional<DeviceId> getActiveDevice() {
+        return Optional.ofNullable(activeDevice.get());
+    }
+
+    /**
+     * Captures one block of recorded input into the
+     * {@link IncompleteTakeStore} so it can be flushed to disk if the
+     * device disappears mid-take. Production wiring (the recording
+     * subsystem) calls this from the audio callback.
+     */
+    void captureRecordingFrames(float[][] inputBuffer, int numFrames) {
+        incompleteTakeStore.appendCapturedFrames(inputBuffer, numFrames);
+    }
+
+    /** Visible for tests. */
+    IncompleteTakeStore getIncompleteTakeStore() {
+        return incompleteTakeStore;
+    }
+
+    private void setEngineState(EngineState newState) {
+        EngineState previous = this.engineState;
+        if (previous == newState) {
+            return;
+        }
+        this.engineState = newState;
+        engineStatePublisher.submit(newState);
+        LOG.info("Engine state " + previous + " -> " + newState);
+    }
+
+    private void onDeviceRemoved(DeviceId removed) {
+        DeviceId active = activeDevice.get();
+        if (active == null || !matches(active, removed)) {
+            // Some other device went away — nothing to do.
+            return;
+        }
+        LOG.warning("Active audio device removed: " + removed);
+        // Halt the render thread cleanly. Best-effort; never let an
+        // exception from the device-event thread escape and crash the
+        // engine — the issue requires "no exceptions on the audio thread".
+        try {
+            audioEngine.stopAudioOutput();
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Failed to stop audio output during disconnect", e);
+        }
+        try {
+            audioEngine.stop();
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Failed to stop engine during disconnect", e);
+        }
+        // Persist any in-progress recording take so the user can review
+        // it after the device returns.
+        try {
+            incompleteTakeStore.flushIfNotEmpty(removed, audioEngine.getFormat());
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Failed to persist incomplete take", e);
+        }
+        setEngineState(EngineState.DEVICE_LOST);
+        try {
+            notifications.notify("Audio device disconnected — playback paused");
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "NotificationManager rejected message", e);
+        }
+    }
+
+    private void onDeviceArrived(DeviceId arrived) {
+        if (engineState != EngineState.DEVICE_LOST) {
+            return;
+        }
+        DeviceId active = activeDevice.get();
+        if (active == null || !matches(active, arrived)) {
+            return;
+        }
+        LOG.info("Lost audio device returned: " + arrived);
+        AudioBackend backend = boundBackend.get();
+        if (backend != null) {
+            try {
+                if (!backend.isOpen()) {
+                    AudioFormat format = audioEngine.getFormat();
+                    backend.open(arrived,
+                            new com.benesquivelmusic.daw.sdk.audio.AudioFormat(
+                                    format.sampleRate(),
+                                    format.channels(),
+                                    format.bitDepth()),
+                            format.bufferSize());
+                }
+            } catch (RuntimeException e) {
+                LOG.log(Level.WARNING, "Failed to reopen backend after reconnect", e);
+                try {
+                    notifications.notify("Audio device reconnected but reopen failed: " + e.getMessage());
+                } catch (RuntimeException ignored) { /* best-effort */ }
+                return;
+            }
+        }
+        // Resume in STOPPED state — the user re-arms transport manually,
+        // so the recovered take can be reviewed first.
+        setEngineState(EngineState.STOPPED);
+        try {
+            notifications.notify("Audio device reconnected — review recovered take and re-arm transport");
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "NotificationManager rejected message", e);
+        }
+    }
+
+    private static boolean matches(DeviceId active, DeviceId other) {
+        if (active.equals(other)) {
+            return true;
+        }
+        // Fall back to friendly-name match across backends — vendor +
+        // product + serial cross-checks would happen in a more advanced
+        // identity-matching layer, but the issue allows friendly-name
+        // fallback when serial information is unavailable.
+        return active.name().equals(other.name());
+    }
+
+    private final class DeviceEventSubscriber implements Flow.Subscriber<AudioDeviceEvent> {
+        @Override
+        public void onSubscribe(Flow.Subscription subscription) {
+            deviceEventSubscription.set(subscription);
+            subscription.request(Long.MAX_VALUE);
+        }
+
+        @Override
+        public void onNext(AudioDeviceEvent event) {
+            // Switch on sealed AudioDeviceEvent — exhaustive over the three
+            // permitted records. JEP 441 (final, JDK 21).
+            switch (event) {
+                case AudioDeviceEvent.DeviceRemoved removed -> onDeviceRemoved(removed.device());
+                case AudioDeviceEvent.DeviceArrived arrived -> onDeviceArrived(arrived.device());
+                case AudioDeviceEvent.DeviceFormatChanged changed ->
+                        LOG.info("Device format changed for " + changed.device() + ": " + changed.newFormat());
+            }
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+            LOG.log(Level.WARNING, "Device-event publisher error", throwable);
+        }
+
+        @Override
+        public void onComplete() {
+            // Backend closed; no further events expected.
+        }
+    }
+
     /**
      * The production audio engine uses {@link NativeAudioBackend}
      * (PortAudio or Java Sound), neither of which exposes a native
@@ -218,6 +424,11 @@ final class DefaultAudioEngineController implements AudioEngineController {
     /** Closes background resources owned by this controller. */
     void shutdown() {
         tonePlayer.close();
+        Flow.Subscription sub = deviceEventSubscription.getAndSet(null);
+        if (sub != null) {
+            try { sub.cancel(); } catch (RuntimeException ignored) { /* best-effort */ }
+        }
+        engineStatePublisher.close();
         XrunDetector detector = this.xrunDetector;
         if (detector != null) {
             detector.close();

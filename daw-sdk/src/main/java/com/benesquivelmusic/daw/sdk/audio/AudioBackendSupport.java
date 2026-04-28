@@ -20,6 +20,7 @@ import java.util.concurrent.SubmissionPublisher;
 final class AudioBackendSupport implements AutoCloseable {
 
     private final SubmissionPublisher<AudioBlock> publisher = new SubmissionPublisher<>();
+    private final SubmissionPublisher<AudioDeviceEvent> devicePublisher = new SubmissionPublisher<>();
     private volatile boolean open;
     private volatile AudioFormat format;
     private volatile int bufferFrames;
@@ -53,6 +54,15 @@ final class AudioBackendSupport implements AutoCloseable {
         return publisher;
     }
 
+    Flow.Publisher<AudioDeviceEvent> deviceEvents() {
+        return devicePublisher;
+    }
+
+    void publishDeviceEvent(AudioDeviceEvent event) {
+        Objects.requireNonNull(event, "event must not be null");
+        devicePublisher.submit(event);
+    }
+
     void publishInput(AudioBlock block) {
         Objects.requireNonNull(block, "block must not be null");
         if (open) {
@@ -75,6 +85,7 @@ final class AudioBackendSupport implements AutoCloseable {
     public void close() {
         open = false;
         publisher.close();
+        devicePublisher.close();
     }
 
     /**

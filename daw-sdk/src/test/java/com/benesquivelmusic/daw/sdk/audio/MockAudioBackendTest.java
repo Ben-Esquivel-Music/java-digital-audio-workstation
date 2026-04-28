@@ -149,4 +149,59 @@ class MockAudioBackendTest {
         assertEquals(1, count.get());
         b.close();
     }
+
+    @Test
+    void simulateDeviceEventsArePublishedInOrder() throws InterruptedException {
+        MockAudioBackend b = new MockAudioBackend();
+        java.util.List<AudioDeviceEvent> received = new java.util.ArrayList<>();
+        CountDownLatch ready = new CountDownLatch(3);
+        b.deviceEvents().subscribe(new Flow.Subscriber<>() {
+            @Override public void onSubscribe(Flow.Subscription s) { s.request(Long.MAX_VALUE); }
+            @Override public void onNext(AudioDeviceEvent e) {
+                synchronized (received) { received.add(e); }
+                ready.countDown();
+            }
+            @Override public void onError(Throwable t) { }
+            @Override public void onComplete() { }
+        });
+
+        DeviceId id = new DeviceId("Mock", "USB Interface");
+        b.simulateDeviceArrived(id);
+        b.simulateDeviceFormatChanged(id, AudioFormat.STUDIO_QUALITY_48K);
+        b.simulateDeviceRemoved(id);
+
+        assertTrue(ready.await(2, TimeUnit.SECONDS), "all three events should be delivered");
+        synchronized (received) {
+            assertEquals(3, received.size());
+            assertTrue(received.get(0) instanceof AudioDeviceEvent.DeviceArrived);
+            assertTrue(received.get(1) instanceof AudioDeviceEvent.DeviceFormatChanged);
+            assertTrue(received.get(2) instanceof AudioDeviceEvent.DeviceRemoved);
+        }
+        b.close();
+    }
+
+    @Test
+    void simulateDeviceEventsRejectNullArguments() {
+        MockAudioBackend b = new MockAudioBackend();
+        assertThrows(NullPointerException.class, () -> b.simulateDeviceArrived(null));
+        assertThrows(NullPointerException.class, () -> b.simulateDeviceRemoved(null));
+        DeviceId id = new DeviceId("Mock", "Dev");
+        assertThrows(NullPointerException.class, () -> b.simulateDeviceFormatChanged(id, null));
+        assertThrows(NullPointerException.class, () -> b.simulateDeviceFormatChanged(null, AudioFormat.CD_QUALITY));
+    }
+
+    @Test
+    void deviceEventsReturnsEmptyPublisherByDefaultForJavaxBackend() {
+        // JavaxSoundBackend keeps the AudioBackend.deviceEvents() default (empty publisher).
+        JavaxSoundBackend backend = new JavaxSoundBackend();
+        AtomicInteger count = new AtomicInteger();
+        backend.deviceEvents().subscribe(new Flow.Subscriber<>() {
+            @Override public void onSubscribe(Flow.Subscription s) { s.request(Long.MAX_VALUE); }
+            @Override public void onNext(AudioDeviceEvent e) { count.incrementAndGet(); }
+            @Override public void onError(Throwable t) { }
+            @Override public void onComplete() { }
+        });
+        // Default empty publisher never emits.
+        assertEquals(0, count.get());
+    }
 }

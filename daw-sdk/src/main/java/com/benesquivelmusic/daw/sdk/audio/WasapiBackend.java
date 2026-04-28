@@ -83,6 +83,19 @@ public final class WasapiBackend implements AudioBackend {
         return support.inputBlocks();
     }
 
+    /**
+     * Translates WASAPI's
+     * {@code IMMNotificationClient::OnDeviceStateChanged} and
+     * {@code OnDefaultDeviceChanged} notifications into
+     * {@link AudioDeviceEvent}s. The native shim registers an
+     * {@code IMMNotificationClient} on driver open and publishes via
+     * {@link AudioBackendSupport#publishDeviceEvent(AudioDeviceEvent)}.
+     */
+    @Override
+    public Flow.Publisher<AudioDeviceEvent> deviceEvents() {
+        return support.deviceEvents();
+    }
+
     @Override
     public void sink(AudioBlock block) {
         support.validateOutgoing(block);

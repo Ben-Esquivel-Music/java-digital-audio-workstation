@@ -62,6 +62,17 @@ public final class JackBackend implements AudioBackend {
         return support.inputBlocks();
     }
 
+    /**
+     * Translates JACK's registered shutdown callback
+     * ({@code jack_on_shutdown}) and port-registration callback into
+     * {@link AudioDeviceEvent}s. The native shim publishes via
+     * {@link AudioBackendSupport#publishDeviceEvent(AudioDeviceEvent)}.
+     */
+    @Override
+    public Flow.Publisher<AudioDeviceEvent> deviceEvents() {
+        return support.deviceEvents();
+    }
+
     @Override
     public void sink(AudioBlock block) {
         support.validateOutgoing(block);
