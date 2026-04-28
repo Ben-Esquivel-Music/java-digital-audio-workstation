@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.sdk.audio;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.Flow;
 
 /**
@@ -89,6 +90,36 @@ public final class WasapiBackend implements AudioBackend {
     @Override
     public boolean isOpen() {
         return support.isOpen();
+    }
+
+    /**
+     * Launches the Windows Sound control panel ({@code mmsys.cpl})
+     * on the Recording tab — the closest WASAPI equivalent to ASIO's
+     * driver control panel. Returns {@link Optional#empty()} on any
+     * non-Windows host.
+     *
+     * <p>The runnable must be invoked on a non-audio thread. Failures
+     * (missing executable, denied access, non-zero exit) are surfaced
+     * as {@link AudioBackendException} so the caller can show a
+     * notification.</p>
+     */
+    @Override
+    public Optional<Runnable> openControlPanel() {
+        if (!AVAILABLE) {
+            return Optional.empty();
+        }
+        return Optional.of(WasapiBackend::launchSoundControlPanel);
+    }
+
+    private static void launchSoundControlPanel() {
+        try {
+            // Equivalent to running "control mmsys.cpl ,1" which opens the
+            // Sound control panel on the Recording tab; ",0" would be Playback.
+            new ProcessBuilder("control.exe", "mmsys.cpl", ",1").start();
+        } catch (java.io.IOException e) {
+            throw new AudioBackendException(
+                    "Could not launch Windows Sound control panel: " + e.getMessage(), e);
+        }
     }
 
     @Override

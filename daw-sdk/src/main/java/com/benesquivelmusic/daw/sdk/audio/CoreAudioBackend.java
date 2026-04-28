@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.sdk.audio;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.Flow;
 
 /**
@@ -68,6 +69,35 @@ public final class CoreAudioBackend implements AudioBackend {
     @Override
     public boolean isOpen() {
         return support.isOpen();
+    }
+
+    /**
+     * Opens {@code Audio MIDI Setup.app} via {@code open(1)} — the
+     * macOS equivalent of an ASIO control panel for managing
+     * aggregate devices, sample rates, and routing. Returns
+     * {@link Optional#empty()} on any non-macOS host.
+     *
+     * <p>The runnable must be invoked on a non-audio thread. Failures
+     * (missing executable, denied access) are surfaced as
+     * {@link AudioBackendException} so the caller can show a
+     * notification.</p>
+     */
+    @Override
+    public Optional<Runnable> openControlPanel() {
+        if (!AVAILABLE) {
+            return Optional.empty();
+        }
+        return Optional.of(CoreAudioBackend::launchAudioMidiSetup);
+    }
+
+    private static void launchAudioMidiSetup() {
+        try {
+            new ProcessBuilder("open",
+                    "/System/Applications/Utilities/Audio MIDI Setup.app").start();
+        } catch (java.io.IOException e) {
+            throw new AudioBackendException(
+                    "Could not launch Audio MIDI Setup: " + e.getMessage(), e);
+        }
     }
 
     @Override

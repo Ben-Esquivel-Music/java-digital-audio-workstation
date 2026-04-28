@@ -11,8 +11,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.prefs.Preferences;
 
@@ -132,6 +134,55 @@ class AudioSettingsDialogTest {
         assertThat(dialog.getCpuLoadLabel().getText()).contains("42.5");
     }
 
+    @Test
+    void controlPanelButtonShouldBeDisabledWhenBackendHasNoNativePanel() throws Exception {
+        // Default stub returns Optional.empty() from openControlPanel
+        stub.controlPanelAction = Optional.empty();
+        AudioSettingsDialog dialog = onFxThread(() -> new AudioSettingsDialog(model, stub));
+        assertThat(dialog.getOpenControlPanelButton().isDisable()).isTrue();
+        assertThat(dialog.getOpenControlPanelButton().getTooltip().getText())
+                .contains("no native control panel");
+    }
+
+    @Test
+    void controlPanelButtonShouldBeEnabledWhenBackendExposesPanel() throws Exception {
+        stub.controlPanelAction = Optional.of(() -> stub.controlPanelInvocations.incrementAndGet());
+        AudioSettingsDialog dialog = onFxThread(() -> new AudioSettingsDialog(model, stub));
+        assertThat(dialog.getOpenControlPanelButton().isDisable()).isFalse();
+        assertThat(dialog.getOpenControlPanelButton().getTooltip().getText())
+                .contains("USB streaming");
+    }
+
+    @Test
+    void firingControlPanelShouldInvokeBackendAndRefreshDeviceCapabilities() throws Exception {
+        // The MockAudioBackend story: clicking "Open Driver Control Panel"
+        // runs the backend's runnable and the dialog re-queries device
+        // capabilities afterwards so any change the user made in the
+        // vendor UI (sample rates, buffer sizes) is reflected.
+        stub.controlPanelAction = Optional.of(() -> stub.controlPanelInvocations.incrementAndGet());
+        AudioSettingsDialog dialog = onFxThread(() -> new AudioSettingsDialog(model, stub));
+        int devicesBefore = stub.listDevicesCalls;
+        AtomicReference<Boolean> ran = new AtomicReference<>();
+        runOnFxAndWait(() -> ran.set(dialog.fireOpenControlPanelSync()));
+        assertThat(ran.get()).isTrue();
+        assertThat(stub.controlPanelInvocations.get()).isEqualTo(1);
+        // listDevices(backendName) is called by refreshDevicesForBackend
+        assertThat(stub.listDevicesCalls).isGreaterThan(devicesBefore);
+    }
+
+    @Test
+    void controlPanelButtonShouldBeHiddenInHeadlessMode() throws Exception {
+        // Headless mode is the default on CI runners (java.awt.headless=true
+        // is set by surefire in this project). The button is hidden so the
+        // dialog gracefully degrades on headless test runs.
+        if (!java.awt.GraphicsEnvironment.isHeadless()) {
+            return; // skip when running with a real display
+        }
+        AudioSettingsDialog dialog = onFxThread(() -> new AudioSettingsDialog(model, stub));
+        assertThat(dialog.getOpenControlPanelButton().isVisible()).isFalse();
+        assertThat(dialog.getOpenControlPanelButton().isManaged()).isFalse();
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static <T> T onFxThread(java.util.function.Supplier<T> supplier) throws Exception {
@@ -189,6 +240,9 @@ class AudioSettingsDialogTest {
         double cpuLoad = -1.0;
         int applyCount;
         int toneCount;
+        int listDevicesCalls;
+        Optional<Runnable> controlPanelAction = Optional.empty();
+        AtomicInteger controlPanelInvocations = new AtomicInteger();
         Request lastRequest;
         String lastToneDevice;
 
@@ -204,12 +258,19 @@ class AudioSettingsDialogTest {
 
         @Override
         public List<AudioDeviceInfo> listDevices() {
+            listDevicesCalls++;
             return devices;
         }
 
         @Override
         public List<AudioDeviceInfo> listDevices(String backendName) {
+            listDevicesCalls++;
             return devices;
+        }
+
+        @Override
+        public Optional<Runnable> openControlPanel() {
+            return controlPanelAction;
         }
 
         @Override

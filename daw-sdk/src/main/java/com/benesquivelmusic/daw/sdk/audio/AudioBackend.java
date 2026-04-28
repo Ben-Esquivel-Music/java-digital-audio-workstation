@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.sdk.audio;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.Flow;
 
 /**
@@ -164,6 +165,56 @@ public sealed interface AudioBackend extends AutoCloseable
      * @return true when the stream is open
      */
     boolean isOpen();
+
+    /**
+     * Returns an action that launches the driver's native control panel
+     * (the vendor's own out-of-process UI), or {@link Optional#empty()}
+     * when this backend has no native panel.
+     *
+     * <p>Multi-channel USB audio interfaces ship vendor utilities — USB
+     * streaming mode, safe-mode buffers, routing matrices, mixer pages,
+     * and the driver's own buffer-size table all live there. This hook
+     * lets the DAW surface that UI from the Audio Settings dialog
+     * exactly the way Pro Tools, Cubase, Reaper, and Studio One do on
+     * Windows. The DAW is responsible for invoking the returned
+     * {@link Runnable} on a non-audio thread; implementations must
+     * never block the render callback. The DAW is also responsible for
+     * re-querying {@link #listDevices()} after the panel closes so the
+     * UI reflects any change the user made in the driver UI.</p>
+     *
+     * <p>Per-backend conventions:</p>
+     * <ul>
+     *   <li>{@link AsioBackend} — invokes the driver-provided
+     *       {@code ASIOControlPanel()} via the FFM binding.</li>
+     *   <li>{@link WasapiBackend} — launches {@code mmsys.cpl ,1}
+     *       (Recording tab) on Windows.</li>
+     *   <li>{@link CoreAudioBackend} — opens
+     *       {@code /System/Applications/Utilities/Audio MIDI Setup.app}
+     *       via {@code open(1)}.</li>
+     *   <li>{@link JackBackend} — returns empty;
+     *       {@code qjackctl} is third-party and out of scope.</li>
+     *   <li>{@link JavaxSoundBackend} — returns empty; the JDK mixer
+     *       has no vendor UI.</li>
+     *   <li>{@link MockAudioBackend} — returns a runnable that records
+     *       the invocation for tests.</li>
+     * </ul>
+     *
+     * <p>Failures from the launched action (for example the ASIO
+     * driver returning {@code ASE_NotPresent}, a missing executable,
+     * or denied access) must be surfaced as a {@link RuntimeException}
+     * — typically {@link AudioBackendException} — so the caller can
+     * report it to the user instead of letting a stack trace escape.</p>
+     *
+     * <p>The default implementation returns {@link Optional#empty()},
+     * which is the correct behaviour for any backend that has no
+     * vendor control panel.</p>
+     *
+     * @return an optional action that opens the native panel, or
+     *         empty when the backend has no native panel; never null
+     */
+    default Optional<Runnable> openControlPanel() {
+        return Optional.empty();
+    }
 
     /**
      * Closes any open stream and releases native resources. Idempotent.
