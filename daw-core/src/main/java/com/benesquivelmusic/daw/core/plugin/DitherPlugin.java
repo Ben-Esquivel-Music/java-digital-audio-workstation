@@ -51,6 +51,10 @@ public final class DitherPlugin implements BuiltInDawPlugin {
             PluginType.EFFECT
     );
 
+    /** Cached enum arrays — avoids the allocation of {@code Enum.values()} on every call. */
+    private static final DitherProcessor.DitherType[] DITHER_TYPES = DitherProcessor.DitherType.values();
+    private static final DitherProcessor.NoiseShape[] NOISE_SHAPES = DitherProcessor.NoiseShape.values();
+
     private DitherProcessor processor;
     private boolean active;
 
@@ -114,10 +118,10 @@ public final class DitherPlugin implements BuiltInDawPlugin {
         return List.of(
                 new PluginParameter(0, "Bit Depth", 16.0, 24.0, (double) DEFAULT_BIT_DEPTH),
                 new PluginParameter(1, "Type",
-                        0.0, (double) (DitherProcessor.DitherType.values().length - 1),
+                        0.0, (double) (DITHER_TYPES.length - 1),
                         (double) DitherProcessor.DitherType.TPDF.ordinal()),
                 new PluginParameter(2, "Shape",
-                        0.0, (double) (DitherProcessor.NoiseShape.values().length - 1),
+                        0.0, (double) (NOISE_SHAPES.length - 1),
                         (double) DitherProcessor.NoiseShape.FLAT.ordinal()));
     }
 
@@ -125,7 +129,8 @@ public final class DitherPlugin implements BuiltInDawPlugin {
      * Routes an automation value to the underlying {@link DitherProcessor}.
      *
      * <p>Bit-depth values are snapped to the nearest supported value (16, 20,
-     * 24). Type and shape ordinals are clamped to their valid enum range.</p>
+     * 24). Type and shape ordinals are clamped to their valid enum range.
+     * This method is allocation-free and real-time safe.</p>
      */
     @Override
     public void setAutomatableParameter(int parameterId, double value) {
@@ -148,16 +153,14 @@ public final class DitherPlugin implements BuiltInDawPlugin {
     }
 
     private static DitherProcessor.DitherType toType(int ordinal) {
-        DitherProcessor.DitherType[] values = DitherProcessor.DitherType.values();
         if (ordinal < 0) ordinal = 0;
-        if (ordinal >= values.length) ordinal = values.length - 1;
-        return values[ordinal];
+        if (ordinal >= DITHER_TYPES.length) ordinal = DITHER_TYPES.length - 1;
+        return DITHER_TYPES[ordinal];
     }
 
     private static DitherProcessor.NoiseShape toShape(int ordinal) {
-        DitherProcessor.NoiseShape[] values = DitherProcessor.NoiseShape.values();
         if (ordinal < 0) ordinal = 0;
-        if (ordinal >= values.length) ordinal = values.length - 1;
-        return values[ordinal];
+        if (ordinal >= NOISE_SHAPES.length) ordinal = NOISE_SHAPES.length - 1;
+        return NOISE_SHAPES[ordinal];
     }
 }

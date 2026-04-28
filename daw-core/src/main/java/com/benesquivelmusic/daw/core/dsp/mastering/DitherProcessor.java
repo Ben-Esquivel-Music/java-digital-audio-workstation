@@ -95,16 +95,34 @@ public final class DitherProcessor implements AudioProcessor {
         }
     }
 
+    /**
+     * Maximum filter order across all {@link NoiseShape} variants.  Error-history
+     * buffers are pre-allocated at this size so that {@link #setShape(NoiseShape)}
+     * never needs to reallocate and is therefore safe to call while the audio
+     * thread is running.
+     */
+    private static final int MAX_ORDER;
+    static {
+        int m = 1;
+        for (NoiseShape s : NoiseShape.values()) {
+            m = Math.max(m, s.order());
+        }
+        MAX_ORDER = m;
+    }
+
     private final int channels;
     private final Random random;
     private int targetBitDepth;
-    private DitherType type;
-    private NoiseShape shape;
+    private volatile DitherType type;
+    private volatile NoiseShape shape;
 
-    /** Per-channel ring buffers of past quantization errors for noise shaping. */
-    private double[][] errorHistory;
+    /**
+     * Per-channel ring buffers of past quantization errors for noise shaping.
+     * Always sized to {@link #MAX_ORDER} so that shape changes never reallocate.
+     */
+    private final double[][] errorHistory;
     /** Per-channel ring buffer write index. */
-    private int[] errorIndex;
+    private final int[] errorIndex;
 
     /**
      * Creates a dither processor with TPDF dither and a flat (unshaped) curve.
@@ -163,12 +181,7 @@ public final class DitherProcessor implements AudioProcessor {
         this.type = (type == null) ? DitherType.TPDF : type;
         this.shape = (shape == null) ? NoiseShape.FLAT : shape;
         this.random = random;
-        allocateErrorBuffers();
-    }
-
-    private void allocateErrorBuffers() {
-        int order = Math.max(1, shape.order());
-        this.errorHistory = new double[channels][order];
+        this.errorHistory = new double[channels][MAX_ORDER];
         this.errorIndex = new int[channels];
     }
 
@@ -196,11 +209,11 @@ public final class DitherProcessor implements AudioProcessor {
 
                 // Subtract error-feedback noise shaping (feedback is in LSBs).
                 // Standard error-feedback topology: x'[n] = x[n] - Σ h_k · e[n-k].
-                // history[(idx-1) mod order] is the most recent error.
+                // history[(idx-1) mod MAX_ORDER] is the most recent error.
                 if (shapingActive) {
                     double feedback = 0.0;
                     for (int k = 0; k < order; k++) {
-                        int hIdx = Math.floorMod(idx - 1 - k, order);
+                        int hIdx = Math.floorMod(idx - 1 - k, MAX_ORDER);
                         feedback += coeffs[k] * history[hIdx];
                     }
                     scaled -= feedback;
@@ -222,7 +235,7 @@ public final class DitherProcessor implements AudioProcessor {
                     // Round-off error (in LSBs) including dither: y[n] - (x'[n] + d[n]).
                     // This is the high-frequency-shaped error that gets fed back.
                     history[idx] = quantized - (scaled + noise);
-                    idx = (idx + 1) % order;
+                    idx = (idx + 1) % MAX_ORDER;
                 }
 
                 outputBuffer[ch][i] = (float) (quantized * invMaxVal);
@@ -253,7 +266,12 @@ public final class DitherProcessor implements AudioProcessor {
         return type;
     }
 
-    /** Sets the dither type (TPDF/RPDF/NOISE_SHAPED/NONE). */
+    /**
+     * Sets the dither type (TPDF/RPDF/NOISE_SHAPED/NONE).
+     *
+     * <p>This is a simple volatile write — safe to call from any thread
+     * (UI, automation, audio) without synchronization.</p>
+     */
     public void setType(DitherType type) {
         this.type = (type == null) ? DitherType.TPDF : type;
     }
@@ -264,21 +282,21 @@ public final class DitherProcessor implements AudioProcessor {
     }
 
     /**
-     * Sets the noise-shaping curve. Re-allocates the error-history buffer
-     * to match the new filter order; do not call from the audio thread.
+     * Sets the active noise-shaping curve.
+     *
+     * <p>This method only updates the active curve selection and does not
+     * reallocate the error-history buffers. The backing buffers are sized
+     * for the maximum supported noise-shaping order so that shape changes
+     * are safe while the audio thread is running.</p>
      */
     public void setShape(NoiseShape shape) {
-        NoiseShape ns = (shape == null) ? NoiseShape.FLAT : shape;
-        if (ns != this.shape) {
-            this.shape = ns;
-            allocateErrorBuffers();
-        }
+        this.shape = (shape == null) ? NoiseShape.FLAT : shape;
     }
 
     @Override
     public void reset() {
         for (int ch = 0; ch < channels; ch++) {
-            java.util.Arrays.fill(errorHistory[ch], 0.0);
+            java.util.Arrays.fill(errorHistory[ch], 0, MAX_ORDER, 0.0);
             errorIndex[ch] = 0;
         }
     }

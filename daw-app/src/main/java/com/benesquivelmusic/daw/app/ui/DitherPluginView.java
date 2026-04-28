@@ -24,8 +24,10 @@ import java.util.Objects;
  *
  * <p>The view writes parameter changes directly to the underlying
  * {@link DitherProcessor} on the JavaFX application thread; the processor
- * picks them up on its next audio-thread buffer (scalar enum/int writes are
- * naturally thread-safe for the simple primitives used here).</p>
+ * picks them up on its next audio-thread buffer. All setters on
+ * {@code DitherProcessor} ({@code setType}, {@code setShape},
+ * {@code setTargetBitDepth}) are volatile writes and allocation-free,
+ * so they are safe to call from any thread without synchronization.</p>
  */
 public final class DitherPluginView extends VBox {
 

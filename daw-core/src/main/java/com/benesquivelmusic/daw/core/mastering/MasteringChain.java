@@ -140,10 +140,10 @@ public final class MasteringChain implements AudioProcessor {
      *
      * <p>If a terminal stage already exists in the chain, this method throws
      * {@link IllegalStateException} — terminal stages must always be the last
-     * node and there can be only one. If {@code terminal} is {@code true} and
-     * the chain already contains any stage of type
-     * {@link MasteringStageType#DITHERING DITHERING}, the existing stage is
-     * already terminal and the new addition is rejected.</p>
+     * node in the chain, and there can be only one terminal stage at a time.
+     * Whether a stage is terminal is determined by the {@code terminal} flag
+     * passed when it is added (and the stored stage state), not by its
+     * {@link MasteringStageType}.</p>
      *
      * @param type      the mastering stage type
      * @param name      the display name
