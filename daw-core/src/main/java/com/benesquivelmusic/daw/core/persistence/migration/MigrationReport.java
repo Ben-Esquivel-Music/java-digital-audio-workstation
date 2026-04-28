@@ -18,7 +18,7 @@ import java.util.Objects;
  *                    migration succeeds)
  * @param applied     the migrations that ran, in order
  * @param timestamp   wall-clock instant the migration ran (mainly for
- *                    audit/log surfaces; not used for equality)
+ *                    audit/log surfaces)
  */
 public record MigrationReport(int fromVersion,
                               int toVersion,

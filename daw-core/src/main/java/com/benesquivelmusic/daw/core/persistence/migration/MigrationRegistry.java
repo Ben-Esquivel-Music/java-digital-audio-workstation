@@ -183,6 +183,28 @@ public final class MigrationRegistry {
     }
 
     private void validateChain() {
+        // When the current schema version is greater than 1, a legacy
+        // file at version 1 (or with a missing version attribute, which
+        // is normalised to 1 — see readVersion) must be loadable. Refuse
+        // to build a registry that cannot service such a load: either it
+        // is empty, or its first step doesn't start at version 1.
+        if (currentVersion > 1) {
+            if (migrations.isEmpty()) {
+                throw new IllegalStateException(
+                        "currentVersion is " + currentVersion
+                                + " but no migrations are registered — legacy"
+                                + " (v1) files would fail to load");
+            }
+            int firstFrom = migrations.get(0).fromVersion();
+            if (firstFrom > 1) {
+                throw new IllegalStateException(
+                        "Migration chain starts at version " + firstFrom
+                                + " but currentVersion is " + currentVersion
+                                + " — files at versions 1.." + (firstFrom - 1)
+                                + " would fail to load");
+            }
+        }
+
         int expected = -1;
         for (ProjectMigration step : migrations) {
             if (step.toVersion() > currentVersion) {

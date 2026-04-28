@@ -18,31 +18,51 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class ProjectDeserializerMigrationTest {
 
+    /**
+     * Builds a registry whose target version is {@code CURRENT_VERSION + extraSteps},
+     * filled with no-op step migrations from version 1 upward. This keeps
+     * tests version-agnostic: when {@code CURRENT_VERSION} bumps in a
+     * future schema change, the test still exercises the migration path
+     * because the registry always sits one or more versions ahead of
+     * production.
+     */
+    private static MigrationRegistry buildSyntheticChain(int extraSteps) {
+        int target = MigrationRegistry.CURRENT_VERSION + extraSteps;
+        MigrationRegistry.Builder builder = MigrationRegistry.builder(target);
+        for (int v = 1; v < target; v++) {
+            int from = v;
+            builder.add(ProjectMigration.step(from, "v" + from + "→v" + (from + 1), d -> d));
+        }
+        return builder.build();
+    }
+
     @Test
     void deserializerInvokesRegistryAndExposesReport() throws IOException {
-        // Build a registry that targets v2 and registers a no-op v1→v2
-        // migration. This drives ProjectDeserializer through the
-        // migration code path even though the production schema is v1.
-        MigrationRegistry registry = MigrationRegistry.builder(2)
-                .add(ProjectMigration.step(1, "promote-to-v2", d -> d))
-                .build();
+        // Build a registry that targets one schema version above the
+        // production current version with a no-op step at the top of
+        // the chain. The serializer emits CURRENT_VERSION, so loading
+        // through this registry triggers exactly one migration step
+        // regardless of what CURRENT_VERSION happens to be.
+        MigrationRegistry registry = buildSyntheticChain(1);
+        int current = MigrationRegistry.CURRENT_VERSION;
+        int target = current + 1;
+        String topStepDescription = "v" + current + "→v" + target;
 
         ProjectDeserializer deserializer = new ProjectDeserializer(registry);
 
-        // A v1 document — the production serializer always emits v1.
-        String v1Xml = new ProjectSerializer().serialize(
+        String currentXml = new ProjectSerializer().serialize(
                 new DawProject("Legacy", AudioFormat.CD_QUALITY));
 
-        DawProject restored = deserializer.deserialize(v1Xml);
+        DawProject restored = deserializer.deserialize(currentXml);
         MigrationReport report = deserializer.getLastMigrationReport();
 
         assertThat(restored.getName()).isEqualTo("Legacy");
         assertThat(report.wasMigrated()).isTrue();
-        assertThat(report.fromVersion()).isEqualTo(1);
-        assertThat(report.toVersion()).isEqualTo(2);
+        assertThat(report.fromVersion()).isEqualTo(current);
+        assertThat(report.toVersion()).isEqualTo(target);
         assertThat(report.applied())
                 .extracting(MigrationReport.AppliedMigration::description)
-                .containsExactly("promote-to-v2");
+                .containsExactly(topStepDescription);
     }
 
     @Test
@@ -61,33 +81,31 @@ class ProjectDeserializerMigrationTest {
 
     @Test
     void migrationChainReachesSameFinalStateAsNativeCurrentFile() throws IOException {
-        // Build a 3-step chain (v1 → v4) where every step is a no-op so
-        // the final DawProject must be byte-equivalent to one
-        // serialized/deserialized natively.
-        MigrationRegistry registry = MigrationRegistry.builder(4)
-                .add(ProjectMigration.step(1, "v1→v2", d -> d))
-                .add(ProjectMigration.step(2, "v2→v3", d -> d))
-                .add(ProjectMigration.step(3, "v3→v4", d -> d))
-                .build();
+        // Three synthetic no-op steps above the production current
+        // version. The serializer emits CURRENT_VERSION, so exactly
+        // three migration steps run regardless of what CURRENT_VERSION
+        // happens to be.
+        int extraSteps = 3;
+        MigrationRegistry registry = buildSyntheticChain(extraSteps);
 
         ProjectSerializer serializer = new ProjectSerializer();
         DawProject template = new DawProject("Equivalence", AudioFormat.CD_QUALITY);
         template.getTransport().setTempo(101.0);
         template.createAudioTrack("Vocals");
-        String v1Xml = serializer.serialize(template);
+        String currentXml = serializer.serialize(template);
 
         // Deserialize via the migrating registry…
         ProjectDeserializer migrating = new ProjectDeserializer(registry);
-        DawProject migrated = migrating.deserialize(v1Xml);
+        DawProject migrated = migrating.deserialize(currentXml);
 
         // …and via the production no-migration path on the same XML.
         ProjectDeserializer native_ = new ProjectDeserializer();
-        DawProject nativeLoaded = native_.deserialize(v1Xml);
+        DawProject nativeLoaded = native_.deserialize(currentXml);
 
-        // Re-serialise both. The migrating path's report says it ran 3
-        // steps but the resulting state is identical because each step
-        // is a no-op — proving the registry preserves equivalence.
-        assertThat(migrating.getLastMigrationReport().applied()).hasSize(3);
+        // The migrating path's report says it ran the expected number
+        // of synthetic no-op steps but the resulting state is identical
+        // — proving the registry preserves equivalence.
+        assertThat(migrating.getLastMigrationReport().applied()).hasSize(extraSteps);
         assertThat(migrated.getName()).isEqualTo(nativeLoaded.getName());
         assertThat(migrated.getTransport().getTempo())
                 .isEqualTo(nativeLoaded.getTransport().getTempo());

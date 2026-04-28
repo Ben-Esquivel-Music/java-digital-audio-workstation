@@ -156,13 +156,37 @@ class MigrationRegistryTest {
 
     @Test
     void failsWhenFileVersionIsNewerThanCurrent() throws Exception {
-        MigrationRegistry registry = MigrationRegistry.builder(2).build();
+        MigrationRegistry registry = MigrationRegistry.builder(2)
+                .add(ProjectMigration.step(1, "v1→v2", UnaryOperator.identity()))
+                .build();
 
         Document doc = docAtVersion(99);
 
         assertThatThrownBy(() -> registry.migrate(doc))
                 .isInstanceOf(MigrationException.class)
                 .hasMessageContaining("newer than this build");
+    }
+
+    @Test
+    void failsWhenCurrentVersionIsAdvancedButRegistryIsEmpty() {
+        // An empty registry targeting a version > 1 cannot service a load
+        // of a legacy v1 file — the builder must reject this configuration
+        // up front, not at deserialize time.
+        assertThatThrownBy(() -> MigrationRegistry.builder(3).build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("no migrations are registered");
+    }
+
+    @Test
+    void failsWhenChainDoesNotStartAtVersionOne() {
+        // currentVersion is 3 but the chain only handles v2..v3, so a
+        // file at v1 (or with a missing version attribute, normalised to
+        // 1) would have nowhere to start.
+        assertThatThrownBy(() -> MigrationRegistry.builder(3)
+                .add(ProjectMigration.step(2, "v2→v3", UnaryOperator.identity()))
+                .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("starts at version 2");
     }
 
     @Test

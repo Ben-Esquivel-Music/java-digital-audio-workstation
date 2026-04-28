@@ -39,8 +39,12 @@ public final class MigrationSuppression {
      *                         {@code project.daw}; may be {@code null}
      *                         in which case suppression is never honoured
      * @param toVersion        the target schema version of the report —
-     *                         suppression only applies when it matches
-     *                         the recorded version
+     *                         suppression applies when the recorded
+     *                         suppressed version is equal to or higher
+     *                         than this version, so older targets are
+     *                         also covered (a future schema bump that
+     *                         produces a higher {@code toVersion} is
+     *                         <em>not</em> suppressed)
      */
     public static boolean isSuppressed(Path projectDirectory, int toVersion) {
         if (projectDirectory == null) {

@@ -323,6 +323,8 @@ public final class ProjectManager {
         currentDawProject = null;
         readOnly = false;
         migrationBackupPending = false;
+        lastMigrationReport = MigrationReport.noOp(
+                com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION);
     }
 
     /**
@@ -343,6 +345,8 @@ public final class ProjectManager {
         currentDawProject = null;
         readOnly = false;
         migrationBackupPending = false;
+        lastMigrationReport = MigrationReport.noOp(
+                com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry.CURRENT_VERSION);
     }
 
     /**

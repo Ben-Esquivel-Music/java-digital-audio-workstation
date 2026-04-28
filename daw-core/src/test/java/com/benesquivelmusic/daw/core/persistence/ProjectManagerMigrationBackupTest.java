@@ -64,18 +64,38 @@ class ProjectManagerMigrationBackupTest {
                 "version=\"" + MigrationRegistry.CURRENT_VERSION + "\"");
     }
 
+    /**
+     * Builds a registry whose target version is one above
+     * {@link MigrationRegistry#CURRENT_VERSION}, populated with no-op
+     * step migrations from version 1 upward. This forces every load
+     * through the migration path regardless of what the production
+     * schema version happens to be — so the test stays meaningful as
+     * the schema evolves.
+     */
+    private static MigrationRegistry buildForcedMigrationRegistry(String topStepDescription) {
+        int target = MigrationRegistry.CURRENT_VERSION + 1;
+        MigrationRegistry.Builder builder = MigrationRegistry.builder(target);
+        for (int v = 1; v < target; v++) {
+            int from = v;
+            String description = (v == MigrationRegistry.CURRENT_VERSION)
+                    ? topStepDescription
+                    : "v" + from + "→v" + (from + 1);
+            builder.add(ProjectMigration.step(from, description, d -> d));
+        }
+        return builder.build();
+    }
+
     @Test
     void firstSaveAfterMigrationWritesBackupOfOriginalFile() throws Exception {
-        // Build a registry that forces every load to "migrate" — even at
-        // the current schema version we promote v1 to v2 and back-mark
-        // v2 as current. The serializer still emits v1 (production
-        // value), so any opened project triggers migration.
-        MigrationRegistry registry = MigrationRegistry.builder(2)
-                .add(ProjectMigration.step(1, "test-promote-v1-to-v2", d -> d))
-                .build();
+        // The serializer emits CURRENT_VERSION on disk, while the
+        // migrating registry treats CURRENT_VERSION + 1 as current,
+        // so any opened project triggers the synthetic top-of-chain
+        // migration registered for CURRENT_VERSION → CURRENT_VERSION+1.
+        String topStep = "test-promote-from-v" + MigrationRegistry.CURRENT_VERSION;
+        MigrationRegistry registry = buildForcedMigrationRegistry(topStep);
         ProjectManager manager = createManager(registry);
 
-        // Bootstrap a project on disk using the production (v1) serializer.
+        // Bootstrap a project on disk using the production serializer.
         ProjectMetadata metadata = manager.createProject("Legacy", tempDir);
         Path projectFile = metadata.projectPath().resolve("project.daw");
         DawProject dawProject = new DawProject("Legacy", AudioFormat.CD_QUALITY);
@@ -90,7 +110,9 @@ class ProjectManagerMigrationBackupTest {
         assertThat(report.wasMigrated()).isTrue();
         assertThat(report.applied())
                 .extracting(MigrationReport.AppliedMigration::description)
-                .containsExactly("test-promote-v1-to-v2");
+                .contains(topStep);
+        assertThat(report.fromVersion()).isEqualTo(MigrationRegistry.CURRENT_VERSION);
+        assertThat(report.toVersion()).isEqualTo(MigrationRegistry.CURRENT_VERSION + 1);
 
         // Save: the manager must back up the pre-migration file before
         // overwriting it.
@@ -122,9 +144,7 @@ class ProjectManagerMigrationBackupTest {
 
     @Test
     void abandonProjectLeavesOriginalFileUntouched() throws Exception {
-        MigrationRegistry registry = MigrationRegistry.builder(2)
-                .add(ProjectMigration.step(1, "test-migrate", d -> d))
-                .build();
+        MigrationRegistry registry = buildForcedMigrationRegistry("test-migrate");
         ProjectManager manager = createManager(registry);
 
         ProjectMetadata metadata = manager.createProject("Discard", tempDir);
