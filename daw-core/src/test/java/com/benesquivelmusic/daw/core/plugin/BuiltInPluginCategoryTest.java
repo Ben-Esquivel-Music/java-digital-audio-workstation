@@ -7,8 +7,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class BuiltInPluginCategoryTest {
 
     @Test
-    void shouldHaveFiveCategories() {
-        assertThat(BuiltInPluginCategory.values()).hasSize(5);
+    void shouldHaveSixCategories() {
+        assertThat(BuiltInPluginCategory.values()).hasSize(6);
     }
 
     @Test
@@ -18,7 +18,8 @@ class BuiltInPluginCategoryTest {
                 BuiltInPluginCategory.EFFECT,
                 BuiltInPluginCategory.ANALYZER,
                 BuiltInPluginCategory.UTILITY,
-                BuiltInPluginCategory.MASTERING
+                BuiltInPluginCategory.MASTERING,
+                BuiltInPluginCategory.MIDI_EFFECT
         );
     }
 
@@ -38,6 +39,7 @@ class BuiltInPluginCategoryTest {
         assertThat(BuiltInPluginCategory.ANALYZER.displayName()).isEqualTo("Analyzers");
         assertThat(BuiltInPluginCategory.UTILITY.displayName()).isEqualTo("Utilities");
         assertThat(BuiltInPluginCategory.MASTERING.displayName()).isEqualTo("Mastering");
+        assertThat(BuiltInPluginCategory.MIDI_EFFECT.displayName()).isEqualTo("MIDI Effects");
     }
 
     @Test

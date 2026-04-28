@@ -62,6 +62,12 @@ class BuiltInPluginAnnotationTest {
         Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
         assertThat(permitted).isNotNull();
         for (Class<?> clazz : permitted) {
+            // Permitted sub-interfaces (such as MidiEffectPlugin) are category
+            // markers, not concrete plugins — they are intentionally not
+            // expected to carry @BuiltInPlugin.
+            if (clazz.isInterface()) {
+                continue;
+            }
             BuiltInPlugin meta = clazz.getAnnotation(BuiltInPlugin.class);
             assertThat(meta)
                     .as("%s must be annotated with @BuiltInPlugin", clazz.getSimpleName())
@@ -104,7 +110,10 @@ class BuiltInPluginAnnotationTest {
         List<BuiltInDawPlugin.MenuEntry> entries = BuiltInDawPlugin.menuEntries();
 
         Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
-        assertThat(entries).hasSize(permitted.length);
+        long expectedCount = java.util.Arrays.stream(permitted)
+                .filter(c -> !c.isInterface())
+                .count();
+        assertThat(entries).hasSize((int) expectedCount);
 
         Map<Class<?>, BuiltInDawPlugin.MenuEntry> byClass = new HashMap<>();
         for (BuiltInDawPlugin.MenuEntry entry : entries) {
@@ -112,6 +121,9 @@ class BuiltInPluginAnnotationTest {
         }
 
         for (Class<?> clazz : permitted) {
+            if (clazz.isInterface()) {
+                continue;
+            }
             BuiltInPlugin meta = clazz.getAnnotation(BuiltInPlugin.class);
             BuiltInDawPlugin.MenuEntry entry = byClass.get(clazz);
             assertThat(entry).as("menu entry for %s", clazz.getSimpleName()).isNotNull();

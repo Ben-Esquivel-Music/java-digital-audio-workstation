@@ -24,9 +24,9 @@ class BuiltInDawPluginTest {
     }
 
     @Test
-    void shouldPermitExactlyTwentyThreeSubclasses() {
+    void shouldPermitExactlyTwentyFourSubclasses() {
         Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
-        assertThat(permitted).hasSize(23);
+        assertThat(permitted).hasSize(24);
     }
 
     @Test
@@ -55,7 +55,8 @@ class BuiltInDawPluginTest {
                 NoiseGatePlugin.class,
                 MidSideWrapperPlugin.class,
                 ConvolutionReverbPlugin.class,
-                ExciterPlugin.class
+                ExciterPlugin.class,
+                MidiEffectPlugin.class
         );
     }
 
@@ -63,6 +64,12 @@ class BuiltInDawPluginTest {
     void allPermittedSubclassesShouldHavePublicNoArgConstructor() throws Exception {
         Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
         for (Class<?> clazz : permitted) {
+            // Permitted sub-interfaces (such as MidiEffectPlugin) are category
+            // markers and have no constructor — only concrete plugin classes
+            // are required to expose a public no-arg ctor.
+            if (clazz.isInterface()) {
+                continue;
+            }
             Constructor<?> ctor = clazz.getConstructor();
             assertThat(ctor).as("Public no-arg constructor for %s", clazz.getName()).isNotNull();
         }
@@ -72,6 +79,11 @@ class BuiltInDawPluginTest {
     void allPermittedSubclassesShouldBeFinal() {
         Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
         for (Class<?> clazz : permitted) {
+            // Skip permitted sub-interfaces — they are category markers and
+            // are intentionally non-sealed (open for further extension).
+            if (clazz.isInterface()) {
+                continue;
+            }
             assertThat(java.lang.reflect.Modifier.isFinal(clazz.getModifiers()))
                     .as("%s should be final", clazz.getName())
                     .isTrue();
@@ -144,11 +156,14 @@ class BuiltInDawPluginTest {
     // ── menuEntries() ────────────────────────────────────────────────────────
 
     @Test
-    void menuEntriesShouldReturnOneEntryPerPermittedSubclass() {
+    void menuEntriesShouldReturnOneEntryPerPermittedConcreteSubclass() {
         Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
+        long expected = java.util.Arrays.stream(permitted)
+                .filter(c -> !c.isInterface())
+                .count();
         List<BuiltInDawPlugin.MenuEntry> entries = BuiltInDawPlugin.menuEntries();
 
-        assertThat(entries).hasSize(permitted.length);
+        assertThat(entries).hasSize((int) expected);
     }
 
     @Test

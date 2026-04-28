@@ -54,7 +54,8 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
                 NoiseGatePlugin,
                 MidSideWrapperPlugin,
                 ConvolutionReverbPlugin,
-                ExciterPlugin {
+                ExciterPlugin,
+                MidiEffectPlugin {
 
     /**
      * Lightweight metadata record used by the menu layer to populate plugin
@@ -139,6 +140,12 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
         }
         var results = new ArrayList<MenuEntry>(permitted.length);
         for (Class<?> clazz : permitted) {
+            // Permitted entries can be sub-interfaces (such as MidiEffectPlugin),
+            // which are category markers, not concrete plugins — skip them so
+            // they do not appear as a menu entry of their own.
+            if (clazz.isInterface()) {
+                continue;
+            }
             BuiltInPlugin meta = clazz.getAnnotation(BuiltInPlugin.class);
             if (meta == null) {
                 log.log(Level.WARNING,
@@ -186,6 +193,11 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
         }
         var results = new ArrayList<T>(permitted.length);
         for (Class<?> clazz : permitted) {
+            // Skip permitted sub-interfaces — they have no constructor and
+            // exist only to group concrete plugins (e.g. MidiEffectPlugin).
+            if (clazz.isInterface()) {
+                continue;
+            }
             try {
                 BuiltInDawPlugin instance =
                         (BuiltInDawPlugin) clazz.getConstructor().newInstance();
