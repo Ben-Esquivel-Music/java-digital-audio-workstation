@@ -8,6 +8,11 @@ import com.benesquivelmusic.daw.core.automation.AutomationPoint;
 import com.benesquivelmusic.daw.core.marker.Marker;
 import com.benesquivelmusic.daw.core.marker.MarkerManager;
 import com.benesquivelmusic.daw.core.marker.MarkerRange;
+import com.benesquivelmusic.daw.core.midi.MidiCcEvent;
+import com.benesquivelmusic.daw.core.midi.MidiCcLane;
+import com.benesquivelmusic.daw.core.midi.MidiCcLaneType;
+import com.benesquivelmusic.daw.core.midi.MidiClip;
+import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.mixer.*;
 import com.benesquivelmusic.daw.core.mixer.snapshot.ChannelSnapshot;
@@ -60,10 +65,15 @@ import javax.xml.transform.TransformerException;
 import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.dom.DOMSource;
 import javax.xml.transform.stream.StreamResult;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.StringWriter;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+import org.xml.sax.SAXException;
 
 /**
  * Serializes a {@link DawProject} into XML for persistence.
@@ -957,6 +967,176 @@ public final class ProjectSerializer {
             return ImmersiveFormat.valueOf(name);
         } catch (IllegalArgumentException e) {
             return ImmersiveFormat.FORMAT_7_1_4;
+        }
+    }
+
+    // ── MIDI clip (notes + CC editing lanes) ───────────────────────────────
+    //
+    // Round-trips a MidiClip including its note list and any CC editing
+    // lane configuration (lane types, CC numbers, 14-bit flag, channel,
+    // height ratios, breakpoints). Used by the piano-roll editor to
+    // persist per-clip lane configuration.
+
+    /**
+     * Serializes a {@link MidiClip} (notes and CC editing lanes) to an
+     * XML string. Used by the piano-roll editor to persist per-clip
+     * lane configuration.
+     *
+     * @param clip the MIDI clip to serialize
+     * @return the XML representation
+     * @throws IOException if serialization fails
+     */
+    public String serializeMidiClip(MidiClip clip) throws IOException {
+        java.util.Objects.requireNonNull(clip, "clip must not be null");
+        try {
+            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+            factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            DocumentBuilder builder = factory.newDocumentBuilder();
+            Document document = builder.newDocument();
+
+            Element root = document.createElement("midi-clip");
+            root.setAttribute("locked", String.valueOf(clip.isLocked()));
+            document.appendChild(root);
+
+            Element notesElem = document.createElement("notes");
+            for (MidiNoteData n : clip.getNotes()) {
+                Element ne = document.createElement("note");
+                ne.setAttribute("note-number", String.valueOf(n.noteNumber()));
+                ne.setAttribute("start-column", String.valueOf(n.startColumn()));
+                ne.setAttribute("duration-columns", String.valueOf(n.durationColumns()));
+                ne.setAttribute("velocity", String.valueOf(n.velocity()));
+                ne.setAttribute("channel", String.valueOf(n.channel()));
+                notesElem.appendChild(ne);
+            }
+            root.appendChild(notesElem);
+
+            Element lanesElem = document.createElement("cc-lanes");
+            for (MidiCcLane lane : clip.getCcLanes()) {
+                Element le = document.createElement("cc-lane");
+                le.setAttribute("type", lane.getType().name());
+                le.setAttribute("cc-number", String.valueOf(lane.getCcNumber()));
+                le.setAttribute("high-resolution", String.valueOf(lane.isHighResolution()));
+                le.setAttribute("channel", String.valueOf(lane.getChannel()));
+                le.setAttribute("height-ratio", String.valueOf(lane.getHeightRatio()));
+                for (MidiCcEvent ev : lane.getEvents()) {
+                    Element ee = document.createElement("event");
+                    ee.setAttribute("column", String.valueOf(ev.column()));
+                    ee.setAttribute("value", String.valueOf(ev.value()));
+                    le.appendChild(ee);
+                }
+                lanesElem.appendChild(le);
+            }
+            root.appendChild(lanesElem);
+
+            TransformerFactory transformerFactory = TransformerFactory.newInstance();
+            transformerFactory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            transformerFactory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+            transformerFactory.setAttribute(XMLConstants.ACCESS_EXTERNAL_STYLESHEET, "");
+            Transformer transformer = transformerFactory.newTransformer();
+            transformer.setOutputProperty(OutputKeys.INDENT, "yes");
+            transformer.setOutputProperty(OutputKeys.ENCODING, "UTF-8");
+            transformer.setOutputProperty("{http://xml.apache.org/xslt}indent-amount", "2");
+
+            StringWriter writer = new StringWriter();
+            transformer.transform(new DOMSource(document), new StreamResult(writer));
+            return writer.toString();
+        } catch (ParserConfigurationException | TransformerException e) {
+            throw new IOException("Failed to serialize MIDI clip", e);
+        }
+    }
+
+    /**
+     * Deserializes a {@link MidiClip} from an XML string previously
+     * produced by {@link #serializeMidiClip(MidiClip)}.
+     *
+     * @param xml the XML string
+     * @return a new {@code MidiClip} populated with notes and CC lanes
+     * @throws IOException if parsing fails
+     */
+    public MidiClip deserializeMidiClip(String xml) throws IOException {
+        java.util.Objects.requireNonNull(xml, "xml must not be null");
+        try {
+            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+            factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+            factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            factory.setExpandEntityReferences(false);
+            DocumentBuilder builder = factory.newDocumentBuilder();
+            Document document = builder.parse(new ByteArrayInputStream(
+                    xml.getBytes(StandardCharsets.UTF_8)));
+
+            Element root = document.getDocumentElement();
+            if (root == null || !"midi-clip".equals(root.getTagName())) {
+                throw new IOException("Expected <midi-clip> root element");
+            }
+
+            MidiClip clip = new MidiClip();
+            clip.setLocked(Boolean.parseBoolean(root.getAttribute("locked")));
+
+            NodeList noteNodes = root.getElementsByTagName("note");
+            for (int i = 0; i < noteNodes.getLength(); i++) {
+                Node node = noteNodes.item(i);
+                if (!(node instanceof Element ne)) continue;
+                try {
+                    int noteNumber = Integer.parseInt(ne.getAttribute("note-number"));
+                    int start = Integer.parseInt(ne.getAttribute("start-column"));
+                    int dur = Integer.parseInt(ne.getAttribute("duration-columns"));
+                    int vel = Integer.parseInt(ne.getAttribute("velocity"));
+                    int ch = ne.hasAttribute("channel")
+                            ? Integer.parseInt(ne.getAttribute("channel"))
+                            : MidiNoteData.DEFAULT_CHANNEL;
+                    clip.addNote(new MidiNoteData(noteNumber, start, dur, vel, ch));
+                } catch (RuntimeException e) {
+                    throw new IOException("Failed to parse note element at index " + i, e);
+                }
+            }
+
+            NodeList laneNodes = root.getElementsByTagName("cc-lane");
+            for (int i = 0; i < laneNodes.getLength(); i++) {
+                Node node = laneNodes.item(i);
+                if (!(node instanceof Element le)) continue;
+                try {
+                    MidiCcLaneType type = MidiCcLaneType.valueOf(le.getAttribute("type"));
+                    int ccNumber;
+                    if (le.hasAttribute("cc-number")) {
+                        ccNumber = Integer.parseInt(le.getAttribute("cc-number"));
+                    } else if (type == MidiCcLaneType.ARBITRARY_CC) {
+                        throw new IOException(
+                                "cc-number attribute is required for ARBITRARY_CC lane at index " + i);
+                    } else {
+                        ccNumber = type.defaultCcNumber();
+                    }
+                    boolean hi = Boolean.parseBoolean(le.getAttribute("high-resolution"));
+                    int channel = le.hasAttribute("channel")
+                            ? Integer.parseInt(le.getAttribute("channel"))
+                            : 0;
+                    MidiCcLane lane = new MidiCcLane(type, ccNumber, hi, channel);
+                    if (le.hasAttribute("height-ratio")) {
+                        try {
+                            double hr = Double.parseDouble(le.getAttribute("height-ratio"));
+                            lane.setHeightRatio(hr);
+                        } catch (IllegalArgumentException ignore) {
+                            // keep default
+                        }
+                    }
+                    NodeList eventNodes = le.getElementsByTagName("event");
+                    for (int j = 0; j < eventNodes.getLength(); j++) {
+                        Node enode = eventNodes.item(j);
+                        if (!(enode instanceof Element ee)) continue;
+                        int col = Integer.parseInt(ee.getAttribute("column"));
+                        int val = Integer.parseInt(ee.getAttribute("value"));
+                        lane.addEvent(new MidiCcEvent(col, val));
+                    }
+                    clip.addCcLane(lane);
+                } catch (RuntimeException e) {
+                    throw new IOException("Failed to parse cc-lane element at index " + i, e);
+                }
+            }
+            return clip;
+        } catch (ParserConfigurationException | SAXException e) {
+            throw new IOException("Failed to deserialize MIDI clip", e);
         }
     }
 }
