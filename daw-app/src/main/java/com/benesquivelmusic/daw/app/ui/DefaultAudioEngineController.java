@@ -60,7 +60,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
     DefaultAudioEngineController(AudioEngine audioEngine, Runnable postReconfigureCallback) {
         this(audioEngine, postReconfigureCallback,
                 NotificationManager.noop(),
-                new IncompleteTakeStore(Paths.get(System.getProperty("user.dir"))));
+                new IncompleteTakeStore(Paths.get(System.getProperty("java.io.tmpdir"))));
     }
 
     DefaultAudioEngineController(AudioEngine audioEngine,
@@ -190,8 +190,10 @@ final class DefaultAudioEngineController implements AudioEngineController {
 
         if (wasOpen) {
             audioEngine.startAudioOutput(Math.max(0, outputDeviceIndex));
+            setEngineState(EngineState.RUNNING);
         } else {
             audioEngine.start();
+            setEngineState(EngineState.STOPPED);
         }
 
         if (postReconfigureCallback != null) {
@@ -282,7 +284,12 @@ final class DefaultAudioEngineController implements AudioEngineController {
             return;
         }
         this.engineState = newState;
-        engineStatePublisher.submit(newState);
+        // Use offer() instead of submit() to avoid blocking under
+        // backpressure — a slow UI subscriber must not stall the
+        // device-event thread.
+        if (!engineStatePublisher.isClosed()) {
+            engineStatePublisher.offer(newState, (subscriber, dropped) -> false);
+        }
         LOG.info("Engine state " + previous + " -> " + newState);
     }
 

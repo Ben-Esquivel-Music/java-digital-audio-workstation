@@ -140,8 +140,8 @@ class DefaultAudioEngineControllerTest {
         assertThat(takeStore.bufferedByteCount()).isZero();
         Path takesDir = projectRoot.resolve(".daw").resolve("incomplete-takes");
         assertThat(takesDir).exists();
-        try {
-            assertThat(Files.list(takesDir).count()).isPositive();
+        try (java.util.stream.Stream<Path> takeEntries = Files.list(takesDir)) {
+            assertThat(takeEntries.count()).isPositive();
         } catch (IOException e) {
             throw new AssertionError(e);
         }

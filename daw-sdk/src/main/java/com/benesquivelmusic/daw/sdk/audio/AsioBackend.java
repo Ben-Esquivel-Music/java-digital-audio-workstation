@@ -73,13 +73,14 @@ public final class AsioBackend implements AudioBackend {
     }
 
     /**
-     * Translates ASIO's {@code kAsioResetRequest} (driver-initiated drop),
+     * Exposes {@link AudioDeviceEvent}s derived from ASIO's
+     * {@code kAsioResetRequest} (driver-initiated drop),
      * {@code kAsioBufferSizeChange}, and {@code kAsioResyncRequest}
-     * callbacks installed on driver open into
-     * {@link AudioDeviceEvent}s. The native shim invokes
-     * {@link AudioBackendSupport#publishDeviceEvent(AudioDeviceEvent)}
-     * from the ASIO callback thread; this method just exposes the
-     * publisher.
+     * callbacks installed on driver open.
+     *
+     * <p>The native shim translates those driver notifications into
+     * {@link AudioDeviceEvent}s; delivery semantics are defined by the
+     * {@link AudioBackend#deviceEvents()} contract.</p>
      */
     @Override
     public Flow.Publisher<AudioDeviceEvent> deviceEvents() {

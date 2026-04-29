@@ -60,7 +60,16 @@ final class AudioBackendSupport implements AutoCloseable {
 
     void publishDeviceEvent(AudioDeviceEvent event) {
         Objects.requireNonNull(event, "event must not be null");
-        devicePublisher.submit(event);
+        if (devicePublisher.isClosed()) {
+            return;
+        }
+        // Use offer() with a drop handler instead of submit() to avoid
+        // blocking under backpressure — this may be called from a native
+        // callback thread (e.g. ASIO buffer-switch) that must not stall.
+        devicePublisher.offer(event, (subscriber, droppedEvent) -> {
+            // Drop the event rather than block; log for diagnostics.
+            return false;
+        });
     }
 
     void publishInput(AudioBlock block) {

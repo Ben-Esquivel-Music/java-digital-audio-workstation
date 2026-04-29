@@ -7,6 +7,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
@@ -28,10 +29,10 @@ import java.util.logging.Logger;
  * writes them under {@code <projectRoot>/.daw/incomplete-takes/} so the user
  * can review the recovered take after the device returns.</p>
  *
- * <p>Lock-free on the audio thread: {@link #appendCapturedFrames(float[][], int)}
- * acquires a {@link ReentrantLock}, never blocks on disk I/O, and never
- * allocates if the internal buffer has been pre-sized for the expected take
- * length. Disk I/O happens only inside {@link #flushIfNotEmpty}.</p>
+ * <p>{@link #appendCapturedFrames(float[][], int)} appends data to an in-memory
+ * buffer and does not perform disk I/O, but this class is not lock-free or
+ * allocation-free: synchronization and buffer growth may occur. Disk I/O
+ * happens only inside {@link #flushIfNotEmpty(DeviceId, AudioFormat)}.</p>
  */
 public final class IncompleteTakeStore {
 
@@ -165,10 +166,10 @@ public final class IncompleteTakeStore {
         int blockAlign = channels * bitsPerSample / 8;
         int riffSize = 36 + pcm.length;
         ByteBuffer header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN);
-        header.put("RIFF".getBytes());
+        header.put("RIFF".getBytes(StandardCharsets.US_ASCII));
         header.putInt(riffSize);
-        header.put("WAVE".getBytes());
-        header.put("fmt ".getBytes());
+        header.put("WAVE".getBytes(StandardCharsets.US_ASCII));
+        header.put("fmt ".getBytes(StandardCharsets.US_ASCII));
         header.putInt(16);             // fmt chunk size
         header.putShort((short) 1);    // PCM
         header.putShort((short) channels);
@@ -176,7 +177,7 @@ public final class IncompleteTakeStore {
         header.putInt(byteRate);
         header.putShort((short) blockAlign);
         header.putShort((short) bitsPerSample);
-        header.put("data".getBytes());
+        header.put("data".getBytes(StandardCharsets.US_ASCII));
         header.putInt(pcm.length);
         byte[] out = new byte[44 + pcm.length];
         System.arraycopy(header.array(), 0, out, 0, 44);
