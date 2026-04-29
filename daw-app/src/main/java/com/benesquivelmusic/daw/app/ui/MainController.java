@@ -142,6 +142,7 @@ public final class MainController {
     private ToolbarStateStore toolbarStateStore;
     private KeyBindingManager keyBindingManager;
     private CommandPaletteView commandPaletteView;
+    private WorkspaceManager workspaceManager;
 
     private ArrangementCanvas arrangementCanvas;
     private ClipInteractionController clipInteractionController;
@@ -612,6 +613,16 @@ public final class MainController {
                     @Override public void onToggleCommandPalette() {
                         if (commandPaletteView != null) commandPaletteView.toggle();
                     }
+                    @Override public void onSwitchToWorkspaceSlot(int slotIndex) {
+                        if (workspaceManager != null) workspaceManager.switchToSlot(slotIndex);
+                    }
+                    @Override public void onSaveWorkspaceAs() {
+                        if (workspaceManager == null) return;
+                        String name = promptWorkspaceName();
+                        if (name != null && !name.isBlank()) {
+                            workspaceManager.saveCurrentAs(name.trim());
+                        }
+                    }
                 });
         createCommandPaletteView();
     }
@@ -799,8 +810,141 @@ public final class MainController {
                 },
                 keyBindingManager);
         javafx.scene.control.MenuBar bar = menuBarController.build();
+        // Wire the per-user Workspaces menu (Save Current as… / Switch to…).
+        // The WorkspaceManager seeds the six default workspaces on first run
+        // (Tracking, Editing, Mixing, Mastering, Spatial, Minimal).
+        installWorkspacesMenu(bar);
         Node topNode = rootPane.getTop();
         if (topNode instanceof VBox topVBox) { topVBox.getChildren().addFirst(bar); }
+    }
+
+    private void installWorkspacesMenu(javafx.scene.control.MenuBar bar) {
+        workspaceManager = new WorkspaceManager(buildWorkspaceHost());
+        WorkspacesMenu menuBuilder = new WorkspacesMenu(
+                workspaceManager,
+                keyBindingManager,
+                this::promptWorkspaceName,
+                this::exportWorkspaceWithChooser,
+                this::importWorkspaceWithChooser);
+        javafx.scene.control.Menu workspacesMenu = menuBuilder.build();
+        // Insert before the last (Help) menu so Help stays right-most.
+        var menus = bar.getMenus();
+        int insertIndex = Math.max(0, menus.size() - 1);
+        menus.add(insertIndex, workspacesMenu);
+    }
+
+    private WorkspaceManager.Host buildWorkspaceHost() {
+        return new WorkspaceManager.Host() {
+            @Override public java.util.List<String> knownPanelIds() {
+                return DefaultWorkspaces.panelIds();
+            }
+            @Override public boolean isPanelVisible(String panelId) {
+                return switch (panelId) {
+                    case DefaultWorkspaces.PANEL_BROWSER ->
+                            browserPanelController != null && browserPanelController.isPanelVisible();
+                    case DefaultWorkspaces.PANEL_HISTORY ->
+                            historyPanelController != null && historyPanelController.isHistoryPanelVisible();
+                    case DefaultWorkspaces.PANEL_NOTIFICATIONS ->
+                            historyPanelController != null
+                                    && historyPanelController.isNotificationHistoryPanelVisible();
+                    case DefaultWorkspaces.PANEL_ARRANGEMENT ->
+                            viewNavigationController != null
+                                    && viewNavigationController.getActiveView() == DawView.ARRANGEMENT;
+                    case DefaultWorkspaces.PANEL_MIXER ->
+                            viewNavigationController != null
+                                    && viewNavigationController.getActiveView() == DawView.MIXER;
+                    case DefaultWorkspaces.PANEL_EDITOR ->
+                            viewNavigationController != null
+                                    && viewNavigationController.getActiveView() == DawView.EDITOR;
+                    case DefaultWorkspaces.PANEL_MASTERING ->
+                            viewNavigationController != null
+                                    && viewNavigationController.getActiveView() == DawView.MASTERING;
+                    default -> false;
+                };
+            }
+            @Override public void setPanelVisible(String panelId, boolean visible) {
+                switch (panelId) {
+                    case DefaultWorkspaces.PANEL_BROWSER -> {
+                        if (browserPanelController != null
+                                && browserPanelController.isPanelVisible() != visible) {
+                            browserPanelController.toggleBrowserPanel();
+                        }
+                    }
+                    case DefaultWorkspaces.PANEL_HISTORY -> {
+                        if (historyPanelController != null
+                                && historyPanelController.isHistoryPanelVisible() != visible) {
+                            historyPanelController.toggleHistoryPanel();
+                        }
+                    }
+                    case DefaultWorkspaces.PANEL_NOTIFICATIONS -> {
+                        if (historyPanelController != null
+                                && historyPanelController.isNotificationHistoryPanelVisible() != visible) {
+                            historyPanelController.toggleNotificationHistoryPanel();
+                        }
+                    }
+                    case DefaultWorkspaces.PANEL_ARRANGEMENT -> {
+                        if (visible && viewNavigationController != null) {
+                            viewNavigationController.switchView(DawView.ARRANGEMENT);
+                        }
+                    }
+                    case DefaultWorkspaces.PANEL_MIXER -> {
+                        if (visible && viewNavigationController != null) {
+                            viewNavigationController.switchView(DawView.MIXER);
+                        }
+                    }
+                    case DefaultWorkspaces.PANEL_EDITOR -> {
+                        if (visible && viewNavigationController != null) {
+                            viewNavigationController.switchView(DawView.EDITOR);
+                        }
+                    }
+                    case DefaultWorkspaces.PANEL_MASTERING -> {
+                        if (visible && viewNavigationController != null) {
+                            viewNavigationController.switchView(DawView.MASTERING);
+                        }
+                    }
+                    default -> { /* unknown panel id — forward compatible */ }
+                }
+            }
+        };
+    }
+
+    private String promptWorkspaceName() {
+        var dialog = new javafx.scene.control.TextInputDialog("My Workspace");
+        dialog.setTitle("Save Workspace");
+        dialog.setHeaderText("Save current panel arrangement");
+        dialog.setContentText("Workspace name:");
+        return dialog.showAndWait().orElse(null);
+    }
+
+    private void exportWorkspaceWithChooser(String workspaceName) {
+        var chooser = new javafx.stage.FileChooser();
+        chooser.setTitle("Export Workspace");
+        chooser.setInitialFileName(workspaceName + ".json");
+        chooser.getExtensionFilters().add(
+                new javafx.stage.FileChooser.ExtensionFilter("JSON", "*.json"));
+        java.io.File file = chooser.showSaveDialog(rootPane.getScene() != null
+                ? rootPane.getScene().getWindow() : null);
+        if (file == null) return;
+        try {
+            workspaceManager.exportTo(workspaceName, file.toPath());
+        } catch (java.io.IOException e) {
+            LOG.log(Level.WARNING, "Failed to export workspace " + workspaceName, e);
+        }
+    }
+
+    private void importWorkspaceWithChooser() {
+        var chooser = new javafx.stage.FileChooser();
+        chooser.setTitle("Import Workspace");
+        chooser.getExtensionFilters().add(
+                new javafx.stage.FileChooser.ExtensionFilter("JSON", "*.json"));
+        java.io.File file = chooser.showOpenDialog(rootPane.getScene() != null
+                ? rootPane.getScene().getWindow() : null);
+        if (file == null) return;
+        try {
+            workspaceManager.importFrom(file.toPath());
+        } catch (java.io.IOException e) {
+            LOG.log(Level.WARNING, "Failed to import workspace from " + file, e);
+        }
     }
 
     @FXML private void onPlay() { transportController.onPlay(); }

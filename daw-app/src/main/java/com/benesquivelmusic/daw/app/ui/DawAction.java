@@ -172,7 +172,46 @@ public enum DawAction {
      * accelerator by {@code KeyboardShortcutController}.
      */
     OPEN_COMMAND_PALETTE("Command Palette", Category.APPLICATION,
-            new KeyCodeCombination(KeyCode.K, KeyCombination.SHORTCUT_DOWN));
+            new KeyCodeCombination(KeyCode.K, KeyCombination.SHORTCUT_DOWN)),
+
+    // ── Workspaces (Issue: Customizable Workspace Layouts) ──────────────────
+    // The issue spec calls for Ctrl+1..Ctrl+9, but those shortcuts are
+    // already bound to view switching (VIEW_ARRANGEMENT…VIEW_MASTERING).
+    // To preserve backwards-compatible view shortcuts we use Ctrl+Alt+1..9
+    // for the nine numbered workspace slots. Users who prefer the original
+    // bindings can rebind them in Settings → Key Bindings.
+    WORKSPACE_SAVE_AS("Save Current Workspace As\u2026", Category.WORKSPACES,
+            new KeyCodeCombination(KeyCode.S,
+                    KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN, KeyCombination.ALT_DOWN)),
+    WORKSPACE_1("Switch to Workspace 1", Category.WORKSPACES,
+            new KeyCodeCombination(KeyCode.DIGIT1, KeyCombination.SHORTCUT_DOWN, KeyCombination.ALT_DOWN)),
+    WORKSPACE_2("Switch to Workspace 2", Category.WORKSPACES,
+            new KeyCodeCombination(KeyCode.DIGIT2, KeyCombination.SHORTCUT_DOWN, KeyCombination.ALT_DOWN)),
+    WORKSPACE_3("Switch to Workspace 3", Category.WORKSPACES,
+            new KeyCodeCombination(KeyCode.DIGIT3, KeyCombination.SHORTCUT_DOWN, KeyCombination.ALT_DOWN)),
+    WORKSPACE_4("Switch to Workspace 4", Category.WORKSPACES,
+            new KeyCodeCombination(KeyCode.DIGIT4, KeyCombination.SHORTCUT_DOWN, KeyCombination.ALT_DOWN)),
+    WORKSPACE_5("Switch to Workspace 5", Category.WORKSPACES,
+            new KeyCodeCombination(KeyCode.DIGIT5, KeyCombination.SHORTCUT_DOWN, KeyCombination.ALT_DOWN)),
+    WORKSPACE_6("Switch to Workspace 6", Category.WORKSPACES,
+            new KeyCodeCombination(KeyCode.DIGIT6, KeyCombination.SHORTCUT_DOWN, KeyCombination.ALT_DOWN)),
+    WORKSPACE_7("Switch to Workspace 7", Category.WORKSPACES,
+            new KeyCodeCombination(KeyCode.DIGIT7, KeyCombination.SHORTCUT_DOWN, KeyCombination.ALT_DOWN)),
+    WORKSPACE_8("Switch to Workspace 8", Category.WORKSPACES,
+            new KeyCodeCombination(KeyCode.DIGIT8, KeyCombination.SHORTCUT_DOWN, KeyCombination.ALT_DOWN)),
+    WORKSPACE_9("Switch to Workspace 9", Category.WORKSPACES,
+            new KeyCodeCombination(KeyCode.DIGIT9, KeyCombination.SHORTCUT_DOWN, KeyCombination.ALT_DOWN));
+
+    /**
+     * Returns the nine numbered workspace-switch actions in slot order
+     * ({@link #WORKSPACE_1} first). Used by menus and keyboard wiring.
+     */
+    public static java.util.List<DawAction> workspaceSlotActions() {
+        return java.util.List.of(
+                WORKSPACE_1, WORKSPACE_2, WORKSPACE_3,
+                WORKSPACE_4, WORKSPACE_5, WORKSPACE_6,
+                WORKSPACE_7, WORKSPACE_8, WORKSPACE_9);
+    }
 
     /**
      * Logical grouping for the settings UI.
@@ -184,6 +223,7 @@ public enum DawAction {
         TOOLS("Tools"),
         NAVIGATION("Navigation"),
         VIEWS("Views"),
+        WORKSPACES("Workspaces"),
         APPLICATION("Application");
 
         private final String displayName;
