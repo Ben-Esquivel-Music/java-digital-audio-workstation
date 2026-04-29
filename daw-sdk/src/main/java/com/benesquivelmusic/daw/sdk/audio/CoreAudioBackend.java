@@ -69,10 +69,60 @@ public final class CoreAudioBackend implements AudioBackend {
      * {@code kAudioDevicePropertyNominalSampleRate} listeners)
      * into {@link AudioDeviceEvent}s. The native shim publishes via
      * {@link AudioBackendSupport#publishDeviceEvent(AudioDeviceEvent)}.
+     *
+     * <p>Format-change requests (story 218) are surfaced via
+     * {@link #publishFormatChangeRequested(DeviceId, java.util.Optional,
+     * FormatChangeReason)} from the per-device property listeners
+     * registered on stream open.</p>
      */
     @Override
     public Flow.Publisher<AudioDeviceEvent> deviceEvents() {
         return support.deviceEvents();
+    }
+
+    /**
+     * Hook called by the macOS FFM shim from the per-device CoreAudio
+     * property listeners registered on stream open to surface a
+     * driver-initiated reset request as a
+     * {@link AudioDeviceEvent.FormatChangeRequested} event on this
+     * backend's {@link #deviceEvents()} publisher (story 218).
+     *
+     * <p>Mapping conventions used by the shim:</p>
+     * <ul>
+     *   <li>{@code kAudioDevicePropertyNominalSampleRate} listener
+     *       fires &rarr;
+     *       {@code reason = }{@link FormatChangeReason.SampleRateChange};
+     *       the new {@link AudioFormat} carries the just-read
+     *       {@code Float64} rate.</li>
+     *   <li>{@code kAudioDevicePropertyBufferFrameSize} listener
+     *       fires &rarr;
+     *       {@code reason = }{@link FormatChangeReason.BufferSizeChange};
+     *       the new format carries the just-read frame count.</li>
+     *   <li>{@code kAudioDevicePropertyClockSource} listener fires
+     *       &rarr;
+     *       {@code reason = }{@link FormatChangeReason.ClockSourceChange};
+     *       the proposed format is typically empty.</li>
+     * </ul>
+     *
+     * <p>Package-private: only the SDK's native shim is meant to call
+     * this directly. The publisher accepts the event without blocking,
+     * so it is safe to call from the CoreAudio dispatch queue the
+     * property listener was registered on.</p>
+     *
+     * @param device         the affected device id; must not be null
+     * @param proposedFormat the format the driver is moving to, when known;
+     *                       must not be null (use
+     *                       {@link java.util.Optional#empty()} for unknown)
+     * @param reason         why the driver is asking for a reset; must not be null
+     */
+    void publishFormatChangeRequested(DeviceId device,
+                                      java.util.Optional<AudioFormat> proposedFormat,
+                                      FormatChangeReason reason) {
+        Objects.requireNonNull(device, "device must not be null");
+        Objects.requireNonNull(proposedFormat, "proposedFormat must not be null");
+        Objects.requireNonNull(reason, "reason must not be null");
+        support.publishDeviceEvent(
+                new AudioDeviceEvent.FormatChangeRequested(device, proposedFormat, reason));
     }
 
     @Override

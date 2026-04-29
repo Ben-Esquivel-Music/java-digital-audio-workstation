@@ -329,20 +329,48 @@ public sealed interface AudioBackend extends AutoCloseable
      *   <li>{@link AsioBackend} — translates {@code kAsioResetRequest},
      *       {@code kAsioBufferSizeChange}, and
      *       {@code kAsioResyncRequest} from the ASIO callback set
-     *       installed on driver open.</li>
+     *       installed on driver open. {@code kAsioBufferSizeChange}
+     *       maps to
+     *       {@link AudioDeviceEvent.FormatChangeRequested} with
+     *       {@link FormatChangeReason.BufferSizeChange};
+     *       {@code kAsioResetRequest} after a sample-rate renegotiation
+     *       maps to {@link FormatChangeReason.SampleRateChange};
+     *       {@code kAsioResyncRequest} maps to
+     *       {@link FormatChangeReason.ClockSourceChange}; a generic
+     *       {@code kAsioResetRequest} (USB streaming-mode change, USB
+     *       hub cycle) maps to {@link FormatChangeReason.DriverReset}.</li>
      *   <li>{@link WasapiBackend} — subscribes to
      *       {@code IMMNotificationClient::OnDeviceStateChanged} and
-     *       {@code OnDefaultDeviceChanged}.</li>
+     *       {@code OnDefaultDeviceChanged} for arrival/removal, plus
+     *       {@code IMMNotificationClient::OnPropertyValueChanged} on
+     *       the active endpoint and full {@code IAudioClient}
+     *       invalidation, which both map to
+     *       {@link AudioDeviceEvent.FormatChangeRequested} with
+     *       {@link FormatChangeReason.SampleRateChange} (mix-format
+     *       change) or {@link FormatChangeReason.DriverReset}
+     *       (client invalidation).</li>
      *   <li>{@link CoreAudioBackend} — installs a property listener
-     *       on {@code kAudioHardwarePropertyDevices}.</li>
+     *       on {@code kAudioHardwarePropertyDevices} for arrival/removal,
+     *       plus per-device listeners on
+     *       {@code kAudioDevicePropertyNominalSampleRate}
+     *       ({@link FormatChangeReason.SampleRateChange}),
+     *       {@code kAudioDevicePropertyBufferFrameSize}
+     *       ({@link FormatChangeReason.BufferSizeChange}), and
+     *       {@code kAudioDevicePropertyClockSource}
+     *       ({@link FormatChangeReason.ClockSourceChange}) — all
+     *       wrapped in {@link AudioDeviceEvent.FormatChangeRequested}.</li>
      *   <li>{@link JackBackend} — watches for JACK server shutdown
      *       (registered shutdown callback) and port-registration
-     *       changes.</li>
+     *       changes. The JACK server has a single global format and
+     *       restarts to renegotiate, so format-change requests are
+     *       not surfaced.</li>
      *   <li>{@link JavaxSoundBackend} — emits no events; the JDK mixer
-     *       does not expose a hot-plug notification API.</li>
+     *       does not expose a hot-plug or format-change notification
+     *       API.</li>
      *   <li>{@link MockAudioBackend} — exposes
-     *       {@code simulateDeviceArrived/Removed/FormatChanged} so
-     *       tests can drive the device-event flow deterministically.</li>
+     *       {@code simulateDeviceArrived/Removed/FormatChanged} and
+     *       {@code simulateFormatChangeRequested} so tests can drive
+     *       the device-event flow deterministically.</li>
      * </ul>
      *
      * <p>Events are delivered on a backend-owned thread (the OS

@@ -90,10 +90,59 @@ public final class WasapiBackend implements AudioBackend {
      * {@link AudioDeviceEvent}s. The native shim registers an
      * {@code IMMNotificationClient} on driver open and publishes via
      * {@link AudioBackendSupport#publishDeviceEvent(AudioDeviceEvent)}.
+     *
+     * <p>Format-change requests (story 218) are surfaced via
+     * {@link #publishFormatChangeRequested(DeviceId, java.util.Optional,
+     * FormatChangeReason)} from
+     * {@code IMMNotificationClient::OnPropertyValueChanged} (mix-format
+     * key on the active endpoint) and from full {@code IAudioClient}
+     * invalidation by the audio engine.</p>
      */
     @Override
     public Flow.Publisher<AudioDeviceEvent> deviceEvents() {
         return support.deviceEvents();
+    }
+
+    /**
+     * Hook called by the Windows FFM shim from
+     * {@code IMMNotificationClient::OnPropertyValueChanged} (and from
+     * the {@code AUDCLNT_E_DEVICE_INVALIDATED} path inside the audio
+     * engine) to surface a driver-initiated reset request as a
+     * {@link AudioDeviceEvent.FormatChangeRequested} event on this
+     * backend's {@link #deviceEvents()} publisher (story 218).
+     *
+     * <p>Mapping conventions used by the shim:</p>
+     * <ul>
+     *   <li>{@code OnPropertyValueChanged} for the device's mix-format
+     *       property key &rarr;
+     *       {@code reason = }{@link FormatChangeReason.SampleRateChange};
+     *       the new {@link AudioFormat} carries the renegotiated rate.</li>
+     *   <li>{@code IAudioClient} returning
+     *       {@code AUDCLNT_E_DEVICE_INVALIDATED} on the next
+     *       {@code GetBuffer} call &rarr;
+     *       {@code reason = }{@link FormatChangeReason.DriverReset};
+     *       the proposed format is empty since WASAPI does not surface
+     *       the new format until the client is re-initialised.</li>
+     * </ul>
+     *
+     * <p>Package-private: only the SDK's native shim is meant to call
+     * this directly. The publisher accepts the event without blocking,
+     * so it is safe to call from the WASAPI notification thread.</p>
+     *
+     * @param device         the affected device id; must not be null
+     * @param proposedFormat the format the driver is moving to, when known;
+     *                       must not be null (use
+     *                       {@link java.util.Optional#empty()} for unknown)
+     * @param reason         why the driver is asking for a reset; must not be null
+     */
+    void publishFormatChangeRequested(DeviceId device,
+                                      java.util.Optional<AudioFormat> proposedFormat,
+                                      FormatChangeReason reason) {
+        Objects.requireNonNull(device, "device must not be null");
+        Objects.requireNonNull(proposedFormat, "proposedFormat must not be null");
+        Objects.requireNonNull(reason, "reason must not be null");
+        support.publishDeviceEvent(
+                new AudioDeviceEvent.FormatChangeRequested(device, proposedFormat, reason));
     }
 
     @Override
