@@ -1,11 +1,16 @@
 package com.benesquivelmusic.daw.core.track;
 
 import com.benesquivelmusic.daw.core.audio.EffectsChain;
+import com.benesquivelmusic.daw.core.audio.cache.RenderKey;
+import com.benesquivelmusic.daw.core.audio.cache.RenderedTrackCache;
 import com.benesquivelmusic.daw.core.export.TrackBouncer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.function.Function;
 
 /**
@@ -42,6 +47,40 @@ public final class TrackFreezeService {
      */
     public static void freeze(Track track, MixerChannel channel,
                               int sampleRate, double tempo, int channels) {
+        freeze(track, channel, sampleRate, tempo, channels, null, null, null);
+    }
+
+    /**
+     * Freezes a track, consulting the persistent
+     * {@link RenderedTrackCache} first. On cache hit, the previously
+     * rendered audio is loaded and the track is marked frozen
+     * without re-running the effects chain — saving the entire
+     * render cost. On miss, the track is rendered as in
+     * {@link #freeze(Track, MixerChannel, int, double, int)} and the
+     * result is written to the cache.
+     *
+     * <p>If {@code cache}, {@code projectUuid}, or {@code key} is
+     * {@code null}, the cache is bypassed entirely and behaviour is
+     * identical to the four-argument overload.</p>
+     *
+     * @param track       the track to freeze
+     * @param channel     the mixer channel associated with the track
+     * @param sampleRate  the project sample rate in Hz
+     * @param tempo       the project tempo in BPM
+     * @param channels    the number of output channels
+     * @param cache       optional persistent cache; may be {@code null}
+     * @param projectUuid optional project identifier; required if
+     *                    {@code cache} is non-null
+     * @param key         optional render key; required if
+     *                    {@code cache} is non-null
+     * @throws UncheckedIOException if the cache file is corrupt or
+     *                              cannot be written
+     */
+    public static void freeze(Track track, MixerChannel channel,
+                              int sampleRate, double tempo, int channels,
+                              RenderedTrackCache cache,
+                              String projectUuid,
+                              RenderKey key) {
         Objects.requireNonNull(track, "track must not be null");
         Objects.requireNonNull(channel, "channel must not be null");
         if (track.isFrozen()) {
@@ -55,6 +94,20 @@ public final class TrackFreezeService {
         }
         if (channels <= 0) {
             throw new IllegalArgumentException("channels must be positive: " + channels);
+        }
+        boolean cacheEnabled = cache != null && projectUuid != null && key != null;
+
+        if (cacheEnabled) {
+            try {
+                Optional<RenderedTrackCache.RenderedAudio> hit = cache.load(projectUuid, key);
+                if (hit.isPresent()) {
+                    track.setFrozenAudioData(hit.get().audio());
+                    track.setFrozen(true);
+                    return;
+                }
+            } catch (IOException e) {
+                // Fall through to a full render on a corrupt entry.
+            }
         }
 
         float[][] rawAudio = TrackBouncer.bounce(track, sampleRate, tempo, channels);
@@ -75,6 +128,15 @@ public final class TrackFreezeService {
 
         track.setFrozenAudioData(frozenAudio);
         track.setFrozen(true);
+
+        if (cacheEnabled && frozenAudio.length > 0 && frozenAudio[0].length > 0) {
+            try {
+                cache.store(projectUuid, key, frozenAudio);
+            } catch (IOException e) {
+                throw new UncheckedIOException(
+                        "failed to store rendered-track cache entry", e);
+            }
+        }
     }
 
     /**
