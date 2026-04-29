@@ -5,7 +5,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
@@ -17,12 +16,13 @@ import java.util.concurrent.atomic.AtomicReference;
  * a parent task forks several children that must all succeed
  * (otherwise the whole scope is cancelled).
  *
- * <p>This is a stable pre-{@link java.util.concurrent.Flow Flow}
- * implementation of the "shutdown-on-failure" semantics specified by
+ * <p>This is a stable implementation of the "shutdown-on-failure"
+ * semantics specified by
  * <a href="https://openjdk.org/jeps/505">JEP 505 — Structured
- * Concurrency</a>. JEP 505 is in <em>Sixth Preview</em> in Java 26;
- * to keep the build free of {@code --enable-preview} we provide the
- * same guarantees on top of {@link Thread#ofVirtual()}:</p>
+ * Concurrency</a> ({@code StructuredTaskScope}). JEP 505 is in
+ * <em>Sixth Preview</em> in Java 26; to keep the build free of
+ * {@code --enable-preview} we provide the same guarantees on top of
+ * {@link Thread#ofVirtual()}:</p>
  *
  * <ul>
  *   <li>Each {@link #fork(Callable)} starts a virtual thread (one per
@@ -103,7 +103,6 @@ public final class DawScope implements AutoCloseable {
     private final String name;
     private final List<Subtask<?>> subtasks = new ArrayList<>();
     private final List<Thread> threads = new ArrayList<>();
-    private final CountDownLatch firstFailure = new CountDownLatch(1);
     private final AtomicReference<Throwable> failure = new AtomicReference<>();
     private volatile boolean closed;
 
@@ -151,7 +150,6 @@ public final class DawScope implements AutoCloseable {
             } catch (Throwable t) {
                 future.completeExceptionally(t);
                 if (failure.compareAndSet(null, t)) {
-                    firstFailure.countDown();
                     interruptOthers();
                 }
             }
@@ -223,10 +221,8 @@ public final class DawScope implements AutoCloseable {
      * {@link #close()}.
      */
     public synchronized void cancel() {
-        if (failure.compareAndSet(null, new CancellationException(
-                "Scope '" + name + "' cancelled"))) {
-            firstFailure.countDown();
-        }
+        failure.compareAndSet(null, new CancellationException(
+                "Scope '" + name + "' cancelled"));
         interruptOthers();
     }
 

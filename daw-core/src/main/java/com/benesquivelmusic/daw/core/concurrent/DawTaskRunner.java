@@ -114,30 +114,29 @@ public final class DawTaskRunner implements AutoCloseable {
         ExecutorService exec = executorFor(task.category());
         long id = taskIdSequence.incrementAndGet();
         CompletableFuture<T> future = new CompletableFuture<>();
-        exec.execute(() -> {
-            String previousName = Thread.currentThread().getName();
-            // Label virtual threads (which are anonymous by default) so
-            // snapshot() and JFR show the task name.
-            String label = (Thread.currentThread().isVirtual()
-                    ? VIRTUAL_THREAD_NAME_PREFIX
-                    : CPU_THREAD_NAME_PREFIX) + task.category() + ":" + task.name();
-            Active record = new Active(id, task.name(), task.category(), label);
-            active.put(id, record);
-            try {
-                if (!Thread.currentThread().isVirtual()) {
-                    // Platform threads can be renamed safely.
+        try {
+            exec.execute(() -> {
+                String previousName = Thread.currentThread().getName();
+                String label = (Thread.currentThread().isVirtual()
+                        ? VIRTUAL_THREAD_NAME_PREFIX
+                        : CPU_THREAD_NAME_PREFIX) + task.category() + ":" + task.name();
+                Active record = new Active(id, task.name(), task.category());
+                active.put(id, record);
+                try {
+                    // Name the thread for JFR / debug snapshot visibility.
                     Thread.currentThread().setName(label);
-                }
-                future.complete(task.work().call());
-            } catch (Throwable t) {
-                future.completeExceptionally(t);
-            } finally {
-                active.remove(id);
-                if (!Thread.currentThread().isVirtual()) {
+                    future.complete(task.work().call());
+                } catch (Throwable t) {
+                    future.completeExceptionally(t);
+                } finally {
+                    active.remove(id);
                     Thread.currentThread().setName(previousName);
                 }
-            }
-        });
+            });
+        } catch (RuntimeException e) {
+            // Executor rejected the task (e.g., runner already closed).
+            future.completeExceptionally(e);
+        }
         return future;
     }
 
@@ -202,7 +201,7 @@ public final class DawTaskRunner implements AutoCloseable {
         }
     }
 
-    private record Active(long id, String name, TaskCategory category, String label) {}
+    private record Active(long id, String name, TaskCategory category) {}
 
     /**
      * Read-only view of currently running tasks; used by the debug

@@ -305,10 +305,17 @@ public final class CheckpointManager {
             return;
         }
         // JEP 444: each tick spawns one virtual thread; no pool sizing.
-        exec.execute(this::performCheckpoint);
+        try {
+            exec.execute(this::performCheckpoint);
+        } catch (RuntimeException e) {
+            // Executor shut down after isShutdown() check (race with stop()).
+            // Fall back to synchronous checkpoint to keep the scheduler alive.
+            performCheckpoint();
+        }
     }
 
-    private String buildCheckpointId(int index) {        return "chk-" + index + "-" + TIMESTAMP_FMT.format(Instant.now());
+    private String buildCheckpointId(int index) {
+        return "chk-" + index + "-" + TIMESTAMP_FMT.format(Instant.now());
     }
 
     private String buildCheckpointContent(String checkpointId, int index) {

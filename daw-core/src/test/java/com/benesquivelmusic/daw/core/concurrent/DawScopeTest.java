@@ -39,13 +39,14 @@ class DawScopeTest {
     void firstFailureCancelsAllOtherForks() throws Exception {
         AtomicInteger interruptedCount = new AtomicInteger();
         CountDownLatch siblingsStarted = new CountDownLatch(2);
+        CountDownLatch blocker = new CountDownLatch(1);
 
         try (DawScope scope = DawScope.openShutdownOnFailure("bundle-export")) {
-            // Two long-running siblings that count interrupts.
+            // Two siblings that block on a latch and observe interruption.
             scope.fork("long-1", () -> {
                 siblingsStarted.countDown();
                 try {
-                    Thread.sleep(60_000);
+                    blocker.await(5, TimeUnit.SECONDS);
                     return "done";
                 } catch (InterruptedException ie) {
                     interruptedCount.incrementAndGet();
@@ -55,7 +56,7 @@ class DawScopeTest {
             scope.fork("long-2", () -> {
                 siblingsStarted.countDown();
                 try {
-                    Thread.sleep(60_000);
+                    blocker.await(5, TimeUnit.SECONDS);
                     return "done";
                 } catch (InterruptedException ie) {
                     interruptedCount.incrementAndGet();
@@ -81,13 +82,14 @@ class DawScopeTest {
     @Test
     void closingScopeCancelsRunningForks() throws Exception {
         CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch blocker = new CountDownLatch(1);
         AtomicInteger interrupted = new AtomicInteger();
 
         DawScope scope = DawScope.openShutdownOnFailure("test");
         scope.fork("blocker", () -> {
             started.countDown();
             try {
-                Thread.sleep(60_000);
+                blocker.await(5, TimeUnit.SECONDS);
                 return "done";
             } catch (InterruptedException ie) {
                 interrupted.incrementAndGet();
@@ -129,10 +131,11 @@ class DawScopeTest {
     @Test
     void joinAllWithTimeoutInterruptsLongRunningForks() throws Exception {
         AtomicInteger interrupted = new AtomicInteger();
+        CountDownLatch blocker = new CountDownLatch(1);
         try (DawScope scope = DawScope.openShutdownOnFailure("timeout")) {
             scope.fork("slow", () -> {
                 try {
-                    Thread.sleep(30_000);
+                    blocker.await(5, TimeUnit.SECONDS);
                     return "done";
                 } catch (InterruptedException ie) {
                     interrupted.incrementAndGet();
