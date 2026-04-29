@@ -36,7 +36,11 @@ final class WorkspaceJson {
             Map<String, PanelState> panelStates = parsePanelStates(m.get("panelStates"));
             List<String> openDialogs = parseStringArray(m.get("openDialogs"));
             Map<String, Rectangle2D> panelBounds = parsePanelBounds(m.get("panelBounds"));
-            return new Workspace(name, panelStates, openDialogs, panelBounds);
+            // dockLayout is forward-compatible: workspaces written before
+            // the dock manager existed simply omit it.
+            String dockLayoutJson = stringField(m, "dockLayout");
+            if (dockLayoutJson == null) dockLayoutJson = "";
+            return new Workspace(name, panelStates, openDialogs, panelBounds, dockLayoutJson);
         } catch (RuntimeException e) {
             return null;
         }

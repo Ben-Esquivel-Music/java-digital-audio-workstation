@@ -211,7 +211,14 @@ public final class WorkspaceStore {
                     .append(",\"height\":").append(num(r.height()))
                     .append('}');
         }
-        sb.append("}}");
+        sb.append("}");
+        // dockLayout is emitted as an embedded JSON string for forward
+        // compatibility — older WorkspaceJson parsers that don't recognise
+        // the field simply ignore it.
+        if (!ws.dockLayoutJson().isEmpty()) {
+            sb.append(",\"dockLayout\":\"").append(escape(ws.dockLayoutJson())).append('"');
+        }
+        sb.append('}');
         return sb.toString();
     }
 

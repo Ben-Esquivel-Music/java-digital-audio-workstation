@@ -101,6 +101,16 @@ final class KeyboardShortcutController {
          * keeps existing test stubs source-compatible.
          */
         default void onSaveWorkspaceAs() { }
+        /**
+         * Show or hide the dockable mixer panel ({@code F3}). Default
+         * no-op keeps existing host implementations source-compatible
+         * for hosts that don't yet own a {@code DockManager}.
+         */
+        default void onToggleDockMixer() { }
+        /** Show or hide the dockable browser panel ({@code F4}). */
+        default void onToggleDockBrowser() { }
+        /** Show or hide the dockable arrangement panel ({@code F5}). */
+        default void onToggleDockArrangement() { }
     }
 
     private final KeyBindingManager keyBindingManager;
@@ -182,6 +192,10 @@ final class KeyboardShortcutController {
         actionHandlers.put(DawAction.TOGGLE_FOLD_SELECTED_TRACKS, host::onToggleFoldSelectedTracks);
         actionHandlers.put(DawAction.FOLD_ALL_AUTOMATION, host::onFoldAllAutomation);
         actionHandlers.put(DawAction.OPEN_COMMAND_PALETTE, host::onToggleCommandPalette);
+        // ── Dockable panels (Resizable and Detachable Dockable Panels) ────────
+        actionHandlers.put(DawAction.TOGGLE_DOCK_MIXER, host::onToggleDockMixer);
+        actionHandlers.put(DawAction.TOGGLE_DOCK_BROWSER, host::onToggleDockBrowser);
+        actionHandlers.put(DawAction.TOGGLE_DOCK_ARRANGEMENT, host::onToggleDockArrangement);
         // ── Workspaces (Customizable Workspace Layouts) ──────────────────────
         actionHandlers.put(DawAction.WORKSPACE_SAVE_AS, host::onSaveWorkspaceAs);
         java.util.List<DawAction> slotActions = DawAction.workspaceSlotActions();

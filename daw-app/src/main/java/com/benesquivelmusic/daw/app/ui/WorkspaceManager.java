@@ -106,6 +106,22 @@ public final class WorkspaceManager {
 
         /** Closes any currently-open dialogs. Default is a no-op. */
         default void closeAllDialogs() { }
+
+        /**
+         * Returns the current dock layout as an opaque JSON string,
+         * suitable for round-tripping through {@link Workspace#dockLayoutJson()}.
+         * The default returns an empty string for hosts with no dock manager.
+         */
+        default String captureDockLayoutJson() {
+            return "";
+        }
+
+        /**
+         * Applies a previously-captured dock layout JSON. The default is a
+         * no-op so legacy hosts can ignore dock data; implementations that
+         * own a {@code DockManager} should restore the layout atomically.
+         */
+        default void applyDockLayoutJson(String dockLayoutJson) { }
     }
 
     private final WorkspaceStore store;
@@ -180,7 +196,8 @@ public final class WorkspaceManager {
             if (b != null) bounds.put(id, b);
         }
         List<String> dialogs = List.copyOf(Optional.ofNullable(host.openDialogIds()).orElse(List.of()));
-        return new Workspace(name, states, dialogs, bounds);
+        String dockLayoutJson = Optional.ofNullable(host.captureDockLayoutJson()).orElse("");
+        return new Workspace(name, states, dialogs, bounds, dockLayoutJson);
     }
 
     /** Captures the current UI state and persists it under {@code name}. */
@@ -214,6 +231,11 @@ public final class WorkspaceManager {
         }
         for (String dialogId : workspace.openDialogs()) {
             host.openDialog(dialogId);
+        }
+        // Apply the dock layout last so it takes precedence over the
+        // legacy panelStates/panelBounds for hosts that own a DockManager.
+        if (!workspace.dockLayoutJson().isEmpty()) {
+            host.applyDockLayoutJson(workspace.dockLayoutJson());
         }
         LOG.fine(() -> "Applied workspace '" + workspace.name() + "'");
     }

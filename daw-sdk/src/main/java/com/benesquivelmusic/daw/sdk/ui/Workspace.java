@@ -30,13 +30,19 @@ import java.util.Objects;
  *                     {@code "mixer"}, {@code "arrangement"})
  * @param openDialogs  list of stable dialog ids that should be re-opened
  *                     when the workspace is restored (empty if none)
- * @param panelBounds  on-screen bounds for each addressable panel, keyed
- *                     by the same stable id used in {@code panelStates}
+ * @param panelBounds     on-screen bounds for each addressable panel, keyed
+ *                        by the same stable id used in {@code panelStates}
+ * @param dockLayoutJson  opaque JSON blob describing the panel dock layout
+ *                        (zones, tab order, floating window bounds) for
+ *                        {@code daw-app}'s {@code DockManager}; empty
+ *                        string for workspaces that predate dockable panels
+ *                        (forward-compatible default).
  */
 public record Workspace(String name,
                         Map<String, PanelState> panelStates,
                         List<String> openDialogs,
-                        Map<String, Rectangle2D> panelBounds) {
+                        Map<String, Rectangle2D> panelBounds,
+                        String dockLayoutJson) {
 
     /**
      * Validates and defensively copies every collection so the resulting
@@ -50,13 +56,32 @@ public record Workspace(String name,
         Objects.requireNonNull(panelStates, "panelStates must not be null");
         Objects.requireNonNull(openDialogs, "openDialogs must not be null");
         Objects.requireNonNull(panelBounds, "panelBounds must not be null");
+        Objects.requireNonNull(dockLayoutJson, "dockLayoutJson must not be null");
         panelStates = Map.copyOf(panelStates);
         openDialogs = List.copyOf(openDialogs);
         panelBounds = Map.copyOf(panelBounds);
     }
 
+    /**
+     * Backwards-compatible constructor used by callers written before
+     * {@link #dockLayoutJson} existed. Equivalent to passing an empty
+     * dock-layout string.
+     */
+    public Workspace(String name,
+                     Map<String, PanelState> panelStates,
+                     List<String> openDialogs,
+                     Map<String, Rectangle2D> panelBounds) {
+        this(name, panelStates, openDialogs, panelBounds, "");
+    }
+
     /** Returns a copy of this workspace renamed to {@code newName}. */
     public Workspace withName(String newName) {
-        return new Workspace(newName, panelStates, openDialogs, panelBounds);
+        return new Workspace(newName, panelStates, openDialogs, panelBounds, dockLayoutJson);
+    }
+
+    /** Returns a copy of this workspace with the given dock layout. */
+    public Workspace withDockLayoutJson(String newDockLayoutJson) {
+        return new Workspace(name, panelStates, openDialogs, panelBounds,
+                newDockLayoutJson == null ? "" : newDockLayoutJson);
     }
 }

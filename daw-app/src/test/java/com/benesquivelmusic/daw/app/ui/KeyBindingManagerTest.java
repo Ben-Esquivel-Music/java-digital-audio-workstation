@@ -70,7 +70,7 @@ class KeyBindingManagerTest {
 
     @Test
     void shouldSetCustomBinding() {
-        KeyCombination custom = new KeyCodeCombination(KeyCode.F5);
+        KeyCombination custom = new KeyCodeCombination(KeyCode.F12);
         manager.setBinding(DawAction.PLAY_STOP, custom);
 
         Optional<KeyCombination> result = manager.getBinding(DawAction.PLAY_STOP);
@@ -94,7 +94,7 @@ class KeyBindingManagerTest {
 
     @Test
     void setBindingShouldRejectNullAction() {
-        KeyCombination combo = new KeyCodeCombination(KeyCode.F5);
+        KeyCombination combo = new KeyCodeCombination(KeyCode.F12);
         assertThatThrownBy(() -> manager.setBinding(null, combo))
                 .isInstanceOf(NullPointerException.class);
     }
@@ -103,7 +103,7 @@ class KeyBindingManagerTest {
 
     @Test
     void shouldPersistCustomBinding() {
-        KeyCombination custom = new KeyCodeCombination(KeyCode.F5);
+        KeyCombination custom = new KeyCodeCombination(KeyCode.F12);
         manager.setBinding(DawAction.PLAY_STOP, custom);
 
         KeyBindingManager reloaded = new KeyBindingManager(prefs);
@@ -244,7 +244,7 @@ class KeyBindingManagerTest {
     @Test
     void isCustomizedShouldReturnTrueForChangedBinding() {
         manager.setBinding(DawAction.PLAY_STOP,
-                new KeyCodeCombination(KeyCode.F5));
+                new KeyCodeCombination(KeyCode.F12));
         assertThat(manager.isCustomized(DawAction.PLAY_STOP)).isTrue();
     }
 
@@ -265,7 +265,7 @@ class KeyBindingManagerTest {
     @Test
     void shouldLoadStoredValidBinding() {
         // Store a valid binding in preferences
-        KeyCombination custom = new KeyCodeCombination(KeyCode.F5);
+        KeyCombination custom = new KeyCodeCombination(KeyCode.F12);
         prefs.put("keybinding.PLAY_STOP", custom.getName());
 
         KeyBindingManager reloaded = new KeyBindingManager(prefs);
