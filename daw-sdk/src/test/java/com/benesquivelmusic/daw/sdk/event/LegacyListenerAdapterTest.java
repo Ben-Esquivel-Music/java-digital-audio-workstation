@@ -6,19 +6,27 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Flow;
 import java.util.concurrent.SubmissionPublisher;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Verifies that {@link LegacyListenerAdapter} bridges the new
- * {@link DawEvent} stream to legacy listener callbacks. Subscribing the
- * adapter to a {@link SubmissionPublisher} and emitting events should
- * drive the legacy listener exactly as the legacy engine did.
+ * Verifies that {@link LegacyListenerAdapter} bridges the supported
+ * subset of new {@link DawEvent}s to legacy listener callbacks.
+ *
+ * <p>Currently only {@link ProjectEvent.Saved} is mapped (to
+ * {@link AutoSaveListener#onAfterCheckpoint}). Other legacy callbacks
+ * ({@code onBeforeCheckpoint}, {@code onCheckpointFailed}, and all
+ * {@link RecordingListener} methods) are not bridged yet.</p>
  */
 class LegacyListenerAdapterTest {
 
     private static final Instant T0 = Instant.parse("2026-01-01T00:00:00Z");
+
+    /** Executor that runs tasks inline on the submitting thread. */
+    private static final Executor DIRECT = Runnable::run;
 
     private static final class RecordingAutoSave implements AutoSaveListener {
         final List<String> beforeIds = new ArrayList<>();
@@ -35,25 +43,17 @@ class LegacyListenerAdapterTest {
         RecordingAutoSave listener = new RecordingAutoSave();
         LegacyListenerAdapter adapter = new LegacyListenerAdapter(null, listener);
 
-        try (SubmissionPublisher<DawEvent> publisher = new SubmissionPublisher<>()) {
+        UUID projectId = UUID.randomUUID();
+        try (var publisher = new SubmissionPublisher<DawEvent>(DIRECT, Flow.defaultBufferSize())) {
             publisher.subscribe(adapter);
-            UUID projectId = UUID.randomUUID();
             publisher.submit(new ProjectEvent.Saved(
                     projectId, java.nio.file.Path.of("/tmp/p.daw"), T0));
-            publisher.close();
-        }
-
-        // The publisher closed; wait briefly for delivery to complete.
-        // SubmissionPublisher uses ForkJoinPool — onComplete is called
-        // asynchronously, but onNext for already-submitted items must
-        // run before onComplete. A short busy-wait keeps the test
-        // deterministic without resorting to time-based sleeps.
-        long deadline = System.nanoTime() + java.time.Duration.ofSeconds(2).toNanos();
-        while (listener.afterIds.isEmpty() && System.nanoTime() < deadline) {
-            Thread.onSpinWait();
         }
 
         assertThat(listener.afterIds).hasSize(1);
+        // Checkpoint id is unique per save: projectId + "-" + timestamp millis
+        assertThat(listener.afterIds.getFirst())
+                .isEqualTo(projectId + "-" + T0.toEpochMilli());
         assertThat(listener.beforeIds).isEmpty();
         assertThat(listener.failedIds).isEmpty();
     }
@@ -63,18 +63,14 @@ class LegacyListenerAdapterTest {
         RecordingAutoSave listener = new RecordingAutoSave();
         LegacyListenerAdapter adapter = new LegacyListenerAdapter(null, listener);
 
-        try (SubmissionPublisher<DawEvent> publisher = new SubmissionPublisher<>()) {
+        try (var publisher = new SubmissionPublisher<DawEvent>(DIRECT, Flow.defaultBufferSize())) {
             publisher.subscribe(adapter);
             publisher.submit(new TransportEvent.Started(0L, T0));
             publisher.submit(new TrackEvent.Added(UUID.randomUUID(), T0));
             publisher.submit(new ProjectEvent.Opened(
                     UUID.randomUUID(), java.nio.file.Path.of("/tmp/p.daw"), T0));
-            publisher.close();
         }
 
-        // No after-checkpoint should be observed for non-Saved events.
-        long deadline = System.nanoTime() + java.time.Duration.ofMillis(500).toNanos();
-        while (System.nanoTime() < deadline) { Thread.onSpinWait(); }
         assertThat(listener.afterIds).isEmpty();
     }
 
@@ -94,12 +90,12 @@ class LegacyListenerAdapterTest {
     @Test
     void nullListenersAreAllowed() {
         LegacyListenerAdapter adapter = new LegacyListenerAdapter(null, null);
-        try (SubmissionPublisher<DawEvent> publisher = new SubmissionPublisher<>()) {
+        try (var publisher = new SubmissionPublisher<DawEvent>(DIRECT, Flow.defaultBufferSize())) {
             publisher.subscribe(adapter);
             publisher.submit(new ProjectEvent.Saved(
                     UUID.randomUUID(), java.nio.file.Path.of("/tmp/p.daw"), T0));
         }
-        // Just verifying no NPE was thrown by the adapter itself.
+        // Verifying no NPE was thrown by the adapter itself.
         assertThat(adapter.recordingListener()).isNull();
     }
 }

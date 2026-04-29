@@ -2,33 +2,51 @@ package com.benesquivelmusic.daw.sdk.event;
 
 import java.util.Objects;
 import java.util.concurrent.Flow;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Compatibility bridge that re-emits legacy listener callbacks from a
- * stream of {@link DawEvent}s.
+ * Compatibility bridge that re-emits a <em>subset</em> of legacy
+ * listener callbacks from a stream of {@link DawEvent}s.
  *
  * <p>This adapter exists for the duration of the migration described in
  * the issue: the engine's authoritative event channel is now a
  * {@link Flow.Publisher Flow.Publisher&lt;DawEvent&gt;}, but a number of
  * call sites still observe the project through the older
  * {@link RecordingListener} and {@link AutoSaveListener} interfaces.
- * Subscribe an instance of this adapter to the publisher and the legacy
- * listener callbacks will fire on the same events that drove them
- * before, with no behavioural change visible to the listener.</p>
+ * Subscribe an instance of this adapter to the publisher and the
+ * supported legacy callbacks will fire as described below.</p>
+ *
+ * <h2>Current bridging scope (partial)</h2>
+ *
+ * <ul>
+ *   <li>{@link ProjectEvent.Saved} &rarr;
+ *       {@link AutoSaveListener#onAfterCheckpoint(String)} with a
+ *       unique checkpoint id derived from the event timestamp and
+ *       project id.</li>
+ * </ul>
+ *
+ * <p>The following legacy callbacks are <strong>not yet bridged</strong>
+ * and must still be invoked by the engine directly until full migration
+ * is complete:</p>
+ *
+ * <ul>
+ *   <li>{@link AutoSaveListener#onBeforeCheckpoint(String)}</li>
+ *   <li>{@link AutoSaveListener#onCheckpointFailed(String, Throwable)}</li>
+ *   <li>All {@link RecordingListener} callbacks</li>
+ * </ul>
  *
  * <p>New code <strong>must not</strong> rely on this adapter &mdash;
  * subscribe to the {@code DawEvent} stream and use an exhaustive
- * {@code switch} instead. The adapter is intentionally minimal: it only
- * handles the legacy events that exist today, so {@code default} cases
- * in its internal {@code switch}es trigger compile-time
- * exhaustiveness warnings whenever a new {@link DawEvent} variant is
- * introduced.</p>
+ * {@code switch} instead. The adapter's internal {@code switch}es
+ * have <strong>no {@code default} branch</strong>, which makes them
+ * exhaustive: adding a new {@link DawEvent} variant causes a
+ * compilation error, forcing an explicit migration decision.</p>
  */
 public final class LegacyListenerAdapter implements Flow.Subscriber<DawEvent> {
 
     private final RecordingListener recordingListener;
     private final AutoSaveListener autoSaveListener;
-    private Flow.Subscription subscription;
+    private final AtomicReference<Flow.Subscription> subscription = new AtomicReference<>();
 
     /**
      * Constructs an adapter that re-emits legacy listener callbacks.
@@ -48,7 +66,12 @@ public final class LegacyListenerAdapter implements Flow.Subscriber<DawEvent> {
 
     @Override
     public void onSubscribe(Flow.Subscription subscription) {
-        this.subscription = Objects.requireNonNull(subscription, "subscription");
+        Objects.requireNonNull(subscription, "subscription");
+        if (!this.subscription.compareAndSet(null, subscription)) {
+            // Reactive Streams rule §2.5: reject subsequent subscriptions.
+            subscription.cancel();
+            return;
+        }
         subscription.request(Long.MAX_VALUE);
     }
 
@@ -75,11 +98,13 @@ public final class LegacyListenerAdapter implements Flow.Subscriber<DawEvent> {
             return;
         }
         // Legacy AutoSaveListener fires around save checkpoints. We map
-        // ProjectEvent.Saved to onAfterCheckpoint so call sites that
-        // only care about "a save just happened" continue to fire.
+        // ProjectEvent.Saved to onAfterCheckpoint with a unique checkpoint
+        // id derived from project id + event timestamp so consumers that
+        // key state/files off checkpointId see distinct values per save.
         switch (event) {
             case ProjectEvent.Saved s ->
-                    autoSaveListener.onAfterCheckpoint(s.projectId().toString());
+                    autoSaveListener.onAfterCheckpoint(
+                            s.projectId() + "-" + s.timestamp().toEpochMilli());
             case ProjectEvent.Opened ignored  -> { /* no legacy auto-save mapping */ }
             case ProjectEvent.Closed ignored  -> { /* no legacy auto-save mapping */ }
             case ProjectEvent.Created ignored -> { /* no legacy auto-save mapping */ }
@@ -116,6 +141,6 @@ public final class LegacyListenerAdapter implements Flow.Subscriber<DawEvent> {
      * {@link #onSubscribe(Flow.Subscription)} has fired.
      */
     public Flow.Subscription subscription() {
-        return subscription;
+        return subscription.get();
     }
 }
