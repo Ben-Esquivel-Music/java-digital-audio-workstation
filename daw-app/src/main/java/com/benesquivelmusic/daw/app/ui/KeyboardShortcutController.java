@@ -84,6 +84,12 @@ final class KeyboardShortcutController {
         void onToggleFoldSelectedTracks();
         /** Master "Fold all automation" toggle (Issue 568). */
         void onFoldAllAutomation();
+        /**
+         * Toggle the searchable Command Palette. Bound to {@code Ctrl+K} via
+         * {@link DawAction#OPEN_COMMAND_PALETTE} and to a fixed
+         * {@code Ctrl+Shift+P} accelerator.
+         */
+        void onToggleCommandPalette();
     }
 
     private final KeyBindingManager keyBindingManager;
@@ -94,12 +100,13 @@ final class KeyboardShortcutController {
         this.host = host;
     }
 
-    void register(Scene scene) {
-        if (scene == null) {
-            return;
-        }
-        ObservableMap<KeyCombination, Runnable> accelerators = scene.getAccelerators();
-
+    /**
+     * Builds the (action → handler) map used both for accelerator registration
+     * and for sourcing {@link CommandPaletteView} entries. Exposed
+     * package-private so the {@code MainController} can share the same
+     * handlers with the command palette without duplicating the wiring.
+     */
+    Map<DawAction, Runnable> buildActionHandlers() {
         Map<DawAction, Runnable> actionHandlers = new EnumMap<>(DawAction.class);
         actionHandlers.put(DawAction.PLAY_STOP, () -> {
             if (host.transportState() == TransportState.PLAYING) {
@@ -163,6 +170,17 @@ final class KeyboardShortcutController {
         actionHandlers.put(DawAction.TOGGLE_FOLD_FOCUSED_TRACK, host::onToggleFoldFocusedTrack);
         actionHandlers.put(DawAction.TOGGLE_FOLD_SELECTED_TRACKS, host::onToggleFoldSelectedTracks);
         actionHandlers.put(DawAction.FOLD_ALL_AUTOMATION, host::onFoldAllAutomation);
+        actionHandlers.put(DawAction.OPEN_COMMAND_PALETTE, host::onToggleCommandPalette);
+        return actionHandlers;
+    }
+
+    void register(Scene scene) {
+        if (scene == null) {
+            return;
+        }
+        ObservableMap<KeyCombination, Runnable> accelerators = scene.getAccelerators();
+
+        Map<DawAction, Runnable> actionHandlers = buildActionHandlers();
 
         for (DawAction action : DawAction.values()) {
             Runnable handler = actionHandlers.get(action);
@@ -171,6 +189,19 @@ final class KeyboardShortcutController {
             }
             Optional<KeyCombination> binding = keyBindingManager.getBinding(action);
             binding.ifPresent(kc -> accelerators.put(kc, handler));
+        }
+
+        // Register Ctrl+Shift+P as a fixed additional accelerator for the
+        // command palette, in addition to the user-rebindable Ctrl+K
+        // (DawAction.OPEN_COMMAND_PALETTE). This mirrors VS Code's
+        // longstanding muscle-memory binding.
+        Runnable paletteHandler = actionHandlers.get(DawAction.OPEN_COMMAND_PALETTE);
+        if (paletteHandler != null) {
+            accelerators.put(
+                    new javafx.scene.input.KeyCodeCombination(
+                            javafx.scene.input.KeyCode.P,
+                            KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN),
+                    paletteHandler);
         }
 
         LOG.fine("Registered keyboard shortcuts");

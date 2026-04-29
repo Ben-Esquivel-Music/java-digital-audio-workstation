@@ -141,6 +141,7 @@ public final class MainController {
     private TempoEditController tempoEditController;
     private ToolbarStateStore toolbarStateStore;
     private KeyBindingManager keyBindingManager;
+    private CommandPaletteView commandPaletteView;
 
     private ArrangementCanvas arrangementCanvas;
     private ClipInteractionController clipInteractionController;
@@ -255,6 +256,9 @@ public final class MainController {
             if (scene != null) {
                 keyboardShortcutController.register(scene);
                 if (scene.getWindow() instanceof Stage primaryStage) {
+                    if (commandPaletteView != null) {
+                        commandPaletteView.setOwner(primaryStage);
+                    }
                     primaryStage.setOnHidden(_ -> {
                         pluginViewController.dispose();
                         if (pluginFaultUiController != null) {
@@ -605,7 +609,48 @@ public final class MainController {
                     @Override public void onToggleFoldFocusedTrack() { MainController.this.onToggleFoldFocusedTrack(); }
                     @Override public void onToggleFoldSelectedTracks() { MainController.this.onToggleFoldSelectedTracks(); }
                     @Override public void onFoldAllAutomation() { MainController.this.onFoldAllAutomation(); }
+                    @Override public void onToggleCommandPalette() {
+                        if (commandPaletteView != null) commandPaletteView.toggle();
+                    }
                 });
+        createCommandPaletteView();
+    }
+
+    /**
+     * Builds the {@link CommandPaletteView} using the same action-handler
+     * map as {@link KeyboardShortcutController}. Each handler is wrapped to
+     * source the latest {@link KeyBindingManager} display text and category
+     * description, ensuring rebound shortcuts surface in the palette.
+     */
+    private void createCommandPaletteView() {
+        if (keyboardShortcutController == null) {
+            return;
+        }
+        java.util.Map<DawAction, Runnable> handlers = keyboardShortcutController.buildActionHandlers();
+        CommandPaletteRecentsStore recentsStore = new CommandPaletteRecentsStore();
+        commandPaletteView = new CommandPaletteView(
+                () -> {
+                    java.util.List<CommandPaletteEntry> entries = new java.util.ArrayList<>();
+                    for (DawAction action : DawAction.values()) {
+                        if (action == DawAction.OPEN_COMMAND_PALETTE) {
+                            // Don't list the palette itself.
+                            continue;
+                        }
+                        Runnable h = handlers.get(action);
+                        if (h == null) continue;
+                        String shortcut = keyBindingManager == null ? ""
+                                : keyBindingManager.getDisplayText(action);
+                        entries.add(CommandPaletteEntry.of(
+                                action.name(),
+                                action.displayName(),
+                                shortcut,
+                                action.category().displayName(),
+                                null,
+                                h));
+                    }
+                    return entries;
+                },
+                recentsStore);
     }
 
     private void initializeNotificationBar() {

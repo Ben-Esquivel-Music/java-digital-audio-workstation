@@ -165,7 +165,14 @@ public enum DawAction {
 
     // ── Application ──────────────────────────────────────────────────────────
     OPEN_SETTINGS("Settings", Category.APPLICATION,
-            new KeyCodeCombination(KeyCode.COMMA, KeyCombination.SHORTCUT_DOWN));
+            new KeyCodeCombination(KeyCode.COMMA, KeyCombination.SHORTCUT_DOWN)),
+    /**
+     * Toggle the searchable Command Palette. Bound to {@code Ctrl+K} by
+     * default; {@code Ctrl+Shift+P} is registered as an additional, fixed
+     * accelerator by {@code KeyboardShortcutController}.
+     */
+    OPEN_COMMAND_PALETTE("Command Palette", Category.APPLICATION,
+            new KeyCodeCombination(KeyCode.K, KeyCombination.SHORTCUT_DOWN));
 
     /**
      * Logical grouping for the settings UI.
