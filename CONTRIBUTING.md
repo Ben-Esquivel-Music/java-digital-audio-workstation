@@ -74,8 +74,8 @@ without touching global state.
 
 The application's composition root is
 [`DawRuntime`](daw-app/src/main/java/com/benesquivelmusic/daw/app/DawRuntime.java)
-— a small hand-rolled class instantiated once in `DawApplication#start`
-that owns the canonical long-lived collaborators (`ProcessorRegistry`,
+— a small hand-rolled class instantiated once during `DawApplication`
+construction that owns the canonical long-lived collaborators (`ProcessorRegistry`,
 `java.time.Clock`, `java.util.random.RandomGenerator`, …) and passes
 them into downstream constructors.
 

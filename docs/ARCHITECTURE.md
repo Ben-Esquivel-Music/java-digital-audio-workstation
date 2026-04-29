@@ -29,8 +29,9 @@ or service locators. The wiring happens in a single class:
 
 > `daw-app/src/main/java/com/benesquivelmusic/daw/app/DawRuntime.java`
 
-`DawRuntime` is the composition root. It is instantiated once in
-`DawApplication#start` and owns:
+`DawRuntime` is the composition root. It is instantiated once during
+`DawApplication` construction (via the JavaFX no-arg constructor) and
+owns:
 
 | Collaborator | Type | Default |
 |---|---|---|

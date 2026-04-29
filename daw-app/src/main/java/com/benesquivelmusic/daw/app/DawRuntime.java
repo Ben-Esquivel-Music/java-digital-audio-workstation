@@ -20,7 +20,7 @@ import java.util.random.RandomGenerator;
  * than it solves: there are a handful of long-lived collaborators, all of
  * them constructed at startup from pure-Java dependencies. A single
  * {@code DawRuntime} that {@code new}s them up — and is itself constructed
- * once in {@link DawApplication#start} — is the simplest thing that could
+ * once during application startup — is the simplest thing that could
  * possibly work, while still giving tests the full benefit of constructor
  * injection.</p>
  *
