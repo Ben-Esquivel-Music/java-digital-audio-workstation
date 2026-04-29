@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.BufferSizeRange;
+import com.benesquivelmusic.daw.sdk.audio.ClockSource;
 import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 
@@ -119,6 +120,7 @@ public final class AudioSettingsDialog extends Dialog<Void> {
     private final ComboBox<Integer> bufferSizeCombo;
     private final ComboBox<Integer> bitDepthCombo;
     private final ComboBox<MixPrecision> mixPrecisionCombo;
+    private final ComboBox<ClockSource> clockSourceCombo;
     private final Label bufferLatencyLabel;
     private final Label sampleRateLatencyLabel;
     private final Label cpuLoadLabel;
@@ -166,6 +168,16 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         bufferSizeCombo = new ComboBox<>();
         bitDepthCombo = new ComboBox<>();
         mixPrecisionCombo = new ComboBox<>();
+        clockSourceCombo = new ComboBox<>();
+        clockSourceCombo.setConverter(new javafx.util.StringConverter<>() {
+            @Override public String toString(ClockSource cs) {
+                return cs == null ? "" : cs.name() + " (" + cs.kind().shortLabel() + ")";
+            }
+            @Override public ClockSource fromString(String s) { return null; }
+        });
+        clockSourceCombo.setTooltip(new Tooltip(
+                "Hardware clock source — Internal, Word Clock, S/PDIF, ADAT, AES. "
+                        + "Disabled when the active backend does not expose clock-source selection."));
 
         bufferSizeCombo.getItems().setAll(BUFFER_SIZE_OPTIONS);
         bitDepthCombo.getItems().setAll(BIT_DEPTH_OPTIONS);
@@ -281,6 +293,10 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         grid.add(bufferLatencyLabel, 2, row);
         row++;
 
+        grid.add(new Label("Clock Source:"), 0, row);
+        grid.add(clockSourceCombo, 1, row, 2, 1);
+        row++;
+
         grid.add(new Label("Bit Depth:"), 0, row);
         grid.add(bitDepthCombo, 1, row);
         row++;
@@ -390,6 +406,27 @@ public final class AudioSettingsDialog extends Dialog<Void> {
 
         testToneButton.setOnAction(_ -> onTestTone());
         openControlPanelButton.setOnAction(_ -> onOpenControlPanel());
+
+        clockSourceCombo.valueProperty().addListener((_, _, newVal) -> {
+            if (suppressChangeEvents || newVal == null || controller == null) {
+                return;
+            }
+            // Forward the selection to the backend, then re-query buffer
+            // and sample-rate ranges since some interfaces only allow
+            // specific rates per clock source.
+            try {
+                controller.selectClockSource(effectiveBackendName(),
+                        unwrapDefault(outputDeviceCombo.getValue()),
+                        newVal.id());
+            } catch (RuntimeException e) {
+                LOG.log(Level.WARNING, "Clock source selection failed", e);
+                showError("Clock Source Failed",
+                        "Could not switch clock source: "
+                                + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+                return;
+            }
+            refreshDeviceCapabilities(currentBufferSizeOrDefault(), currentSampleRateOrDefault());
+        });
     }
 
     private int currentBufferSizeOrDefault() {
@@ -477,7 +514,40 @@ public final class AudioSettingsDialog extends Dialog<Void> {
 
         rebuildBufferSizeMenu(desiredBufferFrames);
         rebuildSampleRateMenu(desiredSampleRate);
+        refreshClockSourceMenu();
         refreshLatencyLabels();
+    }
+
+    /**
+     * Re-queries the active backend for the current output device's
+     * available {@link ClockSource}s and rebuilds the Clock Source
+     * combo. The combo is greyed out and tooltipped when the backend
+     * returns an empty list — that is the correct behaviour for
+     * WASAPI / JACK / the JDK mixer, which all run at the OS / server
+     * clock and have no per-device clock-source selection.
+     */
+    private void refreshClockSourceMenu() {
+        List<ClockSource> sources = controller != null
+                ? controller.clockSources(effectiveBackendName(),
+                        unwrapDefault(outputDeviceCombo.getValue()))
+                : List.of();
+        suppressChangeEvents = true;
+        try {
+            clockSourceCombo.getItems().setAll(sources);
+            ClockSource current = sources.stream()
+                    .filter(ClockSource::current)
+                    .findFirst()
+                    .orElse(sources.isEmpty() ? null : sources.getFirst());
+            clockSourceCombo.setValue(current);
+            boolean enabled = !sources.isEmpty();
+            clockSourceCombo.setDisable(!enabled);
+            clockSourceCombo.setTooltip(new Tooltip(enabled
+                    ? "Locks the device to the selected clock source — "
+                            + "Internal, Word Clock, S/PDIF, ADAT, or AES."
+                    : "This backend does not expose clock-source selection."));
+        } finally {
+            suppressChangeEvents = false;
+        }
     }
 
     private void rebuildBufferSizeMenu(int desiredFrames) {
@@ -916,5 +986,10 @@ public final class AudioSettingsDialog extends Dialog<Void> {
     /** Test hook — the WASAPI exclusive-mode checkbox. */
     CheckBox getWasapiExclusiveCheck() {
         return wasapiExclusiveCheck;
+    }
+
+    /** Test hook — the Clock Source combo. */
+    ComboBox<ClockSource> getClockSourceCombo() {
+        return clockSourceCombo;
     }
 }

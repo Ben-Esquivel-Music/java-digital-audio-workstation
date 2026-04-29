@@ -259,6 +259,69 @@ public interface AudioEngineController {
     }
 
     /**
+     * Returns the hardware clock sources the active backend's named
+     * output device exposes. The Audio Settings dialog renders this as
+     * a combo box; an empty list disables the combo and tooltips it
+     * "this backend does not expose clock-source selection".
+     *
+     * <p>The default implementation returns an empty list so test
+     * stubs that have no real backend continue to work.</p>
+     *
+     * @param backendName       backend name (e.g. "ASIO", "WASAPI")
+     * @param outputDeviceName  output device name; empty for the
+     *                          default device
+     * @return the device's clock sources; never {@code null}
+     */
+    default List<com.benesquivelmusic.daw.sdk.audio.ClockSource> clockSources(
+            String backendName, String outputDeviceName) {
+        return List.of();
+    }
+
+    /**
+     * Asks the active backend to lock the named output device to the
+     * clock source whose id is {@code sourceId}. The dialog calls this
+     * when the user picks a new entry in the Clock Source combo. After
+     * a successful selection the dialog re-queries
+     * {@link #bufferSizeRange(String, String)} and
+     * {@link #supportedSampleRates(String, String)}, since some
+     * interfaces only allow specific rates per clock source.
+     *
+     * <p>The default implementation is a no-op which is safe for test
+     * stubs.</p>
+     *
+     * @param backendName       backend name
+     * @param outputDeviceName  output device name; empty for the
+     *                          default device
+     * @param sourceId          driver-defined clock-source id
+     */
+    default void selectClockSource(String backendName, String outputDeviceName, int sourceId) {
+        // no-op for test stubs
+    }
+
+    /**
+     * Returns a {@link Flow.Publisher} that emits a
+     * {@link com.benesquivelmusic.daw.sdk.audio.ClockLockEvent} every
+     * time the active backend reports a change in external-clock lock
+     * state. The transport-bar clock-status indicator subscribes to
+     * this so it can flash red on lock failure; the engine
+     * additionally pauses recording (not playback) on a lock-loss
+     * event.
+     *
+     * <p>The default implementation returns an empty publisher that
+     * never emits, which is safe for test doubles.</p>
+     *
+     * @return a publisher of clock-lock events; never {@code null}
+     */
+    default Flow.Publisher<com.benesquivelmusic.daw.sdk.audio.ClockLockEvent> clockLockEvents() {
+        return subscriber -> {
+            subscriber.onSubscribe(new Flow.Subscription() {
+                @Override public void request(long n) { /* no-op */ }
+                @Override public void cancel() { /* no-op */ }
+            });
+        };
+    }
+
+    /**
      * Binds the given {@link AudioBackend} so the controller subscribes
      * to its {@link AudioBackend#deviceEvents()} publisher and reacts
      * to {@code DeviceArrived}, {@code DeviceRemoved}, and

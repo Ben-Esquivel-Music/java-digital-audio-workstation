@@ -415,6 +415,105 @@ public sealed interface AudioBackend extends AutoCloseable
     }
 
     /**
+     * Returns the hardware clock sources the given device exposes
+     * (internal crystal, word-clock BNC, S/PDIF, ADAT, AES, …) — story
+     * "Hardware Clock Source Selection".
+     *
+     * <p>One element of the returned list will have
+     * {@link ClockSource#current()} {@code true}; the dialog uses that
+     * to default the Clock Source combo. An empty list disables the
+     * combo and tooltips it "this backend does not expose clock-source
+     * selection" — that is the correct behaviour for WASAPI / JACK /
+     * the JDK mixer, which all run at the OS / server clock and have
+     * no per-device choice.</p>
+     *
+     * <p>Per-backend conventions:</p>
+     * <ul>
+     *   <li>{@link AsioBackend} — calls
+     *       {@code ASIOGetClockSources(ASIOClockSource[], int*
+     *       numSources)} and maps every entry's {@code associatedGroup}
+     *       to a {@link ClockKind}.</li>
+     *   <li>{@link CoreAudioBackend} — reads
+     *       {@code kAudioDevicePropertyClockSource} (current) and
+     *       {@code kAudioDevicePropertyClockSources} (available).</li>
+     *   <li>{@link WasapiBackend} — empty list; selection happens in
+     *       the device's own control panel.</li>
+     *   <li>{@link JackBackend} — empty list; the JACK server runs at
+     *       its own clock.</li>
+     *   <li>{@link JavaxSoundBackend} — empty list; the JDK mixer has
+     *       no clock-source API.</li>
+     *   <li>{@link MockAudioBackend} — returns whatever the test
+     *       fixture has configured via {@code setClockSources}.</li>
+     * </ul>
+     *
+     * <p>The default implementation returns an empty list, which the
+     * UI interprets as "no choice available — disable the combo and
+     * tooltip it".</p>
+     *
+     * @param device target device id; must not be null
+     * @return an unmodifiable list of clock sources; never null
+     */
+    default List<ClockSource> clockSources(DeviceId device) {
+        return List.of();
+    }
+
+    /**
+     * Asks the driver to lock the device to the clock source whose
+     * {@link ClockSource#id()} equals {@code sourceId}. Maps to
+     * {@code ASIOSetClockSource(int)} on ASIO and to
+     * {@code kAudioDevicePropertyClockSource} on CoreAudio.
+     *
+     * <p>After this call the host should re-query
+     * {@link #bufferSizeRange(DeviceId)} and
+     * {@link #supportedSampleRates(DeviceId)}, since some interfaces
+     * only allow specific rates and buffer sizes per clock source.</p>
+     *
+     * <p>The default implementation throws
+     * {@link UnsupportedOperationException}, which is appropriate for
+     * backends that report an empty {@link #clockSources(DeviceId)}
+     * list (the UI keeps the combo disabled in that case so the call
+     * never reaches them through the normal flow).</p>
+     *
+     * @param device   target device id; must not be null
+     * @param sourceId the driver-defined id of the source to lock to,
+     *                 as reported by {@link #clockSources(DeviceId)}
+     * @throws UnsupportedOperationException if this backend has no
+     *                                       clock-source selection API
+     * @throws AudioBackendException         if the driver rejects the
+     *                                       requested source
+     */
+    default void selectClockSource(DeviceId device, int sourceId) {
+        throw new UnsupportedOperationException(
+                "Backend " + name() + " does not support clock-source selection");
+    }
+
+    /**
+     * Returns a {@link Flow.Publisher} that emits a
+     * {@link ClockLockEvent} every time the driver reports a change in
+     * external-clock lock state.
+     *
+     * <p>ASIO drivers surface this through
+     * {@code ASIOFuture(kAsioGetExternalClockLocked)} (polled at 1 Hz
+     * from a non-audio thread) plus the asynchronous
+     * {@code kAsioResyncRequest} callback. CoreAudio surfaces it via
+     * {@code kAudioDevicePropertyClockSourceLocked}.</p>
+     *
+     * <p>The default implementation returns an empty publisher that
+     * never emits, which is correct for backends that do not expose
+     * clock-lock state (WASAPI / JACK / the JDK mixer).</p>
+     *
+     * @return a publisher of clock-lock events; never {@code null}
+     */
+    default Flow.Publisher<ClockLockEvent> clockLockEvents() {
+        return subscriber -> {
+            subscriber.onSubscribe(new Flow.Subscription() {
+                @Override public void request(long n) { /* no-op */ }
+                @Override public void cancel() { /* no-op */ }
+            });
+        };
+    }
+
+    /**
      * Closes any open stream and releases native resources. Idempotent.
      */
     @Override

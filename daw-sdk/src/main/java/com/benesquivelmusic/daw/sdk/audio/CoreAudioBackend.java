@@ -151,6 +151,37 @@ public final class CoreAudioBackend implements AudioBackend {
         return Set.of(44_100, 48_000, 88_200, 96_000, 176_400, 192_000);
     }
 
+    /**
+     * Reports the device's available clock sources from CoreAudio's
+     * {@code kAudioDevicePropertyClockSources} property and marks the
+     * one returned by {@code kAudioDevicePropertyClockSource} as
+     * {@link ClockSource#current()}. The SDK-level default returns an
+     * empty list; the FFM implementation layer (story 130) replaces it
+     * with the real property reads at runtime.
+     */
+    @Override
+    public List<ClockSource> clockSources(DeviceId device) {
+        Objects.requireNonNull(device, "device must not be null");
+        return List.of();
+    }
+
+    /**
+     * Writes the requested source id to
+     * {@code kAudioDevicePropertyClockSource}. The SDK-level default
+     * throws {@link UnsupportedOperationException}; the FFM
+     * implementation layer replaces it with the real property write.
+     */
+    @Override
+    public void selectClockSource(DeviceId device, int sourceId) {
+        Objects.requireNonNull(device, "device must not be null");
+        if (!AVAILABLE) {
+            throw new AudioBackendException("CoreAudio is only available on macOS.");
+        }
+        throw new AudioBackendException(
+                "CoreAudio clock-source selection requires the macOS FFM shim "
+                        + "which is not present in this build.");
+    }
+
     private static boolean isMac() {
         String os = System.getProperty("os.name", "").toLowerCase();
         return os.contains("mac") || os.contains("darwin");

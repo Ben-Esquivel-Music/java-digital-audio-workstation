@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.BufferSizeRange;
+import com.benesquivelmusic.daw.sdk.audio.ClockKind;
+import com.benesquivelmusic.daw.sdk.audio.ClockSource;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 
 import javafx.application.Platform;
@@ -296,6 +298,50 @@ class AudioSettingsDialogTest {
         assertThat(stub.bufferSizeRangeCalls).isGreaterThan(beforeToggle);
     }
 
+    @Test
+    void clockSourceComboIsDisabledWhenBackendReportsNone() throws Exception {
+        // WASAPI / JACK / the JDK mixer all run at the OS / server clock
+        // and never report clock sources. The combo must be disabled and
+        // tooltipped so the user understands the option does not apply.
+        AudioSettingsDialog dialog = onFxThread(() -> new AudioSettingsDialog(model, stub));
+        assertThat(dialog.getClockSourceCombo().isDisabled()).isTrue();
+        assertThat(dialog.getClockSourceCombo().getItems()).isEmpty();
+    }
+
+    @Test
+    void clockSourceComboIsPopulatedWhenBackendReportsSources() throws Exception {
+        // Three sources in the order an ASIO driver typically reports
+        // them: internal crystal, word-clock BNC, S/PDIF coax.
+        ClockSource internal = new ClockSource(0, "Internal", true, new ClockKind.Internal());
+        ClockSource wordClock = new ClockSource(1, "Word Clock", false, new ClockKind.WordClock());
+        ClockSource spdif = new ClockSource(2, "S/PDIF", false, new ClockKind.Spdif());
+        stub.clockSources = List.of(internal, wordClock, spdif);
+
+        AudioSettingsDialog dialog = onFxThread(() -> new AudioSettingsDialog(model, stub));
+        assertThat(dialog.getClockSourceCombo().getItems()).hasSize(3);
+        assertThat(dialog.getClockSourceCombo().isDisabled()).isFalse();
+        // The combo defaults to whichever source the driver reports as current.
+        assertThat(dialog.getClockSourceCombo().getValue()).isEqualTo(internal);
+    }
+
+    @Test
+    void selectingClockSourceForwardsToControllerAndReQueriesCapabilities() throws Exception {
+        // Some interfaces (RME Fireface, Antelope Discrete) only allow
+        // 44.1 / 48 kHz when locked to S/PDIF, but the full canonical
+        // ladder when locked to the internal crystal. The dialog must
+        // re-query capabilities after a clock-source change.
+        ClockSource internal = new ClockSource(0, "Internal", true, new ClockKind.Internal());
+        ClockSource spdif = new ClockSource(2, "S/PDIF", false, new ClockKind.Spdif());
+        stub.clockSources = List.of(internal, spdif);
+
+        AudioSettingsDialog dialog = onFxThread(() -> new AudioSettingsDialog(model, stub));
+        int rangeCallsBefore = stub.bufferSizeRangeCalls;
+        runOnFxAndWait(() -> dialog.getClockSourceCombo().setValue(spdif));
+
+        assertThat(stub.lastSelectedClockSourceId).isEqualTo(2);
+        assertThat(stub.bufferSizeRangeCalls).isGreaterThan(rangeCallsBefore);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static <T> T onFxThread(java.util.function.Supplier<T> supplier) throws Exception {
@@ -365,6 +411,10 @@ class AudioSettingsDialogTest {
         final Map<String, BufferSizeRange> bufferRanges = new HashMap<>();
         /** Per-device supported sample-rate overrides (story 213). */
         final Map<String, Set<Integer>> supportedRates = new HashMap<>();
+        /** Clock sources reported to the dialog (Hardware Clock Source story). */
+        List<ClockSource> clockSources = List.of();
+        /** Last clock source id passed to {@link #selectClockSource}; -1 when never called. */
+        int lastSelectedClockSourceId = -1;
 
         @Override
         public String getActiveBackendName() {
@@ -439,6 +489,16 @@ class AudioSettingsDialogTest {
 
         private static String keyOf(String outputDeviceName) {
             return outputDeviceName == null ? "" : outputDeviceName;
+        }
+
+        @Override
+        public List<ClockSource> clockSources(String backendName, String outputDeviceName) {
+            return clockSources;
+        }
+
+        @Override
+        public void selectClockSource(String backendName, String outputDeviceName, int sourceId) {
+            lastSelectedClockSourceId = sourceId;
         }
     }
 }

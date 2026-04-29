@@ -43,6 +43,11 @@ public final class MockAudioBackend implements AudioBackend {
             Set.of(44_100, 48_000, 88_200, 96_000, 176_400, 192_000);
     private volatile List<AudioChannelInfo> inputChannelInfos = List.of();
     private volatile List<AudioChannelInfo> outputChannelInfos = List.of();
+    private volatile List<ClockSource> clockSources = List.of();
+    private final java.util.concurrent.SubmissionPublisher<ClockLockEvent> clockLockPublisher =
+            new java.util.concurrent.SubmissionPublisher<>();
+    private final java.util.List<Integer> clockSourceSelections =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<>());
 
     /**
      * Creates a new mock backend with no pre-canned input audio. Useful when
@@ -307,9 +312,107 @@ public final class MockAudioBackend implements AudioBackend {
                 Objects.requireNonNull(channels, "channels must not be null"));
     }
 
+    /**
+     * Returns the clock sources configured via
+     * {@link #setClockSources(List)}, defaulting to an empty list.
+     * Tests use this to drive the Audio Settings dialog's Clock Source
+     * combo through the same code path it would exercise against an
+     * ASIO driver reporting Internal / Word Clock / S/PDIF / ADAT.
+     */
+    @Override
+    public List<ClockSource> clockSources(DeviceId device) {
+        Objects.requireNonNull(device, "device must not be null");
+        return clockSources;
+    }
+
+    /**
+     * Records the selection in an internal list and, when the selected
+     * id matches a configured {@link ClockSource}, marks that source
+     * as the new "current" by rotating the {@link #clockSources()} list
+     * accordingly. Throws {@link IllegalArgumentException} when no
+     * configured source has the given id, mirroring how an ASIO driver
+     * returns {@code ASE_InvalidParameter} for an unknown source id.
+     */
+    @Override
+    public void selectClockSource(DeviceId device, int sourceId) {
+        Objects.requireNonNull(device, "device must not be null");
+        boolean known = false;
+        for (ClockSource s : clockSources) {
+            if (s.id() == sourceId) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) {
+            throw new IllegalArgumentException(
+                    "Unknown clock source id " + sourceId + " on device " + device);
+        }
+        clockSourceSelections.add(sourceId);
+        // Refresh the {@code current} flag so subsequent {@link #clockSources(DeviceId)}
+        // calls reflect the new selection — exactly what a driver would do
+        // after a successful {@code ASIOSetClockSource}.
+        java.util.List<ClockSource> updated = new java.util.ArrayList<>(clockSources.size());
+        for (ClockSource s : clockSources) {
+            updated.add(new ClockSource(s.id(), s.name(), s.id() == sourceId, s.kind()));
+        }
+        this.clockSources = List.copyOf(updated);
+    }
+
+    /**
+     * Configures the clock-source list this mock will report from
+     * {@link #clockSources(DeviceId)}.
+     *
+     * @param sources the clock sources to report (must not be null;
+     *                defensively copied)
+     */
+    public void setClockSources(List<ClockSource> sources) {
+        this.clockSources = List.copyOf(
+                Objects.requireNonNull(sources, "sources must not be null"));
+    }
+
+    /**
+     * Returns the ordered list of clock-source ids that have been
+     * passed to {@link #selectClockSource(DeviceId, int)} since this
+     * mock was constructed. Tests use this to assert that the dialog
+     * forwarded the user's selection to the backend.
+     *
+     * @return an unmodifiable snapshot of the recorded selections
+     */
+    public List<Integer> recordedClockSourceSelections() {
+        synchronized (clockSourceSelections) {
+            return List.copyOf(clockSourceSelections);
+        }
+    }
+
+    /**
+     * Returns a {@link Flow.Publisher} that re-publishes
+     * {@link ClockLockEvent}s the test fixture pushes via
+     * {@link #simulateClockLock(DeviceId, int, boolean)}. Subscribers
+     * receive every event published after they subscribe.
+     */
+    @Override
+    public Flow.Publisher<ClockLockEvent> clockLockEvents() {
+        return clockLockPublisher;
+    }
+
+    /**
+     * Simulates the driver reporting a clock-lock state change so
+     * tests can drive the transport-bar indicator and the
+     * "lock-loss during recording" flow without real hardware.
+     *
+     * @param device   the affected device id; must not be null
+     * @param sourceId the driver-defined id of the affected clock source
+     * @param locked   {@code true} for lock acquired, {@code false} for unlock
+     */
+    public void simulateClockLock(DeviceId device, int sourceId, boolean locked) {
+        Objects.requireNonNull(device, "device must not be null");
+        clockLockPublisher.submit(new ClockLockEvent(device, sourceId, locked));
+    }
+
     @Override
     public void close() {
         support.close();
+        clockLockPublisher.close();
     }
 
     /**

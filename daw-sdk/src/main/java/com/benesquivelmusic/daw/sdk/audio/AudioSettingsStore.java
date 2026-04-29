@@ -35,18 +35,31 @@ public final class AudioSettingsStore {
     /** Default relative path under {@code user.home}. */
     public static final String DEFAULT_RELATIVE_PATH = ".daw/audio-settings.json";
 
-    /** Immutable snapshot of the persisted settings. */
+    /**
+     * Immutable snapshot of the persisted settings.
+     *
+     * <p>The optional {@link #clockSourceByDeviceKey()} map persists
+     * the user's chosen hardware clock source per device, keyed by
+     * {@code "<backend>|<device-name>"}. It is serialized as a single
+     * comma-separated string field {@code "clockSourcesByDevice"} so
+     * the flat-JSON parser does not need to grow a nested-object code
+     * path. An empty map is the historical default and serializes as
+     * an empty string.</p>
+     */
     public record Settings(
             String backend,
             String inputDevice,
             String outputDevice,
             double sampleRate,
-            int bufferFrames) {
+            int bufferFrames,
+            Map<String, Integer> clockSourceByDeviceKey) {
 
         public Settings {
             Objects.requireNonNull(backend, "backend must not be null");
             Objects.requireNonNull(inputDevice, "inputDevice must not be null");
             Objects.requireNonNull(outputDevice, "outputDevice must not be null");
+            Objects.requireNonNull(clockSourceByDeviceKey,
+                    "clockSourceByDeviceKey must not be null");
             if (backend.isBlank()) {
                 throw new IllegalArgumentException("backend must not be blank");
             }
@@ -56,6 +69,35 @@ public final class AudioSettingsStore {
             if (bufferFrames <= 0) {
                 throw new IllegalArgumentException("bufferFrames must be positive: " + bufferFrames);
             }
+            // Defensive copy so callers cannot mutate the persisted map.
+            clockSourceByDeviceKey = Map.copyOf(clockSourceByDeviceKey);
+        }
+
+        /**
+         * Backwards-compatible constructor for callers that do not
+         * persist per-device clock-source selections. Equivalent to
+         * passing an empty map for {@code clockSourceByDeviceKey}.
+         */
+        public Settings(String backend,
+                        String inputDevice,
+                        String outputDevice,
+                        double sampleRate,
+                        int bufferFrames) {
+            this(backend, inputDevice, outputDevice, sampleRate, bufferFrames, Map.of());
+        }
+
+        /**
+         * Returns the device-key encoding used by
+         * {@link #clockSourceByDeviceKey()} for a given {@link DeviceId}.
+         * Defined here so callers always agree on the encoding.
+         *
+         * @param device the device id; must not be null
+         * @return a stable string key in the form
+         *         {@code "<backend>|<device-name>"}
+         */
+        public static String deviceKey(DeviceId device) {
+            Objects.requireNonNull(device, "device must not be null");
+            return device.backend() + "|" + device.name();
         }
     }
 
@@ -115,7 +157,8 @@ public final class AudioSettingsStore {
                     inputDevice,
                     outputDevice,
                     Double.parseDouble(sr),
-                    Integer.parseInt(bf)));
+                    Integer.parseInt(bf),
+                    parseClockSources(kv.get("clockSourcesByDevice"))));
         } catch (IOException | IllegalArgumentException e) {
             return Optional.empty();
         }
@@ -142,8 +185,62 @@ public final class AudioSettingsStore {
                 + "  \"inputDevice\": \"" + escape(s.inputDevice()) + "\",\n"
                 + "  \"outputDevice\": \"" + escape(s.outputDevice()) + "\",\n"
                 + "  \"sampleRate\": " + s.sampleRate() + ",\n"
-                + "  \"bufferFrames\": " + s.bufferFrames() + "\n"
+                + "  \"bufferFrames\": " + s.bufferFrames() + ",\n"
+                + "  \"clockSourcesByDevice\": \""
+                + escape(encodeClockSources(s.clockSourceByDeviceKey())) + "\"\n"
                 + "}\n";
+    }
+
+    /**
+     * Encodes a per-device clock-source map as a single comma-separated
+     * string of {@code key=id} pairs, with {@code key} URL-encoded so
+     * embedded {@code ,} or {@code =} characters round-trip cleanly.
+     */
+    static String encodeClockSources(Map<String, Integer> map) {
+        if (map.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        boolean first = true;
+        // Sort for deterministic output so persisted files diff cleanly.
+        for (Map.Entry<String, Integer> e :
+                new java.util.TreeMap<>(map).entrySet()) {
+            if (!first) sb.append(',');
+            sb.append(java.net.URLEncoder.encode(
+                            e.getKey(), java.nio.charset.StandardCharsets.UTF_8))
+                    .append('=')
+                    .append(e.getValue().intValue());
+            first = false;
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Decodes the {@link #encodeClockSources(Map)} format. Returns an
+     * empty map for {@code null}, the empty string, or any malformed
+     * entry — corrupt clock-source data is non-fatal: the rest of the
+     * settings file still loads.
+     */
+    static Map<String, Integer> parseClockSources(String encoded) {
+        if (encoded == null || encoded.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Integer> out = new LinkedHashMap<>();
+        for (String pair : encoded.split(",")) {
+            int eq = pair.indexOf('=');
+            if (eq <= 0 || eq == pair.length() - 1) {
+                continue;
+            }
+            String key = java.net.URLDecoder.decode(
+                    pair.substring(0, eq),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            try {
+                out.put(key, Integer.parseInt(pair.substring(eq + 1)));
+            } catch (NumberFormatException ignored) {
+                // Skip malformed id; preserve any previously parsed entries.
+            }
+        }
+        return out;
     }
 
     private static String escape(String s) {
