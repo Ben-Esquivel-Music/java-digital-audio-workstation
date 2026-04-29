@@ -372,4 +372,35 @@ class SettingsModelTest {
         assertThat(model.getAudioInputDevice()).isEmpty();
         assertThat(model.getAudioOutputDevice()).isEmpty();
     }
+
+    // ── Theme persistence ────────────────────────────────────────────────────
+
+    @Test
+    void shouldDefaultToDarkAccessibleTheme() {
+        assertThat(model.getThemeId()).isEqualTo("dark-accessible");
+    }
+
+    @Test
+    void shouldPersistThemeIdAcrossInstances() {
+        model.setThemeId("high-contrast");
+        SettingsModel reloaded = new SettingsModel(prefs);
+        assertThat(reloaded.getThemeId()).isEqualTo("high-contrast");
+    }
+
+    @Test
+    void shouldRejectNullOrBlankThemeId() {
+        assertThatThrownBy(() -> model.setThemeId(null))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> model.setThemeId(""))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> model.setThemeId("   "))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void resetToDefaultsShouldRestoreThemeId() {
+        model.setThemeId("light-accessible");
+        model.resetToDefaults();
+        assertThat(model.getThemeId()).isEqualTo("dark-accessible");
+    }
 }

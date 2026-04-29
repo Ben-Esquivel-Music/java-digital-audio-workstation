@@ -1,0 +1,22 @@
+{
+  "id": "high-contrast",
+  "name": "High Contrast",
+  "description": "Maximum-contrast accessible theme for low vision (AAA).",
+  "dark": true,
+  "colors": {
+    "background":       { "value": "#000000", "role": "background" },
+    "surface":          { "value": "#000000", "role": "background" },
+    "foreground":       { "value": "#ffffff", "role": "foreground" },
+    "mutedForeground":  { "value": "#c0c0c0", "role": "foreground" },
+    "accent":           { "value": "#ffff00", "role": "accent"     },
+    "warning":          { "value": "#ffa500", "role": "warning"    },
+    "danger":           { "value": "#ff8a80", "role": "danger"     }
+  },
+  "pairs": [
+    { "foreground": "foreground",      "background": "background" },
+    { "foreground": "mutedForeground", "background": "background" },
+    { "foreground": "accent",          "background": "background" },
+    { "foreground": "warning",         "background": "background" },
+    { "foreground": "danger",          "background": "background" }
+  ]
+}

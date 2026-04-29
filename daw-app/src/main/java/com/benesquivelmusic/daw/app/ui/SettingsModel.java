@@ -30,6 +30,7 @@ public final class SettingsModel {
 
     // ── Appearance keys ──────────────────────────────────────────────────────
     private static final String KEY_UI_SCALE = "appearance.uiScale";
+    private static final String KEY_THEME_ID = "appearance.themeId";
 
     // ── Plugin keys ──────────────────────────────────────────────────────────
     private static final String KEY_PLUGIN_SCAN_PATHS = "plugins.scanPaths";
@@ -50,6 +51,14 @@ public final class SettingsModel {
     static final int DEFAULT_AUTO_SAVE_INTERVAL_SECONDS = 120;
     static final double DEFAULT_TEMPO = 120.0;
     static final double DEFAULT_UI_SCALE = 1.0;
+    /**
+     * Default active theme id. Matches
+     * {@code com.benesquivelmusic.daw.app.ui.theme.ThemeRegistry.DEFAULT_THEME_ID}
+     * — duplicated here as a literal to avoid creating a build-time
+     * coupling to the JavaFX-dependent theme package from this settings
+     * class (which is also used in headless test contexts).
+     */
+    static final String DEFAULT_THEME_ID = "dark-accessible";
     static final String DEFAULT_PLUGIN_SCAN_PATHS = "";
     /** Empty backend name means "auto-select best available". */
     static final String DEFAULT_AUDIO_BACKEND = "";
@@ -73,6 +82,7 @@ public final class SettingsModel {
     private int autoSaveIntervalSeconds;
     private double defaultTempo;
     private double uiScale;
+    private String themeId;
     private String pluginScanPaths;
     private String audioBackend;
     private String audioInputDevice;
@@ -106,6 +116,7 @@ public final class SettingsModel {
                 DEFAULT_AUTO_SAVE_INTERVAL_SECONDS);
         defaultTempo = prefs.getDouble(KEY_DEFAULT_TEMPO, DEFAULT_TEMPO);
         uiScale = prefs.getDouble(KEY_UI_SCALE, DEFAULT_UI_SCALE);
+        themeId = prefs.get(KEY_THEME_ID, DEFAULT_THEME_ID);
         pluginScanPaths = prefs.get(KEY_PLUGIN_SCAN_PATHS, DEFAULT_PLUGIN_SCAN_PATHS);
         audioBackend = prefs.get(KEY_AUDIO_BACKEND, DEFAULT_AUDIO_BACKEND);
         audioInputDevice = prefs.get(KEY_AUDIO_INPUT_DEVICE, DEFAULT_AUDIO_DEVICE);
@@ -320,6 +331,29 @@ public final class SettingsModel {
         prefs.putDouble(KEY_UI_SCALE, scale);
     }
 
+    /**
+     * Returns the id of the active theme — see
+     * {@code com.benesquivelmusic.daw.app.ui.theme.ThemeRegistry}.
+     * Defaults to {@code "dark-accessible"} on first launch.
+     */
+    public String getThemeId() {
+        return themeId;
+    }
+
+    /**
+     * Sets the active theme id and persists the change.
+     *
+     * @param id non-blank theme id (must not be {@code null})
+     */
+    public void setThemeId(String id) {
+        Objects.requireNonNull(id, "id must not be null");
+        if (id.isBlank()) {
+            throw new IllegalArgumentException("themeId must not be blank");
+        }
+        this.themeId = id;
+        prefs.put(KEY_THEME_ID, id);
+    }
+
     // ── Plugins ──────────────────────────────────────────────────────────────
 
     /** Returns the plugin scan paths as a semicolon-separated string. */
@@ -367,6 +401,7 @@ public final class SettingsModel {
         setAutoSaveIntervalSeconds(DEFAULT_AUTO_SAVE_INTERVAL_SECONDS);
         setDefaultTempo(DEFAULT_TEMPO);
         setUiScale(DEFAULT_UI_SCALE);
+        setThemeId(DEFAULT_THEME_ID);
         setPluginScanPaths(DEFAULT_PLUGIN_SCAN_PATHS);
         setAudioBackend(DEFAULT_AUDIO_BACKEND);
         setAudioInputDevice(DEFAULT_AUDIO_DEVICE);
