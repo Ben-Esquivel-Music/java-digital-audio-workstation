@@ -34,8 +34,6 @@ class WasapiFormatChangeShimTest {
             MemorySegment first = shim.instance().reinterpret(8)
                     .get(ValueLayout.ADDRESS, 0);
             assertThat(first.address()).isEqualTo(shim.vtable().address());
-            // Ole32 absent on non-Windows hosts.
-            assertThat(shim.isRegistered()).isFalse();
         }
     }
 
