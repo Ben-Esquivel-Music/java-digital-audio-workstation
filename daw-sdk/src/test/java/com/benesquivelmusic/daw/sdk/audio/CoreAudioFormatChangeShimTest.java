@@ -83,6 +83,24 @@ class CoreAudioFormatChangeShimTest {
     }
 
     @Test
+    void callbackFromUnrelatedObjectIsIgnored() throws Exception {
+        CoreAudioBackend backend = new CoreAudioBackend();
+        AtomicReference<AudioDeviceEvent> ref = new AtomicReference<>();
+        backend.deviceEvents().subscribe(new CapturingSubscriber(ref, new CountDownLatch(1)));
+        Thread.sleep(50);
+        try (Arena scratch = Arena.ofConfined();
+             CoreAudioFormatChangeShim shim =
+                     new CoreAudioFormatChangeShim(backend, DEVICE, /* objectID */ 42)) {
+            MemorySegment addr = scratch.allocate(12);
+            addr.set(ValueLayout.JAVA_INT, 0, CoreAudioFormatChangeShim.kSelNominalSampleRate);
+            // Dispatch with a different objectID — should be filtered out.
+            shim.dispatch(/* unrelated objectID */ 999, 1, addr);
+        }
+        Thread.sleep(50);
+        assertThat(ref.get()).isNull();
+    }
+
+    @Test
     void nullAddressArrayIsTolerated() {
         CoreAudioBackend backend = new CoreAudioBackend();
         try (CoreAudioFormatChangeShim shim = new CoreAudioFormatChangeShim(backend, DEVICE)) {

@@ -57,6 +57,8 @@ class AsioFormatChangeShimTest {
         AudioDeviceEvent.FormatChangeRequested fc =
                 (AudioDeviceEvent.FormatChangeRequested) received;
         assertThat(fc.reason()).isInstanceOf(FormatChangeReason.BufferSizeChange.class);
+        FormatChangeReason.BufferSizeChange bsc = (FormatChangeReason.BufferSizeChange) fc.reason();
+        assertThat(bsc.newBufferFrames()).isEqualTo(512);
         assertThat(fc.proposedFormat()).contains(opened);
         assertThat(fc.device()).isEqualTo(DEVICE);
     }

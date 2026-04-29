@@ -90,6 +90,8 @@ final class CoreAudioFormatChangeShim implements AutoCloseable {
     private final DeviceId device;
     private final Arena arena;
     private final MemorySegment upcallStub;
+    /** The {@code AudioObjectID} the listeners were registered on. */
+    private final int registeredObjectID;
     /** Holds (selectorAddress, addPropertyListenerHandle, removeHandle) per registration. */
     private final List<MemorySegment> registeredAddresses = new ArrayList<>();
     private final MethodHandle removeListener;
@@ -99,15 +101,29 @@ final class CoreAudioFormatChangeShim implements AutoCloseable {
      * Builds the shared listener upcall stub and (on macOS) registers it
      * for the three property selectors.
      *
-     * @param backend owning backend; never null
-     * @param device  device id to use when publishing; never null
+     * @param backend  owning backend; never null
+     * @param device   device id to use when publishing; never null
+     * @param objectID the {@code AudioObjectID} to register listeners on;
+     *                 use {@link #kAudioObjectSystemObject} as a
+     *                 placeholder until the real {@code AudioDeviceID}
+     *                 is known (story 130)
      */
-    CoreAudioFormatChangeShim(CoreAudioBackend backend, DeviceId device) {
+    CoreAudioFormatChangeShim(CoreAudioBackend backend, DeviceId device, int objectID) {
         this.backend = Objects.requireNonNull(backend, "backend must not be null");
         this.device = Objects.requireNonNull(device, "device must not be null");
+        this.registeredObjectID = objectID;
         this.arena = Arena.ofConfined();
         this.upcallStub = buildUpcallStub();
         this.removeListener = tryRegister();
+    }
+
+    /**
+     * Convenience constructor that registers on
+     * {@link #kAudioObjectSystemObject} — used until story 130 surfaces
+     * the real {@code AudioDeviceID}.
+     */
+    CoreAudioFormatChangeShim(CoreAudioBackend backend, DeviceId device) {
+        this(backend, device, kAudioObjectSystemObject);
     }
 
     private MemorySegment buildUpcallStub() {
@@ -157,7 +173,7 @@ final class CoreAudioFormatChangeShim implements AutoCloseable {
                 addr.set(ValueLayout.JAVA_INT, 4L, kScopeGlobal);
                 addr.set(ValueLayout.JAVA_INT, 8L, kElementMain);
                 int status = (int) add.invoke(
-                        kAudioObjectSystemObject, addr, upcallStub, MemorySegment.NULL);
+                        registeredObjectID, addr, upcallStub, MemorySegment.NULL);
                 if (status == 0) {
                     registeredAddresses.add(addr);
                 }
@@ -201,6 +217,12 @@ final class CoreAudioFormatChangeShim implements AutoCloseable {
      *       {@link FormatChangeReason.ClockSourceChange}</li>
      * </ul>
      *
+     * <p>When {@code inObjectID} does not match the
+     * {@link #registeredObjectID} the shim was registered on, the
+     * callback is silently ignored — this prevents unrelated system-wide
+     * property changes (for other devices) from being attributed to the
+     * active device and triggering unnecessary reconfiguration.</p>
+     *
      * <p>{@code proposedFormat} is always {@link Optional#empty()}: the
      * listener fires before the new property value is fully readable on
      * the dispatch queue, so the controller re-queries it on reopen.</p>
@@ -217,6 +239,13 @@ final class CoreAudioFormatChangeShim implements AutoCloseable {
         if (inAddresses == null
                 || inAddresses.equals(MemorySegment.NULL)
                 || inNumberAddresses <= 0) {
+            return 0;
+        }
+        // Ignore callbacks from objects that don't match the registered
+        // target — prevents unrelated devices' property changes from
+        // triggering reconfiguration when registered on
+        // kAudioObjectSystemObject (story 218 review feedback).
+        if (inObjectID != registeredObjectID) {
             return 0;
         }
         MemorySegment addrs = inAddresses.reinterpret(
@@ -293,7 +322,7 @@ final class CoreAudioFormatChangeShim implements AutoCloseable {
             for (MemorySegment addr : registeredAddresses) {
                 try {
                     removeListener.invoke(
-                            kAudioObjectSystemObject, addr, upcallStub, MemorySegment.NULL);
+                            registeredObjectID, addr, upcallStub, MemorySegment.NULL);
                 } catch (Throwable ignored) {
                     // Best-effort: never throw from close().
                 }

@@ -587,7 +587,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
                     sdkFmt.sampleRate(),
                     currentFormat.channels(),
                     sdkFmt.bitDepth() > 0 ? sdkFmt.bitDepth() : currentFormat.bitDepth(),
-                    deriveBufferFrames(sdkFmt, currentFormat));
+                    deriveBufferFrames(requested.reason(), currentFormat, backend, active));
         } else if (proposed.isPresent() /* sample-rate change — keep project rate */) {
             reopenFormat = currentFormat;
         } else {
@@ -600,19 +600,35 @@ final class DefaultAudioEngineController implements AudioEngineController {
             LOG.log(Level.WARNING, "Failed to set new format on audio engine", e);
         }
 
-        // 6. Reopen the SDK backend's stream when applicable — same shape
-        //    as the DeviceArrived flow. The production NativeAudioBackend
-        //    is reopened lazily by the next startAudioOutput() call.
+        // Rebuild the xrun detector so its deadline matches the new
+        // format — mirrors applyConfiguration() behaviour.
+        XrunDetector previousDetector = this.xrunDetector;
+        this.xrunDetector = createDetectorFor(reopenFormat);
+        if (previousDetector != null) {
+            previousDetector.close();
+        }
+
+        // 6. Reopen the SDK backend's stream — close first since a
+        //    driver-initiated format change occurs while the backend is
+        //    still open, and calling open() without a preceding close()
+        //    would violate AudioBackendSupport.markOpen().
         if (backend != null) {
             try {
-                if (!backend.isOpen()) {
-                    backend.open(active,
-                            new com.benesquivelmusic.daw.sdk.audio.AudioFormat(
-                                    reopenFormat.sampleRate(),
-                                    reopenFormat.channels(),
-                                    reopenFormat.bitDepth()),
-                            reopenFormat.bufferSize());
+                if (backend.isOpen()) {
+                    try {
+                        backend.close();
+                    } catch (RuntimeException closeException) {
+                        LOG.log(Level.WARNING,
+                                "Failed to close backend before reopen after format change",
+                                closeException);
+                    }
                 }
+                backend.open(active,
+                        new com.benesquivelmusic.daw.sdk.audio.AudioFormat(
+                                reopenFormat.sampleRate(),
+                                reopenFormat.channels(),
+                                reopenFormat.bitDepth()),
+                        reopenFormat.bufferSize());
             } catch (RuntimeException e) {
                 LOG.log(Level.WARNING, "Failed to reopen backend after format change", e);
             }
@@ -655,22 +671,36 @@ final class DefaultAudioEngineController implements AudioEngineController {
 
     /**
      * Picks the buffer-frame count to use when reopening after a
-     * {@link AudioDeviceEvent.FormatChangeRequested}. Honours the
-     * driver-proposed buffer size when it carries one
-     * (the SDK {@code AudioFormat} record does not include buffer size,
-     * so we conservatively fall back to the engine's current value when
-     * the proposed format does not encode it explicitly — this keeps
-     * the host stable until the FFM shim ships richer payloads).
+     * {@link AudioDeviceEvent.FormatChangeRequested}.
+     *
+     * <p>The SDK {@code AudioFormat} payload does not carry buffer frames,
+     * so a request whose reason is {@link FormatChangeReason.BufferSizeChange}
+     * reads the new frame count from
+     * {@link FormatChangeReason.BufferSizeChange#newBufferFrames()} when
+     * known, or falls back to the backend's
+     * {@link BufferSizeRange#preferred()} value. For all other reasons the
+     * current engine buffer size is retained to avoid changing multiple
+     * variables at once.</p>
      */
     private static int deriveBufferFrames(
-            com.benesquivelmusic.daw.sdk.audio.AudioFormat proposed,
-            AudioFormat current) {
-        // The SDK AudioFormat record is (sampleRate, channels, bitDepth)
-        // — buffer size is negotiated separately by AudioBackend.open(),
-        // so the proposed format never carries one directly. When the
-        // FFM shim wants to surface a new buffer size it does so via
-        // the next bufferSizeRange() call which the controller honours
-        // upstream. For now, retain the engine's current buffer size.
+            FormatChangeReason reason,
+            AudioFormat current,
+            AudioBackend backend,
+            DeviceId device) {
+        if (reason instanceof FormatChangeReason.BufferSizeChange bsc) {
+            if (bsc.newBufferFrames() > 0) {
+                return bsc.newBufferFrames();
+            }
+            // Driver signal didn't carry a concrete frame count — fall
+            // back to the backend's preferred buffer size.
+            if (backend != null) {
+                try {
+                    return backend.bufferSizeRange(device).preferred();
+                } catch (RuntimeException e) {
+                    LOG.log(Level.FINE, "Failed to query bufferSizeRange for fallback", e);
+                }
+            }
+        }
         return current.bufferSize();
     }
 

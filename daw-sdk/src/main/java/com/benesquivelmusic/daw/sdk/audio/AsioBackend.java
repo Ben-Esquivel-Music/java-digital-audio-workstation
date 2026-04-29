@@ -110,9 +110,13 @@ public final class AsioBackend implements AudioBackend {
      * <ul>
      *   <li>{@code kAsioBufferSizeChange(newFrames)} &rarr;
      *       {@code reason = }{@link FormatChangeReason.BufferSizeChange};
-     *       the new {@link AudioFormat} carries the new
-     *       {@code bufferFrames} and the previously opened sample
-     *       rate / channel count / bit depth.</li>
+     *       {@code proposedFormat} can only carry the previously opened
+     *       sample rate / channel count / bit depth, because
+     *       {@code bufferFrames} is negotiated separately via
+     *       {@link AudioBackend#open(DeviceId, AudioFormat, int)} and is
+     *       not part of {@link AudioFormat}. The new frame count is
+     *       carried as
+     *       {@link FormatChangeReason.BufferSizeChange#newBufferFrames()}.</li>
      *   <li>{@code kAsioResetRequest} after a successful
      *       {@code ASIOSetSampleRate(newRate)} &rarr;
      *       {@code reason = }{@link FormatChangeReason.SampleRateChange};

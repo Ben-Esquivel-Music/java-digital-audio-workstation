@@ -122,7 +122,10 @@ public final class WasapiBackend implements AudioBackend {
      *   <li>{@code OnPropertyValueChanged} for the device's mix-format
      *       property key &rarr;
      *       {@code reason = }{@link FormatChangeReason.SampleRateChange};
-     *       the new {@link AudioFormat} carries the renegotiated rate.</li>
+     *       {@code proposedFormat} is {@link java.util.Optional#empty()}
+     *       because WASAPI does not surface the new format until the
+     *       client is re-initialised; the controller re-queries on
+     *       reopen.</li>
      *   <li>{@code IAudioClient} returning
      *       {@code AUDCLNT_E_DEVICE_INVALIDATED} on the next
      *       {@code GetBuffer} call &rarr;

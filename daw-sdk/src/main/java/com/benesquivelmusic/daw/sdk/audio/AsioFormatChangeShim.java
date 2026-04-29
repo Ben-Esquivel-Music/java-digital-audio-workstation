@@ -153,9 +153,9 @@ final class AsioFormatChangeShim implements AutoCloseable {
      *       {@link FormatChangeReason.BufferSizeChange}. The proposed
      *       format carries the previously opened sample rate / channels
      *       / bit depth via {@link AudioBackendSupport#format()};
-     *       {@code value} is the new frame count but
-     *       {@link AudioFormat} does not include buffer size, so the
-     *       new frame count is implicit in the event semantics.</li>
+     *       {@code value} is the new frame count and is carried as
+     *       {@link FormatChangeReason.BufferSizeChange#newBufferFrames()}
+     *       so consumers can apply it during reopen.</li>
      *   <li>{@link #kAsioResyncRequest} &rarr;
      *       {@link FormatChangeReason.ClockSourceChange}; proposed
      *       format is empty.</li>
@@ -186,7 +186,8 @@ final class AsioFormatChangeShim implements AutoCloseable {
                                 current.channels(),
                                 current.bitDepth()));
                 backend.publishFormatChangeRequested(
-                        device, proposed, new FormatChangeReason.BufferSizeChange());
+                        device, proposed,
+                        new FormatChangeReason.BufferSizeChange((int) value));
                 return ASE_OK;
             }
             case kAsioResyncRequest:

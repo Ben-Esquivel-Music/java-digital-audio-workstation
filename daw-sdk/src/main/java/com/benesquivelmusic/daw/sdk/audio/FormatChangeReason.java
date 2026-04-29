@@ -59,8 +59,30 @@ public sealed interface FormatChangeReason
      * a different entry from the driver panel's "Samples per buffer"
      * dropdown. ASIO source: {@code kAsioBufferSizeChange}. CoreAudio
      * source: {@code kAudioDevicePropertyBufferFrameSize}.
+     *
+     * <p>{@code newBufferFrames} is the driver's new buffer size in sample
+     * frames when the underlying signal carries it (for example ASIO's
+     * {@code kAsioBufferSizeChange} ships the new frame count in
+     * {@code value}). When the driver signal does not carry a concrete
+     * value (for example CoreAudio's
+     * {@code kAudioDevicePropertyBufferFrameSize} listener fires before
+     * the new value is fully readable), the field is {@code -1} and the
+     * controller falls back to
+     * {@link com.benesquivelmusic.daw.sdk.audio.BufferSizeRange#preferred()}.
+     * </p>
+     *
+     * @param newBufferFrames the new buffer size in sample frames, or
+     *                        {@code -1} when the signal does not carry one
      */
-    record BufferSizeChange() implements FormatChangeReason {}
+    record BufferSizeChange(int newBufferFrames) implements FormatChangeReason {
+        /** Unknown buffer size sentinel — the driver signal did not carry a concrete frame count. */
+        public static final int UNKNOWN = -1;
+
+        /** Creates a {@code BufferSizeChange} with an unknown new frame count. */
+        public BufferSizeChange() {
+            this(UNKNOWN);
+        }
+    }
 
     /**
      * The driver renegotiated the sample rate. ASIO source:

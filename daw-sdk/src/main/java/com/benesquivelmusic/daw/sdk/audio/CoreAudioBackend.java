@@ -98,12 +98,15 @@ public final class CoreAudioBackend implements AudioBackend {
      *   <li>{@code kAudioDevicePropertyNominalSampleRate} listener
      *       fires &rarr;
      *       {@code reason = }{@link FormatChangeReason.SampleRateChange};
-     *       the new {@link AudioFormat} carries the just-read
-     *       {@code Float64} rate.</li>
+     *       {@code proposedFormat} is {@link java.util.Optional#empty()}
+     *       because the listener fires before the new value is fully
+     *       readable; the controller re-queries on reopen.</li>
      *   <li>{@code kAudioDevicePropertyBufferFrameSize} listener
      *       fires &rarr;
      *       {@code reason = }{@link FormatChangeReason.BufferSizeChange};
-     *       the new format carries the just-read frame count.</li>
+     *       {@code proposedFormat} is {@link java.util.Optional#empty()};
+     *       the new frame count is not yet readable at notification
+     *       time.</li>
      *   <li>{@code kAudioDevicePropertyClockSource} listener fires
      *       &rarr;
      *       {@code reason = }{@link FormatChangeReason.ClockSourceChange};

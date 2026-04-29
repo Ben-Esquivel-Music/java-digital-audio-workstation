@@ -358,6 +358,10 @@ class DefaultAudioEngineControllerTest {
             }
             Thread.sleep(5);
         }
+        if (!condition.getAsBoolean()) {
+            throw new AssertionError(
+                    "Timed out after 2 s waiting for condition to become true");
+        }
     }
 
     /** Same as {@link #waitFor(java.util.function.BooleanSupplier)} but with a
@@ -371,6 +375,10 @@ class DefaultAudioEngineControllerTest {
                 return;
             }
             Thread.sleep(10);
+        }
+        if (!condition.getAsBoolean()) {
+            throw new AssertionError(
+                    "Timed out after 3 s waiting for condition to become true");
         }
     }
 }

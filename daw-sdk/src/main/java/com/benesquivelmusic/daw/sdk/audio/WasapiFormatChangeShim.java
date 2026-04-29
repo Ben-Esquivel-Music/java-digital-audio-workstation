@@ -89,7 +89,40 @@ final class WasapiFormatChangeShim implements AutoCloseable {
             (byte) 0x60, (byte) 0xC0
     };
 
-    /** PROPERTYKEY = 16-byte GUID + 4-byte DWORD pid = 20 bytes. */
+    /** {@code S_FALSE} HRESULT. */
+    private static final int S_FALSE = 1;
+    /** {@code RPC_E_CHANGED_MODE} HRESULT — COM already initialized in a different threading model. */
+    private static final int RPC_E_CHANGED_MODE = 0x80010106;
+    /** {@code COINIT_APARTMENTTHREADED}. */
+    private static final int COINIT_APARTMENTTHREADED = 0x2;
+    /** {@code CLSCTX_ALL} = CLSCTX_INPROC_SERVER | CLSCTX_INPROC_HANDLER | CLSCTX_LOCAL_SERVER | CLSCTX_REMOTE_SERVER. */
+    private static final int CLSCTX_ALL = 0x17;
+    /** Vtable slot index for {@code IMMDeviceEnumerator::RegisterEndpointNotificationCallback}. */
+    private static final int IMMDEVICE_ENUMERATOR_REGISTER_ENDPOINT_NOTIFICATION_CALLBACK_SLOT = 6;
+    /** Vtable slot index for {@code IMMDeviceEnumerator::UnregisterEndpointNotificationCallback}. */
+    private static final int IMMDEVICE_ENUMERATOR_UNREGISTER_ENDPOINT_NOTIFICATION_CALLBACK_SLOT = 7;
+    /** Vtable slot index for {@code IUnknown::Release}. */
+    private static final int IUNKNOWN_RELEASE_SLOT = 2;
+
+    /** {@code CLSID_MMDeviceEnumerator} = {@code {BCDE0395-E52F-467C-8E3D-C4579291692E}}. */
+    private static final byte[] CLSID_MMDEVICE_ENUMERATOR = new byte[] {
+            (byte) 0x95, (byte) 0x03, (byte) 0xDE, (byte) 0xBC,
+            (byte) 0x2F, (byte) 0xE5,
+            (byte) 0x7C, (byte) 0x46,
+            (byte) 0x8E, (byte) 0x3D,
+            (byte) 0xC4, (byte) 0x57, (byte) 0x92, (byte) 0x91,
+            (byte) 0x69, (byte) 0x2E
+    };
+
+    /** {@code IID_IMMDeviceEnumerator} = {@code {A95664D2-9614-4F35-A746-DE8DB63617E6}}. */
+    private static final byte[] IID_IMMDEVICE_ENUMERATOR = new byte[] {
+            (byte) 0xD2, (byte) 0x64, (byte) 0x56, (byte) 0xA9,
+            (byte) 0x14, (byte) 0x96,
+            (byte) 0x35, (byte) 0x4F,
+            (byte) 0xA7, (byte) 0x46,
+            (byte) 0xDE, (byte) 0x8D, (byte) 0xB6, (byte) 0x36,
+            (byte) 0x17, (byte) 0xE6
+    };
     static final long PROPERTYKEY_SIZE = 20L;
     private static final long GUID_SIZE = 16L;
 
@@ -98,6 +131,8 @@ final class WasapiFormatChangeShim implements AutoCloseable {
     private final Arena arena;
     private final MemorySegment vtable;
     private final MemorySegment instance;
+    /** The {@code IMMDeviceEnumerator*} obtained via {@code CoCreateInstance}, or {@code NULL}. */
+    private MemorySegment enumerator = MemorySegment.NULL;
     private final boolean registered;
     private boolean closed;
 
@@ -212,27 +247,95 @@ final class WasapiFormatChangeShim implements AutoCloseable {
         return vt;
     }
 
+    private static boolean hresultSucceeded(int hr) {
+        return hr >= 0;
+    }
+
+    private static boolean coInitializeSucceeded(int hr) {
+        return hr == S_OK || hr == S_FALSE || hr == RPC_E_CHANGED_MODE;
+    }
+
+    private MemorySegment allocateGuid(byte[] guidBytes) {
+        MemorySegment guid = arena.allocate(guidBytes.length, 1);
+        MemorySegment.copy(MemorySegment.ofArray(guidBytes), 0, guid, 0, guidBytes.length);
+        return guid;
+    }
+
+    private static MemorySegment vtableSlot(MemorySegment comInterface, int slotIndex) {
+        MemorySegment vtablePtr = comInterface.reinterpret(ValueLayout.ADDRESS.byteSize())
+                .get(ValueLayout.ADDRESS, 0);
+        return vtablePtr.reinterpret((long) (slotIndex + 1) * ValueLayout.ADDRESS.byteSize())
+                .get(ValueLayout.ADDRESS, (long) slotIndex * ValueLayout.ADDRESS.byteSize());
+    }
+
     private boolean tryRegister() {
         if (instance.equals(MemorySegment.NULL)) {
             return false;
         }
         try {
-            // Resolve Ole32.dll for CoInitializeEx + CoCreateInstance.
-            // On non-Windows hosts these lookups throw IllegalArgumentException
-            // and we degrade to no-op. The full IMMDeviceEnumerator-via-COM
-            // dance is wired in the implementation layer (story 130); story
-            // 218 only requires that the FFM plumbing is in place and that
-            // dispatchPropertyChanged() correctly translates the COM
-            // notification into a deviceEvents() emission.
-            SymbolLookup.libraryLookup("Ole32", arena);
-            // The actual CoCreateInstance + RegisterEndpointNotificationCallback
-            // path lives in the daw-core native shim; here we only verify the
-            // library is present so that close() can safely no-op when it
-            // is not.
-            return false;
+            SymbolLookup ole32 = SymbolLookup.libraryLookup("Ole32", arena);
+            Linker nativeLinker = Linker.nativeLinker();
+
+            MethodHandle coInitializeEx = nativeLinker.downcallHandle(
+                    ole32.find("CoInitializeEx").orElseThrow(),
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                            ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
+            MethodHandle coCreateInstance = nativeLinker.downcallHandle(
+                    ole32.find("CoCreateInstance").orElseThrow(),
+                    FunctionDescriptor.of(
+                            ValueLayout.JAVA_INT,
+                            ValueLayout.ADDRESS,
+                            ValueLayout.ADDRESS,
+                            ValueLayout.JAVA_INT,
+                            ValueLayout.ADDRESS,
+                            ValueLayout.ADDRESS));
+
+            int initHr = (int) coInitializeEx.invokeExact(
+                    MemorySegment.NULL, COINIT_APARTMENTTHREADED);
+            if (!coInitializeSucceeded(initHr)) {
+                return false;
+            }
+
+            MemorySegment clsid = allocateGuid(CLSID_MMDEVICE_ENUMERATOR);
+            MemorySegment iid = allocateGuid(IID_IMMDEVICE_ENUMERATOR);
+            MemorySegment enumeratorOut = arena.allocate(ValueLayout.ADDRESS);
+            enumeratorOut.set(ValueLayout.ADDRESS, 0, MemorySegment.NULL);
+
+            int createHr = (int) coCreateInstance.invokeExact(
+                    clsid,
+                    MemorySegment.NULL,
+                    CLSCTX_ALL,
+                    iid,
+                    enumeratorOut);
+            if (!hresultSucceeded(createHr)) {
+                return false;
+            }
+
+            MemorySegment en = enumeratorOut.get(ValueLayout.ADDRESS, 0);
+            if (en == null || en.equals(MemorySegment.NULL)) {
+                return false;
+            }
+
+            MethodHandle registerEndpointNotificationCallback =
+                    nativeLinker.downcallHandle(
+                            vtableSlot(en,
+                                    IMMDEVICE_ENUMERATOR_REGISTER_ENDPOINT_NOTIFICATION_CALLBACK_SLOT),
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+
+            int registerHr = (int) registerEndpointNotificationCallback.invokeExact(
+                    en, instance);
+            if (!hresultSucceeded(registerHr)) {
+                return false;
+            }
+
+            this.enumerator = en;
+            return true;
         } catch (IllegalArgumentException | UnsatisfiedLinkError ignored) {
+            // Library not present on this host (non-Windows) — no-op.
             return false;
         } catch (Throwable ignored) {
+            // Any other failure — no-op.
             return false;
         }
     }
@@ -380,9 +483,32 @@ final class WasapiFormatChangeShim implements AutoCloseable {
             return;
         }
         closed = true;
-        // The actual UnregisterEndpointNotificationCallback + Release
-        // call chain lives in the daw-core native shim (story 130). When
-        // registered == false there is nothing to undo.
+        // Unregister and release the enumerator when registration succeeded.
+        if (registered && !enumerator.equals(MemorySegment.NULL)) {
+            try {
+                Linker nativeLinker = Linker.nativeLinker();
+                // UnregisterEndpointNotificationCallback(enumerator, callback)
+                MethodHandle unregister = nativeLinker.downcallHandle(
+                        vtableSlot(enumerator,
+                                IMMDEVICE_ENUMERATOR_UNREGISTER_ENDPOINT_NOTIFICATION_CALLBACK_SLOT),
+                        FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+                unregister.invokeExact(enumerator, instance);
+            } catch (Throwable ignored) {
+                // Best-effort: never throw from close().
+            }
+            try {
+                // enumerator->Release()
+                Linker nativeLinker = Linker.nativeLinker();
+                MethodHandle release = nativeLinker.downcallHandle(
+                        vtableSlot(enumerator, IUNKNOWN_RELEASE_SLOT),
+                        FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                ValueLayout.ADDRESS));
+                release.invokeExact(enumerator);
+            } catch (Throwable ignored) {
+                // Best-effort.
+            }
+        }
         try {
             arena.close();
         } catch (Throwable ignored) {
