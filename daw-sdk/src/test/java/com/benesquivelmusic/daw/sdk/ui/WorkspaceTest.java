@@ -63,10 +63,28 @@ class WorkspaceTest {
     }
 
     @Test
+    void panelStateRejectsInfiniteValues() {
+        assertThatThrownBy(() -> new PanelState(true, Double.POSITIVE_INFINITY, 0, 0))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new PanelState(true, 1.0, Double.POSITIVE_INFINITY, 0))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new PanelState(true, 1.0, 0, Double.NEGATIVE_INFINITY))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void rectangle2DRejectsNegativeDimensions() {
         assertThatThrownBy(() -> new Rectangle2D(0, 0, -1, 1))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new Rectangle2D(0, 0, 1, -1))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void rectangle2DRejectsInfiniteValues() {
+        assertThatThrownBy(() -> new Rectangle2D(Double.POSITIVE_INFINITY, 0, 1, 1))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new Rectangle2D(0, 0, Double.POSITIVE_INFINITY, 1))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 }

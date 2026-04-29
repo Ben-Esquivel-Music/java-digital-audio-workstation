@@ -140,7 +140,7 @@ public final class WorkspaceManager {
         refresh();
     }
 
-    /** Returns all stored workspaces in display order (most-recent saves last). */
+    /** Returns all stored workspaces sorted by filename for stable slot assignment. */
     public List<Workspace> listAll() {
         return cache;
     }
@@ -173,8 +173,8 @@ public final class WorkspaceManager {
             boolean visible = host.isPanelVisible(id);
             double zoom = sanitizeZoom(host.panelZoom(id));
             double[] scroll = host.panelScroll(id);
-            double sx = scroll != null && scroll.length >= 2 ? scroll[0] : 0;
-            double sy = scroll != null && scroll.length >= 2 ? scroll[1] : 0;
+            double sx = scroll != null && scroll.length >= 2 ? sanitizeFinite(scroll[0]) : 0;
+            double sy = scroll != null && scroll.length >= 2 ? sanitizeFinite(scroll[1]) : 0;
             states.put(id, new PanelState(visible, zoom, sx, sy));
             Rectangle2D b = host.panelBounds(id);
             if (b != null) bounds.put(id, b);
@@ -263,8 +263,12 @@ public final class WorkspaceManager {
     }
 
     private static double sanitizeZoom(double z) {
-        if (Double.isNaN(z) || z <= 0.0) return 1.0;
+        if (!Double.isFinite(z) || z <= 0.0) return 1.0;
         return z;
+    }
+
+    private static double sanitizeFinite(double v) {
+        return Double.isFinite(v) ? v : 0.0;
     }
 
     /** Returns the underlying store (for tests and advanced callers). */

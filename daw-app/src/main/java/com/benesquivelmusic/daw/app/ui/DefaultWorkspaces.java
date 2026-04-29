@@ -142,11 +142,14 @@ public final class DefaultWorkspaces {
         return new Workspace("Minimal", panels, List.of(), Map.of());
     }
 
-    /** Returns the (single) panel-id list every default workspace addresses. */
+    /**
+     * Returns the panel-id list that corresponds to currently implemented UI components.
+     * Ids for panels not yet wired in {@code MainController} (spatial, loudness) are
+     * excluded — they will be added once those UI components exist.
+     */
     public static List<String> panelIds() {
         return List.of(
                 PANEL_ARRANGEMENT, PANEL_MIXER, PANEL_EDITOR, PANEL_MASTERING,
-                PANEL_SPATIAL, PANEL_LOUDNESS,
                 PANEL_BROWSER, PANEL_HISTORY, PANEL_NOTIFICATIONS, PANEL_VISUALIZATIONS);
     }
 

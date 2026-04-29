@@ -22,11 +22,11 @@ public record PanelState(boolean visible, double zoom, double scrollX, double sc
     public static final PanelState HIDDEN = new PanelState(false, 1.0, 0.0, 0.0);
 
     public PanelState {
-        if (Double.isNaN(zoom) || zoom <= 0.0) {
-            throw new IllegalArgumentException("zoom must be > 0, got " + zoom);
+        if (!Double.isFinite(zoom) || zoom <= 0.0) {
+            throw new IllegalArgumentException("zoom must be finite and > 0, got " + zoom);
         }
-        if (Double.isNaN(scrollX) || Double.isNaN(scrollY)) {
-            throw new IllegalArgumentException("scroll values must not be NaN");
+        if (!Double.isFinite(scrollX) || !Double.isFinite(scrollY)) {
+            throw new IllegalArgumentException("scroll values must be finite numbers");
         }
     }
 

@@ -847,6 +847,9 @@ public final class MainController {
                     case DefaultWorkspaces.PANEL_NOTIFICATIONS ->
                             historyPanelController != null
                                     && historyPanelController.isNotificationHistoryPanelVisible();
+                    case DefaultWorkspaces.PANEL_VISUALIZATIONS ->
+                            vizPanelController != null
+                                    && vizPanelController.isRowVisible();
                     case DefaultWorkspaces.PANEL_ARRANGEMENT ->
                             viewNavigationController != null
                                     && viewNavigationController.getActiveView() == DawView.ARRANGEMENT;
@@ -880,6 +883,12 @@ public final class MainController {
                         if (historyPanelController != null
                                 && historyPanelController.isNotificationHistoryPanelVisible() != visible) {
                             historyPanelController.toggleNotificationHistoryPanel();
+                        }
+                    }
+                    case DefaultWorkspaces.PANEL_VISUALIZATIONS -> {
+                        if (vizPanelController != null
+                                && vizPanelController.isRowVisible() != visible) {
+                            vizPanelController.toggleRowVisibility();
                         }
                     }
                     case DefaultWorkspaces.PANEL_ARRANGEMENT -> {

@@ -10,7 +10,6 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -68,21 +67,26 @@ public final class WorkspaceStore {
     }
 
     /**
-     * Lists all stored workspaces. Returns an empty list if the directory
-     * does not yet exist or cannot be read.
+     * Lists all stored workspaces sorted by filename for stable slot ordering.
+     * Returns an empty list if the directory does not yet exist or cannot be read.
      */
     public List<Workspace> listAll() {
         if (!Files.isDirectory(directory)) {
             return List.of();
         }
-        List<Workspace> out = new ArrayList<>();
+        List<Path> files = new ArrayList<>();
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(directory, "*.json")) {
             for (Path p : stream) {
-                Workspace ws = readFile(p);
-                if (ws != null) out.add(ws);
+                files.add(p);
             }
         } catch (IOException e) {
             LOG.log(Level.FINE, "Could not list workspaces directory " + directory, e);
+        }
+        files.sort(java.util.Comparator.comparing(p -> p.getFileName().toString()));
+        List<Workspace> out = new ArrayList<>();
+        for (Path p : files) {
+            Workspace ws = readFile(p);
+            if (ws != null) out.add(ws);
         }
         return List.copyOf(out);
     }
@@ -129,10 +133,13 @@ public final class WorkspaceStore {
      * Imports a workspace from the given path. The imported workspace is
      * <em>not</em> automatically added to the store; call {@link #save}
      * to persist it.
+     *
+     * @throws IOException if the file cannot be read or is not valid workspace JSON
      */
     public Workspace importFrom(Path source) throws IOException {
         Objects.requireNonNull(source, "source must not be null");
-        Workspace ws = readFile(source);
+        String json = Files.readString(source, StandardCharsets.UTF_8);
+        Workspace ws = WorkspaceJson.parse(json);
         if (ws == null) {
             throw new IOException("File is not a valid workspace JSON: " + source);
         }
@@ -209,8 +216,11 @@ public final class WorkspaceStore {
     }
 
     private static String num(double d) {
-        if (d == Math.floor(d) && !Double.isInfinite(d)) {
-            // integer-valued — emit without trailing zeros
+        if (!Double.isFinite(d)) {
+            return "0"; // non-finite values are not valid JSON
+        }
+        if (d == Math.floor(d) && Math.abs(d) < (double) Long.MAX_VALUE) {
+            // integer-valued and within long range — emit without trailing zeros
             return Long.toString((long) d);
         }
         return Double.toString(d);
@@ -237,8 +247,4 @@ public final class WorkspaceStore {
         return WorkspaceJson.parse(json);
     }
 
-    /** Package-private helper for guaranteeing iteration order. */
-    static Map<String, PanelState> orderedPanelStates(Map<String, PanelState> in) {
-        return new LinkedHashMap<>(in);
-    }
 }

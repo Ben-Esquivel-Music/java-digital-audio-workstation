@@ -54,10 +54,10 @@ final class WorkspaceJson {
             for (Map.Entry<?, ?> e : m.entrySet()) {
                 if (e.getKey() instanceof String k && e.getValue() instanceof Map<?, ?> v) {
                     boolean visible = v.get("visible") instanceof Boolean b ? b : true;
-                    double zoom = numberOr(v.get("zoom"), 1.0);
-                    double scrollX = numberOr(v.get("scrollX"), 0.0);
-                    double scrollY = numberOr(v.get("scrollY"), 0.0);
-                    if (zoom <= 0 || Double.isNaN(zoom)) zoom = 1.0;
+                    double zoom = finiteOr(numberOr(v.get("zoom"), 1.0), 1.0);
+                    double scrollX = finiteOr(numberOr(v.get("scrollX"), 0.0), 0.0);
+                    double scrollY = finiteOr(numberOr(v.get("scrollY"), 0.0), 0.0);
+                    if (zoom <= 0) zoom = 1.0;
                     out.put(k, new PanelState(visible, zoom, scrollX, scrollY));
                 }
             }
@@ -70,10 +70,10 @@ final class WorkspaceJson {
         if (obj instanceof Map<?, ?> m) {
             for (Map.Entry<?, ?> e : m.entrySet()) {
                 if (e.getKey() instanceof String k && e.getValue() instanceof Map<?, ?> v) {
-                    double x = numberOr(v.get("x"), 0.0);
-                    double y = numberOr(v.get("y"), 0.0);
-                    double width = Math.max(0, numberOr(v.get("width"), 0.0));
-                    double height = Math.max(0, numberOr(v.get("height"), 0.0));
+                    double x = finiteOr(numberOr(v.get("x"), 0.0), 0.0);
+                    double y = finiteOr(numberOr(v.get("y"), 0.0), 0.0);
+                    double width = Math.max(0, finiteOr(numberOr(v.get("width"), 0.0), 0.0));
+                    double height = Math.max(0, finiteOr(numberOr(v.get("height"), 0.0), 0.0));
                     out.put(k, new Rectangle2D(x, y, width, height));
                 }
             }
@@ -94,6 +94,11 @@ final class WorkspaceJson {
     private static double numberOr(Object o, double fallback) {
         if (o instanceof Number n) return n.doubleValue();
         return fallback;
+    }
+
+    /** Returns {@code value} if finite, otherwise {@code fallback}. */
+    private static double finiteOr(double value, double fallback) {
+        return Double.isFinite(value) ? value : fallback;
     }
 
     // ── Tiny recursive-descent JSON parser ──────────────────────────────────

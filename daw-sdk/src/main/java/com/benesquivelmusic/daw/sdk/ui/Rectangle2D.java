@@ -19,9 +19,9 @@ public record Rectangle2D(double x, double y, double width, double height) {
      * Validates that {@code width} and {@code height} are non-negative finite numbers.
      */
     public Rectangle2D {
-        if (Double.isNaN(x) || Double.isNaN(y)
-                || Double.isNaN(width) || Double.isNaN(height)) {
-            throw new IllegalArgumentException("Rectangle2D coordinates must not be NaN");
+        if (!Double.isFinite(x) || !Double.isFinite(y)
+                || !Double.isFinite(width) || !Double.isFinite(height)) {
+            throw new IllegalArgumentException("Rectangle2D coordinates must be finite numbers");
         }
         if (width < 0) {
             throw new IllegalArgumentException("width must be >= 0, got " + width);

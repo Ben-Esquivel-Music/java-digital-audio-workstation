@@ -99,12 +99,19 @@ public final class WorkspacesMenu {
             switchTo.getItems().add(none);
         }
 
-        MenuItem exportItem = item("Export\u2026", null, () -> {
-            // Default behaviour: export the first workspace if no specific
-            // selection — callers typically wire this through a chooser.
-            if (manager.listAll().isEmpty()) return;
-            exportRequest.accept(manager.listAll().getFirst().name());
-        });
+        Menu exportMenu = new Menu("Export\u2026");
+        exportMenu.getStyleClass().add("daw-menu");
+        for (Workspace ws : all) {
+            MenuItem exportWs = new MenuItem(ws.name());
+            String wsName = ws.name();
+            exportWs.setOnAction(_ -> exportRequest.accept(wsName));
+            exportMenu.getItems().add(exportWs);
+        }
+        if (all.isEmpty()) {
+            MenuItem none = new MenuItem("(no workspaces to export)");
+            none.setDisable(true);
+            exportMenu.getItems().add(none);
+        }
         MenuItem importItem = item("Import\u2026", null, importRequest);
 
         menu.getItems().addAll(
@@ -112,7 +119,7 @@ public final class WorkspacesMenu {
                 new SeparatorMenuItem(),
                 switchTo,
                 new SeparatorMenuItem(),
-                exportItem,
+                exportMenu,
                 importItem
         );
         return menu;
