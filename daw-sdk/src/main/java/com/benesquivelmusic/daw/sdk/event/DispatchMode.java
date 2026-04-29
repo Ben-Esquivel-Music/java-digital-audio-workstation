@@ -10,10 +10,9 @@ package com.benesquivelmusic.daw.sdk.event;
  *
  * <ul>
  *   <li>{@link #ON_CALLER_THREAD} — the subscriber runs synchronously
- *       on whichever thread {@code SubmissionPublisher} is delivering
- *       on (typically a {@code ForkJoinPool} worker, or the publishing
- *       thread when buffers are saturated). Lowest latency, no thread
- *       handoff, but must be glitch-free for audio-originated events.</li>
+ *       on the thread that dispatches the event, with no thread
+ *       handoff or executor re-dispatch. Lowest latency, but handlers
+ *       must be glitch-free for audio-originated events.</li>
  *   <li>{@link #ON_UI_THREAD} — every event is re-dispatched through the
  *       UI executor (typically {@code Platform::runLater}) so the
  *       subscriber always runs on the JavaFX Application Thread.</li>

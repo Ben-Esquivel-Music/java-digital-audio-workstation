@@ -168,12 +168,23 @@ public final class DefaultEventBus implements EventBus {
     @Override
     public <E extends DawEvent> Flow.Publisher<E> subscribe(Class<E> type) {
         Objects.requireNonNull(type, "type");
+        if (closed.get()) {
+            throw new IllegalStateException("EventBus is closed");
+        }
         return downstream -> attachFlowSubscriber(type, downstream);
     }
 
     private <E extends DawEvent> void attachFlowSubscriber(Class<E> type,
                                                            Flow.Subscriber<? super E> downstream) {
         Objects.requireNonNull(downstream, "subscriber");
+        if (closed.get()) {
+            downstream.onSubscribe(new Flow.Subscription() {
+                @Override public void request(long n) {}
+                @Override public void cancel() {}
+            });
+            downstream.onComplete();
+            return;
+        }
         Consumer<E> bridge = ev -> {
             try {
                 downstream.onNext(ev);
@@ -184,8 +195,11 @@ public final class DefaultEventBus implements EventBus {
         Sub<E> sub = new Sub<>(type, bufferCapacity, DispatchMode.ON_CALLER_THREAD,
                 uiExecutor, dispatcher, metrics, bridge);
         subs.add(sub);
+        // Note: this publisher does not implement Reactive Streams demand
+        // tracking (request(n) is a no-op). Backpressure is enforced by the
+        // bus's bounded buffer and overflow strategy. cancel() works correctly.
         downstream.onSubscribe(new Flow.Subscription() {
-            @Override public void request(long n) { /* unbounded; bus enforces back-pressure */ }
+            @Override public void request(long n) { /* backpressure via bounded buffer, not demand */ }
             @Override public void cancel() { sub.cancel(); subs.remove(sub); }
         });
         sub.start();
@@ -198,6 +212,9 @@ public final class DefaultEventBus implements EventBus {
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(mode, "mode");
         Objects.requireNonNull(handler, "handler");
+        if (closed.get()) {
+            throw new IllegalStateException("EventBus is closed");
+        }
         if (mode == DispatchMode.ON_UI_THREAD && uiExecutor == null) {
             throw new IllegalStateException(
                     "DispatchMode.ON_UI_THREAD requires uiExecutor on the EventBus builder");
@@ -282,6 +299,7 @@ public final class DefaultEventBus implements EventBus {
             } finally {
                 lock.unlock();
             }
+            metrics.unregisterSubscription(id);
         }
 
         void tryEnqueue(DawEvent event, OverflowStrategy strategy) {
@@ -292,8 +310,10 @@ public final class DefaultEventBus implements EventBus {
             try {
                 if (buffer.size() >= capacity) {
                     if (strategy == OverflowStrategy.DROP_OLDEST) {
-                        buffer.pollFirst();
-                        metrics.recordDropped(event.getClass());
+                        DawEvent dropped = buffer.pollFirst();
+                        if (dropped != null) {
+                            metrics.recordDropped(dropped.getClass());
+                        }
                     } else {
                         // BLOCK
                         while (buffer.size() >= capacity && !cancelled.get()) {
@@ -337,9 +357,37 @@ public final class DefaultEventBus implements EventBus {
                 };
                 switch (mode) {
                     case ON_CALLER_THREAD -> deliver.run();
-                    case ON_UI_THREAD -> uiExecutor.execute(deliver);
-                    case ON_VIRTUAL_THREAD -> Thread.ofVirtual().start(deliver);
+                    case ON_UI_THREAD -> runAndAwait(deliver);
+                    case ON_VIRTUAL_THREAD -> runAndAwait(deliver);
                 }
+            }
+        }
+
+        /**
+         * Dispatches work to the appropriate executor/virtual-thread and
+         * blocks the drain loop until the task completes. This ensures the
+         * bounded buffer truly caps the outstanding work: at most one event
+         * is in-flight on the target thread at any time, preventing unbounded
+         * queue growth in the UI executor or unbounded virtual-thread fan-out.
+         */
+        private void runAndAwait(Runnable deliver) {
+            var latch = new java.util.concurrent.CountDownLatch(1);
+            Runnable wrapped = () -> {
+                try {
+                    deliver.run();
+                } finally {
+                    latch.countDown();
+                }
+            };
+            if (mode == DispatchMode.ON_UI_THREAD) {
+                uiExecutor.execute(wrapped);
+            } else {
+                Thread.ofVirtual().start(wrapped);
+            }
+            try {
+                latch.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
         }
     }
@@ -355,6 +403,10 @@ public final class DefaultEventBus implements EventBus {
 
         void registerSubscription(String id) {
             dispatch.putIfAbsent(id, new DispatchStats());
+        }
+
+        void unregisterSubscription(String id) {
+            dispatch.remove(id);
         }
 
         void recordPublished(Class<?> type) {

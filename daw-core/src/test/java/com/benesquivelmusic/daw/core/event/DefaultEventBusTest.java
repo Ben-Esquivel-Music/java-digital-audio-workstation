@@ -119,7 +119,6 @@ class DefaultEventBusTest {
     @Test
     void onUiThreadRoutesThroughConfiguredExecutorAndNotCallerThread() throws Exception {
         AtomicReference<Thread> uiThread = new AtomicReference<>();
-        Thread fxThread = new Thread(() -> {}, "fake-fx-thread");
         // UI executor that pretends to be JavaFX's Platform.runLater:
         // it dispatches to a single dedicated thread.
         java.util.concurrent.ExecutorService fxExec =
@@ -234,6 +233,16 @@ class DefaultEventBusTest {
         bus.close();
         bus.publish(newStarted(1));
         assertThat(count.get()).isZero();
+    }
+
+    @Test
+    void closedBusRejectsNewSubscriptions() {
+        bus = DefaultEventBus.builder().build();
+        bus.close();
+        assertThatThrownBy(() -> bus.on(TransportEvent.Started.class, ev -> {}))
+                .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> bus.subscribe(TransportEvent.Started.class))
+                .isInstanceOf(IllegalStateException.class);
     }
 
     @Test

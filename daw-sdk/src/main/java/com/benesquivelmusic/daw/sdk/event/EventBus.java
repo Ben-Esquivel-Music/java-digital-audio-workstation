@@ -61,10 +61,17 @@ public interface EventBus {
      * (or its subtypes).
      *
      * <p>Each subscription gets its own bounded buffer; subscribers
-     * receive events on whichever thread the underlying
-     * {@code SubmissionPublisher} delivers on. Use
+     * receive events on bus-managed delivery threads unless an
+     * implementation specifies otherwise. Use
      * {@link #on(Class, DispatchMode, Consumer)} for explicit
      * dispatch-mode control.</p>
+     *
+     * <p><strong>Note:</strong> the returned publisher does not track
+     * per-subscriber demand via {@link Flow.Subscription#request(long)};
+     * backpressure is enforced by the bus's bounded buffer and overflow
+     * strategy rather than Reactive Streams demand signalling. Calling
+     * {@link Flow.Subscription#cancel()} on the subscription handle
+     * correctly cancels delivery.</p>
      *
      * @param type the event type to filter by; not {@code null}
      * @param <E>  the event type
@@ -107,7 +114,9 @@ public interface EventBus {
     /**
      * Closes the bus, cancelling every active subscription and
      * releasing any backing executors. After {@code close()}, calls to
-     * {@link #publish} are silently dropped.
+     * {@link #publish} are silently dropped and new subscriptions via
+     * {@link #subscribe(Class)} or {@link #on(Class, DispatchMode, Consumer)}
+     * throw {@link IllegalStateException}.
      */
     void close();
 

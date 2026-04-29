@@ -7,11 +7,16 @@ import java.util.Map;
  * panels, telemetry pipelines, and tests.
  *
  * <p>The bus implementation maintains per-event-type throughput
- * counters and per-subscription dispatch latency averages. Slow
- * subscribers — those whose mean dispatch time exceeds
+ * counters and per-subscription handler execution time averages.
+ * Slow subscribers — those whose mean handler execution time exceeds
  * {@value #SLOW_SUBSCRIBER_THRESHOLD_NANOS} nanoseconds (1&nbsp;ms) —
  * are flagged in {@link #slowSubscribers()} so they can be surfaced
  * in a debug overlay or logged at startup.</p>
+ *
+ * <p><strong>Note:</strong> the "slow subscriber" metric measures only
+ * handler execution time (the duration of the user callback), not
+ * end-to-end latency including queueing or executor scheduling
+ * delays.</p>
  *
  * <p>All snapshots returned by methods on this interface are
  * immutable point-in-time copies; the bus itself continues to
@@ -19,7 +24,7 @@ import java.util.Map;
  */
 public interface EventBusMetrics {
 
-    /** Average dispatch threshold (in nanoseconds) above which a subscriber is considered slow. */
+    /** Mean handler execution time threshold (in nanoseconds) above which a subscriber is considered slow. */
     long SLOW_SUBSCRIBER_THRESHOLD_NANOS = 1_000_000L;
 
     /**
@@ -36,9 +41,9 @@ public interface EventBusMetrics {
     Map<String, Long> droppedByType();
 
     /**
-     * Returns identifiers of subscriptions whose mean dispatch latency
-     * has exceeded {@link #SLOW_SUBSCRIBER_THRESHOLD_NANOS}. Each entry
-     * is human-readable text suitable for display in a debug view.
+     * Returns identifiers of subscriptions whose mean handler execution
+     * time has exceeded {@link #SLOW_SUBSCRIBER_THRESHOLD_NANOS}. Each
+     * entry is human-readable text suitable for display in a debug view.
      */
     Iterable<String> slowSubscribers();
 }
