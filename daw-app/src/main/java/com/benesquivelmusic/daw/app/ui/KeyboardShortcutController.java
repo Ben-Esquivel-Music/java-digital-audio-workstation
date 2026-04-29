@@ -90,6 +90,17 @@ final class KeyboardShortcutController {
          * {@code Ctrl+Shift+P} accelerator.
          */
         void onToggleCommandPalette();
+        /**
+         * Switch to the user's workspace at the given 1-based slot
+         * (1–{@value WorkspaceManager#MAX_NUMBERED_SLOTS}). No-op if the
+         * slot is empty or workspaces have not been initialised.
+         */
+        default void onSwitchToWorkspaceSlot(int slotIndex) { }
+        /**
+         * Open the "Save current workspace as…" prompt. Default no-op
+         * keeps existing test stubs source-compatible.
+         */
+        default void onSaveWorkspaceAs() { }
     }
 
     private final KeyBindingManager keyBindingManager;
@@ -171,6 +182,13 @@ final class KeyboardShortcutController {
         actionHandlers.put(DawAction.TOGGLE_FOLD_SELECTED_TRACKS, host::onToggleFoldSelectedTracks);
         actionHandlers.put(DawAction.FOLD_ALL_AUTOMATION, host::onFoldAllAutomation);
         actionHandlers.put(DawAction.OPEN_COMMAND_PALETTE, host::onToggleCommandPalette);
+        // ── Workspaces (Customizable Workspace Layouts) ──────────────────────
+        actionHandlers.put(DawAction.WORKSPACE_SAVE_AS, host::onSaveWorkspaceAs);
+        java.util.List<DawAction> slotActions = DawAction.workspaceSlotActions();
+        for (int i = 0; i < slotActions.size(); i++) {
+            int slot = i + 1;
+            actionHandlers.put(slotActions.get(i), () -> host.onSwitchToWorkspaceSlot(slot));
+        }
         return actionHandlers;
     }
 

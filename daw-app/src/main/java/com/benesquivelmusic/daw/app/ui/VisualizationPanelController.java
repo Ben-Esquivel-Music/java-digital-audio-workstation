@@ -100,6 +100,13 @@ public final class VisualizationPanelController {
     }
 
     /**
+     * Returns whether the visualization row is currently visible.
+     */
+    boolean isRowVisible() {
+        return preferences.isRowVisible();
+    }
+
+    /**
      * Shows the context menu with per-tile checkboxes and utility actions.
      */
     void showContextMenu() {
