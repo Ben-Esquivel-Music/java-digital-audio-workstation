@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -53,6 +54,14 @@ public final class CheckpointManager {
     private volatile BackupRetentionPolicy retentionPolicy;
 
     private ScheduledExecutorService scheduler;
+    /**
+     * Virtual-thread-per-task executor used to perform the actual
+     * checkpoint serialization and disk write off the scheduler thread
+     * (JEP 444). Autosave is I/O-bound so the scheduler tick must
+     * never block — it just hands the work to a virtual thread and
+     * returns.
+     */
+    private ExecutorService saveExecutor;
     private Path projectDirectory;
     private Supplier<String> projectDataSupplier;
 
@@ -84,9 +93,12 @@ public final class CheckpointManager {
             t.setDaemon(true);
             return t;
         });
+        // Autosave I/O runs on virtual threads — the scheduler tick
+        // never blocks on disk writes. JEP 444.
+        this.saveExecutor = Executors.newVirtualThreadPerTaskExecutor();
         long intervalMillis = config.autoSaveInterval().toMillis();
         scheduler.scheduleAtFixedRate(
-                this::performCheckpoint,
+                this::triggerCheckpoint,
                 intervalMillis,
                 intervalMillis,
                 TimeUnit.MILLISECONDS);
@@ -110,6 +122,18 @@ public final class CheckpointManager {
                 Thread.currentThread().interrupt();
             }
             scheduler = null;
+        }
+        if (saveExecutor != null) {
+            saveExecutor.shutdown();
+            try {
+                if (!saveExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    saveExecutor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                saveExecutor.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+            saveExecutor = null;
         }
     }
 
@@ -228,6 +252,12 @@ public final class CheckpointManager {
     /**
      * Performs a single checkpoint. Called automatically by the scheduler,
      * but may also be invoked manually for an explicit save.
+     *
+     * <p>This method runs the actual file I/O on the calling thread —
+     * which for a synchronous test or an explicit "Save Now" call is
+     * fine. The periodic scheduler dispatches via
+     * {@link #triggerCheckpoint()} so the I/O happens on a virtual
+     * thread instead of blocking the single-threaded scheduler.</p>
      */
     public void performCheckpoint() {
         if (projectDirectory == null) {
@@ -260,8 +290,25 @@ public final class CheckpointManager {
         }
     }
 
-    private String buildCheckpointId(int index) {
-        return "chk-" + index + "-" + TIMESTAMP_FMT.format(Instant.now());
+    /**
+     * Schedules a checkpoint on the virtual-thread save executor and
+     * returns immediately. Used internally by the periodic scheduler
+     * so the scheduler thread is never blocked on disk I/O. If the
+     * save executor is not active (manager not started, or already
+     * stopped) the checkpoint runs synchronously on the calling
+     * thread as a fallback.
+     */
+    void triggerCheckpoint() {
+        ExecutorService exec = this.saveExecutor;
+        if (exec == null || exec.isShutdown()) {
+            performCheckpoint();
+            return;
+        }
+        // JEP 444: each tick spawns one virtual thread; no pool sizing.
+        exec.execute(this::performCheckpoint);
+    }
+
+    private String buildCheckpointId(int index) {        return "chk-" + index + "-" + TIMESTAMP_FMT.format(Instant.now());
     }
 
     private String buildCheckpointContent(String checkpointId, int index) {
