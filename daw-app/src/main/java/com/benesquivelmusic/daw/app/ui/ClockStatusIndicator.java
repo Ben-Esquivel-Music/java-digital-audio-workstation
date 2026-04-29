@@ -182,7 +182,7 @@ public final class ClockStatusIndicator extends Label {
                 ? "—"
                 : (sampleRate % 1000 == 0
                         ? (sampleRate / 1000) + "k"
-                        : String.format("%.1fk", sampleRate / 1000.0));
+                        : String.format(java.util.Locale.ROOT, "%.1fk", sampleRate / 1000.0));
         if (locked) {
             setText(shortLabel + " " + rateLabel);
             setStyle(STYLE_LOCKED);

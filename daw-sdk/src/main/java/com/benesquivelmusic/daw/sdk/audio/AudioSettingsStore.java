@@ -217,9 +217,11 @@ public final class AudioSettingsStore {
 
     /**
      * Decodes the {@link #encodeClockSources(Map)} format. Returns an
-     * empty map for {@code null}, the empty string, or any malformed
-     * entry — corrupt clock-source data is non-fatal: the rest of the
-     * settings file still loads.
+     * empty map for {@code null} or the empty string. Individual
+     * malformed entries (bad percent-encoding, non-integer id) are
+     * silently skipped — only that pair is lost; any successfully
+     * parsed entries are preserved. This ensures corrupt clock-source
+     * data is non-fatal: the rest of the settings file still loads.
      */
     static Map<String, Integer> parseClockSources(String encoded) {
         if (encoded == null || encoded.isEmpty()) {
@@ -231,13 +233,13 @@ public final class AudioSettingsStore {
             if (eq <= 0 || eq == pair.length() - 1) {
                 continue;
             }
-            String key = java.net.URLDecoder.decode(
-                    pair.substring(0, eq),
-                    java.nio.charset.StandardCharsets.UTF_8);
             try {
+                String key = java.net.URLDecoder.decode(
+                        pair.substring(0, eq),
+                        java.nio.charset.StandardCharsets.UTF_8);
                 out.put(key, Integer.parseInt(pair.substring(eq + 1)));
-            } catch (NumberFormatException ignored) {
-                // Skip malformed id; preserve any previously parsed entries.
+            } catch (IllegalArgumentException ignored) {
+                // Skip malformed entry; preserve any previously parsed entries.
             }
         }
         return out;

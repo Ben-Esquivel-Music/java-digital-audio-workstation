@@ -179,16 +179,16 @@ public final class AsioBackend implements AudioBackend {
 
     /**
      * Routes a clock-source selection to the FFM-bound
-     * {@code ASIOSetClockSource(int)} symbol. The SDK-level default
-     * throws {@link UnsupportedOperationException}; the implementation
-     * layer that ships the native ASIO shim under
-     * {@code daw-core/native/asio/} replaces it with the real FFM
-     * downcall.
+     * {@code ASIOSetClockSource(int)} symbol. Without the native ASIO
+     * shim under {@code daw-core/native/asio/} this method throws
+     * {@link UnsupportedOperationException} — the same exception the
+     * interface default throws — so callers can reliably detect lack
+     * of support with a single catch.
      */
     @Override
     public void selectClockSource(DeviceId device, int sourceId) {
         Objects.requireNonNull(device, "device must not be null");
-        throw new AudioBackendException(
+        throw new UnsupportedOperationException(
                 "ASIO clock-source selection requires the native shim under "
                         + "daw-core/native/asio/ which is not present in this build.");
     }
