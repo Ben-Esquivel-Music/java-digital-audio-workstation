@@ -834,6 +834,41 @@ class ProjectSerializationRoundTripTest {
     }
 
     @Test
+    void shouldRoundTripInputRoutingDisplayNameSnapshot() throws IOException {
+        // Story 199: the snapshot of the driver-reported channel name is
+        // persisted alongside the input-routing index so projects that
+        // move between machines render meaningful labels.
+        DawProject original = new DawProject("Input Routing Snapshot Test", AudioFormat.CD_QUALITY);
+        Track track = original.createAudioTrack("Vox");
+        track.setInputRouting(new InputRouting(2, 1));
+        track.setInputRoutingDisplayName("Mic/Line 3");
+
+        String xml = serializer.serialize(original);
+        assertThat(xml).contains("input-routing-name=\"Mic/Line 3\"");
+
+        DawProject restored = deserializer.deserialize(xml);
+        Track restoredTrack = restored.getTracks().get(0);
+        assertThat(restoredTrack.getInputRoutingDisplayName()).isEqualTo("Mic/Line 3");
+    }
+
+    @Test
+    void shouldRoundTripOutputRoutingDisplayNameSnapshot() throws IOException {
+        DawProject original = new DawProject("Output Routing Snapshot Test", AudioFormat.CD_QUALITY);
+        Track track = original.createAudioTrack("Drums");
+        MixerChannel channel = original.getMixerChannelForTrack(track);
+        channel.setOutputRouting(new OutputRouting(2, 2));
+        channel.setOutputRoutingDisplayName("Phones 1 (Stereo)");
+
+        String xml = serializer.serialize(original);
+        assertThat(xml).contains("output-routing-name=\"Phones 1 (Stereo)\"");
+
+        DawProject restored = deserializer.deserialize(xml);
+        MixerChannel restoredChannel = restored.getMixer().getChannels().get(0);
+        assertThat(restoredChannel.getOutputRoutingDisplayName())
+                .isEqualTo("Phones 1 (Stereo)");
+    }
+
+    @Test
     void shouldRoundTripInputRouting() throws IOException {
         DawProject original = new DawProject("Input Routing Test", AudioFormat.CD_QUALITY);
         Track track = original.createAudioTrack("Guitar");

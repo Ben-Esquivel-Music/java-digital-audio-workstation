@@ -365,6 +365,56 @@ public sealed interface AudioBackend extends AutoCloseable
     }
 
     /**
+     * Returns driver-reported metadata for every input channel of the
+     * given device — story 199 ("Driver-Reported Channel Names in I/O
+     * Routing Dropdowns").
+     *
+     * <p>Each {@link AudioChannelInfo} carries the channel's index, a
+     * driver-reported display name (e.g. {@code "Mic/Line 1"},
+     * {@code "Hi-Z Inst 3"}, {@code "S/PDIF L"}), a {@link ChannelKind}
+     * classification, and an active flag (ASIO {@code isActive}: the
+     * UI greys disabled channels).</p>
+     *
+     * <p>Per-backend conventions:</p>
+     * <ul>
+     *   <li>{@link AsioBackend} — {@code ASIOGetChannelInfo(channel,
+     *       isInput=true)} per channel; kind via
+     *       {@link ChannelKindHeuristics}.</li>
+     *   <li>{@link CoreAudioBackend} —
+     *       {@code kAudioObjectPropertyElementName} per channel.</li>
+     *   <li>{@link WasapiBackend} — {@code IPart::GetName} on the
+     *       capture endpoint's channel parts.</li>
+     *   <li>{@link JackBackend} — {@code jack_port_get_aliases}.</li>
+     *   <li>{@link JavaxSoundBackend} — empty list; the JDK mixer does
+     *       not expose per-channel names.</li>
+     *   <li>{@link MockAudioBackend} — returns whatever the test fixture
+     *       has configured via {@code setInputChannels}.</li>
+     * </ul>
+     *
+     * <p>The default implementation returns an empty list, which the
+     * UI interprets as "fall back to generic 'Input N' labels".</p>
+     *
+     * @param device target device id; must not be null
+     * @return an unmodifiable list of input-channel metadata; never null
+     */
+    default List<AudioChannelInfo> inputChannels(DeviceId device) {
+        return List.of();
+    }
+
+    /**
+     * Returns driver-reported metadata for every output channel of the
+     * given device — the output-side counterpart of
+     * {@link #inputChannels(DeviceId)}. See that method for per-backend
+     * conventions.
+     *
+     * @param device target device id; must not be null
+     * @return an unmodifiable list of output-channel metadata; never null
+     */
+    default List<AudioChannelInfo> outputChannels(DeviceId device) {
+        return List.of();
+    }
+
+    /**
      * Closes any open stream and releases native resources. Idempotent.
      */
     @Override

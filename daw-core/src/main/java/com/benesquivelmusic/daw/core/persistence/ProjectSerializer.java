@@ -241,6 +241,9 @@ public final class ProjectSerializer {
         elem.setAttribute("input-device", String.valueOf(track.getInputDeviceIndex()));
         elem.setAttribute("input-routing-channel", String.valueOf(track.getInputRouting().firstChannel()));
         elem.setAttribute("input-routing-count", String.valueOf(track.getInputRouting().channelCount()));
+        if (!track.getInputRoutingDisplayName().isEmpty()) {
+            elem.setAttribute("input-routing-name", track.getInputRoutingDisplayName());
+        }
         elem.setAttribute("collapsed", String.valueOf(track.isCollapsed()));
         elem.setAttribute("automation-mode", track.getAutomationMode().name());
         elem.setAttribute("input-monitoring", track.getInputMonitoring().name());
@@ -444,6 +447,10 @@ public final class ProjectSerializer {
                     String.valueOf(channel.getOutputRouting().firstChannel()));
             elem.setAttribute("output-routing-count",
                     String.valueOf(channel.getOutputRouting().channelCount()));
+            if (!channel.getOutputRoutingDisplayName().isEmpty()) {
+                elem.setAttribute("output-routing-name",
+                        channel.getOutputRoutingDisplayName());
+            }
         }
 
         // Serialize insert effect slots

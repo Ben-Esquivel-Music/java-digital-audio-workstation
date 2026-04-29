@@ -13,6 +13,9 @@ import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
+import com.benesquivelmusic.daw.sdk.audio.AudioChannelInfo;
+import com.benesquivelmusic.daw.sdk.audio.ChannelGrouping;
+import com.benesquivelmusic.daw.sdk.audio.ChannelKind;
 import com.benesquivelmusic.daw.sdk.spatial.SpeakerLayout;
 import javafx.geometry.Insets;
 import javafx.geometry.Orientation;
@@ -87,6 +90,10 @@ public final class MixerView extends VBox {
     private final com.benesquivelmusic.daw.core.undo.UndoHistoryListener undoHistoryListener;
     private PluginRegistry pluginRegistry;
     private InputLevelMonitorRegistry inputLevelMonitorRegistry;
+    private java.util.function.Supplier<List<AudioChannelInfo>> inputChannelInfoSupplier =
+            () -> List.of();
+    private java.util.function.Supplier<List<AudioChannelInfo>> outputChannelInfoSupplier =
+            () -> List.of();
 
     /**
      * Creates a new mixer view bound to the given project.
@@ -216,6 +223,37 @@ public final class MixerView extends VBox {
      */
     public InputLevelMonitorRegistry getInputLevelMonitorRegistry() {
         return inputLevelMonitorRegistry;
+    }
+
+    /**
+     * Configures the source of driver-reported input-channel metadata used
+     * to populate the per-track input-routing dropdown — story 199. When
+     * the supplier returns a non-empty list, the dropdown renders the
+     * driver's display names (e.g. {@code "Mic/Line 1"},
+     * {@code "S/PDIF L"}), shows a {@link ChannelKind} icon, auto-groups
+     * consecutive {@code L}/{@code R} pairs into a single
+     * {@code "<stem> (Stereo)"} entry, and greys out channels reported
+     * inactive by the driver. The default supplier returns an empty list,
+     * which preserves the legacy "Input N" / "Output N" dropdowns.
+     *
+     * @param supplier supplies the live input-channel metadata; must not be null
+     */
+    public void setInputChannelInfoSupplier(
+            java.util.function.Supplier<List<AudioChannelInfo>> supplier) {
+        this.inputChannelInfoSupplier = Objects.requireNonNull(
+                supplier, "supplier must not be null");
+    }
+
+    /**
+     * Output-side counterpart of {@link #setInputChannelInfoSupplier}. See
+     * that method for the semantics.
+     *
+     * @param supplier supplies the live output-channel metadata; must not be null
+     */
+    public void setOutputChannelInfoSupplier(
+            java.util.function.Supplier<List<AudioChannelInfo>> supplier) {
+        this.outputChannelInfoSupplier = Objects.requireNonNull(
+                supplier, "supplier must not be null");
     }
 
     /**
@@ -584,10 +622,10 @@ public final class MixerView extends VBox {
         Node typeIcon = trackTypeIcon(track.getType());
 
         // Input routing selector
-        ComboBox<String> inputRoutingCombo = buildInputRoutingSelector(track);
+        ComboBox<IoOption> inputRoutingCombo = buildInputRoutingSelector(track);
 
         // Output routing selector
-        ComboBox<String> outputRoutingCombo = buildOutputRoutingSelector(mixerChannel);
+        ComboBox<IoOption> outputRoutingCombo = buildOutputRoutingSelector(mixerChannel);
 
         // Insert effects rack
         int channels = project.getFormat().channels();
@@ -826,86 +864,176 @@ public final class MixerView extends VBox {
 
     private static final int MAX_IO_CHANNELS = 16;
 
-    private ComboBox<String> buildInputRoutingSelector(Track track) {
-        ComboBox<String> combo = new ComboBox<>();
+    /**
+     * One row in the I/O routing dropdown, carrying both the underlying
+     * routing identity and the rendering metadata (driver-reported
+     * display name, kind icon, active flag). Stored as the ComboBox's
+     * item type so the list cell factory can render it directly.
+     */
+    private record IoOption(int firstChannel, int channelCount,
+                            String displayName, ChannelKind kind,
+                            boolean active, boolean isNoneOrMaster) {
+        @Override public String toString() { return displayName; }
+    }
+
+    private ComboBox<IoOption> buildInputRoutingSelector(Track track) {
+        ComboBox<IoOption> combo = new ComboBox<>();
         combo.setMaxWidth(CHANNEL_WIDTH - 8);
         combo.setMaxHeight(18);
         combo.setStyle("-fx-font-size: 8px;");
         combo.setTooltip(new Tooltip("Input routing"));
 
-        List<InputRouting> options = new ArrayList<>();
-        options.add(InputRouting.NONE);
-        // Mono inputs
-        for (int ch = 0; ch < MAX_IO_CHANNELS; ch++) {
-            options.add(new InputRouting(ch, 1));
-        }
-        // Stereo pairs
-        for (int ch = 0; ch < MAX_IO_CHANNELS; ch += 2) {
-            options.add(new InputRouting(ch, 2));
-        }
+        List<IoOption> options = new ArrayList<>();
+        // Always offer "None" as the first entry.
+        options.add(new IoOption(InputRouting.NONE.firstChannel(),
+                InputRouting.NONE.channelCount(),
+                InputRouting.NONE.displayName(),
+                ChannelKind.Generic.INSTANCE, true, true));
 
-        for (InputRouting opt : options) {
-            combo.getItems().add(opt.displayName());
-        }
-
-        // Select current
-        InputRouting current = track.getInputRouting();
-        int selectedIndex = 0;
-        for (int i = 0; i < options.size(); i++) {
-            if (options.get(i).equals(current)) {
-                selectedIndex = i;
-                break;
+        List<AudioChannelInfo> live = inputChannelInfoSupplier.get();
+        if (live != null && !live.isEmpty()) {
+            // Driver-reported channels: build options via the L/R-grouping
+            // helper so consecutive "Mic 1 L" + "Mic 1 R" auto-collapse to
+            // "Mic 1 (Stereo)".
+            for (ChannelGrouping.Option opt : ChannelGrouping.buildOptions(live)) {
+                options.add(new IoOption(
+                        opt.firstChannel(), opt.channelCount(),
+                        opt.displayName(), opt.kind(), opt.active(), false));
+            }
+        } else {
+            // Legacy fallback when no live channel info is available.
+            for (int ch = 0; ch < MAX_IO_CHANNELS; ch++) {
+                options.add(new IoOption(ch, 1, "Input " + (ch + 1),
+                        ChannelKind.Generic.INSTANCE, true, false));
+            }
+            for (int ch = 0; ch < MAX_IO_CHANNELS; ch += 2) {
+                options.add(new IoOption(ch, 2,
+                        "Input " + (ch + 1) + "-" + (ch + 2),
+                        ChannelKind.Generic.INSTANCE, true, false));
             }
         }
-        combo.getSelectionModel().select(selectedIndex);
+
+        combo.getItems().addAll(options);
+        combo.setCellFactory(_ -> ioCell());
+        combo.setButtonCell(ioCell());
+
+        // Select current routing (matched on first channel + count).
+        InputRouting current = track.getInputRouting();
+        IoOption selected = options.stream()
+                .filter(o -> o.firstChannel() == current.firstChannel()
+                        && o.channelCount() == current.channelCount())
+                .findFirst()
+                .orElse(options.getFirst());
+        combo.getSelectionModel().select(selected);
 
         combo.setOnAction(_ -> {
-            int idx = combo.getSelectionModel().getSelectedIndex();
-            if (idx >= 0 && idx < options.size()) {
-                track.setInputRouting(options.get(idx));
+            IoOption opt = combo.getSelectionModel().getSelectedItem();
+            if (opt == null) {
+                return;
             }
+            track.setInputRouting(new InputRouting(opt.firstChannel(), opt.channelCount()));
+            track.setInputRoutingDisplayName(opt.isNoneOrMaster() ? "" : opt.displayName());
         });
 
         return combo;
     }
 
-    private ComboBox<String> buildOutputRoutingSelector(MixerChannel channel) {
-        ComboBox<String> combo = new ComboBox<>();
+    private ComboBox<IoOption> buildOutputRoutingSelector(MixerChannel channel) {
+        ComboBox<IoOption> combo = new ComboBox<>();
         combo.setMaxWidth(CHANNEL_WIDTH - 8);
         combo.setMaxHeight(18);
         combo.setStyle("-fx-font-size: 8px;");
         combo.setTooltip(new Tooltip("Output routing"));
 
-        List<OutputRouting> options = new ArrayList<>();
-        options.add(OutputRouting.MASTER);
-        // Stereo output pairs
-        for (int ch = 0; ch < MAX_IO_CHANNELS; ch += 2) {
-            options.add(new OutputRouting(ch, 2));
-        }
+        List<IoOption> options = new ArrayList<>();
+        options.add(new IoOption(OutputRouting.MASTER.firstChannel(),
+                OutputRouting.MASTER.channelCount(),
+                OutputRouting.MASTER.displayName(),
+                ChannelKind.Generic.INSTANCE, true, true));
 
-        for (OutputRouting opt : options) {
-            combo.getItems().add(opt.displayName());
-        }
-
-        // Select current
-        OutputRouting current = channel.getOutputRouting();
-        int selectedIndex = 0;
-        for (int i = 0; i < options.size(); i++) {
-            if (options.get(i).equals(current)) {
-                selectedIndex = i;
-                break;
+        List<AudioChannelInfo> live = outputChannelInfoSupplier.get();
+        if (live != null && !live.isEmpty()) {
+            for (ChannelGrouping.Option opt : ChannelGrouping.buildOptions(live)) {
+                options.add(new IoOption(
+                        opt.firstChannel(), opt.channelCount(),
+                        opt.displayName(), opt.kind(), opt.active(), false));
+            }
+        } else {
+            // Legacy fallback: stereo pairs only, matching the historical UI.
+            for (int ch = 0; ch < MAX_IO_CHANNELS; ch += 2) {
+                options.add(new IoOption(ch, 2,
+                        "Output " + (ch + 1) + "-" + (ch + 2),
+                        ChannelKind.Generic.INSTANCE, true, false));
             }
         }
-        combo.getSelectionModel().select(selectedIndex);
+
+        combo.getItems().addAll(options);
+        combo.setCellFactory(_ -> ioCell());
+        combo.setButtonCell(ioCell());
+
+        OutputRouting current = channel.getOutputRouting();
+        IoOption selected = options.stream()
+                .filter(o -> o.firstChannel() == current.firstChannel()
+                        && o.channelCount() == current.channelCount())
+                .findFirst()
+                .orElse(options.getFirst());
+        combo.getSelectionModel().select(selected);
 
         combo.setOnAction(_ -> {
-            int idx = combo.getSelectionModel().getSelectedIndex();
-            if (idx >= 0 && idx < options.size()) {
-                channel.setOutputRouting(options.get(idx));
+            IoOption opt = combo.getSelectionModel().getSelectedItem();
+            if (opt == null) {
+                return;
             }
+            channel.setOutputRouting(new OutputRouting(opt.firstChannel(), opt.channelCount()));
+            channel.setOutputRoutingDisplayName(opt.isNoneOrMaster() ? "" : opt.displayName());
         });
 
         return combo;
+    }
+
+    /**
+     * Builds a {@link ListCell} that renders an {@link IoOption} with a
+     * small {@link ChannelKind} glyph and dims/disables inactive entries
+     * with the "Disabled in driver" tooltip required by story 199.
+     */
+    private static ListCell<IoOption> ioCell() {
+        return new ListCell<>() {
+            @Override
+            protected void updateItem(IoOption item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                    setGraphic(null);
+                    setTooltip(null);
+                    setDisable(false);
+                    setStyle("");
+                    return;
+                }
+                setText(item.displayName());
+                setGraphic(IconNode.of(iconForKind(item.kind()), 10));
+                if (!item.active()) {
+                    setDisable(true);
+                    setStyle("-fx-text-fill: #888888;");
+                    setTooltip(new Tooltip("Disabled in driver"));
+                } else {
+                    setDisable(false);
+                    setStyle("");
+                    setTooltip(null);
+                }
+            }
+        };
+    }
+
+    private static DawIcon iconForKind(ChannelKind kind) {
+        return switch (kind) {
+            case ChannelKind.Mic m         -> DawIcon.MICROPHONE;
+            case ChannelKind.Line l        -> DawIcon.XLR;
+            case ChannelKind.Instrument i  -> DawIcon.GUITAR;
+            case ChannelKind.Digital d     -> DawIcon.SPDIF;
+            case ChannelKind.Monitor mo    -> DawIcon.MONITOR;
+            case ChannelKind.Headphone h   -> DawIcon.HEADPHONES;
+            case ChannelKind.Generic g     -> DawIcon.LINK;
+        };
     }
 
     /**
