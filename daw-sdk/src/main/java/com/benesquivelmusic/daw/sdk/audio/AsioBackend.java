@@ -33,6 +33,7 @@ public final class AsioBackend implements AudioBackend {
                     && AudioBackendSupport.nativeLibraryAvailable("asio", "asiosdk");
 
     private final AudioBackendSupport support = new AudioBackendSupport();
+    private volatile AsioFormatChangeShim formatChangeShim;
 
     /** Creates a new ASIO backend (no native resources allocated until {@link #open}). */
     public AsioBackend() {
@@ -63,6 +64,11 @@ public final class AsioBackend implements AudioBackend {
                             + "(e.g. ASIO4ALL) and rebuild daw-core with the ASIO shim.");
         }
         support.markOpen(format, bufferFrames);
+        // Story 218: install the FFM upcall that translates ASIO's
+        // asioMessage host-callback into publishFormatChangeRequested(...).
+        // Construction always succeeds; the actual native registration is
+        // a no-op if the asioshim library is not present on this host.
+        this.formatChangeShim = new AsioFormatChangeShim(this, support, device);
         // Native ASIO buffer-switch wiring lives in the implementation layer
         // that ships the Steinberg ASIO SDK shim; see daw-core/native/asio/.
     }
@@ -80,11 +86,70 @@ public final class AsioBackend implements AudioBackend {
      *
      * <p>The native shim translates those driver notifications into
      * {@link AudioDeviceEvent}s; delivery semantics are defined by the
-     * {@link AudioBackend#deviceEvents()} contract.</p>
+     * {@link AudioBackend#deviceEvents()} contract. Format-change
+     * requests in particular (story 218) are surfaced as
+     * {@link AudioDeviceEvent.FormatChangeRequested} via
+     * {@link #publishFormatChangeRequested(DeviceId, java.util.Optional,
+     * FormatChangeReason)} from the native callback running on the
+     * ASIO host-callback thread; see that method's Javadoc for the
+     * exact mapping from each ASIO callback to a
+     * {@link FormatChangeReason}.</p>
      */
     @Override
     public Flow.Publisher<AudioDeviceEvent> deviceEvents() {
         return support.deviceEvents();
+    }
+
+    /**
+     * Hook called by the native ASIO host-callback shim under
+     * {@code daw-core/native/asio/} to surface a driver-initiated
+     * reset request as a {@link AudioDeviceEvent.FormatChangeRequested}
+     * event on this backend's {@link #deviceEvents()} publisher.
+     *
+     * <p>Mapping conventions used by the shim:</p>
+     * <ul>
+     *   <li>{@code kAsioBufferSizeChange(newFrames)} &rarr;
+     *       {@code reason = }{@link FormatChangeReason.BufferSizeChange};
+     *       {@code proposedFormat} can only carry the previously opened
+     *       sample rate / channel count / bit depth, because
+     *       {@code bufferFrames} is negotiated separately via
+     *       {@link AudioBackend#open(DeviceId, AudioFormat, int)} and is
+     *       not part of {@link AudioFormat}. The new frame count is
+     *       carried as
+     *       {@link FormatChangeReason.BufferSizeChange#newBufferFrames()}.</li>
+     *   <li>{@code kAsioResetRequest} after a successful
+     *       {@code ASIOSetSampleRate(newRate)} &rarr;
+     *       {@code reason = }{@link FormatChangeReason.SampleRateChange};
+     *       the new format carries the new sample rate.</li>
+     *   <li>{@code kAsioResyncRequest} &rarr;
+     *       {@code reason = }{@link FormatChangeReason.ClockSourceChange};
+     *       the proposed format is typically empty since the rate /
+     *       buffer size do not necessarily change.</li>
+     *   <li>any other {@code kAsioResetRequest} (USB streaming-mode
+     *       change, USB hub cycle, vendor utility "reset") &rarr;
+     *       {@code reason = }{@link FormatChangeReason.DriverReset}.</li>
+     * </ul>
+     *
+     * <p>Package-private: only the SDK's native shim is meant to call
+     * this directly. The publisher accepts the event without blocking
+     * (the underlying {@code SubmissionPublisher.offer(...)} drops
+     * under back-pressure rather than stalling), so it is safe to call
+     * from the ASIO host-callback thread.</p>
+     *
+     * @param device         the affected device id; must not be null
+     * @param proposedFormat the format the driver is moving to, when known;
+     *                       must not be null (use
+     *                       {@link java.util.Optional#empty()} for unknown)
+     * @param reason         why the driver is asking for a reset; must not be null
+     */
+    void publishFormatChangeRequested(DeviceId device,
+                                      java.util.Optional<AudioFormat> proposedFormat,
+                                      FormatChangeReason reason) {
+        Objects.requireNonNull(device, "device must not be null");
+        Objects.requireNonNull(proposedFormat, "proposedFormat must not be null");
+        Objects.requireNonNull(reason, "reason must not be null");
+        support.publishDeviceEvent(
+                new AudioDeviceEvent.FormatChangeRequested(device, proposedFormat, reason));
     }
 
     @Override
@@ -126,6 +191,11 @@ public final class AsioBackend implements AudioBackend {
 
     @Override
     public void close() {
+        AsioFormatChangeShim shim = this.formatChangeShim;
+        this.formatChangeShim = null;
+        if (shim != null) {
+            shim.close();
+        }
         support.close();
     }
 

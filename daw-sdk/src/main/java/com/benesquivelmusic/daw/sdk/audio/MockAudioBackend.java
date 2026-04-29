@@ -193,6 +193,33 @@ public final class MockAudioBackend implements AudioBackend {
     }
 
     /**
+     * Simulates the driver issuing a structured "drop and reopen"
+     * request mid-session — the equivalent of ASIO's
+     * {@code kAsioResetRequest} / {@code kAsioBufferSizeChange} /
+     * {@code kAsioResyncRequest}, CoreAudio's
+     * {@code kAudioDevicePropertyNominalSampleRate} listener firing,
+     * or WASAPI invalidating the active {@code IAudioClient} — so
+     * tests can drive the
+     * {@link AudioDeviceEvent.FormatChangeRequested} flow in
+     * {@code AudioEngineController} without real hardware (story 218).
+     *
+     * @param device         the affected device id; must not be null
+     * @param proposedFormat the format the driver is moving to, when known;
+     *                       must not be null
+     *                       (use {@link Optional#empty()} for unknown)
+     * @param reason         why the driver is asking for a reset; must not be null
+     */
+    public void simulateFormatChangeRequested(DeviceId device,
+                                              Optional<AudioFormat> proposedFormat,
+                                              FormatChangeReason reason) {
+        Objects.requireNonNull(device, "device must not be null");
+        Objects.requireNonNull(proposedFormat, "proposedFormat must not be null");
+        Objects.requireNonNull(reason, "reason must not be null");
+        support.publishDeviceEvent(
+                new AudioDeviceEvent.FormatChangeRequested(device, proposedFormat, reason));
+    }
+
+    /**
      * Returns a runnable that records the invocation. Tests can assert
      * the count via {@link #controlPanelInvocationCount()} and verify
      * that the dialog re-queries device capabilities after the panel
