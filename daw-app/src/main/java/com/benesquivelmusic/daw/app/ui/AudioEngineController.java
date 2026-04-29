@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.BufferSizeRange;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
+import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 import com.benesquivelmusic.daw.sdk.audio.XrunEvent;
 
@@ -256,6 +257,24 @@ public interface AudioEngineController {
                 @Override public void cancel() { /* no-op */ }
             });
         };
+    }
+
+    /**
+     * Returns the driver-reported round-trip latency for the currently
+     * opened audio stream. The {@link TransportController} queries this
+     * once at recording start and passes the result to
+     * {@link com.benesquivelmusic.daw.core.recording.RecordingPipeline#setReportedLatency(RoundTripLatency)}
+     * so captured clips are shifted by the driver's reported
+     * input + output + safety-offset frames.
+     *
+     * <p>The default implementation returns
+     * {@link RoundTripLatency#UNKNOWN} (zero compensation), which is
+     * safe for test stubs that have no real backend.</p>
+     *
+     * @return the driver-reported round-trip latency; never {@code null}
+     */
+    default RoundTripLatency reportedLatency() {
+        return RoundTripLatency.UNKNOWN;
     }
 
     /**

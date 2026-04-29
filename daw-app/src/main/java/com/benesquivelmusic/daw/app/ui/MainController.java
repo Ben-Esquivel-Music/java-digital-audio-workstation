@@ -102,6 +102,8 @@ public final class MainController {
     // mixer's input-meter column and the arrangement-view clip indicator.
     private final InputLevelMonitorRegistry inputLevelMonitorRegistry = new InputLevelMonitorRegistry();
     private DefaultAudioEngineController audioEngineController;
+    /** Cached settings model for transport-controller access to latency compensation toggle. */
+    private SettingsModel settingsModel;
     private NotificationBar notificationBar;
     private Metronome metronome;
     private PluginInvocationSupervisor pluginSupervisor;
@@ -179,6 +181,7 @@ public final class MainController {
         // project's mixer so that a previously-saved FLOAT_32 choice is
         // honoured on restart rather than silently reverting to the default.
         SettingsModel startupSettings = new SettingsModel(Preferences.userNodeForPackage(SettingsModel.class));
+        this.settingsModel = startupSettings;
         project.getMixer().setMixPrecision(startupSettings.getMixPrecision());
 
         CheckpointManager checkpointManager = new CheckpointManager(AutoSaveConfig.DEFAULT);
@@ -308,6 +311,14 @@ public final class MainController {
                     @Override public void pauseTimeTicker() { animationController.pauseTimeTicker(); }
                     @Override public void stopTimeTicker() { animationController.stopTimeTicker(); }
                     @Override public void flashMidiActivity(Track track) { flashTrackArmButton(track); }
+                    @Override public boolean isApplyLatencyCompensation() {
+                        return settingsModel.isApplyLatencyCompensation();
+                    }
+                    @Override public com.benesquivelmusic.daw.sdk.audio.RoundTripLatency reportedLatency() {
+                        return audioEngineController != null
+                                ? audioEngineController.reportedLatency()
+                                : com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN;
+                    }
                 });
     }
 

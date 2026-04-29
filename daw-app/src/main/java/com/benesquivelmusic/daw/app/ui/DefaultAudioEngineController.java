@@ -235,6 +235,15 @@ final class DefaultAudioEngineController implements AudioEngineController {
         return engineStatePublisher;
     }
 
+    @Override
+    public com.benesquivelmusic.daw.sdk.audio.RoundTripLatency reportedLatency() {
+        NativeAudioBackend backend = audioEngine.getAudioBackend();
+        if (backend == null) {
+            return com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN;
+        }
+        return backend.reportedLatency();
+    }
+
     /**
      * Subscribes to {@code backend.deviceEvents()} so the controller
      * can transition to {@link EngineState#DEVICE_LOST} when

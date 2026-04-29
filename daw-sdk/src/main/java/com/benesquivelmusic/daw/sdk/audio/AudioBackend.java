@@ -520,20 +520,23 @@ public sealed interface AudioBackend extends AutoCloseable
      * sample position so a recorded take aligns with the cue the user
      * heard.
      *
-     * <p>Per-backend conventions:</p>
+     * <p>Per-backend conventions (planned — none of these backends
+     * override this method yet; they all return the default
+     * {@link RoundTripLatency#UNKNOWN} until the native query is
+     * implemented in a follow-up):</p>
      * <ul>
-     *   <li>{@link AsioBackend} — calls
+     *   <li><b>ASIO</b> — will call
      *       {@code ASIOGetLatencies(int* in, int* out)}; safety-offset
-     *       frames are zero (ASIO has no equivalent).</li>
-     *   <li>{@link CoreAudioBackend} — sums
+     *       frames will be zero (ASIO has no equivalent).</li>
+     *   <li><b>CoreAudio</b> — will sum
      *       {@code kAudioDevicePropertyLatency} +
      *       {@code kAudioStreamPropertyLatency} into the input/output
-     *       components and reports {@code kAudioDevicePropertySafetyOffset}
-     *       separately.</li>
-     *   <li>{@link WasapiBackend} — translates
+     *       components and report
+     *       {@code kAudioDevicePropertySafetyOffset} separately.</li>
+     *   <li><b>WASAPI</b> — will translate
      *       {@code IAudioClient::GetStreamLatency} plus the device
      *       period into the input/output components.</li>
-     *   <li>{@link JackBackend} — uses
+     *   <li><b>JACK</b> — will use
      *       {@code jack_port_get_total_latency} on the capture and
      *       playback ports.</li>
      *   <li>{@link JavaxSoundBackend} — returns

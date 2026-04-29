@@ -838,8 +838,9 @@ public final class AudioSettingsDialog extends Dialog<Void> {
             model.setAudioOutputDevice("(default)".equals(outputDevice) ? "" : outputDevice);
         }
         // Persist the "Apply latency compensation to recorded takes"
-        // toggle. The recording pipeline reads this value via
-        // SettingsModel#isApplyLatencyCompensation() at session start.
+        // toggle. The TransportController reads this value via
+        // Host#isApplyLatencyCompensation() at recording start and
+        // passes it to RecordingPipeline.setApplyLatencyCompensation().
         model.setApplyLatencyCompensation(latencyCompensationCheck.isSelected());
 
         if (controller == null) {

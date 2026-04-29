@@ -64,10 +64,16 @@ public record RoundTripLatency(int inputFrames, int outputFrames, int safetyOffs
      * {@code RecordingPipeline} subtracts from each captured-block sample
      * position so the resulting clip aligns with the cue the user heard.
      *
+     * <p>Uses {@link Math#addExact(int, int)} so corrupt or extremely
+     * large values surface as an {@link ArithmeticException} instead of
+     * silently overflowing into a negative/incorrect compensation
+     * amount.</p>
+     *
      * @return total round-trip frames (never negative)
+     * @throws ArithmeticException if the sum overflows {@code int}
      */
     public int totalFrames() {
-        return inputFrames + outputFrames + safetyOffsetFrames;
+        return Math.addExact(Math.addExact(inputFrames, outputFrames), safetyOffsetFrames);
     }
 
     /**
