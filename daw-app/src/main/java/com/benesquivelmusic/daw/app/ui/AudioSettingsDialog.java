@@ -128,6 +128,7 @@ public final class AudioSettingsDialog extends Dialog<Void> {
     private final Button testToneButton;
     private final Button openControlPanelButton;
     private final CheckBox wasapiExclusiveCheck;
+    private final CheckBox latencyCompensationCheck;
     private final Timeline cpuPollTimer;
 
     /** Most-recently enumerated device list for the active backend selection. */
@@ -199,6 +200,21 @@ public final class AudioSettingsDialog extends Dialog<Void> {
                 "WASAPI exclusive mode bypasses the Windows audio engine "
                 + "for lower latency and unlocks the full driver-reported "
                 + "buffer-size and sample-rate range."));
+
+        // "Apply latency compensation to recorded takes" — story this
+        // checkbox was added for. When enabled, the recording pipeline
+        // shifts each captured buffer's start position by the driver's
+        // reported round-trip latency so the take aligns with the cue
+        // the user heard. Default on; matches Pro Tools / Logic / Cubase /
+        // Reaper. Useful to disable for diagnostic listening or for users
+        // wired through a hardware monitor mixer that already pre-compensates.
+        latencyCompensationCheck = new CheckBox("Apply latency compensation to recorded takes");
+        latencyCompensationCheck.setTooltip(new Tooltip(
+                "Shifts each recorded take by the driver-reported round-trip "
+                + "latency (input + output + safety) so the wave aligns with "
+                + "the bar where the user played. Disable for diagnostic "
+                + "listening or when wired through a hardware monitor mixer "
+                + "that already pre-compensates."));
 
         // Custom list-cell factory greys out sample rates the active
         // device does not support and shows a tooltip explaining why,
@@ -305,6 +321,9 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         grid.add(mixPrecisionCombo, 1, row, 2, 1);
         row++;
 
+        grid.add(latencyCompensationCheck, 0, row, 3, 1);
+        row++;
+
         HBox buttonRow = new HBox(12, testToneButton, cpuLoadLabel);
         grid.add(new Separator(), 0, row, 3, 1);
         row++;
@@ -348,6 +367,7 @@ public final class AudioSettingsDialog extends Dialog<Void> {
 
             bitDepthCombo.setValue(nearestOption(BIT_DEPTH_OPTIONS, model.getBitDepth()));
             mixPrecisionCombo.setValue(model.getMixPrecision());
+            latencyCompensationCheck.setSelected(model.isApplyLatencyCompensation());
 
             // Stash the persisted buffer size; refreshDeviceCapabilities
             // will rebuild the menu and snap the value into the
@@ -817,6 +837,10 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         if (outputDevice != null) {
             model.setAudioOutputDevice("(default)".equals(outputDevice) ? "" : outputDevice);
         }
+        // Persist the "Apply latency compensation to recorded takes"
+        // toggle. The recording pipeline reads this value via
+        // SettingsModel#isApplyLatencyCompensation() at session start.
+        model.setApplyLatencyCompensation(latencyCompensationCheck.isSelected());
 
         if (controller == null) {
             return;
@@ -971,6 +995,11 @@ public final class AudioSettingsDialog extends Dialog<Void> {
     /** Test hook — read-only snapshot of the buffer-size dropdown items. */
     List<Integer> getBufferSizeOptions() {
         return Collections.unmodifiableList(bufferSizeCombo.getItems());
+    }
+
+    /** Test hook — exposes the "Apply latency compensation" checkbox. */
+    CheckBox getLatencyCompensationCheck() {
+        return latencyCompensationCheck;
     }
 
     /** Test hook — current driver-reported buffer-size range. */

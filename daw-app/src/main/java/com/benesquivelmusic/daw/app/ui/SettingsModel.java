@@ -22,6 +22,7 @@ public final class SettingsModel {
     private static final String KEY_AUDIO_BACKEND = "audio.backend";
     private static final String KEY_AUDIO_INPUT_DEVICE = "audio.inputDevice";
     private static final String KEY_AUDIO_OUTPUT_DEVICE = "audio.outputDevice";
+    private static final String KEY_APPLY_LATENCY_COMPENSATION = "audio.applyLatencyCompensation";
 
     // ── Project keys ─────────────────────────────────────────────────────────
     private static final String KEY_AUTO_SAVE_INTERVAL_SECONDS = "project.autoSaveIntervalSeconds";
@@ -54,6 +55,14 @@ public final class SettingsModel {
     static final String DEFAULT_AUDIO_BACKEND = "";
     /** Empty device name means "use default device". */
     static final String DEFAULT_AUDIO_DEVICE = "";
+    /**
+     * Default for the "Apply latency compensation to recorded takes" toggle.
+     * {@code true} matches Pro Tools, Logic, Cubase and Reaper, all of which
+     * compensate the driver's reported round-trip by default. Users wired
+     * through a hardware monitor mixer that already pre-compensates can
+     * disable it from the Audio Settings dialog.
+     */
+    static final boolean DEFAULT_APPLY_LATENCY_COMPENSATION = true;
 
     private final Preferences prefs;
 
@@ -68,6 +77,7 @@ public final class SettingsModel {
     private String audioBackend;
     private String audioInputDevice;
     private String audioOutputDevice;
+    private boolean applyLatencyCompensation;
     private KeyBindingManager keyBindingManager;
 
     /**
@@ -100,6 +110,8 @@ public final class SettingsModel {
         audioBackend = prefs.get(KEY_AUDIO_BACKEND, DEFAULT_AUDIO_BACKEND);
         audioInputDevice = prefs.get(KEY_AUDIO_INPUT_DEVICE, DEFAULT_AUDIO_DEVICE);
         audioOutputDevice = prefs.get(KEY_AUDIO_OUTPUT_DEVICE, DEFAULT_AUDIO_DEVICE);
+        applyLatencyCompensation = prefs.getBoolean(
+                KEY_APPLY_LATENCY_COMPENSATION, DEFAULT_APPLY_LATENCY_COMPENSATION);
     }
 
     // ── Audio ────────────────────────────────────────────────────────────────
@@ -222,6 +234,31 @@ public final class SettingsModel {
         prefs.put(KEY_AUDIO_OUTPUT_DEVICE, deviceName);
     }
 
+    /**
+     * Returns whether the recording pipeline should compensate for the
+     * driver's reported round-trip latency on captured takes — the
+     * "Apply latency compensation to recorded takes" toggle in the
+     * Audio Settings dialog. Defaults to {@code true}.
+     *
+     * @return {@code true} when compensation is enabled
+     */
+    public boolean isApplyLatencyCompensation() {
+        return applyLatencyCompensation;
+    }
+
+    /**
+     * Sets the latency-compensation toggle and persists the change.
+     * Disabling is useful for diagnostic listening or for users wired
+     * through a hardware monitor mixer that already pre-compensates.
+     *
+     * @param apply {@code true} to compensate, {@code false} to leave
+     *              recorded takes uncompensated
+     */
+    public void setApplyLatencyCompensation(boolean apply) {
+        this.applyLatencyCompensation = apply;
+        prefs.putBoolean(KEY_APPLY_LATENCY_COMPENSATION, apply);
+    }
+
     // ── Project ──────────────────────────────────────────────────────────────
 
     /** Returns the auto-save interval in seconds. */
@@ -334,5 +371,6 @@ public final class SettingsModel {
         setAudioBackend(DEFAULT_AUDIO_BACKEND);
         setAudioInputDevice(DEFAULT_AUDIO_DEVICE);
         setAudioOutputDevice(DEFAULT_AUDIO_DEVICE);
+        setApplyLatencyCompensation(DEFAULT_APPLY_LATENCY_COMPENSATION);
     }
 }
