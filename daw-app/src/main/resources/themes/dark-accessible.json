@@ -1,0 +1,24 @@
+{
+  "id": "dark-accessible",
+  "name": "Dark Accessible",
+  "description": "Default WCAG 2.1 AAA-compliant dark theme.",
+  "dark": true,
+  "colors": {
+    "background":       { "value": "#121212", "role": "background" },
+    "surface":          { "value": "#1e1e1e", "role": "background" },
+    "foreground":       { "value": "#f5f5f5", "role": "foreground" },
+    "mutedForeground":  { "value": "#bdbdbd", "role": "foreground" },
+    "accent":           { "value": "#82b1ff", "role": "accent"     },
+    "warning":          { "value": "#ffd54f", "role": "warning"    },
+    "danger":           { "value": "#ff8a80", "role": "danger"     }
+  },
+  "pairs": [
+    { "foreground": "foreground",      "background": "background" },
+    { "foreground": "foreground",      "background": "surface"    },
+    { "foreground": "mutedForeground", "background": "background" },
+    { "foreground": "mutedForeground", "background": "surface"    },
+    { "foreground": "accent",          "background": "background" },
+    { "foreground": "warning",         "background": "background" },
+    { "foreground": "danger",          "background": "background" }
+  ]
+}

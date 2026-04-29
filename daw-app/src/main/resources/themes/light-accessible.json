@@ -1,0 +1,24 @@
+{
+  "id": "light-accessible",
+  "name": "Light Accessible",
+  "description": "WCAG 2.1 AAA-compliant light theme for bright environments.",
+  "dark": false,
+  "colors": {
+    "background":       { "value": "#ffffff", "role": "background" },
+    "surface":          { "value": "#f5f5f5", "role": "background" },
+    "foreground":       { "value": "#1a1a1a", "role": "foreground" },
+    "mutedForeground":  { "value": "#4f4f4f", "role": "foreground" },
+    "accent":           { "value": "#0050b3", "role": "accent"     },
+    "warning":          { "value": "#774400", "role": "warning"    },
+    "danger":           { "value": "#a30000", "role": "danger"     }
+  },
+  "pairs": [
+    { "foreground": "foreground",      "background": "background" },
+    { "foreground": "foreground",      "background": "surface"    },
+    { "foreground": "mutedForeground", "background": "background" },
+    { "foreground": "mutedForeground", "background": "surface"    },
+    { "foreground": "accent",          "background": "background" },
+    { "foreground": "warning",         "background": "background" },
+    { "foreground": "danger",          "background": "background" }
+  ]
+}
