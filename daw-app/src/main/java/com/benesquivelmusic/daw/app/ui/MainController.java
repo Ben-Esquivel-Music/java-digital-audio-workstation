@@ -143,6 +143,7 @@ public final class MainController {
     private KeyBindingManager keyBindingManager;
     private CommandPaletteView commandPaletteView;
     private WorkspaceManager workspaceManager;
+    private com.benesquivelmusic.daw.app.ui.dock.DockManager dockManager;
 
     private ArrangementCanvas arrangementCanvas;
     private ClipInteractionController clipInteractionController;
@@ -623,6 +624,33 @@ public final class MainController {
                             workspaceManager.saveCurrentAs(name.trim());
                         }
                     }
+                    // ── Dockable panels (F3 / F4 / F5) ────────────────────
+                    // Preserve legacy visible behavior unless the docking
+                    // path is the only available way to service the toggle.
+                    @Override public void onToggleDockMixer() {
+                        if (viewNavigationController != null) {
+                            viewNavigationController.switchView(DawView.MIXER);
+                        } else if (dockManager != null
+                                && dockManager.layout().contains(DefaultWorkspaces.PANEL_MIXER)) {
+                            dockManager.toggleVisible(DefaultWorkspaces.PANEL_MIXER);
+                        }
+                    }
+                    @Override public void onToggleDockBrowser() {
+                        if (browserPanelController != null) {
+                            browserPanelController.toggleBrowserPanel();
+                        } else if (dockManager != null
+                                && dockManager.layout().contains(DefaultWorkspaces.PANEL_BROWSER)) {
+                            dockManager.toggleVisible(DefaultWorkspaces.PANEL_BROWSER);
+                        }
+                    }
+                    @Override public void onToggleDockArrangement() {
+                        if (viewNavigationController != null) {
+                            viewNavigationController.switchView(DawView.ARRANGEMENT);
+                        } else if (dockManager != null
+                                && dockManager.layout().contains(DefaultWorkspaces.PANEL_ARRANGEMENT)) {
+                            dockManager.toggleVisible(DefaultWorkspaces.PANEL_ARRANGEMENT);
+                        }
+                    }
                 });
         createCommandPaletteView();
     }
@@ -819,6 +847,11 @@ public final class MainController {
     }
 
     private void installWorkspacesMenu(javafx.scene.control.MenuBar bar) {
+        // Do not create/register a DockManager until the JavaFX docking
+        // adapter is available to reconcile layout changes back into the
+        // existing panel controllers. Creating it early would make workspace
+        // apply and keyboard actions mutate dock state without updating the
+        // visible UI, effectively bypassing legacy behavior.
         workspaceManager = new WorkspaceManager(buildWorkspaceHost());
         WorkspacesMenu menuBuilder = new WorkspacesMenu(
                 workspaceManager,
@@ -914,7 +947,41 @@ public final class MainController {
                     default -> { /* unknown panel id — forward compatible */ }
                 }
             }
+            // ── Dock layout integration ─────────────────────────────────
+            @Override public String captureDockLayoutJson() {
+                return dockManager == null ? "" : dockManager.captureJson();
+            }
+            @Override public void applyDockLayoutJson(String dockLayoutJson) {
+                if (dockManager != null && dockLayoutJson != null && !dockLayoutJson.isEmpty()) {
+                    dockManager.applyJson(dockLayoutJson);
+                }
+            }
         };
+    }
+
+    /**
+     * Registers the well-known top-level panels (arrangement, mixer,
+     * editor, mastering, browser) with the {@link
+     * com.benesquivelmusic.daw.app.ui.dock.DockManager} so workspace
+     * switches can save/restore their dock placement. Each registration
+     * is a lightweight {@link com.benesquivelmusic.daw.app.ui.dock.Dockable}
+     * — a record carrying the stable id, display name, icon, and
+     * preferred zone.
+     */
+    private void registerDockablePanels(com.benesquivelmusic.daw.app.ui.dock.DockManager dm) {
+        record Panel(String dockId, String displayName, String iconName,
+                     com.benesquivelmusic.daw.app.ui.dock.DockZone preferredZone)
+                implements com.benesquivelmusic.daw.app.ui.dock.Dockable { }
+        dm.register(new Panel(DefaultWorkspaces.PANEL_ARRANGEMENT, "Arrangement",
+                "TIMELINE", com.benesquivelmusic.daw.app.ui.dock.DockZone.CENTER));
+        dm.register(new Panel(DefaultWorkspaces.PANEL_MIXER, "Mixer",
+                "MIXER", com.benesquivelmusic.daw.app.ui.dock.DockZone.BOTTOM));
+        dm.register(new Panel(DefaultWorkspaces.PANEL_EDITOR, "Editor",
+                "EDITOR", com.benesquivelmusic.daw.app.ui.dock.DockZone.CENTER));
+        dm.register(new Panel(DefaultWorkspaces.PANEL_MASTERING, "Mastering",
+                "MASTERING", com.benesquivelmusic.daw.app.ui.dock.DockZone.CENTER));
+        dm.register(new Panel(DefaultWorkspaces.PANEL_BROWSER, "Browser",
+                "BROWSER", com.benesquivelmusic.daw.app.ui.dock.DockZone.LEFT));
     }
 
     private String promptWorkspaceName() {

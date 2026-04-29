@@ -163,6 +163,16 @@ public enum DawAction {
     TOGGLE_VISUALIZATIONS("Toggle Visualizations", Category.VIEWS,
             new KeyCodeCombination(KeyCode.V, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
 
+    // ── Dockable panels (Issue: Resizable and Detachable Dockable Panels) ──
+    // Cubase-consistent function-key shortcuts: F3 mixer, F4 browser,
+    // F5 arrangement. These show/hide the corresponding dockable panel.
+    TOGGLE_DOCK_MIXER("Show / Hide Mixer Panel", Category.VIEWS,
+            new KeyCodeCombination(KeyCode.F3)),
+    TOGGLE_DOCK_BROWSER("Show / Hide Browser Panel", Category.VIEWS,
+            new KeyCodeCombination(KeyCode.F4)),
+    TOGGLE_DOCK_ARRANGEMENT("Show / Hide Arrangement Panel", Category.VIEWS,
+            new KeyCodeCombination(KeyCode.F5)),
+
     // ── Application ──────────────────────────────────────────────────────────
     OPEN_SETTINGS("Settings", Category.APPLICATION,
             new KeyCodeCombination(KeyCode.COMMA, KeyCombination.SHORTCUT_DOWN)),

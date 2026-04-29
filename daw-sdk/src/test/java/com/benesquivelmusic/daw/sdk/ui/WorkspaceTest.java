@@ -87,4 +87,33 @@ class WorkspaceTest {
         assertThatThrownBy(() -> new Rectangle2D(0, 0, Double.POSITIVE_INFINITY, 1))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void fourArgConstructorDefaultsDockLayoutToEmpty() {
+        // Backwards-compatible 4-arg constructor used by every caller
+        // written before dockable panels existed.
+        Workspace ws = new Workspace("Mixing", Map.of(), List.of(), Map.of());
+        assertThat(ws.dockLayoutJson()).isEqualTo("");
+    }
+
+    @Test
+    void fiveArgConstructorRejectsNullDockLayout() {
+        assertThatThrownBy(() -> new Workspace("X", Map.of(), List.of(), Map.of(), null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void withDockLayoutJsonReturnsCopyWithLayout() {
+        Workspace ws = new Workspace("Mixing", Map.of(), List.of(), Map.of());
+        Workspace docked = ws.withDockLayoutJson("{\"entries\":[]}");
+        assertThat(ws.dockLayoutJson()).isEqualTo("");
+        assertThat(docked.dockLayoutJson()).isEqualTo("{\"entries\":[]}");
+        assertThat(docked.name()).isEqualTo("Mixing");
+    }
+
+    @Test
+    void withNamePreservesDockLayoutJson() {
+        Workspace ws = new Workspace("Mixing", Map.of(), List.of(), Map.of(), "{\"x\":1}");
+        assertThat(ws.withName("Mix2").dockLayoutJson()).isEqualTo("{\"x\":1}");
+    }
 }
