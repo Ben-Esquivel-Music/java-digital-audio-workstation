@@ -53,6 +53,10 @@ class AudioChannelInfoTest {
                 .isInstanceOf(ChannelKind.Headphone.class);
         assertThat(ChannelKindHeuristics.infer("Headphone Out"))
                 .isInstanceOf(ChannelKind.Headphone.class);
+        assertThat(ChannelKindHeuristics.infer("Headphones"))
+                .isInstanceOf(ChannelKind.Headphone.class);
+        assertThat(ChannelKindHeuristics.infer("Headphones 1"))
+                .isInstanceOf(ChannelKind.Headphone.class);
     }
 
     @Test

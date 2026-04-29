@@ -440,7 +440,7 @@ public final class ProjectDeserializer {
             }
         }
         String irName = elem.getAttribute("input-routing-name");
-        if (irName != null && !irName.isEmpty()) {
+        if (!irName.isEmpty()) {
             track.setInputRoutingDisplayName(irName);
         }
 
@@ -753,7 +753,7 @@ public final class ProjectDeserializer {
             }
         }
         String orName = elem.getAttribute("output-routing-name");
-        if (orName != null && !orName.isEmpty()) {
+        if (!orName.isEmpty()) {
             channel.setOutputRoutingDisplayName(orName);
         }
 

@@ -26,7 +26,7 @@ public final class ChannelKindHeuristics {
 
     // "Mic" appears inside "Microphone" too, and "Line" inside "Line Out";
     // the order of probes matters, so we go from most specific to least.
-    private static final Pattern HEADPHONE = Pattern.compile("(?i)\\b(head\\s*phone|phones?)\\b");
+    private static final Pattern HEADPHONE = Pattern.compile("(?i)\\b(head\\s*phones?|phones?)\\b");
     private static final Pattern MONITOR = Pattern.compile("(?i)\\b(main|monitor)\\b");
     private static final Pattern DIGITAL = Pattern.compile("(?i)\\b(s/?pdif|adat|aes(/?ebu)?)\\b");
     private static final Pattern INSTRUMENT = Pattern.compile("(?i)\\b(inst(rument)?|hi[\\s\\-_.]?z)\\b");

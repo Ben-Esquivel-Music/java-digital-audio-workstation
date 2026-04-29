@@ -114,6 +114,33 @@ class ChannelNameSnapshotReconcilerTest {
     }
 
     @Test
+    void reconcileShouldNotCollapseSameOldNameMappingToDifferentNewNames() {
+        // Two channels both had snapshot "Mic 3" but now map to different
+        // live names — both renames must appear, not just one.
+        DawProject project = newProject();
+        Track t1 = new Track("Vox", TrackType.AUDIO);
+        t1.setInputRouting(new InputRouting(2, 1));
+        t1.setInputRoutingDisplayName("Mic 3");
+        project.addTrack(t1);
+
+        Track t2 = new Track("DI", TrackType.AUDIO);
+        t2.setInputRouting(new InputRouting(3, 1));
+        t2.setInputRoutingDisplayName("Mic 3");
+        project.addTrack(t2);
+
+        var live = List.of(
+                new AudioChannelInfo(2, "Hi-Z Inst 3"),
+                new AudioChannelInfo(3, "Line 4"));
+
+        var result = ChannelNameSnapshotReconciler.reconcile(project, live, List.of());
+
+        assertThat(result.renames()).hasSize(2);
+        assertThat(result.warning().get())
+                .contains("'Mic 3' → 'Hi-Z Inst 3'")
+                .contains("'Mic 3' → 'Line 4'");
+    }
+
+    @Test
     void reconcileShouldDetectOutputRoutingRenamesOnMixerChannels() {
         DawProject project = newProject();
         // The constructor adds a default master channel; first user-added

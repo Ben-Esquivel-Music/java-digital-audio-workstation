@@ -94,9 +94,10 @@ public final class ChannelNameSnapshotReconciler {
         Objects.requireNonNull(liveInputs, "liveInputs must not be null");
         Objects.requireNonNull(liveOutputs, "liveOutputs must not be null");
 
-        // Dedupe by (oldName -> newName) so 80 tracks routed to "Mic 3"
-        // surface as a single warning, not 80.
-        Map<String, NameChange> renamesByOld = new LinkedHashMap<>();
+        // Dedupe by (oldName, newName) pair so 80 tracks routed to "Mic 3"
+        // surface as a single warning, not 80, but two different renames
+        // from the same old name are not collapsed.
+        Map<String, NameChange> renamesByPair = new LinkedHashMap<>();
 
         for (Track track : project.getTracks()) {
             String snapshot = track.getInputRoutingDisplayName();
@@ -109,8 +110,9 @@ public final class ChannelNameSnapshotReconciler {
             }
             String live = liveNameAt(liveInputs, routing.firstChannel());
             if (live != null && !live.equals(snapshot)) {
-                renamesByOld.computeIfAbsent(snapshot,
-                        old -> new NameChange(routing.firstChannel(), old, live));
+                String pairKey = snapshot + " → " + live;
+                renamesByPair.computeIfAbsent(pairKey,
+                        _ -> new NameChange(routing.firstChannel(), snapshot, live));
                 track.setInputRoutingDisplayName(live);
             }
         }
@@ -126,13 +128,14 @@ public final class ChannelNameSnapshotReconciler {
             }
             String live = liveNameAt(liveOutputs, routing.firstChannel());
             if (live != null && !live.equals(snapshot)) {
-                renamesByOld.computeIfAbsent(snapshot,
-                        old -> new NameChange(routing.firstChannel(), old, live));
+                String pairKey = snapshot + " → " + live;
+                renamesByPair.computeIfAbsent(pairKey,
+                        _ -> new NameChange(routing.firstChannel(), snapshot, live));
                 channel.setOutputRoutingDisplayName(live);
             }
         }
 
-        List<NameChange> renames = new ArrayList<>(renamesByOld.values());
+        List<NameChange> renames = new ArrayList<>(renamesByPair.values());
         if (renames.isEmpty()) {
             return new ReconciliationResult(Optional.empty(), List.of());
         }
