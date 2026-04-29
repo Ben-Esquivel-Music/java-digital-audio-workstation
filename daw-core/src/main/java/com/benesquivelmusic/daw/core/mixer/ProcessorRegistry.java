@@ -57,8 +57,14 @@ import java.util.Objects;
  *       before invoking.</li>
  * </ul>
  *
- * <p>The registry is a stateless singleton and thread-safe after initialization;
- * all lookups are O(1) on pre-populated {@link Map} instances.</p>
+ * <p>The registry is stateless after construction and thread-safe; all lookups
+ * are O(1) on pre-populated {@link Map} instances. Construct one instance via
+ * the public no-arg constructor and inject it through collaborators'
+ * constructors. The legacy {@link #getInstance()} accessor is retained as a
+ * {@linkplain Deprecated deprecated} pass-through during the singleton-removal
+ * migration tracked by issue
+ * &laquo;Replace Static Singletons with Constructor-Injected Dependencies&raquo;
+ * and will be removed once every call site has been converted.</p>
  */
 public final class ProcessorRegistry {
 
@@ -91,12 +97,30 @@ public final class ProcessorRegistry {
             WaveshaperProcessor.class,
             ConvolutionReverbProcessor.class);
 
-    /** Lazy holder idiom: initialized on first access, thread-safe via JLS. */
+    /**
+     * Lazy holder idiom: initialized on first access, thread-safe via JLS.
+     *
+     * @deprecated Will be removed when the singleton-migration completes;
+     *     prefer constructing a fresh {@link ProcessorRegistry} via the public
+     *     constructor and injecting it into collaborators.
+     */
+    @Deprecated(since = "0.1.0", forRemoval = true)
     private static final class Holder {
         static final ProcessorRegistry INSTANCE = new ProcessorRegistry();
     }
 
-    /** Returns the shared registry instance. */
+    /**
+     * Returns the shared registry instance.
+     *
+     * @deprecated Static-singleton access is being removed across the codebase
+     *     (see issue &laquo;Replace Static Singletons with Constructor-Injected
+     *     Dependencies&raquo;). New code must accept a {@link ProcessorRegistry}
+     *     via constructor injection, ultimately wired by {@code DawRuntime} in
+     *     {@code daw-app}. This pass-through remains only so existing call
+     *     sites can be migrated incrementally; it will be deleted in the final
+     *     step of the migration.
+     */
+    @Deprecated(since = "0.1.0", forRemoval = true)
     public static ProcessorRegistry getInstance() {
         return Holder.INSTANCE;
     }
@@ -105,7 +129,15 @@ public final class ProcessorRegistry {
     private final Map<Class<? extends AudioProcessor>, InsertEffectType> byClass;
     private final List<InsertEffectType> availableTypes;
 
-    private ProcessorRegistry() {
+    /**
+     * Constructs a new registry by scanning {@link #KNOWN_PROCESSORS} for
+     * {@link InsertEffect @InsertEffect} annotations and resolving a
+     * {@link MethodHandle} per class. Each instance owns its own immutable
+     * lookup tables; instances are cheap to construct (sub-millisecond on
+     * modern hardware) and intended to be created once at application start
+     * by the {@code DawRuntime} composition root and injected from there.
+     */
+    public ProcessorRegistry() {
         Map<InsertEffectType, Entry> types = new EnumMap<>(InsertEffectType.class);
         Map<Class<? extends AudioProcessor>, InsertEffectType> classes = new HashMap<>();
         MethodHandles.Lookup lookup = MethodHandles.publicLookup();

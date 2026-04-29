@@ -72,6 +72,25 @@ introduce static singletons or service-locator patterns when extracting
 a focused service. Tests then drive the collaborator with stubs/fakes
 without touching global state.
 
+The application's composition root is
+[`DawRuntime`](daw-app/src/main/java/com/benesquivelmusic/daw/app/DawRuntime.java)
+— a small hand-rolled class instantiated once in `DawApplication#start`
+that owns the canonical long-lived collaborators (`ProcessorRegistry`,
+`java.time.Clock`, `java.util.random.RandomGenerator`, …) and passes
+them into downstream constructors.
+
+When a collaborator's behaviour depends on **time or randomness**,
+inject a `java.time.Clock` and/or `java.util.random.RandomGenerator`
+through its constructor instead of calling `System.currentTimeMillis()`,
+`Instant.now()`, `Math.random()`, or `new Random()` directly. Tests
+then pass `Clock.fixed(...)` or a seeded `RandomGenerator` to make the
+behaviour deterministic.
+
+A few historical static singletons are being removed
+incrementally — one per PR. See
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#the-singleton-removal-migration)
+for the migration pattern and current status.
+
 ### Extraction checklist
 
 When extracting a focused service:
