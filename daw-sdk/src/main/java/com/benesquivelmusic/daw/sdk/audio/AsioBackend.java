@@ -162,6 +162,37 @@ public final class AsioBackend implements AudioBackend {
         return Set.of(44_100, 48_000, 88_200, 96_000, 176_400, 192_000);
     }
 
+    /**
+     * Reports the hardware clock sources the ASIO driver exposes.
+     * The FFM implementation layer calls
+     * {@code ASIOGetClockSources(ASIOClockSource[], int* numSources)}
+     * and maps each entry's {@code associatedGroup} / name into a
+     * {@link ClockKind}; the SDK-level default returns an empty list,
+     * which the Audio Settings dialog renders as a disabled combo with
+     * a tooltip explaining that the native shim is required.
+     */
+    @Override
+    public List<ClockSource> clockSources(DeviceId device) {
+        Objects.requireNonNull(device, "device must not be null");
+        return List.of();
+    }
+
+    /**
+     * Routes a clock-source selection to the FFM-bound
+     * {@code ASIOSetClockSource(int)} symbol. Without the native ASIO
+     * shim under {@code daw-core/native/asio/} this method throws
+     * {@link UnsupportedOperationException} — the same exception the
+     * interface default throws — so callers can reliably detect lack
+     * of support with a single catch.
+     */
+    @Override
+    public void selectClockSource(DeviceId device, int sourceId) {
+        Objects.requireNonNull(device, "device must not be null");
+        throw new UnsupportedOperationException(
+                "ASIO clock-source selection requires the native shim under "
+                        + "daw-core/native/asio/ which is not present in this build.");
+    }
+
     private static String osFamily() {
         String os = System.getProperty("os.name", "").toLowerCase();
         if (os.contains("win")) return "Windows";
