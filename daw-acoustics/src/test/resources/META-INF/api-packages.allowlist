@@ -1,0 +1,14 @@
+# Allowlist of packages that the daw.acoustics module is permitted to export.
+#
+# Format: one fully-qualified package name per line. Blank lines and lines
+# starting with `#` are comments.
+#
+# This file is the single source of truth for the daw.acoustics public API
+# surface. ModuleExportsAllowlistTest fails if module-info.java and this file
+# disagree, so adding/removing exports requires a deliberate update here.
+#
+# See docs/ARCHITECTURE.md > "Module export tiers".
+com.benesquivelmusic.daw.acoustics.common
+com.benesquivelmusic.daw.acoustics.dsp
+com.benesquivelmusic.daw.acoustics.simulator
+com.benesquivelmusic.daw.acoustics.spatialiser

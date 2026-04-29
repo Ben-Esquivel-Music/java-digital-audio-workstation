@@ -1,0 +1,31 @@
+# Allowlist of packages that the daw.sdk module is permitted to export.
+#
+# Format: one fully-qualified package name per line. Blank lines and lines
+# starting with `#` are comments.
+#
+# This file is the *single source of truth* for the daw.sdk public API
+# surface. ModuleExportsAllowlistTest fails if module-info.java and this file
+# disagree, so adding/removing exports requires a deliberate update here.
+#
+# See docs/ARCHITECTURE.md > "Module export tiers" for the three-tier model
+# (public API / SPI / internal).
+com.benesquivelmusic.daw.sdk.analysis
+com.benesquivelmusic.daw.sdk.annotation
+com.benesquivelmusic.daw.sdk.audio
+com.benesquivelmusic.daw.sdk.audio.performance
+com.benesquivelmusic.daw.sdk.edit
+com.benesquivelmusic.daw.sdk.event
+com.benesquivelmusic.daw.sdk.export
+com.benesquivelmusic.daw.sdk.mastering
+com.benesquivelmusic.daw.sdk.mastering.album
+com.benesquivelmusic.daw.sdk.midi
+com.benesquivelmusic.daw.sdk.model
+com.benesquivelmusic.daw.sdk.persistence
+com.benesquivelmusic.daw.sdk.plugin
+com.benesquivelmusic.daw.sdk.session
+com.benesquivelmusic.daw.sdk.spatial
+com.benesquivelmusic.daw.sdk.store
+com.benesquivelmusic.daw.sdk.telemetry
+com.benesquivelmusic.daw.sdk.transport
+com.benesquivelmusic.daw.sdk.ui
+com.benesquivelmusic.daw.sdk.visualization
