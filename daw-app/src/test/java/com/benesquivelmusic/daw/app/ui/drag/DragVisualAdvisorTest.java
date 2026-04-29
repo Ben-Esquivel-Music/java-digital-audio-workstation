@@ -203,6 +203,16 @@ class DragVisualAdvisorTest {
     }
 
     @Test
+    void beginDragDuringRevertingRejected() {
+        DragVisualAdvisor advisor = new DragVisualAdvisor();
+        advisor.beginDrag(DragSourceKind.CLIP, "C", 0, 0, 80, 24);
+        advisor.cancel();
+        assertThat(advisor.state()).isEqualTo(DragVisualAdvisor.State.REVERTING);
+        assertThatIllegalStateException().isThrownBy(() ->
+                advisor.beginDrag(DragSourceKind.CLIP, "C2", 0, 0, 80, 24));
+    }
+
+    @Test
     void updateBeforeBeginRejected() {
         DragVisualAdvisor advisor = new DragVisualAdvisor();
         assertThatIllegalStateException().isThrownBy(() -> advisor.update(
@@ -224,7 +234,7 @@ class DragVisualAdvisorTest {
     }
 
     @Test
-    void noTargetEmitsNoneHighlightAndDefaultCursor() {
+    void noTargetEmitsNoneHighlightAndNeutralCursor() {
         DragVisualAdvisor advisor = new DragVisualAdvisor();
         advisor.beginDrag(DragSourceKind.CLIP, "C", 0, 0, 80, 24);
 
@@ -232,7 +242,7 @@ class DragVisualAdvisorTest {
                 EnumSet.noneOf(DragModifier.class));
 
         assertThat(s.highlight()).isEqualTo(DropTargetHighlight.NONE);
-        assertThat(s.cursor()).isEqualTo(DragCursor.NO_DROP);
+        assertThat(s.cursor()).isEqualTo(DragCursor.DEFAULT);
         assertThat(s.snap().visible()).isFalse();
     }
 

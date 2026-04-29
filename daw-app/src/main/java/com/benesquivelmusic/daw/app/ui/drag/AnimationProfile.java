@@ -7,11 +7,9 @@ import java.util.Objects;
  * Timings used by every drag-related animation, providing the "consistent
  * timing" requirement of user story 197.
  *
- * <p>A single instance of this profile is owned by
- * {@link com.benesquivelmusic.daw.app.ui.AnimationController} and shared
- * with {@link DragVisualAdvisor}. Centralising the durations here gives
- * every drag-related transition (ghost fade-in, drop-zone tint, snap
- * guide-line, cancel-revert) the same cohesive feel.</p>
+ * <p>Centralising the durations here gives every drag-related transition
+ * (ghost fade-in, drop-zone tint, snap guide-line, cancel-revert) the
+ * same cohesive feel.</p>
  *
  * @param ghostFadeIn   how long the ghost preview fades in when a drag
  *                      starts

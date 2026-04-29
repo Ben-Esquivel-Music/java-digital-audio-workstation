@@ -108,8 +108,9 @@ public final class DragVisualAdvisor {
                                      double originY,
                                      double ghostWidth,
                                      double ghostHeight) {
-        if (state == State.DRAGGING) {
-            throw new IllegalStateException("drag already in progress");
+        if (state != State.IDLE) {
+            throw new IllegalStateException(
+                    "drag can only begin from IDLE (state=" + state + ")");
         }
         Objects.requireNonNull(kind, "kind");
         Objects.requireNonNull(label, "label");
@@ -141,7 +142,9 @@ public final class DragVisualAdvisor {
      *                      currently rounds to (ignored unless
      *                      {@code target == TRACK_LANE})
      * @param snapValueLabel human label of the active snap value
-     *                      (e.g. {@code "1/4"})
+     *                      (e.g. {@code "1/4"}); must be non-null even
+     *                      when snap is not applicable — use an empty
+     *                      string or a placeholder such as {@code "off"}
      * @param modifiers     active drag modifiers
      * @return a fully populated {@link DragVisualState}
      * @throws IllegalStateException if no drag is in progress
@@ -162,11 +165,14 @@ public final class DragVisualAdvisor {
                 : EnumSet.copyOf(modifiers);
 
         boolean valid = canDropOn(sourceKind, target);
-        DropTargetHighlight highlight = (target == DropTargetKind.NONE)
+        boolean noTarget = (target == DropTargetKind.NONE);
+        DropTargetHighlight highlight = noTarget
                 ? DropTargetHighlight.NONE
                 : new DropTargetHighlight(target, valid, valid ? VALID_TINT : "");
 
-        DragCursor cursor = selectCursor(valid, mods);
+        DragCursor cursor = noTarget
+                ? DragCursor.DEFAULT
+                : selectCursor(valid, mods);
 
         SnapIndicator snap = computeSnap(target, snappedXPx, snapValueLabel,
                 mods.contains(DragModifier.DISABLE_SNAP));

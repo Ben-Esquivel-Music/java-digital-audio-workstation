@@ -4,7 +4,7 @@
  * <p>This package implements the visual-feedback layer described by user
  * story 197 — "Drag Cursor and Drop-Target Visual Feedback Polish." Every
  * draggable source in the application (clips, plugins, browser samples)
- * consults the same
+ * should consult the same
  * {@link com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor} to obtain:
  *
  * <ul>
