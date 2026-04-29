@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.cache.RenderCacheStats;
 import com.benesquivelmusic.daw.core.audio.cache.RenderedTrackCache;
+import javafx.application.Platform;
+import javafx.concurrent.Task;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
@@ -33,6 +35,10 @@ import java.util.Objects;
  * "Clear cache" action; it does not auto-refresh while open. Closing
  * and reopening it recomputes from disk.</p>
  *
+ * <p>Disk I/O (stats computation and cache clearing) runs on a
+ * background thread so the JavaFX application thread is never
+ * blocked.</p>
+ *
  * <p>This is a UI-only convenience class; all behaviour is delegated
  * to {@link RenderedTrackCache}, which is fully unit-tested in
  * {@code daw-core}.</p>
@@ -44,6 +50,8 @@ public final class RenderCacheStatsDialog {
     private final Label totalSizeLabel = new Label();
     private final Label hitRateLabel = new Label();
     private final TableView<ProjectRow> table = new TableView<>();
+    private final Button clearButton;
+    private final Button closeButton;
 
     public RenderCacheStatsDialog(RenderedTrackCache cache) {
         this.cache = Objects.requireNonNull(cache, "cache must not be null");
@@ -63,10 +71,10 @@ public final class RenderCacheStatsDialog {
         table.getColumns().add(sizeCol);
         table.setPlaceholder(new Label("Cache is empty."));
 
-        Button clearButton = new Button("Clear cache");
+        clearButton = new Button("Clear cache");
         clearButton.setOnAction(_ -> onClear());
 
-        Button closeButton = new Button("Close");
+        closeButton = new Button("Close");
         closeButton.setOnAction(_ -> stage.close());
 
         HBox actions = new HBox(8, clearButton, closeButton);
@@ -101,39 +109,68 @@ public final class RenderCacheStatsDialog {
                 ButtonType.OK, ButtonType.CANCEL);
         confirm.setHeaderText("Clear render cache");
         confirm.showAndWait().filter(b -> b == ButtonType.OK).ifPresent(_ -> {
-            try {
-                cache.clearAll();
-                cache.resetSessionCounters();
+            setControlsDisabled(true);
+            Task<Void> task = new Task<>() {
+                @Override
+                protected Void call() throws IOException {
+                    cache.clearAll();
+                    cache.resetSessionCounters();
+                    return null;
+                }
+            };
+            task.setOnSucceeded(_ -> {
+                setControlsDisabled(false);
                 refresh();
-            } catch (IOException e) {
+            });
+            task.setOnFailed(_ -> {
+                setControlsDisabled(false);
+                Throwable ex = task.getException();
                 new Alert(AlertType.ERROR,
-                        "Failed to clear cache: " + e.getMessage(),
+                        "Failed to clear cache: " + ex.getMessage(),
                         ButtonType.OK).showAndWait();
-            }
+            });
+            Thread.ofVirtual().name("render-cache-clear").start(task);
         });
     }
 
     private void refresh() {
-        RenderCacheStats stats;
-        try {
-            stats = cache.stats();
-        } catch (IOException e) {
-            totalSizeLabel.setText("Total size: <error: " + e.getMessage() + ">");
+        totalSizeLabel.setText("Total size: computing…");
+        hitRateLabel.setText("Hit rate this session: …");
+        setControlsDisabled(true);
+
+        Task<RenderCacheStats> task = new Task<>() {
+            @Override
+            protected RenderCacheStats call() throws IOException {
+                return cache.stats();
+            }
+        };
+        task.setOnSucceeded(_ -> {
+            setControlsDisabled(false);
+            RenderCacheStats stats = task.getValue();
+            totalSizeLabel.setText("Total size: " + formatBytes(stats.totalSizeBytes()));
+            hitRateLabel.setText(String.format(
+                    "Hit rate this session: %.1f%%  (%d hits / %d misses)",
+                    stats.hitRate() * 100.0, stats.sessionHits(), stats.sessionMisses()));
+            List<ProjectRow> rows = new ArrayList<>();
+            for (Map.Entry<String, Long> e : stats.perProjectSizeBytes().entrySet()) {
+                rows.add(new ProjectRow(e.getKey(), e.getValue()));
+            }
+            rows.sort((a, b) -> Long.compare(b.sizeBytes(), a.sizeBytes()));
+            table.getItems().setAll(rows);
+        });
+        task.setOnFailed(_ -> {
+            setControlsDisabled(false);
+            Throwable ex = task.getException();
+            totalSizeLabel.setText("Total size: <error: " + ex.getMessage() + ">");
             hitRateLabel.setText("Hit rate this session: —");
             table.getItems().clear();
-            return;
-        }
-        totalSizeLabel.setText("Total size: " + formatBytes(stats.totalSizeBytes()));
-        hitRateLabel.setText(String.format(
-                "Hit rate this session: %.1f%%  (%d hits / %d misses)",
-                stats.hitRate() * 100.0, stats.sessionHits(), stats.sessionMisses()));
+        });
+        Thread.ofVirtual().name("render-cache-stats").start(task);
+    }
 
-        List<ProjectRow> rows = new ArrayList<>();
-        for (Map.Entry<String, Long> e : stats.perProjectSizeBytes().entrySet()) {
-            rows.add(new ProjectRow(e.getKey(), e.getValue()));
-        }
-        rows.sort((a, b) -> Long.compare(b.sizeBytes(), a.sizeBytes()));
-        table.getItems().setAll(rows);
+    private void setControlsDisabled(boolean disabled) {
+        clearButton.setDisable(disabled);
+        closeButton.setDisable(disabled);
     }
 
     static String formatBytes(long bytes) {

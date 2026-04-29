@@ -106,9 +106,6 @@ class TrackFreezeServiceCacheTest {
         assertThat(session2.stats().sessionHits()).isEqualTo(1);
     }
 
-    private static final RenderKey KEY_AT_RATE = new RenderKey(
-            new TrackDspHasher().addParameter("gain", 0.5).digestHex(),
-            SAMPLE_RATE, 32);
 
     private static Track createTrackWithAudio() {
         Track track = new Track("Test Track", TrackType.AUDIO);

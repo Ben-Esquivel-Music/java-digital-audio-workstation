@@ -61,7 +61,7 @@ public final class TrackFreezeService {
      *
      * <p>If {@code cache}, {@code projectUuid}, or {@code key} is
      * {@code null}, the cache is bypassed entirely and behaviour is
-     * identical to the four-argument overload.</p>
+     * identical to {@link #freeze(Track, MixerChannel, int, double, int)}.</p>
      *
      * @param track       the track to freeze
      * @param channel     the mixer channel associated with the track
@@ -73,8 +73,10 @@ public final class TrackFreezeService {
      *                    {@code cache} is non-null
      * @param key         optional render key; required if
      *                    {@code cache} is non-null
-     * @throws UncheckedIOException if the cache file is corrupt or
-     *                              cannot be written
+     * @throws UncheckedIOException if the rendered audio cannot be
+     *                              written to the cache (corrupt or
+     *                              unreadable entries are deleted and
+     *                              fall through to a full render)
      */
     public static void freeze(Track track, MixerChannel channel,
                               int sampleRate, double tempo, int channels,
@@ -106,7 +108,13 @@ public final class TrackFreezeService {
                     return;
                 }
             } catch (IOException e) {
-                // Fall through to a full render on a corrupt entry.
+                // Corrupt entry — delete so subsequent freezes don't
+                // pay the exception cost, then fall through to render.
+                try {
+                    cache.remove(projectUuid, key);
+                } catch (IOException ignored) {
+                    // Best-effort cleanup.
+                }
             }
         }
 

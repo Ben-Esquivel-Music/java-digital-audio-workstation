@@ -252,16 +252,29 @@ public final class RenderedTrackCache {
                 throw new IOException("Frame count exceeds int range: " + frames);
             }
             int frameCount = (int) frames;
+            long payloadBytes = (long) channels * frameCount * Float.BYTES;
+            if (payloadBytes > (long) Integer.MAX_VALUE) {
+                throw new IOException("Payload size exceeds addressable range: " + payloadBytes);
+            }
             float[][] audio = new float[channels][frameCount];
             if (frameCount > 0) {
+                int bytesPerFrame = channels * Float.BYTES;
+                int targetChunkBytes = 64 * 1024;
+                int framesPerChunk = Math.max(1, targetChunkBytes / bytesPerFrame);
                 ByteBuffer payload = ByteBuffer
-                        .allocate(channels * frameCount * Float.BYTES)
+                        .allocate(framesPerChunk * bytesPerFrame)
                         .order(ByteOrder.LITTLE_ENDIAN);
-                readFully(ch, payload);
-                payload.flip();
-                for (int f = 0; f < frameCount; f++) {
-                    for (int c = 0; c < channels; c++) {
-                        audio[c][f] = payload.getFloat();
+                for (int startFrame = 0; startFrame < frameCount; startFrame += framesPerChunk) {
+                    int endFrame = Math.min(frameCount, startFrame + framesPerChunk);
+                    int chunkFrames = endFrame - startFrame;
+                    payload.clear();
+                    payload.limit(chunkFrames * bytesPerFrame);
+                    readFully(ch, payload);
+                    payload.flip();
+                    for (int f = startFrame; f < endFrame; f++) {
+                        for (int c = 0; c < channels; c++) {
+                            audio[c][f] = payload.getFloat();
+                        }
                     }
                 }
             }
@@ -272,7 +285,10 @@ public final class RenderedTrackCache {
     private void writeFile(Path file, RenderKey key, float[][] audio) throws IOException {
         int channels = audio.length;
         int frames = audio[0].length;
-        Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
+        // Use a unique temp file per thread to avoid collisions on
+        // concurrent writes to the same key.
+        Path tmp = file.resolveSibling(
+                file.getFileName() + ".tmp." + Thread.currentThread().threadId());
         try (FileChannel ch = FileChannel.open(tmp,
                 StandardOpenOption.CREATE,
                 StandardOpenOption.TRUNCATE_EXISTING,
@@ -289,16 +305,23 @@ public final class RenderedTrackCache {
             writeFully(ch, header);
 
             if (frames > 0) {
+                int bytesPerFrame = channels * Float.BYTES;
+                int targetChunkBytes = 64 * 1024;
+                int framesPerChunk = Math.max(1, targetChunkBytes / bytesPerFrame);
                 ByteBuffer payload = ByteBuffer
-                        .allocate(channels * frames * Float.BYTES)
+                        .allocate(framesPerChunk * bytesPerFrame)
                         .order(ByteOrder.LITTLE_ENDIAN);
-                for (int f = 0; f < frames; f++) {
-                    for (int c = 0; c < channels; c++) {
-                        payload.putFloat(audio[c][f]);
+                for (int startFrame = 0; startFrame < frames; startFrame += framesPerChunk) {
+                    int endFrame = Math.min(frames, startFrame + framesPerChunk);
+                    payload.clear();
+                    for (int f = startFrame; f < endFrame; f++) {
+                        for (int c = 0; c < channels; c++) {
+                            payload.putFloat(audio[c][f]);
+                        }
                     }
+                    payload.flip();
+                    writeFully(ch, payload);
                 }
-                payload.flip();
-                writeFully(ch, payload);
             }
         }
         try {
@@ -336,11 +359,12 @@ public final class RenderedTrackCache {
         }
         List<Path> entries = listEntries(dir);
         // Sort ascending by lastModifiedTime — oldest first.
+        // Use epoch fallback on I/O failure so eviction remains best-effort.
         entries.sort(Comparator.comparing(p -> {
             try {
                 return Files.getLastModifiedTime(p);
             } catch (IOException e) {
-                throw new UncheckedIOException(e);
+                return FileTime.fromMillis(0L);
             }
         }));
         for (Path victim : entries) {
