@@ -33,6 +33,7 @@ public final class AsioBackend implements AudioBackend {
                     && AudioBackendSupport.nativeLibraryAvailable("asio", "asiosdk");
 
     private final AudioBackendSupport support = new AudioBackendSupport();
+    private volatile AsioFormatChangeShim formatChangeShim;
 
     /** Creates a new ASIO backend (no native resources allocated until {@link #open}). */
     public AsioBackend() {
@@ -63,6 +64,11 @@ public final class AsioBackend implements AudioBackend {
                             + "(e.g. ASIO4ALL) and rebuild daw-core with the ASIO shim.");
         }
         support.markOpen(format, bufferFrames);
+        // Story 218: install the FFM upcall that translates ASIO's
+        // asioMessage host-callback into publishFormatChangeRequested(...).
+        // Construction always succeeds; the actual native registration is
+        // a no-op if the asioshim library is not present on this host.
+        this.formatChangeShim = new AsioFormatChangeShim(this, support, device);
         // Native ASIO buffer-switch wiring lives in the implementation layer
         // that ships the Steinberg ASIO SDK shim; see daw-core/native/asio/.
     }
@@ -181,6 +187,11 @@ public final class AsioBackend implements AudioBackend {
 
     @Override
     public void close() {
+        AsioFormatChangeShim shim = this.formatChangeShim;
+        this.formatChangeShim = null;
+        if (shim != null) {
+            shim.close();
+        }
         support.close();
     }
 

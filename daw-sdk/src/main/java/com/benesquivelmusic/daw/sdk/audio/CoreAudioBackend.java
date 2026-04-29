@@ -26,6 +26,7 @@ public final class CoreAudioBackend implements AudioBackend {
     private static final boolean AVAILABLE = isMac();
 
     private final AudioBackendSupport support = new AudioBackendSupport();
+    private volatile CoreAudioFormatChangeShim formatChangeShim;
 
     /** Creates a new CoreAudio backend (no native resources allocated until {@link #open}). */
     public CoreAudioBackend() {
@@ -54,6 +55,11 @@ public final class CoreAudioBackend implements AudioBackend {
             throw new AudioBackendException("CoreAudio is only available on macOS.");
         }
         support.markOpen(format, bufferFrames);
+        // Story 218: install CoreAudio property listeners that translate
+        // nominal-sample-rate / buffer-frame-size / clock-source changes
+        // into publishFormatChangeRequested(...). On non-macOS hosts the
+        // CoreAudio.framework lookup fails and the shim degrades to no-op.
+        this.formatChangeShim = new CoreAudioFormatChangeShim(this, device);
         // Native AudioUnit render-callback wiring is implemented on macOS builds.
     }
 
@@ -166,6 +172,11 @@ public final class CoreAudioBackend implements AudioBackend {
 
     @Override
     public void close() {
+        CoreAudioFormatChangeShim shim = this.formatChangeShim;
+        this.formatChangeShim = null;
+        if (shim != null) {
+            shim.close();
+        }
         support.close();
     }
 

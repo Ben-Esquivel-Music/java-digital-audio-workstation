@@ -25,6 +25,7 @@ public final class WasapiBackend implements AudioBackend {
 
     private final AudioBackendSupport support = new AudioBackendSupport();
     private final boolean exclusive;
+    private volatile WasapiFormatChangeShim formatChangeShim;
 
     /** Creates a new WASAPI backend in shared mode. */
     public WasapiBackend() {
@@ -75,6 +76,11 @@ public final class WasapiBackend implements AudioBackend {
             throw new AudioBackendException("WASAPI is only available on Windows.");
         }
         support.markOpen(format, bufferFrames);
+        // Story 218: install the IMMNotificationClient FFM shim that
+        // translates OnPropertyValueChanged(PKEY_AudioEngine_DeviceFormat)
+        // into publishFormatChangeRequested(...). On non-Windows hosts
+        // the Ole32 lookup fails and the shim degrades to no-op.
+        this.formatChangeShim = new WasapiFormatChangeShim(this, device);
         // Native IAudioClient wiring implemented on Windows builds.
     }
 
@@ -189,6 +195,11 @@ public final class WasapiBackend implements AudioBackend {
 
     @Override
     public void close() {
+        WasapiFormatChangeShim shim = this.formatChangeShim;
+        this.formatChangeShim = null;
+        if (shim != null) {
+            shim.close();
+        }
         support.close();
     }
 
