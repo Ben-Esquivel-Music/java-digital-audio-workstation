@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.InputRouting;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
 import java.nio.file.Path;
@@ -80,6 +81,28 @@ public final class RecordingPipeline {
     /** Duration, in seconds, of the cosine crossfade applied at the
      *  punch-in and punch-out boundaries to avoid clicks. */
     private static final double PUNCH_CROSSFADE_SECONDS = 0.005;
+
+    /**
+     * Driver round-trip latency to compensate for when finalizing recorded
+     * clips — typically populated from {@code AudioBackend.reportedLatency()}
+     * once per opened stream by the application layer. Defaults to
+     * {@link RoundTripLatency#UNKNOWN} (zero compensation).
+     */
+    private RoundTripLatency reportedLatency = RoundTripLatency.UNKNOWN;
+    /**
+     * Whether the pipeline applies driver round-trip compensation. Mirrors
+     * the "Apply latency compensation to recorded takes" toggle in the
+     * Audio Settings dialog. Default is {@code true} — Pro Tools / Logic /
+     * Cubase / Reaper all default to compensating.
+     */
+    private boolean applyLatencyCompensation = true;
+    /**
+     * Resolved compensation frames captured at {@link #start()} so the
+     * value cannot drift mid-session if the user toggles the dialog or
+     * the device re-reports its latency. {@code 0} means no compensation
+     * is applied to recorded clip start positions.
+     */
+    private long resolvedCompensationFrames;
 
     /**
      * Creates a new recording pipeline with default settings (no count-in,
@@ -189,12 +212,22 @@ public final class RecordingPipeline {
             }
         }
 
+        // Resolve driver-reported latency compensation once per opened
+        // stream, so the value cannot drift mid-session. This is the
+        // round-trip caused by the driver's own input/output buffer
+        // pipelines — separate from PDC (story 124) which handles
+        // plugin latency inside the graph.
+        resolvedCompensationFrames = applyLatencyCompensation
+                ? Math.max(0, reportedLatency.totalFrames())
+                : 0L;
+
         // Create and start a recording session per armed track, and
         // pre-allocate per-track routed input buffers for extraction
         int bufferFrames = format.bufferSize();
         for (Track track : armedTracks) {
             Path trackDir = outputDirectory.resolve(track.getId());
             RecordingSession session = new RecordingSession(format, trackDir);
+            session.setCompensationFrames(resolvedCompensationFrames);
             session.start();
             sessions.put(track, session);
 
@@ -276,7 +309,7 @@ public final class RecordingPipeline {
 
                 AudioClip clip = new AudioClip(
                         "Recording — " + track.getName(),
-                        recordingStartBeat,
+                        compensatedStartBeat(),
                         durationBeats,
                         segmentPath);
 
@@ -396,6 +429,79 @@ public final class RecordingPipeline {
      */
     public double getRecordingStartBeat() {
         return recordingStartBeat;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Driver round-trip latency compensation
+    // ─────────────────────────────────────────────────────────────────────
+
+    /**
+     * Returns the driver-reported round-trip latency this pipeline will
+     * compensate for at {@link #start()}. Defaults to
+     * {@link RoundTripLatency#UNKNOWN} (no compensation).
+     *
+     * @return the configured round-trip latency; never {@code null}
+     */
+    public RoundTripLatency getReportedLatency() {
+        return reportedLatency;
+    }
+
+    /**
+     * Configures the driver-reported round-trip latency to compensate for.
+     * Must be called <em>before</em> {@link #start()} — the pipeline
+     * captures the value once when each session starts so it cannot
+     * drift mid-take. Typical use is to read
+     * {@code AudioBackend.reportedLatency()} once per opened stream and
+     * pass the result here.
+     *
+     * <p>This is the round-trip caused by the driver's own input/output
+     * buffer pipelines (story this method was added for) — separate
+     * from PDC (story 124), which compensates plugin latency inside the
+     * graph.</p>
+     *
+     * @param latency the round-trip latency the driver reported; must
+     *                not be {@code null}
+     */
+    public void setReportedLatency(RoundTripLatency latency) {
+        this.reportedLatency = Objects.requireNonNull(latency, "latency must not be null");
+    }
+
+    /**
+     * Returns whether driver round-trip compensation is enabled. Mirrors
+     * the "Apply latency compensation to recorded takes" toggle in the
+     * Audio Settings dialog. Default is {@code true}.
+     *
+     * @return {@code true} when compensation is applied to recorded clip
+     *         start positions
+     */
+    public boolean isApplyLatencyCompensation() {
+        return applyLatencyCompensation;
+    }
+
+    /**
+     * Enables or disables driver round-trip compensation. Useful for
+     * diagnostic listening or for users wired through a hardware
+     * monitor mixer who already pre-compensate. Must be called
+     * <em>before</em> {@link #start()}.
+     *
+     * @param apply {@code true} to compensate, {@code false} to leave
+     *              recorded takes uncompensated
+     */
+    public void setApplyLatencyCompensation(boolean apply) {
+        this.applyLatencyCompensation = apply;
+    }
+
+    /**
+     * Returns the compensation amount (in sample frames) the pipeline
+     * resolved at {@link #start()} from the configured
+     * {@link #getReportedLatency()} and toggle state. {@code 0} when
+     * compensation is disabled or the driver reports zero latency. Only
+     * meaningful after {@link #start()}.
+     *
+     * @return resolved compensation in sample frames (never negative)
+     */
+    public long getResolvedCompensationFrames() {
+        return resolvedCompensationFrames;
     }
 
     /**
@@ -721,6 +827,25 @@ public final class RecordingPipeline {
         return Math.round(seconds * format.sampleRate());
     }
 
+    /**
+     * Returns the clip start beat after applying driver-round-trip
+     * compensation. The take is shifted *earlier* on the timeline by
+     * {@link #resolvedCompensationFrames} sample frames so the recorded
+     * wave aligns with the bar where the user played, not the (later)
+     * sample position the DAW wrote it to. Negative results are clamped
+     * to zero so {@link AudioClip} validation does not reject the clip
+     * for early takes near the start of the timeline.
+     */
+    private double compensatedStartBeat() {
+        if (resolvedCompensationFrames <= 0) {
+            return recordingStartBeat;
+        }
+        double bpm = transport.getTempo();
+        double compensationSeconds = resolvedCompensationFrames / format.sampleRate();
+        double compensationBeats = compensationSeconds * (bpm / 60.0);
+        return Math.max(0.0, recordingStartBeat - compensationBeats);
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // Loop-record (story 132)
     // ─────────────────────────────────────────────────────────────────────
@@ -808,7 +933,7 @@ public final class RecordingPipeline {
             // immediately so playback can happen without waiting on I/O.
             AudioClip clip = new AudioClip(
                     "Take — " + track.getName(),
-                    recordingStartBeat,
+                    compensatedStartBeat(),
                     durationBeats,
                     segmentPath);
             if (capturedAudio != null) {

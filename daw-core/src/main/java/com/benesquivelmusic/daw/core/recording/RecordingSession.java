@@ -50,6 +50,21 @@ public final class RecordingSession {
     private RecordingSegment currentSegment;
     private long currentSegmentBytes;
 
+    /**
+     * Driver round-trip latency in sample frames the recording pipeline
+     * applies to compensate for the input + output buffer pipelines —
+     * the click leaves the DAW, travels through the output buffer to the
+     * speakers, the singer hears it and sings, the mic captures it, the
+     * signal travels back through the input buffer to the DAW, and the
+     * DAW writes it at the *current* sample position which is later than
+     * the bar that prompted the singer. The pipeline shifts each captured
+     * buffer's start position by {@code -compensationFrames} so the take
+     * aligns with the cue the user heard. {@code 0} means "no compensation
+     * applied" (driver reports zero, or the user toggled compensation off,
+     * or compensation was never configured for this session).
+     */
+    private long compensationFrames;
+
     // Growing audio capture buffer: [channel][sample]
     private float[][] capturedAudio;
     private int capturedSampleCount;
@@ -333,6 +348,35 @@ public final class RecordingSession {
     /** Returns the maximum segment size in bytes. */
     public long getMaxSegmentBytes() {
         return maxSegmentBytes;
+    }
+
+    /**
+     * Returns the driver round-trip compensation in sample frames the
+     * recording pipeline configured for this session — the value the
+     * pipeline subtracts from each captured-block sample position so the
+     * recorded take aligns with the cue the user heard. Returns
+     * {@code 0} when compensation is disabled (user toggle) or the
+     * driver reports {@link com.benesquivelmusic.daw.sdk.audio.RoundTripLatency#UNKNOWN}.
+     *
+     * @return compensation frames (never negative)
+     */
+    public long getCompensationFrames() {
+        return compensationFrames;
+    }
+
+    /**
+     * Sets the driver round-trip compensation in sample frames. Called
+     * once by {@code RecordingPipeline} at session start.
+     *
+     * @param compensationFrames the compensation amount; must be {@code >= 0}
+     * @throws IllegalArgumentException if {@code compensationFrames < 0}
+     */
+    public void setCompensationFrames(long compensationFrames) {
+        if (compensationFrames < 0) {
+            throw new IllegalArgumentException(
+                    "compensationFrames must be >= 0: " + compensationFrames);
+        }
+        this.compensationFrames = compensationFrames;
     }
 
     private boolean shouldRotateSegment() {

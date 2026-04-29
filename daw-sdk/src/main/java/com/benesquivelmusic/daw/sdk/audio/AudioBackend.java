@@ -514,6 +514,54 @@ public sealed interface AudioBackend extends AutoCloseable
     }
 
     /**
+     * Returns the driver-reported round-trip latency for the currently
+     * opened stream — the sum of capture-path and playback-path frames
+     * the recording pipeline must subtract from each captured-block
+     * sample position so a recorded take aligns with the cue the user
+     * heard.
+     *
+     * <p>Per-backend conventions:</p>
+     * <ul>
+     *   <li>{@link AsioBackend} — calls
+     *       {@code ASIOGetLatencies(int* in, int* out)}; safety-offset
+     *       frames are zero (ASIO has no equivalent).</li>
+     *   <li>{@link CoreAudioBackend} — sums
+     *       {@code kAudioDevicePropertyLatency} +
+     *       {@code kAudioStreamPropertyLatency} into the input/output
+     *       components and reports {@code kAudioDevicePropertySafetyOffset}
+     *       separately.</li>
+     *   <li>{@link WasapiBackend} — translates
+     *       {@code IAudioClient::GetStreamLatency} plus the device
+     *       period into the input/output components.</li>
+     *   <li>{@link JackBackend} — uses
+     *       {@code jack_port_get_total_latency} on the capture and
+     *       playback ports.</li>
+     *   <li>{@link JavaxSoundBackend} — returns
+     *       {@link RoundTripLatency#UNKNOWN}; the JDK mixer does not
+     *       expose a latency query API.</li>
+     *   <li>{@link MockAudioBackend} — returns whatever the test
+     *       fixture has configured via
+     *       {@code setReportedLatency(RoundTripLatency)}.</li>
+     * </ul>
+     *
+     * <p>Backends that have not yet opened a stream — or that have no
+     * way to query the driver — return
+     * {@link RoundTripLatency#UNKNOWN}, which yields zero compensation
+     * frames and makes the recording pipeline a no-op for that
+     * stream.</p>
+     *
+     * <p>The default implementation returns
+     * {@link RoundTripLatency#UNKNOWN}, which preserves the historical
+     * "no compensation" behaviour for backends that have not yet
+     * overridden it.</p>
+     *
+     * @return the driver-reported round-trip latency; never {@code null}
+     */
+    default RoundTripLatency reportedLatency() {
+        return RoundTripLatency.UNKNOWN;
+    }
+
+    /**
      * Closes any open stream and releases native resources. Idempotent.
      */
     @Override
