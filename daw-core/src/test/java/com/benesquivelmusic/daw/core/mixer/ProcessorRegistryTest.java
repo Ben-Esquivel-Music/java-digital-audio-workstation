@@ -16,7 +16,9 @@ class ProcessorRegistryTest {
     private static final int CHANNELS = 2;
     private static final double SAMPLE_RATE = 44100.0;
 
-    private final ProcessorRegistry registry = ProcessorRegistry.getInstance();
+    // Constructed fresh per test class — no shared singleton state leaks across
+    // tests. See the singleton-removal migration in CONTRIBUTING.md.
+    private final ProcessorRegistry registry = new ProcessorRegistry();
 
     @Test
     void shouldDiscoverAllNonClapTypes() {
@@ -126,5 +128,38 @@ class ProcessorRegistryTest {
         AudioProcessor processor = registry.createProcessor(
                 InsertEffectType.STEREO_IMAGER, 2, SAMPLE_RATE);
         assertThat(processor).isInstanceOf(StereoImagerProcessor.class);
+    }
+
+    /**
+     * Regression test for the singleton-removal migration: independently
+     * constructed registries must yield equivalent catalogs (same available
+     * types in the same order, same processor classes per type) but be
+     * distinct instances with their own internal lookup tables. This is the
+     * test that was not possible while the constructor was {@code private}.
+     */
+    @Test
+    void shouldConstructIndependentInstancesWithEquivalentCatalogs() {
+        ProcessorRegistry a = new ProcessorRegistry();
+        ProcessorRegistry b = new ProcessorRegistry();
+
+        assertThat(a).isNotSameAs(b);
+        assertThat(a.availableTypes()).containsExactlyElementsOf(b.availableTypes());
+        for (InsertEffectType type : a.availableTypes()) {
+            assertThat(a.processorClassFor(type)).isEqualTo(b.processorClassFor(type));
+        }
+    }
+
+    /**
+     * Regression test for the singleton-removal migration: the deprecated
+     * {@link ProcessorRegistry#getInstance()} pass-through must continue to
+     * return a working registry until every call site is converted.
+     */
+    @Test
+    @SuppressWarnings({"deprecation", "removal"})
+    void shouldRetainDeprecatedGetInstanceAsPassThrough() {
+        ProcessorRegistry legacy = ProcessorRegistry.getInstance();
+        assertThat(legacy).isNotNull();
+        assertThat(legacy.availableTypes())
+                .containsExactlyElementsOf(registry.availableTypes());
     }
 }

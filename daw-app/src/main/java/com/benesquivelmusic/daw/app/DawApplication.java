@@ -17,6 +17,26 @@ public final class DawApplication extends Application {
     private static final double DEFAULT_WIDTH = 1600;
     private static final double DEFAULT_HEIGHT = 900;
 
+    private final DawRuntime runtime;
+
+    /** JavaFX-required no-arg constructor: builds a default {@link DawRuntime}. */
+    public DawApplication() {
+        this(new DawRuntime());
+    }
+
+    /**
+     * Test/override constructor: lets callers inject a {@link DawRuntime}
+     * configured with non-default collaborators (e.g. fakes, fixed clocks).
+     */
+    public DawApplication(DawRuntime runtime) {
+        this.runtime = java.util.Objects.requireNonNull(runtime, "runtime");
+    }
+
+    /** The injected runtime — exposed so future controllers can read it. */
+    public DawRuntime runtime() {
+        return runtime;
+    }
+
     @Override
     public void start(Stage primaryStage) throws IOException {
         FXMLLoader loader = new FXMLLoader(

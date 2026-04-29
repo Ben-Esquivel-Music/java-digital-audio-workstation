@@ -15,7 +15,15 @@ import java.util.function.BiConsumer;
  * <p>This class bridges the gap between the {@code InsertEffectType} enum and
  * the concrete {@link AudioProcessor} implementations in the DSP package,
  * enabling the mixer UI to instantiate, configure, and edit built-in effects.</p>
+ *
+ * <p><strong>Migration note:</strong> the static helpers below currently route
+ * through the deprecated {@link ProcessorRegistry#getInstance()} pass-through.
+ * They will be converted to instance methods accepting an injected
+ * {@link ProcessorRegistry} in a follow-up PR (see the singleton-removal
+ * migration issue). Until then, the {@code @SuppressWarnings("removal")} on
+ * this class acknowledges the temporary coupling.</p>
  */
+@SuppressWarnings("removal") // TODO: convert to instance methods with injected ProcessorRegistry
 public final class InsertEffectFactory {
 
     private InsertEffectFactory() {
