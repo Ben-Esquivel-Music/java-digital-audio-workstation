@@ -37,6 +37,7 @@ public final class Track {
     private InputMonitoringMode inputMonitoringMode = InputMonitoringMode.OFF;
     private int inputDeviceIndex = NO_INPUT_DEVICE;
     private InputRouting inputRouting = InputRouting.DEFAULT_STEREO;
+    private String inputRoutingDisplayName = "";
     private final List<AudioClip> clips = new ArrayList<>();
     private final AutomationData automationData = new AutomationData();
     private final MidiClip midiClip = new MidiClip();
@@ -300,6 +301,35 @@ public final class Track {
     public void setInputRouting(InputRouting inputRouting) {
         this.inputRouting = Objects.requireNonNull(inputRouting,
                 "inputRouting must not be null");
+    }
+
+    /**
+     * Returns the driver-reported display name snapshot of this track's
+     * {@link #getInputRouting() input routing} — story 199.
+     *
+     * <p>The snapshot is captured at the moment the user picks an entry
+     * from the routing dropdown and persisted with the project so a
+     * project that moves between machines still renders the original
+     * meaningful label even when the new machine reports different
+     * channel names. An empty string means "no snapshot has been
+     * recorded yet" and the UI falls back to
+     * {@link InputRouting#displayName()}.</p>
+     *
+     * @return the snapshot label (never {@code null}; may be empty)
+     */
+    public String getInputRoutingDisplayName() {
+        return inputRoutingDisplayName;
+    }
+
+    /**
+     * Records a driver-reported display name snapshot for this track's
+     * input routing. See {@link #getInputRoutingDisplayName()}.
+     *
+     * @param name the snapshot label; an empty or {@code null} string
+     *             clears the snapshot
+     */
+    public void setInputRoutingDisplayName(String name) {
+        this.inputRoutingDisplayName = (name == null) ? "" : name;
     }
 
     /**
@@ -692,6 +722,7 @@ public final class Track {
         copy.setInputMonitoringMode(inputMonitoringMode);
         copy.setInputDeviceIndex(inputDeviceIndex);
         copy.setInputRouting(inputRouting);
+        copy.setInputRoutingDisplayName(inputRoutingDisplayName);
         copy.setColor(color);
         copy.setSoundFontAssignment(soundFontAssignment);
         copy.setMidiInputDeviceName(midiInputDeviceName);

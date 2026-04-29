@@ -439,6 +439,10 @@ public final class ProjectDeserializer {
                 // keep default routing on invalid values
             }
         }
+        String irName = elem.getAttribute("input-routing-name");
+        if (!irName.isEmpty()) {
+            track.setInputRoutingDisplayName(irName);
+        }
 
         String midiInputDevice = elem.getAttribute("midi-input-device");
         if (!midiInputDevice.isEmpty()) {
@@ -747,6 +751,10 @@ public final class ProjectDeserializer {
             } catch (IllegalArgumentException ignored) {
                 // keep default routing on invalid values
             }
+        }
+        String orName = elem.getAttribute("output-routing-name");
+        if (!orName.isEmpty()) {
+            channel.setOutputRoutingDisplayName(orName);
         }
 
         // Parse insert effect slots

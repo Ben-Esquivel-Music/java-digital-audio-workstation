@@ -40,6 +40,7 @@ public final class MixerChannel {
     private boolean phaseInverted;
     private TrackColor color;
     private OutputRouting outputRouting = OutputRouting.MASTER;
+    private String outputRoutingDisplayName = "";
     private final List<Send> sends = new ArrayList<>();
     private final List<InsertSlot> insertSlots = new ArrayList<>();
     private final EffectsChain effectsChain = new EffectsChain();
@@ -187,6 +188,30 @@ public final class MixerChannel {
     public void setOutputRouting(OutputRouting outputRouting) {
         this.outputRouting = Objects.requireNonNull(outputRouting,
                 "outputRouting must not be null");
+    }
+
+    /**
+     * Returns the driver-reported display-name snapshot of this
+     * channel's {@link #getOutputRouting() output routing} — story 199.
+     *
+     * <p>Empty string means "no snapshot recorded yet" and the UI falls
+     * back to {@link OutputRouting#displayName()}.</p>
+     *
+     * @return the snapshot label (never {@code null}; may be empty)
+     */
+    public String getOutputRoutingDisplayName() {
+        return outputRoutingDisplayName;
+    }
+
+    /**
+     * Records a driver-reported display-name snapshot for this channel's
+     * output routing. See {@link #getOutputRoutingDisplayName()}.
+     *
+     * @param name the snapshot label; an empty or {@code null} string
+     *             clears the snapshot
+     */
+    public void setOutputRoutingDisplayName(String name) {
+        this.outputRoutingDisplayName = (name == null) ? "" : name;
     }
 
     /**

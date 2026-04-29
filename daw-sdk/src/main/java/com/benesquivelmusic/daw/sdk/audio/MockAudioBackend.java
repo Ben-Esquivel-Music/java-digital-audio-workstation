@@ -41,6 +41,8 @@ public final class MockAudioBackend implements AudioBackend {
     private volatile BufferSizeRange bufferSizeRange = BufferSizeRange.DEFAULT_RANGE;
     private volatile Set<Integer> supportedSampleRates =
             Set.of(44_100, 48_000, 88_200, 96_000, 176_400, 192_000);
+    private volatile List<AudioChannelInfo> inputChannelInfos = List.of();
+    private volatile List<AudioChannelInfo> outputChannelInfos = List.of();
 
     /**
      * Creates a new mock backend with no pre-canned input audio. Useful when
@@ -255,6 +257,54 @@ public final class MockAudioBackend implements AudioBackend {
     public void setSupportedSampleRates(Set<Integer> rates) {
         this.supportedSampleRates =
                 Set.copyOf(Objects.requireNonNull(rates, "rates must not be null"));
+    }
+
+    /**
+     * Returns the driver-reported input-channel infos configured via
+     * {@link #setInputChannels(List)}. Story 199 — the per-track input
+     * routing dropdown reads these to render driver-reported names
+     * instead of generic {@code "Input N"} labels.
+     */
+    @Override
+    public List<AudioChannelInfo> inputChannels(DeviceId device) {
+        Objects.requireNonNull(device, "device must not be null");
+        return inputChannelInfos;
+    }
+
+    /**
+     * Returns the driver-reported output-channel infos configured via
+     * {@link #setOutputChannels(List)}. Story 199 — the per-track output
+     * routing dropdown reads these.
+     */
+    @Override
+    public List<AudioChannelInfo> outputChannels(DeviceId device) {
+        Objects.requireNonNull(device, "device must not be null");
+        return outputChannelInfos;
+    }
+
+    /**
+     * Configures the input-channel metadata this mock will report from
+     * {@link #inputChannels(DeviceId)}. Tests use this to drive the
+     * stereo-pair grouping and the inactive-channel greyout paths.
+     *
+     * @param channels the channel infos to report (must not be null;
+     *                 defensively copied)
+     */
+    public void setInputChannels(List<AudioChannelInfo> channels) {
+        this.inputChannelInfos = List.copyOf(
+                Objects.requireNonNull(channels, "channels must not be null"));
+    }
+
+    /**
+     * Configures the output-channel metadata this mock will report from
+     * {@link #outputChannels(DeviceId)}.
+     *
+     * @param channels the channel infos to report (must not be null;
+     *                 defensively copied)
+     */
+    public void setOutputChannels(List<AudioChannelInfo> channels) {
+        this.outputChannelInfos = List.copyOf(
+                Objects.requireNonNull(channels, "channels must not be null"));
     }
 
     @Override
