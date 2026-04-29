@@ -312,7 +312,7 @@ final class WasapiFormatChangeShim implements AutoCloseable {
             }
 
             MemorySegment en = enumeratorOut.get(ValueLayout.ADDRESS, 0);
-            if (en == null || en.equals(MemorySegment.NULL)) {
+            if (en.equals(MemorySegment.NULL)) {
                 return false;
             }
 
@@ -485,8 +485,8 @@ final class WasapiFormatChangeShim implements AutoCloseable {
         closed = true;
         // Unregister and release the enumerator when registration succeeded.
         if (registered && !enumerator.equals(MemorySegment.NULL)) {
+            Linker nativeLinker = Linker.nativeLinker();
             try {
-                Linker nativeLinker = Linker.nativeLinker();
                 // UnregisterEndpointNotificationCallback(enumerator, callback)
                 MethodHandle unregister = nativeLinker.downcallHandle(
                         vtableSlot(enumerator,
@@ -499,7 +499,6 @@ final class WasapiFormatChangeShim implements AutoCloseable {
             }
             try {
                 // enumerator->Release()
-                Linker nativeLinker = Linker.nativeLinker();
                 MethodHandle release = nativeLinker.downcallHandle(
                         vtableSlot(enumerator, IUNKNOWN_RELEASE_SLOT),
                         FunctionDescriptor.of(ValueLayout.JAVA_INT,
