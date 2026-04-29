@@ -72,6 +72,21 @@ public final class AsioBackend implements AudioBackend {
         return support.inputBlocks();
     }
 
+    /**
+     * Exposes {@link AudioDeviceEvent}s derived from ASIO's
+     * {@code kAsioResetRequest} (driver-initiated drop),
+     * {@code kAsioBufferSizeChange}, and {@code kAsioResyncRequest}
+     * callbacks installed on driver open.
+     *
+     * <p>The native shim translates those driver notifications into
+     * {@link AudioDeviceEvent}s; delivery semantics are defined by the
+     * {@link AudioBackend#deviceEvents()} contract.</p>
+     */
+    @Override
+    public Flow.Publisher<AudioDeviceEvent> deviceEvents() {
+        return support.deviceEvents();
+    }
+
     @Override
     public void sink(AudioBlock block) {
         support.validateOutgoing(block);

@@ -1,7 +1,9 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.BufferSizeRange;
+import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 import com.benesquivelmusic.daw.sdk.audio.XrunEvent;
@@ -218,5 +220,68 @@ public interface AudioEngineController {
      */
     default Set<Integer> supportedSampleRates(String backendName, String outputDeviceName) {
         return Set.of(44_100, 48_000, 88_200, 96_000, 176_400, 192_000);
+    }
+
+    /**
+     * Returns the current high-level engine lifecycle state. Distinct from
+     * transport state (play/record/stop) and from the audio stream's
+     * open/closed flag — captures whether the engine is rendering normally,
+     * intentionally stopped, or recovering from a device disconnect.
+     *
+     * <p>The default implementation returns {@link EngineState#STOPPED}
+     * which is safe for test stubs that do not track engine lifecycle.</p>
+     *
+     * @return the current engine state; never {@code null}
+     */
+    default EngineState engineState() {
+        return EngineState.STOPPED;
+    }
+
+    /**
+     * Returns a {@link Flow.Publisher} that emits the new
+     * {@link EngineState} every time the engine transitions between
+     * states. UI components (for example the transport bar's
+     * "Reconnecting…" indicator) subscribe to this publisher so they
+     * never have to poll.
+     *
+     * <p>The default implementation returns an empty publisher that
+     * never emits, which is safe for test doubles.</p>
+     *
+     * @return a publisher of engine-state transitions; never {@code null}
+     */
+    default Flow.Publisher<EngineState> engineStateEvents() {
+        return subscriber -> {
+            subscriber.onSubscribe(new Flow.Subscription() {
+                @Override public void request(long n) { /* no-op */ }
+                @Override public void cancel() { /* no-op */ }
+            });
+        };
+    }
+
+    /**
+     * Binds the given {@link AudioBackend} so the controller subscribes
+     * to its {@link AudioBackend#deviceEvents()} publisher and reacts
+     * to {@code DeviceArrived}, {@code DeviceRemoved}, and
+     * {@code DeviceFormatChanged}.
+     *
+     * <p>On {@code DeviceRemoved} for the active device, the controller
+     * transitions to {@link EngineState#DEVICE_LOST}, halts the render
+     * thread, persists the in-flight recording take to
+     * {@code .daw/incomplete-takes/}, and notifies the user. On a
+     * matching {@code DeviceArrived}, the stream is reopened with the
+     * previously configured format and the engine returns to
+     * {@link EngineState#STOPPED}.</p>
+     *
+     * <p>The default implementation is a no-op which is safe for test
+     * stubs.</p>
+     *
+     * @param backend       the backend whose hot-plug events to consume;
+     *                      must not be null
+     * @param activeDevice  the currently opened device (the one whose
+     *                      removal should trigger {@code DEVICE_LOST});
+     *                      must not be null
+     */
+    default void bindBackendDeviceEvents(AudioBackend backend, DeviceId activeDevice) {
+        // no-op for test stubs
     }
 }
