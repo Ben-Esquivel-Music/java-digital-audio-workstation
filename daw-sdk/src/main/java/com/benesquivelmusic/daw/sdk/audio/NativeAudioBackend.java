@@ -119,6 +119,39 @@ public interface NativeAudioBackend extends AutoCloseable {
     boolean isAvailable();
 
     /**
+     * Returns the driver-reported round-trip latency for the currently
+     * opened stream, expressed as sample frames suitable for recording
+     * compensation.
+     *
+     * <p>The default implementation derives the frame counts from
+     * {@link #getLatencyInfo()} (which reports milliseconds) and the
+     * stream's sample rate. Concrete backends may override this with
+     * a native frame-accurate query (e.g.
+     * {@code ASIOGetLatencies(int* in, int* out)} or CoreAudio's
+     * {@code kAudioDevicePropertyLatency}).</p>
+     *
+     * @return the round-trip latency; never {@code null}. Returns
+     *         {@link RoundTripLatency#UNKNOWN} when no stream is open.
+     */
+    default RoundTripLatency reportedLatency() {
+        try {
+            LatencyInfo info = getLatencyInfo();
+            double sr = info.sampleRateHz();
+            if (!(sr > 0)) {
+                return RoundTripLatency.UNKNOWN;
+            }
+            int inputFrames = (int) Math.round(info.inputLatencyMs() * sr / 1000.0);
+            int outputFrames = (int) Math.round(info.outputLatencyMs() * sr / 1000.0);
+            return RoundTripLatency.of(
+                    Math.max(0, inputFrames),
+                    Math.max(0, outputFrames));
+        } catch (IllegalStateException _) {
+            // No stream is open — return UNKNOWN.
+            return RoundTripLatency.UNKNOWN;
+        }
+    }
+
+    /**
      * Terminates the backend and releases all resources.
      */
     @Override

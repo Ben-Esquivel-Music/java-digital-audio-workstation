@@ -45,6 +45,21 @@ public final class AudioSettingsStore {
      * the flat-JSON parser does not need to grow a nested-object code
      * path. An empty map is the historical default and serializes as
      * an empty string.</p>
+     *
+     * <p>{@link #applyLatencyCompensation()} mirrors the
+     * "Apply latency compensation to recorded takes" toggle in the
+     * Audio Settings dialog. Default is {@code true} — Pro Tools,
+     * Logic, Cubase and Reaper all default to compensating.</p>
+     *
+     * <p>{@link #latencyOverrideFramesByDeviceKey()} persists the
+     * user's per-device latency-calibration override (in sample
+     * frames) — populated when the calibration tool measures a delta
+     * greater than 64 frames vs the driver-reported value and the user
+     * accepts the override. Devices with no override fall back to
+     * {@code AudioBackend.reportedLatency()}. Encoded the same way as
+     * {@link #clockSourceByDeviceKey()}: a single comma-separated
+     * string field {@code "latencyOverridesByDevice"} so the flat-JSON
+     * parser does not need to grow a nested-object code path.</p>
      */
     public record Settings(
             String backend,
@@ -52,7 +67,9 @@ public final class AudioSettingsStore {
             String outputDevice,
             double sampleRate,
             int bufferFrames,
-            Map<String, Integer> clockSourceByDeviceKey) {
+            Map<String, Integer> clockSourceByDeviceKey,
+            boolean applyLatencyCompensation,
+            Map<String, Integer> latencyOverrideFramesByDeviceKey) {
 
         public Settings {
             Objects.requireNonNull(backend, "backend must not be null");
@@ -60,6 +77,8 @@ public final class AudioSettingsStore {
             Objects.requireNonNull(outputDevice, "outputDevice must not be null");
             Objects.requireNonNull(clockSourceByDeviceKey,
                     "clockSourceByDeviceKey must not be null");
+            Objects.requireNonNull(latencyOverrideFramesByDeviceKey,
+                    "latencyOverrideFramesByDeviceKey must not be null");
             if (backend.isBlank()) {
                 throw new IllegalArgumentException("backend must not be blank");
             }
@@ -69,21 +88,46 @@ public final class AudioSettingsStore {
             if (bufferFrames <= 0) {
                 throw new IllegalArgumentException("bufferFrames must be positive: " + bufferFrames);
             }
+            for (Integer frames : latencyOverrideFramesByDeviceKey.values()) {
+                if (frames == null || frames < 0) {
+                    throw new IllegalArgumentException(
+                            "latency override frames must be >= 0: " + frames);
+                }
+            }
             // Defensive copy so callers cannot mutate the persisted map.
             clockSourceByDeviceKey = Map.copyOf(clockSourceByDeviceKey);
+            latencyOverrideFramesByDeviceKey = Map.copyOf(latencyOverrideFramesByDeviceKey);
         }
 
         /**
          * Backwards-compatible constructor for callers that do not
          * persist per-device clock-source selections. Equivalent to
-         * passing an empty map for {@code clockSourceByDeviceKey}.
+         * passing an empty map for {@code clockSourceByDeviceKey} and
+         * default values for the latency-compensation fields
+         * ({@code true}, empty override map).
          */
         public Settings(String backend,
                         String inputDevice,
                         String outputDevice,
                         double sampleRate,
                         int bufferFrames) {
-            this(backend, inputDevice, outputDevice, sampleRate, bufferFrames, Map.of());
+            this(backend, inputDevice, outputDevice, sampleRate, bufferFrames,
+                    Map.of(), true, Map.of());
+        }
+
+        /**
+         * Backwards-compatible constructor preserving the previous
+         * six-arg signature; defaults the new latency-compensation
+         * fields to {@code true} and an empty override map.
+         */
+        public Settings(String backend,
+                        String inputDevice,
+                        String outputDevice,
+                        double sampleRate,
+                        int bufferFrames,
+                        Map<String, Integer> clockSourceByDeviceKey) {
+            this(backend, inputDevice, outputDevice, sampleRate, bufferFrames,
+                    clockSourceByDeviceKey, true, Map.of());
         }
 
         /**
@@ -158,7 +202,9 @@ public final class AudioSettingsStore {
                     outputDevice,
                     Double.parseDouble(sr),
                     Integer.parseInt(bf),
-                    parseClockSources(kv.get("clockSourcesByDevice"))));
+                    parseClockSources(kv.get("clockSourcesByDevice")),
+                    parseApplyLatencyCompensation(kv.get("applyLatencyCompensation")),
+                    parseLatencyOverrides(kv.get("latencyOverridesByDevice"))));
         } catch (IOException | IllegalArgumentException e) {
             return Optional.empty();
         }
@@ -187,8 +233,46 @@ public final class AudioSettingsStore {
                 + "  \"sampleRate\": " + s.sampleRate() + ",\n"
                 + "  \"bufferFrames\": " + s.bufferFrames() + ",\n"
                 + "  \"clockSourcesByDevice\": \""
-                + escape(encodeClockSources(s.clockSourceByDeviceKey())) + "\"\n"
+                + escape(encodeClockSources(s.clockSourceByDeviceKey())) + "\",\n"
+                + "  \"applyLatencyCompensation\": " + s.applyLatencyCompensation() + ",\n"
+                + "  \"latencyOverridesByDevice\": \""
+                + escape(encodeClockSources(s.latencyOverrideFramesByDeviceKey())) + "\"\n"
                 + "}\n";
+    }
+
+    /**
+     * Parses the {@code applyLatencyCompensation} flag. Missing or
+     * malformed values default to {@code true} — Pro Tools / Logic /
+     * Cubase / Reaper all default to compensating, so an old settings
+     * file written before this field existed gets the right behaviour
+     * after the upgrade.
+     */
+    static boolean parseApplyLatencyCompensation(String raw) {
+        if (raw == null) return true;
+        String trimmed = raw.trim();
+        if (trimmed.isEmpty()) return true;
+        return !trimmed.equalsIgnoreCase("false");
+    }
+
+    /**
+     * Decodes the per-device latency-override map written by
+     * {@link #encodeClockSources(Map)} (we reuse the encoding because
+     * both maps have the same shape: {@code String -> Integer}).
+     * Negative override values are silently dropped — defensive against
+     * a corrupt settings file shifting recorded clips into the future.
+     */
+    static Map<String, Integer> parseLatencyOverrides(String encoded) {
+        Map<String, Integer> raw = parseClockSources(encoded);
+        if (raw.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Integer> out = new LinkedHashMap<>();
+        for (Map.Entry<String, Integer> e : raw.entrySet()) {
+            if (e.getValue() != null && e.getValue() >= 0) {
+                out.put(e.getKey(), e.getValue());
+            }
+        }
+        return out;
     }
 
     /**

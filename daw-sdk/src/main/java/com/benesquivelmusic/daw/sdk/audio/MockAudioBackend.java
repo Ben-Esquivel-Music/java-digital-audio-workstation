@@ -48,6 +48,7 @@ public final class MockAudioBackend implements AudioBackend {
             new java.util.concurrent.SubmissionPublisher<>();
     private final java.util.List<Integer> clockSourceSelections =
             java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+    private volatile RoundTripLatency reportedLatency = RoundTripLatency.UNKNOWN;
 
     /**
      * Creates a new mock backend with no pre-canned input audio. Useful when
@@ -413,6 +414,30 @@ public final class MockAudioBackend implements AudioBackend {
     public void close() {
         support.close();
         clockLockPublisher.close();
+    }
+
+    /**
+     * Returns the driver-reported round-trip latency configured via
+     * {@link #setReportedLatency(RoundTripLatency)}, defaulting to
+     * {@link RoundTripLatency#UNKNOWN}. Tests use this to verify that
+     * {@code RecordingPipeline} reads the value once at stream open and
+     * shifts recorded clips by {@link RoundTripLatency#totalFrames()}.
+     */
+    @Override
+    public RoundTripLatency reportedLatency() {
+        return reportedLatency;
+    }
+
+    /**
+     * Configures the {@link RoundTripLatency} this mock will report from
+     * {@link #reportedLatency()}. Tests use this to drive the recording
+     * pipeline through the same code path it would exercise against a
+     * real driver reporting non-zero input/output/safety frames.
+     *
+     * @param latency the round-trip latency to report (must not be null)
+     */
+    public void setReportedLatency(RoundTripLatency latency) {
+        this.reportedLatency = Objects.requireNonNull(latency, "latency must not be null");
     }
 
     /**

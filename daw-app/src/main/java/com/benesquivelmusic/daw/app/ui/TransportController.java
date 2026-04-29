@@ -18,6 +18,7 @@ import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 import javafx.animation.FadeTransition;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
@@ -68,6 +69,29 @@ final class TransportController {
          * @param track the track that received MIDI activity
          */
         void flashMidiActivity(Track track);
+
+        /**
+         * Returns whether the recording pipeline should compensate for the
+         * driver's reported round-trip latency on captured takes. Reads the
+         * "Apply latency compensation to recorded takes" toggle from
+         * {@link SettingsModel}.
+         *
+         * @return {@code true} when compensation is enabled
+         */
+        default boolean isApplyLatencyCompensation() {
+            return true;
+        }
+
+        /**
+         * Returns the driver-reported round-trip latency for the currently
+         * opened audio stream. Delegates to
+         * {@link AudioEngineController#reportedLatency()}.
+         *
+         * @return the reported latency; never {@code null}
+         */
+        default RoundTripLatency reportedLatency() {
+            return RoundTripLatency.UNKNOWN;
+        }
     }
 
     private final DawProject project;
@@ -251,6 +275,8 @@ final class TransportController {
             recordingPipeline = new RecordingPipeline(
                     audioEngine, project.getTransport(), project.getFormat(), outputDir,
                     armedAudioTracks, countIn, InputMonitoringMode.OFF, null);
+            recordingPipeline.setReportedLatency(host.reportedLatency());
+            recordingPipeline.setApplyLatencyCompensation(host.isApplyLatencyCompensation());
             recordingPipeline.start();
 
             // Open audio input stream with the first armed audio track's input device
