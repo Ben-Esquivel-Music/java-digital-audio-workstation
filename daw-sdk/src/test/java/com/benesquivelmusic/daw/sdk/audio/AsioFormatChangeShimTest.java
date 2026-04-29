@@ -44,11 +44,10 @@ class AsioFormatChangeShimTest {
 
     @Test
     void bufferSizeChangeSelectorEmitsBufferSizeChange() throws Exception {
+        // Set up a real opened-support so the proposed format can be built
+        // from the previously opened sample rate / channels / bit depth,
+        // per the BufferSizeChange contract.
         AudioFormat opened = new AudioFormat(48_000.0, 2, 24);
-        AudioDeviceEvent event = invokeAndCapture(opened, () -> {});
-        // First, set up a real opened-support so the proposed format can
-        // be built from the previously opened sample rate / channels /
-        // bit depth, per the BufferSizeChange contract.
         AsioBackend backend = new AsioBackend();
         AudioBackendSupport support = new AudioBackendSupport();
         support.markOpen(opened, 256);
@@ -60,8 +59,6 @@ class AsioFormatChangeShimTest {
         assertThat(fc.reason()).isInstanceOf(FormatChangeReason.BufferSizeChange.class);
         assertThat(fc.proposedFormat()).contains(opened);
         assertThat(fc.device()).isEqualTo(DEVICE);
-        // silence unused-warning on `event` placeholder in IDE
-        assertThat(event).isNull();
     }
 
     @Test
@@ -118,13 +115,6 @@ class AsioFormatChangeShimTest {
         }
         assertThat(latch.await(2, TimeUnit.SECONDS)).isTrue();
         return ref.get();
-    }
-
-    private static AudioDeviceEvent invokeAndCapture(AudioFormat opened, Runnable runnable) {
-        // Helper kept for symmetry with other shim tests; the real work
-        // happens in subscribeAndDispatch above.
-        runnable.run();
-        return null;
     }
 
     private record CapturingSubscriber(AtomicReference<AudioDeviceEvent> ref, CountDownLatch latch)
