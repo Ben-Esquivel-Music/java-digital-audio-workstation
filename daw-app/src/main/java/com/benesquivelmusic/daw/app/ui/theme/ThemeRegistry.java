@@ -91,7 +91,15 @@ public final class ThemeRegistry {
             return;
         }
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(userThemesDir, "*.json")) {
+            // Collect and sort by filename for stable, deterministic display order
+            // across platforms (DirectoryStream order is filesystem-dependent).
+            List<Path> files = new ArrayList<>();
             for (Path file : stream) {
+                files.add(file);
+            }
+            files.sort((a, b) -> a.getFileName().toString()
+                    .compareToIgnoreCase(b.getFileName().toString()));
+            for (Path file : files) {
                 try {
                     Theme t = ThemeJson.load(file);
                     themes.put(t.id(), t); // user theme overrides bundled

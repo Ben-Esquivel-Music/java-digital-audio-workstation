@@ -14,7 +14,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Verifies that all bundled themes are loadable, and that every declared
- * foreground/background pair in every bundled theme reaches WCAG 2.1 AA.
+ * foreground/background pair in every bundled theme reaches WCAG 2.1 AAA
+ * (the stronger requirement, per the issue spec "all AAA-compliant").
  *
  * <p>Also exercises the user-themes directory loading and the
  * "duplicate and edit" save round-trip.</p>

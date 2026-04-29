@@ -49,9 +49,13 @@ class ThemePickerDialogTest {
         CountDownLatch readLatch = new CountDownLatch(1);
         AtomicReference<String> selectedId = new AtomicReference<>();
         Platform.runLater(() -> {
-            Theme t = dialog.selectedThemeProperty().getValue();
-            selectedId.set(t == null ? null : t.id());
-            readLatch.countDown();
+            try {
+                Theme t = dialog.selectedThemeProperty().getValue();
+                selectedId.set(t == null ? null : t.id());
+            } finally {
+                dialog.close();
+                readLatch.countDown();
+            }
         });
         assertThat(readLatch.await(5, TimeUnit.SECONDS)).isTrue();
         assertThat(selectedId.get()).isEqualTo("high-contrast");

@@ -74,8 +74,10 @@ public record Theme(
         public Color {
             Objects.requireNonNull(value, "value must not be null");
             Objects.requireNonNull(role, "role must not be null");
-            // Validate value is parseable so loading fails fast on bad data.
-            ThemeContrastValidator.parseHexColor(value);
+            // Validate and normalize to canonical "#rrggbb" form so
+            // JavaFX Color.web() never receives a bare hex like "ffffff".
+            int[] rgb = ThemeContrastValidator.parseHexColor(value);
+            value = String.format("#%02x%02x%02x", rgb[0], rgb[1], rgb[2]);
         }
     }
 

@@ -21,6 +21,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Manual screenshot harness — generates PNGs of the {@link ThemePickerDialog}
@@ -34,7 +37,8 @@ class ThemePickerScreenshotIT {
     @Test
     void captureScreenshots() throws Exception {
         Path tmp = Files.createTempDirectory("theme-shot-user");
-        Path outDir = Path.of(System.getProperty("theme.screenshots.dir", "/tmp"));
+        Path outDir = Path.of(System.getProperty("theme.screenshots.dir",
+                System.getProperty("java.io.tmpdir")));
         Files.createDirectories(outDir);
 
         ThemeRegistry registry = new ThemeRegistry(tmp);
@@ -43,16 +47,29 @@ class ThemePickerScreenshotIT {
         for (String id : ids) {
             CountDownLatch shown = new CountDownLatch(1);
             CountDownLatch shot = new CountDownLatch(1);
+            AtomicReference<Exception> error = new AtomicReference<>();
             final ThemePickerDialog[] holder = new ThemePickerDialog[1];
+            final Stage[] hostHolder = new Stage[1];
             Platform.runLater(() -> {
-                Stage host = new Stage();
-                host.setScene(new Scene(new StackPane(), 1, 1));
-                host.show();
-                holder[0] = new ThemePickerDialog(registry, id);
-                holder[0].show();
-                shown.countDown();
+                try {
+                    Stage host = new Stage();
+                    host.setScene(new Scene(new StackPane(), 1, 1));
+                    host.show();
+                    hostHolder[0] = host;
+                    holder[0] = new ThemePickerDialog(registry, id);
+                    holder[0].show();
+                } catch (Exception e) {
+                    error.set(e);
+                } finally {
+                    shown.countDown();
+                }
             });
-            shown.await(5, TimeUnit.SECONDS);
+            assertThat(shown.await(5, TimeUnit.SECONDS))
+                    .as("Timed out waiting for dialog to show for theme: %s", id)
+                    .isTrue();
+            if (error.get() != null) {
+                throw error.get();
+            }
             // Allow layout to settle.
             Thread.sleep(400);
             Platform.runLater(() -> {
@@ -60,14 +77,22 @@ class ThemePickerScreenshotIT {
                     WritableImage img = holder[0].getDialogPane().snapshot(null, null);
                     File out = outDir.resolve("theme-picker-" + id + ".png").toFile();
                     ImageIO.write(toBuffered(img), "png", out);
-                    holder[0].close();
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    error.set(e);
                 } finally {
+                    holder[0].close();
+                    if (hostHolder[0] != null) {
+                        hostHolder[0].close();
+                    }
                     shot.countDown();
                 }
             });
-            shot.await(5, TimeUnit.SECONDS);
+            assertThat(shot.await(5, TimeUnit.SECONDS))
+                    .as("Timed out waiting for screenshot of theme: %s", id)
+                    .isTrue();
+            if (error.get() != null) {
+                throw error.get();
+            }
         }
     }
 
