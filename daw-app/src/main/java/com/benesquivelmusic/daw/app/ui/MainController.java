@@ -625,32 +625,30 @@ public final class MainController {
                         }
                     }
                     // ── Dockable panels (F3 / F4 / F5) ────────────────────
-                    // Cubase-style toggles. When a DockManager is wired the
-                    // toggle goes through it (so floating windows are
-                    // hidden/shown too); otherwise we fall back to the
-                    // legacy panel/view controllers.
+                    // Preserve legacy visible behavior unless the docking
+                    // path is the only available way to service the toggle.
                     @Override public void onToggleDockMixer() {
-                        if (dockManager != null
+                        if (viewNavigationController != null) {
+                            viewNavigationController.switchView(DawView.MIXER);
+                        } else if (dockManager != null
                                 && dockManager.layout().contains(DefaultWorkspaces.PANEL_MIXER)) {
                             dockManager.toggleVisible(DefaultWorkspaces.PANEL_MIXER);
-                        } else if (viewNavigationController != null) {
-                            viewNavigationController.switchView(DawView.MIXER);
                         }
                     }
                     @Override public void onToggleDockBrowser() {
-                        if (dockManager != null
+                        if (browserPanelController != null) {
+                            browserPanelController.toggleBrowserPanel();
+                        } else if (dockManager != null
                                 && dockManager.layout().contains(DefaultWorkspaces.PANEL_BROWSER)) {
                             dockManager.toggleVisible(DefaultWorkspaces.PANEL_BROWSER);
-                        } else if (browserPanelController != null) {
-                            browserPanelController.toggleBrowserPanel();
                         }
                     }
                     @Override public void onToggleDockArrangement() {
-                        if (dockManager != null
+                        if (viewNavigationController != null) {
+                            viewNavigationController.switchView(DawView.ARRANGEMENT);
+                        } else if (dockManager != null
                                 && dockManager.layout().contains(DefaultWorkspaces.PANEL_ARRANGEMENT)) {
                             dockManager.toggleVisible(DefaultWorkspaces.PANEL_ARRANGEMENT);
-                        } else if (viewNavigationController != null) {
-                            viewNavigationController.switchView(DawView.ARRANGEMENT);
                         }
                     }
                 });
@@ -849,13 +847,11 @@ public final class MainController {
     }
 
     private void installWorkspacesMenu(javafx.scene.control.MenuBar bar) {
-        // Construct the DockManager first so the workspace host can
-        // capture/apply dock layout. The manager is UI-agnostic — the
-        // host only renders snapshots, so registering panels with it is
-        // safe even before the JavaFX scene graph is fully wired.
-        dockManager = new com.benesquivelmusic.daw.app.ui.dock.DockManager(
-                newLayout -> { /* UI repaint hook — full integration is incremental */ });
-        registerDockablePanels(dockManager);
+        // Do not create/register a DockManager until the JavaFX docking
+        // adapter is available to reconcile layout changes back into the
+        // existing panel controllers. Creating it early would make workspace
+        // apply and keyboard actions mutate dock state without updating the
+        // visible UI, effectively bypassing legacy behavior.
         workspaceManager = new WorkspaceManager(buildWorkspaceHost());
         WorkspacesMenu menuBuilder = new WorkspacesMenu(
                 workspaceManager,

@@ -117,7 +117,10 @@ public final class FloatingWindowStore {
         }
         String json = DockLayoutJson.toJson(DockLayout.of(entries));
         try {
-            Files.createDirectories(file.getParent());
+            Path parent = file.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
             Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
             Files.writeString(tmp, json, StandardCharsets.UTF_8);
             try {

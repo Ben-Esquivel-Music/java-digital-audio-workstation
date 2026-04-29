@@ -85,7 +85,7 @@ public final class DockLayoutJson {
                 int tabIndex = Math.max(0, intOf(em.get("tabIndex"), 0));
                 boolean visible = em.get("visible") instanceof Boolean b ? b : true;
                 Rectangle2D bounds = null;
-                if (em.get("bounds") instanceof Map<?, ?> bm) {
+                if (zone == DockZone.FLOATING && em.get("bounds") instanceof Map<?, ?> bm) {
                     double x = doubleOf(bm.get("x"), 0);
                     double y = doubleOf(bm.get("y"), 0);
                     double w = Math.max(0, doubleOf(bm.get("width"), 0));

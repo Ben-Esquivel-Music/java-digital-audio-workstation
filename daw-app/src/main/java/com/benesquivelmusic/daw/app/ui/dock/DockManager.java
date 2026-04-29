@@ -95,7 +95,10 @@ public final class DockManager {
         }
         panels.put(id, panel);
         if (!layout.contains(id)) {
-            DockZone zone = panel.preferredZone() == null ? DockZone.CENTER : panel.preferredZone();
+            DockZone preferredZone = panel.preferredZone();
+            DockZone zone = preferredZone == null || preferredZone == DockZone.FLOATING
+                    ? DockZone.CENTER
+                    : preferredZone;
             int nextIndex = layout.entriesInZone(zone).size();
             layout = layout.withEntry(DockEntry.docked(id, zone, nextIndex, true));
             fireChanged();
@@ -261,12 +264,32 @@ public final class DockManager {
                         DockEntry.docked(me.getKey(), zone, Integer.MAX_VALUE, true));
             }
         }
-        layout = DockLayout.of(result);
-        // renumber by re-applying via withEntry to ensure tab indices are 0..N-1
-        for (DockEntry e : new ArrayList<>(layout.entries().values())) {
-            layout = layout.withEntry(e);
-        }
+        layout = normalizeTabIndices(result.values());
         fireChanged();
+    }
+
+    /**
+     * Renumbers tab indices across all zones in a single pass so each
+     * zone has contiguous 0..N-1 indices in insertion order.
+     */
+    private static DockLayout normalizeTabIndices(Collection<DockEntry> entries) {
+        Map<DockZone, Integer> nextTabIndexByZone = new LinkedHashMap<>();
+        Map<String, DockEntry> normalized = new LinkedHashMap<>();
+        for (DockEntry entry : entries) {
+            if (entry.zone() == DockZone.FLOATING) {
+                normalized.put(entry.panelId(), entry);
+            } else {
+                int tabIndex = nextTabIndexByZone.getOrDefault(entry.zone(), 0);
+                normalized.put(entry.panelId(), new DockEntry(
+                        entry.panelId(),
+                        entry.zone(),
+                        tabIndex,
+                        entry.visible(),
+                        null));
+                nextTabIndexByZone.put(entry.zone(), tabIndex + 1);
+            }
+        }
+        return DockLayout.of(normalized);
     }
 
     private void fireChanged() {

@@ -35,6 +35,11 @@ public record DockEntry(String panelId,
         if (tabIndex < 0) {
             throw new IllegalArgumentException("tabIndex must be >= 0, got " + tabIndex);
         }
+        if (zone == DockZone.FLOATING) {
+            Objects.requireNonNull(floatingBounds, "floatingBounds must not be null when zone is FLOATING");
+        } else if (floatingBounds != null) {
+            throw new IllegalArgumentException("floatingBounds must be null when zone is not FLOATING");
+        }
     }
 
     /** Convenience: creates an entry for a docked (non-floating) panel. */
@@ -61,8 +66,11 @@ public record DockEntry(String panelId,
         return new DockEntry(panelId, zone, newTabIndex, visible, floatingBounds);
     }
 
-    /** Returns a copy of this entry with the given floating bounds. */
+    /** Returns a copy of this entry with the given floating bounds (zone must be FLOATING). */
     public DockEntry withFloatingBounds(Rectangle2D newBounds) {
+        if (zone != DockZone.FLOATING) {
+            throw new IllegalStateException("withFloatingBounds() requires zone == FLOATING");
+        }
         return new DockEntry(panelId, zone, tabIndex, visible, newBounds);
     }
 }

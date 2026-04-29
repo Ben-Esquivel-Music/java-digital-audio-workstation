@@ -81,7 +81,6 @@ public record Workspace(String name,
 
     /** Returns a copy of this workspace with the given dock layout. */
     public Workspace withDockLayoutJson(String newDockLayoutJson) {
-        return new Workspace(name, panelStates, openDialogs, panelBounds,
-                newDockLayoutJson == null ? "" : newDockLayoutJson);
+        return new Workspace(name, panelStates, openDialogs, panelBounds, newDockLayoutJson);
     }
 }
