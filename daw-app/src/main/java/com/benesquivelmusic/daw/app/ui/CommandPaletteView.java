@@ -52,16 +52,18 @@ import java.util.logging.Logger;
  *   <li>{@code Up}/{@code Down} navigate the list; {@code Enter} executes
  *       the selected entry's {@link CommandPaletteEntry#handler() handler};
  *       {@code Esc} closes the palette.</li>
- *   <li>The palette closes automatically when the search field loses focus.</li>
+ *   <li>The palette closes automatically when its {@link Stage} loses
+ *       focus (e.g. the user clicks outside the palette window).</li>
  *   <li>Disabled entries are rendered greyed-out, are not selectable via
  *       Enter, and surface their {@link CommandPaletteEntry#disabledReason()}
  *       via tooltip.</li>
  *   <li>Executing an entry records it in the {@link CommandPaletteRecentsStore}.</li>
  * </ul>
  *
- * <p>The palette is added as the topmost child of an {@link Pane} owner
- * (typically the {@code MainController}'s root) and displays itself by
- * setting visible/managed flags.</p>
+ * <p>The palette renders in its own borderless, undecorated {@link Stage}
+ * anchored to the primary application window. It is shown/hidden via
+ * {@link #show()} and {@link #hide()} which delegate to
+ * {@link Stage#show()} and {@link Stage#hide()}.</p>
  */
 public final class CommandPaletteView {
 
@@ -130,8 +132,8 @@ public final class CommandPaletteView {
         this.root.setStyle("-fx-background-color: rgba(0,0,0,0.25);");
         this.root.setPrefSize(640, 480);
 
-        // Construct a borderless utility stage. Tests can use this without a
-        // primary window — the stage is initialized lazily on first show().
+        // Construct a borderless utility stage eagerly so the scene graph is
+        // ready for programmatic interaction (e.g. tests driving searchField).
         this.stage = new Stage(StageStyle.UNDECORATED);
         this.stage.setScene(new Scene(root, 640, 480));
         this.stage.setResizable(false);
@@ -331,7 +333,17 @@ public final class CommandPaletteView {
                 items.addAll(recentEntries);
                 items.add(HEADER_ALL);
             }
-            List<CommandPaletteEntry> rest = new ArrayList<>(currentEntries);
+            // Exclude entries already shown in the recents section.
+            java.util.Set<String> recentIds = new java.util.HashSet<>();
+            for (CommandPaletteEntry re : recentEntries) {
+                recentIds.add(re.id());
+            }
+            List<CommandPaletteEntry> rest = new ArrayList<>();
+            for (CommandPaletteEntry e : currentEntries) {
+                if (!recentIds.contains(e.id())) {
+                    rest.add(e);
+                }
+            }
             rest.sort(Comparator.comparing(e -> e.label().toLowerCase()));
             items.addAll(rest);
         } else {

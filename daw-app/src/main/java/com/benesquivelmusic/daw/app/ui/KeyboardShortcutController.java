@@ -195,13 +195,22 @@ final class KeyboardShortcutController {
         // command palette, in addition to the user-rebindable Ctrl+K
         // (DawAction.OPEN_COMMAND_PALETTE). This mirrors VS Code's
         // longstanding muscle-memory binding.
+        // Only register if no other DawAction is already bound to that
+        // combination — otherwise we would silently override a user-
+        // configured binding, violating the KeyBindingManager contract.
         Runnable paletteHandler = actionHandlers.get(DawAction.OPEN_COMMAND_PALETTE);
         if (paletteHandler != null) {
-            accelerators.put(
-                    new javafx.scene.input.KeyCodeCombination(
-                            javafx.scene.input.KeyCode.P,
-                            KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN),
-                    paletteHandler);
+            KeyCombination ctrlShiftP = new javafx.scene.input.KeyCodeCombination(
+                    javafx.scene.input.KeyCode.P,
+                    KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN);
+            Optional<DawAction> conflict = keyBindingManager
+                    .getActionForBinding(ctrlShiftP);
+            if (conflict.isEmpty() || conflict.get() == DawAction.OPEN_COMMAND_PALETTE) {
+                accelerators.put(ctrlShiftP, paletteHandler);
+            } else {
+                LOG.fine("Skipping fixed Ctrl+Shift+P palette accelerator — "
+                        + "already bound to " + conflict.get().displayName());
+            }
         }
 
         LOG.fine("Registered keyboard shortcuts");

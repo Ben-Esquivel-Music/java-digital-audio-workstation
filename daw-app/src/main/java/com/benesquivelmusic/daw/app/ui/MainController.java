@@ -618,9 +618,9 @@ public final class MainController {
 
     /**
      * Builds the {@link CommandPaletteView} using the same action-handler
-     * map as {@link KeyboardShortcutController}. Each handler is wrapped to
-     * source the latest {@link KeyBindingManager} display text and category
-     * description, ensuring rebound shortcuts surface in the palette.
+     * map as {@link KeyboardShortcutController}. The entry supplier
+     * re-evaluates the {@link KeyBindingManager} display text on each
+     * invocation, so rebound shortcuts are reflected when the palette opens.
      */
     private void createCommandPaletteView() {
         if (keyboardShortcutController == null) {
