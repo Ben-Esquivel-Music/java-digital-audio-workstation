@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.sdk.audio;
 
+import com.benesquivelmusic.daw.sdk.event.DawEvent;
+
 import java.time.Duration;
 import java.util.Objects;
 
@@ -18,7 +20,7 @@ import java.util.Objects;
  * <p>This is a sealed algebraic data type (Java 17+) so consumers can
  * use exhaustive pattern-matching {@code switch} expressions.</p>
  */
-public sealed interface XrunEvent
+public sealed interface XrunEvent extends DawEvent
         permits XrunEvent.BufferLate,
                 XrunEvent.BufferDropped,
                 XrunEvent.GraphOverload {
