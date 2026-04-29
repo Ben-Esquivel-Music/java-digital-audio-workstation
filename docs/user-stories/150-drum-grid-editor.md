@@ -30,3 +30,5 @@ We have everything we need to build this view alongside the existing piano roll.
 - Polyrhythmic grids where different rows have different column counts — every row uses the same `GridResolution`.
 - Drum-map editing UI within the app — drum maps come from JSON resources and the user picks among them; authoring a custom drum map is a future enhancement.
 - Importing patterns from external drum-machine formats (Beatstep, Maschine) — out of scope.
+
+## WON't DO

@@ -27,3 +27,5 @@ Story 113 provides reflective parameter bindings for automation; this story reus
 - Bidirectional protocol support (MCU V-Pot feedback, OSC) — CC-in only.
 - Moving-fader "display" for hardware that supports it.
 - Gesture-based mappings (aftertouch, XY controllers) beyond standard CC.
+
+## WON't DO

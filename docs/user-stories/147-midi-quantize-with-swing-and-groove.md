@@ -26,3 +26,5 @@ labels: ["enhancement", "midi", "editor", "groove"]
 - Audio quantize (warping audio events to grid — a separate major story).
 - Real-time input quantize during recording.
 - Machine-learning-assisted groove detection from audio.
+
+## WON't DO

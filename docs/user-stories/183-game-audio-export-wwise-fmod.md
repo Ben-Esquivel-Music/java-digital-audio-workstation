@@ -29,3 +29,5 @@ Pro-tool parity here matters: Reaper's "Render regions" with wildcard naming, Pr
 - Random/sequential container *behavior* (that is the middleware's job) — this story only ensures the right files exist with the right names
 - Multi-channel surround variations bundled into a single file — variations remain mono or stereo; surround stems use the existing `StemExporter`
 - Auto-tagging variations with metadata RPCs (real-time parameter controls); only basic loop metadata is in scope
+
+## WON't DO

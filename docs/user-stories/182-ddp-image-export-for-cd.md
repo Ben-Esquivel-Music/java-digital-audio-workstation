@@ -27,3 +27,5 @@ Story 168 provides ISRC + CD-Text metadata; story 025 provides album assembly. T
 - DDP 1.02 (legacy, not supported).
 - CUE+BIN export (a separate story if needed; DDP is the professional standard).
 - DVD-Audio or SACD image export.
+
+## WON't DO

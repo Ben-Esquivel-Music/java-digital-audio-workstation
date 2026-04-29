@@ -26,3 +26,5 @@ Composers frequently need a score from their MIDI: send a part to a session play
 - Lyric alignment beyond text-event extraction.
 - Guitar tab output.
 - Advanced engraving hints (slurs, phrasing) — basic notation only.
+
+## WON't DO
