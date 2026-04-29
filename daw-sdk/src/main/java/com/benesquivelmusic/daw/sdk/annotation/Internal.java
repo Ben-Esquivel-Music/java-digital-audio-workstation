@@ -7,8 +7,9 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /**
- * Marks a class, interface, method, field, or constructor as <strong>internal
- * implementation detail</strong> with no API stability guarantees.
+ * Marks a class, interface, method, field, constructor, or package as
+ * <strong>internal implementation detail</strong> with no API stability
+ * guarantees.
  *
  * <p>Elements marked {@code @Internal} live inside an exported module package
  * for technical reasons (split-package avoidance, friend-module access via

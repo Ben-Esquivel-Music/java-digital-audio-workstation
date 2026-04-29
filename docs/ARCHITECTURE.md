@@ -104,8 +104,8 @@ consumers, see
 
 ## Module export tiers
 
-Each Maven module is a JPMS module declared by a `module-info.java`. The
-`exports` directives are the *single source of truth* for which packages
+Each migrated Maven module is a JPMS module declared by a `module-info.java`.
+Its `exports` directives are the *single source of truth* for which packages
 downstream consumers may depend on. Every export falls into one of three
 tiers:
 
@@ -133,15 +133,18 @@ reference these elements; they may move or disappear without deprecation.
 
 ### Allowlist + ModuleDescriptor compile-check
 
-Each modular Maven module commits an allowlist of the package names it is
-permitted to export at
-`src/test/resources/META-INF/api-packages.allowlist`. The matching
+For each modular Maven module, `module-info.java` is the definition of the
+module's actual exports (that is, the packages visible through JPMS at
+compile time and run time). In addition, each module commits
+`src/test/resources/META-INF/api-packages.allowlist` as the reviewable
+contract for its intended public API surface. The matching
 `ModuleExportsAllowlistTest` reads
 [`java.lang.module.ModuleDescriptor`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/module/ModuleDescriptor.html)
 for the running module and asserts that its set of (unqualified) exports
 exactly equals the allowlist. **Adding or removing an export therefore
 requires updating both `module-info.java` and the allowlist in the same
-commit** — which forces the change to be deliberate and reviewable.
+commit** — `module-info.java` changes the actual visibility, and the
+allowlist records the committed contract enforced by tests.
 
 Friend-module access uses a qualified export:
 
