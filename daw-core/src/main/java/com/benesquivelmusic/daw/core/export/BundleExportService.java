@@ -2,6 +2,9 @@ package com.benesquivelmusic.daw.core.export;
 
 import com.benesquivelmusic.daw.core.analysis.LoudnessMeter;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.concurrent.DawTask;
+import com.benesquivelmusic.daw.core.concurrent.DawTaskRunner;
+import com.benesquivelmusic.daw.core.concurrent.TaskCategory;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -277,10 +280,13 @@ public final class BundleExportService {
     /**
      * Performs an asynchronous bundle export on a dedicated virtual thread.
      *
-     * <p>Each call submits the export to a fresh virtual-thread-per-task
-     * executor; the executor is shut down once the task completes. The
-     * returned future completes with the result on success, or completes
-     * exceptionally with an {@link IOException} on failure.</p>
+     * <p>This overload spins up a transient virtual-thread executor for the
+     * single export and shuts it down when the task completes. For
+     * applications that already hold a long-lived {@link DawTaskRunner},
+     * prefer {@link #exportAsync(DawProject, double, DeliverableBundle,
+     * ExportProgressListener, DawTaskRunner)} — it routes the work through
+     * the shared runner so the export shows up in
+     * {@link DawTaskRunner#snapshot()} debug views.</p>
      *
      * @param project           the DAW project
      * @param totalProjectBeats the total project length in beats
@@ -307,6 +313,33 @@ public final class BundleExportService {
             }
         });
         return future;
+    }
+
+    /**
+     * Performs an asynchronous bundle export on the shared
+     * {@link DawTaskRunner}. The work is routed to the runner's
+     * virtual-thread executor (I/O-bound — JEP 444) and registered for
+     * the active-task snapshot used by the debug view.
+     *
+     * @param project           the DAW project
+     * @param totalProjectBeats the total project length in beats
+     * @param bundle            the deliverable bundle specification
+     * @param listener          progress listener (0.0 – 1.0)
+     * @param runner            the application's shared task runner
+     * @return a future that completes with the bundle export result
+     */
+    public CompletableFuture<BundleExportResult> exportAsync(
+            DawProject project,
+            double totalProjectBeats,
+            DeliverableBundle bundle,
+            ExportProgressListener listener,
+            DawTaskRunner runner) {
+        Objects.requireNonNull(runner, "runner must not be null");
+        String taskName = "bundle-export:" + bundle.zipOutput().getFileName();
+        return runner.submit(new DawTask<>(
+                taskName,
+                TaskCategory.EXPORT,
+                () -> export(project, totalProjectBeats, bundle, listener)));
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

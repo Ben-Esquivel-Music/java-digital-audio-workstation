@@ -94,6 +94,64 @@ Pure elapsed-time *measurement* (e.g. progress logging in
 `daw-core/.../export/*`) does not need an injected `Clock` because
 the measured value is not observable behaviour.
 
+## Threading model — audio = platform, everything else = virtual
+
+The DAW separates threads into two strict tiers, with a single
+inviolable rule:
+
+> **Audio thread = platform; everything else = virtual by default.**
+
+| Tier | Threads | Used for | Why |
+|---|---|---|---|
+| **Realtime** | Dedicated **platform** threads owned by the audio host (PortAudio / CoreAudio / WASAPI / JACK) | Audio callbacks, the mixer's process loop, anything inside an `@RealTimeSafe` boundary | Virtual threads can be unmounted from their carrier at arbitrary safepoints. That breaks the deadline guarantees the audio engine relies on — a single missed callback is an audible glitch. |
+| **Non-realtime** | **Virtual threads** (JEP 444) via `DawTaskRunner` | File import / export, autosave / checkpoints, project scans for the browser panel, offline analysis (peaks, spectrum, loudness), any I/O-bound work | Cheap (kilobytes), one per task, no pool sizing. Importing 100 audio files concurrently spawns 100 virtual threads with no extra configuration. |
+
+### `DawTaskRunner` — the single entry point
+
+All non-realtime concurrency goes through
+[`com.benesquivelmusic.daw.core.concurrent.DawTaskRunner`](../daw-core/src/main/java/com/benesquivelmusic/daw/core/concurrent/DawTaskRunner.java).
+Submit a `DawTask` and the runner decides which executor to use based
+on the task's `TaskCategory`:
+
+- `IMPORT` / `EXPORT` / `AUTOSAVE` / `SCAN` / `ANALYSIS` →
+  virtual-thread-per-task executor.
+- `COMPUTE` (short CPU-bound bursts) → bounded platform pool sized to
+  `Runtime.getRuntime().availableProcessors()` so the CPU is not
+  oversubscribed.
+
+Every active task is registered for `DawTaskRunner.snapshot()` so the
+debug view can show counts per category and spot leaks.
+
+### Structured concurrency for fan-out / fan-in
+
+Workflows that fork several children which must all succeed
+(deliverable bundle export is the canonical example) use
+[`DawScope`](../daw-core/src/main/java/com/benesquivelmusic/daw/core/concurrent/DawScope.java) —
+a stable shutdown-on-failure scope built on virtual threads. It
+mirrors the JEP 505 surface (`fork` / `joinAll` / `close`) so when
+`StructuredTaskScope` ships as final the helper can be replaced by a
+thin wrapper without changing call sites.
+
+```java
+try (var scope = DawScope.openShutdownOnFailure("bundle-export")) {
+    var wav = scope.fork("wav", () -> wavExporter.export(project));
+    var mp3 = scope.fork("mp3", () -> mp3Exporter.export(project));
+    var pdf = scope.fork("pdf", () -> trackSheetPdf.write(project));
+    scope.joinAll();   // throws fast if any fork fails — others are interrupted
+    return new Bundle(wav.resultNow(), mp3.resultNow(), pdf.resultNow());
+}
+```
+
+### `CompletableFuture` audit
+
+Whenever a non-realtime call site uses `CompletableFuture.supplyAsync`
+/ `runAsync`, it must pass an explicit executor — never rely on the
+common `ForkJoinPool` (it is sized for CPU work, not I/O, and pinning
+on it starves the rest of the application). The two existing async
+sites — `ConvolutionReverbProcessor` IR loading and
+`BundleExportService.exportAsync` — both delegate to virtual-thread
+executors.
+
 ## Annotation & reflection layer
 
 For a deep dive into the five custom annotations
