@@ -38,9 +38,19 @@ import java.util.List;
  * @param preferred   the driver's preferred / current buffer size (frames; must be in {@code [min, max]})
  * @param granularity step size between successive accepted buffer sizes
  *                    ({@code 0} means the singleton {@code preferred} is the only allowed value;
- *                    must be {@code >= 0})
+ *                    {@code -1} is the ASIO power-of-two sentinel — the driver accepts every
+ *                    power of two between {@code min} and {@code max} inclusive;
+ *                    all other values must be {@code >= 0})
  */
 public record BufferSizeRange(int min, int max, int preferred, int granularity) {
+
+    /**
+     * Sentinel granularity value used by ASIO drivers to indicate that
+     * the accepted buffer sizes are powers of two between {@code min}
+     * and {@code max}. {@link #expandedSizes()} and {@link #accepts(int)}
+     * expand this into an explicit power-of-two ladder.
+     */
+    public static final int POWER_OF_TWO_GRANULARITY = -1;
 
     /**
      * The historical power-of-two buffer-size ladder that the dialog
@@ -82,9 +92,9 @@ public record BufferSizeRange(int min, int max, int preferred, int granularity) 
             throw new IllegalArgumentException(
                     "preferred (" + preferred + ") must be in [" + min + ", " + max + "]");
         }
-        if (granularity < 0) {
+        if (granularity < POWER_OF_TWO_GRANULARITY) {
             throw new IllegalArgumentException(
-                    "granularity must not be negative: " + granularity);
+                    "granularity must be >= " + POWER_OF_TWO_GRANULARITY + ": " + granularity);
         }
     }
 
@@ -130,6 +140,18 @@ public record BufferSizeRange(int min, int max, int preferred, int granularity) 
         if (granularity == 0) {
             return List.of(preferred);
         }
+        if (granularity == POWER_OF_TWO_GRANULARITY) {
+            List<Integer> out = new ArrayList<>();
+            for (int n = Integer.highestOneBit(min); n <= max; n <<= 1) {
+                if (n >= min) {
+                    out.add(n);
+                }
+            }
+            if (out.isEmpty()) {
+                out.add(preferred);
+            }
+            return Collections.unmodifiableList(out);
+        }
         List<Integer> out = new ArrayList<>();
         for (int n = min; n <= max; n += granularity) {
             out.add(n);
@@ -162,6 +184,9 @@ public record BufferSizeRange(int min, int max, int preferred, int granularity) 
         }
         if (frames < min || frames > max) {
             return false;
+        }
+        if (granularity == POWER_OF_TWO_GRANULARITY) {
+            return frames > 0 && (frames & (frames - 1)) == 0;
         }
         // Accept both the regular ladder and the max value (which
         // expandedSizes() appends when max is not on the ladder).
