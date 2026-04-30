@@ -4,16 +4,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.logging.Handler;
-import java.util.logging.Level;
-import java.util.logging.LogRecord;
-import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Unit tests for the FFM bridge to Steinberg's
@@ -25,10 +19,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * so the symbol-present, symbol-absent and {@code ASE_NotPresent} paths
  * can all be exercised without requiring the native shim or a Windows
  * host with the Steinberg ASIO SDK installed.</p>
+ *
+ * <p>Per the {@link AudioBackend#openControlPanel()} contract, launch
+ * failures are surfaced as {@link AudioBackendException} on the calling
+ * thread so the dialog can present a user-visible notification.</p>
  */
 class AsioBackendControlPanelTest {
-
-    private static final long AWAIT_SECONDS = 5;
 
     @AfterEach
     void restoreFactory() {
@@ -36,15 +32,13 @@ class AsioBackendControlPanelTest {
     }
 
     @Test
-    void openControlPanelInvokesNativeSymbolExactlyOnceWhenSymbolResolves() throws InterruptedException {
+    void openControlPanelInvokesNativeSymbolExactlyOnceWhenSymbolResolves() {
         // Story 212, test 1: when asioshim_openControlPanel resolves,
         // AsioBackend#openControlPanel() returns a non-empty Optional
         // whose Runnable performs exactly one call to the mocked symbol.
         AtomicInteger calls = new AtomicInteger();
-        CountDownLatch invoked = new CountDownLatch(1);
         AsioBackend.setCapabilityShimFactory(() -> new ControlPanelStubShim(true, () -> {
             calls.incrementAndGet();
-            invoked.countDown();
             return 1; // ASE_OK
         }));
 
@@ -52,14 +46,8 @@ class AsioBackendControlPanelTest {
         Optional<Runnable> action = backend.openControlPanel();
 
         assertThat(action).isPresent();
+        // On success the runnable completes normally without throwing.
         action.get().run();
-
-        assertThat(invoked.await(AWAIT_SECONDS, TimeUnit.SECONDS))
-                .as("the dispatched worker thread should call the native symbol")
-                .isTrue();
-        // Give the worker a brief moment after the latch in case it
-        // somehow re-entered (it must not).
-        Thread.sleep(50);
         assertThat(calls.get()).isEqualTo(1);
     }
 
@@ -78,100 +66,36 @@ class AsioBackendControlPanelTest {
     }
 
     @Test
-    void aseNotPresentTranslatesToAudioBackendExceptionAndDoesNotEscapeRunnable()
-            throws InterruptedException {
-        // Story 212, test 3: a return code of 0 (ASE_NotPresent) becomes
-        // a clear AudioBackendException, but the supervising
-        // uncaught-exception handler logs it — the runnable must not
-        // throw past the dialog's onOpenControlPanel handler.
-        CountDownLatch invoked = new CountDownLatch(1);
-        AsioBackend.setCapabilityShimFactory(() -> new ControlPanelStubShim(true, () -> {
-            invoked.countDown();
-            return AsioCapabilityShim.CONTROL_PANEL_NOT_PRESENT; // 0 → ASE_NotPresent
-        }));
+    void aseNotPresentThrowsAudioBackendExceptionOnCallingThread() {
+        // Story 212, test 3: a return code of 0 (ASE_NotPresent) is
+        // propagated as an AudioBackendException on the calling thread
+        // per the AudioBackend#openControlPanel() contract, so the
+        // dialog's onOpenControlPanel handler can surface the error.
+        AsioBackend.setCapabilityShimFactory(() -> new ControlPanelStubShim(true,
+                () -> AsioCapabilityShim.CONTROL_PANEL_NOT_PRESENT));
 
-        // Capture WARNING records emitted by AsioBackend so we can assert
-        // the AudioBackendException's message.
-        AtomicReference<LogRecord> captured = new AtomicReference<>();
-        CountDownLatch logged = new CountDownLatch(1);
-        Handler handler = new Handler() {
-            @Override public void publish(LogRecord record) {
-                if (record.getLevel().intValue() >= Level.WARNING.intValue()) {
-                    captured.compareAndSet(null, record);
-                    logged.countDown();
-                }
-            }
-            @Override public void flush() {}
-            @Override public void close() {}
-        };
-        Logger backendLog = Logger.getLogger(AsioBackend.class.getName());
-        backendLog.addHandler(handler);
-        boolean wasUseParent = backendLog.getUseParentHandlers();
-        Level wasLevel = backendLog.getLevel();
-        backendLog.setUseParentHandlers(false);
-        backendLog.setLevel(Level.ALL);
-        try {
-            AsioBackend backend = new AsioBackend();
-            Optional<Runnable> action = backend.openControlPanel();
-            assertThat(action).isPresent();
+        AsioBackend backend = new AsioBackend();
+        Optional<Runnable> action = backend.openControlPanel();
+        assertThat(action).isPresent();
 
-            // The runnable itself must return normally — failures live on
-            // the worker thread and are routed through the supervisor.
-            action.get().run();
-
-            assertThat(invoked.await(AWAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
-            assertThat(logged.await(AWAIT_SECONDS, TimeUnit.SECONDS))
-                    .as("the supervisor should log the AudioBackendException")
-                    .isTrue();
-            LogRecord record = captured.get();
-            assertThat(record).isNotNull();
-            assertThat(record.getThrown()).isInstanceOf(AudioBackendException.class);
-            assertThat(record.getThrown().getMessage())
-                    .isEqualTo("Driver does not provide a control panel");
-        } finally {
-            backendLog.removeHandler(handler);
-            backendLog.setUseParentHandlers(wasUseParent);
-            backendLog.setLevel(wasLevel);
-        }
+        assertThatThrownBy(() -> action.get().run())
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessage("Driver does not provide a control panel");
     }
 
     @Test
-    void genericFailureCodeIsTranslatedWithCodeInMessage() throws InterruptedException {
+    void genericFailureCodeThrowsWithCodeInMessage() {
         // Any non-ASE_OK, non-ASE_NotPresent code surfaces as
-        // "Could not launch ASIO control panel: <code>".
+        // "Could not launch ASIO control panel: <code>" on the
+        // calling thread.
         AsioBackend.setCapabilityShimFactory(() -> new ControlPanelStubShim(true, () -> -1));
 
-        AtomicReference<LogRecord> captured = new AtomicReference<>();
-        CountDownLatch logged = new CountDownLatch(1);
-        Handler handler = new Handler() {
-            @Override public void publish(LogRecord record) {
-                if (record.getLevel().intValue() >= Level.WARNING.intValue()) {
-                    captured.compareAndSet(null, record);
-                    logged.countDown();
-                }
-            }
-            @Override public void flush() {}
-            @Override public void close() {}
-        };
-        Logger backendLog = Logger.getLogger(AsioBackend.class.getName());
-        backendLog.addHandler(handler);
-        boolean wasUseParent = backendLog.getUseParentHandlers();
-        Level wasLevel = backendLog.getLevel();
-        backendLog.setUseParentHandlers(false);
-        backendLog.setLevel(Level.ALL);
-        try {
-            AsioBackend backend = new AsioBackend();
-            backend.openControlPanel().orElseThrow().run();
+        AsioBackend backend = new AsioBackend();
+        Runnable runnable = backend.openControlPanel().orElseThrow();
 
-            assertThat(logged.await(AWAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
-            assertThat(captured.get().getThrown())
-                    .isInstanceOf(AudioBackendException.class)
-                    .hasMessage("Could not launch ASIO control panel: -1");
-        } finally {
-            backendLog.removeHandler(handler);
-            backendLog.setUseParentHandlers(wasUseParent);
-            backendLog.setLevel(wasLevel);
-        }
+        assertThatThrownBy(runnable::run)
+                .isInstanceOf(AudioBackendException.class)
+                .hasMessage("Could not launch ASIO control panel: -1");
     }
 
     @Test

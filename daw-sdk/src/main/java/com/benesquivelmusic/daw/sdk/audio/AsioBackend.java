@@ -5,6 +5,8 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.Flow;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
@@ -216,64 +218,65 @@ public final class AsioBackend implements AudioBackend {
     }
 
     /**
-     * Dispatches the FFM downcall to Steinberg's
-     * {@code ASIOControlPanel()} on a dedicated daemon platform thread
+     * Performs the FFM downcall to Steinberg's {@code ASIOControlPanel()}
+     * on a dedicated daemon platform thread and propagates any failure
+     * back to the calling thread as an {@link AudioBackendException}
      * (story 212).
      *
-     * <p>The native call blocks the calling thread until the user
-     * closes the modal panel, so it must not run on the JavaFX thread
-     * (which would freeze the UI) nor on a virtual thread (the
-     * carrier would be pinned by the modal Win32 dialog's message
-     * pump). A daemon platform thread satisfies both constraints.</p>
+     * <p>The native call may block until the user closes the modal
+     * panel, so it must not run on the JavaFX thread (which would
+     * freeze the UI) nor directly on a virtual thread (the carrier
+     * would be pinned by the modal Win32 dialog's message pump). A
+     * daemon platform thread satisfies both constraints while
+     * {@link CompletableFuture#join()} communicates the result back
+     * to the caller without busy-waiting or timing fragility.</p>
      *
-     * <p>The runnable returns as soon as the downcall is dispatched —
-     * matching the WASAPI fire-and-forget contract — not when the
-     * user closes the panel. The dialog's existing
-     * {@code onOpenControlPanel} hook re-queries device capabilities
-     * after the runnable returns; story 218's reset-request path
-     * handles the case where the driver fired
-     * {@code kAsioResetRequest} while its panel was open.</p>
-     *
-     * <p>Failures observed by the worker thread are translated into
-     * {@link AudioBackendException} and logged via the supervising
-     * uncaught-exception handler so the runnable never throws past
-     * the dialog's notification handler — only the calling-thread
-     * shim-unavailable path throws synchronously.</p>
+     * <p>Per the {@link AudioBackend#openControlPanel()} contract,
+     * failures are surfaced as {@link AudioBackendException} so the
+     * caller (e.g. {@code AudioSettingsDialog#onOpenControlPanel})
+     * can present a user-visible notification. Success means the
+     * native panel was shown (and possibly already closed).</p>
      */
     private void invokeAsioControlPanel() {
-        // Pre-flight: if the shim disappeared between openControlPanel()
-        // and now, throw synchronously so the dialog surfaces the error.
-        try (AsioCapabilityShim shim = capabilityShimFactory.get()) {
-            if (!shim.isControlPanelAvailable()) {
-                throw new AudioBackendException(
-                        "ASIO control panel is not available: the asioshim "
-                                + "library or asioshim_openControlPanel symbol is missing.");
-            }
-        }
-        Runnable worker = () -> {
-            try (AsioCapabilityShim shim = capabilityShimFactory.get()) {
-                if (!shim.isControlPanelAvailable()) {
-                    throw new AudioBackendException(
-                            "ASIO control panel is not available: the asioshim "
-                                    + "library or asioshim_openControlPanel symbol is missing.");
-                }
-                int rc = shim.openControlPanel();
-                if (rc == AsioCapabilityShim.CONTROL_PANEL_NOT_PRESENT) {
-                    throw new AudioBackendException(
-                            "Driver does not provide a control panel");
-                }
-                if (rc != 1) {
-                    throw new AudioBackendException(
-                            "Could not launch ASIO control panel: " + rc);
-                }
-            }
-        };
+        CompletableFuture<Void> result = new CompletableFuture<>();
         Thread.ofPlatform()
                 .name("asio-control-panel")
                 .daemon(true)
-                .uncaughtExceptionHandler((t, e) -> LOG.log(Level.WARNING,
-                        "ASIO control panel launch failed", e))
-                .start(worker);
+                .start(() -> {
+                    try (AsioCapabilityShim shim = capabilityShimFactory.get()) {
+                        if (!shim.isControlPanelAvailable()) {
+                            result.completeExceptionally(new AudioBackendException(
+                                    "ASIO control panel is not available: the asioshim "
+                                            + "library or asioshim_openControlPanel symbol is missing."));
+                            return;
+                        }
+                        int rc = shim.openControlPanel();
+                        if (rc == AsioCapabilityShim.CONTROL_PANEL_NOT_PRESENT) {
+                            result.completeExceptionally(new AudioBackendException(
+                                    "Driver does not provide a control panel"));
+                        } else if (rc != 1) {
+                            result.completeExceptionally(new AudioBackendException(
+                                    "Could not launch ASIO control panel: " + rc));
+                        } else {
+                            result.complete(null);
+                        }
+                    } catch (AudioBackendException e) {
+                        result.completeExceptionally(e);
+                    } catch (RuntimeException e) {
+                        result.completeExceptionally(new AudioBackendException(
+                                "ASIO control panel launch failed: " + e.getMessage(), e));
+                    }
+                });
+        try {
+            result.join();
+        } catch (CompletionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof AudioBackendException abe) {
+                throw abe;
+            }
+            throw new AudioBackendException(
+                    "ASIO control panel launch failed", cause);
+        }
     }
 
     @Override
