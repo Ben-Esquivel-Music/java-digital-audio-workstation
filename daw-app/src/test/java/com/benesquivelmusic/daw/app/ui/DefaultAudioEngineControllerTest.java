@@ -413,15 +413,18 @@ class DefaultAudioEngineControllerTest {
     @Test
     void applyBackendByNameWithUnavailablePlatformBackendFallsBackAndNotifies(
             @TempDir Path projectRoot) {
-        // Re-register "ASIO" with the real AsioBackend factory: on the
-        // Linux CI host AsioBackend.isAvailable() is always false (no
-        // Windows ASIO driver, no native shim), so the controller must
-        // route to JavaSoundBackend and emit *exactly one* fallback
-        // notification.
+        // Register a deterministic test-only unavailable backend under the
+        // name "ASIO" so this test does not depend on host OS or
+        // native-library state. MockAudioBackend with setAvailable(false)
+        // simulates a platform backend whose native driver is absent.
         java.util.Map<String, java.util.function.Supplier<
                 com.benesquivelmusic.daw.sdk.audio.AudioBackend>> factories =
                 new java.util.LinkedHashMap<>();
-        factories.put("ASIO", com.benesquivelmusic.daw.sdk.audio.AsioBackend::new);
+        factories.put("ASIO", () -> {
+            MockAudioBackend unavailable = new MockAudioBackend();
+            unavailable.setAvailable(false);
+            return unavailable;
+        });
         com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
                 new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(factories);
 

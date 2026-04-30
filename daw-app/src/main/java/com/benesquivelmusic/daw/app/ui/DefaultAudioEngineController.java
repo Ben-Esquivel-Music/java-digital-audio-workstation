@@ -210,15 +210,18 @@ final class DefaultAudioEngineController implements AudioEngineController {
         // Try the SDK sealed-hierarchy first (ASIO / WASAPI / CoreAudio /
         // JACK / Mock — story 130). These don't implement
         // NativeAudioBackend, so the legacy probe path below would skip
-        // them. Closing the probe is best-effort: AudioBackend extends
-        // AutoCloseable.
-        try (AudioBackend sdkProbe = backendSelector.selectByName(backendName)) {
-            if (sdkProbe != null) {
-                return sdkProbe.listDevices();
+        // them. Skip for legacy names ("PortAudio", "Java Sound") to avoid
+        // device-enumeration mismatches between the SDK JavaxSoundBackend
+        // and the daw-core JavaSoundBackend (they enumerate differently).
+        if (!"PortAudio".equals(backendName) && !"Java Sound".equals(backendName)) {
+            try (AudioBackend sdkProbe = backendSelector.selectByName(backendName)) {
+                if (sdkProbe != null) {
+                    return sdkProbe.listDevices();
+                }
+            } catch (RuntimeException e) {
+                LOG.log(Level.WARNING, "Failed to enumerate " + backendName + " devices via SDK", e);
+                return List.of();
             }
-        } catch (RuntimeException e) {
-            LOG.log(Level.WARNING, "Failed to enumerate " + backendName + " devices via SDK", e);
-            return List.of();
         }
         NativeAudioBackend probe = null;
         try {
@@ -275,7 +278,20 @@ final class DefaultAudioEngineController implements AudioEngineController {
         }
 
         NativeAudioBackend currentBackend = audioEngine.getAudioBackend();
-        if (currentBackend == null || !request.backendName().equals(currentBackend.getBackendName())) {
+        // Include the SDK slot in the comparison so repeated reconfigures
+        // (buffer size / sample rate changes) don't re-create the SDK
+        // backend and re-emit fallback notifications when the selection
+        // hasn't actually changed.
+        AudioBackend currentSdkBackend = audioEngine.getBackend();
+        boolean backendChanged;
+        if (currentSdkBackend != null && request.backendName().equals(currentSdkBackend.name())) {
+            backendChanged = false;
+        } else if (currentBackend != null && request.backendName().equals(currentBackend.getBackendName())) {
+            backendChanged = false;
+        } else {
+            backendChanged = true;
+        }
+        if (backendChanged) {
             applyBackendByName(request.backendName());
         }
 
@@ -862,6 +878,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
      */
     void applyBackendByName(String name) {
         if (name == null || name.isBlank() || BACKEND_NONE.equals(name)) {
+            closePreviousSdkBackend();
             audioEngine.setBackend(null);
             return;
         }
@@ -872,6 +889,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
                 legacy = AudioBackendFactory.createDefault();
             }
             audioEngine.setAudioBackend(legacy);
+            closePreviousSdkBackend();
             audioEngine.setBackend(null);
             return;
         }
@@ -881,6 +899,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
             // Unknown name — preserve historical behaviour: fall back to
             // AudioBackendFactory.createDefault() on the legacy slot.
             audioEngine.setAudioBackend(AudioBackendFactory.createDefault());
+            closePreviousSdkBackend();
             audioEngine.setBackend(null);
             return;
         }
@@ -899,6 +918,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
                 LOG.log(Level.WARNING, "NotificationManager rejected fallback message", e);
             }
             audioEngine.setAudioBackend(new JavaSoundBackend());
+            closePreviousSdkBackend();
             audioEngine.setBackend(null);
             return;
         }
@@ -909,6 +929,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
         // actual selection. The native shim implementation stories
         // (220 / 221 / 222 / 223 / 224) will route I/O through the SDK
         // backend itself.
+        closePreviousSdkBackend();
         audioEngine.setBackend(sdk);
         // Don't downgrade an already-installed PortAudio NativeAudioBackend
         // when the user picks an SDK platform backend; the engine's render
@@ -918,6 +939,21 @@ final class DefaultAudioEngineController implements AudioEngineController {
         NativeAudioBackend nativeSlot = audioEngine.getAudioBackend();
         if (nativeSlot == null || !"PortAudio".equals(nativeSlot.getBackendName())) {
             audioEngine.setAudioBackend(new JavaSoundBackend());
+        }
+    }
+
+    /**
+     * Best-effort close of any previously installed SDK backend to avoid
+     * leaking native resources when backends are replaced or cleared.
+     */
+    private void closePreviousSdkBackend() {
+        AudioBackend previous = audioEngine.getBackend();
+        if (previous != null) {
+            try {
+                previous.close();
+            } catch (RuntimeException ignored) {
+                // best-effort cleanup
+            }
         }
     }
 

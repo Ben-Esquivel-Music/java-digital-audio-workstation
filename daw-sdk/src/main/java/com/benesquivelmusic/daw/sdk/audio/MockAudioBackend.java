@@ -49,6 +49,7 @@ public final class MockAudioBackend implements AudioBackend {
     private final java.util.List<Integer> clockSourceSelections =
             java.util.Collections.synchronizedList(new java.util.ArrayList<>());
     private volatile RoundTripLatency reportedLatency = RoundTripLatency.UNKNOWN;
+    private volatile boolean available = true;
 
     /**
      * Creates a new mock backend with no pre-canned input audio. Useful when
@@ -77,7 +78,20 @@ public final class MockAudioBackend implements AudioBackend {
 
     @Override
     public boolean isAvailable() {
-        return true;
+        return available;
+    }
+
+    /**
+     * Configures the availability flag returned by {@link #isAvailable()}.
+     * Defaults to {@code true}; set to {@code false} to simulate a backend
+     * whose native library / driver is absent — useful for testing the
+     * controller's fallback-notification path without depending on host
+     * OS or native-library state.
+     *
+     * @param available whether this mock should report itself as available
+     */
+    public void setAvailable(boolean available) {
+        this.available = available;
     }
 
     @Override

@@ -82,8 +82,8 @@ public final class AudioBackendSelector {
      * match any registered factory — this lets the caller's own legacy /
      * non-SDK switch fall through. Story 130 (this method) is the single
      * place that maps a UI-facing backend name to an SDK
-     * {@link AudioBackend} instance, so {@link DefaultAudioEngineController}
-     * does not need to maintain a parallel hand-rolled {@code switch}.</p>
+     * {@link AudioBackend} instance, so the app controller does not need to
+     * maintain a parallel hand-rolled {@code switch}.</p>
      *
      * @param name backend name as listed by {@link #availableBackendNames()}
      * @return a fresh {@link AudioBackend} instance, or {@code null} if
