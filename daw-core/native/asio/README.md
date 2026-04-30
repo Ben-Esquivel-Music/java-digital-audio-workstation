@@ -16,12 +16,25 @@ and `AsioFormatChangeShim.java`.
 | `int asioshim_canSampleRate(double rate)` | `ASIOCanSampleRate` | `AsioBackend.supportedSampleRates` |
 | `int asioshim_getSampleRate(double* outRate)` | `ASIOGetSampleRate` | controller after a driver-initiated reset |
 | `int asioshim_setSampleRate(double rate)` | `ASIOSetSampleRate` | dialog "apply rate" path |
+| `int asioshim_openControlPanel()` | `ASIOControlPanel` | dialog "Open Driver Control Panel" button (story 212) |
+| `int asioshim_getClockSources(void* outArray, int* outCount)` | `ASIOGetClockSources` | `AsioBackend.clockSources` (story 216) |
+| `int asioshim_setClockSource(int reference)` | `ASIOSetClockSource` | `AsioBackend.selectClockSource` (story 216) |
 | `void installAsioMessageCallback(void* callback)` | (host upcall) | `AsioFormatChangeShim` (story 218) |
 | `void uninstallAsioMessageCallback()` | (host upcall) | `AsioFormatChangeShim` close |
 
-All capability functions return `1` for `ASE_OK` and `0` otherwise.
-The Java side treats any non-`1` return as the same fallback path it
-takes when the library is missing.
+All capability functions return `1` for `ASE_OK` and `0` otherwise,
+**except** `asioshim_setClockSource`, which returns the raw `ASIOError`
+(0 on `ASE_OK`, negative for the SDK's standard error codes —
+`ASE_NotPresent`, `ASE_HWMalfunction`, `ASE_InvalidParameter`,
+`ASE_InvalidMode`, …) so the Java side can translate each into a
+mapped `AudioBackendException` message.
+
+`asioshim_getClockSources` writes into a caller-allocated buffer of
+`*outCount` entries (each entry is a fixed 48-byte struct: 32-byte
+ASCII NUL-terminated `name`, then four `int32`s for `index`,
+`associatedChannel`, `associatedGroup`, `isCurrentSource`). On entry
+`*outCount` is the buffer capacity; on `ASE_OK` it is overwritten with
+the actual entry count.
 
 ## Building
 

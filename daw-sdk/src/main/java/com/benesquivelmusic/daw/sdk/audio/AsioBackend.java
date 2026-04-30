@@ -408,33 +408,173 @@ public final class AsioBackend implements AudioBackend {
 
     /**
      * Reports the hardware clock sources the ASIO driver exposes.
-     * The FFM implementation layer calls
-     * {@code ASIOGetClockSources(ASIOClockSource[], int* numSources)}
-     * and maps each entry's {@code associatedGroup} / name into a
-     * {@link ClockKind}; the SDK-level default returns an empty list,
-     * which the Audio Settings dialog renders as a disabled combo with
-     * a tooltip explaining that the native shim is required.
+     * Calls {@code ASIOGetClockSources(ASIOClockSource[], int* numSources)}
+     * via the {@link AsioCapabilityShim} (story 216), classifies each
+     * driver-reported name into a {@link ClockKind} via
+     * {@link #classifyClockKind(String)}, and returns an unmodifiable
+     * list with {@link ClockSource#current()} reflecting the entry the
+     * driver flagged as currently active.
+     *
+     * <p>When the {@code asioshim} library or the
+     * {@code asioshim_getClockSources} symbol is absent (older shim
+     * builds, Linux/macOS hosts, Windows hosts where the user did not
+     * install the Steinberg ASIO SDK at build time), this returns an
+     * empty list — which the Audio Settings dialog renders as a
+     * disabled combo with a tooltip explaining that the native shim is
+     * required.</p>
+     *
+     * <p>The downcall runs on the calling thread (typically the JavaFX
+     * thread when the Audio Settings dialog opens), never on the audio
+     * render thread.</p>
      */
     @Override
     public List<ClockSource> clockSources(DeviceId device) {
         Objects.requireNonNull(device, "device must not be null");
-        return List.of();
+        try (AsioCapabilityShim shim = capabilityShimFactory.get()) {
+            if (!shim.isClockSourceAvailable()) {
+                return List.of();
+            }
+            List<AsioCapabilityShim.RawClockSource> rows = shim.getClockSources();
+            if (rows.isEmpty()) {
+                return List.of();
+            }
+            List<ClockSource> out = new java.util.ArrayList<>(rows.size());
+            for (AsioCapabilityShim.RawClockSource row : rows) {
+                String name = row.name();
+                if (name == null || name.isBlank()) {
+                    // ClockSource enforces non-blank names; substitute
+                    // a stable label so a driver-side bug does not
+                    // crash the dialog.
+                    name = "Source " + row.id();
+                }
+                int id = row.id();
+                if (id < 0) {
+                    // Negative ids are invalid per ClockSource; skip
+                    // the row rather than crash.
+                    continue;
+                }
+                out.add(new ClockSource(id, name, row.current(),
+                        classifyClockKind(name)));
+            }
+            return List.copyOf(out);
+        }
     }
 
     /**
-     * Routes a clock-source selection to the FFM-bound
-     * {@code ASIOSetClockSource(int)} symbol. Without the native ASIO
-     * shim under {@code daw-core/native/asio/} this method throws
-     * {@link UnsupportedOperationException} — the same exception the
-     * interface default throws — so callers can reliably detect lack
-     * of support with a single catch.
+     * Routes a clock-source selection to
+     * {@code ASIOSetClockSource(int)} via the {@link AsioCapabilityShim}
+     * on a dedicated daemon platform thread (story 216), consistent
+     * with stories 218 / 221 — the native driver call must not run on
+     * the audio render thread, and we cannot pin the JavaFX thread on
+     * a potentially-blocking driver call either.
+     *
+     * <p>A non-zero return from the shim is translated into a
+     * {@link AudioBackendException} with the ASE error code mapped to
+     * a human-readable message:</p>
+     * <ul>
+     *   <li>{@code ASE_NotPresent} (-1000) →
+     *       "unknown clock source id" (also covers a missing shim).</li>
+     *   <li>{@code ASE_HWMalfunction} (-999) → "hardware malfunction".</li>
+     *   <li>{@code ASE_InvalidParameter} (-998) → "invalid parameter".</li>
+     *   <li>{@code ASE_InvalidMode} (-997) →
+     *       "driver rejects clock change while streaming".</li>
+     *   <li>{@code ASE_SPNotAdvancing} (-996) → "sample position not advancing".</li>
+     *   <li>{@code ASE_NoClock} (-995) → "no clock available".</li>
+     *   <li>{@code ASE_NoMemory} (-994) → "out of memory".</li>
+     * </ul>
      */
     @Override
     public void selectClockSource(DeviceId device, int sourceId) {
         Objects.requireNonNull(device, "device must not be null");
-        throw new UnsupportedOperationException(
-                "ASIO clock-source selection requires the native shim under "
-                        + "daw-core/native/asio/ which is not present in this build.");
+        if (sourceId < 0) {
+            throw new IllegalArgumentException(
+                    "sourceId must not be negative: " + sourceId);
+        }
+        CompletableFuture<Void> result = new CompletableFuture<>();
+        Thread.ofPlatform()
+                .name("asio-set-clock-source")
+                .daemon(true)
+                .start(() -> {
+                    try (AsioCapabilityShim shim = capabilityShimFactory.get()) {
+                        if (!shim.isClockSourceAvailable()) {
+                            result.completeExceptionally(new AudioBackendException(
+                                    "ASIO clock-source selection requires the native shim "
+                                            + "under daw-core/native/asio/ which is not present "
+                                            + "in this build."));
+                            return;
+                        }
+                        int rc = shim.setClockSource(sourceId);
+                        if (rc == 0) {
+                            result.complete(null);
+                            return;
+                        }
+                        result.completeExceptionally(new AudioBackendException(
+                                "Could not set ASIO clock source " + sourceId
+                                        + ": " + asioErrorMessage(rc)));
+                    } catch (RuntimeException e) {
+                        result.completeExceptionally(new AudioBackendException(
+                                "ASIO clock-source selection failed: "
+                                        + (e.getMessage() == null
+                                                ? e.getClass().getSimpleName()
+                                                : e.getMessage()),
+                                e));
+                    }
+                });
+        try {
+            result.join();
+        } catch (CompletionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof AudioBackendException abe) {
+                throw abe;
+            }
+            throw new AudioBackendException(
+                    "ASIO clock-source selection failed", cause);
+        }
+    }
+
+    /**
+     * Maps a driver-reported clock-source display name to a
+     * {@link ClockKind}. The heuristic is the standard table the issue
+     * specifies — case-insensitive substring matches against the well
+     * known sync-source short names. A name that does not match any
+     * digital-input bucket falls into {@link ClockKind.External}.
+     */
+    static ClockKind classifyClockKind(String name) {
+        if (name == null) {
+            return new ClockKind.External();
+        }
+        String n = name.toLowerCase(java.util.Locale.ROOT);
+        if (n.contains("internal") || n.contains("int ") || n.equals("int")
+                || n.contains("xtal") || n.contains("crystal")) {
+            return new ClockKind.Internal();
+        }
+        if (n.contains("word") || n.contains("w/c") || n.contains("wclk")
+                || n.contains("wordclock")) {
+            return new ClockKind.WordClock();
+        }
+        if (n.contains("spdif") || n.contains("s/pdif") || n.contains("s pdif")) {
+            return new ClockKind.Spdif();
+        }
+        if (n.contains("adat")) {
+            return new ClockKind.Adat();
+        }
+        if (n.contains("aes")) {
+            return new ClockKind.Aes();
+        }
+        return new ClockKind.External();
+    }
+
+    private static String asioErrorMessage(int rc) {
+        return switch (rc) {
+            case -1000 -> "ASE_NotPresent — unknown clock source id";
+            case -999  -> "ASE_HWMalfunction — hardware malfunction";
+            case -998  -> "ASE_InvalidParameter — invalid parameter";
+            case -997  -> "ASE_InvalidMode — driver rejects clock change while streaming";
+            case -996  -> "ASE_SPNotAdvancing — sample position not advancing";
+            case -995  -> "ASE_NoClock — no clock available";
+            case -994  -> "ASE_NoMemory — out of memory";
+            default    -> "ASIOError " + rc;
+        };
     }
 
     private static String osFamily() {
