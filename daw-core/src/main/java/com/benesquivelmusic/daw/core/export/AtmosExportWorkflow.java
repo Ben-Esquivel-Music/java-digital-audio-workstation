@@ -68,9 +68,35 @@ public final class AtmosExportWorkflow {
                                            List<float[]> objectAudio,
                                            AudioMetadata metadata,
                                            Path outputPath) throws IOException {
+        return export(config, bedAudio, objectAudio, List.of(), metadata, outputPath);
+    }
+
+    /**
+     * Validates and exports the Atmos session, embedding optional per-object
+     * time-stamped trajectories as multiple {@code audioBlockFormat} entries
+     * (story 172).
+     *
+     * @param config       the Atmos session configuration
+     * @param bedAudio     audio buffers for bed channels ({@code [bed][sample]})
+     * @param objectAudio  audio buffers for audio objects ({@code [object][sample]})
+     * @param trajectories per-object trajectories, parallel to
+     *                     {@code config.getAudioObjects()}; may be empty for
+     *                     a static export
+     * @param metadata     file-level metadata to embed
+     * @param outputPath   the output file path
+     * @return the export result
+     * @throws IOException if an I/O error occurs during writing
+     */
+    public static AtmosExportResult export(AtmosSessionConfig config,
+                                           List<float[]> bedAudio,
+                                           List<float[]> objectAudio,
+                                           List<ObjectTrajectory> trajectories,
+                                           AudioMetadata metadata,
+                                           Path outputPath) throws IOException {
         Objects.requireNonNull(config, "config must not be null");
         Objects.requireNonNull(bedAudio, "bedAudio must not be null");
         Objects.requireNonNull(objectAudio, "objectAudio must not be null");
+        Objects.requireNonNull(trajectories, "trajectories must not be null");
         Objects.requireNonNull(metadata, "metadata must not be null");
         Objects.requireNonNull(outputPath, "outputPath must not be null");
 
@@ -84,6 +110,7 @@ public final class AtmosExportWorkflow {
                 bedAudio,
                 config.getAudioObjects(),
                 objectAudio,
+                trajectories,
                 config.getLayout(),
                 config.getSampleRate(),
                 config.getBitDepth(),

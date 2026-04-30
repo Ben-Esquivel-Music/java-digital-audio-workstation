@@ -5,6 +5,8 @@ import com.benesquivelmusic.daw.core.automation.AutomationLane;
 import com.benesquivelmusic.daw.core.automation.AutomationParameter;
 import com.benesquivelmusic.daw.core.automation.AutomationPoint;
 import com.benesquivelmusic.daw.core.automation.InterpolationMode;
+import com.benesquivelmusic.daw.core.automation.ObjectParameterTarget;
+import com.benesquivelmusic.daw.sdk.spatial.ObjectParameter;
 import com.benesquivelmusic.daw.core.marker.Marker;
 import com.benesquivelmusic.daw.core.marker.MarkerRange;
 import com.benesquivelmusic.daw.core.marker.MarkerType;
@@ -943,6 +945,40 @@ public final class ProjectDeserializer {
                         pointElem.getAttribute("interpolation"));
 
                 if (time >= 0.0 && parameter.isValidValue(value)) {
+                    lane.addPoint(new AutomationPoint(time, value, interpolation));
+                }
+            }
+        }
+
+        // Object-parameter lanes (Story 172). Older projects without
+        // <object-lane> elements are loaded unchanged — the loop simply
+        // finds nothing to read, which is the documented graceful upgrade
+        // path.
+        List<Element> objectLaneElements = getDirectChildElements(automationElem, "object-lane");
+        for (Element laneElem : objectLaneElements) {
+            String objectId = laneElem.getAttribute("object-id");
+            String paramStr = laneElem.getAttribute("parameter");
+            if (objectId == null || objectId.isBlank() || paramStr == null || paramStr.isBlank()) {
+                continue;
+            }
+            ObjectParameter parameter;
+            try {
+                parameter = ObjectParameter.valueOf(paramStr);
+            } catch (IllegalArgumentException e) {
+                continue;
+            }
+            ObjectParameterTarget target = new ObjectParameterTarget(objectId, parameter);
+            AutomationLane lane = track.getAutomationData().getOrCreateObjectLane(target);
+            lane.setVisible(parseBooleanAttr(laneElem, "visible"));
+
+            List<Element> pointElements = getDirectChildElements(laneElem, "point");
+            for (Element pointElem : pointElements) {
+                double time = parseDoubleAttr(pointElem, "time", 0.0);
+                double value = parseDoubleAttr(pointElem, "value", target.getDefaultValue());
+                InterpolationMode interpolation = parseInterpolationMode(
+                        pointElem.getAttribute("interpolation"));
+
+                if (time >= 0.0 && target.isValidValue(value)) {
                     lane.addPoint(new AutomationPoint(time, value, interpolation));
                 }
             }

@@ -5,6 +5,8 @@ import com.benesquivelmusic.daw.core.automation.AutomationData;
 import com.benesquivelmusic.daw.core.automation.AutomationLane;
 import com.benesquivelmusic.daw.core.automation.AutomationParameter;
 import com.benesquivelmusic.daw.core.automation.AutomationPoint;
+import com.benesquivelmusic.daw.core.automation.ObjectParameterTarget;
+import com.benesquivelmusic.daw.sdk.spatial.ObjectParameter;
 import com.benesquivelmusic.daw.core.marker.Marker;
 import com.benesquivelmusic.daw.core.marker.MarkerManager;
 import com.benesquivelmusic.daw.core.marker.MarkerRange;
@@ -558,7 +560,8 @@ public final class ProjectSerializer {
 
     private void buildAutomationData(Document document, Element trackElem, AutomationData automationData) {
         Map<AutomationParameter, AutomationLane> lanes = automationData.getLanes();
-        if (lanes.isEmpty()) {
+        Map<ObjectParameterTarget, AutomationLane> objectLanes = automationData.getObjectLanes();
+        if (lanes.isEmpty() && objectLanes.isEmpty()) {
             return;
         }
 
@@ -569,6 +572,26 @@ public final class ProjectSerializer {
             AutomationLane lane = entry.getValue();
             Element laneElem = document.createElement("lane");
             laneElem.setAttribute("parameter", entry.getKey().name());
+            laneElem.setAttribute("visible", String.valueOf(lane.isVisible()));
+            automationElem.appendChild(laneElem);
+
+            for (AutomationPoint point : lane.getPoints()) {
+                Element pointElem = document.createElement("point");
+                pointElem.setAttribute("time", String.valueOf(point.getTimeInBeats()));
+                pointElem.setAttribute("value", String.valueOf(point.getValue()));
+                pointElem.setAttribute("interpolation", point.getInterpolationMode().name());
+                laneElem.appendChild(pointElem);
+            }
+        }
+
+        // Object-parameter lanes (Story 172). Persisted alongside mixer lanes
+        // so that recorded spatial trajectories survive project save/load.
+        for (Map.Entry<ObjectParameterTarget, AutomationLane> entry : objectLanes.entrySet()) {
+            ObjectParameterTarget target = entry.getKey();
+            AutomationLane lane = entry.getValue();
+            Element laneElem = document.createElement("object-lane");
+            laneElem.setAttribute("object-id", target.objectInstanceId());
+            laneElem.setAttribute("parameter", target.parameter().name());
             laneElem.setAttribute("visible", String.valueOf(lane.isVisible()));
             automationElem.appendChild(laneElem);
 

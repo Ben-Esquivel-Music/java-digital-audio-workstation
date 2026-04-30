@@ -380,4 +380,50 @@ class ProjectSerializerTest {
 
         assertThat(xml).doesNotContain("midi-input-device");
     }
+
+    @Test
+    void shouldSerializeObjectParameterAutomationLanes() throws IOException {
+        DawProject project = new DawProject("Spatial", AudioFormat.CD_QUALITY);
+        Track track = project.createAudioTrack("Spatial Object");
+
+        com.benesquivelmusic.daw.core.automation.ObjectParameterTarget xTarget =
+                new com.benesquivelmusic.daw.core.automation.ObjectParameterTarget(
+                        "obj-1",
+                        com.benesquivelmusic.daw.sdk.spatial.ObjectParameter.X);
+        com.benesquivelmusic.daw.core.automation.AutomationLane xLane =
+                track.getAutomationData().getOrCreateObjectLane(xTarget);
+        xLane.addPoint(new com.benesquivelmusic.daw.core.automation.AutomationPoint(0.0, -0.5));
+        xLane.addPoint(new com.benesquivelmusic.daw.core.automation.AutomationPoint(2.0, 0.75));
+
+        String xml = new ProjectSerializer().serialize(project);
+
+        // Round-trip: deserialize and verify the lane survived.
+        DawProject reloaded = new ProjectDeserializer().deserialize(xml);
+        Track reloadedTrack = reloaded.getTracks().getFirst();
+        com.benesquivelmusic.daw.core.automation.AutomationLane reloadedLane =
+                reloadedTrack.getAutomationData().getObjectLane(xTarget);
+        assertThat(reloadedLane).isNotNull();
+        assertThat(reloadedLane.getPointCount()).isEqualTo(2);
+        assertThat(reloadedLane.getPoints().get(0).getValue()).isEqualTo(-0.5);
+        assertThat(reloadedLane.getPoints().get(1).getValue()).isEqualTo(0.75);
+
+        assertThat(xml).contains("<object-lane");
+        assertThat(xml).contains("object-id=\"obj-1\"");
+        assertThat(xml).contains("parameter=\"X\"");
+    }
+
+    @Test
+    void shouldGracefullyLoadProjectsWithoutObjectLanes() throws IOException {
+        // A project XML pre-dating story 172 has no <object-lane> elements;
+        // it must still load with an empty object-lane map (migration path).
+        DawProject project = new DawProject("Legacy", AudioFormat.CD_QUALITY);
+        project.createAudioTrack("Legacy Track");
+
+        String xml = new ProjectSerializer().serialize(project);
+        assertThat(xml).doesNotContain("<object-lane");
+
+        DawProject reloaded = new ProjectDeserializer().deserialize(xml);
+        Track reloadedTrack = reloaded.getTracks().getFirst();
+        assertThat(reloadedTrack.getAutomationData().getObjectLaneCount()).isZero();
+    }
 }
