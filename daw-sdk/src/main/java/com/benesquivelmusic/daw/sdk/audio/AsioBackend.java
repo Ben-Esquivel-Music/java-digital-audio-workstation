@@ -1,10 +1,15 @@
 package com.benesquivelmusic.daw.sdk.audio;
 
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Flow;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Windows ASIO backend — Steinberg's low-latency driver model, the de-facto
@@ -27,6 +32,32 @@ public final class AsioBackend implements AudioBackend {
 
     /** Backend name. */
     public static final String NAME = "ASIO";
+
+    private static final Logger LOG = Logger.getLogger(AsioBackend.class.getName());
+
+    /**
+     * Canonical sample-rate menu probed against {@code ASIOCanSampleRate}
+     * — the historical menu the dialog has always offered (story 213).
+     */
+    static final int[] CANONICAL_SAMPLE_RATES_HZ = {
+            44_100, 48_000, 88_200, 96_000, 176_400, 192_000};
+
+    /**
+     * Factory for the FFM capability shim. Defaults to loading
+     * {@code asioshim} via {@link AsioCapabilityShim}; tests inject a
+     * stub via {@link #setCapabilityShimFactory(Supplier)} to exercise
+     * the success and missing-shim paths without needing a Windows
+     * host with the Steinberg ASIO SDK installed.
+     */
+    private static volatile Supplier<AsioCapabilityShim> capabilityShimFactory =
+            AsioCapabilityShim::new;
+
+    /**
+     * Whether the "ASIO capability shim is unavailable; using fallback"
+     * INFO has already been logged in this JVM. Story 213 explicitly
+     * requires logging the absence "exactly once per process".
+     */
+    private static final AtomicBoolean FALLBACK_LOGGED = new AtomicBoolean(false);
 
     private static final boolean AVAILABLE =
             "Windows".equalsIgnoreCase(osFamily())
@@ -207,29 +238,102 @@ public final class AsioBackend implements AudioBackend {
      * report non-power-of-two granularity (96, 192, 288, …) which the
      * dropdown must honour exactly.
      *
-     * <p>The defaults below mirror the values RME and Focusrite USB
-     * drivers report for a typical 96-frame minimum; the FFM
-     * implementation layer (story 130) replaces them with the actual
-     * driver-reported values at runtime.</p>
+     * <p>Implementation: an FFM downcall to the {@code asioshim}
+     * library's {@code asioshim_getBufferSize} entrypoint via
+     * {@link AsioCapabilityShim} (story 130). When the shim is absent
+     * (e.g. the JVM runs on Linux/macOS, or the Windows DLL was not
+     * bundled) the method falls back to
+     * {@link BufferSizeRange#DEFAULT_RANGE} and logs the absence at
+     * {@code INFO} exactly once per process.</p>
+     *
+     * <p>The downcall runs on the calling thread (typically the
+     * JavaFX thread when the Audio Settings dialog opens), never on
+     * the audio render thread.</p>
      */
     @Override
     public BufferSizeRange bufferSizeRange(DeviceId device) {
         Objects.requireNonNull(device, "device must not be null");
-        return new BufferSizeRange(64, 2048, 256, 64);
+        try (AsioCapabilityShim shim = capabilityShimFactory.get()) {
+            Optional<BufferSizeRange> probed = shim.getBufferSize();
+            if (probed.isPresent()) {
+                return probed.get();
+            }
+            logFallbackOnce();
+            return BufferSizeRange.DEFAULT_RANGE;
+        }
     }
 
     /**
-     * Reports the sample rates the ASIO driver accepts. The FFM
-     * implementation layer (story 130) probes
-     * {@code ASIOCanSampleRate} across the canonical rate list and
-     * keeps only the rates the driver returns {@code ASE_OK} for; the
-     * default returns the canonical set so the dialog still shows the
-     * historical menu when the native shim is absent.
+     * Reports the sample rates the ASIO driver accepts. Probes each
+     * entry of {@link #CANONICAL_SAMPLE_RATES_HZ} against
+     * {@code asioshim_canSampleRate(double)} and returns the rates
+     * the driver answered {@code ASE_OK} for.
+     *
+     * <p>When the {@code asioshim} library is absent the method
+     * returns the canonical rate set unchanged so the dialog still
+     * shows the historical menu, and logs the absence at {@code INFO}
+     * exactly once per process.</p>
      */
     @Override
     public Set<Integer> supportedSampleRates(DeviceId device) {
         Objects.requireNonNull(device, "device must not be null");
-        return Set.of(44_100, 48_000, 88_200, 96_000, 176_400, 192_000);
+        try (AsioCapabilityShim shim = capabilityShimFactory.get()) {
+            if (!shim.isAvailable()) {
+                logFallbackOnce();
+                return canonicalSampleRateSet();
+            }
+            Set<Integer> accepted = new LinkedHashSet<>();
+            for (int rate : CANONICAL_SAMPLE_RATES_HZ) {
+                if (shim.canSampleRate(rate)) {
+                    accepted.add(rate);
+                }
+            }
+            // If the driver rejected every canonical rate (e.g. an unusual
+            // hardware-locked rate), fall back to the canonical set rather
+            // than returning an empty menu the user cannot pick from.
+            if (accepted.isEmpty()) {
+                return canonicalSampleRateSet();
+            }
+            return Set.copyOf(accepted);
+        }
+    }
+
+    private static Set<Integer> canonicalSampleRateSet() {
+        Set<Integer> all = new LinkedHashSet<>();
+        for (int rate : CANONICAL_SAMPLE_RATES_HZ) {
+            all.add(rate);
+        }
+        return Set.copyOf(all);
+    }
+
+    private static void logFallbackOnce() {
+        if (FALLBACK_LOGGED.compareAndSet(false, true)) {
+            LOG.log(Level.INFO,
+                    "ASIO capability shim (asioshim) not available — "
+                            + "Audio Settings dialog will use the canonical "
+                            + "buffer-size and sample-rate fallbacks. "
+                            + "Bundle daw-core/native/asio/asioshim.dll "
+                            + "for driver-reported values.");
+        }
+    }
+
+    /**
+     * Test seam: replace the factory the backend uses to obtain its
+     * {@link AsioCapabilityShim}. Used by unit tests to inject a stub
+     * shim that returns a known {@link BufferSizeRange} and answers
+     * {@code canSampleRate} deterministically, without requiring the
+     * native library to be loaded. Restores via {@link #resetCapabilityShimFactory()}.
+     *
+     * @param factory non-null supplier of a shim instance per call
+     */
+    static void setCapabilityShimFactory(Supplier<AsioCapabilityShim> factory) {
+        capabilityShimFactory = Objects.requireNonNull(factory, "factory");
+    }
+
+    /** Test seam: restore the production factory and reset log-once state. */
+    static void resetCapabilityShimFactory() {
+        capabilityShimFactory = AsioCapabilityShim::new;
+        FALLBACK_LOGGED.set(false);
     }
 
     /**

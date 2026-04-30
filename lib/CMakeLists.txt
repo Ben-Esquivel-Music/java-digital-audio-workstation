@@ -27,6 +27,12 @@ option(BUILD_FLUIDSYNTH     "Build FluidSynth shared library"     ON)
 option(BUILD_LIBMP3LAME     "Build libmp3lame shared library"     ON)
 option(BUILD_LIBOGG         "Build libogg shared library"         ON)
 option(BUILD_LIBVORBIS      "Build libvorbis shared library"      ON)
+# asioshim is opt-in: only built when the user supplies a path to the
+# Steinberg ASIO SDK via -DASIO_SDK_DIR=... (story 130 / 213). The
+# Steinberg licence forbids us from redistributing the SDK source, so
+# the default build path skips this target and the Java layer falls
+# back to BufferSizeRange.DEFAULT_RANGE / the canonical sample-rate set.
+option(BUILD_ASIOSHIM       "Build asioshim FFM bridge (requires ASIO_SDK_DIR)" ON)
 
 # ── 1. PortAudio ───────────────────────────────────────────────────
 if(BUILD_PORTAUDIO)
@@ -242,6 +248,21 @@ endif()
 if(TARGET vorbisfile AND BUILD_LIBVORBIS)
     list(APPEND DAW_NATIVE_TARGETS vorbisfile)
 endif()
+
+# ── asioshim — Steinberg ASIO SDK FFM bridge ──────────────────────
+# Pulled in via the source tree under daw-core/native/asio/. The
+# subdirectory's own CMakeLists silently returns when ASIO_SDK_DIR is
+# unset or when the host is not Windows, so this add_subdirectory call
+# is safe on every platform / fresh checkout.
+if(BUILD_ASIOSHIM)
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../daw-core/native/asio"
+                     "${CMAKE_CURRENT_BINARY_DIR}/asioshim"
+                     EXCLUDE_FROM_ALL)
+    if(TARGET asioshim)
+        list(APPEND DAW_NATIVE_TARGETS asioshim)
+    endif()
+endif()
+
 add_custom_target(daw-native-libs ALL DEPENDS ${DAW_NATIVE_TARGETS})
 
 # ── Smoke test: verify libogg + libvorbis are loadable ─────────────
