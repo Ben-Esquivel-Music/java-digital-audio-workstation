@@ -33,6 +33,7 @@ extern "C" ASIOError ASIOGetBufferSize(long* minSize, long* maxSize,
 extern "C" ASIOError ASIOCanSampleRate(ASIOSampleRate sampleRate);
 extern "C" ASIOError ASIOGetSampleRate(ASIOSampleRate* sampleRate);
 extern "C" ASIOError ASIOSetSampleRate(ASIOSampleRate sampleRate);
+extern "C" ASIOError ASIOControlPanel(void);
 
 // Steinberg's ASE_OK is 0 in the SDK, but the FFM contract documented
 // in AsioCapabilityShim and AsioFormatChangeShim normalises "OK" to 1
@@ -42,6 +43,15 @@ namespace {
     constexpr int SHIM_OK = 1;
     constexpr int SHIM_FAIL = 0;
     constexpr ASIOError ASE_OK = 0;
+    // Subset of Steinberg ASIO error codes used at the FFM boundary.
+    // Steinberg defines ASE_NotPresent = -1000 in asio.h, but the shim
+    // contract documented in AsioBackend / AsioCapabilityShim normalises
+    // "driver does not provide a control panel" to 0 so the Java side
+    // can treat any negative value as a generic failure without parsing
+    // the SDK's full error enum.
+    constexpr ASIOError ASE_NotPresent = -1000;
+    constexpr int SHIM_NOT_PRESENT = 0;
+    constexpr int SHIM_GENERIC_FAIL = -1;
 }
 
 ASIOSHIM_EXPORT int asioshim_getBufferSize(int* min, int* max,
@@ -82,6 +92,27 @@ ASIOSHIM_EXPORT int asioshim_getSampleRate(double* outRate) {
 ASIOSHIM_EXPORT int asioshim_setSampleRate(double rate) {
     return (ASIOSetSampleRate(static_cast<ASIOSampleRate>(rate)) == ASE_OK)
            ? SHIM_OK : SHIM_FAIL;
+}
+
+// Bridges Steinberg's ASIOControlPanel() so the JVM can launch the
+// active driver's vendor-supplied modal control panel (story 212).
+// The native call blocks the calling thread until the user closes the
+// panel; the Java side dispatches it onto a daemon platform thread so
+// neither the JavaFX thread nor the audio render thread is pinned.
+//
+// Return-code mapping at the FFM boundary:
+//   SHIM_OK (1)            — ASE_OK; panel was shown and closed normally.
+//   SHIM_NOT_PRESENT (0)   — ASE_NotPresent; driver has no control panel.
+//   SHIM_GENERIC_FAIL (-1) — any other ASIOError; driver-side failure.
+ASIOSHIM_EXPORT int asioshim_openControlPanel(void) {
+    ASIOError err = ASIOControlPanel();
+    if (err == ASE_OK) {
+        return SHIM_OK;
+    }
+    if (err == ASE_NotPresent) {
+        return SHIM_NOT_PRESENT;
+    }
+    return SHIM_GENERIC_FAIL;
 }
 
 // ─── Format-change host-callback bridge (story 218) ─────────────────
