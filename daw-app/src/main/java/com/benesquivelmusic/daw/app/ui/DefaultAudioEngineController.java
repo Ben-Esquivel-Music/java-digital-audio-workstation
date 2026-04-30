@@ -282,11 +282,21 @@ final class DefaultAudioEngineController implements AudioEngineController {
         // (buffer size / sample rate changes) don't re-create the SDK
         // backend and re-emit fallback notifications when the selection
         // hasn't actually changed.
+        // A legacy name ("PortAudio"/"Java Sound") is unchanged only when
+        // the SDK slot is null AND the native slot matches. An SDK name is
+        // unchanged only when the SDK slot's name matches. This ensures
+        // switching between SDK↔legacy always triggers applyBackendByName.
         AudioBackend currentSdkBackend = audioEngine.getBackend();
+        boolean isLegacyRequest = "PortAudio".equals(request.backendName())
+                || "Java Sound".equals(request.backendName());
         boolean backendChanged;
-        if (currentSdkBackend != null && request.backendName().equals(currentSdkBackend.name())) {
-            backendChanged = false;
-        } else if (currentBackend != null && request.backendName().equals(currentBackend.getBackendName())) {
+        if (isLegacyRequest) {
+            // Legacy is "unchanged" only when no SDK backend is active
+            // AND the native slot already matches.
+            backendChanged = currentSdkBackend != null
+                    || currentBackend == null
+                    || !request.backendName().equals(currentBackend.getBackendName());
+        } else if (currentSdkBackend != null && request.backendName().equals(currentSdkBackend.name())) {
             backendChanged = false;
         } else {
             backendChanged = true;
@@ -840,6 +850,9 @@ final class DefaultAudioEngineController implements AudioEngineController {
         if (detector != null) {
             detector.close();
         }
+        // Close any active SDK backend to release native resources on exit.
+        closePreviousSdkBackend();
+        audioEngine.setBackend(null);
     }
 
     private static XrunDetector createDetectorFor(AudioFormat format) {
