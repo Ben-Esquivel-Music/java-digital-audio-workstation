@@ -191,6 +191,63 @@ class AdmBwfExportControllerTest {
         assertThat(controller.getMetadata()).isEqualTo(AudioMetadata.EMPTY);
     }
 
+    @Test
+    void shouldExportTimeStampedPositionsFromAutomationLanes() throws IOException {
+        // Build a session with one object track and an X-automation lane on it.
+        AtmosSessionConfig config = new AtmosSessionConfig();
+        config.addBedChannel(new BedChannel("bed-L", SpeakerLabel.L));
+        config.addAudioObject(new AudioObject("obj-1",
+                new ObjectMetadata(0.0, 0.0, 0.0, 0.0, 1.0)));
+
+        com.benesquivelmusic.daw.core.automation.AutomationData automationData =
+                new com.benesquivelmusic.daw.core.automation.AutomationData();
+        com.benesquivelmusic.daw.core.automation.AutomationLane xLane =
+                automationData.getOrCreateObjectLane(
+                        new com.benesquivelmusic.daw.core.automation.ObjectParameterTarget(
+                                "obj-1",
+                                com.benesquivelmusic.daw.sdk.spatial.ObjectParameter.X));
+        // 120 BPM => 0.5 sec/beat — points at beats 0, 2 → seconds 0, 1.
+        xLane.addPoint(new com.benesquivelmusic.daw.core.automation.AutomationPoint(0.0, -0.8));
+        xLane.addPoint(new com.benesquivelmusic.daw.core.automation.AutomationPoint(2.0, 0.6));
+
+        Path output = tempDir.resolve("trajectory.wav");
+        controller.setAudioDataProvider(trackId -> new float[48_000 * 2]); // 2 sec at 48 kHz
+        controller.setOutputPath(output);
+        controller.setObjectAutomationProvider(trackId ->
+                "obj-1".equals(trackId) ? automationData : null);
+        controller.setTempoBpm(120.0);
+
+        AtmosExportResult result = controller.performExport(config);
+        assertThat(result.isSuccess()).isTrue();
+
+        byte[] data = Files.readAllBytes(output);
+        String content = new String(data, StandardCharsets.UTF_8);
+        // Two breakpoints → two audioBlockFormat entries with rtime/duration.
+        assertThat(content).contains("rtime=\"00:00:00.00000\"");
+        assertThat(content).contains("rtime=\"00:00:01.00000\"");
+        assertThat(content).contains("duration=");
+        // The X values from the lane appear in the exported XML.
+        assertThat(content).contains("-0.8000");
+        assertThat(content).contains("0.6000");
+    }
+
+    @Test
+    void shouldFallBackToStaticBlockFormatWhenNoAutomationProvider() throws IOException {
+        AtmosSessionConfig config = createValidConfig();
+        Path output = tempDir.resolve("static.wav");
+
+        controller.setAudioDataProvider(trackId -> new float[1024]);
+        controller.setOutputPath(output);
+
+        AtmosExportResult result = controller.performExport(config);
+        assertThat(result.isSuccess()).isTrue();
+
+        byte[] data = Files.readAllBytes(output);
+        String content = new String(data, StandardCharsets.UTF_8);
+        // No rtime attribute when no automation provider is set.
+        assertThat(content).doesNotContain("rtime=");
+    }
+
     private AtmosSessionConfig createValidConfig() {
         AtmosSessionConfig config = new AtmosSessionConfig();
         config.addBedChannel(new BedChannel("bed-L", SpeakerLabel.L));

@@ -67,10 +67,43 @@ public final class AdmBwfExporter {
                               List<AudioObject> audioObjects, List<float[]> objectAudio,
                               SpeakerLayout layout, int sampleRate, int bitDepth,
                               AudioMetadata metadata, Path outputPath) throws IOException {
+        export(bedChannels, bedAudio, audioObjects, objectAudio,
+                List.of(), layout, sampleRate, bitDepth, metadata, outputPath);
+    }
+
+    /**
+     * Exports an ADM BWF file with optional time-stamped per-object
+     * trajectories (story 172). When a trajectory is supplied, the exporter
+     * emits one {@code audioBlockFormat} per trajectory frame with
+     * {@code rtime} and {@code duration} attributes; when the trajectory list
+     * is empty (or its entry for an object is {@code null} / empty), the
+     * exporter falls back to a single block format derived from the object's
+     * static metadata, matching the legacy behaviour.
+     *
+     * @param bedChannels  bed channel assignments (ordered by layout)
+     * @param bedAudio     audio buffers for bed channels ({@code [bed][sample]})
+     * @param audioObjects audio objects with 3D metadata
+     * @param objectAudio  audio buffers for objects ({@code [object][sample]})
+     * @param trajectories per-object trajectories, parallel to {@code audioObjects};
+     *                     may be empty (static export) or contain {@code null} /
+     *                     empty entries (fall back to static metadata for that object)
+     * @param layout       the speaker layout for bed channels
+     * @param sampleRate   the sample rate in Hz
+     * @param bitDepth     the target bit depth (16, 24, or 32)
+     * @param metadata     file-level metadata
+     * @param outputPath   the output file path
+     * @throws IOException if an I/O error occurs
+     */
+    public static void export(List<BedChannel> bedChannels, List<float[]> bedAudio,
+                              List<AudioObject> audioObjects, List<float[]> objectAudio,
+                              List<ObjectTrajectory> trajectories,
+                              SpeakerLayout layout, int sampleRate, int bitDepth,
+                              AudioMetadata metadata, Path outputPath) throws IOException {
         Objects.requireNonNull(bedChannels, "bedChannels must not be null");
         Objects.requireNonNull(bedAudio, "bedAudio must not be null");
         Objects.requireNonNull(audioObjects, "audioObjects must not be null");
         Objects.requireNonNull(objectAudio, "objectAudio must not be null");
+        Objects.requireNonNull(trajectories, "trajectories must not be null");
         Objects.requireNonNull(layout, "layout must not be null");
         Objects.requireNonNull(outputPath, "outputPath must not be null");
 
@@ -81,7 +114,7 @@ public final class AdmBwfExporter {
         short formatCode = isFloat ? (short) 3 : (short) 1;
 
         // Build ADM XML
-        byte[] admXml = buildAdmXml(bedChannels, audioObjects, layout, sampleRate, numSamples);
+        byte[] admXml = buildAdmXml(bedChannels, audioObjects, trajectories, layout, sampleRate, numSamples);
 
         // axml chunk: "axml" + size(4) + xml bytes (padded to even)
         int axmlPayloadSize = admXml.length;
@@ -139,6 +172,20 @@ public final class AdmBwfExporter {
                                List<AudioObject> audioObjects,
                                SpeakerLayout layout,
                                int sampleRate, int numSamples) {
+        return buildAdmXml(bedChannels, audioObjects, List.of(), layout, sampleRate, numSamples);
+    }
+
+    /**
+     * Builds ADM XML metadata, optionally with time-stamped per-object
+     * trajectories. When {@code trajectories} is empty or an entry is
+     * {@code null} / empty, a single static {@code audioBlockFormat} is
+     * emitted for the object — matching the legacy behaviour.
+     */
+    static byte[] buildAdmXml(List<BedChannel> bedChannels,
+                               List<AudioObject> audioObjects,
+                               List<ObjectTrajectory> trajectories,
+                               SpeakerLayout layout,
+                               int sampleRate, int numSamples) {
         StringBuilder sb = new StringBuilder();
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         sb.append("<audioFormatExtended version=\"ITU-R_BS.2076-2\">\n");
@@ -173,6 +220,7 @@ public final class AdmBwfExporter {
 
         // Audio objects
         int trackOffset = bedChannels.size();
+        int blockId = 1;
         for (int i = 0; i < audioObjects.size(); i++) {
             AudioObject obj = audioObjects.get(i);
             ObjectMetadata meta = obj.getMetadata();
@@ -182,14 +230,34 @@ public final class AdmBwfExporter {
             sb.append("    <audioTrackUIDRef>ATU_%04d</audioTrackUIDRef>\n".formatted(trackOffset + i + 1));
             sb.append("  </audioObject>\n");
 
-            // Block format with position
-            sb.append("  <audioBlockFormat audioBlockFormatID=\"AB_%04d\">\n".formatted(i + 1));
-            sb.append("    <position coordinate=\"X\">%.4f</position>\n".formatted(meta.x()));
-            sb.append("    <position coordinate=\"Y\">%.4f</position>\n".formatted(meta.y()));
-            sb.append("    <position coordinate=\"Z\">%.4f</position>\n".formatted(meta.z()));
-            sb.append("    <width>%.4f</width>\n".formatted(meta.size()));
-            sb.append("    <gain>%.4f</gain>\n".formatted(meta.gain()));
-            sb.append("  </audioBlockFormat>\n");
+            // Block format(s) with position. When a trajectory is supplied,
+            // emit one audioBlockFormat per frame with rtime and duration
+            // attributes (story 172). Otherwise fall back to a single
+            // static block from the object's metadata.
+            ObjectTrajectory trajectory = (i < trajectories.size()) ? trajectories.get(i) : null;
+            if (trajectory != null && !trajectory.isEmpty()) {
+                for (ObjectTrajectory.Frame frame : trajectory.frames()) {
+                    ObjectMetadata fm = frame.metadata();
+                    sb.append("  <audioBlockFormat audioBlockFormatID=\"AB_%04d\" rtime=\"%s\" duration=\"%s\">\n"
+                            .formatted(blockId++,
+                                    formatAdmTime(frame.rtimeSeconds()),
+                                    formatAdmTime(frame.durationSeconds())));
+                    sb.append("    <position coordinate=\"X\">%.4f</position>\n".formatted(fm.x()));
+                    sb.append("    <position coordinate=\"Y\">%.4f</position>\n".formatted(fm.y()));
+                    sb.append("    <position coordinate=\"Z\">%.4f</position>\n".formatted(fm.z()));
+                    sb.append("    <width>%.4f</width>\n".formatted(fm.size()));
+                    sb.append("    <gain>%.4f</gain>\n".formatted(fm.gain()));
+                    sb.append("  </audioBlockFormat>\n");
+                }
+            } else {
+                sb.append("  <audioBlockFormat audioBlockFormatID=\"AB_%04d\">\n".formatted(blockId++));
+                sb.append("    <position coordinate=\"X\">%.4f</position>\n".formatted(meta.x()));
+                sb.append("    <position coordinate=\"Y\">%.4f</position>\n".formatted(meta.y()));
+                sb.append("    <position coordinate=\"Z\">%.4f</position>\n".formatted(meta.z()));
+                sb.append("    <width>%.4f</width>\n".formatted(meta.size()));
+                sb.append("    <gain>%.4f</gain>\n".formatted(meta.gain()));
+                sb.append("  </audioBlockFormat>\n");
+            }
         }
 
         // Channel formats for bed channels
@@ -204,6 +272,21 @@ public final class AdmBwfExporter {
 
         sb.append("</audioFormatExtended>\n");
         return sb.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Formats a duration in seconds as an ADM-BWF {@code rtime}/{@code duration}
+     * timecode of the form {@code HH:MM:SS.sssss}.
+     */
+    static String formatAdmTime(double seconds) {
+        if (seconds < 0.0) {
+            seconds = 0.0;
+        }
+        long totalMillis = Math.round(seconds * 1000.0);
+        long hours = totalMillis / 3_600_000L;
+        long mins = (totalMillis / 60_000L) % 60L;
+        double secs = (totalMillis % 60_000L) / 1000.0;
+        return "%02d:%02d:%08.5f".formatted(hours, mins, secs);
     }
 
     private static String admSpeakerLabel(SpeakerLabel label) {

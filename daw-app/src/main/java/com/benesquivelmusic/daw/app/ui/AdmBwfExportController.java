@@ -2,6 +2,9 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.export.AtmosExportResult;
 import com.benesquivelmusic.daw.core.export.AtmosExportWorkflow;
+import com.benesquivelmusic.daw.core.export.ObjectTrajectory;
+import com.benesquivelmusic.daw.core.export.ObjectTrajectoryBuilder;
+import com.benesquivelmusic.daw.core.automation.AutomationData;
 import com.benesquivelmusic.daw.core.spatial.objectbased.AtmosSessionConfig;
 import com.benesquivelmusic.daw.core.spatial.objectbased.AudioObject;
 import com.benesquivelmusic.daw.core.spatial.objectbased.BedChannel;
@@ -57,10 +60,36 @@ public final class AdmBwfExportController {
         float[] getAudioForTrack(String trackId);
     }
 
+    /**
+     * Provider interface for per-object automation data. Implementations
+     * supply the {@link AutomationData} container holding the
+     * {@code ObjectParameterTarget} lanes for a given object track. When
+     * present, the export emits time-stamped {@code audioBlockFormat}
+     * entries (story 172).
+     *
+     * <p>If this provider is not set or returns {@code null} for a given
+     * track, the export falls back to a single static block format derived
+     * from the object's metadata.</p>
+     */
+    @FunctionalInterface
+    public interface ObjectAutomationProvider {
+
+        /**
+         * Returns the automation data for the given object track, or
+         * {@code null} if the track has no automation lanes.
+         *
+         * @param trackId the object's track identifier
+         * @return the automation data, or {@code null}
+         */
+        AutomationData getAutomationForTrack(String trackId);
+    }
+
     private AudioDataProvider audioDataProvider;
     private ExportResultListener resultListener;
     private AudioMetadata metadata = AudioMetadata.EMPTY;
     private Path outputPath;
+    private ObjectAutomationProvider objectAutomationProvider;
+    private double tempoBpm = 120.0;
 
     /**
      * Sets the audio data provider.
@@ -119,6 +148,41 @@ public final class AdmBwfExportController {
     }
 
     /**
+     * Sets a provider that supplies per-object automation data. When set,
+     * the exporter walks each object's {@code ObjectParameterTarget} lanes
+     * to emit time-stamped {@code audioBlockFormat} positions (story 172).
+     *
+     * @param provider the provider, or {@code null} to clear
+     */
+    public void setObjectAutomationProvider(ObjectAutomationProvider provider) {
+        this.objectAutomationProvider = provider;
+    }
+
+    /** Returns the current object-automation provider, or {@code null}. */
+    public ObjectAutomationProvider getObjectAutomationProvider() {
+        return objectAutomationProvider;
+    }
+
+    /**
+     * Sets the tempo (in BPM) used to translate beat-timed automation points
+     * into seconds for the exported {@code rtime}/{@code duration}
+     * attributes. Defaults to 120 BPM.
+     *
+     * @param tempoBpm the project tempo (must be {@code > 0})
+     */
+    public void setTempoBpm(double tempoBpm) {
+        if (tempoBpm <= 0.0) {
+            throw new IllegalArgumentException("tempoBpm must be > 0: " + tempoBpm);
+        }
+        this.tempoBpm = tempoBpm;
+    }
+
+    /** Returns the configured tempo in BPM. */
+    public double getTempoBpm() {
+        return tempoBpm;
+    }
+
+    /**
      * Performs the ADM BWF export using the given Atmos session configuration.
      *
      * <p>First validates the configuration. If valid, collects audio from
@@ -164,11 +228,43 @@ public final class AdmBwfExportController {
             objectAudio.add(audioDataProvider.getAudioForTrack(obj.getTrackId()));
         }
 
+        // Build per-object trajectories from automation lanes (story 172).
+        // When no automation provider is set, the list is empty and the
+        // exporter falls back to static metadata for every object.
+        List<ObjectTrajectory> trajectories = buildTrajectories(config, objectAudio);
+
         AtmosExportResult result = AtmosExportWorkflow.export(
-                config, bedAudio, objectAudio, metadata, outputPath);
+                config, bedAudio, objectAudio, trajectories, metadata, outputPath);
 
         notifyListener(result);
         return result;
+    }
+
+    private List<ObjectTrajectory> buildTrajectories(AtmosSessionConfig config,
+                                                     List<float[]> objectAudio) {
+        if (objectAutomationProvider == null) {
+            return List.of();
+        }
+        List<ObjectTrajectory> trajectories = new ArrayList<>();
+        int sampleRate = config.getSampleRate();
+        for (int i = 0; i < config.getAudioObjects().size(); i++) {
+            AudioObject obj = config.getAudioObjects().get(i);
+            AutomationData data = objectAutomationProvider.getAutomationForTrack(
+                    obj.getTrackId());
+            if (data == null) {
+                trajectories.add(ObjectTrajectory.empty());
+                continue;
+            }
+            float[] audio = (i < objectAudio.size()) ? objectAudio.get(i) : null;
+            int frames = (audio != null) ? audio.length : 0;
+            double durationSeconds = (frames > 0)
+                    ? (double) frames / sampleRate
+                    : 1.0; // fall back to a 1-second window when no audio
+            trajectories.add(ObjectTrajectoryBuilder.build(
+                    data, obj.getTrackId(), obj.getMetadata(),
+                    tempoBpm, durationSeconds));
+        }
+        return trajectories;
     }
 
     private void notifyListener(AtmosExportResult result) {
