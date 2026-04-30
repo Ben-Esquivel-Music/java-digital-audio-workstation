@@ -63,6 +63,7 @@ public final class DawProject {
     private RippleMode rippleMode = RippleMode.OFF;
     private NudgeSettings nudgeSettings = NudgeSettings.DEFAULT;
     private LoudnessTarget loudnessTarget = LoudnessTarget.SPOTIFY;
+    private String activeHrtfProfileName;
 
     /**
      * Creates a new DAW project.
@@ -594,5 +595,38 @@ public final class DawProject {
     public void setLoudnessTarget(LoudnessTarget loudnessTarget) {
         this.loudnessTarget = Objects.requireNonNull(loudnessTarget,
                 "loudnessTarget must not be null");
+    }
+
+    // ── Active HRTF profile (binaural monitoring) ─────────────────────────────
+
+    /**
+     * Returns the active HRTF profile reference for binaural monitoring, or
+     * {@code null} when no preference has been set (the
+     * {@code BinauralMonitorPlugin} should fall back to its factory default).
+     *
+     * <p>The reference is purely a name — either one of the built-in
+     * {@link com.benesquivelmusic.daw.sdk.spatial.HrtfProfile} display names,
+     * or the file-stem of a personalized profile imported into
+     * {@link com.benesquivelmusic.daw.core.spatial.binaural.HrtfProfileLibrary}.
+     * Resolving a missing profile is the loader's responsibility (it should
+     * fall back to the highest-matching factory profile and surface a one-shot
+     * warning).</p>
+     *
+     * @return the active profile name, or {@code null} when unset
+     */
+    public String getActiveHrtfProfileName() {
+        return activeHrtfProfileName;
+    }
+
+    /**
+     * Sets the active HRTF profile reference for binaural monitoring. Pass
+     * {@code null} to clear the project-level preference. The selection is
+     * persisted by {@code ProjectSerializer}.
+     *
+     * @param name profile name (factory display name or imported file-stem),
+     *             or {@code null} to clear
+     */
+    public void setActiveHrtfProfileName(String name) {
+        this.activeHrtfProfileName = (name == null || name.isBlank()) ? null : name;
     }
 }

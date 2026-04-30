@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplayWindow;
 import com.benesquivelmusic.daw.app.ui.display.TunerDisplayWindow;
 import com.benesquivelmusic.daw.core.plugin.*;
+import com.benesquivelmusic.daw.core.spatial.binaural.HrtfProfileLibrary;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import javafx.scene.Scene;
 import javafx.stage.Stage;
@@ -57,6 +58,9 @@ final class PluginViewController {
     private ConvolutionReverbPluginView convolutionReverbView;
     private Stage exciterStage;
     private ExciterPluginView exciterView;
+    private Stage binauralMonitorStage;
+    private BinauralMonitorPluginView binauralMonitorView;
+    private final HrtfProfileLibrary hrtfProfileLibrary = new HrtfProfileLibrary();
 
     PluginViewController(Host host) {
         this.host = host;
@@ -164,6 +168,7 @@ final class PluginViewController {
             case NoiseGatePlugin.PLUGIN_ID -> openNoiseGateWindow((NoiseGatePlugin) plugin);
             case ConvolutionReverbPlugin.PLUGIN_ID -> openConvolutionReverbWindow((ConvolutionReverbPlugin) plugin);
             case ExciterPlugin.PLUGIN_ID -> openExciterWindow((ExciterPlugin) plugin);
+            case BinauralMonitorPlugin.PLUGIN_ID -> openBinauralMonitorWindow((BinauralMonitorPlugin) plugin);
             case ParametricEqPlugin.PLUGIN_ID,
                  CompressorPlugin.PLUGIN_ID,
                  ReverbPlugin.PLUGIN_ID -> host.switchToMasteringView();
@@ -483,5 +488,54 @@ final class PluginViewController {
         stage.show();
         stage.toFront();
         exciterStage = stage;
+    }
+
+    private void openBinauralMonitorWindow(BinauralMonitorPlugin plugin) {
+        if (binauralMonitorStage != null) {
+            binauralMonitorStage.show();
+            binauralMonitorStage.toFront();
+            return;
+        }
+
+        binauralMonitorView = new BinauralMonitorPluginView(
+                plugin, hrtfProfileLibrary, host.sampleRate());
+
+        // Persist the user's selection on the active project so it survives
+        // save/load (story 174 — per-project active HRTF profile).
+        binauralMonitorView.setProfileSelectionListener(entry -> {
+            host.project().setActiveHrtfProfileName(entry.displayName());
+            host.setProjectDirty();
+        });
+        // Honour any previously saved selection.
+        String saved = host.project().getActiveHrtfProfileName();
+        if (saved != null) {
+            binauralMonitorView.selectProfileByName(saved);
+        }
+
+        Stage stage = new Stage(StageStyle.UTILITY);
+        stage.setTitle("Binaural Monitor");
+        stage.setScene(new Scene(binauralMonitorView));
+        DarkThemeHelper.applyTo(stage.getScene());
+        stage.setMinWidth(420);
+        stage.setMinHeight(220);
+        stage.setOnHidden(_ -> {
+            binauralMonitorView = null;
+            plugin.deactivate();
+            binauralMonitorStage = null;
+        });
+        stage.show();
+        stage.toFront();
+        binauralMonitorStage = stage;
+    }
+
+    /**
+     * Opens the standalone "Manage HRTF Profiles…" dialog (Settings entry-point
+     * for story 174). Surfaced as a {@code public} method so the menu bar can
+     * route a "Settings → HRTF Profiles…" action through the plugin controller.
+     */
+    public void onManageHrtfProfiles() {
+        HrtfProfileBrowserDialog dialog = new HrtfProfileBrowserDialog(
+                hrtfProfileLibrary, host.sampleRate());
+        dialog.showAndWait();
     }
 }
