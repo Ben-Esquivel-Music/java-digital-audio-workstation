@@ -75,4 +75,39 @@ class AudioBackendSelectorTest {
         assertTrue(opened.isOpen());
         opened.close();
     }
+
+    @Test
+    void selectByNameReturnsMatchingSdkBackendInstance() {
+        AudioBackendSelector selector = new AudioBackendSelector();
+        // Mock is always registered and always available; using it keeps
+        // this assertion deterministic across Windows / macOS / Linux CI.
+        AudioBackend backend = selector.selectByName(MockAudioBackend.NAME);
+        assertInstanceOf(MockAudioBackend.class, backend);
+        assertEquals(MockAudioBackend.NAME, backend.name());
+        backend.close();
+    }
+
+    @Test
+    void selectByNameReturnsNullForUnknownName() {
+        AudioBackendSelector selector = new AudioBackendSelector();
+        assertEquals(null, selector.selectByName("NotARealBackend"));
+        assertEquals(null, selector.selectByName(""));
+        assertEquals(null, selector.selectByName(null));
+    }
+
+    @Test
+    void availableBackendNamesRoundTripsThroughSelectByName() {
+        // Story 130: the combo values produced by availableBackendNames()
+        // (consumed by AudioSettingsDialog) must be the same set the
+        // controller can instantiate. Round-trip every entry.
+        AudioBackendSelector selector = new AudioBackendSelector();
+        for (String name : selector.availableBackendNames()) {
+            AudioBackend backend = selector.selectByName(name);
+            assertTrue(backend != null,
+                    "selectByName must produce an instance for " + name);
+            assertEquals(name, backend.name(),
+                    "round-trip name mismatch for " + name);
+            backend.close();
+        }
+    }
 }

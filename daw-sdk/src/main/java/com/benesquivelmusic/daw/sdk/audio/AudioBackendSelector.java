@@ -73,6 +73,44 @@ public final class AudioBackendSelector {
     }
 
     /**
+     * Instantiates the backend registered under {@code name}, regardless of
+     * whether it reports {@link AudioBackend#isAvailable()}. Callers are
+     * responsible for the returned backend's lifecycle (must be
+     * {@link AudioBackend#close() closed}).
+     *
+     * <p>Returns {@code null} when {@code name} is null/blank or does not
+     * match any registered factory — this lets the caller's own legacy /
+     * non-SDK switch fall through. Story 130 (this method) is the single
+     * place that maps a UI-facing backend name to an SDK
+     * {@link AudioBackend} instance, so the app controller does not need to
+     * maintain a parallel hand-rolled {@code switch}.</p>
+     *
+     * @param name backend name as listed by {@link #availableBackendNames()}
+     * @return a fresh {@link AudioBackend} instance, or {@code null} if
+     *         no factory is registered for {@code name}
+     */
+    public AudioBackend selectByName(String name) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        Supplier<AudioBackend> factory = factories.get(name);
+        return factory == null ? null : factory.get();
+    }
+
+    /**
+     * Alias for {@link #availableBackends()} — the name used by the
+     * {@code AudioSettingsDialog} combo and the round-trip wiring test
+     * in story 130. Kept as a separate method so the UI vocabulary
+     * ("availableBackendNames") and the legacy SDK vocabulary
+     * ("availableBackends") can both be used without confusion.
+     *
+     * @return the list of backend names available on this host
+     */
+    public List<String> availableBackendNames() {
+        return availableBackends();
+    }
+
+    /**
      * Returns the names of every backend whose native library / driver is
      * available on this host, in OS-default priority order.
      *

@@ -381,4 +381,94 @@ class DefaultAudioEngineControllerTest {
                     "Timed out after 3 s waiting for condition to become true");
         }
     }
+
+    // -- Story 130: backend selection & SDK platform-backend wiring ---------
+
+    @Test
+    void applyBackendByNameWiresSdkBackendIntoEngine(@TempDir Path projectRoot) {
+        // Inject a selector whose factory map maps "Mock" to MockAudioBackend
+        // (the default selector already does, but threading it explicitly
+        // keeps the test deterministic and demonstrates how the selector
+        // is wired into the controller for headless integration tests).
+        java.util.Map<String, java.util.function.Supplier<
+                com.benesquivelmusic.daw.sdk.audio.AudioBackend>> factories =
+                new java.util.LinkedHashMap<>();
+        factories.put(MockAudioBackend.NAME, MockAudioBackend::new);
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(factories);
+
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), selector);
+
+        controller.applyBackendByName(MockAudioBackend.NAME);
+
+        // The SDK backend slot on AudioEngine is populated with a fresh
+        // MockAudioBackend instance — the wiring story's headline goal.
+        assertThat(engine.getBackend())
+                .isInstanceOf(MockAudioBackend.class);
+    }
+
+    @Test
+    void applyBackendByNameWithUnavailablePlatformBackendFallsBackAndNotifies(
+            @TempDir Path projectRoot) {
+        // Register a deterministic test-only unavailable backend under the
+        // name "ASIO" so this test does not depend on host OS or
+        // native-library state. MockAudioBackend with setAvailable(false)
+        // simulates a platform backend whose native driver is absent.
+        java.util.Map<String, java.util.function.Supplier<
+                com.benesquivelmusic.daw.sdk.audio.AudioBackend>> factories =
+                new java.util.LinkedHashMap<>();
+        factories.put("ASIO", () -> {
+            MockAudioBackend unavailable = new MockAudioBackend();
+            unavailable.setAvailable(false);
+            return unavailable;
+        });
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(factories);
+
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        List<String> notices = new ArrayList<>();
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null,
+                message -> { synchronized (notices) { notices.add(message); } },
+                new IncompleteTakeStore(projectRoot), selector);
+
+        controller.applyBackendByName("ASIO");
+
+        // SDK slot is *not* populated with an unavailable backend — the
+        // user must end up on the live Java Sound path instead.
+        assertThat(engine.getBackend()).isNull();
+        assertThat(engine.getAudioBackend()).isNotNull();
+        assertThat(engine.getAudioBackend().getBackendName())
+                .isEqualTo("Java Sound");
+        // Exactly one fallback notification, matching the issue's wording.
+        synchronized (notices) {
+            assertThat(notices)
+                    .filteredOn(m -> m.contains("not available — falling back to Java Sound"))
+                    .hasSize(1)
+                    .first()
+                    .asString()
+                    .startsWith("ASIO");
+        }
+    }
+
+    @Test
+    void getAvailableBackendNamesIncludesSdkSelectorBackends() {
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(engine, null);
+        List<String> names = controller.getAvailableBackendNames();
+        // Java Sound is always present (legacy NativeAudioBackend slot).
+        // The full set is the union with whatever the selector reports
+        // available on this host: on Linux that's at least JACK,
+        // on Windows ASIO/WASAPI, on macOS CoreAudio. The exact extra
+        // entry depends on the OS, but the union must always be a
+        // superset of the selector's available list.
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector();
+        assertThat(names)
+                .contains("Java Sound")
+                .containsAll(selector.availableBackendNames());
+    }
 }

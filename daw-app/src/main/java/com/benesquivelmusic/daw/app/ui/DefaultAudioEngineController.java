@@ -9,6 +9,7 @@ import com.benesquivelmusic.daw.core.audio.portaudio.PortAudioBackend;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
+import com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.BufferSizeRange;
@@ -19,8 +20,6 @@ import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.XrunEvent;
 
 import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -54,6 +53,15 @@ final class DefaultAudioEngineController implements AudioEngineController {
     private final Runnable postReconfigureCallback;
     private final NotificationManager notifications;
     private final IncompleteTakeStore incompleteTakeStore;
+    /**
+     * Maps a UI-facing backend name (e.g. {@code "ASIO"}, {@code "WASAPI"},
+     * {@code "CoreAudio"}, {@code "JACK"}, {@code "Mock"}) to a fresh SDK
+     * {@link AudioBackend} instance. Story 130: the selector is the single
+     * place that knows the {@link AudioBackend} sealed permits, so this
+     * controller no longer hand-rolls a {@code switch} that fell through
+     * to {@code null} for every platform backend.
+     */
+    private final AudioBackendSelector backendSelector;
     private final SubmissionPublisher<EngineState> engineStatePublisher = new SubmissionPublisher<>();
     private volatile XrunDetector xrunDetector;
     private volatile EngineState engineState = EngineState.STOPPED;
@@ -123,12 +131,28 @@ final class DefaultAudioEngineController implements AudioEngineController {
                                  Runnable postReconfigureCallback,
                                  NotificationManager notifications,
                                  IncompleteTakeStore incompleteTakeStore) {
+        this(audioEngine, postReconfigureCallback, notifications, incompleteTakeStore,
+                new AudioBackendSelector());
+    }
+
+    /**
+     * Test-friendly constructor that injects an {@link AudioBackendSelector}
+     * — typically one whose factory map maps {@code "Mock"} (or any other
+     * permitted backend name) to {@link com.benesquivelmusic.daw.sdk.audio.MockAudioBackend}.
+     */
+    DefaultAudioEngineController(AudioEngine audioEngine,
+                                 Runnable postReconfigureCallback,
+                                 NotificationManager notifications,
+                                 IncompleteTakeStore incompleteTakeStore,
+                                 AudioBackendSelector backendSelector) {
         this.audioEngine = Objects.requireNonNull(audioEngine, "audioEngine must not be null");
         this.tonePlayer = new TestTonePlayer();
         this.postReconfigureCallback = postReconfigureCallback;
         this.notifications = Objects.requireNonNull(notifications, "notifications must not be null");
         this.incompleteTakeStore = Objects.requireNonNull(
                 incompleteTakeStore, "incompleteTakeStore must not be null");
+        this.backendSelector = Objects.requireNonNull(
+                backendSelector, "backendSelector must not be null");
         this.xrunDetector = createDetectorFor(audioEngine.getFormat());
     }
 
@@ -140,7 +164,13 @@ final class DefaultAudioEngineController implements AudioEngineController {
 
     @Override
     public List<String> getAvailableBackendNames() {
-        List<String> names = new ArrayList<>();
+        // Preserve the historical NativeAudioBackend names (PortAudio + the
+        // daw-core JavaSoundBackend) — those drive the live engine I/O
+        // path today — and union them with the SDK sealed-hierarchy names
+        // (ASIO / WASAPI / CoreAudio / JACK / Mock) reported by the
+        // AudioBackendSelector. Story 130: the dialog must be able to
+        // *select* every backend the controller can *instantiate*.
+        java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
         try {
             if (new PortAudioBackend().isAvailable()) {
                 names.add("PortAudio");
@@ -148,8 +178,9 @@ final class DefaultAudioEngineController implements AudioEngineController {
         } catch (RuntimeException e) {
             LOG.log(Level.FINE, "PortAudio unavailable", e);
         }
+        names.addAll(backendSelector.availableBackendNames());
         names.add("Java Sound");
-        return Collections.unmodifiableList(names);
+        return List.copyOf(names);
     }
 
     @Override
@@ -175,6 +206,22 @@ final class DefaultAudioEngineController implements AudioEngineController {
         NativeAudioBackend active = audioEngine.getAudioBackend();
         if (active != null && backendName.equals(active.getBackendName())) {
             return listDevices();
+        }
+        // Try the SDK sealed-hierarchy first (ASIO / WASAPI / CoreAudio /
+        // JACK / Mock — story 130). These don't implement
+        // NativeAudioBackend, so the legacy probe path below would skip
+        // them. Skip for legacy names ("PortAudio", "Java Sound") to avoid
+        // device-enumeration mismatches between the SDK JavaxSoundBackend
+        // and the daw-core JavaSoundBackend (they enumerate differently).
+        if (!"PortAudio".equals(backendName) && !"Java Sound".equals(backendName)) {
+            try (AudioBackend sdkProbe = backendSelector.selectByName(backendName)) {
+                if (sdkProbe != null) {
+                    return sdkProbe.listDevices();
+                }
+            } catch (RuntimeException e) {
+                LOG.log(Level.WARNING, "Failed to enumerate " + backendName + " devices via SDK", e);
+                return List.of();
+            }
         }
         NativeAudioBackend probe = null;
         try {
@@ -231,12 +278,31 @@ final class DefaultAudioEngineController implements AudioEngineController {
         }
 
         NativeAudioBackend currentBackend = audioEngine.getAudioBackend();
-        if (currentBackend == null || !request.backendName().equals(currentBackend.getBackendName())) {
-            NativeAudioBackend newBackend = createBackendByName(request.backendName());
-            if (newBackend == null) {
-                newBackend = AudioBackendFactory.createDefault();
-            }
-            audioEngine.setAudioBackend(newBackend);
+        // Include the SDK slot in the comparison so repeated reconfigures
+        // (buffer size / sample rate changes) don't re-create the SDK
+        // backend and re-emit fallback notifications when the selection
+        // hasn't actually changed.
+        // A legacy name ("PortAudio"/"Java Sound") is unchanged only when
+        // the SDK slot is null AND the native slot matches. An SDK name is
+        // unchanged only when the SDK slot's name matches. This ensures
+        // switching between SDK↔legacy always triggers applyBackendByName.
+        AudioBackend currentSdkBackend = audioEngine.getBackend();
+        boolean isLegacyRequest = "PortAudio".equals(request.backendName())
+                || "Java Sound".equals(request.backendName());
+        boolean backendChanged;
+        if (isLegacyRequest) {
+            // Legacy is "unchanged" only when no SDK backend is active
+            // AND the native slot already matches.
+            backendChanged = currentSdkBackend != null
+                    || currentBackend == null
+                    || !request.backendName().equals(currentBackend.getBackendName());
+        } else if (currentSdkBackend != null && request.backendName().equals(currentSdkBackend.name())) {
+            backendChanged = false;
+        } else {
+            backendChanged = true;
+        }
+        if (backendChanged) {
+            applyBackendByName(request.backendName());
         }
 
         int outputDeviceIndex = resolveDeviceIndex(
@@ -784,10 +850,124 @@ final class DefaultAudioEngineController implements AudioEngineController {
         if (detector != null) {
             detector.close();
         }
+        // Close any active SDK backend to release native resources on exit.
+        closePreviousSdkBackend();
+        audioEngine.setBackend(null);
     }
 
     private static XrunDetector createDetectorFor(AudioFormat format) {
         return new XrunDetector(format.sampleRate(), format.bufferSize());
+    }
+
+    /**
+     * Routes {@code name} through the {@link AudioBackendSelector} (story
+     * 130) and wires the resulting backend into the engine. Two paths
+     * coexist:
+     *
+     * <ul>
+     *   <li>{@code "PortAudio"} / {@code "Java Sound"} — legacy
+     *       {@link NativeAudioBackend} I/O drivers; live engine output
+     *       still flows through these.</li>
+     *   <li>Every SDK sealed-hierarchy name returned by
+     *       {@link AudioBackendSelector#availableBackendNames()} —
+     *       {@code "ASIO"}, {@code "WASAPI"}, {@code "CoreAudio"},
+     *       {@code "JACK"}, {@code "Mock"}. The selector hands us a
+     *       fresh {@link AudioBackend}; we store it on
+     *       {@link AudioEngine#setBackend(AudioBackend)}.</li>
+     * </ul>
+     *
+     * <p>If the SDK platform backend reports
+     * {@link AudioBackend#isAvailable()} {@code == false} (e.g., ASIO
+     * requested on Linux because no native shim is installed), the
+     * controller falls back to the daw-core {@code JavaSoundBackend}
+     * exactly as the issue requires, and emits a single
+     * {@link NotificationManager} warning of the form
+     * {@code "ASIO not available — falling back to Java Sound"} so the
+     * user is never silently routed to a different backend.</p>
+     *
+     * @param name the backend name; {@code null} / blank / {@link #BACKEND_NONE}
+     *             clears any installed SDK backend and is a no-op for the
+     *             legacy slot
+     */
+    void applyBackendByName(String name) {
+        if (name == null || name.isBlank() || BACKEND_NONE.equals(name)) {
+            closePreviousSdkBackend();
+            audioEngine.setBackend(null);
+            return;
+        }
+        // Legacy NativeAudioBackend names — keep the existing wiring.
+        if ("PortAudio".equals(name) || "Java Sound".equals(name)) {
+            NativeAudioBackend legacy = createBackendByName(name);
+            if (legacy == null) {
+                legacy = AudioBackendFactory.createDefault();
+            }
+            audioEngine.setAudioBackend(legacy);
+            closePreviousSdkBackend();
+            audioEngine.setBackend(null);
+            return;
+        }
+        // SDK sealed-hierarchy names route through the selector.
+        AudioBackend sdk = backendSelector.selectByName(name);
+        if (sdk == null) {
+            // Unknown name — preserve historical behaviour: fall back to
+            // AudioBackendFactory.createDefault() on the legacy slot.
+            audioEngine.setAudioBackend(AudioBackendFactory.createDefault());
+            closePreviousSdkBackend();
+            audioEngine.setBackend(null);
+            return;
+        }
+        if (!sdk.isAvailable()) {
+            try {
+                sdk.close();
+            } catch (RuntimeException ignored) {
+                // best-effort cleanup of the unusable probe
+            }
+            // Fallback notification: the user explicitly asked for a
+            // platform backend that the host can't supply — surface the
+            // switch instead of silently routing them elsewhere.
+            try {
+                notifications.notify(name + " not available — falling back to Java Sound");
+            } catch (RuntimeException e) {
+                LOG.log(Level.WARNING, "NotificationManager rejected fallback message", e);
+            }
+            audioEngine.setAudioBackend(new JavaSoundBackend());
+            closePreviousSdkBackend();
+            audioEngine.setBackend(null);
+            return;
+        }
+        // Available platform backend: keep the legacy NativeAudioBackend
+        // slot pointing at JavaSoundBackend so the engine's render path
+        // (still NativeAudioBackend-driven until the consolidation story)
+        // continues to function, while the SDK slot tracks the user's
+        // actual selection. The native shim implementation stories
+        // (220 / 221 / 222 / 223 / 224) will route I/O through the SDK
+        // backend itself.
+        closePreviousSdkBackend();
+        audioEngine.setBackend(sdk);
+        // Don't downgrade an already-installed PortAudio NativeAudioBackend
+        // when the user picks an SDK platform backend; the engine's render
+        // path is NativeAudioBackend-driven until the consolidation story
+        // lands, and PortAudio is still the lowest-latency option for
+        // multi-channel USB hardware (Mac/Linux).
+        NativeAudioBackend nativeSlot = audioEngine.getAudioBackend();
+        if (nativeSlot == null || !"PortAudio".equals(nativeSlot.getBackendName())) {
+            audioEngine.setAudioBackend(new JavaSoundBackend());
+        }
+    }
+
+    /**
+     * Best-effort close of any previously installed SDK backend to avoid
+     * leaking native resources when backends are replaced or cleared.
+     */
+    private void closePreviousSdkBackend() {
+        AudioBackend previous = audioEngine.getBackend();
+        if (previous != null) {
+            try {
+                previous.close();
+            } catch (RuntimeException ignored) {
+                // best-effort cleanup
+            }
+        }
     }
 
     private static NativeAudioBackend createBackendByName(String name) {

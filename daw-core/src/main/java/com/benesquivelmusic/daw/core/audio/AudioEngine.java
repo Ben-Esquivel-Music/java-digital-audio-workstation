@@ -50,6 +50,16 @@ public final class AudioEngine {
     private final EffectsChain masterChain;
     private AudioBufferPool bufferPool;
     private NativeAudioBackend audioBackend;
+    /**
+     * SDK sealed {@link AudioBackend} the user has selected (story 130 —
+     * "Audio Backend Selection"). Distinct from {@link #audioBackend}: the
+     * {@code NativeAudioBackend} drives the live PortAudio / Java Sound
+     * I/O stream today, while this slot tracks the platform backend
+     * (ASIO / WASAPI / CoreAudio / JACK / Mock) the
+     * {@link AudioBackendSelector} produced. The two coexist until the
+     * sealed-hierarchy consolidation story lands.
+     */
+    private volatile AudioBackend sdkBackend;
 
     // Audio output stream state
     private volatile boolean streamOpen;
@@ -241,6 +251,32 @@ public final class AudioEngine {
      */
     public NativeAudioBackend getAudioBackend() {
         return audioBackend;
+    }
+
+    /**
+     * Returns the SDK sealed {@link AudioBackend} currently selected by
+     * the user, or {@code null} if none has been wired. Set by
+     * {@link #setBackend(AudioBackend)} from
+     * {@code DefaultAudioEngineController} after the
+     * {@link AudioBackendSelector} routes a backend name to an instance.
+     *
+     * @return the active SDK backend, or {@code null}
+     */
+    public AudioBackend getBackend() {
+        return sdkBackend;
+    }
+
+    /**
+     * Stores the SDK sealed {@link AudioBackend} the user has selected.
+     * Replacing the previous backend does not close it — the caller owns
+     * the lifecycle. Story 130: this slot is read by tests and by
+     * future engine code that drives I/O through the platform backend
+     * (ASIO / WASAPI / CoreAudio / JACK).
+     *
+     * @param backend the SDK backend, or {@code null} to clear
+     */
+    public void setBackend(AudioBackend backend) {
+        this.sdkBackend = backend;
     }
 
     /**
