@@ -128,11 +128,11 @@ class AsioCapabilityShim implements AutoCloseable {
                 return Optional.empty();
             }
             int gran = granularity.get(ValueLayout.JAVA_INT, 0);
-            // ASIO's contract uses negative granularity for power-of-two ladders;
-            // BufferSizeRange does not model that, so clamp negatives to 0
-            // (singleton == preferred behaviour) — same fallback the dialog
-            // already applies for JACK / WASAPI shared mode.
-            int safeGran = gran < 0 ? 0 : gran;
+            // ASIO uses any negative granularity as a sentinel meaning the
+            // driver accepts power-of-two buffer sizes between min and max.
+            // Normalize to BufferSizeRange.POWER_OF_TWO_GRANULARITY (-1)
+            // so expandedSizes() / accepts() expand the correct ladder.
+            int safeGran = gran < 0 ? BufferSizeRange.POWER_OF_TWO_GRANULARITY : gran;
             return Optional.of(new BufferSizeRange(
                     min.get(ValueLayout.JAVA_INT, 0),
                     max.get(ValueLayout.JAVA_INT, 0),

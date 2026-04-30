@@ -16,6 +16,7 @@
 #endif
 
 #include <cstddef>
+#include <atomic>
 
 // The Steinberg ASIO SDK headers live under ${ASIO_SDK_DIR}/common.
 // We forward-declare the few entry points we use so this translation
@@ -98,15 +99,16 @@ extern "C" {
 }
 
 namespace {
-    asio_message_fn g_asioMessageCallback = nullptr;
+    std::atomic<asio_message_fn> g_asioMessageCallback{nullptr};
 }
 
 ASIOSHIM_EXPORT void installAsioMessageCallback(void* callback) {
-    g_asioMessageCallback = reinterpret_cast<asio_message_fn>(callback);
+    g_asioMessageCallback.store(reinterpret_cast<asio_message_fn>(callback),
+                                std::memory_order_release);
 }
 
 ASIOSHIM_EXPORT void uninstallAsioMessageCallback() {
-    g_asioMessageCallback = nullptr;
+    g_asioMessageCallback.store(nullptr, std::memory_order_release);
 }
 
 // The SDK's ASIOCallbacks struct contains a slot called asioMessage
@@ -115,7 +117,7 @@ ASIOSHIM_EXPORT void uninstallAsioMessageCallback() {
 // asioshim is built with -DASIOSHIM_TRAMPOLINE.
 ASIOSHIM_EXPORT long asioshim_messageTrampoline(long selector, long value,
                                                 void* message, double* opt) {
-    asio_message_fn cb = g_asioMessageCallback;
+    asio_message_fn cb = g_asioMessageCallback.load(std::memory_order_acquire);
     if (cb == nullptr) {
         return 0;
     }

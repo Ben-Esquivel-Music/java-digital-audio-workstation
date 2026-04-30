@@ -84,18 +84,32 @@ class AsioBackendCapabilityTest {
     }
 
     @Test
-    void supportedSampleRatesFallsBackWhenDriverRejectsEveryCanonicalRate() {
+    void supportedSampleRatesFallsBackToDriverCurrentRateWhenAllCanonicalRatesRejected() {
         // The shim is available but the driver rejects every canonical rate
-        // (e.g. a hardware-locked device). Returning an empty menu would
-        // leave the user nothing to pick from, so we fall back instead.
+        // (e.g. a hardware-locked device). Instead of returning the full
+        // canonical set (which would reintroduce ASE_InvalidMode), we query
+        // the driver's current rate and return that as a singleton.
+        AsioBackend.setCapabilityShimFactory(() -> new StubShim(true,
+                Optional.of(BufferSizeRange.DEFAULT_RANGE), rate -> false, 48_000.0));
+
+        AsioBackend backend = new AsioBackend();
+        Set<Integer> rates = backend.supportedSampleRates(DEVICE);
+
+        assertThat(rates).containsExactly(48_000);
+    }
+
+    @Test
+    void supportedSampleRatesReturnsEmptyWhenAllRejectedAndNoCurrentRate() {
+        // When the shim is available, all canonical rates are rejected, and
+        // getSampleRate also fails, the result is an empty set — safer than
+        // marking unsupported rates as supported.
         AsioBackend.setCapabilityShimFactory(() -> new StubShim(true,
                 Optional.of(BufferSizeRange.DEFAULT_RANGE), rate -> false));
 
         AsioBackend backend = new AsioBackend();
         Set<Integer> rates = backend.supportedSampleRates(DEVICE);
 
-        assertThat(rates).containsExactlyInAnyOrder(
-                44_100, 48_000, 88_200, 96_000, 176_400, 192_000);
+        assertThat(rates).isEmpty();
     }
 
     @Test
@@ -118,7 +132,9 @@ class AsioBackendCapabilityTest {
         Logger backendLog = Logger.getLogger(AsioBackend.class.getName());
         backendLog.addHandler(counter);
         boolean wasUseParent = backendLog.getUseParentHandlers();
+        Level wasLevel = backendLog.getLevel();
         backendLog.setUseParentHandlers(false);
+        backendLog.setLevel(Level.ALL);
         try {
             AsioBackend backend = new AsioBackend();
             // Each call falls back to the default; the absence message
@@ -131,6 +147,7 @@ class AsioBackendCapabilityTest {
         } finally {
             backendLog.removeHandler(counter);
             backendLog.setUseParentHandlers(wasUseParent);
+            backendLog.setLevel(wasLevel);
         }
     }
 
@@ -171,14 +188,23 @@ class AsioBackendCapabilityTest {
         private final boolean available;
         private final Optional<BufferSizeRange> range;
         private final java.util.function.DoublePredicate canRate;
+        private final Optional<Double> currentRate;
 
         StubShim(boolean available,
                  Optional<BufferSizeRange> range,
                  java.util.function.DoublePredicate canRate) {
+            this(available, range, canRate, null);
+        }
+
+        StubShim(boolean available,
+                 Optional<BufferSizeRange> range,
+                 java.util.function.DoublePredicate canRate,
+                 Double currentRate) {
             super();
             this.available = available;
             this.range = range;
             this.canRate = canRate;
+            this.currentRate = Optional.ofNullable(currentRate);
         }
 
         static StubShim unavailable() {
@@ -198,6 +224,11 @@ class AsioBackendCapabilityTest {
         @Override
         boolean canSampleRate(double rate) {
             return available && canRate.test(rate);
+        }
+
+        @Override
+        Optional<Double> getSampleRate() {
+            return available ? currentRate : Optional.empty();
         }
     }
 }

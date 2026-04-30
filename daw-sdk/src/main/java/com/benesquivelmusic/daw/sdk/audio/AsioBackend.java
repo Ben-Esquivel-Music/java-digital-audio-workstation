@@ -254,11 +254,17 @@ public final class AsioBackend implements AudioBackend {
     public BufferSizeRange bufferSizeRange(DeviceId device) {
         Objects.requireNonNull(device, "device must not be null");
         try (AsioCapabilityShim shim = capabilityShimFactory.get()) {
+            if (!shim.isAvailable()) {
+                logFallbackOnce();
+                return BufferSizeRange.DEFAULT_RANGE;
+            }
             Optional<BufferSizeRange> probed = shim.getBufferSize();
             if (probed.isPresent()) {
                 return probed.get();
             }
-            logFallbackOnce();
+            LOG.log(Level.FINE,
+                    "ASIO buffer-size probe failed or returned invalid values; "
+                            + "using default range");
             return BufferSizeRange.DEFAULT_RANGE;
         }
     }
@@ -289,10 +295,15 @@ public final class AsioBackend implements AudioBackend {
                 }
             }
             // If the driver rejected every canonical rate (e.g. an unusual
-            // hardware-locked rate), fall back to the canonical set rather
-            // than returning an empty menu the user cannot pick from.
+            // hardware-locked rate), return the driver's current rate when
+            // available instead of marking the full canonical set as
+            // supported. Otherwise return an empty set so the UI can
+            // detect "unsupported" rather than offering rates that fail.
             if (accepted.isEmpty()) {
-                return canonicalSampleRateSet();
+                return shim.getSampleRate()
+                        .map(rate -> (int) Math.round(rate))
+                        .map(Set::of)
+                        .orElseGet(Set::of);
             }
             return Set.copyOf(accepted);
         }

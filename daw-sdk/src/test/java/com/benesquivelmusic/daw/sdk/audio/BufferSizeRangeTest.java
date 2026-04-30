@@ -83,8 +83,25 @@ class BufferSizeRangeTest {
         assertThatThrownBy(() -> new BufferSizeRange(100, 200, 50, 10))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("preferred");
-        assertThatThrownBy(() -> new BufferSizeRange(100, 200, 150, -1))
+        assertThatThrownBy(() -> new BufferSizeRange(100, 200, 150, -2))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("granularity");
+    }
+
+    @Test
+    void powerOfTwoGranularityExpandsToCorrectLadder() {
+        // ASIO drivers use negative granularity to indicate a power-of-two
+        // ladder. BufferSizeRange.POWER_OF_TWO_GRANULARITY (-1) is the
+        // normalized sentinel.
+        BufferSizeRange range = new BufferSizeRange(64, 2048, 256,
+                BufferSizeRange.POWER_OF_TWO_GRANULARITY);
+        assertThat(range.expandedSizes())
+                .containsExactly(64, 128, 256, 512, 1024, 2048);
+        assertThat(range.accepts(64)).isTrue();
+        assertThat(range.accepts(256)).isTrue();
+        assertThat(range.accepts(2048)).isTrue();
+        assertThat(range.accepts(96)).isFalse();
+        assertThat(range.accepts(300)).isFalse();
+        assertThat(range.accepts(4096)).isFalse();
     }
 }
