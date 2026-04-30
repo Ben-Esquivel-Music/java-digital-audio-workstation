@@ -27,6 +27,12 @@ import java.util.Optional;
  *       &rarr; wraps {@code ASIOGetSampleRate}; returns 1 on success.</li>
  *   <li>{@code int asioshim_setSampleRate(double rate)}
  *       &rarr; wraps {@code ASIOSetSampleRate}; returns 1 on success.</li>
+ *   <li>{@code int asioshim_openControlPanel()} (story 212)
+ *       &rarr; wraps {@code ASIOControlPanel}; blocks until the modal
+ *       panel is closed. Returns 1 on success, 0 if the driver does
+ *       not provide a control panel ({@code ASE_NotPresent}), or a
+ *       negative value for any other {@code ASIOError}. Optional —
+ *       older shim builds without this symbol degrade gracefully.</li>
  * </ul>
  *
  * <p>Construction never throws: when the {@code asioshim} library is
@@ -48,12 +54,26 @@ class AsioCapabilityShim implements AutoCloseable {
     /** {@code ASE_OK} status returned by the wrapped ASIO calls. */
     private static final int ASE_OK = 1;
 
+    /**
+     * {@code ASE_NotPresent} mapped at the native shim boundary —
+     * the driver does not provide a control panel (story 212).
+     */
+    static final int CONTROL_PANEL_NOT_PRESENT = 0;
+
     private final Arena arena;
     private final boolean available;
     private final MethodHandle getBufferSize;
     private final MethodHandle canSampleRate;
     private final MethodHandle getSampleRate;
     private final MethodHandle setSampleRate;
+    /**
+     * Optional handle for {@code asioshim_openControlPanel} (story 212).
+     * Older shim builds may not export this symbol; in that case the
+     * field is {@code null} and {@link #isControlPanelAvailable()}
+     * returns {@code false}, which keeps {@code AsioBackend#openControlPanel}
+     * returning {@link Optional#empty()}.
+     */
+    private final MethodHandle openControlPanel;
     private boolean closed;
 
     /**
@@ -68,9 +88,12 @@ class AsioCapabilityShim implements AutoCloseable {
         MethodHandle csr = null;
         MethodHandle gsr = null;
         MethodHandle ssr = null;
+        MethodHandle ocp = null;
+        SymbolLookup lookup = null;
+        Linker linker = null;
         try {
-            SymbolLookup lookup = SymbolLookup.libraryLookup("asioshim", arena);
-            Linker linker = Linker.nativeLinker();
+            lookup = SymbolLookup.libraryLookup("asioshim", arena);
+            linker = Linker.nativeLinker();
             gbs = linker.downcallHandle(
                     lookup.find("asioshim_getBufferSize").orElseThrow(
                             () -> new UnsatisfiedLinkError("asioshim_getBufferSize")),
@@ -95,11 +118,27 @@ class AsioCapabilityShim implements AutoCloseable {
         } catch (Throwable ignored) {
             // ABI mismatch or any other failure: degrade to a no-op.
         }
+        // Story 212: resolve asioshim_openControlPanel optionally — its
+        // absence does not invalidate the four required capability
+        // symbols, but its presence is what unlocks the dialog button.
+        if (ok && lookup != null && linker != null) {
+            try {
+                ocp = linker.downcallHandle(
+                        lookup.find("asioshim_openControlPanel").orElseThrow(
+                                () -> new UnsatisfiedLinkError("asioshim_openControlPanel")),
+                        FunctionDescriptor.of(ValueLayout.JAVA_INT));
+            } catch (IllegalArgumentException | UnsatisfiedLinkError ignored) {
+                // Older shim build without the control-panel export.
+            } catch (Throwable ignored) {
+                // ABI mismatch or any other failure: leave handle null.
+            }
+        }
         this.available = ok;
         this.getBufferSize = gbs;
         this.canSampleRate = csr;
         this.getSampleRate = gsr;
         this.setSampleRate = ssr;
+        this.openControlPanel = ocp;
     }
 
     /** Returns {@code true} when all four entry points were resolved. */
@@ -196,6 +235,50 @@ class AsioCapabilityShim implements AutoCloseable {
             return rc == ASE_OK;
         } catch (Throwable ignored) {
             return false;
+        }
+    }
+
+    /**
+     * Returns {@code true} when the {@code asioshim_openControlPanel}
+     * symbol resolved at construction (story 212). The four capability
+     * accessors do not depend on this symbol, so an older shim build
+     * still reports {@link #isAvailable()} = true while
+     * {@code isControlPanelAvailable()} returns {@code false}.
+     */
+    boolean isControlPanelAvailable() {
+        return isAvailable() && openControlPanel != null;
+    }
+
+    /**
+     * Calls {@code ASIOControlPanel()} via the shim and returns the
+     * raw shim status code (story 212):
+     * <ul>
+     *   <li>{@code 1} — {@code ASE_OK}, panel was shown and closed normally.</li>
+     *   <li>{@link #CONTROL_PANEL_NOT_PRESENT} ({@code 0}) — driver does
+     *       not provide a control panel ({@code ASE_NotPresent}).</li>
+     *   <li>negative — any other {@code ASIOError} (driver-side failure).</li>
+     * </ul>
+     *
+     * <p>The native call blocks the calling thread until the user
+     * closes the modal panel; callers must therefore invoke this on a
+     * dedicated platform thread, never on the JavaFX thread or the
+     * audio render thread.</p>
+     *
+     * <p>If the shim or the {@code openControlPanel} symbol is
+     * unavailable, returns a generic failure (negative). FFM-level
+     * exceptions are also normalised to a generic failure rather than
+     * propagated, so the supervising {@link AsioBackend#openControlPanel()}
+     * runnable can translate every non-OK code into a clear
+     * {@link AudioBackendException}.</p>
+     */
+    int openControlPanel() {
+        if (!isControlPanelAvailable()) {
+            return -1;
+        }
+        try {
+            return (int) openControlPanel.invokeExact();
+        } catch (Throwable ignored) {
+            return -1;
         }
     }
 

@@ -194,30 +194,86 @@ public final class AsioBackend implements AudioBackend {
     }
 
     /**
-     * Do not advertise control-panel support until the native ASIO
-     * control-panel bridge is actually wired. Returning an empty
-     * {@link Optional} allows the UI to disable the action instead of
-     * exposing a button that can only fail at runtime.
+     * Returns {@code Optional.of(this::invokeAsioControlPanel)} when
+     * the {@code asioshim} library is present and exports
+     * {@code asioshim_openControlPanel} (story 212), and
+     * {@link Optional#empty()} otherwise.
      *
-     * <p>When the FFM downcall to {@code ASIOControlPanel()} is wired
-     * by the implementation layer that ships the Steinberg ASIO SDK
-     * shim (see {@code daw-core/native/asio/}), this method should
-     * return {@code Optional.of(this::invokeAsioControlPanel)}.</p>
+     * <p>The dialog ({@code AudioSettingsDialog}) uses the empty
+     * result to disable the "Open Driver Control Panel" button with
+     * the existing tooltip. The non-empty result triggers the FFM
+     * downcall to Steinberg's {@code ASIOControlPanel()} via the
+     * native shim under {@code daw-core/native/asio/}.</p>
      */
     @Override
     public Optional<Runnable> openControlPanel() {
-        return Optional.empty();
+        try (AsioCapabilityShim shim = capabilityShimFactory.get()) {
+            if (!shim.isControlPanelAvailable()) {
+                return Optional.empty();
+            }
+        }
+        return Optional.of(this::invokeAsioControlPanel);
     }
 
     /**
-     * Placeholder for a future bridge to the FFM-bound
-     * {@code ASIOControlPanel()} symbol from the native shim under
-     * {@code daw-core/native/asio/}. This backend does not currently
-     * expose the control panel.
+     * Dispatches the FFM downcall to Steinberg's
+     * {@code ASIOControlPanel()} on a dedicated daemon platform thread
+     * (story 212).
+     *
+     * <p>The native call blocks the calling thread until the user
+     * closes the modal panel, so it must not run on the JavaFX thread
+     * (which would freeze the UI) nor on a virtual thread (the
+     * carrier would be pinned by the modal Win32 dialog's message
+     * pump). A daemon platform thread satisfies both constraints.</p>
+     *
+     * <p>The runnable returns as soon as the downcall is dispatched —
+     * matching the WASAPI fire-and-forget contract — not when the
+     * user closes the panel. The dialog's existing
+     * {@code onOpenControlPanel} hook re-queries device capabilities
+     * after the runnable returns; story 218's reset-request path
+     * handles the case where the driver fired
+     * {@code kAsioResetRequest} while its panel was open.</p>
+     *
+     * <p>Failures observed by the worker thread are translated into
+     * {@link AudioBackendException} and logged via the supervising
+     * uncaught-exception handler so the runnable never throws past
+     * the dialog's notification handler — only the calling-thread
+     * shim-unavailable path throws synchronously.</p>
      */
     private void invokeAsioControlPanel() {
-        throw new AudioBackendException(
-                "ASIO control panel is not implemented in this build.");
+        // Pre-flight: if the shim disappeared between openControlPanel()
+        // and now, throw synchronously so the dialog surfaces the error.
+        try (AsioCapabilityShim shim = capabilityShimFactory.get()) {
+            if (!shim.isControlPanelAvailable()) {
+                throw new AudioBackendException(
+                        "ASIO control panel is not available: the asioshim "
+                                + "library or asioshim_openControlPanel symbol is missing.");
+            }
+        }
+        Runnable worker = () -> {
+            try (AsioCapabilityShim shim = capabilityShimFactory.get()) {
+                if (!shim.isControlPanelAvailable()) {
+                    throw new AudioBackendException(
+                            "ASIO control panel is not available: the asioshim "
+                                    + "library or asioshim_openControlPanel symbol is missing.");
+                }
+                int rc = shim.openControlPanel();
+                if (rc == AsioCapabilityShim.CONTROL_PANEL_NOT_PRESENT) {
+                    throw new AudioBackendException(
+                            "Driver does not provide a control panel");
+                }
+                if (rc != 1) {
+                    throw new AudioBackendException(
+                            "Could not launch ASIO control panel: " + rc);
+                }
+            }
+        };
+        Thread.ofPlatform()
+                .name("asio-control-panel")
+                .daemon(true)
+                .uncaughtExceptionHandler((t, e) -> LOG.log(Level.WARNING,
+                        "ASIO control panel launch failed", e))
+                .start(worker);
     }
 
     @Override
