@@ -77,13 +77,14 @@ public final class HrtfImportController {
      * {@code DawProject.getActiveHrtfProfileName()}) into a usable selection.
      *
      * <p>If the reference matches a built-in {@link HrtfProfile} display name,
-     * a {@link Resolution#hit} is returned for that factory profile.
-     * If it matches an imported profile in the library, the personalized
-     * profile is loaded. If it matches neither (the project came from another
-     * machine that had the profile imported), the resolver falls back to the
-     * "Medium" factory profile — the closest neutral baseline — and the
-     * resulting {@link Resolution#fallbackWarning()} is non-empty so the UI
-     * can show a one-shot notification.</p>
+     * a {@link Resolution} with {@link Resolution#generic()} set is returned.
+     * If it matches an imported profile in the library, a resolution with
+     * {@link Resolution#personalized()} set is returned. If it matches
+     * neither (the project came from another machine that had the profile
+     * imported), the resolver falls back to {@link HrtfProfile#MEDIUM} — the
+     * neutral baseline — and the resulting
+     * {@link Resolution#fallbackWarning()} is non-empty so the UI can show a
+     * one-shot notification.</p>
      *
      * @param requested the project's stored profile reference; may be {@code null}
      * @return a {@link Resolution} describing the chosen profile
@@ -104,32 +105,19 @@ public final class HrtfImportController {
             if (imported.isPresent()) {
                 return new Resolution(null, imported.get(), Optional.empty());
             }
-        } catch (IOException ignored) {
-            // Treat read errors the same as a missing profile and fall back.
+        } catch (IOException | IllegalArgumentException ignored) {
+            // Treat read errors and invalid profile names the same as a
+            // missing profile and fall back.
         }
 
-        // Fall back: pick the first generic profile whose display name is
-        // closest in length to the missing reference; "Medium" is the default
-        // when nothing else applies.
-        HrtfProfile fallback = pickClosestFactoryProfile(requested);
+        // Fall back to the neutral "Medium" factory profile — deterministic
+        // regardless of the missing profile's name.
+        HrtfProfile fallback = HrtfProfile.MEDIUM;
         String warning = "HRTF profile \"" + requested
                 + "\" is not available on this machine; falling back to \""
                 + fallback.displayName() + "\". Re-import the SOFA file to restore "
                 + "the personalized profile.";
         return new Resolution(fallback, null, Optional.of(warning));
-    }
-
-    private static HrtfProfile pickClosestFactoryProfile(String requested) {
-        HrtfProfile best = HrtfProfile.MEDIUM;
-        int bestDelta = Math.abs(best.displayName().length() - requested.length());
-        for (HrtfProfile p : HrtfProfile.values()) {
-            int delta = Math.abs(p.displayName().length() - requested.length());
-            if (delta < bestDelta) {
-                best = p;
-                bestDelta = delta;
-            }
-        }
-        return best;
     }
 
     /**

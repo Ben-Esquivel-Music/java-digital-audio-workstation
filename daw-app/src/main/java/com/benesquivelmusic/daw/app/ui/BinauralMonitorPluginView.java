@@ -51,6 +51,7 @@ public final class BinauralMonitorPluginView extends VBox {
     private final Button importButton;
     private final Button manageButton;
     private Consumer<HrtfProfileLibrary.ProfileEntry> profileSelectionListener;
+    private boolean suppressNotification;
 
     /**
      * Creates a binaural monitor view bound to the given plugin and library.
@@ -91,7 +92,7 @@ public final class BinauralMonitorPluginView extends VBox {
         profileCombo.setPrefWidth(220);
         refreshProfiles();
         profileCombo.valueProperty().addListener((_, _, entry) -> {
-            if (entry != null && profileSelectionListener != null) {
+            if (entry != null && profileSelectionListener != null && !suppressNotification) {
                 profileSelectionListener.accept(entry);
             }
         });
@@ -110,8 +111,8 @@ public final class BinauralMonitorPluginView extends VBox {
         wetLabel.setStyle("-fx-text-fill: #ccc; -fx-font-size: 11px;");
         wetSlider = new Slider(0.0, 1.0, 0.5);
         wetSlider.setPrefWidth(220);
-        // No public setter on the plugin — kept for visual feedback only;
-        // the host should pick this up via PluginParameter wiring.
+        wetSlider.valueProperty().addListener((_, _, v) ->
+                plugin.setAutomatableParameter(0, v.doubleValue()));
 
         getChildren().addAll(title, profileLabel, profileRow, wetLabel, wetSlider);
     }
@@ -152,22 +153,41 @@ public final class BinauralMonitorPluginView extends VBox {
         return false;
     }
 
+    /**
+     * Like {@link #selectProfileByName(String)} but suppresses the profile
+     * selection listener — used during initial restore to avoid
+     * dirty-flagging the project with its own saved value.
+     */
+    public boolean selectProfileByNameSilently(String name) {
+        suppressNotification = true;
+        try {
+            return selectProfileByName(name);
+        } finally {
+            suppressNotification = false;
+        }
+    }
+
     /** Reloads the chooser items from the library. */
     public void refreshProfiles() {
-        List<HrtfProfileLibrary.ProfileEntry> entries = controller.chooserEntries();
-        ObservableList<HrtfProfileLibrary.ProfileEntry> obs = FXCollections.observableArrayList(entries);
-        HrtfProfileLibrary.ProfileEntry previous = profileCombo.getValue();
-        profileCombo.setItems(obs);
-        if (previous != null) {
-            for (HrtfProfileLibrary.ProfileEntry e : obs) {
-                if (e.displayName().equals(previous.displayName())) {
-                    profileCombo.getSelectionModel().select(e);
-                    return;
+        suppressNotification = true;
+        try {
+            List<HrtfProfileLibrary.ProfileEntry> entries = controller.chooserEntries();
+            ObservableList<HrtfProfileLibrary.ProfileEntry> obs = FXCollections.observableArrayList(entries);
+            HrtfProfileLibrary.ProfileEntry previous = profileCombo.getValue();
+            profileCombo.setItems(obs);
+            if (previous != null) {
+                for (HrtfProfileLibrary.ProfileEntry e : obs) {
+                    if (e.displayName().equals(previous.displayName())) {
+                        profileCombo.getSelectionModel().select(e);
+                        return;
+                    }
                 }
             }
-        }
-        if (!obs.isEmpty() && profileCombo.getValue() == null) {
-            profileCombo.getSelectionModel().selectFirst();
+            if (!obs.isEmpty() && profileCombo.getValue() == null) {
+                profileCombo.getSelectionModel().selectFirst();
+            }
+        } finally {
+            suppressNotification = false;
         }
     }
 

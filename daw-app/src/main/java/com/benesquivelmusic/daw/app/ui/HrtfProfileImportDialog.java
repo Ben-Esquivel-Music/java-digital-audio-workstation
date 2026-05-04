@@ -128,6 +128,9 @@ public final class HrtfProfileImportDialog extends Dialog<String> {
             } catch (IOException ex) {
                 event.consume();
                 showError("Failed to save profile: " + ex.getMessage());
+            } catch (IllegalArgumentException ex) {
+                event.consume();
+                showError("Invalid profile name: " + ex.getMessage());
             }
         });
 
@@ -263,9 +266,10 @@ public final class HrtfProfileImportDialog extends Dialog<String> {
             for (double[] pos : positions) {
                 double az = Math.toRadians(pos[0]);
                 double el = pos[1];          // degrees, [-90, 90]
-                // Project: distance from centre = cos(elevation), so the equator
-                // sits on the rim and the poles are at the centre — a polar
-                // azimuthal projection split per hemisphere.
+                // Project: distance from centre uses a linear mapping
+                // (1 - |elevation|/90) so the equator sits on the rim and
+                // the poles are at the centre — a simplified polar azimuthal
+                // projection split per hemisphere.
                 double rad = (1.0 - Math.abs(el) / 90.0) * r;
                 double x = cx + rad * Math.cos(az);
                 double y = cy - rad * Math.sin(az);

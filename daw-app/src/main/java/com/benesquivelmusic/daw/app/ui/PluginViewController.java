@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplayWindow;
 import com.benesquivelmusic.daw.app.ui.display.TunerDisplayWindow;
 import com.benesquivelmusic.daw.core.plugin.*;
+import com.benesquivelmusic.daw.core.spatial.binaural.HrtfImportController;
 import com.benesquivelmusic.daw.core.spatial.binaural.HrtfProfileLibrary;
 import com.benesquivelmusic.daw.sdk.plugin.PluginContext;
 import javafx.scene.Scene;
@@ -503,13 +504,22 @@ final class PluginViewController {
         // Persist the user's selection on the active project so it survives
         // save/load (story 174 — per-project active HRTF profile).
         binauralMonitorView.setProfileSelectionListener(entry -> {
-            host.project().setActiveHrtfProfileName(entry.displayName());
-            host.setProjectDirty();
+            String current = host.project().getActiveHrtfProfileName();
+            if (!entry.displayName().equals(current)) {
+                host.project().setActiveHrtfProfileName(entry.displayName());
+                host.setProjectDirty();
+            }
         });
-        // Honour any previously saved selection.
+        // Honour any previously saved selection, resolving through the
+        // controller so missing profiles trigger the one-shot fallback warning.
         String saved = host.project().getActiveHrtfProfileName();
         if (saved != null) {
-            binauralMonitorView.selectProfileByName(saved);
+            HrtfImportController resolver = new HrtfImportController(
+                    hrtfProfileLibrary, host.sampleRate());
+            HrtfImportController.Resolution resolution = resolver.resolve(saved);
+            binauralMonitorView.selectProfileByNameSilently(resolution.displayName());
+            resolution.fallbackWarning().ifPresent(warning ->
+                    host.showNotification(NotificationLevel.WARNING, warning));
         }
 
         Stage stage = new Stage(StageStyle.UTILITY);
