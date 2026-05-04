@@ -10,6 +10,7 @@ import com.benesquivelmusic.daw.core.audio.AudioDeviceManager;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
+import com.benesquivelmusic.daw.core.persistence.ChannelNameSnapshotReconciler;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
@@ -469,7 +470,7 @@ public final class MainController {
             // No active device bound yet — use a placeholder that
             // satisfies the non-null contract; ASIO's implementation
             // enumerates the currently-open device regardless of the id.
-            device = new DeviceId(backend.name(), "default");
+            device = DeviceId.defaultFor(backend.name());
         }
         try {
             return isInput
@@ -485,16 +486,15 @@ public final class MainController {
     }
 
     /**
-     * Compares each track's saved {@code inputRoutingDisplayName} (and
+     * Reconciles each track's saved {@code inputRoutingDisplayName} (and
      * each mixer channel's saved {@code outputRoutingDisplayName})
-     * against the live driver-reported name at the same index, and
-     * surfaces exactly one warning notification per project load when
-     * any mismatch is detected (story 215).
+     * against the live driver-reported names using the existing
+     * {@link ChannelNameSnapshotReconciler}, and surfaces at most one
+     * warning notification per project load (story 215).
      *
-     * <p>The notification is one-shot per project load: even when a
-     * project has 50 tracks all wired to renamed channels the user
-     * sees a single "Channel names changed since last save" message,
-     * not 50.</p>
+     * <p>The reconciler also rewrites snapshots to the live names as a
+     * side-effect, so the next save carries the up-to-date names and a
+     * subsequent load will not warn again.</p>
      */
     private void notifyChannelNameMismatchOnce() {
         if (project == null || notificationBar == null) {
@@ -502,9 +502,12 @@ public final class MainController {
         }
         List<AudioChannelInfo> liveInputs = liveChannelInfo(true);
         List<AudioChannelInfo> liveOutputs = liveChannelInfo(false);
-        ChannelNameMismatchDetector.detect(project, liveInputs, liveOutputs)
-                .ifPresent(label -> notificationBar.show(NotificationLevel.WARNING,
-                        "Channel names changed since last save: " + label));
+        if (liveInputs.isEmpty() && liveOutputs.isEmpty()) {
+            return;
+        }
+        ChannelNameSnapshotReconciler.reconcile(project, liveInputs, liveOutputs)
+                .warning()
+                .ifPresent(msg -> notificationBar.show(NotificationLevel.WARNING, msg));
     }
 
     private void createViewNavigationController() {
