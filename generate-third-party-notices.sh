@@ -153,7 +153,12 @@ automatically include it in this notices file on the next build.
 
 This project bundles or links to the following third-party native
 libraries at runtime. Each library retains its own license; the full
-text of each license is reproduced below.
+text of each license is reproduced below where redistributable.
+
+Some entries are **build-time-only** dependencies whose source we link
+against but cannot redistribute under their license terms. These
+entries are listed at the end without a reproduced license text; see
+each entry's website for the full license agreement.
 
 ---
 
@@ -247,10 +252,14 @@ HEADER
         echo ""
         echo "- **Version**: ${VERSION}"
         echo "- **License**: ${LICENSE}"
+        echo "- **Linkage**: build-time only (source is **not redistributed** with this project)"
         if [[ -n "${WEBSITE}" ]]; then
             echo "- **Website**: ${WEBSITE}"
         fi
-        echo "- **Linkage**: build-time only (not redistributed)"
+        echo ""
+        echo "> **Note:** The license terms for this dependency prohibit redistribution"
+        echo "> of the source code. The full license text is available at the Website"
+        echo "> URL above. This entry is included for attribution purposes only."
         echo ""
         if [[ -n "${NOTICE}" ]]; then
             echo "${NOTICE}"

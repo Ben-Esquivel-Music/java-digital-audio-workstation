@@ -107,6 +107,15 @@ class NativeLibraryDetectorTest {
      * requires the library to be present on the FFM library path
      * (skipped on a fresh Windows checkout that has not yet built the
      * shim).
+     *
+     * <p>This test lives in {@code daw-core} rather than {@code daw-sdk}
+     * because the native build that produces
+     * {@code target/build/native/asioshim.dll} runs in {@code daw-core}'s
+     * {@code generate-resources} phase, and only {@code daw-core}'s
+     * Surefire config sets {@code -Djava.library.path=${native.libs.dir}}.
+     * The {@code daw-sdk} test suite executes earlier in the reactor
+     * (before the native build) and does not have the library path set,
+     * so a test there would always be skipped.</p>
      */
     @Test
     @EnabledOnOs(OS.WINDOWS)
@@ -121,6 +130,31 @@ class NativeLibraryDetectorTest {
                 .orElseThrow();
         assertThat(asioshim.available()).isTrue();
         assertThat(asioshim.detectedPath()).isNotEmpty();
+    }
+
+    /**
+     * Story 224 — when the bundled {@code asioshim.dll} is present on
+     * a Windows build, the key symbols required by
+     * {@code AsioFormatChangeShim} must be resolvable via FFM so the
+     * shim can install its upcall callback. This test confirms
+     * {@code installAsioMessageCallback} and
+     * {@code uninstallAsioMessageCallback} are exported.
+     */
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void asioshimExportsRequiredSymbolsOnWindows() {
+        assumeTrue(NativeLibraryDetector.isAvailable("asioshim"),
+                "asioshim.dll not on java.library.path — skip "
+                        + "(build the native libs with -DASIO_SDK_DIR=...)");
+        try (var arena = java.lang.foreign.Arena.ofConfined()) {
+            var lookup = java.lang.foreign.SymbolLookup.libraryLookup("asioshim", arena);
+            assertThat(lookup.find("installAsioMessageCallback"))
+                    .as("installAsioMessageCallback symbol")
+                    .isPresent();
+            assertThat(lookup.find("uninstallAsioMessageCallback"))
+                    .as("uninstallAsioMessageCallback symbol")
+                    .isPresent();
+        }
     }
 
     @Test

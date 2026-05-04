@@ -74,30 +74,53 @@ public final class NativeLibraryDetector {
      * is currently resolvable via the bundled {@code java.library.path}
      * directories or the OS-level system loader.
      *
-     * <p>This is a lightweight existence check: it does not enumerate
-     * symbols and does not consult {@link #detectAll()}'s display-name
-     * mapping. Callers pass the same base name they would hand to
-     * {@link java.lang.foreign.SymbolLookup#libraryLookup(String,
-     * java.lang.foreign.Arena)} (e.g. {@code "asioshim"}, {@code "vorbis"}).</p>
-     *
-     * <p>Used by Windows-gated tests via
-     * {@code Assumptions.assumeTrue(NativeLibraryDetector.isAvailable("asioshim"))}
-     * so the test is skipped on hosts that do not bundle the library
-     * (Linux, macOS, fresh Windows checkouts without an ASIO SDK) and
-     * fails on Windows CI builds where the library should be present.</p>
+     * <p>Convenience overload that defaults {@code soVersion} to {@code 0}.
+     * This is correct for libraries whose runtime SONAME is 0 (e.g.
+     * {@code libogg.so.0}) or whose platform naming has no versioned
+     * variant (e.g. {@code asioshim.dll} on Windows). For libraries
+     * with a non-zero SONAME (e.g. {@code libvorbisenc.so.2}), use
+     * {@link #isAvailable(String, int)} instead.</p>
      *
      * @param baseName the library base name (no {@code lib} prefix, no
      *                 platform suffix); must not be null
      * @return true iff the library is loadable on the current host
+     * @see #isAvailable(String, int)
      */
     public static boolean isAvailable(String baseName) {
+        return isAvailable(baseName, 0);
+    }
+
+    /**
+     * Returns {@code true} if a native library with the given base name
+     * and SOVERSION is currently resolvable via the bundled
+     * {@code java.library.path} directories or the OS-level system loader.
+     *
+     * <p>This is a lightweight existence check: it does not enumerate
+     * symbols and does not consult {@link #detectAll()}'s display-name
+     * mapping. Callers pass the same base name they would hand to
+     * {@link java.lang.foreign.SymbolLookup#libraryLookup(String,
+     * java.lang.foreign.Arena)} (e.g. {@code "asioshim"}, {@code "vorbis"})
+     * together with the library's runtime SOVERSION (e.g. {@code 0} for
+     * {@code libogg.so.0}, {@code 2} for {@code libvorbisenc.so.2}).</p>
+     *
+     * <p>The {@code soVersion} is used to generate the versioned
+     * platform candidate names via
+     * {@link NativeLibraryLoader#platformLibraryNames(String, String, int)},
+     * matching the same resolution used by {@link #detectAll()} and
+     * {@link NativeLibraryLoader#loadLibrary(Arena, String, int)}.</p>
+     *
+     * @param baseName  the library base name (no {@code lib} prefix, no
+     *                  platform suffix); must not be null
+     * @param soVersion the SONAME version number (e.g. {@code 0} for
+     *                  {@code libogg.so.0}, {@code 2} for
+     *                  {@code libvorbisenc.so.2}); on Windows this
+     *                  parameter is ignored since DLLs are unversioned
+     * @return true iff the library is loadable on the current host
+     */
+    public static boolean isAvailable(String baseName, int soVersion) {
         java.util.Objects.requireNonNull(baseName, "baseName must not be null");
         String os = System.getProperty("os.name", "").toLowerCase();
-        // The SOVERSION is irrelevant for the unversioned candidate
-        // (`asioshim.dll`, `libasioshim.so`, `libasioshim.dylib`); the
-        // versioned candidate is also probed but harmlessly absent for
-        // first-party libraries we ship without a SONAME.
-        String[] names = NativeLibraryLoader.platformLibraryNames(os, baseName, 0);
+        String[] names = NativeLibraryLoader.platformLibraryNames(os, baseName, soVersion);
         if (NativeLibraryLoader.findFirstLoadableInLibraryPath(names) != null) {
             return true;
         }

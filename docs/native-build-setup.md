@@ -153,7 +153,7 @@ skip on hosts that have not yet built the shim.
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | `cmake -DASIO_SDK_DIR=... ...` errors with `ASIO_SDK_DIR=... does not look like a Steinberg ASIO SDK tree` | Path points at the parent of the SDK extract, or the extract is missing the `host/` subtree | Re-extract the SDK ZIP and re-point `ASIO_SDK_DIR` at the directory that contains `common/`, `host/`, `host/pc/` |
-| `mvn package` finishes but `daw-app/target/dist/native/windows-x64/` lacks `asioshim.dll` | `ASIO_SDK_DIR` was not visible to the CMake configure step | Set `ASIO_SDK_DIR` as an environment variable before running Maven, or pass it explicitly via `mvn -DargLine=...` |
+| `mvn package` finishes but `daw-app/target/dist/native/windows-x64/` lacks `asioshim.dll` | `ASIO_SDK_DIR` was not visible to the CMake configure step | Set `ASIO_SDK_DIR` as an environment variable before running Maven (CMake reads it from the environment; Maven's `-DargLine=...` only affects the Surefire test JVM, not the CMake configure step) |
 | Help dialog reports asioshim missing on a fresh Windows build | The native build was skipped (`-DskipNativeBuild=true`) or `ASIO_SDK_DIR` was unset | Re-run `mvn package` with `ASIO_SDK_DIR` set |
 | `AsioFormatChangeShimTest.shimRegistersAgainstBundledAsioshimDll` skipped on Windows CI | `asioshim.dll` not bundled on the FFM library path for the test JVM | Ensure the CI job runs the full native build (which copies into `target/build/native/`) before `mvn test` |
 

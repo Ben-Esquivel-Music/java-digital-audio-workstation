@@ -9,7 +9,12 @@ automatically include it in this notices file on the next build.
 
 This project bundles or links to the following third-party native
 libraries at runtime. Each library retains its own license; the full
-text of each license is reproduced below.
+text of each license is reproduced below where redistributable.
+
+Some entries are **build-time-only** dependencies whose source we link
+against but cannot redistribute under their license terms. These
+entries are listed at the end without a reproduced license text; see
+each entry's website for the full license agreement.
 
 ---
 
@@ -1924,8 +1929,12 @@ Public License instead of this License.  But first, please read
 
 - **Version**: 2.3+
 - **License**: Steinberg ASIO SDK Licensing Agreement (proprietary; non-redistributable source)
+- **Linkage**: build-time only (source is **not redistributed** with this project)
 - **Website**: https://www.steinberg.net/asiosdk
-- **Linkage**: build-time only (not redistributed)
+
+> **Note:** The license terms for this dependency prohibit redistribution
+> of the source code. The full license text is available at the Website
+> URL above. This entry is included for attribution purposes only.
 
 The `asioshim` native bridge under `daw-core/native/asio/` is compiled against the Steinberg ASIO SDK headers and host glue source files (`asio.cpp`, `asiodrivers.cpp`, `asiolist.cpp`). Steinberg's licence forbids redistribution of the SDK source, so this repository does **not** vendor the SDK; the build is opt-in via the `ASIO_SDK_DIR` CMake variable. Contributors who wish to build the asioshim.dll must download and accept the SDK licence directly from Steinberg. See `docs/native-build-setup.md` for the full setup instructions and `daw-core/native/asio/README.md` for the exported-symbol contract. ASIO is a trademark and software of Steinberg Media Technologies GmbH.
 
