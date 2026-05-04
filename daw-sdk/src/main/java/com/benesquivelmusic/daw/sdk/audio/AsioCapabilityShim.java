@@ -74,6 +74,16 @@ class AsioCapabilityShim implements AutoCloseable {
      * returning {@link Optional#empty()}.
      */
     private final MethodHandle openControlPanel;
+    /**
+     * Optional handle for {@code asioshim_getClockSources} (story 216).
+     * {@code null} if the symbol is not present in the shim build.
+     */
+    private final MethodHandle getClockSources;
+    /**
+     * Optional handle for {@code asioshim_setClockSource} (story 216).
+     * {@code null} if the symbol is not present in the shim build.
+     */
+    private final MethodHandle setClockSource;
     private boolean closed;
 
     /**
@@ -89,6 +99,8 @@ class AsioCapabilityShim implements AutoCloseable {
         MethodHandle gsr = null;
         MethodHandle ssr = null;
         MethodHandle ocp = null;
+        MethodHandle gcs = null;
+        MethodHandle scs = null;
         SymbolLookup lookup = null;
         Linker linker = null;
         try {
@@ -133,12 +145,39 @@ class AsioCapabilityShim implements AutoCloseable {
                 // ABI mismatch or any other failure: leave handle null.
             }
         }
+        // Story 216: resolve clock-source symbols optionally — older
+        // shim builds may not export them, in which case the
+        // AsioBackend falls back to the empty-list / UnsupportedOperation
+        // contract documented on AudioBackend.
+        if (ok && lookup != null && linker != null) {
+            try {
+                gcs = linker.downcallHandle(
+                        lookup.find("asioshim_getClockSources").orElseThrow(
+                                () -> new UnsatisfiedLinkError("asioshim_getClockSources")),
+                        FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+                scs = linker.downcallHandle(
+                        lookup.find("asioshim_setClockSource").orElseThrow(
+                                () -> new UnsatisfiedLinkError("asioshim_setClockSource")),
+                        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
+            } catch (IllegalArgumentException | UnsatisfiedLinkError ignored) {
+                // Older shim build without the clock-source exports —
+                // leave both handles null so isClockSourceAvailable() = false.
+                gcs = null;
+                scs = null;
+            } catch (Throwable ignored) {
+                gcs = null;
+                scs = null;
+            }
+        }
         this.available = ok;
         this.getBufferSize = gbs;
         this.canSampleRate = csr;
         this.getSampleRate = gsr;
         this.setSampleRate = ssr;
         this.openControlPanel = ocp;
+        this.getClockSources = gcs;
+        this.setClockSource = scs;
     }
 
     /** Returns {@code true} when all four entry points were resolved. */
@@ -280,6 +319,128 @@ class AsioCapabilityShim implements AutoCloseable {
         } catch (Throwable ignored) {
             return -1;
         }
+    }
+
+    /**
+     * Returns {@code true} when both clock-source symbols
+     * ({@code asioshim_getClockSources} and {@code asioshim_setClockSource})
+     * resolved at construction (story 216). Older shim builds that only
+     * export the four capability symbols still report
+     * {@link #isAvailable()} = true while {@code isClockSourceAvailable()}
+     * returns {@code false}.
+     */
+    boolean isClockSourceAvailable() {
+        return isAvailable() && getClockSources != null && setClockSource != null;
+    }
+
+    /**
+     * Bytes per {@code ASIOClockSourceCStruct} entry as defined by the
+     * native shim (32-byte name, 4×int32 for index / associatedChannel /
+     * associatedGroup / isCurrentSource).
+     */
+    static final int CLOCK_SOURCE_STRIDE = 48;
+    /**
+     * Practical capacity for the clock-source array. ASIO's spec sets
+     * no upper bound, but no shipping interface exposes more than a
+     * handful (Internal + 1-3 external sync inputs); 32 is generous.
+     */
+    static final int CLOCK_SOURCE_CAPACITY = 32;
+
+    /** Raw clock-source row decoded from the native struct. */
+    record RawClockSource(int id, String name, int associatedChannel,
+                          int associatedGroup, boolean current) {
+    }
+
+    /**
+     * Calls {@code ASIOGetClockSources} via the shim. Returns the
+     * decoded list of clock-source rows on {@code ASE_OK}, or an empty
+     * list if the shim is unavailable, the symbol is missing, the
+     * native call returned non-{@code ASE_OK}, or any FFM error.
+     *
+     * <p>The {@code name} field is decoded as ASCII per the ASIO SDK
+     * contract; non-ASCII bytes (which a non-conformant driver may
+     * emit) are replaced with {@code '?'} to keep
+     * {@link ClockSource#name()} non-blank and printable.</p>
+     */
+    java.util.List<RawClockSource> getClockSources() {
+        if (!isClockSourceAvailable()) {
+            return java.util.List.of();
+        }
+        try (Arena call = Arena.ofConfined()) {
+            MemorySegment array = call.allocate((long) CLOCK_SOURCE_STRIDE
+                    * CLOCK_SOURCE_CAPACITY);
+            MemorySegment count = call.allocate(ValueLayout.JAVA_INT);
+            count.set(ValueLayout.JAVA_INT, 0, CLOCK_SOURCE_CAPACITY);
+            int rc = (int) getClockSources.invokeExact(array, count);
+            if (rc != ASE_OK) {
+                return java.util.List.of();
+            }
+            int n = count.get(ValueLayout.JAVA_INT, 0);
+            if (n <= 0) {
+                return java.util.List.of();
+            }
+            if (n > CLOCK_SOURCE_CAPACITY) {
+                n = CLOCK_SOURCE_CAPACITY;
+            }
+            java.util.List<RawClockSource> rows = new java.util.ArrayList<>(n);
+            for (int i = 0; i < n; i++) {
+                long base = (long) i * CLOCK_SOURCE_STRIDE;
+                String name = decodeAsciiName(array, base, 32);
+                int idx       = array.get(ValueLayout.JAVA_INT, base + 32);
+                int chan      = array.get(ValueLayout.JAVA_INT, base + 36);
+                int group     = array.get(ValueLayout.JAVA_INT, base + 40);
+                int isCurrent = array.get(ValueLayout.JAVA_INT, base + 44);
+                rows.add(new RawClockSource(idx, name, chan, group, isCurrent != 0));
+            }
+            return java.util.List.copyOf(rows);
+        } catch (RuntimeException ignored) {
+            return java.util.List.of();
+        } catch (Throwable ignored) {
+            return java.util.List.of();
+        }
+    }
+
+    /**
+     * Calls {@code ASIOSetClockSource(reference)} via the shim and
+     * returns the raw {@code ASIOError} the driver returned. ASE_OK is
+     * 0; non-zero values are translated by
+     * {@link AsioBackend#selectClockSource(DeviceId, int)} into
+     * {@link AudioBackendException} with mapped messages. Returns a
+     * sentinel non-zero value when the shim is unavailable so callers
+     * see a uniform "rejection" response.
+     */
+    int setClockSource(int reference) {
+        if (!isClockSourceAvailable()) {
+            // Mirror Steinberg's ASE_NotPresent (-1000) when the shim
+            // simply isn't there — semantically "unknown source / no
+            // driver" which is the right error mapping for callers.
+            return -1000;
+        }
+        try {
+            return (int) setClockSource.invokeExact(reference);
+        } catch (Throwable ignored) {
+            return -1000;
+        }
+    }
+
+    /**
+     * Decodes a fixed-length ASCII byte field (NUL-terminated, padded)
+     * into a Java {@link String}. Non-ASCII bytes (which a buggy driver
+     * may emit) are replaced with {@code '?'} to preserve the
+     * non-blank invariant required by {@link ClockSource#name()}.
+     */
+    private static String decodeAsciiName(MemorySegment seg, long base, int maxLen) {
+        StringBuilder sb = new StringBuilder(maxLen);
+        for (int i = 0; i < maxLen; i++) {
+            int b = seg.get(ValueLayout.JAVA_BYTE, base + i) & 0xFF;
+            if (b == 0) break;
+            if (b < 0x20 || b > 0x7E) {
+                sb.append('?');
+            } else {
+                sb.append((char) b);
+            }
+        }
+        return sb.toString();
     }
 
     /** Releases the FFM arena. Idempotent. */
