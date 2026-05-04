@@ -465,8 +465,11 @@ public final class AsioBackend implements AudioBackend {
      * {@code ASIOSetClockSource(int)} via the {@link AsioCapabilityShim}
      * on a dedicated daemon platform thread (story 216), consistent
      * with stories 218 / 221 — the native driver call must not run on
-     * the audio render thread, and we cannot pin the JavaFX thread on
-     * a potentially-blocking driver call either.
+     * the audio render thread. The method blocks on
+     * {@link CompletableFuture#join()}, so callers must invoke it off
+     * the JavaFX application thread (the Audio Settings dialog already
+     * does this — its clock-source combo listener runs on a background
+     * thread, mirroring {@link #invokeAsioControlPanel()}).
      *
      * <p>A non-zero return from the shim is translated into a
      * {@link AudioBackendException} with the ASE error code mapped to
@@ -497,7 +500,7 @@ public final class AsioBackend implements AudioBackend {
                 .start(() -> {
                     try (AsioCapabilityShim shim = capabilityShimFactory.get()) {
                         if (!shim.isClockSourceAvailable()) {
-                            result.completeExceptionally(new AudioBackendException(
+                            result.completeExceptionally(new UnsupportedOperationException(
                                     "ASIO clock-source selection requires the native shim "
                                             + "under daw-core/native/asio/ which is not present "
                                             + "in this build."));
@@ -511,7 +514,7 @@ public final class AsioBackend implements AudioBackend {
                         result.completeExceptionally(new AudioBackendException(
                                 "Could not set ASIO clock source " + sourceId
                                         + ": " + asioErrorMessage(rc)));
-                    } catch (RuntimeException e) {
+                    } catch (Throwable e) {
                         result.completeExceptionally(new AudioBackendException(
                                 "ASIO clock-source selection failed: "
                                         + (e.getMessage() == null
@@ -524,6 +527,9 @@ public final class AsioBackend implements AudioBackend {
             result.join();
         } catch (CompletionException e) {
             Throwable cause = e.getCause();
+            if (cause instanceof UnsupportedOperationException uoe) {
+                throw uoe;
+            }
             if (cause instanceof AudioBackendException abe) {
                 throw abe;
             }

@@ -185,9 +185,9 @@ ASIOSHIM_EXPORT int asioshim_getClockSources(void* outArray, int* outCount) {
         }
         row[31] = '\0';
         // Pack int32 fields little-endian (FFM ValueLayout.JAVA_INT
-        // matches host endian, but ASIO only ships on little-endian
-        // hosts — Windows x64 / x86 / ARM64 / macOS — so a direct
-        // memcpy preserves the contract).
+        // matches host endian, and ASIO is Windows-only — x64 / x86 /
+        // ARM64, all little-endian — so a direct memcpy preserves the
+        // contract).
         int32_t idx       = static_cast<int32_t>(scratch[i].index);
         int32_t chan      = static_cast<int32_t>(scratch[i].associatedChannel);
         int32_t group     = static_cast<int32_t>(scratch[i].associatedGroup);

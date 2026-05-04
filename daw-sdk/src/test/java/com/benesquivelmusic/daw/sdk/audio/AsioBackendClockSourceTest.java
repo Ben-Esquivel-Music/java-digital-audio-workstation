@@ -151,7 +151,7 @@ class AsioBackendClockSourceTest {
     void selectClockSourceThrowsWhenShimMissing() {
         AsioBackend.setCapabilityShimFactory(StubShim::unavailable);
         assertThatThrownBy(() -> new AsioBackend().selectClockSource(DEVICE, 0))
-                .isInstanceOf(AudioBackendException.class)
+                .isInstanceOf(UnsupportedOperationException.class)
                 .hasMessageContaining("native shim");
     }
 
