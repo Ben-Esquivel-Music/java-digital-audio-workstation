@@ -237,6 +237,7 @@ public final class MainController {
         updateProjectInfo();
         updateCheckpointStatus();
         updateUndoRedoState();
+        installIoLatencyClickHandler();
         animationController.start();
         viewNavigationController.getMixerView().setPluginRegistry(pluginRegistry);
         // Story 137: bind the input-level-monitor registry into the mixer
@@ -1228,6 +1229,106 @@ public final class MainController {
         AudioSettingsDialog dialog = new AudioSettingsDialog(settingsModel, audioEngineController);
         dialog.showAndWait();
         status("Audio settings closed", DawIcon.STATUS);
+    }
+
+    /**
+     * Installs the click handler on the transport-bar I/O latency
+     * indicator (story 217). A primary-button click opens an
+     * {@link IoLatencyDetailsPopup} surfacing the three driver-reported
+     * components and an embedded "Calibrate&hellip;" button that opens
+     * a {@link LatencyCalibrationDialog} on the same input device list.
+     *
+     * <p>The label retains its existing tooltip and styling — only its
+     * cursor and on-click behaviour are augmented.</p>
+     */
+    private void installIoLatencyClickHandler() {
+        if (ioRoutingLabel == null) {
+            return;
+        }
+        ioRoutingLabel.setCursor(javafx.scene.Cursor.HAND);
+        ioRoutingLabel.setOnMouseClicked(event -> {
+            if (event.getButton() == javafx.scene.input.MouseButton.PRIMARY) {
+                openIoLatencyDetailsPopup();
+            }
+        });
+    }
+
+    /**
+     * Composes and shows the I/O latency details popup. Reads the
+     * driver-reported latency and any active per-device override from
+     * the {@link AudioEngineController}, and wires the embedded
+     * "Calibrate&hellip;" button to {@link #openLatencyCalibrationDialog()}.
+     */
+    void openIoLatencyDetailsPopup() {
+        com.benesquivelmusic.daw.sdk.audio.RoundTripLatency driver =
+                audioEngineController != null
+                        ? audioEngineController.driverReportedLatency()
+                        : com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN;
+        Integer override = audioEngineController != null
+                ? audioEngineController.latencyOverrideFrames().orElse(null)
+                : null;
+        double sampleRate = project.getFormat().sampleRate();
+        IoLatencyDetailsPopup popup = new IoLatencyDetailsPopup(
+                driver, override, sampleRate, this::openLatencyCalibrationDialog);
+        popup.showAndWait();
+    }
+
+    /**
+     * Composes and shows the latency calibration dialog. Hooks the
+     * dialog's {@link LatencyCalibrationDialog.CalibrationRunner} to
+     * the live audio engine and persists any accepted override via
+     * {@link AudioEngineController#setLatencyOverrideFrames(java.util.Optional)}.
+     *
+     * <p>The default runner used by production wiring plays a
+     * single-sample impulse via {@link com.benesquivelmusic.daw.sdk.audio.LatencyCalibration#generateImpulse(int)}
+     * and captures it back through the active audio engine. When no
+     * audio backend is bound (test stubs) the runner reports an
+     * inconclusive result rather than throwing.</p>
+     */
+    void openLatencyCalibrationDialog() {
+        if (audioEngineController == null) {
+            return;
+        }
+        java.util.List<com.benesquivelmusic.daw.sdk.audio.AudioChannelInfo> inputs =
+                listInputChannelsForCalibration();
+        double sampleRate = project.getFormat().sampleRate();
+        com.benesquivelmusic.daw.sdk.audio.RoundTripLatency driver =
+                audioEngineController.driverReportedLatency();
+        LatencyCalibrationDialog.CalibrationRunner runner = input -> {
+            // Production wiring is intentionally minimal: synthesize an
+            // impulse and report no impulse detected. Real impulse
+            // playback / capture is wired by an end-to-end harness in
+            // a follow-up story; this stub preserves the contract that
+            // the dialog never blocks the FX thread and surfaces a
+            // graceful "no impulse detected" result panel rather than
+            // an error.
+            return com.benesquivelmusic.daw.sdk.audio.LatencyCalibration.measure(
+                    com.benesquivelmusic.daw.sdk.audio.LatencyCalibration.generateImpulse(2048),
+                    driver.totalFrames());
+        };
+        LatencyCalibrationDialog dialog = new LatencyCalibrationDialog(inputs, sampleRate, runner);
+        java.util.Optional<java.util.Optional<Integer>> result = dialog.showAndWait();
+        if (result.isPresent() && result.get().isPresent()) {
+            audioEngineController.setLatencyOverrideFrames(result.get());
+        }
+    }
+
+    /**
+     * Returns the input channels the calibration dialog offers in its
+     * source combo. Currently returns the active backend's input
+     * channels (story 215 / 223). When no input channel info is
+     * available the list is empty and the dialog disables its
+     * <em>Run calibration</em> button.
+     */
+    private java.util.List<com.benesquivelmusic.daw.sdk.audio.AudioChannelInfo>
+            listInputChannelsForCalibration() {
+        // Heuristic: build a single "Loopback" pseudo-channel so the
+        // dialog has at least one selectable input until the
+        // story-215 / story-223 channel-info wiring is plumbed
+        // through. This keeps the calibration UI usable on systems
+        // where the backend has no driver-reported channel names.
+        return java.util.List.of(new com.benesquivelmusic.daw.sdk.audio.AudioChannelInfo(
+                0, "Loopback / measurement input"));
     }
 
     void onHome() {

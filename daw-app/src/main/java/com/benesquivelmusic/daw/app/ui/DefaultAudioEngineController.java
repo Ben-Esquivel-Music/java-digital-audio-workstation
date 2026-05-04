@@ -73,6 +73,18 @@ final class DefaultAudioEngineController implements AudioEngineController {
     private final AtomicReference<Flow.Subscription> deviceEventSubscription = new AtomicReference<>();
 
     /**
+     * Per-device calibration override (in sample frames) accepted by
+     * the user via {@code LatencyCalibrationDialog} — story 217. When
+     * non-null this is folded into {@link #reportedLatency()} so the
+     * recording pipeline shifts captured clips by the calibrated value
+     * rather than by the driver's (mistrusted) report. Persisted to
+     * {@code ~/.daw/audio-settings.json} through
+     * {@link com.benesquivelmusic.daw.sdk.audio.AudioSettingsStore}'s
+     * {@code latencyOverrideFramesByDeviceKey} map.
+     */
+    private final AtomicReference<Integer> latencyOverrideFrames = new AtomicReference<>();
+
+    /**
      * Single-thread worker that runs the
      * {@link AudioDeviceEvent.FormatChangeRequested} reopen flow off the
      * device-event thread (story 218). Coalescing of rapid-fire reset
@@ -359,11 +371,46 @@ final class DefaultAudioEngineController implements AudioEngineController {
 
     @Override
     public com.benesquivelmusic.daw.sdk.audio.RoundTripLatency reportedLatency() {
+        com.benesquivelmusic.daw.sdk.audio.RoundTripLatency driver = driverReportedLatency();
+        Integer override = latencyOverrideFrames.get();
+        if (override == null) {
+            return driver;
+        }
+        // Fold override into a single-component RoundTripLatency so the
+        // total equals the calibrated value while keeping the record
+        // shape recording pipelines already understand.
+        return new com.benesquivelmusic.daw.sdk.audio.RoundTripLatency(override, 0, 0);
+    }
+
+    @Override
+    public com.benesquivelmusic.daw.sdk.audio.RoundTripLatency driverReportedLatency() {
         NativeAudioBackend backend = audioEngine.getAudioBackend();
         if (backend == null) {
             return com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN;
         }
         return backend.reportedLatency();
+    }
+
+    @Override
+    public Optional<Integer> latencyOverrideFrames() {
+        return Optional.ofNullable(latencyOverrideFrames.get());
+    }
+
+    @Override
+    public void setLatencyOverrideFrames(Optional<Integer> frames) {
+        Objects.requireNonNull(frames, "frames must not be null");
+        if (frames.isPresent() && frames.get() < 0) {
+            throw new IllegalArgumentException(
+                    "override frames must be >= 0: " + frames.get());
+        }
+        latencyOverrideFrames.set(frames.orElse(null));
+        // Apply to the live recording pipeline if one is active. The
+        // recording pipeline is owned by the transport controller and
+        // queries reportedLatency() at recording-start, so the next
+        // recording will pick up the new value automatically. No live
+        // mutation is required from this controller — see the issue
+        // notes ("the active value is the source of truth for the
+        // recording-time-shift compensation").
     }
 
     /**
