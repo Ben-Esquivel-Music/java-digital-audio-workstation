@@ -260,21 +260,92 @@ public interface AudioEngineController {
     }
 
     /**
-     * Returns the driver-reported round-trip latency for the currently
-     * opened audio stream. The {@link TransportController} queries this
-     * once at recording start and passes the result to
+     * Returns the <em>effective</em> round-trip latency the recording
+     * pipeline should compensate for. When a per-device calibration
+     * override is active (story 217 — {@code IoLatencyDetailsPopup}
+     * and {@code LatencyCalibrationDialog}), implementations fold the
+     * override into this result so that
      * {@link com.benesquivelmusic.daw.core.recording.RecordingPipeline#setReportedLatency(RoundTripLatency)}
-     * so captured clips are shifted by the driver's reported
-     * input + output + safety-offset frames.
+     * shifts captured clips by the user-calibrated value rather than
+     * by the (mistrusted) driver report. With no override active, this
+     * is identical to {@link #driverReportedLatency()}.
      *
-     * <p>The default implementation returns
+     * <p>The {@link TransportController} queries this once at
+     * recording start and passes the result to the recording pipeline.
+     * The default implementation returns
      * {@link RoundTripLatency#UNKNOWN} (zero compensation), which is
      * safe for test stubs that have no real backend.</p>
      *
-     * @return the driver-reported round-trip latency; never {@code null}
+     * @return the effective round-trip latency the recording pipeline
+     *         should compensate for; never {@code null}
      */
     default RoundTripLatency reportedLatency() {
         return RoundTripLatency.UNKNOWN;
+    }
+
+    /**
+     * Returns the unmodified driver-reported round-trip latency for
+     * the currently opened audio stream — i.e. the three components
+     * exactly as the backend reports them, never folded with a
+     * calibration override.
+     *
+     * <p>The {@code IoLatencyDetailsPopup} surfaces these so the user
+     * sees the raw driver values even when an override is in effect,
+     * and the {@code LatencyCalibrationDialog} compares its measured
+     * round-trip against this value. Implementations that have no
+     * override concept may simply delegate to {@link #reportedLatency()}.
+     *
+     * <p>The default implementation delegates to
+     * {@link #reportedLatency()}, which is safe for test stubs that
+     * do not yet model per-device overrides.</p>
+     *
+     * @return the driver-reported round-trip latency; never {@code null}
+     */
+    default RoundTripLatency driverReportedLatency() {
+        return reportedLatency();
+    }
+
+    /**
+     * Returns the per-device calibration override (in sample frames)
+     * the user accepted via {@code LatencyCalibrationDialog} for the
+     * currently opened device, or {@link Optional#empty()} when no
+     * override is active for that device. The
+     * {@code IoLatencyDetailsPopup} uses this to choose between the
+     * <em>"reported by driver"</em> and <em>"calibrated by user"</em>
+     * source-label badges.
+     *
+     * <p>The default implementation returns empty, which is safe for
+     * test stubs that do not persist overrides.</p>
+     *
+     * @return the active override in frames, or empty
+     */
+    default Optional<Integer> latencyOverrideFrames() {
+        return Optional.empty();
+    }
+
+    /**
+     * Sets (or clears) the per-device calibration override for the
+     * currently opened device. Pass {@link Optional#empty()} to clear
+     * the override and return to the driver-reported value.
+     *
+     * <p>The override is keyed by the active {@link DeviceId} so it
+     * does not bleed across devices within the same session.
+     * Implementations store the value in memory; the
+     * {@code MainController} persists it to
+     * {@code AudioSettingsStore.latencyOverrideFramesByDeviceKey}
+     * after the dialog closes.</p>
+     *
+     * <p>The override takes effect at the next recording start when
+     * {@link com.benesquivelmusic.daw.core.recording.RecordingPipeline#setReportedLatency(RoundTripLatency)}
+     * queries {@link #reportedLatency()} — no live mid-session
+     * mutation is performed. The default implementation is a no-op
+     * which is safe for test stubs.</p>
+     *
+     * @param frames the override in frames, or empty to clear; the
+     *               value (when present) must be {@code &ge; 0}
+     */
+    default void setLatencyOverrideFrames(Optional<Integer> frames) {
+        // no-op for test stubs
     }
 
     /**

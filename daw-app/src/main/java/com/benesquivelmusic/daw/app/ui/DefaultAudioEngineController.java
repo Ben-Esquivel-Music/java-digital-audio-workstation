@@ -73,6 +73,21 @@ final class DefaultAudioEngineController implements AudioEngineController {
     private final AtomicReference<Flow.Subscription> deviceEventSubscription = new AtomicReference<>();
 
     /**
+     * Per-device calibration overrides (in sample frames) accepted by
+     * the user via {@code LatencyCalibrationDialog} — story 217. Keyed
+     * by the device-key encoding used by {@link AudioSettingsStore.Settings#deviceKey(DeviceId)}.
+     * The override for the currently active device is folded into
+     * {@link #reportedLatency()} so the recording pipeline shifts
+     * captured clips by the calibrated value rather than by the
+     * driver's (mistrusted) report. Persisted to
+     * {@code ~/.daw/audio-settings.json} through
+     * {@link com.benesquivelmusic.daw.sdk.audio.AudioSettingsStore}'s
+     * {@code latencyOverrideFramesByDeviceKey} map.
+     */
+    private final java.util.concurrent.ConcurrentHashMap<String, Integer>
+            latencyOverridesByDeviceKey = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
      * Single-thread worker that runs the
      * {@link AudioDeviceEvent.FormatChangeRequested} reopen flow off the
      * device-event thread (story 218). Coalescing of rapid-fire reset
@@ -359,11 +374,68 @@ final class DefaultAudioEngineController implements AudioEngineController {
 
     @Override
     public com.benesquivelmusic.daw.sdk.audio.RoundTripLatency reportedLatency() {
+        com.benesquivelmusic.daw.sdk.audio.RoundTripLatency driver = driverReportedLatency();
+        Integer override = activeDeviceOverride();
+        if (override == null) {
+            return driver;
+        }
+        // Fold override into a single-component RoundTripLatency so the
+        // total equals the calibrated value while keeping the record
+        // shape recording pipelines already understand.
+        return new com.benesquivelmusic.daw.sdk.audio.RoundTripLatency(override, 0, 0);
+    }
+
+    @Override
+    public com.benesquivelmusic.daw.sdk.audio.RoundTripLatency driverReportedLatency() {
         NativeAudioBackend backend = audioEngine.getAudioBackend();
         if (backend == null) {
             return com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN;
         }
         return backend.reportedLatency();
+    }
+
+    @Override
+    public Optional<Integer> latencyOverrideFrames() {
+        return Optional.ofNullable(activeDeviceOverride());
+    }
+
+    @Override
+    public void setLatencyOverrideFrames(Optional<Integer> frames) {
+        Objects.requireNonNull(frames, "frames must not be null");
+        if (frames.isPresent() && frames.get() < 0) {
+            throw new IllegalArgumentException(
+                    "override frames must be >= 0: " + frames.get());
+        }
+        DeviceId device = activeDevice.get();
+        if (device == null) {
+            // No active device — nothing to key by; ignore silently.
+            return;
+        }
+        String key = com.benesquivelmusic.daw.sdk.audio.AudioSettingsStore
+                .Settings.deviceKey(device);
+        if (frames.isPresent()) {
+            latencyOverridesByDeviceKey.put(key, frames.get());
+        } else {
+            latencyOverridesByDeviceKey.remove(key);
+        }
+        // The recording pipeline is owned by the transport controller and
+        // queries reportedLatency() at recording-start, so the next
+        // recording will pick up the new value automatically. No live
+        // mutation is required from this controller.
+    }
+
+    /**
+     * Returns the override for the currently active device, or null if
+     * no override is set for this device.
+     */
+    private Integer activeDeviceOverride() {
+        DeviceId device = activeDevice.get();
+        if (device == null) {
+            return null;
+        }
+        String key = com.benesquivelmusic.daw.sdk.audio.AudioSettingsStore
+                .Settings.deviceKey(device);
+        return latencyOverridesByDeviceKey.get(key);
     }
 
     /**
