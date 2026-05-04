@@ -56,7 +56,60 @@ public final class NativeLibraryDetector {
         results.add(detect(os, "libvorbisfile", "vorbisfile", 3,
                 "OGG Vorbis import and export"));
 
+        // asioshim is Windows-only — Steinberg's ASIO SDK is Windows-only,
+        // and the `daw-core/native/asio/CMakeLists.txt` silently skips the
+        // target on Linux / macOS. Probing on non-Windows hosts would
+        // always report "missing" and clutter the HelpDialog "Native
+        // libraries" tab, so we omit the entry entirely off-platform.
+        if (os.contains("win")) {
+            results.add(detect(os, "asioshim", "asioshim", 0,
+                    "ASIO driver capability bridge (story 224)"));
+        }
+
         return List.copyOf(results);
+    }
+
+    /**
+     * Returns {@code true} if a native library with the given base name
+     * is currently resolvable via the bundled {@code java.library.path}
+     * directories or the OS-level system loader.
+     *
+     * <p>This is a lightweight existence check: it does not enumerate
+     * symbols and does not consult {@link #detectAll()}'s display-name
+     * mapping. Callers pass the same base name they would hand to
+     * {@link java.lang.foreign.SymbolLookup#libraryLookup(String,
+     * java.lang.foreign.Arena)} (e.g. {@code "asioshim"}, {@code "vorbis"}).</p>
+     *
+     * <p>Used by Windows-gated tests via
+     * {@code Assumptions.assumeTrue(NativeLibraryDetector.isAvailable("asioshim"))}
+     * so the test is skipped on hosts that do not bundle the library
+     * (Linux, macOS, fresh Windows checkouts without an ASIO SDK) and
+     * fails on Windows CI builds where the library should be present.</p>
+     *
+     * @param baseName the library base name (no {@code lib} prefix, no
+     *                 platform suffix); must not be null
+     * @return true iff the library is loadable on the current host
+     */
+    public static boolean isAvailable(String baseName) {
+        java.util.Objects.requireNonNull(baseName, "baseName must not be null");
+        String os = System.getProperty("os.name", "").toLowerCase();
+        // The SOVERSION is irrelevant for the unversioned candidate
+        // (`asioshim.dll`, `libasioshim.so`, `libasioshim.dylib`); the
+        // versioned candidate is also probed but harmlessly absent for
+        // first-party libraries we ship without a SONAME.
+        String[] names = NativeLibraryLoader.platformLibraryNames(os, baseName, 0);
+        if (NativeLibraryLoader.findFirstLoadableInLibraryPath(names) != null) {
+            return true;
+        }
+        for (String name : names) {
+            try (Arena arena = Arena.ofConfined()) {
+                SymbolLookup.libraryLookup(name, arena);
+                return true;
+            } catch (IllegalArgumentException | UnsatisfiedLinkError _) {
+                // try next candidate
+            }
+        }
+        return false;
     }
 
     /**

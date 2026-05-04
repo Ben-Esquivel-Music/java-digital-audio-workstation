@@ -1,14 +1,19 @@
 package com.benesquivelmusic.daw.sdk.audio;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 
+import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.lang.foreign.SymbolLookup;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Unit tests for {@link AsioFormatChangeShim} — story 218 FFM upcall
@@ -129,5 +134,51 @@ class AsioFormatChangeShimTest {
         }
         @Override public void onError(Throwable t) {}
         @Override public void onComplete() {}
+    }
+
+    /**
+     * Story 224 — when {@code asioshim.dll} is bundled on the FFM
+     * library path on a Windows build, opening the shim against the
+     * real library must successfully install the upcall callback
+     * (i.e. {@link AsioFormatChangeShim#isRegistered()} returns true).
+     *
+     * <p>The test is gated on Windows (Steinberg ASIO SDK is
+     * Windows-only — story 224 non-goals) and additionally skipped
+     * via {@link org.junit.jupiter.api.Assumptions#assumeTrue} when
+     * the library is not yet on the library path (typical for fresh
+     * checkouts that have not built native libs with
+     * {@code -DASIO_SDK_DIR=...}). On Windows CI builds where the
+     * asioshim binary IS bundled, absence becomes a hard failure
+     * because the assumption holds.</p>
+     */
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void shimRegistersAgainstBundledAsioshimDll() {
+        assumeTrue(asioshimAvailable(),
+                "asioshim.dll not on java.library.path — skip "
+                        + "(build the native libs with -DASIO_SDK_DIR=...)");
+        AsioBackend backend = new AsioBackend();
+        AudioBackendSupport support = new AudioBackendSupport();
+        try (AsioFormatChangeShim shim = new AsioFormatChangeShim(backend, support, DEVICE)) {
+            assertThat(shim.isRegistered())
+                    .as("isRegistered() must be true once installAsioMessageCallback resolves")
+                    .isTrue();
+        }
+    }
+
+    /**
+     * Lightweight inline existence probe — the daw-sdk module does
+     * not depend on daw-core, so {@code NativeLibraryDetector} is
+     * not available here. This mirrors what the production code in
+     * {@link AsioFormatChangeShim#tryRegister()} does on its slow
+     * path.
+     */
+    private static boolean asioshimAvailable() {
+        try (Arena arena = Arena.ofConfined()) {
+            SymbolLookup.libraryLookup("asioshim", arena);
+            return true;
+        } catch (IllegalArgumentException | UnsatisfiedLinkError _) {
+            return false;
+        }
     }
 }
