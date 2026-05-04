@@ -169,9 +169,13 @@ ASIOSHIM_EXPORT int asioshim_getClockSources(void* outArray, int* outCount) {
     ASIOClockSource scratch[MAX];
     long n = capacity;
     ASIOError err = ASIOGetClockSources(scratch, &n);
-    if (err != ASE_OK || n <= 0) {
+    if (err != ASE_OK) {
         *outCount = 0;
         return SHIM_FAIL;
+    }
+    if (n <= 0) {
+        *outCount = 0;
+        return SHIM_OK;
     }
     if (n > capacity) n = capacity;
     auto* bytes = static_cast<unsigned char*>(outArray);

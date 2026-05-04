@@ -22,12 +22,16 @@ and `AsioFormatChangeShim.java`.
 | `void installAsioMessageCallback(void* callback)` | (host upcall) | `AsioFormatChangeShim` (story 218) |
 | `void uninstallAsioMessageCallback()` | (host upcall) | `AsioFormatChangeShim` close |
 
-All capability functions return `1` for `ASE_OK` and `0` otherwise,
-**except** `asioshim_setClockSource`, which returns the raw `ASIOError`
-(0 on `ASE_OK`, negative for the SDK's standard error codes —
-`ASE_NotPresent`, `ASE_HWMalfunction`, `ASE_InvalidParameter`,
-`ASE_InvalidMode`, …) so the Java side can translate each into a
-mapped `AudioBackendException` message.
+Most capability functions return `1` (`SHIM_OK`) for `ASE_OK` and `0`
+(`SHIM_FAIL`) otherwise, with two exceptions:
+
+- **`asioshim_openControlPanel`** — returns `1` on `ASE_OK`, `0` when
+  `ASE_NotPresent` (no control panel), or `-1` for any other error.
+- **`asioshim_setClockSource`** — returns the raw `ASIOError` directly
+  (0 on `ASE_OK`, negative for the SDK's standard error codes —
+  `ASE_NotPresent`, `ASE_HWMalfunction`, `ASE_InvalidParameter`,
+  `ASE_InvalidMode`, …) so the Java side can translate each into a
+  mapped `AudioBackendException` message.
 
 `asioshim_getClockSources` writes into a caller-allocated buffer of
 `*outCount` entries (each entry is a fixed 48-byte struct: 32-byte
