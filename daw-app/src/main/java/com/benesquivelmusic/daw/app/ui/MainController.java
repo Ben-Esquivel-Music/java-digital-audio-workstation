@@ -24,6 +24,9 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
+import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
+import com.benesquivelmusic.daw.sdk.audio.AudioChannelInfo;
+import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import javafx.animation.FadeTransition;
 import javafx.fxml.FXML;
 import javafx.scene.Node;
@@ -34,6 +37,7 @@ import javafx.scene.layout.*;
 import javafx.stage.Stage;
 import javafx.util.Duration;
 
+import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.prefs.Preferences;
@@ -234,12 +238,19 @@ public final class MainController {
         updateUndoRedoState();
         animationController.start();
         viewNavigationController.getMixerView().setPluginRegistry(pluginRegistry);
-        // Story 137: wire the input-level-monitor registry into the mixer
+        // Story 137: bind the input-level-monitor registry into the mixer
         // so armed-track strips grow a second meter column with a latching
         // clip LED, and into the track-strip controller so armed tracks
         // also show the miniature clip indicator in the arrangement view.
         viewNavigationController.getMixerView()
                 .setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
+        // Story 215: wire driver-reported input/output channel-info
+        // suppliers into the mixer so per-track routing dropdowns render
+        // "Mic/Line 1" / "S/PDIF L" / "Phones 1 L" rather than the
+        // generic "Input N" labels. Each supplier reads the live SDK
+        // backend so a future driver-side rename is reflected on the
+        // next dropdown rebuild without restarting the DAW.
+        installChannelInfoSuppliers(viewNavigationController.getMixerView());
         if (trackStripController != null) {
             trackStripController.setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
         }
@@ -393,6 +404,17 @@ public final class MainController {
         // lazily as tracks are armed.
         inputLevelMonitorRegistry.clear();
         newMixerView.setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
+        // Story 215: the freshly-built MixerView starts with the default
+        // empty supplier — re-wire the live driver-channel suppliers so
+        // routing dropdowns show driver-reported names.
+        installChannelInfoSuppliers(newMixerView);
+        // Story 215: a project loaded from disk carries channelNameSnapshot
+        // values in its track / mixer-channel routing display names.
+        // Compare against what the live driver reports right now and
+        // surface a single notification per project load if any name has
+        // drifted (e.g., the user renamed "Mic 3" to "Hi-Z Inst 3" in
+        // the driver since saving).
+        notifyChannelNameMismatchOnce();
         viewNavigationController.setMixerView(newMixerView);
         viewNavigationController.onProjectChanged();
         pluginViewController.onProjectChanged(project);
@@ -416,6 +438,76 @@ public final class MainController {
         if (viewNavigationController.getActiveView() == DawView.MIXER) {
             rootPane.setCenter(newMixerView);
         }
+    }
+
+    /**
+     * Sentinel {@link DeviceId} used by the channel-info suppliers when
+     * no specific device id is known. The SDK backends'
+     * {@code inputChannels(DeviceId)} / {@code outputChannels(DeviceId)}
+     * implementations enumerate channels of the currently-open device
+     * regardless of the id passed in (the open device is implicit in
+     * the underlying native handle), so the placeholder is sufficient
+     * — backends only require a non-null argument.
+     */
+    private static final DeviceId DEFAULT_DEVICE_ID =
+            new DeviceId("active", "active");
+
+    /**
+     * Wires the {@link MixerView}'s driver-reported input/output
+     * channel-info suppliers (story 215) to the live SDK
+     * {@link AudioBackend} on the audio engine. Each supplier is a
+     * closure over {@code audioEngine}, so a future driver-side rename
+     * is reflected on the next dropdown rebuild without restarting the
+     * DAW. When no SDK backend is wired (e.g., the user is on legacy
+     * PortAudio / Java Sound), the suppliers return an empty list and
+     * the dropdown falls back to its legacy "Input N" labels.
+     */
+    private void installChannelInfoSuppliers(MixerView mixerView) {
+        mixerView.setInputChannelInfoSupplier(
+                () -> liveChannelInfo(/*input*/ true));
+        mixerView.setOutputChannelInfoSupplier(
+                () -> liveChannelInfo(/*input*/ false));
+    }
+
+    private List<AudioChannelInfo> liveChannelInfo(boolean isInput) {
+        AudioBackend backend = audioEngine == null ? null : audioEngine.getBackend();
+        if (backend == null) {
+            return List.of();
+        }
+        try {
+            return isInput
+                    ? backend.inputChannels(DEFAULT_DEVICE_ID)
+                    : backend.outputChannels(DEFAULT_DEVICE_ID);
+        } catch (RuntimeException e) {
+            // Never let a transient backend / FFM glitch crash the UI —
+            // fall back to the empty list which keeps the routing
+            // dropdown on its legacy labels.
+            LOG.log(Level.FINE, "Live channel-info lookup failed", e);
+            return List.of();
+        }
+    }
+
+    /**
+     * Compares each track's saved {@code inputRoutingDisplayName} (and
+     * each mixer channel's saved {@code outputRoutingDisplayName})
+     * against the live driver-reported name at the same index, and
+     * surfaces exactly one warning notification per project load when
+     * any mismatch is detected (story 215).
+     *
+     * <p>The notification is one-shot per project load: even when a
+     * project has 50 tracks all wired to renamed channels the user
+     * sees a single "Channel names changed since last save" message,
+     * not 50.</p>
+     */
+    private void notifyChannelNameMismatchOnce() {
+        if (project == null || notificationBar == null) {
+            return;
+        }
+        List<AudioChannelInfo> liveInputs = liveChannelInfo(true);
+        List<AudioChannelInfo> liveOutputs = liveChannelInfo(false);
+        ChannelNameMismatchDetector.detect(project, liveInputs, liveOutputs)
+                .ifPresent(label -> notificationBar.show(NotificationLevel.WARNING,
+                        "Channel names changed since last save: " + label));
     }
 
     private void createViewNavigationController() {

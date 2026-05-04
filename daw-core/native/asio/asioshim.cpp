@@ -53,6 +53,25 @@ struct ASIOClockSource {
 extern "C" ASIOError ASIOGetClockSources(ASIOClockSource* clocks, long* numSources);
 extern "C" ASIOError ASIOSetClockSource(long reference);
 
+// ASIOGetChannels reports the device's input / output channel counts.
+extern "C" ASIOError ASIOGetChannels(long* numInputChannels, long* numOutputChannels);
+
+// ASIOChannelInfo as defined in Steinberg's asio.h. The Steinberg
+// declaration uses long (32-bit on Windows) integer fields, an
+// ASIOSampleType enum (long), and a 32-byte fixed-length name buffer
+// (ASCII, NUL-terminated). The shim's FFM contract normalises that
+// layout into a fixed 56-byte struct with int32 fields so the Java
+// side does not need to track the SDK's platform-dependent long width.
+struct ASIOChannelInfo {
+    long channel;       // on input,  the channel index (0..numInputs-1) or output (0..numOutputs-1)
+    long isInput;       // on input,  1 = input, 0 = output
+    long isActive;      // on output, 1 = enabled in driver
+    long channelGroup;  // on output, driver's stereo-pair / group id
+    long type;          // on output, ASIOSampleType
+    char name[32];      // on output, ASCII NUL-terminated
+};
+extern "C" ASIOError ASIOGetChannelInfo(ASIOChannelInfo* info);
+
 // Steinberg's ASE_OK is 0 in the SDK, but the FFM contract documented
 // in AsioCapabilityShim and AsioFormatChangeShim normalises "OK" to 1
 // (so the Java side can treat a missing symbol or RPC failure as 0
@@ -212,6 +231,81 @@ ASIOSHIM_EXPORT int asioshim_getClockSources(void* outArray, int* outCount) {
 //  ASE_NotPresent  → unknown clock source id, etc).
 ASIOSHIM_EXPORT int asioshim_setClockSource(int reference) {
     return static_cast<int>(ASIOSetClockSource(static_cast<long>(reference)));
+}
+
+// ─── Channel-info bridge (story 215) ────────────────────────────────
+//
+// asioshim_getChannelCount mirrors ASIOGetChannels(numInputs, numOutputs)
+// so the controller knows how many channel indices to enumerate before
+// calling asioshim_getChannelInfo per index.
+//
+// Returns SHIM_OK (1) on ASE_OK, SHIM_FAIL (0) otherwise. On failure
+// both *outInputs and *outOutputs are set to 0.
+ASIOSHIM_EXPORT int asioshim_getChannelCount(int* outInputs, int* outOutputs) {
+    if (!outInputs || !outOutputs) {
+        if (outInputs) *outInputs = 0;
+        if (outOutputs) *outOutputs = 0;
+        return SHIM_FAIL;
+    }
+    long ins = 0, outs = 0;
+    ASIOError err = ASIOGetChannels(&ins, &outs);
+    if (err != ASE_OK) {
+        *outInputs = 0;
+        *outOutputs = 0;
+        return SHIM_FAIL;
+    }
+    if (ins < 0) ins = 0;
+    if (outs < 0) outs = 0;
+    *outInputs = static_cast<int>(ins);
+    *outOutputs = static_cast<int>(outs);
+    return SHIM_OK;
+}
+
+// asioshim_getChannelInfo wraps ASIOGetChannelInfo(ASIOChannelInfo*).
+// Layout the Java side reads via FFM: 56 bytes per entry,
+//   [0..4)   int32 channel          (also written by Java on entry)
+//   [4..8)   int32 isInput          (also written by Java on entry; 1 = input)
+//   [8..12)  int32 isActive
+//   [12..16) int32 channelGroup
+//   [16..20) int32 type             (ASIOSampleType)
+//   [20..24) int32 reserved (padding so name starts at byte 24)
+//   [24..56) char name[32]          ASCII, NUL-terminated
+//
+// The caller pre-fills channel and isInput; the shim copies those into
+// the SDK struct, calls ASIOGetChannelInfo, and writes the driver's
+// answer back into the normalised layout.
+//
+// Returns SHIM_OK (1) on ASE_OK, SHIM_FAIL (0) otherwise.
+ASIOSHIM_EXPORT int asioshim_getChannelInfo(int channelIndex, int isInput,
+                                            void* outInfo) {
+    if (!outInfo || channelIndex < 0) {
+        return SHIM_FAIL;
+    }
+    ASIOChannelInfo info{};
+    info.channel = channelIndex;
+    info.isInput = (isInput != 0) ? 1 : 0;
+    ASIOError err = ASIOGetChannelInfo(&info);
+    if (err != ASE_OK) {
+        return SHIM_FAIL;
+    }
+    auto* row = static_cast<unsigned char*>(outInfo);
+    int32_t ch        = static_cast<int32_t>(info.channel);
+    int32_t isIn      = static_cast<int32_t>(info.isInput);
+    int32_t active    = static_cast<int32_t>(info.isActive);
+    int32_t group     = static_cast<int32_t>(info.channelGroup);
+    int32_t type      = static_cast<int32_t>(info.type);
+    int32_t pad       = 0;
+    std::memcpy(row + 0,  &ch,     4);
+    std::memcpy(row + 4,  &isIn,   4);
+    std::memcpy(row + 8,  &active, 4);
+    std::memcpy(row + 12, &group,  4);
+    std::memcpy(row + 16, &type,   4);
+    std::memcpy(row + 20, &pad,    4);
+    for (int k = 0; k < 32; ++k) {
+        row[24 + k] = static_cast<unsigned char>(info.name[k]);
+    }
+    row[24 + 31] = '\0';  // defensive NUL termination of the last byte
+    return SHIM_OK;
 }
 
 // ─── Format-change host-callback bridge (story 218) ─────────────────

@@ -84,6 +84,16 @@ class AsioCapabilityShim implements AutoCloseable {
      * {@code null} if the symbol is not present in the shim build.
      */
     private final MethodHandle setClockSource;
+    /**
+     * Optional handle for {@code asioshim_getChannelCount} (story 215).
+     * {@code null} if the symbol is not present in the shim build.
+     */
+    private final MethodHandle getChannelCount;
+    /**
+     * Optional handle for {@code asioshim_getChannelInfo} (story 215).
+     * {@code null} if the symbol is not present in the shim build.
+     */
+    private final MethodHandle getChannelInfo;
     private boolean closed;
 
     /**
@@ -101,6 +111,8 @@ class AsioCapabilityShim implements AutoCloseable {
         MethodHandle ocp = null;
         MethodHandle gcs = null;
         MethodHandle scs = null;
+        MethodHandle gcc = null;
+        MethodHandle gci = null;
         SymbolLookup lookup = null;
         Linker linker = null;
         try {
@@ -170,6 +182,32 @@ class AsioCapabilityShim implements AutoCloseable {
                 scs = null;
             }
         }
+        // Story 215: resolve channel-info symbols optionally — older
+        // shim builds may not export them, in which case the
+        // AsioBackend falls back to the empty-list contract documented
+        // on AudioBackend (which the UI renders as the legacy
+        // "Input N" / "Output N" dropdowns).
+        if (ok && lookup != null && linker != null) {
+            try {
+                gcc = linker.downcallHandle(
+                        lookup.find("asioshim_getChannelCount").orElseThrow(
+                                () -> new UnsatisfiedLinkError("asioshim_getChannelCount")),
+                        FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+                gci = linker.downcallHandle(
+                        lookup.find("asioshim_getChannelInfo").orElseThrow(
+                                () -> new UnsatisfiedLinkError("asioshim_getChannelInfo")),
+                        FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                ValueLayout.ADDRESS));
+            } catch (IllegalArgumentException | UnsatisfiedLinkError ignored) {
+                gcc = null;
+                gci = null;
+            } catch (Throwable ignored) {
+                gcc = null;
+                gci = null;
+            }
+        }
         this.available = ok;
         this.getBufferSize = gbs;
         this.canSampleRate = csr;
@@ -178,6 +216,8 @@ class AsioCapabilityShim implements AutoCloseable {
         this.openControlPanel = ocp;
         this.getClockSources = gcs;
         this.setClockSource = scs;
+        this.getChannelCount = gcc;
+        this.getChannelInfo = gci;
     }
 
     /** Returns {@code true} when all four entry points were resolved. */
@@ -420,6 +460,89 @@ class AsioCapabilityShim implements AutoCloseable {
             return (int) setClockSource.invokeExact(reference);
         } catch (Throwable ignored) {
             return -1000;
+        }
+    }
+
+    /**
+     * Bytes per {@code ASIOChannelInfoCStruct} entry as defined by the
+     * native shim (24 bytes for the int32 header + 32-byte name buffer).
+     */
+    static final int CHANNEL_INFO_STRIDE = 56;
+
+    /** Raw channel-info row decoded from the native struct (story 215). */
+    record RawChannelInfo(int index, boolean isInput, boolean active,
+                          int channelGroup, int sampleType, String name) {
+    }
+
+    /**
+     * Returns {@code true} when both channel-info symbols
+     * ({@code asioshim_getChannelCount} and {@code asioshim_getChannelInfo})
+     * resolved at construction (story 215).
+     */
+    boolean isChannelInfoAvailable() {
+        return isAvailable() && getChannelCount != null && getChannelInfo != null;
+    }
+
+    /**
+     * Calls {@code ASIOGetChannels(numInputChannels, numOutputChannels)}
+     * via the shim. Returns an {@code int[]{inputs, outputs}} on
+     * {@code ASE_OK}, or {@link Optional#empty()} when the shim is
+     * unavailable, the symbol is missing, or the native call failed.
+     */
+    Optional<int[]> getChannelCount() {
+        if (!isChannelInfoAvailable()) {
+            return Optional.empty();
+        }
+        try (Arena call = Arena.ofConfined()) {
+            MemorySegment ins = call.allocate(ValueLayout.JAVA_INT);
+            MemorySegment outs = call.allocate(ValueLayout.JAVA_INT);
+            int rc = (int) getChannelCount.invokeExact(ins, outs);
+            if (rc != ASE_OK) {
+                return Optional.empty();
+            }
+            return Optional.of(new int[] {
+                    ins.get(ValueLayout.JAVA_INT, 0),
+                    outs.get(ValueLayout.JAVA_INT, 0)
+            });
+        } catch (RuntimeException ignored) {
+            return Optional.empty();
+        } catch (Throwable ignored) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Calls {@code ASIOGetChannelInfo(channel, isInput)} via the shim
+     * for the given direction and zero-based index. Returns the decoded
+     * {@link RawChannelInfo} on {@code ASE_OK}, or {@link Optional#empty()}
+     * on any failure.
+     */
+    Optional<RawChannelInfo> getChannelInfo(int channelIndex, boolean isInput) {
+        if (!isChannelInfoAvailable()) {
+            return Optional.empty();
+        }
+        if (channelIndex < 0) {
+            return Optional.empty();
+        }
+        try (Arena call = Arena.ofConfined()) {
+            MemorySegment row = call.allocate(CHANNEL_INFO_STRIDE);
+            int rc = (int) getChannelInfo.invokeExact(channelIndex,
+                    isInput ? 1 : 0, row);
+            if (rc != ASE_OK) {
+                return Optional.empty();
+            }
+            int idx    = row.get(ValueLayout.JAVA_INT, 0);
+            int isIn   = row.get(ValueLayout.JAVA_INT, 4);
+            int active = row.get(ValueLayout.JAVA_INT, 8);
+            int group  = row.get(ValueLayout.JAVA_INT, 12);
+            int type   = row.get(ValueLayout.JAVA_INT, 16);
+            String name = decodeAsciiName(row, 24, 32);
+            return Optional.of(new RawChannelInfo(idx, isIn != 0, active != 0,
+                    group, type, name));
+        } catch (RuntimeException ignored) {
+            return Optional.empty();
+        } catch (Throwable ignored) {
+            return Optional.empty();
         }
     }
 

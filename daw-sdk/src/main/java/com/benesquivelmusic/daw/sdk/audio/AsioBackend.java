@@ -570,6 +570,75 @@ public final class AsioBackend implements AudioBackend {
         return new ClockKind.External();
     }
 
+    /**
+     * Reports driver-supplied input-channel metadata via
+     * {@code asioshim_getChannelCount} + {@code asioshim_getChannelInfo}
+     * (story 215). Each entry's display name comes verbatim from the
+     * driver's 32-byte ASCII {@code name} field; the {@link ChannelKind}
+     * is inferred from the name via {@link ChannelKindHeuristics}.
+     *
+     * <p>Inactive channels (driver-reported {@code isActive == 0}) are
+     * still included so {@link com.benesquivelmusic.daw.sdk.audio.AudioChannelInfo#active()}
+     * is {@code false} and the routing dropdown can grey them out with
+     * the existing "Disabled in driver" tooltip.</p>
+     *
+     * <p>When the {@code asioshim} library is absent or does not export
+     * the channel-info symbols, this returns {@link List#of()} — the
+     * inherited default — so the UI falls back to the legacy
+     * "Input N" labels exactly as before.</p>
+     */
+    @Override
+    public List<AudioChannelInfo> inputChannels(DeviceId device) {
+        Objects.requireNonNull(device, "device must not be null");
+        return enumerateChannels(true);
+    }
+
+    /**
+     * Output-side counterpart of {@link #inputChannels(DeviceId)}; see
+     * that method for the full contract (story 215).
+     */
+    @Override
+    public List<AudioChannelInfo> outputChannels(DeviceId device) {
+        Objects.requireNonNull(device, "device must not be null");
+        return enumerateChannels(false);
+    }
+
+    private static List<AudioChannelInfo> enumerateChannels(boolean isInput) {
+        try (AsioCapabilityShim shim = capabilityShimFactory.get()) {
+            if (!shim.isChannelInfoAvailable()) {
+                return List.of();
+            }
+            Optional<int[]> counts = shim.getChannelCount();
+            if (counts.isEmpty()) {
+                return List.of();
+            }
+            int total = isInput ? counts.get()[0] : counts.get()[1];
+            if (total <= 0) {
+                return List.of();
+            }
+            List<AudioChannelInfo> out = new java.util.ArrayList<>(total);
+            for (int i = 0; i < total; i++) {
+                Optional<AsioCapabilityShim.RawChannelInfo> info =
+                        shim.getChannelInfo(i, isInput);
+                if (info.isEmpty()) {
+                    // The shim either ran out of valid channels or the
+                    // driver returned an error; stop enumerating rather
+                    // than emit a synthetic placeholder.
+                    break;
+                }
+                String name = info.get().name();
+                if (name == null || name.isBlank()) {
+                    name = (isInput ? "Input " : "Output ") + (i + 1);
+                }
+                out.add(new AudioChannelInfo(
+                        i, name,
+                        ChannelKindHeuristics.infer(name),
+                        info.get().active()));
+            }
+            return List.copyOf(out);
+        }
+    }
+
     private static String asioErrorMessage(int rc) {
         return switch (rc) {
             case -1000 -> "ASE_NotPresent — unknown clock source id";
