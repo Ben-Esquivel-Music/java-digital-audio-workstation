@@ -262,18 +262,18 @@ ASIOSHIM_EXPORT int asioshim_getChannelCount(int* outInputs, int* outOutputs) {
 }
 
 // asioshim_getChannelInfo wraps ASIOGetChannelInfo(ASIOChannelInfo*).
-// Layout the Java side reads via FFM: 56 bytes per entry,
-//   [0..4)   int32 channel          (also written by Java on entry)
-//   [4..8)   int32 isInput          (also written by Java on entry; 1 = input)
+// The channel index and direction (input vs output) are passed as
+// explicit parameters — the caller does NOT pre-fill any fields in
+// outInfo. The shim populates the SDK struct from the parameters,
+// calls ASIOGetChannelInfo, and writes the driver's answer into the
+// normalised FFM layout at outInfo (56 bytes):
+//   [0..4)   int32 channel
+//   [4..8)   int32 isInput          (1 = input, 0 = output)
 //   [8..12)  int32 isActive
 //   [12..16) int32 channelGroup
 //   [16..20) int32 type             (ASIOSampleType)
 //   [20..24) int32 reserved (padding so name starts at byte 24)
 //   [24..56) char name[32]          ASCII, NUL-terminated
-//
-// The caller pre-fills channel and isInput; the shim copies those into
-// the SDK struct, calls ASIOGetChannelInfo, and writes the driver's
-// answer back into the normalised layout.
 //
 // Returns SHIM_OK (1) on ASE_OK, SHIM_FAIL (0) otherwise.
 ASIOSHIM_EXPORT int asioshim_getChannelInfo(int channelIndex, int isInput,

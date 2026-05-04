@@ -37,7 +37,8 @@ final class ChannelNameMismatchDetector {
      * {@link Optional#empty()} when every saved snapshot matches the
      * live driver-reported names (or there is nothing to compare).
      *
-     * @param project     the project just loaded from disk; must not be null
+     * @param project     the project just loaded from disk; {@code null} is
+     *                    tolerated (returns empty) for defensive call sites
      * @param liveInputs  driver-reported input-channel metadata; the
      *                    backend's empty list short-circuits to "no
      *                    mismatch" (we cannot tell)

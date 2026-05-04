@@ -441,18 +441,6 @@ public final class MainController {
     }
 
     /**
-     * Sentinel {@link DeviceId} used by the channel-info suppliers when
-     * no specific device id is known. The SDK backends'
-     * {@code inputChannels(DeviceId)} / {@code outputChannels(DeviceId)}
-     * implementations enumerate channels of the currently-open device
-     * regardless of the id passed in (the open device is implicit in
-     * the underlying native handle), so the placeholder is sufficient
-     * — backends only require a non-null argument.
-     */
-    private static final DeviceId DEFAULT_DEVICE_ID =
-            new DeviceId("active", "active");
-
-    /**
      * Wires the {@link MixerView}'s driver-reported input/output
      * channel-info suppliers (story 215) to the live SDK
      * {@link AudioBackend} on the audio engine. Each supplier is a
@@ -474,10 +462,19 @@ public final class MainController {
         if (backend == null) {
             return List.of();
         }
+        DeviceId device = audioEngineController != null
+                ? audioEngineController.getActiveDevice().orElse(null)
+                : null;
+        if (device == null) {
+            // No active device bound yet — use a placeholder that
+            // satisfies the non-null contract; ASIO's implementation
+            // enumerates the currently-open device regardless of the id.
+            device = new DeviceId(backend.name(), "default");
+        }
         try {
             return isInput
-                    ? backend.inputChannels(DEFAULT_DEVICE_ID)
-                    : backend.outputChannels(DEFAULT_DEVICE_ID);
+                    ? backend.inputChannels(device)
+                    : backend.outputChannels(device);
         } catch (RuntimeException e) {
             // Never let a transient backend / FFM glitch crash the UI —
             // fall back to the empty list which keeps the routing

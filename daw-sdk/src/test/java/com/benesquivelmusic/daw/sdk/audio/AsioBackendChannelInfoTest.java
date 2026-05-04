@@ -43,10 +43,10 @@ class AsioBackendChannelInfoTest {
                 6, raw(6, false, "Mic 7"),  // driver disabled
                 7, raw(7, true, "Aux 8"));
         Map<Integer, AsioCapabilityShim.RawChannelInfo> outs = Map.of(
-                0, raw(0, true, "Main Out L"),
-                1, raw(1, true, "Main Out R"),
-                2, raw(2, true, "Phones 1 L"),
-                3, raw(3, true, "Phones 1 R"));
+                0, rawOut(0, true, "Main Out L"),
+                1, rawOut(1, true, "Main Out R"),
+                2, rawOut(2, true, "Phones 1 L"),
+                3, rawOut(3, true, "Phones 1 R"));
         AsioBackend.setCapabilityShimFactory(() ->
                 StubShim.withChannels(8, 4, ins, outs));
 
@@ -124,6 +124,12 @@ class AsioBackendChannelInfoTest {
                                                           String name) {
         return new AsioCapabilityShim.RawChannelInfo(
                 idx, true, active, /*group*/ idx / 2, /*type*/ 18, name);
+    }
+
+    private static AsioCapabilityShim.RawChannelInfo rawOut(int idx, boolean active,
+                                                             String name) {
+        return new AsioCapabilityShim.RawChannelInfo(
+                idx, false, active, /*group*/ idx / 2, /*type*/ 18, name);
     }
 
     /**
