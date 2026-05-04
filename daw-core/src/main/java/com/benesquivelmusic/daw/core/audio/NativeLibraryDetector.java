@@ -97,11 +97,14 @@ public final class NativeLibraryDetector {
      *
      * <p>This is a lightweight existence check: it does not enumerate
      * symbols and does not consult {@link #detectAll()}'s display-name
-     * mapping. Callers pass the same base name they would hand to
-     * {@link java.lang.foreign.SymbolLookup#libraryLookup(String,
-     * java.lang.foreign.Arena)} (e.g. {@code "asioshim"}, {@code "vorbis"})
-     * together with the library's runtime SOVERSION (e.g. {@code 0} for
-     * {@code libogg.so.0}, {@code 2} for {@code libvorbisenc.so.2}).</p>
+     * mapping. Callers pass the same {@code baseName} convention used by
+     * {@link NativeLibraryLoader#loadLibrary(Arena, String, int)} and
+     * {@link NativeLibraryLoader#platformLibraryNames(String, String, int)}
+     * (e.g. {@code "asioshim"}, {@code "vorbis"}) together with the
+     * library's runtime SOVERSION (e.g. {@code 0} for
+     * {@code libogg.so.0}, {@code 2} for {@code libvorbisenc.so.2}).
+     * The base name is expanded into platform-specific filenames
+     * (e.g. {@code asioshim.dll}, {@code libvorbis.so.0}) before probing.</p>
      *
      * <p>The {@code soVersion} is used to generate the versioned
      * platform candidate names via

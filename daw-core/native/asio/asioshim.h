@@ -57,9 +57,19 @@
 #define ASIOSHIM_H_
 
 #if defined(_WIN32)
-#  define ASIOSHIM_API extern "C" __declspec(dllimport)
+#  if defined(ASIOSHIM_EXPORTS)
+#    define ASIOSHIM_DECL __declspec(dllexport)
+#  else
+#    define ASIOSHIM_DECL __declspec(dllimport)
+#  endif
 #else
-#  define ASIOSHIM_API extern "C"
+#  define ASIOSHIM_DECL
+#endif
+
+#ifdef __cplusplus
+#  define ASIOSHIM_API extern "C" ASIOSHIM_DECL
+#else
+#  define ASIOSHIM_API ASIOSHIM_DECL
 #endif
 
 // ── Capability queries (story 130 / 213) ──────────────────────────
