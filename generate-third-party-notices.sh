@@ -61,6 +61,19 @@ KNOWN_KEYS+=("lib/libmp3lame/COPYING");           KNOWN_VALS+=("LAME (libmp3lame
 EXTRA_ENTRIES=()
 EXTRA_ENTRIES+=("RoomAcoustiCpp (Java port; derivative work)|1.0.1|GNU General Public License (GPL), version 3|https://github.com/audiolabs/RoomAcoustiCpp|LICENSE|The \`daw-acoustics\` Maven module is a pure-Java port of the RoomAcoustiCpp room acoustics library. Per GPLv3 §5, the derivative work is distributed under the same GPLv3 license as the original. The vendored C++ source tree was removed from this repository once the port was complete; original upstream sources remain available at the Website URL above. The reproduced license text below is the same GPLv3 text used by this project itself (see the project root \`LICENSE\` file). See also \`daw-acoustics/NOTICE\` for the in-module attribution.|daw-acoustics/src/main/java/com/benesquivelmusic/daw/acoustics/")
 
+# ── Build-time-only attributions ────────────────────────────────────
+# Some third-party SDKs are linked at build time only and cannot be
+# redistributed under their license terms (so no license file is
+# vendored under lib/ and no compiled bits are shipped from these
+# vendors directly). They still need attribution because the produced
+# native library (e.g. asioshim.dll) is built from the SDK's headers
+# and host glue source files.
+#
+# Each entry is:
+#   display_name|version|license_type|website|notice
+BUILD_TIME_ENTRIES=()
+BUILD_TIME_ENTRIES+=("Steinberg ASIO SDK|2.3+|Steinberg ASIO SDK Licensing Agreement (proprietary; non-redistributable source)|https://www.steinberg.net/asiosdk|The \`asioshim\` native bridge under \`daw-core/native/asio/\` is compiled against the Steinberg ASIO SDK headers and host glue source files (\`asio.cpp\`, \`asiodrivers.cpp\`, \`asiolist.cpp\`). Steinberg's licence forbids redistribution of the SDK source, so this repository does **not** vendor the SDK; the build is opt-in via the \`ASIO_SDK_DIR\` CMake variable. Contributors who wish to build the asioshim.dll must download and accept the SDK licence directly from Steinberg. See \`docs/native-build-setup.md\` for the full setup instructions and \`daw-core/native/asio/README.md\` for the exported-symbol contract. ASIO is a trademark and software of Steinberg Media Technologies GmbH.")
+
 # Look up metadata for a license file path; prints the value or empty.
 lookup_known() {
     local key="$1"
@@ -140,7 +153,12 @@ automatically include it in this notices file on the next build.
 
 This project bundles or links to the following third-party native
 libraries at runtime. Each library retains its own license; the full
-text of each license is reproduced below.
+text of each license is reproduced below where redistributable.
+
+Some entries are **build-time-only** dependencies whose source we link
+against but cannot redistribute under their license terms. These
+entries are listed at the end without a reproduced license text; see
+each entry's website for the full license agreement.
 
 ---
 
@@ -222,6 +240,31 @@ HEADER
         fi
 
         echo ""
+        echo "---"
+        echo ""
+        INDEX=$((INDEX + 1))
+    done
+    # ── Emit build-time-only attribution entries ───────────────────
+    for entry in "${BUILD_TIME_ENTRIES[@]+"${BUILD_TIME_ENTRIES[@]}"}"; do
+        IFS='|' read -r NAME VERSION LICENSE WEBSITE NOTICE <<< "${entry}"
+
+        echo "## ${INDEX}. ${NAME}"
+        echo ""
+        echo "- **Version**: ${VERSION}"
+        echo "- **License**: ${LICENSE}"
+        echo "- **Linkage**: build-time only (source is **not redistributed** with this project)"
+        if [[ -n "${WEBSITE}" ]]; then
+            echo "- **Website**: ${WEBSITE}"
+        fi
+        echo ""
+        echo "> **Note:** The license terms for this dependency prohibit redistribution"
+        echo "> of the source code. The full license text is available at the Website"
+        echo "> URL above. This entry is included for attribution purposes only."
+        echo ""
+        if [[ -n "${NOTICE}" ]]; then
+            echo "${NOTICE}"
+            echo ""
+        fi
         echo "---"
         echo ""
         INDEX=$((INDEX + 1))

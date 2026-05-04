@@ -1,10 +1,13 @@
 package com.benesquivelmusic.daw.core.audio;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class NativeLibraryDetectorTest {
 
@@ -80,5 +83,90 @@ class NativeLibraryDetectorTest {
         assertThat(status.available()).isFalse();
         assertThat(status.detectedPath()).isEmpty();
         assertThat(status.libraryName()).isEqualTo("libnonexistent");
+    }
+
+    @Test
+    void isAvailableShouldRejectNullBaseName() {
+        org.assertj.core.api.Assertions.assertThatNullPointerException()
+                .isThrownBy(() -> NativeLibraryDetector.isAvailable(null));
+    }
+
+    @Test
+    void isAvailableShouldReturnFalseForNonExistentLibrary() {
+        assertThat(NativeLibraryDetector.isAvailable("nonexistent_library_xyz_zz"))
+                .isFalse();
+    }
+
+    /**
+     * Story 224 — on Windows builds the bundled {@code asioshim.dll}
+     * must be resolvable so the FFM upcall in {@code AsioFormatChangeShim}
+     * can install itself. On Linux / macOS the asioshim entry is
+     * intentionally absent from {@link NativeLibraryDetector#detectAll()}
+     * (Steinberg ASIO SDK is Windows-only — see story 224 non-goals),
+     * so this assertion is gated on Windows only and additionally
+     * requires the library to be present on the FFM library path
+     * (skipped on a fresh Windows checkout that has not yet built the
+     * shim).
+     *
+     * <p>This test lives in {@code daw-core} rather than {@code daw-sdk}
+     * because the native build that produces
+     * {@code target/build/native/asioshim.dll} runs in {@code daw-core}'s
+     * {@code generate-resources} phase, and only {@code daw-core}'s
+     * Surefire config sets {@code -Djava.library.path=${native.libs.dir}}.
+     * The {@code daw-sdk} test suite executes earlier in the reactor
+     * (before the native build) and does not have the library path set,
+     * so a test there would always be skipped.</p>
+     */
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void asioshimShouldBeResolvableOnWindowsWhenBundled() {
+        assumeTrue(NativeLibraryDetector.isAvailable("asioshim"),
+                "asioshim.dll not on java.library.path — skip "
+                        + "(build the native libs with -DASIO_SDK_DIR=...)");
+        List<NativeLibraryStatus> results = NativeLibraryDetector.detectAll();
+        NativeLibraryStatus asioshim = results.stream()
+                .filter(s -> s.libraryName().equals("asioshim"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(asioshim.available()).isTrue();
+        assertThat(asioshim.detectedPath()).isNotEmpty();
+    }
+
+    /**
+     * Story 224 — when the bundled {@code asioshim.dll} is present on
+     * a Windows build, the key symbols required by
+     * {@code AsioFormatChangeShim} must be resolvable via FFM so the
+     * shim can install its upcall callback. This test confirms
+     * {@code installAsioMessageCallback} and
+     * {@code uninstallAsioMessageCallback} are exported.
+     */
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void asioshimExportsRequiredSymbolsOnWindows() {
+        assumeTrue(NativeLibraryDetector.isAvailable("asioshim"),
+                "asioshim.dll not on java.library.path — skip "
+                        + "(build the native libs with -DASIO_SDK_DIR=...)");
+        try (var arena = java.lang.foreign.Arena.ofConfined()) {
+            var lookup = java.lang.foreign.SymbolLookup.libraryLookup("asioshim", arena);
+            assertThat(lookup.find("installAsioMessageCallback"))
+                    .as("installAsioMessageCallback symbol")
+                    .isPresent();
+            assertThat(lookup.find("uninstallAsioMessageCallback"))
+                    .as("uninstallAsioMessageCallback symbol")
+                    .isPresent();
+        }
+    }
+
+    @Test
+    void asioshimEntryShouldBeWindowsOnly() {
+        List<String> names = NativeLibraryDetector.detectAll().stream()
+                .map(NativeLibraryStatus::libraryName)
+                .toList();
+        boolean isWindows = System.getProperty("os.name", "").toLowerCase().contains("win");
+        if (isWindows) {
+            assertThat(names).contains("asioshim");
+        } else {
+            assertThat(names).doesNotContain("asioshim");
+        }
     }
 }

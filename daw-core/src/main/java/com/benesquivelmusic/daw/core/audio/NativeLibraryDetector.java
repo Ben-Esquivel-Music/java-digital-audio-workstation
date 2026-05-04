@@ -56,7 +56,86 @@ public final class NativeLibraryDetector {
         results.add(detect(os, "libvorbisfile", "vorbisfile", 3,
                 "OGG Vorbis import and export"));
 
+        // asioshim is Windows-only — Steinberg's ASIO SDK is Windows-only,
+        // and the `daw-core/native/asio/CMakeLists.txt` silently skips the
+        // target on Linux / macOS. Probing on non-Windows hosts would
+        // always report "missing" and clutter the HelpDialog "Native
+        // libraries" tab, so we omit the entry entirely off-platform.
+        if (os.contains("win")) {
+            results.add(detect(os, "asioshim", "asioshim", 0,
+                    "ASIO driver capability bridge (story 224)"));
+        }
+
         return List.copyOf(results);
+    }
+
+    /**
+     * Returns {@code true} if a native library with the given base name
+     * is currently resolvable via the bundled {@code java.library.path}
+     * directories or the OS-level system loader.
+     *
+     * <p>Convenience overload that defaults {@code soVersion} to {@code 0}.
+     * This is correct for libraries whose runtime SONAME is 0 (e.g.
+     * {@code libogg.so.0}) or whose platform naming has no versioned
+     * variant (e.g. {@code asioshim.dll} on Windows). For libraries
+     * with a non-zero SONAME (e.g. {@code libvorbisenc.so.2}), use
+     * {@link #isAvailable(String, int)} instead.</p>
+     *
+     * @param baseName the library base name (no {@code lib} prefix, no
+     *                 platform suffix); must not be null
+     * @return true iff the library is loadable on the current host
+     * @see #isAvailable(String, int)
+     */
+    public static boolean isAvailable(String baseName) {
+        return isAvailable(baseName, 0);
+    }
+
+    /**
+     * Returns {@code true} if a native library with the given base name
+     * and SOVERSION is currently resolvable via the bundled
+     * {@code java.library.path} directories or the OS-level system loader.
+     *
+     * <p>This is a lightweight existence check: it does not enumerate
+     * symbols and does not consult {@link #detectAll()}'s display-name
+     * mapping. Callers pass the same {@code baseName} convention used by
+     * {@link NativeLibraryLoader#loadLibrary(Arena, String, int)} and
+     * {@link NativeLibraryLoader#platformLibraryNames(String, String, int)}
+     * (e.g. {@code "asioshim"}, {@code "vorbis"}) together with the
+     * library's runtime SOVERSION (e.g. {@code 0} for
+     * {@code libogg.so.0}, {@code 2} for {@code libvorbisenc.so.2}).
+     * The base name is expanded into platform-specific filenames
+     * (e.g. {@code asioshim.dll}, {@code libvorbis.so.0}) before probing.</p>
+     *
+     * <p>The {@code soVersion} is used to generate the versioned
+     * platform candidate names via
+     * {@link NativeLibraryLoader#platformLibraryNames(String, String, int)},
+     * matching the same resolution used by {@link #detectAll()} and
+     * {@link NativeLibraryLoader#loadLibrary(Arena, String, int)}.</p>
+     *
+     * @param baseName  the library base name (no {@code lib} prefix, no
+     *                  platform suffix); must not be null
+     * @param soVersion the SONAME version number (e.g. {@code 0} for
+     *                  {@code libogg.so.0}, {@code 2} for
+     *                  {@code libvorbisenc.so.2}); on Windows this
+     *                  parameter is ignored since DLLs are unversioned
+     * @return true iff the library is loadable on the current host
+     */
+    public static boolean isAvailable(String baseName, int soVersion) {
+        java.util.Objects.requireNonNull(baseName, "baseName must not be null");
+        String os = System.getProperty("os.name", "").toLowerCase();
+        String[] names = NativeLibraryLoader.platformLibraryNames(os, baseName, soVersion);
+        if (NativeLibraryLoader.findFirstLoadableInLibraryPath(names) != null) {
+            return true;
+        }
+        for (String name : names) {
+            try (Arena arena = Arena.ofConfined()) {
+                SymbolLookup.libraryLookup(name, arena);
+                return true;
+            } catch (IllegalArgumentException | UnsatisfiedLinkError _) {
+                // try next candidate
+            }
+        }
+        return false;
     }
 
     /**
