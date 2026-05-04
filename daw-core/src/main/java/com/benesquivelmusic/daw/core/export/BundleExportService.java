@@ -143,6 +143,8 @@ public final class BundleExportService {
                     + (bundle.includeTrackSheet() ? 1 : 0);
             int stepIndex = 0;
 
+            try (OfflineStemRenderer stemRenderer =
+                         new OfflineStemRenderer(project, totalFrames)) {
             for (int i = 0; i < stemSpecs.size(); i++) {
                 StemSpec spec = stemSpecs.get(i);
                 Track track = allTracks.get(spec.trackIndex());
@@ -150,8 +152,8 @@ public final class BundleExportService {
                         "Rendering stem " + (i + 1) + "/" + stemSpecs.size()
                                 + ": " + spec.stemName());
 
-                float[][] stemBuffer = renderTrack(project, track, sampleRate, tempo,
-                        channels, totalFrames);
+                float[][] stemBuffer = stemRenderer.render(
+                        track, project.getMixerChannelForTrack(track));
 
                 // Sum into master mix BEFORE encoding (master = sum of post-channel stems)
                 for (int ch = 0; ch < channels; ch++) {
@@ -171,6 +173,7 @@ public final class BundleExportService {
                 stemRenders.add(new StemRender(spec, stemBuffer, result.outputPath()));
                 stepIndex++;
             }
+            } // end OfflineStemRenderer try-with-resources
 
             // ── Step 2: Apply master channel + render master ──────────────
             MixerChannel master = project.getMixer().getMasterChannel();
@@ -343,30 +346,6 @@ public final class BundleExportService {
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
-
-    /**
-     * Renders a single track (bounce + mixer channel) to a buffer matching
-     * the project duration. Mirrors {@link StemExporter}'s pipeline so
-     * stems and bundle have identical sound.
-     */
-    private static float[][] renderTrack(DawProject project, Track track,
-                                          int sampleRate, double tempo,
-                                          int channels, int totalFrames) {
-        float[][] bounced = TrackBouncer.bounce(track, sampleRate, tempo, channels);
-        float[][] buffer = new float[channels][totalFrames];
-        if (bounced != null) {
-            for (int ch = 0; ch < channels; ch++) {
-                int srcCh = Math.min(ch, bounced.length - 1);
-                int copyLen = Math.min(bounced[srcCh].length, totalFrames);
-                System.arraycopy(bounced[srcCh], 0, buffer[ch], 0, copyLen);
-            }
-        }
-        MixerChannel mc = project.getMixerChannelForTrack(track);
-        if (mc != null) {
-            StemExporter.applyMixerChannel(buffer, mc, totalFrames, channels);
-        }
-        return buffer;
-    }
 
     /**
      * Applies the master channel volume and pan to the summed stem mix.
