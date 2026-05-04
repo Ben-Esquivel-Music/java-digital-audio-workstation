@@ -75,6 +75,30 @@ class LatencyCalibrationDialogTest {
     }
 
     @Test
+    void keepDriverReportShouldProduceExplicitClearOverride() throws Exception {
+        // When the user explicitly clicks "Keep driver report", the dialog
+        // must return ClearOverride so callers can remove an existing override.
+        float[] capture = new float[2048];
+        capture[208] = 1.0f;
+
+        LatencyCalibrationDialog dialog = onFxThread(() -> new LatencyCalibrationDialog(
+                SINGLE_INPUT, 48_000.0,
+                input -> LatencyCalibration.measure(capture, 64)));
+
+        runOnFxAndWait(() -> dialog.applyResultForTest(
+                LatencyCalibration.measure(capture, 64)));
+
+        runOnFxAndWait(() -> {
+            assertThat(dialog.acceptOverrideButton().isDisabled()).isFalse();
+            // User clicks "Keep driver report".
+            dialog.clickKeepDriverForTest();
+        });
+
+        assertThat(dialog.isExplicitClearOverride()).isTrue();
+        assertThat(dialog.acceptedOverride()).isEmpty();
+    }
+
+    @Test
     void shouldNotOfferOverrideWhenDeltaIsWithinTolerance() throws Exception {
         // 80 - 64 = 16 frames < 64 → no warning, override disabled.
         float[] capture = new float[2048];

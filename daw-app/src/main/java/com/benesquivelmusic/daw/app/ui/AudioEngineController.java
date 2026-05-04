@@ -325,17 +325,21 @@ public interface AudioEngineController {
 
     /**
      * Sets (or clears) the per-device calibration override for the
-     * currently opened device and persists it via
-     * {@code AudioSettingsStore.latencyOverrideFramesByDeviceKey}.
-     * Pass {@link Optional#empty()} to clear the override and return
-     * to the driver-reported value.
+     * currently opened device. Pass {@link Optional#empty()} to clear
+     * the override and return to the driver-reported value.
      *
-     * <p>Implementations apply the new override to the live
-     * {@link com.benesquivelmusic.daw.core.recording.RecordingPipeline RecordingPipeline}
-     * by re-invoking
+     * <p>The override is keyed by the active {@link DeviceId} so it
+     * does not bleed across devices within the same session.
+     * Implementations store the value in memory; the
+     * {@code MainController} persists it to
+     * {@code AudioSettingsStore.latencyOverrideFramesByDeviceKey}
+     * after the dialog closes.</p>
+     *
+     * <p>The override takes effect at the next recording start when
      * {@link com.benesquivelmusic.daw.core.recording.RecordingPipeline#setReportedLatency(RoundTripLatency)}
-     * with the override-folded value. The default implementation is a
-     * no-op which is safe for test stubs.</p>
+     * queries {@link #reportedLatency()} — no live mid-session
+     * mutation is performed. The default implementation is a no-op
+     * which is safe for test stubs.</p>
      *
      * @param frames the override in frames, or empty to clear; the
      *               value (when present) must be {@code &ge; 0}

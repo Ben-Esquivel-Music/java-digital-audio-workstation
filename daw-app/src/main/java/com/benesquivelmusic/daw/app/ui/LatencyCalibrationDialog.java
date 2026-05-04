@@ -60,7 +60,22 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * a deterministic synthetic capture — the issue specifies a
  * 208-frame round-trip impulse for the harness test.</p>
  */
-public final class LatencyCalibrationDialog extends Dialog<Optional<Integer>> {
+public final class LatencyCalibrationDialog extends Dialog<LatencyCalibrationDialog.Result> {
+
+    /**
+     * Tri-state result returned by the dialog so callers can
+     * distinguish an accepted override, an explicit "keep driver
+     * report" (which clears any pre-existing override), and a
+     * simple cancel/dismiss.
+     */
+    public sealed interface Result {
+        /** The user accepted the calibration override. */
+        record AcceptOverride(int frames) implements Result {}
+        /** The user explicitly chose "Keep driver report" — clear any existing override. */
+        record ClearOverride() implements Result {}
+        /** The dialog was dismissed without a decision (Close/cancel). */
+        record Cancelled() implements Result {}
+    }
 
     /**
      * Stub-friendly seam over the audio-thread impulse playback /
@@ -107,8 +122,11 @@ public final class LatencyCalibrationDialog extends Dialog<Optional<Integer>> {
     /** Last successful result, or null until the user runs. */
     private CalibrationResult lastResult;
 
-    /** Override the user accepted, or null if the dialog was closed without accepting. */
+    /** Override the user accepted, or null if no override accepted. */
     private Integer acceptedOverrideFrames;
+
+    /** True when the user explicitly chose "Keep driver report" (clear override). */
+    private boolean explicitClearOverride;
 
     /**
      * Creates a new calibration dialog.
@@ -189,6 +207,7 @@ public final class LatencyCalibrationDialog extends Dialog<Optional<Integer>> {
         keepDriverButton.setGraphic(IconNode.of(DawIcon.INFO, 12));
         keepDriverButton.setDisable(true);
         keepDriverButton.setOnAction(e -> {
+            explicitClearOverride = true;
             acceptedOverrideFrames = null;
             close();
         });
@@ -207,7 +226,15 @@ public final class LatencyCalibrationDialog extends Dialog<Optional<Integer>> {
         getDialogPane().getButtonTypes().addAll(ButtonType.CLOSE);
         DarkThemeHelper.applyTo(this);
 
-        setResultConverter(button -> Optional.ofNullable(acceptedOverrideFrames));
+        setResultConverter(button -> {
+            if (acceptedOverrideFrames != null) {
+                return new Result.AcceptOverride(acceptedOverrideFrames);
+            }
+            if (explicitClearOverride) {
+                return new Result.ClearOverride();
+            }
+            return new Result.Cancelled();
+        });
     }
 
     /** Visible-for-tests — kicks off a calibration without going through the FX button. */
@@ -258,6 +285,11 @@ public final class LatencyCalibrationDialog extends Dialog<Optional<Integer>> {
      */
     public Optional<Integer> acceptedOverride() {
         return Optional.ofNullable(acceptedOverrideFrames);
+    }
+
+    /** Returns whether the user explicitly chose "Keep driver report" (clear override). */
+    public boolean isExplicitClearOverride() {
+        return explicitClearOverride;
     }
 
     /** Returns whether a calibration is currently in flight. */

@@ -73,16 +73,19 @@ final class DefaultAudioEngineController implements AudioEngineController {
     private final AtomicReference<Flow.Subscription> deviceEventSubscription = new AtomicReference<>();
 
     /**
-     * Per-device calibration override (in sample frames) accepted by
-     * the user via {@code LatencyCalibrationDialog} — story 217. When
-     * non-null this is folded into {@link #reportedLatency()} so the
-     * recording pipeline shifts captured clips by the calibrated value
-     * rather than by the driver's (mistrusted) report. Persisted to
+     * Per-device calibration overrides (in sample frames) accepted by
+     * the user via {@code LatencyCalibrationDialog} — story 217. Keyed
+     * by the device-key encoding used by {@link AudioSettingsStore.Settings#deviceKey(DeviceId)}.
+     * The override for the currently active device is folded into
+     * {@link #reportedLatency()} so the recording pipeline shifts
+     * captured clips by the calibrated value rather than by the
+     * driver's (mistrusted) report. Persisted to
      * {@code ~/.daw/audio-settings.json} through
      * {@link com.benesquivelmusic.daw.sdk.audio.AudioSettingsStore}'s
      * {@code latencyOverrideFramesByDeviceKey} map.
      */
-    private final AtomicReference<Integer> latencyOverrideFrames = new AtomicReference<>();
+    private final java.util.concurrent.ConcurrentHashMap<String, Integer>
+            latencyOverridesByDeviceKey = new java.util.concurrent.ConcurrentHashMap<>();
 
     /**
      * Single-thread worker that runs the
@@ -372,7 +375,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
     @Override
     public com.benesquivelmusic.daw.sdk.audio.RoundTripLatency reportedLatency() {
         com.benesquivelmusic.daw.sdk.audio.RoundTripLatency driver = driverReportedLatency();
-        Integer override = latencyOverrideFrames.get();
+        Integer override = activeDeviceOverride();
         if (override == null) {
             return driver;
         }
@@ -393,7 +396,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
 
     @Override
     public Optional<Integer> latencyOverrideFrames() {
-        return Optional.ofNullable(latencyOverrideFrames.get());
+        return Optional.ofNullable(activeDeviceOverride());
     }
 
     @Override
@@ -403,14 +406,36 @@ final class DefaultAudioEngineController implements AudioEngineController {
             throw new IllegalArgumentException(
                     "override frames must be >= 0: " + frames.get());
         }
-        latencyOverrideFrames.set(frames.orElse(null));
-        // Apply to the live recording pipeline if one is active. The
-        // recording pipeline is owned by the transport controller and
+        DeviceId device = activeDevice.get();
+        if (device == null) {
+            // No active device — nothing to key by; ignore silently.
+            return;
+        }
+        String key = com.benesquivelmusic.daw.sdk.audio.AudioSettingsStore
+                .Settings.deviceKey(device);
+        if (frames.isPresent()) {
+            latencyOverridesByDeviceKey.put(key, frames.get());
+        } else {
+            latencyOverridesByDeviceKey.remove(key);
+        }
+        // The recording pipeline is owned by the transport controller and
         // queries reportedLatency() at recording-start, so the next
         // recording will pick up the new value automatically. No live
-        // mutation is required from this controller — see the issue
-        // notes ("the active value is the source of truth for the
-        // recording-time-shift compensation").
+        // mutation is required from this controller.
+    }
+
+    /**
+     * Returns the override for the currently active device, or null if
+     * no override is set for this device.
+     */
+    private Integer activeDeviceOverride() {
+        DeviceId device = activeDevice.get();
+        if (device == null) {
+            return null;
+        }
+        String key = com.benesquivelmusic.daw.sdk.audio.AudioSettingsStore
+                .Settings.deviceKey(device);
+        return latencyOverridesByDeviceKey.get(key);
     }
 
     /**

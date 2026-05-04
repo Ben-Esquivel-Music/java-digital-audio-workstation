@@ -1295,38 +1295,54 @@ public final class MainController {
         com.benesquivelmusic.daw.sdk.audio.RoundTripLatency driver =
                 audioEngineController.driverReportedLatency();
         LatencyCalibrationDialog.CalibrationRunner runner = input -> {
-            // Production wiring is intentionally minimal: synthesize an
-            // impulse and report no impulse detected. Real impulse
-            // playback / capture is wired by an end-to-end harness in
-            // a follow-up story; this stub preserves the contract that
-            // the dialog never blocks the FX thread and surfaces a
-            // graceful "no impulse detected" result panel rather than
-            // an error.
-            return com.benesquivelmusic.daw.sdk.audio.LatencyCalibration.measure(
-                    com.benesquivelmusic.daw.sdk.audio.LatencyCalibration.generateImpulse(2048),
-                    driver.totalFrames());
+            // Production stub: return an inconclusive result (no impulse
+            // detected) until the end-to-end audio loopback capture is
+            // wired in a follow-up story. This keeps the dialog functional
+            // and surfaces a graceful "no impulse detected" result panel.
+            return new com.benesquivelmusic.daw.sdk.audio.LatencyCalibration.CalibrationResult(
+                    0, driver.totalFrames(), false);
         };
         LatencyCalibrationDialog dialog = new LatencyCalibrationDialog(inputs, sampleRate, runner);
-        java.util.Optional<java.util.Optional<Integer>> result = dialog.showAndWait();
-        if (result.isPresent() && result.get().isPresent()) {
-            audioEngineController.setLatencyOverrideFrames(result.get());
+        java.util.Optional<LatencyCalibrationDialog.Result> result = dialog.showAndWait();
+        if (result.isPresent()) {
+            switch (result.get()) {
+                case LatencyCalibrationDialog.Result.AcceptOverride accept ->
+                        audioEngineController.setLatencyOverrideFrames(
+                                java.util.Optional.of(accept.frames()));
+                case LatencyCalibrationDialog.Result.ClearOverride _ ->
+                        audioEngineController.setLatencyOverrideFrames(
+                                java.util.Optional.empty());
+                case LatencyCalibrationDialog.Result.Cancelled _ -> { /* no-op */ }
+            }
         }
     }
 
     /**
      * Returns the input channels the calibration dialog offers in its
-     * source combo. Currently returns the active backend's input
-     * channels (story 215 / 223). When no input channel info is
-     * available the list is empty and the dialog disables its
-     * <em>Run calibration</em> button.
+     * source combo. Queries the active backend's input channels for the
+     * currently bound device (story 215 / 223). Falls back to a single
+     * synthetic "Loopback / measurement input" entry when no real
+     * channel info is available, so the dialog is always usable.
      */
     private java.util.List<com.benesquivelmusic.daw.sdk.audio.AudioChannelInfo>
             listInputChannelsForCalibration() {
-        // Heuristic: build a single "Loopback" pseudo-channel so the
-        // dialog has at least one selectable input until the
-        // story-215 / story-223 channel-info wiring is plumbed
-        // through. This keeps the calibration UI usable on systems
-        // where the backend has no driver-reported channel names.
+        // Try to query the real backend's input channels for the active device.
+        if (audioEngineController != null) {
+            com.benesquivelmusic.daw.core.audio.AudioEngine engine = audioEngine;
+            com.benesquivelmusic.daw.sdk.audio.AudioBackend backend = engine.getBackend();
+            if (backend != null) {
+                com.benesquivelmusic.daw.sdk.audio.DeviceId device =
+                        audioEngineController.getActiveDevice().orElse(null);
+                if (device != null) {
+                    java.util.List<com.benesquivelmusic.daw.sdk.audio.AudioChannelInfo> channels =
+                            backend.inputChannels(device);
+                    if (!channels.isEmpty()) {
+                        return channels;
+                    }
+                }
+            }
+        }
+        // Fallback: synthetic pseudo-channel so the dialog is usable.
         return java.util.List.of(new com.benesquivelmusic.daw.sdk.audio.AudioChannelInfo(
                 0, "Loopback / measurement input"));
     }
