@@ -323,6 +323,19 @@ public final class ProjectDeserializer {
             }
         }
 
+        // Parse active HRTF profile reference (binaural monitoring). Missing element
+        // means the project has no preference and the binaural plugin should use its
+        // factory default. The reference is purely a name; resolving it (and falling
+        // back to a generic profile when not present in the local library) is the
+        // loader's responsibility.
+        List<Element> hrtfElements = getDirectChildElements(root, "active-hrtf-profile");
+        if (!hrtfElements.isEmpty()) {
+            String name = hrtfElements.getFirst().getAttribute("name");
+            if (!name.isEmpty()) {
+                project.setActiveHrtfProfileName(name);
+            }
+        }
+
         return project;
     }
 

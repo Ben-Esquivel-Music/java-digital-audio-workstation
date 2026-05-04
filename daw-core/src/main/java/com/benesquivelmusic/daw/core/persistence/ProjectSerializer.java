@@ -142,6 +142,17 @@ public final class ProjectSerializer {
         buildRippleMode(document, root, project);
         buildNudgeSettings(document, root, project);
         buildLoudnessTarget(document, root, project);
+        buildActiveHrtfProfile(document, root, project);
+    }
+
+    private void buildActiveHrtfProfile(Document document, Element root, DawProject project) {
+        String name = project.getActiveHrtfProfileName();
+        if (name == null) {
+            return;
+        }
+        Element elem = document.createElement("active-hrtf-profile");
+        elem.setAttribute("name", name);
+        root.appendChild(elem);
     }
 
     private void buildLoudnessTarget(Document document, Element root, DawProject project) {
