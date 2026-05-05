@@ -165,7 +165,7 @@ final class OfflineStemRenderer implements AutoCloseable {
         // succeeded so the project is left in its original configuration.
         masterChannel.setMuted(originalMasterMute);
         masterChannel.setVolume(originalMasterVolume);
-        for (int j = 0; j < mixerChannels.size(); j++) {
+        for (int j = 0; j < mixerChannels.size() && j < originalMutes.length; j++) {
             mixerChannels.get(j).setMuted(originalMutes[j]);
             mixerChannels.get(j).setSolo(originalSolos[j]);
         }
