@@ -9,6 +9,7 @@ import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
@@ -23,10 +24,11 @@ import java.util.Objects;
  * the track during live playback (story 102 — "Playback-Export Parity").</p>
  *
  * <p>The renderer is single-use and {@linkplain AutoCloseable closeable}: it
- * snapshots the project's mute state and the master channel's volume/mute
- * on construction, mutates them during {@link #render}, and restores them
- * inside {@link #close()}. Use it inside a try-with-resources block so
- * the project state is always restored — even if rendering fails.</p>
+ * snapshots the project's mute and solo state plus the master channel's
+ * volume/mute on construction, mutates them during {@link #render}, and
+ * restores them inside {@link #close()}. Use it inside a try-with-resources
+ * block so the project state is always restored — even if rendering
+ * fails.</p>
  *
  * <p>This class is a package-private implementation detail shared between
  * {@link StemExporter} and {@link BundleExportService} so that both export
@@ -43,6 +45,7 @@ final class OfflineStemRenderer implements AutoCloseable {
     private final EffectsChain emptyMaster;
     private final List<MixerChannel> mixerChannels;
     private final boolean[] originalMutes;
+    private final boolean[] originalSolos;
     private final MixerChannel masterChannel;
     private final boolean originalMasterMute;
     private final double originalMasterVolume;
@@ -84,15 +87,33 @@ final class OfflineStemRenderer implements AutoCloseable {
         this.emptyMaster = new EffectsChain();
         emptyMaster.allocateIntermediateBuffers(audioChannels, blockSize);
 
-        // Snapshot mute state so we can restore on close.
-        this.mixerChannels = mixer.getChannels();
+        // NOTE: MidiTrackRenderer is package-private in
+        // com.benesquivelmusic.daw.core.audio and cannot be instantiated
+        // here. MIDI tracks with SoundFont assignments will render as
+        // silence in stems until MidiTrackRenderer is made accessible
+        // (tracked separately). For now we pass null to renderOffline,
+        // which skips MIDI synthesis — matching the historical stem-export
+        // behaviour that only supported audio tracks.
+
+        // Snapshot mute and solo state into a stable copy so concurrent
+        // channel-list mutations do not affect the restore on close.
+        List<MixerChannel> liveChannels = mixer.getChannels();
+        this.mixerChannels = new ArrayList<>(liveChannels);
         this.originalMutes = new boolean[mixerChannels.size()];
+        this.originalSolos = new boolean[mixerChannels.size()];
         for (int j = 0; j < mixerChannels.size(); j++) {
             originalMutes[j] = mixerChannels.get(j).isMuted();
+            originalSolos[j] = mixerChannels.get(j).isSolo();
         }
         this.masterChannel = mixer.getMasterChannel();
         this.originalMasterMute = masterChannel.isMuted();
         this.originalMasterVolume = masterChannel.getVolume();
+
+        // Clear solo state so the mute-based isolation in render() is not
+        // overridden by Mixer.mixDown's solo-gating logic.
+        for (MixerChannel ch : mixerChannels) {
+            ch.setSolo(false);
+        }
 
         // Neutralize master so it does not affect the stems.
         masterChannel.setMuted(false);
@@ -104,10 +125,10 @@ final class OfflineStemRenderer implements AutoCloseable {
      * pipeline. All other mixer channels are muted for the duration of
      * the call so only this track contributes to the bus.
      *
+     * @param targetTrack   the track being rendered (must not be {@code null})
      * @param targetChannel the mixer channel for the track to render, or
      *                      {@code null} to render silence (no channel
      *                      contributes — every channel is muted)
-     * @param targetTrack   the track being rendered
      * @return the rendered stem as {@code [channels][totalFrames]}
      */
     float[][] render(Track targetTrack, MixerChannel targetChannel) {
@@ -116,9 +137,7 @@ final class OfflineStemRenderer implements AutoCloseable {
         }
         Objects.requireNonNull(targetTrack, "targetTrack must not be null");
 
-        // Mute every channel except the target's. Iterate the channels list
-        // captured at construction time so additions made elsewhere do not
-        // disturb the snapshot we will restore on close.
+        // Mute every channel except the target's.
         for (MixerChannel ch : mixerChannels) {
             ch.setMuted(targetChannel == null || ch != targetChannel);
         }
@@ -142,12 +161,13 @@ final class OfflineStemRenderer implements AutoCloseable {
             return;
         }
         closed = true;
-        // Restore mute / master state regardless of whether rendering
+        // Restore mute / solo / master state regardless of whether rendering
         // succeeded so the project is left in its original configuration.
         masterChannel.setMuted(originalMasterMute);
         masterChannel.setVolume(originalMasterVolume);
-        for (int j = 0; j < mixerChannels.size() && j < originalMutes.length; j++) {
+        for (int j = 0; j < mixerChannels.size(); j++) {
             mixerChannels.get(j).setMuted(originalMutes[j]);
+            mixerChannels.get(j).setSolo(originalSolos[j]);
         }
     }
 }

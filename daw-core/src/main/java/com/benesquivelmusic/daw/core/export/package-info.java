@@ -16,16 +16,26 @@
  * {@link com.benesquivelmusic.daw.core.audio.AudioEngine#processBlock
  * AudioEngine.processBlock}.</p>
  *
- * <p>This means {@link com.benesquivelmusic.daw.core.export.StemExporter},
- * {@link com.benesquivelmusic.daw.core.export.TrackBouncer}, and
- * {@link com.benesquivelmusic.daw.core.export.BundleExportService} no
+ * <p>This means {@link com.benesquivelmusic.daw.core.export.StemExporter}
+ * and {@link com.benesquivelmusic.daw.core.export.BundleExportService} no
  * longer carry their own clip-walking, accumulator-summing,
  * pan/volume/insert-applying logic — each delegates per-block rendering
- * to the unified pipeline. The architectural guarantee is "what you hear
- * is what you get" (WYHIWYG): exported audio is bit-identical to live
- * playback for the same project state, verified by
- * {@code RenderPipelineParityTest} (pipeline level) and
+ * to the unified pipeline via
+ * {@link com.benesquivelmusic.daw.core.export.OfflineStemRenderer}. The
+ * architectural guarantee is "what you hear is what you get" (WYHIWYG):
+ * exported audio is bit-identical to live playback for the same project
+ * state, verified by {@code RenderPipelineParityTest} (pipeline level) and
  * {@code StemExporterParityTest} (export level).</p>
+ *
+ * <p>{@link com.benesquivelmusic.daw.core.export.TrackBouncer} remains a
+ * low-level raw clip-summing utility that does <em>not</em> route through
+ * the pipeline. It is intentionally pre-fader and pre-insert so that
+ * callers like {@code RenderInPlaceService} and {@code TrackFreezeService}
+ * can compose it with their own per-channel processing. New offline render
+ * code that needs the full mixer-channel-and-master signal must use
+ * {@link com.benesquivelmusic.daw.core.audio.RenderPipeline} (or
+ * {@link com.benesquivelmusic.daw.core.export.OfflineStemRenderer})
+ * directly.</p>
  *
  * <h2>Authoring guideline for new export features</h2>
  *

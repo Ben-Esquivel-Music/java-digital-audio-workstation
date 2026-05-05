@@ -112,19 +112,23 @@ class StemExporterParityTest {
         engine.start();
 
         float[][] liveOut = new float[CHANNELS][totalFrames];
-        float[][] blockIn = new float[CHANNELS][BUFFER_SIZE];
-        float[][] blockOut = new float[CHANNELS][BUFFER_SIZE];
-        int rendered = 0;
-        while (rendered < totalFrames) {
-            int n = Math.min(BUFFER_SIZE, totalFrames - rendered);
-            for (int ch = 0; ch < CHANNELS; ch++) {
-                Arrays.fill(blockOut[ch], 0.0f);
+        try {
+            float[][] blockIn = new float[CHANNELS][BUFFER_SIZE];
+            float[][] blockOut = new float[CHANNELS][BUFFER_SIZE];
+            int rendered = 0;
+            while (rendered < totalFrames) {
+                int n = Math.min(BUFFER_SIZE, totalFrames - rendered);
+                for (int ch = 0; ch < CHANNELS; ch++) {
+                    Arrays.fill(blockOut[ch], 0.0f);
+                }
+                engine.processBlock(blockIn, blockOut, n);
+                for (int ch = 0; ch < CHANNELS; ch++) {
+                    System.arraycopy(blockOut[ch], 0, liveOut[ch], rendered, n);
+                }
+                rendered += n;
             }
-            engine.processBlock(blockIn, blockOut, n);
-            for (int ch = 0; ch < CHANNELS; ch++) {
-                System.arraycopy(blockOut[ch], 0, liveOut[ch], rendered, n);
-            }
-            rendered += n;
+        } finally {
+            engine.stop();
         }
 
         // ── Offline render via StemExporter ──────────────────────────────
