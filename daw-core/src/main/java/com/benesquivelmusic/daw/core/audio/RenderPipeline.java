@@ -725,11 +725,16 @@ public final class RenderPipeline {
      * session rate. Falls back to {@link AudioClip#getAudioData()} when
      * no cache is installed or no conversion is required.
      *
-     * <p>The cache lookup is a {@link java.util.concurrent.ConcurrentHashMap}
-     * read; on a cache hit no allocation occurs. Cache misses allocate
-     * a converted buffer and insert it — this is non-RT-safe but happens
-     * only the first time a rate-mismatched clip is rendered and the
-     * resulting buffer is reused for every subsequent block.</p>
+     * <p><strong>RT-safety caveat:</strong> On a cache <em>hit</em> (the
+     * common steady-state path) this method is a single
+     * {@link java.util.concurrent.ConcurrentHashMap} read — no allocation
+     * and no lock. On a cache <em>miss</em> (the very first block after a
+     * rate-mismatched clip enters the render graph, or after the cache is
+     * invalidated) the conversion is computed inline, which allocates and
+     * is CPU-heavy. Callers that require strict RT guarantees on the first
+     * block should pre-warm the cache before entering the audio callback
+     * (e.g. via {@link SampleRateConversionCache#get} from a setup thread).
+     * Once populated, subsequent blocks are allocation-free.</p>
      */
     private float[][] resolveAudioData(AudioClip clip) {
         float[][] raw = clip.getAudioData();

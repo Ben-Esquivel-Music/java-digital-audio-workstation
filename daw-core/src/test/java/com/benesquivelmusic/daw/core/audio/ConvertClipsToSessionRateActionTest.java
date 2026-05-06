@@ -60,7 +60,7 @@ class ConvertClipsToSessionRateActionTest {
         action.undo();
 
         assertThat(mismatched.getAudioData()).isSameAs(originalMismatchedData);
-        assertThat(mismatched.getSourceRateMetadata()).isEqualTo(originalMismatchedMeta);
+        assertThat(mismatched.getSourceRateMetadata()).isSameAs(originalMismatchedMeta);
     }
 
     @Test

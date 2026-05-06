@@ -128,10 +128,13 @@ public interface AudioEngineController {
     /**
      * Applies the given {@link com.benesquivelmusic.daw.sdk.audio.SampleRateConverter.QualityTier}
      * to the live engine's sample-rate-conversion path (story 126).
-     * Conversions cached at a different tier are invalidated so the
-     * next render produces them at the new quality.
+     * Implementations should invalidate any cached conversions rendered
+     * at a different tier so the next render produces them at the new
+     * quality; otherwise stale buffers from the previous kernel will be
+     * replayed.
      *
-     * <p>The default implementation is a no-op, safe for test doubles.</p>
+     * <p>The default implementation is a no-op, safe for test doubles
+     * that do not maintain a real cache.</p>
      *
      * @param tier the new SRC quality tier (must not be {@code null})
      */
