@@ -44,14 +44,17 @@ final class OfflineStemRenderer implements AutoCloseable {
     private final RenderPipeline pipeline;
     private final EffectsChain emptyMaster;
     private final List<MixerChannel> mixerChannels;
+    private final List<MixerChannel> returnBuses;
     private final boolean[] originalMutes;
     private final boolean[] originalSolos;
+    private final boolean[] originalReturnBusSolos;
     private final MixerChannel masterChannel;
     private final boolean originalMasterMute;
     private final double originalMasterVolume;
     private final int audioChannels;
     private final int totalFrames;
     private final int blockSize;
+    private final int originalBlockSize;
     private final double tempo;
     private boolean closed;
 
@@ -76,10 +79,20 @@ final class OfflineStemRenderer implements AutoCloseable {
         this.blockSize = Math.max(1, Math.min(OFFLINE_BLOCK_SIZE,
                 Math.max(totalFrames, 1)));
 
+        // Record the project's configured buffer size so we can restore
+        // the mixer's prepared state on close (avoids permanently resizing
+        // scratch buffers for live playback).
+        this.originalBlockSize = project.getFormat().bufferSize();
+
         AudioFormat format = new AudioFormat(sampleRate, audioChannels,
                 project.getFormat().bitDepth(), blockSize);
         this.mixer = project.getMixer();
-        mixer.prepareForPlayback(audioChannels, blockSize);
+        // Only call prepareForPlayback if the offline block size is larger
+        // than the project's live block size — never shrink the mixer's
+        // scratch buffers below what live playback expects.
+        if (blockSize > originalBlockSize) {
+            mixer.prepareForPlayback(audioChannels, blockSize);
+        }
         this.allTracks = project.getTracks();
         this.pipeline = new RenderPipeline(format,
                 Math.max(1, allTracks.size()), blockSize);
@@ -105,14 +118,29 @@ final class OfflineStemRenderer implements AutoCloseable {
             originalMutes[j] = mixerChannels.get(j).isMuted();
             originalSolos[j] = mixerChannels.get(j).isSolo();
         }
+
+        // Also snapshot return-bus solo state — Mixer.isAnySolo() checks
+        // both regular channels and return buses, so a soloed return bus
+        // would cause solo-gating to silence non-solo-safe track channels.
+        List<MixerChannel> liveReturnBuses = mixer.getReturnBuses();
+        this.returnBuses = new ArrayList<>(liveReturnBuses);
+        this.originalReturnBusSolos = new boolean[returnBuses.size()];
+        for (int j = 0; j < returnBuses.size(); j++) {
+            originalReturnBusSolos[j] = returnBuses.get(j).isSolo();
+        }
+
         this.masterChannel = mixer.getMasterChannel();
         this.originalMasterMute = masterChannel.isMuted();
         this.originalMasterVolume = masterChannel.getVolume();
 
-        // Clear solo state so the mute-based isolation in render() is not
-        // overridden by Mixer.mixDown's solo-gating logic.
+        // Clear solo state on both track channels and return buses so the
+        // mute-based isolation in render() is not overridden by
+        // Mixer.mixDown's solo-gating logic.
         for (MixerChannel ch : mixerChannels) {
             ch.setSolo(false);
+        }
+        for (MixerChannel rb : returnBuses) {
+            rb.setSolo(false);
         }
 
         // Neutralize master so it does not affect the stems.
@@ -168,6 +196,13 @@ final class OfflineStemRenderer implements AutoCloseable {
         for (int j = 0; j < mixerChannels.size() && j < originalMutes.length; j++) {
             mixerChannels.get(j).setMuted(originalMutes[j]);
             mixerChannels.get(j).setSolo(originalSolos[j]);
+        }
+        for (int j = 0; j < returnBuses.size() && j < originalReturnBusSolos.length; j++) {
+            returnBuses.get(j).setSolo(originalReturnBusSolos[j]);
+        }
+        // Restore the mixer's prepared block size if we enlarged it.
+        if (blockSize > originalBlockSize) {
+            mixer.prepareForPlayback(audioChannels, originalBlockSize);
         }
     }
 }
