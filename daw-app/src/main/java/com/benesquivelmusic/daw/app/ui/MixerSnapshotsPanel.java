@@ -207,10 +207,12 @@ public final class MixerSnapshotsPanel extends VBox {
                 HBox.setHgrow(spacer, Priority.ALWAYS);
 
                 Button recallBtn = new Button("Recall");
+                recallBtn.setMinWidth(Region.USE_PREF_SIZE);
                 recallBtn.setTooltip(new Tooltip("Recall this snapshot (undoable)."));
                 recallBtn.setOnAction(_ -> recallSnapshot(snapshot));
 
                 Button deleteBtn = new Button("✕");
+                deleteBtn.setMinWidth(Region.USE_PREF_SIZE);
                 deleteBtn.setTooltip(new Tooltip("Delete this snapshot."));
                 deleteBtn.setOnAction(_ -> {
                     manager.removeSnapshot(snapshot);
@@ -220,6 +222,11 @@ public final class MixerSnapshotsPanel extends VBox {
 
                 HBox row = new HBox(6, info, spacer, recallBtn, deleteBtn);
                 row.setAlignment(Pos.CENTER_LEFT);
+                // Constrain the row to the cell's content width so the
+                // delete button stays visible inside the side panel
+                // instead of being pushed past the horizontal scrollbar.
+                row.prefWidthProperty().bind(
+                        widthProperty().subtract(20));
                 setText(null);
                 setGraphic(row);
             }
