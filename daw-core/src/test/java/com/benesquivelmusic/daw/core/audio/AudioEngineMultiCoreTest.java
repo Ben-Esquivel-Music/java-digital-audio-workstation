@@ -79,6 +79,9 @@ class AudioEngineMultiCoreTest {
             Mixer m2 = new Mixer();
             engine.setMixer(m2);
             assertThat(m2.getGraphScheduler()).isSameAs(engine.getGraphScheduler());
+            // The previous mixer must have its scheduler detached so stale
+            // references do not attempt parallel dispatch after pool close.
+            assertThat(m1.getGraphScheduler()).isNull();
         } finally {
             engine.stop();
         }

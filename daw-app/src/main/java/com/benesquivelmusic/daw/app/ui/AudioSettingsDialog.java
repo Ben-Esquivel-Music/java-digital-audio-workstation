@@ -174,13 +174,13 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         bitDepthCombo = new ComboBox<>();
         mixPrecisionCombo = new ComboBox<>();
         workerPoolSizeCombo = new ComboBox<>();
-        // Offer a generous range up to 32 — covers any current consumer
-        // CPU. The combo is editable in spirit (any positive integer is
-        // valid) but a fixed list keeps the UI predictable. Includes
-        // {@code 1} so users can disable parallelism explicitly.
+        // Offer options from 1 up to the number of available processors.
+        // If the previously persisted value exceeds this range it is
+        // injected into the items list during initialization so that
+        // Apply never silently truncates the user's choice.
         {
             int cores = Runtime.getRuntime().availableProcessors();
-            int maxOffered = Math.max(8, Math.min(32, cores));
+            int maxOffered = Math.max(8, cores);
             java.util.List<Integer> options = new java.util.ArrayList<>(maxOffered);
             for (int i = 1; i <= maxOffered; i++) {
                 options.add(i);
@@ -420,11 +420,22 @@ public final class AudioSettingsDialog extends Dialog<Void> {
             mixPrecisionCombo.setValue(model.getMixPrecision());
             srcQualityCombo.setValue(model.getSrcQuality());
             // Story 125: prime the worker-pool combo from persisted
-            // settings, snapping to the nearest offered value if a
-            // newer build had recorded a value beyond the menu range.
+            // settings. If the persisted value exceeds the standard menu
+            // range (e.g. a high-core machine that was later moved to a
+            // smaller one, or a newer build that recorded a larger value),
+            // inject it into the items list so Apply is idempotent and
+            // never silently truncates the setting.
             int persistedPool = model.getWorkerPoolSize();
-            workerPoolSizeCombo.setValue(nearestOption(
-                    workerPoolSizeCombo.getItems(), persistedPool));
+            if (persistedPool > 0
+                    && !workerPoolSizeCombo.getItems().contains(persistedPool)) {
+                // Insert in sorted order so the combo remains ascending.
+                java.util.List<Integer> items = workerPoolSizeCombo.getItems();
+                int insertIdx = Collections.binarySearch(items, persistedPool);
+                if (insertIdx < 0) {
+                    items.add(-insertIdx - 1, persistedPool);
+                }
+            }
+            workerPoolSizeCombo.setValue(persistedPool > 0 ? persistedPool : 1);
             latencyCompensationCheck.setSelected(model.isApplyLatencyCompensation());
 
             // Stash the persisted buffer size; refreshDeviceCapabilities

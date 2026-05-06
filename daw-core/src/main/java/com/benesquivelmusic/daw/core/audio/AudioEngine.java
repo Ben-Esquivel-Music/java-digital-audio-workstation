@@ -589,11 +589,20 @@ public final class AudioEngine {
      * @param mixer the mixer, or {@code null} to disable playback rendering
      */
     public void setMixer(Mixer mixer) {
+        // Story 125: detach the scheduler from the *previous* mixer so
+        // stale references do not attempt parallel dispatch after the
+        // pool is closed in stop(). This is safe even when the old mixer
+        // is null or when no scheduler is installed.
+        Mixer previousMixer = this.mixer;
+        if (previousMixer != null && graphScheduler != null
+                && previousMixer.getGraphScheduler() == graphScheduler) {
+            previousMixer.setGraphScheduler(null);
+        }
         this.mixer = mixer;
         if (mixer != null && running.get()) {
             mixer.prepareForPlayback(format.channels(), format.bufferSize());
-            // Story 125: re-install the scheduler on the new mixer so
-            // parallel insert dispatch keeps working after a hot mixer swap.
+            // Re-install the scheduler on the new mixer so parallel
+            // insert dispatch keeps working after a hot mixer swap.
             if (graphScheduler != null) {
                 mixer.setGraphScheduler(graphScheduler);
             }
