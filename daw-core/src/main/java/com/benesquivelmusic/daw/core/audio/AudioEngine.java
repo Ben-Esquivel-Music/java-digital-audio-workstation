@@ -99,6 +99,14 @@ public final class AudioEngine {
     // input-meter column and the arrangement-view clip indicator stay live.
     private volatile InputLevelMonitorRegistry inputLevelMonitorRegistry;
 
+    // Multi-core graph scheduling state (story 125). The pool size is
+    // locked at start(); changing it requires a stop/start cycle. The
+    // scheduler is also installed on the mixer so its mixDown() path
+    // dispatches independent insert chains across the worker pool.
+    private volatile AudioEngineSettings engineSettings = AudioEngineSettings.defaults();
+    private AudioWorkerPool workerPool;
+    private AudioGraphScheduler graphScheduler;
+
     /**
      * Creates a new audio engine with the specified format.
      *
@@ -107,6 +115,24 @@ public final class AudioEngine {
     public AudioEngine(AudioFormat format) {
         this.format = Objects.requireNonNull(format, "format must not be null");
         this.masterChain = new EffectsChain();
+    }
+
+    /**
+     * Creates a new audio engine with the specified format and engine
+     * settings (story 125 — Multi-Core Parallel Audio Graph Processing).
+     *
+     * <p>The {@link AudioEngineSettings#workerPoolSize() worker-pool size}
+     * is locked at {@link #start()} time; changing it later requires
+     * stopping and restarting the engine.</p>
+     *
+     * @param format         the audio format configuration
+     * @param engineSettings the engine settings; must not be null
+     */
+    public AudioEngine(AudioFormat format, AudioEngineSettings engineSettings) {
+        this.format = Objects.requireNonNull(format, "format must not be null");
+        this.masterChain = new EffectsChain();
+        this.engineSettings = Objects.requireNonNull(
+                engineSettings, "engineSettings must not be null");
     }
 
     /**
@@ -144,6 +170,23 @@ public final class AudioEngine {
         // Pre-allocate MIDI track renderer for SoundFont synthesis
         midiTrackRenderer = new MidiTrackRenderer(format.sampleRate(), frames);
 
+        // Story 125: spin up the multi-core graph scheduler and install it
+        // on the mixer so independent per-channel insert chains run on the
+        // worker pool. A pool size of 1 is treated as a request to disable
+        // parallelism — we skip pool/scheduler creation entirely so the
+        // mixer falls back to its sequential mixDown path with zero
+        // coordination overhead.
+        AudioEngineSettings settings = this.engineSettings;
+        int poolSize = settings.workerPoolSize();
+        if (poolSize > 1) {
+            workerPool = new AudioWorkerPool(poolSize);
+            graphScheduler = new AudioGraphScheduler(
+                    workerPool, MAX_TRACKS, settings.minParallelBlockSize());
+            if (currentMixer != null) {
+                currentMixer.setGraphScheduler(graphScheduler);
+            }
+        }
+
         return true;
     }
 
@@ -159,6 +202,19 @@ public final class AudioEngine {
         if (midiTrackRenderer != null) {
             midiTrackRenderer.close();
             midiTrackRenderer = null;
+        }
+        // Story 125: tear down the multi-core graph scheduling state.
+        // Detach the scheduler from the mixer first so subsequent mixDown
+        // calls (e.g. via offline export) revert to the single-threaded
+        // path even if the mixer reference outlives the engine restart.
+        Mixer currentMixer = this.mixer;
+        if (currentMixer != null && currentMixer.getGraphScheduler() == graphScheduler) {
+            currentMixer.setGraphScheduler(null);
+        }
+        graphScheduler = null;
+        if (workerPool != null) {
+            workerPool.close();
+            workerPool = null;
         }
         return true;
     }
@@ -536,6 +592,11 @@ public final class AudioEngine {
         this.mixer = mixer;
         if (mixer != null && running.get()) {
             mixer.prepareForPlayback(format.channels(), format.bufferSize());
+            // Story 125: re-install the scheduler on the new mixer so
+            // parallel insert dispatch keeps working after a hot mixer swap.
+            if (graphScheduler != null) {
+                mixer.setGraphScheduler(graphScheduler);
+            }
         }
     }
 
@@ -829,6 +890,83 @@ public final class AudioEngine {
      */
     RenderPipeline getRenderPipeline() {
         return renderPipeline;
+    }
+
+    // ── Multi-core graph scheduling (story 125) ─────────────────────────
+
+    /**
+     * Returns the current multi-core engine settings (worker-pool size and
+     * minimum parallel block size). Story 125.
+     *
+     * @return the engine settings, never {@code null}
+     */
+    public AudioEngineSettings getEngineSettings() {
+        return engineSettings;
+    }
+
+    /**
+     * Replaces the multi-core engine settings. Must only be called while
+     * the engine is stopped — the worker-pool size locks at
+     * {@link #start()} time so changing it requires a stop/start cycle.
+     * Story 125.
+     *
+     * @param settings the new settings; must not be null
+     * @throws IllegalStateException if the engine is currently running
+     */
+    public void setEngineSettings(AudioEngineSettings settings) {
+        if (running.get()) {
+            throw new IllegalStateException(
+                    "Cannot change engine settings while engine is running");
+        }
+        this.engineSettings = Objects.requireNonNull(settings, "settings must not be null");
+    }
+
+    /**
+     * Returns the {@link AudioWorkerPool} currently driving parallel insert
+     * dispatch, or {@code null} if the engine is not running or
+     * parallelism is disabled (worker-pool size = 1). Story 125.
+     *
+     * @return the worker pool, or {@code null}
+     */
+    public AudioWorkerPool getWorkerPool() {
+        return workerPool;
+    }
+
+    /**
+     * Returns the {@link AudioGraphScheduler} currently installed on the
+     * mixer, or {@code null} if the engine is not running or parallelism
+     * is disabled. Story 125.
+     *
+     * @return the graph scheduler, or {@code null}
+     */
+    public AudioGraphScheduler getGraphScheduler() {
+        return graphScheduler;
+    }
+
+    /**
+     * Returns the configured worker-pool size (including the audio
+     * callback as the coordinator). Reflects {@link AudioEngineSettings}
+     * even when the engine is stopped. A return value of {@code 1}
+     * indicates parallelism is disabled.
+     *
+     * @return the worker-pool size; {@code >= 1}
+     */
+    public int getWorkerPoolSize() {
+        return engineSettings.workerPoolSize();
+    }
+
+    /**
+     * Returns the number of parallel insert tasks dispatched during the
+     * most recent block — the live "threads in use" reading shown in the
+     * UI performance area (story 125). Returns {@code 0} when parallelism
+     * is disabled, the engine is not running, or the previous block fell
+     * back to sequential execution.
+     *
+     * @return the dispatched task count for the previous block; {@code >= 0}
+     */
+    public int getActiveThreadCount() {
+        AudioGraphScheduler scheduler = this.graphScheduler;
+        return scheduler == null ? 0 : scheduler.getLastDispatchedTaskCount();
     }
 
 

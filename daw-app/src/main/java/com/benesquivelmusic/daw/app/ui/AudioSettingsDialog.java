@@ -123,9 +123,11 @@ public final class AudioSettingsDialog extends Dialog<Void> {
     private final ComboBox<MixPrecision> mixPrecisionCombo;
     private final ComboBox<QualityTier> srcQualityCombo;
     private final ComboBox<ClockSource> clockSourceCombo;
+    private final ComboBox<Integer> workerPoolSizeCombo;
     private final Label bufferLatencyLabel;
     private final Label sampleRateLatencyLabel;
     private final Label cpuLoadLabel;
+    private final Label threadsInUseLabel;
     private final Label activeBackendLabel;
     private final Button testToneButton;
     private final Button openControlPanelButton;
@@ -171,6 +173,28 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         bufferSizeCombo = new ComboBox<>();
         bitDepthCombo = new ComboBox<>();
         mixPrecisionCombo = new ComboBox<>();
+        workerPoolSizeCombo = new ComboBox<>();
+        // Offer a generous range up to 32 — covers any current consumer
+        // CPU. The combo is editable in spirit (any positive integer is
+        // valid) but a fixed list keeps the UI predictable. Includes
+        // {@code 1} so users can disable parallelism explicitly.
+        {
+            int cores = Runtime.getRuntime().availableProcessors();
+            int maxOffered = Math.max(8, Math.min(32, cores));
+            java.util.List<Integer> options = new java.util.ArrayList<>(maxOffered);
+            for (int i = 1; i <= maxOffered; i++) {
+                options.add(i);
+            }
+            workerPoolSizeCombo.getItems().setAll(options);
+        }
+        workerPoolSizeCombo.setTooltip(new Tooltip(
+                "Number of parallel worker threads used by the multi-core "
+                        + "audio graph scheduler (story 125).\n\n"
+                        + "  • 1 — disables parallelism; renders entirely on the audio callback.\n"
+                        + "  • Default is max(1, CPU cores − 2) so the audio thread and OS "
+                        + "each retain a dedicated core.\n\n"
+                        + "Changes take effect on the next engine restart (Apply will "
+                        + "briefly interrupt playback)."));
         srcQualityCombo = new ComboBox<>();
         srcQualityCombo.getItems().setAll(QualityTier.values());
         srcQualityCombo.setTooltip(new Tooltip(
@@ -200,6 +224,12 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         bufferLatencyLabel = new Label();
         sampleRateLatencyLabel = new Label();
         cpuLoadLabel = new Label("CPU: —");
+        threadsInUseLabel = new Label("Threads: —");
+        threadsInUseLabel.setTooltip(new Tooltip(
+                "Live count of parallel worker threads dispatched on the most "
+                        + "recent audio block by the multi-core graph scheduler "
+                        + "(story 125). Reads 0 when the block size or pool size "
+                        + "puts the engine on the single-threaded fallback path."));
         activeBackendLabel = new Label();
         testToneButton = new Button("Test Tone");
         testToneButton.setGraphic(IconNode.of(DawIcon.PLAY, 12));
@@ -338,10 +368,14 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         grid.add(srcQualityCombo, 1, row, 2, 1);
         row++;
 
+        grid.add(new Label("Worker Pool Size:"), 0, row);
+        grid.add(workerPoolSizeCombo, 1, row, 2, 1);
+        row++;
+
         grid.add(latencyCompensationCheck, 0, row, 3, 1);
         row++;
 
-        HBox buttonRow = new HBox(12, testToneButton, cpuLoadLabel);
+        HBox buttonRow = new HBox(12, testToneButton, cpuLoadLabel, threadsInUseLabel);
         grid.add(new Separator(), 0, row, 3, 1);
         row++;
         grid.add(buttonRow, 0, row, 3, 1);
@@ -385,6 +419,12 @@ public final class AudioSettingsDialog extends Dialog<Void> {
             bitDepthCombo.setValue(nearestOption(BIT_DEPTH_OPTIONS, model.getBitDepth()));
             mixPrecisionCombo.setValue(model.getMixPrecision());
             srcQualityCombo.setValue(model.getSrcQuality());
+            // Story 125: prime the worker-pool combo from persisted
+            // settings, snapping to the nearest offered value if a
+            // newer build had recorded a value beyond the menu range.
+            int persistedPool = model.getWorkerPoolSize();
+            workerPoolSizeCombo.setValue(nearestOption(
+                    workerPoolSizeCombo.getItems(), persistedPool));
             latencyCompensationCheck.setSelected(model.isApplyLatencyCompensation());
 
             // Stash the persisted buffer size; refreshDeviceCapabilities
@@ -750,6 +790,7 @@ public final class AudioSettingsDialog extends Dialog<Void> {
     private void refreshCpuLoad() {
         if (controller == null) {
             cpuLoadLabel.setText("CPU: —");
+            threadsInUseLabel.setText("Threads: —");
             return;
         }
         double load = controller.getCpuLoadPercent();
@@ -758,6 +799,13 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         } else {
             cpuLoadLabel.setText(String.format("CPU: %.1f%%", load));
         }
+        // Story 125: live "threads in use" reading from the multi-core
+        // graph scheduler, alongside the CPU bar. {@code 0} indicates the
+        // engine fell back to single-threaded rendering for the previous
+        // block (small block size, sidechain everywhere, or pool of 1).
+        int active = controller.getActiveThreadCount();
+        int poolSize = controller.getWorkerPoolSize();
+        threadsInUseLabel.setText(String.format("Threads: %d / %d", active, poolSize));
     }
 
     private void onTestTone() {
@@ -848,6 +896,12 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         if (srcQuality != null) {
             model.setSrcQuality(srcQuality);
         }
+        // Story 125: persist the worker-pool size so the next engine
+        // start consumes it via the SettingsModel-driven Request below.
+        Integer workerPoolSize = workerPoolSizeCombo.getValue();
+        if (workerPoolSize != null && workerPoolSize > 0) {
+            model.setWorkerPoolSize(workerPoolSize);
+        }
         if (effectiveBackend != null) {
             model.setAudioBackend(effectiveBackend);
         }
@@ -885,7 +939,8 @@ public final class AudioSettingsDialog extends Dialog<Void> {
                 model.getAudioOutputDevice(),
                 SampleRate.fromHz(sampleRate),
                 bufferFrames,
-                bitDepth);
+                bitDepth,
+                model.getWorkerPoolSize());
 
         try {
             controller.applyConfiguration(request);
