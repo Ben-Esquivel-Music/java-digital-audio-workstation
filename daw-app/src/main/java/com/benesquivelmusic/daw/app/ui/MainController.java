@@ -744,6 +744,12 @@ public final class MainController {
                             dockManager.toggleVisible(DefaultWorkspaces.PANEL_ARRANGEMENT);
                         }
                     }
+                    @Override public void onMixerToggleAB() {
+                        if (viewNavigationController != null
+                                && viewNavigationController.getMixerView() != null) {
+                            viewNavigationController.getMixerView().toggleAB();
+                        }
+                    }
                 });
         createCommandPaletteView();
     }

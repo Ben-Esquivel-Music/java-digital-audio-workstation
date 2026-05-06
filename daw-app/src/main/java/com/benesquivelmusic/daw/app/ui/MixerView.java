@@ -8,6 +8,8 @@ import com.benesquivelmusic.daw.core.analysis.InputLevelMonitor;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.audio.InputRouting;
 import com.benesquivelmusic.daw.core.mixer.*;
+import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshot;
+import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshotManager;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -75,6 +77,20 @@ public final class MixerView extends VBox {
     private final List<InsertEffectRack> activeInsertRacks = new ArrayList<>();
     private final List<InputMeterStrip> activeInputMeterStrips = new ArrayList<>();
     /**
+     * Side panel listing saved mixer-scene snapshots (Story 103). Mounted
+     * to the right of the channel strips; toggled via the "Snapshots"
+     * toolbar button and the corresponding mixer-menu item.
+     */
+    private final MixerSnapshotsPanel snapshotsPanel;
+    /** Top-row button that toggles {@link #snapshotsPanel} visibility. */
+    private final ToggleButton snapshotsToggleButton;
+    /** Top-row "A" slot button — recalls or saves to {@link MixerSnapshotManager.Slot#A}. */
+    private final Button slotAButton;
+    /** Top-row "B" slot button — recalls or saves to {@link MixerSnapshotManager.Slot#B}. */
+    private final Button slotBButton;
+    /** Container that holds {@link #snapshotsPanel} when visible. */
+    private HBox mainArea;
+    /**
      * Callbacks that re-sync solo-button visuals and the "Solo safe"
      * {@code CheckMenuItem} from the model. Invoked after undo/redo so
      * solo-safe changes round-trip through the UI even when the user did
@@ -136,9 +152,43 @@ public final class MixerView extends VBox {
         header.setGraphic(IconNode.of(DawIcon.MIXER, 16));
         header.setPadding(new Insets(0, 0, 6, 0));
 
-        // Mixer maintenance menu — currently exposes "Reset solo safe to
-        // defaults", which restores return buses to solo-safe and track /
-        // master channels to not solo-safe.
+        // ── Snapshots panel & A/B controls (Story 103) ──────────────────────
+        // The panel is constructed against the project's persistent
+        // MixerSnapshotManager so saved scenes round-trip through
+        // ProjectSerializer. The MixerView never replaces the manager —
+        // it always reads project.getMixerSnapshotManager() so a freshly
+        // loaded project's snapshots appear automatically.
+        this.snapshotsPanel = new MixerSnapshotsPanel(
+                project.getMixerSnapshotManager(), project.getMixer(), undoManager);
+        this.snapshotsPanel.setOnChange(this::syncSlotButtons);
+
+        this.snapshotsToggleButton = new ToggleButton("Snapshots");
+        this.snapshotsToggleButton.setTooltip(new Tooltip(
+                "Show or hide the mixer scene snapshots panel."));
+        this.snapshotsToggleButton.selectedProperty().addListener((_, _, selected) -> {
+            if (selected) {
+                if (!mainAreaContains(snapshotsPanel)) {
+                    mainArea.getChildren().add(snapshotsPanel);
+                }
+            } else {
+                mainArea.getChildren().remove(snapshotsPanel);
+            }
+        });
+
+        this.slotAButton = new Button("A");
+        this.slotAButton.setTooltip(new Tooltip(
+                "Recall snapshot slot A. Right-click to save the current state to A."));
+        this.slotAButton.setOnAction(_ -> recallSlot(MixerSnapshotManager.Slot.A));
+        this.slotAButton.setContextMenu(buildSlotContextMenu(MixerSnapshotManager.Slot.A));
+
+        this.slotBButton = new Button("B");
+        this.slotBButton.setTooltip(new Tooltip(
+                "Recall snapshot slot B. Right-click to save the current state to B."));
+        this.slotBButton.setOnAction(_ -> recallSlot(MixerSnapshotManager.Slot.B));
+        this.slotBButton.setContextMenu(buildSlotContextMenu(MixerSnapshotManager.Slot.B));
+
+        // Mixer maintenance menu — exposes "Reset solo safe to defaults"
+        // (legacy) plus the Story 103 Snapshots submenu.
         MenuButton mixerMenu = new MenuButton("⋮");
         mixerMenu.setTooltip(new Tooltip("Mixer options"));
         MenuItem resetSoloSafeItem = new MenuItem("Reset solo safe to defaults");
@@ -146,9 +196,28 @@ public final class MixerView extends VBox {
             project.getMixer().resetSoloSafeToDefaults();
             refresh();
         });
-        mixerMenu.getItems().add(resetSoloSafeItem);
 
-        HBox headerRow = new HBox(8, header, mixerMenu);
+        // Snapshots submenu — Save / Manage / Recall A / Recall B
+        Menu snapshotsMenu = new Menu("Snapshots");
+        MenuItem saveSnapshotItem = new MenuItem("Save current state…");
+        saveSnapshotItem.setOnAction(_ -> snapshotsPanel.getSaveButton().fire());
+        MenuItem manageSnapshotsItem = new MenuItem("Manage…");
+        manageSnapshotsItem.setOnAction(_ -> snapshotsToggleButton.setSelected(true));
+        MenuItem recallAItem = new MenuItem("Recall A");
+        recallAItem.setOnAction(_ -> recallSlot(MixerSnapshotManager.Slot.A));
+        MenuItem recallBItem = new MenuItem("Recall B");
+        recallBItem.setOnAction(_ -> recallSlot(MixerSnapshotManager.Slot.B));
+        snapshotsMenu.getItems().addAll(
+                saveSnapshotItem, manageSnapshotsItem, recallAItem, recallBItem);
+
+        mixerMenu.getItems().addAll(resetSoloSafeItem, snapshotsMenu);
+
+        Region toolbarSpacer = new Region();
+        HBox.setHgrow(toolbarSpacer, Priority.ALWAYS);
+        HBox headerRow = new HBox(8,
+                header, toolbarSpacer,
+                slotAButton, slotBButton,
+                snapshotsToggleButton, mixerMenu);
         headerRow.setAlignment(Pos.CENTER_LEFT);
         headerRow.setPadding(new Insets(0, 0, 6, 0));
 
@@ -175,12 +244,131 @@ public final class MixerView extends VBox {
         scrollPane.setHbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
         scrollPane.setVbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
         scrollPane.setStyle("-fx-background: transparent; -fx-background-color: transparent;");
-        VBox.setVgrow(scrollPane, Priority.ALWAYS);
 
-        getChildren().addAll(headerRow, scrollPane);
+        // mainArea wraps the strip area and the (optional) snapshots side panel
+        // so toggling the panel is an O(1) add/remove of a child node.
+        mainArea = new HBox(0, scrollPane);
+        HBox.setHgrow(scrollPane, Priority.ALWAYS);
+        VBox.setVgrow(mainArea, Priority.ALWAYS);
+
+        getChildren().addAll(headerRow, mainArea);
         setPadding(new Insets(8));
 
+        syncSlotButtons();
+
+        // Keep slot button highlights in sync after undo/redo of saves/
+        // recalls so the "active" slot indicator never goes stale.
+        if (this.undoManager != null) {
+            this.undoManager.addHistoryListener(_ -> {
+                if (javafx.application.Platform.isFxApplicationThread()) {
+                    snapshotsPanel.refresh();
+                    syncSlotButtons();
+                } else {
+                    javafx.application.Platform.runLater(() -> {
+                        snapshotsPanel.refresh();
+                        syncSlotButtons();
+                    });
+                }
+            });
+        }
+
         refresh();
+    }
+
+    private boolean mainAreaContains(javafx.scene.Node node) {
+        return mainArea != null && mainArea.getChildren().contains(node);
+    }
+
+    private ContextMenu buildSlotContextMenu(MixerSnapshotManager.Slot slot) {
+        ContextMenu menu = new ContextMenu();
+        MenuItem saveItem = new MenuItem("Save current state to " + slot.name());
+        saveItem.setOnAction(_ -> saveCurrentStateToSlot(slot));
+        MenuItem clearItem = new MenuItem("Clear " + slot.name());
+        clearItem.setOnAction(_ -> {
+            project.getMixerSnapshotManager().setSlot(slot, null);
+            syncSlotButtons();
+        });
+        menu.getItems().addAll(saveItem, clearItem);
+        return menu;
+    }
+
+    private void saveCurrentStateToSlot(MixerSnapshotManager.Slot slot) {
+        MixerSnapshot snap = MixerSnapshot.capture(
+                project.getMixer(), "Slot " + slot.name());
+        project.getMixerSnapshotManager().setSlot(slot, snap);
+        syncSlotButtons();
+    }
+
+    private void recallSlot(MixerSnapshotManager.Slot slot) {
+        MixerSnapshotManager manager = project.getMixerSnapshotManager();
+        MixerSnapshot snap = manager.getSlot(slot);
+        if (snap == null) {
+            return;
+        }
+        manager.setActiveSlot(slot);
+        snapshotsPanel.recallSnapshot(snap);
+        syncSlotButtons();
+    }
+
+    /**
+     * Toggles between the A and B snapshot slots, applying the newly active
+     * slot's state to the mixer as a single compound undoable action. Bound
+     * to {@link DawAction#MIXER_TOGGLE_AB} (default {@code Shift+A}).
+     */
+    public void toggleAB() {
+        MixerSnapshotManager manager = project.getMixerSnapshotManager();
+        MixerSnapshotManager.Slot next =
+                (manager.getActiveSlot() == MixerSnapshotManager.Slot.A)
+                        ? MixerSnapshotManager.Slot.B
+                        : MixerSnapshotManager.Slot.A;
+        MixerSnapshot snap = manager.getSlot(next);
+        manager.setActiveSlot(next);
+        if (snap != null) {
+            snapshotsPanel.recallSnapshot(snap);
+        }
+        syncSlotButtons();
+    }
+
+    private void syncSlotButtons() {
+        MixerSnapshotManager manager = project.getMixerSnapshotManager();
+        boolean activeA = manager.getActiveSlot() == MixerSnapshotManager.Slot.A;
+        applySlotButtonStyle(slotAButton, activeA, manager.getSlot(MixerSnapshotManager.Slot.A) != null);
+        applySlotButtonStyle(slotBButton, !activeA, manager.getSlot(MixerSnapshotManager.Slot.B) != null);
+    }
+
+    private static void applySlotButtonStyle(Button btn, boolean active, boolean filled) {
+        btn.getStyleClass().removeAll("mixer-slot-active", "mixer-slot-filled");
+        if (filled) {
+            btn.getStyleClass().add("mixer-slot-filled");
+        }
+        if (active) {
+            btn.getStyleClass().add("mixer-slot-active");
+            btn.setStyle("-fx-background-color: #ffaa00; -fx-text-fill: black; -fx-font-weight: bold;");
+        } else if (filled) {
+            btn.setStyle("-fx-background-color: #444; -fx-text-fill: white;");
+        } else {
+            btn.setStyle("");
+        }
+    }
+
+    /** Returns the snapshots side panel. Visible for testing. */
+    public MixerSnapshotsPanel getSnapshotsPanel() {
+        return snapshotsPanel;
+    }
+
+    /** Returns the snapshots toggle button. Visible for testing. */
+    ToggleButton getSnapshotsToggleButton() {
+        return snapshotsToggleButton;
+    }
+
+    /** Returns the A-slot toolbar button. Visible for testing. */
+    Button getSlotAButton() {
+        return slotAButton;
+    }
+
+    /** Returns the B-slot toolbar button. Visible for testing. */
+    Button getSlotBButton() {
+        return slotBButton;
     }
 
     /**
