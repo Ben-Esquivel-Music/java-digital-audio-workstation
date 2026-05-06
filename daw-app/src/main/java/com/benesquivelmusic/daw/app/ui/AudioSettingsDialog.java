@@ -431,9 +431,7 @@ public final class AudioSettingsDialog extends Dialog<Void> {
                 // Insert in sorted order so the combo remains ascending.
                 java.util.List<Integer> items = workerPoolSizeCombo.getItems();
                 int insertIdx = Collections.binarySearch(items, persistedPool);
-                if (insertIdx < 0) {
-                    items.add(-insertIdx - 1, persistedPool);
-                }
+                items.add(-insertIdx - 1, persistedPool);
             }
             workerPoolSizeCombo.setValue(persistedPool > 0 ? persistedPool : 1);
             latencyCompensationCheck.setSelected(model.isApplyLatencyCompensation());
