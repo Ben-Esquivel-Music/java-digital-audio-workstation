@@ -41,6 +41,9 @@ public interface AudioEngineController {
      *                           may be any driver-reported value, not limited to the
      *                           power-of-two {@link BufferSize} enum
      * @param bitDepth           desired bit depth (for new-project defaults)
+     * @param workerPoolSize     desired worker-pool size for the multi-core
+     *                           graph scheduler (story 125); {@code 1}
+     *                           disables parallelism. Must be positive.
      */
     record Request(
             String backendName,
@@ -48,7 +51,8 @@ public interface AudioEngineController {
             String outputDeviceName,
             SampleRate sampleRate,
             int bufferFrames,
-            int bitDepth) {
+            int bitDepth,
+            int workerPoolSize) {
 
         public Request {
             if (backendName == null) {
@@ -69,6 +73,26 @@ public interface AudioEngineController {
             if (bitDepth <= 0) {
                 throw new IllegalArgumentException("bitDepth must be positive: " + bitDepth);
             }
+            if (workerPoolSize <= 0) {
+                throw new IllegalArgumentException(
+                        "workerPoolSize must be positive: " + workerPoolSize);
+            }
+        }
+
+        /**
+         * Backwards-compatible constructor preserving the previous
+         * six-arg signature; the new {@code workerPoolSize} field
+         * defaults to {@code max(1, availableProcessors() - 2)}.
+         */
+        public Request(String backendName,
+                       String inputDeviceName,
+                       String outputDeviceName,
+                       SampleRate sampleRate,
+                       int bufferFrames,
+                       int bitDepth) {
+            this(backendName, inputDeviceName, outputDeviceName, sampleRate,
+                    bufferFrames, bitDepth,
+                    Math.max(1, Runtime.getRuntime().availableProcessors() - 2));
         }
     }
 
@@ -101,6 +125,30 @@ public interface AudioEngineController {
      * performance monitor.
      */
     double getCpuLoadPercent();
+
+    /**
+     * Returns the number of parallel worker threads that processed audio
+     * during the most recent block — the live "threads in use" reading
+     * for the multi-core graph scheduler (story 125). Returns {@code 0}
+     * when the engine is not running, parallelism is disabled, or the
+     * previous block fell back to sequential execution.
+     *
+     * @return the dispatched task count for the previous block; {@code >= 0}
+     */
+    default int getActiveThreadCount() {
+        return 0;
+    }
+
+    /**
+     * Returns the configured worker-pool size for the multi-core audio
+     * graph scheduler (story 125), {@code 1} to indicate parallelism is
+     * disabled.
+     *
+     * @return the worker-pool size; always {@code >= 1}
+     */
+    default int getWorkerPoolSize() {
+        return 1;
+    }
 
     /**
      * Applies the given configuration. Typically stops the current stream,

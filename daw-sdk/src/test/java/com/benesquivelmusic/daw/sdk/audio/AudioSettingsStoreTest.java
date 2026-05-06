@@ -140,4 +140,48 @@ class AudioSettingsStoreTest {
                         java.util.Map.of(), true,
                         java.util.Map.of("ASIO|in", -10)));
     }
+
+    /** Story 125: workerPoolSize round-trips. */
+    @Test
+    void roundTripPersistsWorkerPoolSize(@TempDir Path dir) throws IOException {
+        AudioSettingsStore store = new AudioSettingsStore(dir.resolve("audio-settings.json"));
+        AudioSettingsStore.Settings s = new AudioSettingsStore.Settings(
+                "ASIO", "in", "out", 48_000.0, 128,
+                java.util.Map.of(), true, java.util.Map.of(), 7);
+        store.save(s);
+
+        AudioSettingsStore.Settings loaded = store.load().orElseThrow();
+        assertEquals(7, loaded.workerPoolSize());
+    }
+
+    /** Story 125: legacy files default to {@code Settings.defaultWorkerPoolSize()}. */
+    @Test
+    void legacyFileWithoutWorkerPoolSizeDefaultsToCoresMinusTwo(@TempDir Path dir) throws IOException {
+        Path file = dir.resolve("audio-settings.json");
+        Files.writeString(file, "{\n"
+                + "  \"backend\": \"ASIO\",\n"
+                + "  \"inputDevice\": \"In\",\n"
+                + "  \"outputDevice\": \"Out\",\n"
+                + "  \"sampleRate\": 48000.0,\n"
+                + "  \"bufferFrames\": 128\n"
+                + "}\n");
+        AudioSettingsStore store = new AudioSettingsStore(file);
+        AudioSettingsStore.Settings loaded = store.load().orElseThrow();
+
+        assertEquals(AudioSettingsStore.Settings.defaultWorkerPoolSize(),
+                loaded.workerPoolSize());
+    }
+
+    /** Story 125: workerPoolSize must be positive. */
+    @Test
+    void shouldRejectNonPositiveWorkerPoolSize() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new AudioSettingsStore.Settings(
+                        "ASIO", "in", "out", 44_100, 128,
+                        java.util.Map.of(), true, java.util.Map.of(), 0));
+        assertThrows(IllegalArgumentException.class,
+                () -> new AudioSettingsStore.Settings(
+                        "ASIO", "in", "out", 44_100, 128,
+                        java.util.Map.of(), true, java.util.Map.of(), -1));
+    }
 }

@@ -25,6 +25,7 @@ public final class SettingsModel {
     private static final String KEY_AUDIO_OUTPUT_DEVICE = "audio.outputDevice";
     private static final String KEY_APPLY_LATENCY_COMPENSATION = "audio.applyLatencyCompensation";
     private static final String KEY_SRC_QUALITY = "audio.srcQuality";
+    private static final String KEY_WORKER_POOL_SIZE = "audio.workerPoolSize";
 
     // ── Project keys ─────────────────────────────────────────────────────────
     private static final String KEY_AUTO_SAVE_INTERVAL_SECONDS = "project.autoSaveIntervalSeconds";
@@ -85,6 +86,17 @@ public final class SettingsModel {
      */
     static final QualityTier DEFAULT_SRC_QUALITY = QualityTier.MEDIUM;
 
+    /**
+     * Default worker-pool size for the multi-core audio graph scheduler
+     * (story 125). Mirrors {@code AudioEngineSettings.defaults()} —
+     * {@code max(1, availableProcessors() - 2)} — so the audio callback
+     * thread and the OS each retain a dedicated core. {@code 1} disables
+     * parallelism. Locked at engine start; changing it requires a
+     * stop/start cycle of the audio engine.
+     */
+    static final int DEFAULT_WORKER_POOL_SIZE =
+            Math.max(1, Runtime.getRuntime().availableProcessors() - 2);
+
     private final Preferences prefs;
 
     private double sampleRate;
@@ -101,6 +113,7 @@ public final class SettingsModel {
     private String audioOutputDevice;
     private boolean applyLatencyCompensation;
     private QualityTier srcQuality;
+    private int workerPoolSize;
     private KeyBindingManager keyBindingManager;
 
     /**
@@ -144,6 +157,8 @@ public final class SettingsModel {
             // Unknown value persisted by a newer build; fall back to default.
         }
         srcQuality = resolvedSrcQuality;
+        int storedWorkerPool = prefs.getInt(KEY_WORKER_POOL_SIZE, DEFAULT_WORKER_POOL_SIZE);
+        workerPoolSize = storedWorkerPool > 0 ? storedWorkerPool : DEFAULT_WORKER_POOL_SIZE;
     }
 
     // ── Audio ────────────────────────────────────────────────────────────────
@@ -312,6 +327,34 @@ public final class SettingsModel {
         prefs.put(KEY_SRC_QUALITY, tier.name());
     }
 
+    /**
+     * Returns the configured worker-pool size for the multi-core audio
+     * graph scheduler (story 125). A value of {@code 1} disables
+     * parallelism.
+     *
+     * @return the worker-pool size (always positive)
+     */
+    public int getWorkerPoolSize() {
+        return workerPoolSize;
+    }
+
+    /**
+     * Sets the worker-pool size and persists the change. The new size
+     * takes effect on the next engine restart — the pool size is locked
+     * for the lifetime of an open audio stream so the audio thread sees
+     * a stable scheduler topology. Story 125.
+     *
+     * @param workerPoolSize the new worker-pool size (must be positive)
+     */
+    public void setWorkerPoolSize(int workerPoolSize) {
+        if (workerPoolSize <= 0) {
+            throw new IllegalArgumentException(
+                    "workerPoolSize must be positive: " + workerPoolSize);
+        }
+        this.workerPoolSize = workerPoolSize;
+        prefs.putInt(KEY_WORKER_POOL_SIZE, workerPoolSize);
+    }
+
     // ── Project ──────────────────────────────────────────────────────────────
 
     /** Returns the auto-save interval in seconds. */
@@ -450,5 +493,6 @@ public final class SettingsModel {
         setAudioOutputDevice(DEFAULT_AUDIO_DEVICE);
         setApplyLatencyCompensation(DEFAULT_APPLY_LATENCY_COMPENSATION);
         setSrcQuality(DEFAULT_SRC_QUALITY);
+        setWorkerPoolSize(DEFAULT_WORKER_POOL_SIZE);
     }
 }

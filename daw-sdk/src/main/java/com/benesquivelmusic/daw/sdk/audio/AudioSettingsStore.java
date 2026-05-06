@@ -69,7 +69,8 @@ public final class AudioSettingsStore {
             int bufferFrames,
             Map<String, Integer> clockSourceByDeviceKey,
             boolean applyLatencyCompensation,
-            Map<String, Integer> latencyOverrideFramesByDeviceKey) {
+            Map<String, Integer> latencyOverrideFramesByDeviceKey,
+            int workerPoolSize) {
 
         public Settings {
             Objects.requireNonNull(backend, "backend must not be null");
@@ -87,6 +88,10 @@ public final class AudioSettingsStore {
             }
             if (bufferFrames <= 0) {
                 throw new IllegalArgumentException("bufferFrames must be positive: " + bufferFrames);
+            }
+            if (workerPoolSize <= 0) {
+                throw new IllegalArgumentException(
+                        "workerPoolSize must be positive: " + workerPoolSize);
             }
             for (Integer frames : latencyOverrideFramesByDeviceKey.values()) {
                 if (frames == null || frames < 0) {
@@ -112,7 +117,7 @@ public final class AudioSettingsStore {
                         double sampleRate,
                         int bufferFrames) {
             this(backend, inputDevice, outputDevice, sampleRate, bufferFrames,
-                    Map.of(), true, Map.of());
+                    Map.of(), true, Map.of(), defaultWorkerPoolSize());
         }
 
         /**
@@ -127,7 +132,35 @@ public final class AudioSettingsStore {
                         int bufferFrames,
                         Map<String, Integer> clockSourceByDeviceKey) {
             this(backend, inputDevice, outputDevice, sampleRate, bufferFrames,
-                    clockSourceByDeviceKey, true, Map.of());
+                    clockSourceByDeviceKey, true, Map.of(), defaultWorkerPoolSize());
+        }
+
+        /**
+         * Backwards-compatible constructor preserving the previous
+         * eight-arg signature; defaults the new {@link #workerPoolSize}
+         * field to {@link #defaultWorkerPoolSize()}.
+         */
+        public Settings(String backend,
+                        String inputDevice,
+                        String outputDevice,
+                        double sampleRate,
+                        int bufferFrames,
+                        Map<String, Integer> clockSourceByDeviceKey,
+                        boolean applyLatencyCompensation,
+                        Map<String, Integer> latencyOverrideFramesByDeviceKey) {
+            this(backend, inputDevice, outputDevice, sampleRate, bufferFrames,
+                    clockSourceByDeviceKey, applyLatencyCompensation,
+                    latencyOverrideFramesByDeviceKey, defaultWorkerPoolSize());
+        }
+
+        /**
+         * Returns the default worker-pool size used when a persisted
+         * settings file pre-dates the {@code workerPoolSize} field
+         * (story 125). Mirrors {@code AudioEngineSettings.defaults()} —
+         * keeping the two in sync without taking an SDK→core dependency.
+         */
+        public static int defaultWorkerPoolSize() {
+            return Math.max(1, Runtime.getRuntime().availableProcessors() - 2);
         }
 
         /**
@@ -204,7 +237,8 @@ public final class AudioSettingsStore {
                     Integer.parseInt(bf),
                     parseClockSources(kv.get("clockSourcesByDevice")),
                     parseApplyLatencyCompensation(kv.get("applyLatencyCompensation")),
-                    parseLatencyOverrides(kv.get("latencyOverridesByDevice"))));
+                    parseLatencyOverrides(kv.get("latencyOverridesByDevice")),
+                    parseWorkerPoolSize(kv.get("workerPoolSize"))));
         } catch (IOException | IllegalArgumentException e) {
             return Optional.empty();
         }
@@ -236,8 +270,25 @@ public final class AudioSettingsStore {
                 + escape(encodeClockSources(s.clockSourceByDeviceKey())) + "\",\n"
                 + "  \"applyLatencyCompensation\": " + s.applyLatencyCompensation() + ",\n"
                 + "  \"latencyOverridesByDevice\": \""
-                + escape(encodeClockSources(s.latencyOverrideFramesByDeviceKey())) + "\"\n"
+                + escape(encodeClockSources(s.latencyOverrideFramesByDeviceKey())) + "\",\n"
+                + "  \"workerPoolSize\": " + s.workerPoolSize() + "\n"
                 + "}\n";
+    }
+
+    /**
+     * Parses the {@code workerPoolSize} field. Missing, malformed, or
+     * non-positive values fall back to {@link Settings#defaultWorkerPoolSize()}
+     * — keeps story-125 settings forward-compatible with older settings
+     * files that pre-date the worker-pool field.
+     */
+    static int parseWorkerPoolSize(String raw) {
+        if (raw == null) return Settings.defaultWorkerPoolSize();
+        try {
+            int v = Integer.parseInt(raw.trim());
+            return v > 0 ? v : Settings.defaultWorkerPoolSize();
+        } catch (NumberFormatException e) {
+            return Settings.defaultWorkerPoolSize();
+        }
     }
 
     /**

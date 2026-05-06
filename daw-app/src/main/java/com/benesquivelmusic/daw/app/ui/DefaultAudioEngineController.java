@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.AudioBackendFactory;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
+import com.benesquivelmusic.daw.core.audio.AudioEngineSettings;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.audio.javasound.JavaSoundBackend;
 import com.benesquivelmusic.daw.core.audio.performance.XrunDetector;
@@ -267,6 +268,16 @@ final class DefaultAudioEngineController implements AudioEngineController {
     }
 
     @Override
+    public int getActiveThreadCount() {
+        return audioEngine.getActiveThreadCount();
+    }
+
+    @Override
+    public int getWorkerPoolSize() {
+        return audioEngine.getWorkerPoolSize();
+    }
+
+    @Override
     public void applyConfiguration(Request request) {
         Objects.requireNonNull(request, "request must not be null");
         LOG.info("Applying audio configuration: " + request);
@@ -282,6 +293,15 @@ final class DefaultAudioEngineController implements AudioEngineController {
                 request.bitDepth(),
                 request.bufferFrames());
         audioEngine.setFormat(updated);
+
+        // Story 125: apply the new worker-pool size to the engine. The
+        // pool is locked at start() so the swap must happen between
+        // stop() above and the start{,AudioOutput}() calls below.
+        AudioEngineSettings previousSettings = audioEngine.getEngineSettings();
+        if (previousSettings.workerPoolSize() != request.workerPoolSize()) {
+            audioEngine.setEngineSettings(
+                    previousSettings.withWorkerPoolSize(request.workerPoolSize()));
+        }
 
         // Buffer size or sample rate may have changed — rebuild the
         // xrun detector so its deadline matches the new format, and
