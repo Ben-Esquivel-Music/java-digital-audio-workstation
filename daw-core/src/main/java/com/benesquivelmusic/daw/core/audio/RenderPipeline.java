@@ -15,6 +15,9 @@ import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import com.benesquivelmusic.daw.sdk.audio.ClipGainEnvelope;
+import com.benesquivelmusic.daw.sdk.audio.SampleRateConverter;
+import com.benesquivelmusic.daw.sdk.audio.SampleRateConverter.QualityTier;
+import com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata;
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 
 import java.util.Arrays;
@@ -96,6 +99,23 @@ public final class RenderPipeline {
     private boolean returnBusCapWarningLogged;
 
     /**
+     * Optional cache of sample-rate-converted clip buffers. When set,
+     * {@link #renderSegment} consults the cache for any clip whose
+     * {@link AudioClip#getSourceRateMetadata()} reports a native rate
+     * different from the session rate, falling back to the raw
+     * {@link AudioClip#getAudioData()} when the cache is absent or the
+     * rates already match. Story 126.
+     */
+    private volatile SampleRateConversionCache srcCache;
+
+    /**
+     * SRC quality tier used by the cache when it must materialize a new
+     * conversion. Defaults to {@link QualityTier#MEDIUM}, matching the
+     * persisted default in {@code SettingsModel}.
+     */
+    private volatile QualityTier srcQualityTier = QualityTier.MEDIUM;
+
+    /**
      * Creates a render pipeline with pre-allocated scratch buffers.
      *
      * @param format    the audio format describing channel count and sample rate
@@ -125,6 +145,47 @@ public final class RenderPipeline {
      */
     public AudioFormat getFormat() {
         return format;
+    }
+
+    /**
+     * Installs (or removes) the process-wide
+     * {@link SampleRateConversionCache} used to memoize JIT sample-rate
+     * conversions of clips whose {@link SourceRateMetadata#nativeRateHz()}
+     * differs from the session rate. Story 126.
+     *
+     * <p>Pass {@code null} to disable just-in-time SRC entirely — the
+     * pipeline will then read each clip's raw {@link AudioClip#getAudioData()}
+     * verbatim, restoring the legacy "we assume the importer already
+     * resampled" behavior.</p>
+     *
+     * @param cache the cache, or {@code null} to disable JIT SRC
+     */
+    public void setSampleRateConversionCache(SampleRateConversionCache cache) {
+        this.srcCache = cache;
+    }
+
+    /**
+     * Returns the currently installed sample-rate conversion cache, or
+     * {@code null}.
+     */
+    public SampleRateConversionCache getSampleRateConversionCache() {
+        return srcCache;
+    }
+
+    /**
+     * Sets the SRC quality tier used by the cache when materializing a
+     * new conversion. Story 126 — surfaced through the
+     * {@code AudioSettingsDialog} "SRC Quality" combo.
+     *
+     * @param tier quality tier (must not be {@code null})
+     */
+    public void setSrcQualityTier(QualityTier tier) {
+        this.srcQualityTier = Objects.requireNonNull(tier, "tier must not be null");
+    }
+
+    /** Returns the SRC quality tier currently in effect. */
+    public QualityTier getSrcQualityTier() {
+        return srcQualityTier;
     }
 
     /**
@@ -500,7 +561,7 @@ public final class RenderPipeline {
 
             for (int c = 0; c < clips.size(); c++) {
                 AudioClip clip = clips.get(c);
-                float[][] audioData = clip.getAudioData();
+                float[][] audioData = resolveAudioData(clip);
                 if (audioData == null || audioData.length == 0) {
                     continue;
                 }
@@ -654,5 +715,33 @@ public final class RenderPipeline {
             }
         }
         return null;
+    }
+
+    /**
+     * Returns the {@code [channel][sample]} buffer to read from for
+     * {@code clip}, applying just-in-time sample-rate conversion via the
+     * installed {@link SampleRateConversionCache} when the clip's
+     * {@link SourceRateMetadata#nativeRateHz()} differs from the
+     * session rate. Falls back to {@link AudioClip#getAudioData()} when
+     * no cache is installed or no conversion is required.
+     *
+     * <p>The cache lookup is a {@link java.util.concurrent.ConcurrentHashMap}
+     * read; on a cache hit no allocation occurs. Cache misses allocate
+     * a converted buffer and insert it — this is non-RT-safe but happens
+     * only the first time a rate-mismatched clip is rendered and the
+     * resulting buffer is reused for every subsequent block.</p>
+     */
+    private float[][] resolveAudioData(AudioClip clip) {
+        float[][] raw = clip.getAudioData();
+        SampleRateConversionCache cache = this.srcCache;
+        if (cache == null || raw == null || raw.length == 0) {
+            return raw;
+        }
+        SourceRateMetadata meta = clip.getSourceRateMetadata();
+        int sessionRateHz = (int) Math.round(format.sampleRate());
+        if (meta == null || !meta.requiresConversion(sessionRateHz)) {
+            return raw;
+        }
+        return cache.get(clip.getId(), meta, sessionRateHz, srcQualityTier, () -> raw);
     }
 }

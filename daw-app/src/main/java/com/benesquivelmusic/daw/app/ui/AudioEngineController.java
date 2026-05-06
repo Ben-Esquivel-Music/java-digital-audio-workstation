@@ -126,6 +126,21 @@ public interface AudioEngineController {
     }
 
     /**
+     * Applies the given {@link com.benesquivelmusic.daw.sdk.audio.SampleRateConverter.QualityTier}
+     * to the live engine's sample-rate-conversion path (story 126).
+     * Conversions cached at a different tier are invalidated so the
+     * next render produces them at the new quality.
+     *
+     * <p>The default implementation is a no-op, safe for test doubles.</p>
+     *
+     * @param tier the new SRC quality tier (must not be {@code null})
+     */
+    default void applySrcQuality(
+            com.benesquivelmusic.daw.sdk.audio.SampleRateConverter.QualityTier tier) {
+        // no-op for test stubs
+    }
+
+    /**
      * Plays a short 440 Hz sine tone to verify audio output. Non-blocking —
      * returns as soon as the tone is queued. Uses the {@code javax.sound.sampled}
      * fallback path so it does not interfere with the main engine stream.

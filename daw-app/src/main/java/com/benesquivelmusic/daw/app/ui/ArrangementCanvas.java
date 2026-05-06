@@ -61,6 +61,13 @@ public final class ArrangementCanvas extends Pane {
     private List<Track> tracks = List.of();
     private double pixelsPerBeat = ArrangementNavigator.BASE_PIXELS_PER_BEAT;
     private double samplesPerBeat = 0.0;
+    /**
+     * Active session sample rate in Hz used to detect rate-mismatched
+     * clips and render the "↻ native→session" badge (story 126). A
+     * value of {@code 0} disables the badge entirely; the canvas falls
+     * back to {@code 0} until the controller wires the live rate.
+     */
+    private int sessionRateHz = 0;
     private double scrollXBeats;
     private double scrollYPixels;
     private double trackHeight = TrackHeightZoom.DEFAULT_TRACK_HEIGHT;
@@ -165,6 +172,16 @@ public final class ArrangementCanvas extends Pane {
      */
     public void setSamplesPerBeat(double samplesPerBeat) {
         this.samplesPerBeat = Math.max(0.0, samplesPerBeat);
+        redraw();
+    }
+
+    /**
+     * Sets the active session sample rate in Hz used to render the
+     * SRC-mismatch badge on clips whose native rate differs (story 126).
+     * Pass {@code 0} to disable the badge.
+     */
+    public void setSessionRateHz(int sessionRateHz) {
+        this.sessionRateHz = Math.max(0, sessionRateHz);
         redraw();
     }
 
@@ -706,7 +723,8 @@ public final class ArrangementCanvas extends Pane {
             for (AudioClip clip : track.getClips()) {
                 ClipOverlayRenderer.drawAudioClip(gc, clip, trackColor,
                         laneY, trackHeight, pixelsPerBeat, scrollXBeats,
-                        canvasWidth, canvasHeight, selectionModel, samplesPerBeat);
+                        canvasWidth, canvasHeight, selectionModel,
+                        samplesPerBeat, sessionRateHz);
             }
 
             MidiClip midiClip = track.getMidiClip();

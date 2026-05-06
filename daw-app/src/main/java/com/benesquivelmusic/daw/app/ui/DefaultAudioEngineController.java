@@ -358,6 +358,21 @@ final class DefaultAudioEngineController implements AudioEngineController {
     }
 
     @Override
+    public void applySrcQuality(
+            com.benesquivelmusic.daw.sdk.audio.SampleRateConverter.QualityTier tier) {
+        Objects.requireNonNull(tier, "tier must not be null");
+        var previous = audioEngine.getSrcQualityTier();
+        audioEngine.setSrcQualityTier(tier);
+        // Invalidate cached conversions when the tier changes — they
+        // were rendered with the previous filter kernel and would
+        // otherwise leak across a quality change.
+        if (previous != tier) {
+            audioEngine.getSampleRateConversionCache().invalidateAll();
+        }
+        LOG.info("SRC quality set to " + tier);
+    }
+
+    @Override
     public Flow.Publisher<XrunEvent> xrunEvents() {
         return xrunDetector.xrunEvents();
     }
@@ -778,17 +793,16 @@ final class DefaultAudioEngineController implements AudioEngineController {
         setEngineState(EngineState.STOPPED);
 
         // 8. Surface the SRC fallback notification when the driver moved
-        //    to a rate that differs from the project's session rate. The
-        //    actual SRC insertion at the device boundary is a render-graph
-        //    change owned by the engine pipeline (story 126's
-        //    com.benesquivelmusic.daw.sdk.audio.SampleRateConverter); this
-        //    controller does not own that graph.
-        // TODO(story-126-integration): wire SampleRateConverter at the
-        //   device boundary inside the engine's render graph so a project
-        //   authored at 48 kHz keeps its session rate even when the
-        //   driver moves to 44.1 kHz.
+        //    to a rate that differs from the project's session rate.
+        //    Story 126 — the engine-owned RenderPipeline consults the
+        //    SampleRateConversionCache at each clip read AND at the
+        //    device boundary so the project keeps its authored rate even
+        //    when the driver moves to a different rate. Invalidate the
+        //    cache here because a session-rate change makes every cached
+        //    conversion stale (they all targeted the previous rate).
         if (isSampleRateChange && rateActuallyDiffers) {
             int newRateKhz = (int) Math.round(proposed.get().sampleRate() / 1000.0);
+            audioEngine.getSampleRateConversionCache().invalidateAll();
             try {
                 notifications.notify(
                         "Driver moved to " + newRateKhz
