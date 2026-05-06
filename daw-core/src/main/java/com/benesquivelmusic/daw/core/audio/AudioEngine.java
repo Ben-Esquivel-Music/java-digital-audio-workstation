@@ -87,6 +87,12 @@ public final class AudioEngine {
     // Optional per-track CPU budget enforcer for graceful degradation
     private volatile TrackCpuBudgetEnforcer cpuBudgetEnforcer;
 
+    // Process-wide cache of sample-rate-converted clip buffers (story 126).
+    // The render pipeline consults this cache before reading each clip's
+    // audio data so clips imported at a rate different from the session
+    // rate are JIT resampled rather than pitch-shifted.
+    private volatile SampleRateConversionCache srcCache = new SampleRateConversionCache();
+
     // Optional registry of input-level monitors (story 137). When set, the
     // engine taps the raw input signal per armed track ahead of any
     // processing and feeds it through the track's monitor so the mixer's
@@ -120,6 +126,8 @@ public final class AudioEngine {
 
         // Pre-allocate the unified render pipeline (owns mix/track/return buffers)
         renderPipeline = new RenderPipeline(format, MAX_TRACKS, frames);
+        renderPipeline.setSampleRateConversionCache(srcCache);
+        renderPipeline.setSrcQualityTier(srcQualityTier);
 
         // Pre-allocate the buffer pool (8 buffers for intermediate processing)
         bufferPool = new AudioBufferPool(8, channels, frames);
@@ -185,7 +193,14 @@ public final class AudioEngine {
         if (running.get()) {
             throw new IllegalStateException("Cannot change format while engine is running");
         }
-        this.format = Objects.requireNonNull(format, "format must not be null");
+        Objects.requireNonNull(format, "format must not be null");
+        // Drop every cached SRC entry when the session sample rate
+        // changes — otherwise stale conversions targeting the old rate
+        // would be replayed at the new rate (story 126).
+        if (this.format == null || this.format.sampleRate() != format.sampleRate()) {
+            srcCache.invalidateAll();
+        }
+        this.format = format;
     }
 
     /**
@@ -638,6 +653,41 @@ public final class AudioEngine {
     public TrackCpuBudgetEnforcer getCpuBudgetEnforcer() {
         return cpuBudgetEnforcer;
     }
+
+    /**
+     * Returns the process-wide {@link SampleRateConversionCache} used
+     * by the render pipeline to memoize JIT sample-rate conversions of
+     * clips whose native rate differs from the session rate. Story 126.
+     *
+     * @return the cache, never {@code null}
+     */
+    public SampleRateConversionCache getSampleRateConversionCache() {
+        return srcCache;
+    }
+
+    /**
+     * Sets the SRC quality tier ({@code LOW} / {@code MEDIUM} /
+     * {@code HIGH}) used by the cache when materializing a new
+     * conversion. Story 126.
+     *
+     * @param tier quality tier (must not be {@code null})
+     */
+    public void setSrcQualityTier(
+            com.benesquivelmusic.daw.sdk.audio.SampleRateConverter.QualityTier tier) {
+        if (renderPipeline != null) {
+            renderPipeline.setSrcQualityTier(tier);
+        }
+        this.srcQualityTier = Objects.requireNonNull(tier, "tier must not be null");
+    }
+
+    /** Returns the SRC quality tier currently in effect. */
+    public com.benesquivelmusic.daw.sdk.audio.SampleRateConverter.QualityTier getSrcQualityTier() {
+        return srcQualityTier;
+    }
+
+    /** Cached tier reapplied to the render pipeline on each {@link #start()}. */
+    private volatile com.benesquivelmusic.daw.sdk.audio.SampleRateConverter.QualityTier srcQualityTier
+            = com.benesquivelmusic.daw.sdk.audio.SampleRateConverter.QualityTier.MEDIUM;
 
     /**
      * Binds an {@link InputLevelMonitorRegistry} to the engine so that the

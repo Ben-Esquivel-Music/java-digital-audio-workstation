@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.FadeCurveType;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata;
 
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.paint.Color;
@@ -57,6 +58,45 @@ final class ClipOverlayRenderer {
         drawAudioClip(gc, clip, trackColor, laneY, trackHeight,
                 pixelsPerBeat, scrollXBeats, canvasWidth, canvasHeight,
                 selectionModel, 0.0);
+    }
+
+    /**
+     * Renders the audio clip and overlays a "↻ &lt;native&gt;→&lt;session&gt;"
+     * badge in the upper-left when the clip's
+     * {@link SourceRateMetadata#nativeRateHz()} differs from the active
+     * session rate. Story 126 — surfaces the JIT SRC happening at the
+     * bus boundary so the user knows their 44.1 kHz import is being
+     * resampled into a 48 kHz session.
+     *
+     * @param sessionRateHz active session sample rate in Hz; pass
+     *                      {@code 0} to skip the badge entirely
+     */
+    static void drawAudioClip(GraphicsContext gc, AudioClip clip, Color trackColor,
+                              double laneY, double trackHeight,
+                              double pixelsPerBeat, double scrollXBeats,
+                              double canvasWidth, double canvasHeight,
+                              SelectionModel selectionModel,
+                              double samplesPerBeat,
+                              int sessionRateHz) {
+        drawAudioClip(gc, clip, trackColor, laneY, trackHeight,
+                pixelsPerBeat, scrollXBeats, canvasWidth, canvasHeight,
+                selectionModel, samplesPerBeat);
+        if (sessionRateHz <= 0) {
+            return;
+        }
+        SourceRateMetadata meta = clip.getSourceRateMetadata();
+        if (meta == null || !meta.requiresConversion(sessionRateHz)) {
+            return;
+        }
+        double clipX = (clip.getStartBeat() - scrollXBeats) * pixelsPerBeat;
+        double clipWidth = clip.getDurationBeats() * pixelsPerBeat;
+        if (clipX + clipWidth < 0 || clipX > canvasWidth) {
+            return;
+        }
+        double clipY = laneY + CLIP_INSET;
+        double clipHeight = trackHeight - 2 * CLIP_INSET;
+        drawSrcMismatchBadge(gc, meta.badgeLabel(sessionRateHz),
+                clipX, clipY, clipWidth, clipHeight);
     }
 
     /**
@@ -390,6 +430,37 @@ final class ClipOverlayRenderer {
         gc.rect(clipX, clipY, clipWidth, clipHeight);
         gc.clip();
         gc.fillText(name, clipX + CLIP_LABEL_PADDING, clipY + 12);
+        gc.restore();
+    }
+
+    /**
+     * Renders the "↻ &lt;native&gt;→&lt;session&gt;" SRC mismatch badge
+     * in the clip's upper-left corner. Story 126.
+     */
+    private static void drawSrcMismatchBadge(GraphicsContext gc, String label,
+                                             double clipX, double clipY,
+                                             double clipWidth, double clipHeight) {
+        if (label == null || label.isEmpty() || clipWidth < 32 || clipHeight < 12) {
+            return;
+        }
+        gc.save();
+        gc.beginPath();
+        gc.rect(clipX, clipY, clipWidth, clipHeight);
+        gc.clip();
+        // Pill background — semi-transparent amber so the badge is
+        // visible on bright and dark track colors alike.
+        Color bg = Color.web("#ffb300", 0.85);
+        gc.setFont(CLIP_LABEL_FONT);
+        double textWidth = label.length() * 6.0; // CLIP_LABEL_FONT averages ~6px/char
+        double padX = 4.0;
+        double pillW = Math.min(textWidth + padX * 2, clipWidth - 4.0);
+        double pillH = 12.0;
+        double pillX = clipX + 2.0;
+        double pillY = clipY + 2.0;
+        gc.setFill(bg);
+        gc.fillRoundRect(pillX, pillY, pillW, pillH, 4.0, 4.0);
+        gc.setFill(Color.web("#1a1a1a", 0.95));
+        gc.fillText(label, pillX + padX, pillY + pillH - 3.0);
         gc.restore();
     }
 }

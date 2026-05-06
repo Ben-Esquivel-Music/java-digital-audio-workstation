@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
+import com.benesquivelmusic.daw.sdk.audio.SampleRateConverter.QualityTier;
 
 import java.util.Objects;
 import java.util.prefs.Preferences;
@@ -23,6 +24,7 @@ public final class SettingsModel {
     private static final String KEY_AUDIO_INPUT_DEVICE = "audio.inputDevice";
     private static final String KEY_AUDIO_OUTPUT_DEVICE = "audio.outputDevice";
     private static final String KEY_APPLY_LATENCY_COMPENSATION = "audio.applyLatencyCompensation";
+    private static final String KEY_SRC_QUALITY = "audio.srcQuality";
 
     // ── Project keys ─────────────────────────────────────────────────────────
     private static final String KEY_AUTO_SAVE_INTERVAL_SECONDS = "project.autoSaveIntervalSeconds";
@@ -73,6 +75,16 @@ public final class SettingsModel {
      */
     static final boolean DEFAULT_APPLY_LATENCY_COMPENSATION = true;
 
+    /**
+     * Default SRC quality tier. {@code MEDIUM} matches the story 126
+     * recommendation: 32-tap polyphase FIR with ≥ 60 dB stop-band
+     * attenuation — well above audible thresholds while staying CPU-cheap
+     * for tracking sessions. Power users can switch to {@code HIGH}
+     * (128-tap windowed-sinc) for final mix-down via the Audio Settings
+     * dialog.
+     */
+    static final QualityTier DEFAULT_SRC_QUALITY = QualityTier.MEDIUM;
+
     private final Preferences prefs;
 
     private double sampleRate;
@@ -88,6 +100,7 @@ public final class SettingsModel {
     private String audioInputDevice;
     private String audioOutputDevice;
     private boolean applyLatencyCompensation;
+    private QualityTier srcQuality;
     private KeyBindingManager keyBindingManager;
 
     /**
@@ -123,6 +136,14 @@ public final class SettingsModel {
         audioOutputDevice = prefs.get(KEY_AUDIO_OUTPUT_DEVICE, DEFAULT_AUDIO_DEVICE);
         applyLatencyCompensation = prefs.getBoolean(
                 KEY_APPLY_LATENCY_COMPENSATION, DEFAULT_APPLY_LATENCY_COMPENSATION);
+        String storedSrcQuality = prefs.get(KEY_SRC_QUALITY, DEFAULT_SRC_QUALITY.name());
+        QualityTier resolvedSrcQuality = DEFAULT_SRC_QUALITY;
+        try {
+            resolvedSrcQuality = QualityTier.valueOf(storedSrcQuality);
+        } catch (IllegalArgumentException ignored) {
+            // Unknown value persisted by a newer build; fall back to default.
+        }
+        srcQuality = resolvedSrcQuality;
     }
 
     // ── Audio ────────────────────────────────────────────────────────────────
@@ -270,6 +291,27 @@ public final class SettingsModel {
         prefs.putBoolean(KEY_APPLY_LATENCY_COMPENSATION, apply);
     }
 
+    /**
+     * Returns the configured sample-rate-conversion quality tier — the
+     * "SRC Quality" combo in the Audio Settings dialog (story 126).
+     * Defaults to {@link QualityTier#MEDIUM}.
+     *
+     * @return the SRC quality tier (never {@code null})
+     */
+    public QualityTier getSrcQuality() {
+        return srcQuality;
+    }
+
+    /**
+     * Sets the SRC quality tier and persists the change.
+     *
+     * @param tier the new tier (must not be {@code null})
+     */
+    public void setSrcQuality(QualityTier tier) {
+        this.srcQuality = Objects.requireNonNull(tier, "tier must not be null");
+        prefs.put(KEY_SRC_QUALITY, tier.name());
+    }
+
     // ── Project ──────────────────────────────────────────────────────────────
 
     /** Returns the auto-save interval in seconds. */
@@ -407,5 +449,6 @@ public final class SettingsModel {
         setAudioInputDevice(DEFAULT_AUDIO_DEVICE);
         setAudioOutputDevice(DEFAULT_AUDIO_DEVICE);
         setApplyLatencyCompensation(DEFAULT_APPLY_LATENCY_COMPENSATION);
+        setSrcQuality(DEFAULT_SRC_QUALITY);
     }
 }

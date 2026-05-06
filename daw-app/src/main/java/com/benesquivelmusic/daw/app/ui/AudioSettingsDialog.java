@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.sdk.audio.BufferSizeRange;
 import com.benesquivelmusic.daw.sdk.audio.ClockSource;
 import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
+import com.benesquivelmusic.daw.sdk.audio.SampleRateConverter.QualityTier;
 
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
@@ -120,6 +121,7 @@ public final class AudioSettingsDialog extends Dialog<Void> {
     private final ComboBox<Integer> bufferSizeCombo;
     private final ComboBox<Integer> bitDepthCombo;
     private final ComboBox<MixPrecision> mixPrecisionCombo;
+    private final ComboBox<QualityTier> srcQualityCombo;
     private final ComboBox<ClockSource> clockSourceCombo;
     private final Label bufferLatencyLabel;
     private final Label sampleRateLatencyLabel;
@@ -169,6 +171,17 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         bufferSizeCombo = new ComboBox<>();
         bitDepthCombo = new ComboBox<>();
         mixPrecisionCombo = new ComboBox<>();
+        srcQualityCombo = new ComboBox<>();
+        srcQualityCombo.getItems().setAll(QualityTier.values());
+        srcQualityCombo.setTooltip(new Tooltip(
+                "Sample-rate conversion quality used when a clip's native rate "
+                        + "differs from the session rate (story 126).\n\n"
+                        + "  • Low — linear interpolation; cheapest, mild aliasing.\n"
+                        + "  • Medium — 32-tap polyphase FIR; ≥ 60 dB stop-band, balanced default.\n"
+                        + "  • High — 128-tap windowed-sinc; ≥ 120 dB stop-band, ~40× the CPU.\n\n"
+                        + "Higher tiers reduce passband ripple and stop-band ringing at "
+                        + "the cost of CPU per converted clip. The conversion result is "
+                        + "memoized per (clip, target rate, tier) so the cost is paid once."));
         clockSourceCombo = new ComboBox<>();
         clockSourceCombo.setConverter(new javafx.util.StringConverter<>() {
             @Override public String toString(ClockSource cs) {
@@ -321,6 +334,10 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         grid.add(mixPrecisionCombo, 1, row, 2, 1);
         row++;
 
+        grid.add(new Label("SRC Quality:"), 0, row);
+        grid.add(srcQualityCombo, 1, row, 2, 1);
+        row++;
+
         grid.add(latencyCompensationCheck, 0, row, 3, 1);
         row++;
 
@@ -367,6 +384,7 @@ public final class AudioSettingsDialog extends Dialog<Void> {
 
             bitDepthCombo.setValue(nearestOption(BIT_DEPTH_OPTIONS, model.getBitDepth()));
             mixPrecisionCombo.setValue(model.getMixPrecision());
+            srcQualityCombo.setValue(model.getSrcQuality());
             latencyCompensationCheck.setSelected(model.isApplyLatencyCompensation());
 
             // Stash the persisted buffer size; refreshDeviceCapabilities
@@ -826,6 +844,10 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         if (mixPrecision != null) {
             model.setMixPrecision(mixPrecision);
         }
+        QualityTier srcQuality = srcQualityCombo.getValue();
+        if (srcQuality != null) {
+            model.setSrcQuality(srcQuality);
+        }
         if (effectiveBackend != null) {
             model.setAudioBackend(effectiveBackend);
         }
@@ -852,6 +874,9 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         // path which stops and restarts the audio stream.
         if (mixPrecision != null) {
             controller.applyMixPrecision(mixPrecision);
+        }
+        if (srcQuality != null) {
+            controller.applySrcQuality(srcQuality);
         }
 
         AudioEngineController.Request request = new AudioEngineController.Request(
