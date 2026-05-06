@@ -2,7 +2,6 @@ package com.benesquivelmusic.daw.core.export;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
-import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.sdk.export.*;
@@ -284,50 +283,6 @@ class StemExporterTest {
                 project, config, tempDir, 4.0, ExportProgressListener.NONE))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("track index");
-    }
-
-    @Test
-    void shouldApplyMixerChannelVolume() {
-        float[][] buffer = new float[2][100];
-        for (int ch = 0; ch < 2; ch++) {
-            for (int i = 0; i < 100; i++) {
-                buffer[ch][i] = 1.0f;
-            }
-        }
-
-        MixerChannel channel = new MixerChannel("Test");
-        channel.setVolume(0.5);
-
-        StemExporter.applyMixerChannel(buffer, channel, 100, 2);
-
-        // With pan=0 (center), constant-power pan gives equal L/R gain:
-        // angle = (0+1)*0.25*PI = PI/4
-        // leftGain = cos(PI/4) * 0.5 ≈ 0.354
-        // rightGain = sin(PI/4) * 0.5 ≈ 0.354
-        double expectedGain = Math.cos(Math.PI / 4) * 0.5;
-        assertThat((double) buffer[0][0]).isCloseTo(expectedGain, offset(0.001));
-        assertThat((double) buffer[1][0]).isCloseTo(expectedGain, offset(0.001));
-    }
-
-    @Test
-    void shouldApplyMixerChannelPan() {
-        float[][] buffer = new float[2][100];
-        for (int ch = 0; ch < 2; ch++) {
-            for (int i = 0; i < 100; i++) {
-                buffer[ch][i] = 1.0f;
-            }
-        }
-
-        MixerChannel channel = new MixerChannel("Test");
-        channel.setVolume(1.0);
-        channel.setPan(1.0); // full right
-
-        StemExporter.applyMixerChannel(buffer, channel, 100, 2);
-
-        // Full right: angle = (1+1)*0.25*PI = PI/2
-        // leftGain = cos(PI/2) ≈ 0.0, rightGain = sin(PI/2) ≈ 1.0
-        assertThat((double) buffer[0][0]).isCloseTo(0.0, offset(0.001));
-        assertThat((double) buffer[1][0]).isCloseTo(1.0, offset(0.001));
     }
 
     @Test

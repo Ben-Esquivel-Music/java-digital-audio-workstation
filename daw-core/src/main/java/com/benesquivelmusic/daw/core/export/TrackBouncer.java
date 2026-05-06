@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.export;
 
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.audio.RenderPipeline;
 import com.benesquivelmusic.daw.core.track.Track;
 
 import java.util.List;
@@ -9,9 +10,41 @@ import java.util.Objects;
 /**
  * Bounces a track's audio clips into a single contiguous audio buffer.
  *
- * <p>Each clip with in-memory audio data is placed at its beat position,
- * converted to sample frames using the project tempo and sample rate.
- * Overlapping clips are summed (mixed). Clips without audio data are skipped.</p>
+ * <p>Each clip with in-memory audio data is placed at its beat position
+ * (converted to sample frames using the project tempo and sample rate),
+ * scaled by its {@code gainDb}, and summed into the output buffer.
+ * Overlapping clips are mixed by simple summation, and the result is
+ * clamped to {@code [-1.0, 1.0]}. The output is therefore a "raw" pre-fader
+ * summing of the track's clip audio — no mixer-channel volume, pan, or
+ * insert effects are applied.</p>
+ *
+ * <h2>Relationship to the unified render pipeline (story 102)</h2>
+ *
+ * <p>The full export path — including mixer-channel insert effects,
+ * volume, pan, and master processing — is provided by
+ * {@link RenderPipeline#renderOffline(
+ * com.benesquivelmusic.daw.core.transport.Transport,
+ * com.benesquivelmusic.daw.core.mixer.Mixer, java.util.List,
+ * com.benesquivelmusic.daw.core.audio.MidiTrackRenderer,
+ * com.benesquivelmusic.daw.core.audio.EffectsChain,
+ * float[][], int, int) RenderPipeline.renderOffline}. As of story 102,
+ * {@link StemExporter} delegates per-track rendering to that pipeline
+ * (via {@link OfflineStemRenderer}) — so the production stem-export and
+ * bundle-export code paths share the unified render implementation with
+ * live playback.</p>
+ *
+ * <p>This class deliberately stays a low-level <em>raw</em> clip-summing
+ * utility because two in-tree callers
+ * ({@code com.benesquivelmusic.daw.core.track.TrackFreezeService} and
+ * {@code com.benesquivelmusic.daw.core.track.RenderInPlaceService}) compose
+ * it with their own per-channel processing — applying insert effects and
+ * volume/pan in their own well-defined order so the user can still adjust
+ * faders on a frozen / rendered-in-place track. Routing those callers
+ * through the full pipeline would change their observable contract and
+ * is outside the scope of story 102. New offline render paths that need
+ * the full mixer-channel-and-master signal must use
+ * {@link RenderPipeline#renderOffline} (or {@link OfflineStemRenderer})
+ * directly rather than this method.</p>
  */
 public final class TrackBouncer {
 
@@ -20,7 +53,10 @@ public final class TrackBouncer {
     }
 
     /**
-     * Renders all audio clips on the given track into a single stereo buffer.
+     * Renders all audio clips on the given track into a single audio buffer
+     * by summing each clip at its beat position. No mixer-channel
+     * processing is applied — see the class javadoc for context and
+     * pointers to the full-pipeline alternative.
      *
      * @param track      the track to bounce
      * @param sampleRate the project sample rate in Hz

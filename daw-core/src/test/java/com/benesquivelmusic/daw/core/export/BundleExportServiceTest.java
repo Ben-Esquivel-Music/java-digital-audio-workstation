@@ -168,19 +168,13 @@ class BundleExportServiceTest {
 
         StemMetadata sig = result.finalMetadata().stems().get(0);
 
-        // Independently measure the same buffer and compare.
+        // Independently render the same stem via the offline pipeline
+        // (the same path used by BundleExportService) and measure that.
         int totalFrames = TrackBouncer.beatsToFrames(4.0, SAMPLE_RATE, TEMPO);
-        float[][] expected = TrackBouncer.bounce(track, SAMPLE_RATE, TEMPO, 2);
-        float[][] padded = new float[2][totalFrames];
-        for (int ch = 0; ch < 2; ch++) {
-            int copy = Math.min(expected[ch].length, totalFrames);
-            System.arraycopy(expected[ch], 0, padded[ch], 0, copy);
+        float[][] padded;
+        try (OfflineStemRenderer renderer = new OfflineStemRenderer(project, totalFrames)) {
+            padded = renderer.render(track, project.getMixerChannelForTrack(track));
         }
-        // The exporter applies the (default) mixer-channel pan/volume
-        // (constant-power pan at center attenuates by ~3 dB), so the
-        // reference must apply the same processing to be comparable.
-        StemExporter.applyMixerChannel(padded,
-                project.getMixerChannelForTrack(track), totalFrames, 2);
         BundleExportService.Measurements live =
                 BundleExportService.measure(padded, SAMPLE_RATE);
         assertThat(sig.integratedLufs()).isCloseTo(live.integratedLufs(), offset(0.2));
