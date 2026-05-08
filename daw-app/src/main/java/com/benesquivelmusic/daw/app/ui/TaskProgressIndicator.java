@@ -145,10 +145,34 @@ public final class TaskProgressIndicator {
     public void requestCancel() {
         if (cancelled) return;
         cancelled = true;
-        cancelButton.setDisable(true);
-        cancelButton.setText("Cancelling…");
+        Runnable uiUpdate = () -> {
+            cancelButton.setDisable(true);
+            cancelButton.setText("Cancelling…");
+        };
+        if (Platform.isFxApplicationThread()) {
+            uiUpdate.run();
+        } else {
+            Platform.runLater(uiUpdate);
+        }
         Runnable cb = onCancel;
         if (cb != null) cb.run();
+    }
+
+    /**
+     * Hides the Cancel button entirely. Used for single-track freezes
+     * where cooperative cancellation is not possible (the render is
+     * atomic).
+     */
+    public void hideCancelButton() {
+        Runnable r = () -> {
+            cancelButton.setVisible(false);
+            cancelButton.setManaged(false);
+        };
+        if (Platform.isFxApplicationThread()) {
+            r.run();
+        } else {
+            Platform.runLater(r);
+        }
     }
 
     /** Returns {@code true} once {@link #requestCancel()} has been invoked. */

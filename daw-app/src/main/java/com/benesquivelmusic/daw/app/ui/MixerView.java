@@ -521,9 +521,9 @@ public final class MixerView extends VBox {
      * Wires the {@link TrackFreezeController} that powers the per-channel
      * "Freeze track" / "Unfreeze track" right-click entries and the
      * inline ❄ snowflake glyph next to the channel name (Story 035).
-     * Pass {@code null} to hide both. {@link #refresh()} must be
-     * called after binding so the strips are rebuilt with the new
-     * menu items and indicator.
+     * Pass {@code null} to suppress both the context-menu entries and
+     * the snowflake badge. {@link #refresh()} must be called after
+     * binding so the strips are rebuilt with the new state.
      */
     public void setTrackFreezeController(TrackFreezeController controller) {
         this.trackFreezeController = controller;
@@ -886,18 +886,15 @@ public final class MixerView extends VBox {
 
         // ── ❄ Snowflake "frozen" status indicator (Story 035) ──────────────
         // A small snowflake badge is mounted just under the channel
-        // name on every frozen track. Tooltip distinguishes a
-        // story-206 cache hit from a fresh render. The badge is
-        // inserted into the strip's children list after the regular
-        // strip layout completes (see below).
+        // name on every frozen track, but only when the freeze
+        // controller is wired. When null, the badge is suppressed so
+        // the API contract of setTrackFreezeController is honoured.
         Label freezeBadge = null;
-        if (track.isFrozen()) {
+        if (track.isFrozen() && trackFreezeController != null) {
             freezeBadge = new Label("\u2744");
             freezeBadge.setStyle("-fx-text-fill: #5fa8ff; -fx-font-size: 12px;"
                     + " -fx-padding: 0 2 0 2;");
-            String tip = trackFreezeController != null
-                    ? trackFreezeController.tooltipFor(track)
-                    : "Frozen — pre-rendered audio is in use";
+            String tip = trackFreezeController.tooltipFor(track);
             if (tip != null && !tip.isEmpty()) {
                 Tooltip.install(freezeBadge, new Tooltip(tip));
             }

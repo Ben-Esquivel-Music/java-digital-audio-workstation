@@ -14,7 +14,6 @@ import javafx.stage.Window;
 
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -72,8 +71,10 @@ public final class TrackFreezeController {
     private final BiConsumer<String, DawIcon> statusReporter;
     private final Window owner;
 
-    /** Per-track-id provenance map for the snowflake tooltip. */
-    private final Map<String, FreezeRecord> records = new HashMap<>();
+    /** Per-track-id provenance map for the snowflake tooltip. Thread-safe
+     *  because recordFreeze() is called from the virtual worker thread while
+     *  tooltipFor()/cacheState() are read from the JavaFX application thread. */
+    private final Map<String, FreezeRecord> records = new java.util.concurrent.ConcurrentHashMap<>();
 
     /** Captured state of the most recent freeze for tooltip rendering. */
     private record FreezeRecord(CacheState state, Instant when) { }
@@ -244,17 +245,26 @@ public final class TrackFreezeController {
     /**
      * Runs the freeze for one or more tracks on a background virtual
      * thread. For {@code batch == true} (multi-track), the progress
-     * indicator is always shown; for single-track requests it is
-     * shown only after a small delay so quick freezes don't flash a
-     * dialog. Cancellation is cooperative — the worker checks the
-     * progress indicator's {@code isCancelled()} flag between tracks
-     * and undoes the partial batch via {@link UndoManager#undo()}.
+     * indicator shows a Cancel button with cooperative cancellation;
+     * for single-track requests the Cancel button is hidden because
+     * the render is atomic and cannot be interrupted mid-way.
+     * Cancellation is cooperative — the worker checks the cancel flag
+     * between tracks and undoes the partial batch.
+     *
+     * <p>All {@link UndoManager} mutations and status-bar updates are
+     * serialized onto the JavaFX application thread so the undo
+     * history and UI are only ever modified from a single thread,
+     * even though the render itself runs on a virtual thread.</p>
      */
     private void runFreezeAsync(List<Track> targets, boolean batch) {
         TaskProgressIndicator progress = new TaskProgressIndicator(
                 owner, batch ? "Freezing " + targets.size() + " tracks…" : "Freezing track…");
         AtomicBoolean cancelled = new AtomicBoolean(false);
         progress.setOnCancel(() -> cancelled.set(true));
+        if (!batch) {
+            // Single-track freeze is atomic — cancel is not meaningful.
+            progress.hideCancelButton();
+        }
         progress.show();
         progress.update(0.0, batch ? "Preparing…" : ("Freezing: " + targets.get(0).getName()));
 
@@ -270,7 +280,7 @@ public final class TrackFreezeController {
                             FreezeTrackAction action = new FreezeTrackAction(
                                     t, project.getMixerChannelForTrack(t),
                                     sampleRate(), tempo(), channels());
-                            undoManager.execute(action);
+                            runOnFxThreadAndWait(() -> undoManager.execute(action));
                             recordFreeze(t, CacheState.FRESH, start);
                             succeeded.add(t);
                             progress.update(1.0, "Frozen: " + t.getName());
@@ -297,7 +307,7 @@ public final class TrackFreezeController {
                                                 progress.update((double) (i + 1) / total,
                                                         "Frozen (" + (i + 1) + "/" + total + "): " + t.getName());
                                             });
-                            undoManager.execute(batchAction);
+                            runOnFxThreadAndWait(() -> undoManager.execute(batchAction));
                             succeeded.addAll(batchAction.frozenByThisAction());
                             partial = batchAction.wasCancelled();
                         }
@@ -310,21 +320,27 @@ public final class TrackFreezeController {
                             // in a consistent state — matches the story's
                             // requirement that "Cancellation is supported
                             // and rolls back any partially-rendered tracks".
+                            // After undoing, clear the redo stack so the
+                            // cancelled partial-freeze does not linger as a
+                            // confusing "Redo" option.
                             int rolledBack = succeeded.size();
-                            undoManager.undo();
+                            runOnFxThreadAndWait(() -> {
+                                undoManager.undo();
+                                undoManager.clearRedoStack();
+                            });
                             for (Track t : succeeded) records.remove(t.getId());
-                            statusReporter.accept(
+                            reportStatus(
                                     "Freeze cancelled — rolled back " + rolledBack + " track(s)",
                                     DawIcon.INFO_CIRCLE);
                         } else {
-                            statusReporter.accept(
+                            reportStatus(
                                     batch ? "Frozen " + succeeded.size() + " track(s)"
                                           : "Frozen: " + succeeded.get(0).getName(),
                                     DawIcon.INFO_CIRCLE);
                         }
                     } catch (RuntimeException ex) {
                         LOG.log(Level.WARNING, "Track freeze failed", ex);
-                        statusReporter.accept("Freeze failed: " + ex.getMessage(), DawIcon.INFO_CIRCLE);
+                        reportStatus("Freeze failed: " + ex.getMessage(), DawIcon.INFO_CIRCLE);
                     } finally {
                         progress.close();
                         Runnable refresh = batch ? onSelectionFreezeChanged
@@ -340,6 +356,58 @@ public final class TrackFreezeController {
                         }
                     }
                 });
+    }
+
+    /**
+     * Reports a status message on the FX thread. Safe to call from any
+     * thread — hops via {@link Platform#runLater} when off the FX thread.
+     */
+    private void reportStatus(String message, DawIcon icon) {
+        if (Platform.isFxApplicationThread()) {
+            statusReporter.accept(message, icon);
+        } else {
+            Platform.runLater(() -> statusReporter.accept(message, icon));
+        }
+    }
+
+    /**
+     * Executes a {@link Runnable} on the JavaFX application thread and
+     * blocks until it completes. Used to serialize {@link UndoManager}
+     * mutations from the virtual worker thread onto the single-threaded
+     * FX thread so the undo history and project state are only ever
+     * modified from one thread. If called from the FX thread already,
+     * the runnable is executed inline.
+     */
+    private static void runOnFxThreadAndWait(Runnable action) {
+        if (Platform.isFxApplicationThread()) {
+            action.run();
+            return;
+        }
+        Object lock = new Object();
+        boolean[] done = {false};
+        RuntimeException[] failure = {null};
+        Platform.runLater(() -> {
+            try {
+                action.run();
+            } catch (RuntimeException e) {
+                failure[0] = e;
+            } finally {
+                synchronized (lock) {
+                    done[0] = true;
+                    lock.notifyAll();
+                }
+            }
+        });
+        synchronized (lock) {
+            while (!done[0]) {
+                try { lock.wait(); }
+                catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("interrupted while waiting for FX thread", ie);
+                }
+            }
+        }
+        if (failure[0] != null) throw failure[0];
     }
 
     private void recordFreeze(Track track, CacheState state, Instant when) {

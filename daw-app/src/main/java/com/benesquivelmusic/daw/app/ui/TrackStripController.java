@@ -107,21 +107,25 @@ final class TrackStripController {
     /**
      * Story 035 — Track Freeze and Unfreeze for CPU Management. When
      * set, the per-track right-click menu grows "Freeze track" /
-     * "Unfreeze track" entries and a small ❄ snowflake glyph is
-     * mounted on every frozen strip. {@code null} hides both the menu
-     * items and the indicator (used by tests that don't exercise the
-     * freeze workflow).
+     * "Unfreeze track" entries and the ❄ snowflake glyph is shown
+     * on frozen tracks. When {@code null}, both the menu items and
+     * the indicator are suppressed.
      */
     private TrackFreezeController trackFreezeController;
     /**
      * Per-track ❄ snowflake glyph mounted on each track strip. The
      * label is always present in the strip but its visibility is
-     * driven from {@link Track#isFrozen()} so the indicator appears
-     * the moment a freeze completes and disappears when the track is
-     * unfrozen. Also used to update the cache-state tooltip after
-     * each freeze.
+     * driven from {@link Track#isFrozen()} <b>and</b> from
+     * {@code trackFreezeController != null} — the indicator is hidden
+     * whenever the controller is not wired (e.g. in tests).
+     *
+     * <p>Uses a {@link java.util.WeakHashMap} so entries are
+     * automatically collected when a track strip is removed and the
+     * {@link Track} instance is no longer strongly referenced
+     * elsewhere, preventing memory leaks on long sessions with
+     * frequent add/remove-track operations.</p>
      */
-    private final java.util.Map<Track, Label> freezeIndicatorByTrack = new java.util.HashMap<>();
+    private final java.util.Map<Track, Label> freezeIndicatorByTrack = new java.util.WeakHashMap<>();
 
     TrackStripController(DawProject project,
                          UndoManager undoManager,
@@ -188,16 +192,17 @@ final class TrackStripController {
 
     /**
      * Updates the ❄ snowflake glyph on the given track's strip after
-     * its frozen state has changed. Safe to call when no strip exists
-     * for the track (e.g., after the track was removed).
+     * its frozen state has changed. The indicator is only visible when
+     * the track is frozen <b>and</b> the freeze controller is wired.
+     * Safe to call when no strip exists for the track.
      */
     void refreshFreezeIndicator(Track track) {
         Label indicator = freezeIndicatorByTrack.get(track);
         if (indicator == null) return;
-        boolean frozen = track.isFrozen();
-        indicator.setVisible(frozen);
-        indicator.setManaged(frozen);
-        if (frozen && trackFreezeController != null) {
+        boolean show = track.isFrozen() && trackFreezeController != null;
+        indicator.setVisible(show);
+        indicator.setManaged(show);
+        if (show) {
             String tip = trackFreezeController.tooltipFor(track);
             if (!tip.isEmpty()) {
                 Tooltip.install(indicator, new Tooltip(tip));
@@ -261,13 +266,11 @@ final class TrackStripController {
         freezeIndicator.getStyleClass().add("track-freeze-indicator");
         freezeIndicator.setStyle("-fx-text-fill: #5fa8ff; -fx-font-size: 14px;"
                 + " -fx-padding: 0 2 0 2;");
-        boolean frozen = track.isFrozen();
-        freezeIndicator.setVisible(frozen);
-        freezeIndicator.setManaged(frozen);
-        if (frozen) {
-            String tip = trackFreezeController != null
-                    ? trackFreezeController.tooltipFor(track)
-                    : "Frozen — pre-rendered audio is in use";
+        boolean showFrozen = track.isFrozen() && trackFreezeController != null;
+        freezeIndicator.setVisible(showFrozen);
+        freezeIndicator.setManaged(showFrozen);
+        if (showFrozen) {
+            String tip = trackFreezeController.tooltipFor(track);
             if (tip != null && !tip.isEmpty()) {
                 Tooltip.install(freezeIndicator, new Tooltip(tip));
             }
