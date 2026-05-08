@@ -127,12 +127,17 @@ public enum DawAction {
     // ── Track Freeze and Unfreeze (Story 035) ───────────────────────────────
     // Per-track and batch freeze/unfreeze, accessible via the Tracks menu,
     // the Track List right-click menu, and the mixer channel context menu.
-    // No default key bindings — users may bind them in Settings → Key
-    // Bindings or invoke them through the Command Palette.
-    FREEZE_FOCUSED_TRACK("Freeze Focused Track", Category.TRACKS, null),
-    UNFREEZE_FOCUSED_TRACK("Unfreeze Focused Track", Category.TRACKS, null),
-    FREEZE_SELECTED_TRACKS("Freeze All Selected Tracks", Category.TRACKS, null),
-    UNFREEZE_SELECTED_TRACKS("Unfreeze All Selected Tracks", Category.TRACKS, null),
+    // Shortcut+Alt+F freezes the focused track; add Shift to operate on
+    // every selected track. Substituting U for F gives the symmetric
+    // unfreeze actions. Users may rebind in Settings → Key Bindings.
+    FREEZE_FOCUSED_TRACK("Freeze Focused Track", Category.TRACKS,
+            new KeyCodeCombination(KeyCode.F, KeyCombination.SHORTCUT_DOWN, KeyCombination.ALT_DOWN)),
+    UNFREEZE_FOCUSED_TRACK("Unfreeze Focused Track", Category.TRACKS,
+            new KeyCodeCombination(KeyCode.U, KeyCombination.SHORTCUT_DOWN, KeyCombination.ALT_DOWN)),
+    FREEZE_SELECTED_TRACKS("Freeze All Selected Tracks", Category.TRACKS,
+            new KeyCodeCombination(KeyCode.F, KeyCombination.SHORTCUT_DOWN, KeyCombination.ALT_DOWN, KeyCombination.SHIFT_DOWN)),
+    UNFREEZE_SELECTED_TRACKS("Unfreeze All Selected Tracks", Category.TRACKS,
+            new KeyCodeCombination(KeyCode.U, KeyCombination.SHORTCUT_DOWN, KeyCombination.ALT_DOWN, KeyCombination.SHIFT_DOWN)),
 
     // ── Edit Tools ───────────────────────────────────────────────────────────
     TOOL_POINTER("Pointer Tool", Category.TOOLS,
