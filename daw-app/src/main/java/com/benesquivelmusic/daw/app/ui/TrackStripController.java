@@ -97,6 +97,13 @@ final class TrackStripController {
     // indicator in their arrangement-view header that mirrors the mixer's
     // input-meter clip LED.
     private InputLevelMonitorRegistry inputLevelMonitorRegistry;
+    /**
+     * Optional template controller used by the right-click "Save as
+     * Template…" menu item. {@code null} when the controller has not been
+     * wired (for example in unit tests that do not exercise the templates
+     * UI).
+     */
+    private TrackTemplateController trackTemplateController;
 
     TrackStripController(DawProject project,
                          UndoManager undoManager,
@@ -137,6 +144,17 @@ final class TrackStripController {
      */
     void setInputLevelMonitorRegistry(InputLevelMonitorRegistry registry) {
         this.inputLevelMonitorRegistry = registry;
+    }
+
+    /**
+     * Wires the templates controller used by the right-click
+     * "Save as Template…" action. Pass {@code null} to disable the menu
+     * item (it will hide itself).
+     *
+     * @param controller the controller, or {@code null} to disable
+     */
+    void setTrackTemplateController(TrackTemplateController controller) {
+        this.trackTemplateController = controller;
     }
 
     HBox addTrackToUI(Track track) {
@@ -1243,6 +1261,20 @@ final class TrackStripController {
         renameItem.setGraphic(IconNode.of(DawIcon.BOOKMARK, 14));
         renameItem.setOnAction(_ -> startTrackRename(track, nameLabel, trackItem));
 
+        // ── Track Templates (Story 100) ─────────────────────────────────────
+        // "Save as Template…" captures the current track configuration —
+        // type, color, name pattern, default inserts, and default sends —
+        // via TrackTemplateService.captureTrack and persists it through the
+        // injected TrackTemplateController so the user can spawn identical
+        // tracks later from the Tracks → "Add Track from Template…" menu.
+        MenuItem saveAsTemplateItem = new MenuItem("Save as Template\u2026");
+        saveAsTemplateItem.setGraphic(IconNode.of(DawIcon.DOWNLOAD, 14));
+        saveAsTemplateItem.setOnAction(_ -> {
+            if (trackTemplateController != null) {
+                trackTemplateController.saveTrackAsTemplate(track);
+            }
+        });
+
         menu.getItems().addAll(
                 copyItem, pasteItem, new SeparatorMenuItem(),
                 splitItem, trimItem, cropItem, moveItem, reverseItem, new SeparatorMenuItem(),
@@ -1253,6 +1285,9 @@ final class TrackStripController {
                 exportWav, exportMp3, exportAac, exportMidi, exportWma, new SeparatorMenuItem(),
                 shareItem, broadcastItem, streamItem, rateItem, dislikeItem, commentItem, followItem, new SeparatorMenuItem(),
                 favoriteItem, playlistItem, filmScoreItem, notifyItem, repeatOneItem, renameItem);
+        if (trackTemplateController != null) {
+            menu.getItems().addAll(new SeparatorMenuItem(), saveAsTemplateItem);
+        }
 
         // Recalculate dynamic enabled/disabled states each time the menu is shown
         // so items reflect the current clipboard, selection, clip, and zoom state.

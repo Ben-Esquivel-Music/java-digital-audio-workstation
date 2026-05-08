@@ -82,6 +82,9 @@ public final class DawMenuBarController {
         void onToggleFoldFocusedTrack();
         void onToggleFoldSelectedTracks();
         void onFoldAllAutomation();
+        // Story 100 — track templates and channel-strip presets
+        void onAddTrackFromTemplate();
+        void onManageTemplates();
 
         // Help actions
         void onHelp();

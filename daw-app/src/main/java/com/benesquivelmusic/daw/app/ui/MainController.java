@@ -149,6 +149,13 @@ public final class MainController {
     private CommandPaletteView commandPaletteView;
     private WorkspaceManager workspaceManager;
     private com.benesquivelmusic.daw.app.ui.dock.DockManager dockManager;
+    /**
+     * Story 100 — Track Templates and Channel-Strip Presets. Owns the
+     * {@code TrackTemplateStore} (under {@code ~/.daw/templates} and
+     * {@code .../presets}) and routes Save/Apply/Manage menu actions
+     * through the undo manager so user-facing workflows are reversible.
+     */
+    private TrackTemplateController trackTemplateController;
 
     private ArrangementCanvas arrangementCanvas;
     private ClipInteractionController clipInteractionController;
@@ -256,6 +263,16 @@ public final class MainController {
         if (trackStripController != null) {
             trackStripController.setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
         }
+        // Story 100: wire the templates controller into the track-list
+        // right-click menu and the mixer per-channel right-click menu.
+        // Both views check for a null controller and hide the items, so
+        // tests and non-UI callers continue to work unchanged.
+        createTrackTemplateController();
+        if (trackStripController != null) {
+            trackStripController.setTrackTemplateController(trackTemplateController);
+        }
+        viewNavigationController.getMixerView()
+                .setTrackTemplateController(trackTemplateController);
         createArrangementCanvas();
         viewNavigationController.setOnEditToolChanged(() -> {
             if (clipInteractionController != null) clipInteractionController.updateCursor();
@@ -401,6 +418,10 @@ public final class MainController {
 
     private void handleProjectRebuild(MixerView newMixerView) {
         newMixerView.setPluginRegistry(pluginRegistry);
+        // Story 100: re-attach the templates controller so the freshly
+        // built MixerView's per-channel right-click menu still exposes
+        // "Save channel strip\u2026" and "Apply channel strip\u2026".
+        newMixerView.setTrackTemplateController(trackTemplateController);
         // Story 137: a fresh project means fresh tracks — drop the old
         // per-track input monitors and let the engine/UI recreate them
         // lazily as tracks are armed.
@@ -632,6 +653,34 @@ public final class MainController {
             @Override public void updateStatusBar(String text, DawIcon icon) { status(text, icon); }
             @Override public void showNotification(NotificationLevel level, String message) { notificationBar.show(level, message); }
         });
+    }
+
+    /**
+     * Story 100 — Track Templates and Channel-Strip Presets.
+     *
+     * <p>Constructs the application-wide {@link TrackTemplateController}
+     * that orchestrates the Save / Apply / Add-from / Manage workflows.
+     * The controller is constructor-injected with a {@link TrackTemplateController.Host}
+     * adapter that snapshots the current project, undo manager, primary
+     * stage, and notification bar so the templates and presets feature
+     * stays decoupled from this top-level controller.</p>
+     */
+    private void createTrackTemplateController() {
+        trackTemplateController = new TrackTemplateController(
+                new TrackTemplateController.Host() {
+                    @Override public DawProject project() { return project; }
+                    @Override public UndoManager undoManager() { return undoManager; }
+                    @Override public javafx.stage.Window window() {
+                        return rootPane.getScene() != null
+                                ? rootPane.getScene().getWindow() : null;
+                    }
+                    @Override public void showNotification(NotificationLevel level, String message) {
+                        notificationBar.show(level, message);
+                    }
+                    @Override public void refreshMixer() {
+                        viewNavigationController.getMixerView().refresh();
+                    }
+                });
     }
 
     private void createHistoryPanelController() {
@@ -933,6 +982,16 @@ public final class MainController {
                     @Override public void onToggleFoldFocusedTrack() { MainController.this.onToggleFoldFocusedTrack(); }
                     @Override public void onToggleFoldSelectedTracks() { MainController.this.onToggleFoldSelectedTracks(); }
                     @Override public void onFoldAllAutomation() { MainController.this.onFoldAllAutomation(); }
+                    @Override public void onAddTrackFromTemplate() {
+                        if (trackTemplateController != null) {
+                            trackTemplateController.addTrackFromTemplate();
+                        }
+                    }
+                    @Override public void onManageTemplates() {
+                        if (trackTemplateController != null) {
+                            trackTemplateController.openManager();
+                        }
+                    }
                     @Override public void onHelp() { MainController.this.onHelp(); }
                 },
                 keyBindingManager);

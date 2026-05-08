@@ -188,8 +188,15 @@ final class MenuConstructionService {
         MenuItem foldAllAutomation = menuItem("Toggle Fold All Automation Lanes", DawIcon.AUTOMATION,
                 DawAction.FOLD_ALL_AUTOMATION, host::onFoldAllAutomation);
 
+        // Story 100 — Track Templates and Channel-Strip Presets
+        MenuItem addFromTemplate = menuItem("Add Track from Template\u2026", DawIcon.DOWNLOAD,
+                null, host::onAddTrackFromTemplate);
+        MenuItem manageTemplates = menuItem("Manage Templates\u2026", DawIcon.LIBRARY,
+                null, host::onManageTemplates);
+
         tracksMenu.getItems().addAll(foldFocused, foldSelected,
-                new SeparatorMenuItem(), foldAllAutomation);
+                new SeparatorMenuItem(), foldAllAutomation,
+                new SeparatorMenuItem(), addFromTemplate, manageTemplates);
 
         return tracksMenu;
     }

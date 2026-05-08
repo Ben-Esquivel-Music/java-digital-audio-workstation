@@ -119,6 +119,10 @@ class DawMenuBarControllerTest {
         @Override public void onToggleFoldFocusedTrack() { /* not used in these tests */ }
         @Override public void onToggleFoldSelectedTracks() { /* not used in these tests */ }
         @Override public void onFoldAllAutomation() { /* not used in these tests */ }
+        int addTrackFromTemplateCalls;
+        int manageTemplatesCalls;
+        @Override public void onAddTrackFromTemplate() { addTrackFromTemplateCalls++; }
+        @Override public void onManageTemplates() { manageTemplatesCalls++; }
         @Override public void onHelp() { helpCalls++; }
     }
 

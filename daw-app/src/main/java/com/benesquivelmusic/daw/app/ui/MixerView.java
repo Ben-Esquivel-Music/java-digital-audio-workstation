@@ -157,6 +157,13 @@ public final class MixerView extends VBox {
             () -> List.of();
     private java.util.function.Supplier<List<AudioChannelInfo>> outputChannelInfoSupplier =
             () -> List.of();
+    /**
+     * Story 100 — track templates and channel-strip presets. When set, the
+     * per-channel right-click menu grows "Save channel strip\u2026" and
+     * "Apply channel strip\u2026" entries that delegate to the controller.
+     * {@code null} hides the entries.
+     */
+    private TrackTemplateController trackTemplateController;
 
     /**
      * Creates a new mixer view bound to the given project.
@@ -493,6 +500,17 @@ public final class MixerView extends VBox {
     }
 
     /**
+     * Wires the {@link TrackTemplateController} that powers the per-channel
+     * "Save channel strip\u2026" and "Apply channel strip\u2026" right-click
+     * actions (Story 100). Pass {@code null} to suppress those entries.
+     *
+     * @param controller the controller, or {@code null} to disable
+     */
+    public void setTrackTemplateController(TrackTemplateController controller) {
+        this.trackTemplateController = controller;
+    }
+
+    /**
      * Binds an {@link InputLevelMonitorRegistry} so that armed tracks show
      * an input-signal meter column with a latching clip LED (user story 137).
      *
@@ -806,6 +824,23 @@ public final class MixerView extends VBox {
                     assignMenu.getItems().add(item);
                 }
                 stripMenu.getItems().add(assignMenu);
+            }
+            // ── Story 100: channel-strip presets ────────────────────────────
+            // "Save channel strip\u2026" captures the current insert chain +
+            // sends + level/pan via TrackTemplateService.captureChannelStrip
+            // and persists it as a ChannelStripPreset.  "Apply channel
+            // strip\u2026" opens the preset browser and runs an
+            // ApplyChannelStripPresetAction through the undo manager so the
+            // change is reversible (the previous strip is restored on undo).
+            if (trackTemplateController != null) {
+                stripMenu.getItems().add(new SeparatorMenuItem());
+                MenuItem saveStripItem = new MenuItem("Save channel strip\u2026");
+                saveStripItem.setOnAction(_ -> trackTemplateController
+                        .saveChannelStripAsPreset(mixerChannel));
+                MenuItem applyStripItem = new MenuItem("Apply channel strip\u2026");
+                applyStripItem.setOnAction(_ -> trackTemplateController
+                        .applyChannelStripPreset(mixerChannel));
+                stripMenu.getItems().addAll(saveStripItem, applyStripItem);
             }
             strip.setOnContextMenuRequested(e ->
                     stripMenu.show(strip, e.getScreenX(), e.getScreenY()));
