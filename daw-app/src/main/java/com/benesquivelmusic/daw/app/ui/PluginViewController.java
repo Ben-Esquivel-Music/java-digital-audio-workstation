@@ -61,6 +61,8 @@ final class PluginViewController {
     private ExciterPluginView exciterView;
     private Stage binauralMonitorStage;
     private BinauralMonitorPluginView binauralMonitorView;
+    private Stage midSideWrapperStage;
+    private MidSideWrapperPluginView midSideWrapperView;
     private final HrtfProfileLibrary hrtfProfileLibrary = new HrtfProfileLibrary();
 
     PluginViewController(Host host) {
@@ -140,6 +142,9 @@ final class PluginViewController {
         if (noiseGateStage != null) {
             noiseGateStage.hide();
         }
+        if (midSideWrapperStage != null) {
+            midSideWrapperStage.hide();
+        }
         try {
             for (BuiltInDawPlugin plugin : builtInPluginCache.values()) {
                 try {
@@ -170,6 +175,7 @@ final class PluginViewController {
             case ConvolutionReverbPlugin.PLUGIN_ID -> openConvolutionReverbWindow((ConvolutionReverbPlugin) plugin);
             case ExciterPlugin.PLUGIN_ID -> openExciterWindow((ExciterPlugin) plugin);
             case BinauralMonitorPlugin.PLUGIN_ID -> openBinauralMonitorWindow((BinauralMonitorPlugin) plugin);
+            case MidSideWrapperPlugin.PLUGIN_ID -> openMidSideWrapperWindow((MidSideWrapperPlugin) plugin);
             case ParametricEqPlugin.PLUGIN_ID,
                  CompressorPlugin.PLUGIN_ID,
                  ReverbPlugin.PLUGIN_ID -> host.switchToMasteringView();
@@ -536,6 +542,31 @@ final class PluginViewController {
         stage.show();
         stage.toFront();
         binauralMonitorStage = stage;
+    }
+
+    private void openMidSideWrapperWindow(MidSideWrapperPlugin plugin) {
+        if (midSideWrapperStage != null) {
+            midSideWrapperStage.show();
+            midSideWrapperStage.toFront();
+            return;
+        }
+
+        midSideWrapperView = new MidSideWrapperPluginView(plugin);
+
+        Stage stage = new Stage(StageStyle.UTILITY);
+        stage.setTitle("Mid/Side Wrapper");
+        stage.setScene(new Scene(midSideWrapperView));
+        DarkThemeHelper.applyTo(stage.getScene());
+        stage.setMinWidth(520);
+        stage.setMinHeight(380);
+        stage.setOnHidden(_ -> {
+            midSideWrapperView = null;
+            plugin.deactivate();
+            midSideWrapperStage = null;
+        });
+        stage.show();
+        stage.toFront();
+        midSideWrapperStage = stage;
     }
 
     /**

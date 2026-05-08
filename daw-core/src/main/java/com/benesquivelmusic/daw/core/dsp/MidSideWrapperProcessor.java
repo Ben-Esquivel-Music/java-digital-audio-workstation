@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * {@link AudioProcessor} that wraps two independent processor chains operating
@@ -38,6 +39,13 @@ import java.util.Objects;
  * sized to the largest seen frame count) so that steady-state processing is
  * allocation-free and real-time safe.</p>
  *
+ * <h2>Thread safety</h2>
+ * <p>The mid and side chains use {@link CopyOnWriteArrayList} so that the
+ * audio thread can iterate them without synchronization while the UI thread
+ * adds or removes processors. Mutations (add/remove) are infrequent
+ * (user-initiated) and allocate a new backing array, but iteration during
+ * {@code process()} is lock-free and allocation-free.</p>
+ *
  * <h2>Latency / PDC</h2>
  * <p>Sample-accurate plugin delay compensation across mid vs. side chains when
  * inner processors report different latencies is a future refinement; this
@@ -46,8 +54,8 @@ import java.util.Objects;
  */
 public final class MidSideWrapperProcessor implements AudioProcessor {
 
-    private final List<AudioProcessor> midChain = new ArrayList<>();
-    private final List<AudioProcessor> sideChain = new ArrayList<>();
+    private final List<AudioProcessor> midChain = new CopyOnWriteArrayList<>();
+    private final List<AudioProcessor> sideChain = new CopyOnWriteArrayList<>();
 
     private float[] midBuf;
     private float[] sideBuf;
