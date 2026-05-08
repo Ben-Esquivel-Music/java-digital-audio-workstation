@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.core.template.AddTrackFromTemplateAction;
 import com.benesquivelmusic.daw.core.template.ApplyChannelStripPresetAction;
 import com.benesquivelmusic.daw.core.template.ChannelStripPreset;
 import com.benesquivelmusic.daw.core.template.TrackTemplate;
+import com.benesquivelmusic.daw.core.template.TrackTemplateFactory;
 import com.benesquivelmusic.daw.core.template.TrackTemplateService;
 import com.benesquivelmusic.daw.core.template.TrackTemplateStore;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -258,7 +259,7 @@ public final class TrackTemplateController {
             LOG.log(Level.WARNING, "Failed to load user templates; falling back to factory defaults", e);
             host.showNotification(NotificationLevel.WARNING,
                     "Failed to load user templates: " + e.getMessage());
-            return List.copyOf(com.benesquivelmusic.daw.core.template.TrackTemplateFactory.factoryTemplates());
+            return List.copyOf(TrackTemplateFactory.factoryTemplates());
         }
     }
 
@@ -270,7 +271,7 @@ public final class TrackTemplateController {
             LOG.log(Level.WARNING, "Failed to load user presets; falling back to factory defaults", e);
             host.showNotification(NotificationLevel.WARNING,
                     "Failed to load user presets: " + e.getMessage());
-            return List.copyOf(com.benesquivelmusic.daw.core.template.TrackTemplateFactory.factoryPresets());
+            return List.copyOf(TrackTemplateFactory.factoryPresets());
         }
     }
 
