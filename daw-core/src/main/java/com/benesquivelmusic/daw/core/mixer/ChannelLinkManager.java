@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -54,6 +55,38 @@ public final class ChannelLinkManager {
 
     private final AtomicReference<Snapshot> snapshot = new AtomicReference<>(Snapshot.EMPTY);
 
+    /**
+     * Listeners notified after every {@link #link link}, {@link #unlink unlink}, or
+     * {@link #replace replace} mutation. Used by the application layer (e.g.
+     * {@code MixerView}) to re-render link-related UI without polling. A
+     * {@link CopyOnWriteArrayList} keeps the read path lock-free for the
+     * notification dispatch and tolerates concurrent mutations of the
+     * subscriber set.
+     */
+    private final List<Runnable> listeners = new CopyOnWriteArrayList<>();
+
+    /**
+     * Registers a callback to be invoked (synchronously, on the mutating
+     * thread) after every link add / remove / replace. Listeners that need
+     * to mutate UI state should themselves hop to their UI thread.
+     */
+    public void addListener(Runnable listener) {
+        Objects.requireNonNull(listener, "listener must not be null");
+        listeners.add(listener);
+    }
+
+    /** Removes a previously-registered listener. */
+    public void removeListener(Runnable listener) {
+        Objects.requireNonNull(listener, "listener must not be null");
+        listeners.remove(listener);
+    }
+
+    private void fireChanged() {
+        for (Runnable l : listeners) {
+            l.run();
+        }
+    }
+
     /** Returns every registered link in insertion order. */
     public List<ChannelLink> getLinks() {
         return snapshot.get().ordered();
@@ -99,6 +132,7 @@ public final class ChannelLinkManager {
                     "right channel already linked: " + link.rightChannelId());
         }
         snapshot.set(withAdded(current, link));
+        fireChanged();
     }
 
     /**
@@ -117,6 +151,7 @@ public final class ChannelLinkManager {
             return null;
         }
         snapshot.set(withRemoved(current, existing));
+        fireChanged();
         return existing;
     }
 
@@ -148,6 +183,7 @@ public final class ChannelLinkManager {
             ordered.add(samePair(l, existing) ? updated : l);
         }
         snapshot.set(buildSnapshot(ordered));
+        fireChanged();
     }
 
     // ── Propagation helpers ────────────────────────────────────────────────
