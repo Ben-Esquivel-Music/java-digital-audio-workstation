@@ -384,30 +384,31 @@ public final class TrackFreezeController {
             return;
         }
         Object lock = new Object();
-        boolean[] done = {false};
-        RuntimeException[] failure = {null};
+        var done = new AtomicBoolean(false);
+        var failure = new java.util.concurrent.atomic.AtomicReference<RuntimeException>();
         Platform.runLater(() -> {
             try {
                 action.run();
             } catch (RuntimeException e) {
-                failure[0] = e;
+                failure.set(e);
             } finally {
                 synchronized (lock) {
-                    done[0] = true;
+                    done.set(true);
                     lock.notifyAll();
                 }
             }
         });
         synchronized (lock) {
-            while (!done[0]) {
+            while (!done.get()) {
                 try { lock.wait(); }
                 catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
-                    throw new RuntimeException("interrupted while waiting for FX thread", ie);
+                    throw new RuntimeException(
+                            "Thread interrupted while waiting for FX thread to complete UndoManager operation", ie);
                 }
             }
         }
-        if (failure[0] != null) throw failure[0];
+        if (failure.get() != null) throw failure.get();
     }
 
     private void recordFreeze(Track track, CacheState state, Instant when) {
