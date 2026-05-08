@@ -210,7 +210,17 @@ public enum DawAction {
     WORKSPACE_8("Switch to Workspace 8", Category.WORKSPACES,
             new KeyCodeCombination(KeyCode.DIGIT8, KeyCombination.SHORTCUT_DOWN, KeyCombination.ALT_DOWN)),
     WORKSPACE_9("Switch to Workspace 9", Category.WORKSPACES,
-            new KeyCodeCombination(KeyCode.DIGIT9, KeyCombination.SHORTCUT_DOWN, KeyCombination.ALT_DOWN));
+            new KeyCodeCombination(KeyCode.DIGIT9, KeyCombination.SHORTCUT_DOWN, KeyCombination.ALT_DOWN)),
+
+    // ── Mixer (Story 103 — Mixer Scene Snapshots and A/B Recall) ─────────────
+    /**
+     * Toggle the mixer's two A/B snapshot slots, applying the newly-active
+     * slot's mixer state for instant mix comparison. Default {@code Shift+A}
+     * matches the story specification; users can rebind in
+     * Settings → Key Bindings.
+     */
+    MIXER_TOGGLE_AB("Toggle Mixer A/B Snapshot", Category.MIXER,
+            new KeyCodeCombination(KeyCode.A, KeyCombination.SHIFT_DOWN));
 
     /**
      * Returns the nine numbered workspace-switch actions in slot order
@@ -234,6 +244,7 @@ public enum DawAction {
         NAVIGATION("Navigation"),
         VIEWS("Views"),
         WORKSPACES("Workspaces"),
+        MIXER("Mixer"),
         APPLICATION("Application");
 
         private final String displayName;

@@ -111,6 +111,11 @@ final class KeyboardShortcutController {
         default void onToggleDockBrowser() { }
         /** Show or hide the dockable arrangement panel ({@code F5}). */
         default void onToggleDockArrangement() { }
+        /**
+         * Toggle the mixer's A/B snapshot slots — Story 103. Default no-op
+         * keeps existing test stubs source-compatible.
+         */
+        default void onMixerToggleAB() { }
     }
 
     private final KeyBindingManager keyBindingManager;
@@ -196,6 +201,8 @@ final class KeyboardShortcutController {
         actionHandlers.put(DawAction.TOGGLE_DOCK_MIXER, host::onToggleDockMixer);
         actionHandlers.put(DawAction.TOGGLE_DOCK_BROWSER, host::onToggleDockBrowser);
         actionHandlers.put(DawAction.TOGGLE_DOCK_ARRANGEMENT, host::onToggleDockArrangement);
+        // ── Mixer (Story 103 — Mixer Scene Snapshots and A/B Recall) ──────────
+        actionHandlers.put(DawAction.MIXER_TOGGLE_AB, host::onMixerToggleAB);
         // ── Workspaces (Customizable Workspace Layouts) ──────────────────────
         actionHandlers.put(DawAction.WORKSPACE_SAVE_AS, host::onSaveWorkspaceAs);
         java.util.List<DawAction> slotActions = DawAction.workspaceSlotActions();

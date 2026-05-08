@@ -1395,3 +1395,15 @@
     -fx-border-width: 1 0 0 0;
     -fx-padding: 0 4;
 }
+
+/* ── Mixer A/B slot buttons (Story 103) ── */
+.mixer-slot-active {
+    -fx-background-color: #ffaa00;
+    -fx-text-fill: black;
+    -fx-font-weight: bold;
+}
+
+.mixer-slot-filled {
+    -fx-background-color: #444;
+    -fx-text-fill: white;
+}
