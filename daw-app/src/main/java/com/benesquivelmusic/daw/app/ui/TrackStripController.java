@@ -1274,7 +1274,6 @@ final class TrackStripController {
                 trackTemplateController.saveTrackAsTemplate(track);
             }
         });
-        saveAsTemplateItem.visibleProperty().setValue(trackTemplateController != null);
 
         menu.getItems().addAll(
                 copyItem, pasteItem, new SeparatorMenuItem(),
@@ -1285,8 +1284,10 @@ final class TrackStripController {
                 expandItem, collapseItem, fullscreenItem, minimizeItem, pipItem, homeItem, new SeparatorMenuItem(),
                 exportWav, exportMp3, exportAac, exportMidi, exportWma, new SeparatorMenuItem(),
                 shareItem, broadcastItem, streamItem, rateItem, dislikeItem, commentItem, followItem, new SeparatorMenuItem(),
-                favoriteItem, playlistItem, filmScoreItem, notifyItem, repeatOneItem, renameItem,
-                new SeparatorMenuItem(), saveAsTemplateItem);
+                favoriteItem, playlistItem, filmScoreItem, notifyItem, repeatOneItem, renameItem);
+        if (trackTemplateController != null) {
+            menu.getItems().addAll(new SeparatorMenuItem(), saveAsTemplateItem);
+        }
 
         // Recalculate dynamic enabled/disabled states each time the menu is shown
         // so items reflect the current clipboard, selection, clip, and zoom state.

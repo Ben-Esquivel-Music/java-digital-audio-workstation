@@ -111,9 +111,20 @@ public final class TrackTemplateBrowser extends Dialog<ButtonType> {
         pane.getButtonTypes().setAll(insertType, ButtonType.CLOSE);
         Button insertBtn = (Button) pane.lookupButton(insertType);
         insertBtn.setDefaultButton(true);
-        insertBtn.disableProperty().bind(
-                templateList.getSelectionModel().selectedItemProperty().isNull()
-                        .and(presetList.getSelectionModel().selectedItemProperty().isNull()));
+        // Only enable Insert when the *active* tab has a selection, so
+        // switching tabs with an old selection on the other tab cannot
+        // produce a null-selection Insert.
+        Runnable updateInsertDisable = () -> {
+            boolean onTemplatesTab = tabPane.getSelectionModel().getSelectedItem() == templatesTab;
+            boolean hasSelection = onTemplatesTab
+                    ? templateList.getSelectionModel().getSelectedItem() != null
+                    : presetList.getSelectionModel().getSelectedItem() != null;
+            insertBtn.setDisable(!hasSelection);
+        };
+        templateList.getSelectionModel().selectedItemProperty().addListener((_, _, _) -> updateInsertDisable.run());
+        presetList.getSelectionModel().selectedItemProperty().addListener((_, _, _) -> updateInsertDisable.run());
+        tabPane.getSelectionModel().selectedItemProperty().addListener((_, _, _) -> updateInsertDisable.run());
+        insertBtn.setDisable(true); // initially disabled
         insertBtn.addEventFilter(javafx.event.ActionEvent.ACTION, _ -> captureSelection());
 
         // Initial population
@@ -298,10 +309,8 @@ public final class TrackTemplateBrowser extends Dialog<ButtonType> {
         if (!confirm("Delete template \u201C" + selected.templateName() + "\u201D?")) {
             return;
         }
-        Path file = controller.store().getTemplatesDirectory().resolve(
-                TrackTemplateStore.sanitizeFileName(selected.templateName()) + ".xml");
         try {
-            Files.deleteIfExists(file);
+            controller.store().deleteTemplate(selected.templateName());
             refreshTemplates();
         } catch (IOException e) {
             error("Failed to delete template", e);
@@ -320,10 +329,8 @@ public final class TrackTemplateBrowser extends Dialog<ButtonType> {
         if (!confirm("Delete preset \u201C" + selected.presetName() + "\u201D?")) {
             return;
         }
-        Path file = controller.store().getPresetsDirectory().resolve(
-                TrackTemplateStore.sanitizeFileName(selected.presetName()) + ".xml");
         try {
-            Files.deleteIfExists(file);
+            controller.store().deletePreset(selected.presetName());
             refreshPresets();
         } catch (IOException e) {
             error("Failed to delete preset", e);
@@ -461,7 +468,19 @@ public final class TrackTemplateBrowser extends Dialog<ButtonType> {
         }
     }
 
-    private static boolean isFactoryTemplate(TrackTemplate t) {
+    /**
+     * An item is considered a factory template (non-deletable) only when
+     * there is <em>no</em> corresponding file in the user store. If a
+     * user imports or saves a template whose name collides with a factory
+     * default, the user-store copy is user-deletable because a backing
+     * file exists on disk.
+     */
+    private boolean isFactoryTemplate(TrackTemplate t) {
+        Path userFile = controller.store().getTemplatesDirectory().resolve(
+                TrackTemplateStore.sanitizeFileName(t.templateName()) + ".xml");
+        if (Files.exists(userFile)) {
+            return false; // user-authored — deletable
+        }
         for (TrackTemplate f : TrackTemplateFactory.factoryTemplates()) {
             if (f.templateName().equals(t.templateName())) {
                 return true;
@@ -470,7 +489,17 @@ public final class TrackTemplateBrowser extends Dialog<ButtonType> {
         return false;
     }
 
-    private static boolean isFactoryPreset(ChannelStripPreset p) {
+    /**
+     * Same logic as {@link #isFactoryTemplate(TrackTemplate)}: a preset
+     * backed by a user-store file is always deletable even if its name
+     * matches a factory default.
+     */
+    private boolean isFactoryPreset(ChannelStripPreset p) {
+        Path userFile = controller.store().getPresetsDirectory().resolve(
+                TrackTemplateStore.sanitizeFileName(p.presetName()) + ".xml");
+        if (Files.exists(userFile)) {
+            return false; // user-authored — deletable
+        }
         for (ChannelStripPreset f : TrackTemplateFactory.factoryPresets()) {
             if (f.presetName().equals(p.presetName())) {
                 return true;

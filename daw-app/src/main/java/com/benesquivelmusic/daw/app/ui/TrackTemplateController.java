@@ -146,7 +146,7 @@ public final class TrackTemplateController {
         Objects.requireNonNull(channel, "channel must not be null");
         Optional<String> name = promptForName(
                 "Save Channel Strip",
-                "Save the insert chain and sends on \u201C" + channel.getName()
+                "Save the insert chain, sends, volume, and pan on \u201C" + channel.getName()
                         + "\u201D as a reusable channel-strip preset.",
                 "Preset name:",
                 channel.getName() + " Strip");
@@ -209,7 +209,7 @@ public final class TrackTemplateController {
         }
         if (channel.getInsertCount() > 0 || !channel.getSends().isEmpty()) {
             Alert confirm = new Alert(Alert.AlertType.CONFIRMATION,
-                    "Replace the existing inserts and sends on \u201C"
+                    "Replace the existing inserts, sends, volume, and pan on \u201C"
                             + channel.getName() + "\u201D with the preset \u201C"
                             + preset.presetName() + "\u201D?",
                     ButtonType.OK, ButtonType.CANCEL);
@@ -255,10 +255,10 @@ public final class TrackTemplateController {
         try {
             return store().allTemplates();
         } catch (IOException e) {
-            LOG.log(Level.WARNING, "Failed to load templates", e);
+            LOG.log(Level.WARNING, "Failed to load user templates; falling back to factory defaults", e);
             host.showNotification(NotificationLevel.WARNING,
-                    "Failed to load templates: " + e.getMessage());
-            return List.of();
+                    "Failed to load user templates: " + e.getMessage());
+            return List.copyOf(com.benesquivelmusic.daw.core.template.TrackTemplateFactory.factoryTemplates());
         }
     }
 
@@ -267,10 +267,10 @@ public final class TrackTemplateController {
         try {
             return store().allPresets();
         } catch (IOException e) {
-            LOG.log(Level.WARNING, "Failed to load presets", e);
+            LOG.log(Level.WARNING, "Failed to load user presets; falling back to factory defaults", e);
             host.showNotification(NotificationLevel.WARNING,
-                    "Failed to load presets: " + e.getMessage());
-            return List.of();
+                    "Failed to load user presets: " + e.getMessage());
+            return List.copyOf(com.benesquivelmusic.daw.core.template.TrackTemplateFactory.factoryPresets());
         }
     }
 

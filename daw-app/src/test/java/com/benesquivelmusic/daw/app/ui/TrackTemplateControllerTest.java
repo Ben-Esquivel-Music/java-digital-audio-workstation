@@ -193,7 +193,7 @@ class TrackTemplateControllerTest {
     }
 
     @Test
-    void browserOpensOnFxThreadWithTwoTabs() throws Exception {
+    void browserConstructsWithTwoTabsAndInsertCloseButtons() throws Exception {
         Path temp = Files.createTempDirectory("templateBrowserTest");
         DawProject project = new DawProject("Test", AudioFormat.STUDIO_QUALITY);
         TrackTemplateController controller = newController(project, new UndoManager(), temp);
@@ -204,5 +204,22 @@ class TrackTemplateControllerTest {
         assertThat(browser.getDialogPane().getButtonTypes())
                 .extracting(b -> b.getText())
                 .contains("Insert", "Close");
+
+        // Verify the TabPane contains the expected two tabs.
+        javafx.scene.control.TabPane tabs = runOnFxThread(() -> {
+            javafx.scene.Node content = browser.getDialogPane().getContent();
+            if (content instanceof javafx.scene.layout.VBox vbox) {
+                for (javafx.scene.Node child : vbox.getChildren()) {
+                    if (child instanceof javafx.scene.control.TabPane tp) {
+                        return tp;
+                    }
+                }
+            }
+            return null;
+        });
+        assertThat(tabs).isNotNull();
+        assertThat(tabs.getTabs()).hasSize(2);
+        assertThat(tabs.getTabs().get(0).getText()).isEqualTo("Track Templates");
+        assertThat(tabs.getTabs().get(1).getText()).isEqualTo("Channel-Strip Presets");
     }
 }

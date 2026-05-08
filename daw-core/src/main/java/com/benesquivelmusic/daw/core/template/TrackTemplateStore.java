@@ -160,6 +160,40 @@ public final class TrackTemplateStore {
         return all;
     }
 
+    // ── Deletion ─────────────────────────────────────────────────────────────
+
+    /**
+     * Deletes the user-authored template whose embedded name matches the
+     * given name. The on-disk filename is derived via
+     * {@link #sanitizeFileName(String)}.
+     *
+     * @param templateName the display name of the template to delete
+     * @return {@code true} if a file was deleted, {@code false} if no
+     *         matching file existed
+     * @throws IOException if deletion fails
+     */
+    public boolean deleteTemplate(String templateName) throws IOException {
+        Objects.requireNonNull(templateName, "templateName must not be null");
+        Path file = getTemplatesDirectory().resolve(sanitizeFileName(templateName) + XML_SUFFIX);
+        return Files.deleteIfExists(file);
+    }
+
+    /**
+     * Deletes the user-authored preset whose embedded name matches the
+     * given name. The on-disk filename is derived via
+     * {@link #sanitizeFileName(String)}.
+     *
+     * @param presetName the display name of the preset to delete
+     * @return {@code true} if a file was deleted, {@code false} if no
+     *         matching file existed
+     * @throws IOException if deletion fails
+     */
+    public boolean deletePreset(String presetName) throws IOException {
+        Objects.requireNonNull(presetName, "presetName must not be null");
+        Path file = getPresetsDirectory().resolve(sanitizeFileName(presetName) + XML_SUFFIX);
+        return Files.deleteIfExists(file);
+    }
+
     // ── internal helpers ────────────────────────────────────────────────────
 
     private static <T> List<T> loadAll(Path dir, XmlDeserializer<T> deserializer) throws IOException {
