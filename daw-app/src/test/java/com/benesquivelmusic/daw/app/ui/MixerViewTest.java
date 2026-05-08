@@ -70,7 +70,12 @@ class MixerViewTest {
 
         MixerView view = createOnFxThread(project);
 
-        assertThat(view.getChannelStrips().getChildren()).hasSize(2);
+        // Filter out the chain-glyph link toggles spliced between adjacent
+        // strips by Story 159 — only count the channel strips themselves.
+        long stripCount = view.getChannelStrips().getChildren().stream()
+                .filter(n -> n.getStyleClass().contains("mixer-channel"))
+                .count();
+        assertThat(stripCount).isEqualTo(2);
     }
 
     @Test
@@ -119,11 +124,21 @@ class MixerViewTest {
         project.createMidiTrack("Track 3");
 
         MixerView view = createOnFxThread(project);
-        assertThat(view.getChannelStrips().getChildren()).hasSize(3);
+        assertThat(countChannelStrips(view)).isEqualTo(3);
 
         project.createAudioTrack("Track 4");
         runOnFxThread(view::refresh);
-        assertThat(view.getChannelStrips().getChildren()).hasSize(4);
+        assertThat(countChannelStrips(view)).isEqualTo(4);
+    }
+
+    /**
+     * Count only the actual channel strips (not the chain-glyph link
+     * toggles spliced between them by Story 159).
+     */
+    private static long countChannelStrips(MixerView view) {
+        return view.getChannelStrips().getChildren().stream()
+                .filter(n -> n.getStyleClass().contains("mixer-channel"))
+                .count();
     }
 
     // ── VCA strips (story 153) ────────────────────────────────────────────

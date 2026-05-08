@@ -36,7 +36,9 @@ import javafx.scene.shape.Circle;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -91,6 +93,36 @@ public final class MixerView extends VBox {
      * Create VCA" UX.
      */
     private final Set<UUID> selectedChannelIds = new HashSet<>();
+    /**
+     * Per-channel-id slider/button references the {@link ChannelLinkManager}
+     * propagation path uses to mirror UI state across a stereo pair without
+     * a full strip rebuild. The {@code LinkedHashMap} preserves insertion
+     * order to make iteration in tests deterministic. Cleared and
+     * repopulated by {@link #refresh()} on every rebuild — the lookup
+     * tables are owned by this {@code MixerView} and are not exposed
+     * outside the package.
+     */
+    private final Map<UUID, Slider> volumeFaderByChannelId = new LinkedHashMap<>();
+    private final Map<UUID, Slider> panSliderByChannelId   = new LinkedHashMap<>();
+    private final Map<UUID, Button> muteBtnByChannelId     = new LinkedHashMap<>();
+    private final Map<UUID, Button> soloBtnByChannelId     = new LinkedHashMap<>();
+    private final Map<UUID, MixerChannel> channelByChannelId = new LinkedHashMap<>();
+    private final Map<UUID, Track>        trackByChannelId   = new LinkedHashMap<>();
+    /**
+     * Channel ids currently receiving a propagated edit from a partner.
+     * Used as a re-entry guard so mirroring a fader/pan/mute/solo change
+     * onto the partner does not in turn re-fire the propagation path back
+     * onto the source — guarantees a single round-trip per user gesture.
+     */
+    private final Set<UUID> propagationSuppressed = new HashSet<>();
+    /**
+     * Listener registered on the project's {@link ChannelLinkManager} that
+     * triggers a {@link #refresh()} whenever a link is added, removed, or
+     * replaced — keeps the chain glyphs, connector lines, and L/R badges
+     * in sync with the model. Held as a field so we can deregister if the
+     * view is ever disposed (defensive — there is no current dispose path).
+     */
+    private final Runnable channelLinkListener;
     /**
      * Side panel listing saved mixer-scene snapshots (Story 103). Mounted
      * to the right of the channel strips; toggled via the "Snapshots"
@@ -161,6 +193,33 @@ public final class MixerView extends VBox {
         if (this.undoManager != null) {
             this.undoManager.addHistoryListener(this.undoHistoryListener);
         }
+
+        // ── Mixer channel-link manager hook (Story 159) ─────────────────────
+        // Re-render whenever a stereo pair is created, removed, or re-edited
+        // via the popover so the chain glyphs, connector lines, and L/R
+        // badges always reflect the model. Hop to the FX thread because
+        // ChannelLinkManager fires synchronously on the mutating thread.
+        this.channelLinkListener = () -> {
+            if (javafx.application.Platform.isFxApplicationThread()) {
+                refresh();
+            } else {
+                javafx.application.Platform.runLater(this::refresh);
+            }
+        };
+        project.getChannelLinkManager().addListener(this.channelLinkListener);
+
+        // Auto-unregister listeners when this view is removed from a scene
+        // so a replaced MixerView (e.g. on project reload via
+        // ViewNavigationController.setMixerView) does not stay strongly
+        // referenced by ChannelLinkManager or UndoManager (memory-leak fix).
+        sceneProperty().addListener((_, _, newScene) -> {
+            if (newScene == null) {
+                project.getChannelLinkManager().removeListener(channelLinkListener);
+                if (undoManager != null) {
+                    undoManager.removeHistoryListener(undoHistoryListener);
+                }
+            }
+        });
 
         Label header = new Label("MIXER");
         header.getStyleClass().add("panel-header");
@@ -529,13 +588,41 @@ public final class MixerView extends VBox {
         }
         activeInputMeterStrips.clear();
 
+        // Channel-link lookup tables are rebuilt with the strips below so
+        // the propagation paths reference the live JavaFX widgets.
+        volumeFaderByChannelId.clear();
+        panSliderByChannelId.clear();
+        muteBtnByChannelId.clear();
+        soloBtnByChannelId.clear();
+        channelByChannelId.clear();
+        trackByChannelId.clear();
+        propagationSuppressed.clear();
+
         channelStrips.getChildren().clear();
+        // First pass: build each track's channel strip and remember its
+        // backing channel id (when the track id is a UUID — non-UUID test
+        // fixtures get a strip with no link affordance, matching the
+        // existing VCA-wiring fallback).
+        List<UUID> stripIdsInOrder = new ArrayList<>();
         for (Track track : project.getTracks()) {
             MixerChannel mixerChannel = project.getMixerChannelForTrack(track);
             if (mixerChannel != null) {
                 channelStrips.getChildren().add(buildChannelStrip(track, mixerChannel));
+                UUID id = parseChannelId(track);
+                stripIdsInOrder.add(id);
+                if (id != null) {
+                    channelByChannelId.put(id, mixerChannel);
+                    trackByChannelId.put(id, track);
+                }
             }
         }
+        // Second pass: insert a small chain-glyph link toggle between every
+        // adjacent pair of channel strips. The toggle pairs / unpairs the
+        // two adjacent channels and (right-click) opens the link-detail
+        // popover. Done after strips are built so lookup tables (volume
+        // fader / pan slider / mute / solo) are populated and the
+        // propagation path can mirror immediately on first use.
+        installLinkToggles(stripIdsInOrder);
 
         returnBusStrips.getChildren().clear();
         for (MixerChannel returnBus : project.getMixer().getReturnBuses()) {
@@ -729,6 +816,26 @@ public final class MixerView extends VBox {
         nameLabel.getStyleClass().add("mixer-channel-name");
         nameLabel.setMaxWidth(CHANNEL_WIDTH - 12);
 
+        // ── L / R badge for a member of a stereo pair (Story 159) ─────────
+        // The chain-link manager owns the (left, right) ordering — render
+        // a single-letter badge under the strip name so the engineer can
+        // see at a glance which strip is the source / mirrored side.
+        Label lrBadge = null;
+        if (channelId != null) {
+            ChannelLink existingLink = project.getChannelLinkManager().getLink(channelId);
+            if (existingLink != null) {
+                boolean isLeft = existingLink.leftChannelId().equals(channelId);
+                lrBadge = new Label(isLeft ? "L" : "R");
+                lrBadge.getStyleClass().add("mixer-channel-link-badge");
+                lrBadge.setStyle("-fx-background-color: #00bcd4;"
+                        + " -fx-text-fill: #0d0d0d;"
+                        + " -fx-font-weight: bold;"
+                        + " -fx-padding: 0 4 0 4;"
+                        + " -fx-font-size: 9px;"
+                        + " -fx-background-radius: 3;");
+            }
+        }
+
         // Level meter
         LevelMeterDisplay levelMeter = new LevelMeterDisplay(true);
         levelMeter.setPrefWidth(METER_WIDTH);
@@ -765,11 +872,17 @@ public final class MixerView extends VBox {
         volumeFader.setPrefHeight(FADER_HEIGHT);
         volumeFader.getStyleClass().add("mixer-fader");
         volumeFader.setTooltip(new Tooltip("Volume"));
-        volumeFader.valueProperty().addListener((_, _, newVal) -> {
+        volumeFader.valueProperty().addListener((_, oldVal, newVal) -> {
             double value = newVal.doubleValue();
             mixerChannel.setVolume(value);
             track.setVolume(value);
+            if (channelId != null) {
+                propagateVolumeChange(channelId, oldVal.doubleValue(), value);
+            }
         });
+        if (channelId != null) {
+            volumeFaderByChannelId.put(channelId, volumeFader);
+        }
 
         // Pan control (horizontal slider)
         Slider panSlider = new Slider(-1.0, 1.0, mixerChannel.getPan());
@@ -780,7 +893,13 @@ public final class MixerView extends VBox {
             double value = newVal.doubleValue();
             mixerChannel.setPan(value);
             track.setPan(value);
+            if (channelId != null) {
+                propagatePanChange(channelId, value);
+            }
         });
+        if (channelId != null) {
+            panSliderByChannelId.put(channelId, panSlider);
+        }
         Label panLabel = new Label("PAN");
         panLabel.getStyleClass().add("mixer-channel-name");
 
@@ -795,7 +914,13 @@ public final class MixerView extends VBox {
             track.setMuted(muted);
             muteBtn.setStyle(muted
                     ? "-fx-background-color: #ff9100; -fx-text-fill: #0d0d0d;" : "");
+            if (channelId != null) {
+                propagateMuteChange(channelId, muted);
+            }
         });
+        if (channelId != null) {
+            muteBtnByChannelId.put(channelId, muteBtn);
+        }
 
         // Solo button — right-click to toggle "solo safe" (solo-in-place
         // defeat). When solo-safe is on, a yellow ring highlights the button
@@ -811,8 +936,14 @@ public final class MixerView extends VBox {
             mixerChannel.setSolo(solo);
             track.setSolo(solo);
             applySoloButtonStyle(soloBtn, mixerChannel);
+            if (channelId != null) {
+                propagateSoloChange(channelId, solo);
+            }
         });
         installSoloSafeContextMenu(soloBtn, mixerChannel);
+        if (channelId != null) {
+            soloBtnByChannelId.put(channelId, soloBtn);
+        }
 
         // Arm button
         Button armBtn = new Button("R");
@@ -1030,6 +1161,12 @@ public final class MixerView extends VBox {
                 insertRack, latencyLabel, meterRow, volumeFader,
                 panLabel, panSlider, buttonRow, pannerBtn,
                 sendBox, sendLabel, sendSlider);
+        // L/R badge is inserted after nameLabel so it renders *under* the
+        // channel name rather than above it (Story 159).
+        if (lrBadge != null) {
+            strip.getChildren().add(
+                    strip.getChildren().indexOf(nameLabel) + 1, lrBadge);
+        }
 
         return strip;
     }
@@ -1558,5 +1695,290 @@ public final class MixerView extends VBox {
         }
         selectedChannelIds.clear();
         refresh();
+    }
+
+    // ── Channel-link UI (Story 159) ─────────────────────────────────────────
+
+    /**
+     * Parses {@code track.getId()} into a {@link UUID}, or returns
+     * {@code null} for legacy / hand-crafted test fixtures whose ids are
+     * not UUID-formatted (mirrors the same defensive pattern used by the
+     * VCA-strip wiring elsewhere in this view).
+     */
+    private static UUID parseChannelId(Track track) {
+        try {
+            return UUID.fromString(track.getId());
+        } catch (IllegalArgumentException ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * Inserts a small "link toggle" node between every adjacent pair of
+     * channel strips in {@link #channelStrips}. The toggle pairs the two
+     * adjacent channels via {@link LinkChannelsAction} (or unpairs via
+     * {@link UnlinkChannelsAction}) on left-click and opens a
+     * {@link ChannelLinkPopover} on right-click. The toggle itself is a
+     * tiny {@link Button} rendered with the {@link DawIcon#LINK} chain
+     * glyph; it turns the active accent colour when the pair is linked,
+     * matching the behaviour described in Story 159.
+     *
+     * @param idsInOrder channel ids of the strips in left-to-right order;
+     *                   {@code null} entries (non-UUID track ids) get a
+     *                   non-clickable placeholder so column spacing is
+     *                   preserved
+     */
+    private void installLinkToggles(List<UUID> idsInOrder) {
+        if (idsInOrder.size() < 2) {
+            return;
+        }
+        ChannelLinkManager linkManager = project.getChannelLinkManager();
+        // Iterate in reverse so we can splice toggles into channelStrips
+        // without invalidating the indices of the strips we still have to
+        // process. The toggle for the (i, i+1) pair is inserted at child
+        // position i+1.
+        for (int i = idsInOrder.size() - 2; i >= 0; i--) {
+            UUID leftId  = idsInOrder.get(i);
+            UUID rightId = idsInOrder.get(i + 1);
+            channelStrips.getChildren().add(i + 1,
+                    buildLinkToggle(leftId, rightId, linkManager));
+        }
+    }
+
+    /**
+     * Builds the chain-glyph link toggle node spliced between two adjacent
+     * channel strips.
+     */
+    private Node buildLinkToggle(UUID leftId, UUID rightId, ChannelLinkManager linkManager) {
+        ChannelLink existing = (leftId != null && rightId != null)
+                ? linkManager.getLink(leftId)
+                : null;
+        boolean linkedTogether = existing != null
+                && existing.involves(leftId)
+                && existing.involves(rightId);
+
+        Button btn = new Button();
+        btn.getStyleClass().add("mixer-channel-link-toggle");
+        btn.setGraphic(IconNode.of(DawIcon.LINK, CONTROL_ICON_SIZE));
+        btn.setTooltip(new Tooltip(linkedTogether
+                ? "Stereo-link active. Click to unlink. Right-click for link options."
+                : "Click to link these two channels into a stereo pair."));
+        // Highlight when active so the engineer can see the pair at a glance.
+        btn.setStyle(linkedTogether
+                ? "-fx-background-color: #00bcd4; -fx-text-fill: #0d0d0d;"
+                + " -fx-padding: 2 4 2 4;"
+                : "-fx-padding: 2 4 2 4;");
+        btn.setUserData(new UUID[]{leftId, rightId});
+
+        // Both endpoints must be UUID-typed and not currently linked to a
+        // *third* channel for "Link" to be valid. Disable the button in
+        // edge cases so the user gets a clear non-action.
+        boolean canLink = leftId != null && rightId != null;
+        if (!canLink) {
+            btn.setDisable(true);
+            return wrapLinkToggle(btn, false, leftId, rightId, null);
+        }
+        boolean leftLinked  = linkManager.isLinked(leftId);
+        boolean rightLinked = linkManager.isLinked(rightId);
+        if (!linkedTogether && (leftLinked || rightLinked)) {
+            btn.setDisable(true);
+            btn.setTooltip(new Tooltip(
+                    "One of these channels is already linked to a different channel. "
+                            + "Unlink it first."));
+        }
+
+        btn.setOnAction(_ -> {
+            ChannelLink current = linkManager.getLink(leftId);
+            boolean isLinkedTogetherNow = current != null
+                    && current.involves(leftId) && current.involves(rightId);
+            if (isLinkedTogetherNow) {
+                UnlinkChannelsAction unlink = new UnlinkChannelsAction(linkManager, leftId);
+                if (undoManager != null) {
+                    undoManager.execute(unlink);
+                } else {
+                    unlink.execute();
+                }
+            } else if (!linkManager.isLinked(leftId) && !linkManager.isLinked(rightId)) {
+                // Default per Story 159: faders + pans + mute/solo on,
+                // inserts + sends off, RELATIVE mode.
+                ChannelLink link = new ChannelLink(leftId, rightId,
+                        LinkMode.RELATIVE, true, true, true, false, false);
+                LinkChannelsAction linkAction = new LinkChannelsAction(linkManager, link);
+                if (undoManager != null) {
+                    undoManager.execute(linkAction);
+                } else {
+                    linkAction.execute();
+                }
+            }
+        });
+
+        btn.setOnContextMenuRequested(e -> {
+            ChannelLink current = linkManager.getLink(leftId);
+            if (current != null && current.involves(leftId) && current.involves(rightId)) {
+                ChannelLinkPopover popover =
+                        new ChannelLinkPopover(linkManager, undoManager, current);
+                popover.show(btn, e.getScreenX(), e.getScreenY());
+            }
+        });
+
+        return wrapLinkToggle(btn, linkedTogether, leftId, rightId, existing);
+    }
+
+    /**
+     * Wraps the link toggle button in a thin VBox with an optional
+     * connector line that spans the two strips at the fader-gap level when
+     * the pair is linked. Visible (active accent) only when {@code linked}
+     * is true so unlinked pairs render only the unobtrusive toggle.
+     */
+    private VBox wrapLinkToggle(Button btn, boolean linked,
+                                UUID leftId, UUID rightId, ChannelLink link) {
+        VBox box = new VBox(2);
+        box.setAlignment(Pos.CENTER);
+        box.setPrefWidth(18);
+        box.setMinWidth(18);
+        box.setMaxWidth(24);
+        box.getChildren().add(btn);
+        if (linked) {
+            // Thin horizontal connector line "between" the two faders.
+            Region connector = new Region();
+            connector.setPrefSize(20, 2);
+            connector.setMinHeight(2);
+            connector.setStyle("-fx-background-color: #00bcd4;");
+            box.getChildren().add(connector);
+        }
+        // Tag the wrapper too so tests can locate the node by user data.
+        box.setUserData(new LinkTogglePair(leftId, rightId, link));
+        return box;
+    }
+
+    /**
+     * Lookup tag attached to a link-toggle wrapper {@link VBox} so tests
+     * (and any future feature using the toggle) can correlate a wrapper
+     * node back to the pair of channel ids it spans without walking the
+     * scene graph.
+     */
+    public record LinkTogglePair(UUID leftChannelId, UUID rightChannelId, ChannelLink link) { }
+
+    private void propagateVolumeChange(UUID sourceId, double oldValue, double newValue) {
+        if (propagationSuppressed.contains(sourceId)) {
+            return;
+        }
+        ChannelLinkManager mgr = project.getChannelLinkManager();
+        ChannelLink link = mgr.getLink(sourceId);
+        if (link == null || !link.linkFaders()) {
+            return;
+        }
+        UUID partnerId = link.partnerOf(sourceId);
+        MixerChannel source  = channelByChannelId.get(sourceId);
+        MixerChannel partner = channelByChannelId.get(partnerId);
+        Slider partnerSlider = volumeFaderByChannelId.get(partnerId);
+        if (source == null || partner == null || partnerSlider == null) {
+            return;
+        }
+        propagationSuppressed.add(partnerId);
+        try {
+            // Delegate the per-mode arithmetic to the manager so UI and
+            // model behaviour stay in lock-step. The manager updates the
+            // model, then we copy the new model value onto the partner
+            // slider's value (which would otherwise still hold the old
+            // pre-mirror display value).
+            mgr.applyVolumeChange(link, source, partner, oldValue, newValue);
+            partnerSlider.setValue(partner.getVolume());
+            Track partnerTrack = trackByChannelId.get(partnerId);
+            if (partnerTrack != null) {
+                partnerTrack.setVolume(partner.getVolume());
+            }
+        } finally {
+            propagationSuppressed.remove(partnerId);
+        }
+    }
+
+    private void propagatePanChange(UUID sourceId, double newPan) {
+        if (propagationSuppressed.contains(sourceId)) {
+            return;
+        }
+        ChannelLinkManager mgr = project.getChannelLinkManager();
+        ChannelLink link = mgr.getLink(sourceId);
+        if (link == null || !link.linkPans()) {
+            return;
+        }
+        UUID partnerId = link.partnerOf(sourceId);
+        MixerChannel partner = channelByChannelId.get(partnerId);
+        Slider partnerSlider = panSliderByChannelId.get(partnerId);
+        if (partner == null || partnerSlider == null) {
+            return;
+        }
+        propagationSuppressed.add(partnerId);
+        try {
+            mgr.applyPanChange(link, partner, newPan);
+            partnerSlider.setValue(partner.getPan());
+            Track partnerTrack = trackByChannelId.get(partnerId);
+            if (partnerTrack != null) {
+                partnerTrack.setPan(partner.getPan());
+            }
+        } finally {
+            propagationSuppressed.remove(partnerId);
+        }
+    }
+
+    private void propagateMuteChange(UUID sourceId, boolean muted) {
+        if (propagationSuppressed.contains(sourceId)) {
+            return;
+        }
+        ChannelLinkManager mgr = project.getChannelLinkManager();
+        ChannelLink link = mgr.getLink(sourceId);
+        if (link == null || !link.linkMuteSolo()) {
+            return;
+        }
+        UUID partnerId = link.partnerOf(sourceId);
+        MixerChannel partner = channelByChannelId.get(partnerId);
+        Button partnerBtn = muteBtnByChannelId.get(partnerId);
+        if (partner == null) {
+            return;
+        }
+        propagationSuppressed.add(partnerId);
+        try {
+            mgr.applyMuteChange(link, partner, muted);
+            Track partnerTrack = trackByChannelId.get(partnerId);
+            if (partnerTrack != null) {
+                partnerTrack.setMuted(muted);
+            }
+            if (partnerBtn != null) {
+                partnerBtn.setStyle(muted
+                        ? "-fx-background-color: #ff9100; -fx-text-fill: #0d0d0d;" : "");
+            }
+        } finally {
+            propagationSuppressed.remove(partnerId);
+        }
+    }
+
+    private void propagateSoloChange(UUID sourceId, boolean solo) {
+        if (propagationSuppressed.contains(sourceId)) {
+            return;
+        }
+        ChannelLinkManager mgr = project.getChannelLinkManager();
+        ChannelLink link = mgr.getLink(sourceId);
+        if (link == null || !link.linkMuteSolo()) {
+            return;
+        }
+        UUID partnerId = link.partnerOf(sourceId);
+        MixerChannel partner = channelByChannelId.get(partnerId);
+        Button partnerBtn = soloBtnByChannelId.get(partnerId);
+        if (partner == null) {
+            return;
+        }
+        propagationSuppressed.add(partnerId);
+        try {
+            mgr.applySoloChange(link, partner, solo);
+            Track partnerTrack = trackByChannelId.get(partnerId);
+            if (partnerTrack != null) {
+                partnerTrack.setSolo(solo);
+            }
+            if (partnerBtn != null) {
+                applySoloButtonStyle(partnerBtn, partner);
+            }
+        } finally {
+            propagationSuppressed.remove(partnerId);
+        }
     }
 }
