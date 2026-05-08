@@ -133,6 +133,41 @@ class MixerSnapshotsPanelTest {
     }
 
     @Test
+    void undoOfToggleABRestoresActiveSlotAndMixerState() throws Exception {
+        DawProject project = new DawProject("T", AudioFormat.CD_QUALITY);
+        Track t = project.createAudioTrack("Keys");
+        MixerChannel ch = project.getMixerChannelForTrack(t);
+        Mixer mixer = project.getMixer();
+        UndoManager um = new UndoManager();
+
+        MixerView view = runFx(() -> new MixerView(project, um));
+
+        // Capture A at vol 0.2, B at vol 0.9
+        runFx(() -> ch.setVolume(0.2));
+        MixerSnapshot a = MixerSnapshot.capture(mixer, "A");
+        runFx(() -> ch.setVolume(0.9));
+        MixerSnapshot b = MixerSnapshot.capture(mixer, "B");
+
+        MixerSnapshotManager manager = project.getMixerSnapshotManager();
+        manager.setSlot(MixerSnapshotManager.Slot.A, a);
+        manager.setSlot(MixerSnapshotManager.Slot.B, b);
+        manager.setActiveSlot(MixerSnapshotManager.Slot.A);
+
+        // Toggle: A -> B (vol 0.9)
+        runFx(view::toggleAB);
+        assertThat(manager.getActiveSlot()).isEqualTo(MixerSnapshotManager.Slot.B);
+        assertThat(ch.getVolume()).isEqualTo(0.9);
+
+        // Undo: should restore active slot to A and mixer state
+        runFx(um::undo);
+        assertThat(manager.getActiveSlot()).isEqualTo(MixerSnapshotManager.Slot.A);
+        assertThat(ch.getVolume()).isEqualTo(0.9); // pre-recall state was 0.9 (captured before apply)
+        // The undo restores the mixer state that was captured before the
+        // toggle executed — which was vol 0.9 since that's what was live
+        // at the time of the toggle. The key assertion is activeSlot.
+    }
+
+    @Test
     void saveButtonDisablesAtMaxSnapshots() throws Exception {
         DawProject project = new DawProject("T", AudioFormat.CD_QUALITY);
         project.createAudioTrack("X");

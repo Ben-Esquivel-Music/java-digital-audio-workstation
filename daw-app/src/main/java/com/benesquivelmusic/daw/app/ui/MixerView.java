@@ -10,6 +10,8 @@ import com.benesquivelmusic.daw.core.audio.InputRouting;
 import com.benesquivelmusic.daw.core.mixer.*;
 import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshot;
 import com.benesquivelmusic.daw.core.mixer.snapshot.MixerSnapshotManager;
+import com.benesquivelmusic.daw.core.mixer.snapshot.RecallSnapshotAction;
+import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
@@ -305,8 +307,24 @@ public final class MixerView extends VBox {
         if (snap == null) {
             return;
         }
-        manager.setActiveSlot(slot);
-        snapshotsPanel.recallSnapshot(snap);
+        MixerSnapshotManager.Slot previousSlot = manager.getActiveSlot();
+        RecallSnapshotAction recallAction = new RecallSnapshotAction(project.getMixer(), snap);
+        UndoableAction compound = new UndoableAction() {
+            @Override public String description() { return "Recall Mixer Snapshot (" + slot.name() + ")"; }
+            @Override public void execute() {
+                manager.setActiveSlot(slot);
+                recallAction.execute();
+            }
+            @Override public void undo() {
+                recallAction.undo();
+                manager.setActiveSlot(previousSlot);
+            }
+        };
+        if (undoManager != null) {
+            undoManager.execute(compound);
+        } else {
+            compound.execute();
+        }
         syncSlotButtons();
     }
 
@@ -317,14 +335,32 @@ public final class MixerView extends VBox {
      */
     public void toggleAB() {
         MixerSnapshotManager manager = project.getMixerSnapshotManager();
+        MixerSnapshotManager.Slot previous = manager.getActiveSlot();
         MixerSnapshotManager.Slot next =
-                (manager.getActiveSlot() == MixerSnapshotManager.Slot.A)
+                (previous == MixerSnapshotManager.Slot.A)
                         ? MixerSnapshotManager.Slot.B
                         : MixerSnapshotManager.Slot.A;
         MixerSnapshot snap = manager.getSlot(next);
-        manager.setActiveSlot(next);
         if (snap != null) {
-            snapshotsPanel.recallSnapshot(snap);
+            RecallSnapshotAction recallAction = new RecallSnapshotAction(project.getMixer(), snap);
+            UndoableAction compound = new UndoableAction() {
+                @Override public String description() { return "Toggle Mixer A/B"; }
+                @Override public void execute() {
+                    manager.setActiveSlot(next);
+                    recallAction.execute();
+                }
+                @Override public void undo() {
+                    recallAction.undo();
+                    manager.setActiveSlot(previous);
+                }
+            };
+            if (undoManager != null) {
+                undoManager.execute(compound);
+            } else {
+                compound.execute();
+            }
+        } else {
+            manager.setActiveSlot(next);
         }
         syncSlotButtons();
     }
@@ -338,16 +374,10 @@ public final class MixerView extends VBox {
 
     private static void applySlotButtonStyle(Button btn, boolean active, boolean filled) {
         btn.getStyleClass().removeAll("mixer-slot-active", "mixer-slot-filled");
-        if (filled) {
-            btn.getStyleClass().add("mixer-slot-filled");
-        }
         if (active) {
             btn.getStyleClass().add("mixer-slot-active");
-            btn.setStyle("-fx-background-color: #ffaa00; -fx-text-fill: black; -fx-font-weight: bold;");
         } else if (filled) {
-            btn.setStyle("-fx-background-color: #444; -fx-text-fill: white;");
-        } else {
-            btn.setStyle("");
+            btn.getStyleClass().add("mixer-slot-filled");
         }
     }
 
