@@ -567,17 +567,18 @@ public final class MixerView extends VBox {
         // ── VCA strips (right of master, story 153) ──────────────────────
         vcaStrips.getChildren().clear();
         VcaGroupManager vcaManager = project.getVcaGroupManager();
-        // Resolve a member-channel UUID to a MixerChannel by matching the
-        // track id (UUID-formatted string) — same id used as the drag-payload
-        // and as the VCA membership key.
-        java.util.function.Function<UUID, MixerChannel> channelLookup = id -> {
-            for (Track t : project.getTracks()) {
-                if (UUID.fromString(t.getId()).equals(id)) {
-                    return project.getMixerChannelForTrack(t);
-                }
+        // Precompute a UUID→MixerChannel map with safe parsing so VCA strips
+        // can resolve member channels without crashing on non-UUID track ids.
+        java.util.Map<UUID, MixerChannel> channelMap = new java.util.HashMap<>();
+        for (Track t : project.getTracks()) {
+            try {
+                channelMap.put(UUID.fromString(t.getId()),
+                        project.getMixerChannelForTrack(t));
+            } catch (IllegalArgumentException ignored) {
+                // non-UUID track id — skip
             }
-            return null;
-        };
+        }
+        java.util.function.Function<UUID, MixerChannel> channelLookup = channelMap::get;
         for (VcaGroup vca : vcaManager.getVcaGroups()) {
             vcaStrips.getChildren().add(new VcaStrip(
                     vca, vcaManager, undoManager, channelLookup, this::refresh));
@@ -1514,10 +1515,10 @@ public final class MixerView extends VBox {
 
     /**
      * Implements the issue's "select several channels → right-click → Create
-     * VCA" flow. Prompts for a name and a color from the {@link TrackColor}
-     * palette, then dispatches a {@link CreateVcaGroupAction} (with the seed
-     * members) through the {@link UndoManager}. Falls back to the
-     * right-clicked channel when nothing is multi-selected.
+     * VCA" flow. Prompts for a name, then auto-assigns a palette color and
+     * dispatches a {@link CreateVcaGroupAction} (with the seed members)
+     * through the {@link UndoManager}. Falls back to the right-clicked
+     * channel when nothing is multi-selected.
      */
     private void createVcaFromSelection(UUID rightClickedChannelId) {
         Set<UUID> seeds = new java.util.LinkedHashSet<>(selectedChannelIds);

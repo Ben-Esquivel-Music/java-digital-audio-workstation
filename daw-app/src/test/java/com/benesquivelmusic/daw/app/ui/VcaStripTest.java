@@ -46,7 +46,10 @@ class VcaStripTest {
                 latch.countDown();
             }
         });
-        latch.await(5, TimeUnit.SECONDS);
+        boolean completed = latch.await(5, TimeUnit.SECONDS);
+        if (!completed) {
+            throw new AssertionError("FX task did not complete within 5 seconds");
+        }
         if (err.get() != null) throw new RuntimeException(err.get());
         return ref.get();
     }

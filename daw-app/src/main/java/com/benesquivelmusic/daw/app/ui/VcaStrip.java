@@ -123,12 +123,14 @@ public final class VcaStrip extends VBox {
         nameField.setTooltip(new Tooltip("VCA name (Enter to apply)"));
         Runnable applyName = () -> {
             String newName = nameField.getText();
+            VcaGroup current = manager.getById(group.id());
+            if (current == null) return;
             if (newName != null && !newName.isBlank()
-                    && !newName.equals(group.label())) {
-                manager.replace(group.withLabel(newName));
+                    && !newName.equals(current.label())) {
+                manager.replace(current.withLabel(newName));
                 onChange.run();
             } else {
-                nameField.setText(group.label());
+                nameField.setText(current.label());
             }
         };
         nameField.setOnAction(_ -> applyName.run());
@@ -146,11 +148,13 @@ public final class VcaStrip extends VBox {
         colorPicker.setOnAction(_ -> {
             Color picked = colorPicker.getValue();
             if (picked == null) return;
+            VcaGroup current = manager.getById(group.id());
+            if (current == null) return;
             String hex = String.format("#%02X%02X%02X",
                     (int) Math.round(picked.getRed() * 255),
                     (int) Math.round(picked.getGreen() * 255),
                     (int) Math.round(picked.getBlue() * 255));
-            manager.replace(group.withColor(TrackColor.custom(hex, "VCA")));
+            manager.replace(current.withColor(TrackColor.custom(hex, "VCA")));
             onChange.run();
         });
 
@@ -294,7 +298,9 @@ public final class VcaStrip extends VBox {
             if (payload instanceof String s) {
                 try {
                     UUID channelId = UUID.fromString(s);
-                    boolean alreadyMember = group.hasMember(channelId);
+                    VcaGroup current = manager.getById(group.id());
+                    if (current == null) { event.setDropCompleted(false); event.consume(); return; }
+                    boolean alreadyMember = current.hasMember(channelId);
                     AssignVcaMemberAction action = new AssignVcaMemberAction(
                             manager, group.id(), channelId, !alreadyMember);
                     if (undoManager != null) {
