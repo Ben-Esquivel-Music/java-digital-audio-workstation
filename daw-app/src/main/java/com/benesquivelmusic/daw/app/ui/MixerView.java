@@ -35,7 +35,6 @@ import javafx.scene.paint.Color;
 import javafx.scene.shape.Circle;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -208,6 +207,19 @@ public final class MixerView extends VBox {
             }
         };
         project.getChannelLinkManager().addListener(this.channelLinkListener);
+
+        // Auto-unregister listeners when this view is removed from a scene
+        // so a replaced MixerView (e.g. on project reload via
+        // ViewNavigationController.setMixerView) does not stay strongly
+        // referenced by ChannelLinkManager or UndoManager (memory-leak fix).
+        sceneProperty().addListener((_, _, newScene) -> {
+            if (newScene == null) {
+                project.getChannelLinkManager().removeListener(channelLinkListener);
+                if (undoManager != null) {
+                    undoManager.removeHistoryListener(undoHistoryListener);
+                }
+            }
+        });
 
         Label header = new Label("MIXER");
         header.getStyleClass().add("panel-header");
@@ -806,13 +818,14 @@ public final class MixerView extends VBox {
 
         // ── L / R badge for a member of a stereo pair (Story 159) ─────────
         // The chain-link manager owns the (left, right) ordering — render
-        // a single-letter badge so the engineer can see at a glance which
-        // strip is the source / mirrored side of the pair.
+        // a single-letter badge under the strip name so the engineer can
+        // see at a glance which strip is the source / mirrored side.
+        Label lrBadge = null;
         if (channelId != null) {
             ChannelLink existingLink = project.getChannelLinkManager().getLink(channelId);
             if (existingLink != null) {
                 boolean isLeft = existingLink.leftChannelId().equals(channelId);
-                Label lrBadge = new Label(isLeft ? "L" : "R");
+                lrBadge = new Label(isLeft ? "L" : "R");
                 lrBadge.getStyleClass().add("mixer-channel-link-badge");
                 lrBadge.setStyle("-fx-background-color: #00bcd4;"
                         + " -fx-text-fill: #0d0d0d;"
@@ -820,7 +833,6 @@ public final class MixerView extends VBox {
                         + " -fx-padding: 0 4 0 4;"
                         + " -fx-font-size: 9px;"
                         + " -fx-background-radius: 3;");
-                strip.getChildren().add(lrBadge);
             }
         }
 
@@ -1149,6 +1161,12 @@ public final class MixerView extends VBox {
                 insertRack, latencyLabel, meterRow, volumeFader,
                 panLabel, panSlider, buttonRow, pannerBtn,
                 sendBox, sendLabel, sendSlider);
+        // L/R badge is inserted after nameLabel so it renders *under* the
+        // channel name rather than above it (Story 159).
+        if (lrBadge != null) {
+            strip.getChildren().add(
+                    strip.getChildren().indexOf(nameLabel) + 1, lrBadge);
+        }
 
         return strip;
     }
@@ -1729,8 +1747,7 @@ public final class MixerView extends VBox {
 
     /**
      * Builds the chain-glyph link toggle node spliced between two adjacent
-     * channel strips. Public package access so tests can locate the toggle
-     * without traversing rendered scene geometry.
+     * channel strips.
      */
     private Node buildLinkToggle(UUID leftId, UUID rightId, ChannelLinkManager linkManager) {
         ChannelLink existing = (leftId != null && rightId != null)
