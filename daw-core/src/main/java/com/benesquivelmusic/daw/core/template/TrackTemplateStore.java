@@ -189,8 +189,15 @@ public final class TrackTemplateStore {
      * Replaces filesystem-unsafe characters with underscores. The sanitized
      * form is used only for filenames; the authoritative display name lives
      * inside the XML document.
+     *
+     * <p>Exposed as {@code public} so UI code (and tests) can compute the
+     * on-disk file path for a template/preset by name — used, for example,
+     * by the {@code TrackTemplateBrowser} delete action.</p>
+     *
+     * @param name the display name of a template or preset
+     * @return a filesystem-safe version of {@code name}, never blank
      */
-    static String sanitizeFileName(String name) {
+    public static String sanitizeFileName(String name) {
         String trimmed = name.trim();
         if (trimmed.isEmpty()) {
             return "untitled";
