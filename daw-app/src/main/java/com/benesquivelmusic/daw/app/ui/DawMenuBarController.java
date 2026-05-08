@@ -85,6 +85,11 @@ public final class DawMenuBarController {
         // Story 100 — track templates and channel-strip presets
         void onAddTrackFromTemplate();
         void onManageTemplates();
+        // Story 035 — Track Freeze and Unfreeze for CPU Management
+        void onFreezeFocusedTrack();
+        void onUnfreezeFocusedTrack();
+        void onFreezeSelectedTracks();
+        void onUnfreezeSelectedTracks();
 
         // Help actions
         void onHelp();

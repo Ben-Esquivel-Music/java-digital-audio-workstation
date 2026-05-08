@@ -84,6 +84,14 @@ final class KeyboardShortcutController {
         void onToggleFoldSelectedTracks();
         /** Master "Fold all automation" toggle (Issue 568). */
         void onFoldAllAutomation();
+        /** Story 035 — Freeze the focused track. Default no-op. */
+        default void onFreezeFocusedTrack() { }
+        /** Story 035 — Unfreeze the focused track. Default no-op. */
+        default void onUnfreezeFocusedTrack() { }
+        /** Story 035 — Freeze every track currently in the selection. Default no-op. */
+        default void onFreezeSelectedTracks() { }
+        /** Story 035 — Unfreeze every track currently in the selection. Default no-op. */
+        default void onUnfreezeSelectedTracks() { }
         /**
          * Toggle the searchable Command Palette. Bound to {@code Ctrl+K} via
          * {@link DawAction#OPEN_COMMAND_PALETTE} and to a fixed
@@ -196,6 +204,11 @@ final class KeyboardShortcutController {
         actionHandlers.put(DawAction.TOGGLE_FOLD_FOCUSED_TRACK, host::onToggleFoldFocusedTrack);
         actionHandlers.put(DawAction.TOGGLE_FOLD_SELECTED_TRACKS, host::onToggleFoldSelectedTracks);
         actionHandlers.put(DawAction.FOLD_ALL_AUTOMATION, host::onFoldAllAutomation);
+        // Story 035 — Track Freeze and Unfreeze for CPU Management
+        actionHandlers.put(DawAction.FREEZE_FOCUSED_TRACK, host::onFreezeFocusedTrack);
+        actionHandlers.put(DawAction.UNFREEZE_FOCUSED_TRACK, host::onUnfreezeFocusedTrack);
+        actionHandlers.put(DawAction.FREEZE_SELECTED_TRACKS, host::onFreezeSelectedTracks);
+        actionHandlers.put(DawAction.UNFREEZE_SELECTED_TRACKS, host::onUnfreezeSelectedTracks);
         actionHandlers.put(DawAction.OPEN_COMMAND_PALETTE, host::onToggleCommandPalette);
         // ── Dockable panels (Resizable and Detachable Dockable Panels) ────────
         actionHandlers.put(DawAction.TOGGLE_DOCK_MIXER, host::onToggleDockMixer);

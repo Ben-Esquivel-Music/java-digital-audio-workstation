@@ -156,6 +156,13 @@ public final class MainController {
      * through the undo manager so user-facing workflows are reversible.
      */
     private TrackTemplateController trackTemplateController;
+    /**
+     * Story 035 — Track Freeze and Unfreeze for CPU Management. Wires
+     * the per-track ❄ snowflake glyph, the Tracks menu freeze entries,
+     * the right-click context menus, and the modeless task-progress
+     * indicator that appears during the offline render.
+     */
+    private TrackFreezeController trackFreezeController;
 
     private ArrangementCanvas arrangementCanvas;
     private ClipInteractionController clipInteractionController;
@@ -273,6 +280,15 @@ public final class MainController {
         }
         viewNavigationController.getMixerView()
                 .setTrackTemplateController(trackTemplateController);
+        // Story 035 — wire the per-track freeze workflow into the track
+        // strip context menu, the mixer channel context menu, and the
+        // Tracks menu before the menu bar is constructed below.
+        createTrackFreezeController();
+        if (trackStripController != null) {
+            trackStripController.setTrackFreezeController(trackFreezeController);
+        }
+        viewNavigationController.getMixerView()
+                .setTrackFreezeController(trackFreezeController);
         createArrangementCanvas();
         viewNavigationController.setOnEditToolChanged(() -> {
             if (clipInteractionController != null) clipInteractionController.updateCursor();
@@ -683,6 +699,46 @@ public final class MainController {
                 });
     }
 
+    /**
+     * Story 035 — Track Freeze and Unfreeze for CPU Management.
+     *
+     * <p>Builds the {@link TrackFreezeController} that backs every
+     * freeze/unfreeze entry-point in the application: the Tracks menu,
+     * the Track List right-click menu, and the mixer channel context
+     * menu. Refresh callbacks rebuild the affected track strip and
+     * mixer channel so the ❄ snowflake glyph reflects the current
+     * frozen state of every track.</p>
+     */
+    private void createTrackFreezeController() {
+        trackFreezeController = new TrackFreezeController(
+                project,
+                undoManager,
+                rootPane.getScene() != null ? rootPane.getScene().getWindow() : null,
+                track -> {
+                    // Single-track callback: refresh the affected strip
+                    // and the corresponding mixer channel so the ❄
+                    // glyph appears/disappears immediately.
+                    if (trackStripController != null) {
+                        trackStripController.refreshFreezeIndicator(track);
+                    }
+                    if (viewNavigationController != null) {
+                        viewNavigationController.getMixerView().refresh();
+                    }
+                    projectDirty = true;
+                },
+                () -> {
+                    // Batch callback: refresh every strip plus the mixer.
+                    if (trackStripController != null) {
+                        trackStripController.refreshAllFreezeIndicators();
+                    }
+                    if (viewNavigationController != null) {
+                        viewNavigationController.getMixerView().refresh();
+                    }
+                    projectDirty = true;
+                },
+                this::status);
+    }
+
     private void createHistoryPanelController() {
         historyPanelController = new HistoryPanelController(
                 rootPane, historyButton, notificationHistoryService,
@@ -753,6 +809,10 @@ public final class MainController {
                     @Override public void onToggleFoldFocusedTrack() { MainController.this.onToggleFoldFocusedTrack(); }
                     @Override public void onToggleFoldSelectedTracks() { MainController.this.onToggleFoldSelectedTracks(); }
                     @Override public void onFoldAllAutomation() { MainController.this.onFoldAllAutomation(); }
+                    @Override public void onFreezeFocusedTrack() { MainController.this.onFreezeFocusedTrack(); }
+                    @Override public void onUnfreezeFocusedTrack() { MainController.this.onUnfreezeFocusedTrack(); }
+                    @Override public void onFreezeSelectedTracks() { MainController.this.onFreezeSelectedTracks(); }
+                    @Override public void onUnfreezeSelectedTracks() { MainController.this.onUnfreezeSelectedTracks(); }
                     @Override public void onToggleCommandPalette() {
                         if (commandPaletteView != null) commandPaletteView.toggle();
                     }
@@ -992,6 +1052,10 @@ public final class MainController {
                             trackTemplateController.openManager();
                         }
                     }
+                    @Override public void onFreezeFocusedTrack() { MainController.this.onFreezeFocusedTrack(); }
+                    @Override public void onUnfreezeFocusedTrack() { MainController.this.onUnfreezeFocusedTrack(); }
+                    @Override public void onFreezeSelectedTracks() { MainController.this.onFreezeSelectedTracks(); }
+                    @Override public void onUnfreezeSelectedTracks() { MainController.this.onUnfreezeSelectedTracks(); }
                     @Override public void onHelp() { MainController.this.onHelp(); }
                 },
                 keyBindingManager);
@@ -1233,6 +1297,51 @@ public final class MainController {
         arrangementCanvas.toggleFoldAllAutomation();
         status("Toggled fold for all automation lanes", DawIcon.AUTOMATION);
         projectDirty = true;
+    }
+
+    // ── Track Freeze and Unfreeze (Story 035) ──────────────────────────────
+    // Per-track and batch entry-points wired to the Tracks menu, the
+    // Track List right-click menu, and the mixer channel context menu.
+    // Each routes through TrackFreezeController which performs the
+    // offline render on a virtual thread, surfaces a modeless
+    // TaskProgressIndicator, and registers a single undo step.
+
+    private void onFreezeFocusedTrack() {
+        if (trackFreezeController == null) return;
+        trackFreezeController.freezeTrack(selectionModel.getFocusedTrack());
+    }
+
+    private void onUnfreezeFocusedTrack() {
+        if (trackFreezeController == null) return;
+        trackFreezeController.unfreezeTrack(selectionModel.getFocusedTrack());
+    }
+
+    private void onFreezeSelectedTracks() {
+        if (trackFreezeController == null) return;
+        var tracks = selectionModel.getTracksInClipSelection();
+        if (tracks.isEmpty()) {
+            // Fall back to the focused track if there is no multi-track
+            // selection so the menu entry is never silently a no-op.
+            Track focused = selectionModel.getFocusedTrack();
+            if (focused != null) {
+                trackFreezeController.freezeTrack(focused);
+                return;
+            }
+        }
+        trackFreezeController.freezeTracks(tracks);
+    }
+
+    private void onUnfreezeSelectedTracks() {
+        if (trackFreezeController == null) return;
+        var tracks = selectionModel.getTracksInClipSelection();
+        if (tracks.isEmpty()) {
+            Track focused = selectionModel.getFocusedTrack();
+            if (focused != null) {
+                trackFreezeController.unfreezeTrack(focused);
+                return;
+            }
+        }
+        trackFreezeController.unfreezeTracks(tracks);
     }
 
     @FXML private void onSaveProject() {

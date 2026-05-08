@@ -123,6 +123,11 @@ class DawMenuBarControllerTest {
         int manageTemplatesCalls;
         @Override public void onAddTrackFromTemplate() { addTrackFromTemplateCalls++; }
         @Override public void onManageTemplates() { manageTemplatesCalls++; }
+        // Story 035 — freeze entries (not exercised in these structural tests)
+        @Override public void onFreezeFocusedTrack() { /* not used */ }
+        @Override public void onUnfreezeFocusedTrack() { /* not used */ }
+        @Override public void onFreezeSelectedTracks() { /* not used */ }
+        @Override public void onUnfreezeSelectedTracks() { /* not used */ }
         @Override public void onHelp() { helpCalls++; }
     }
 

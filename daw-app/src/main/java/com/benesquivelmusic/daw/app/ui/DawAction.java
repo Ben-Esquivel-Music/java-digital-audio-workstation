@@ -124,6 +124,15 @@ public enum DawAction {
             new KeyCodeCombination(KeyCode.F, KeyCombination.SHIFT_DOWN, KeyCombination.ALT_DOWN)),
     FOLD_ALL_AUTOMATION("Toggle Fold All Automation Lanes", Category.TRACKS,
             new KeyCodeCombination(KeyCode.F, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
+    // ── Track Freeze and Unfreeze (Story 035) ───────────────────────────────
+    // Per-track and batch freeze/unfreeze, accessible via the Tracks menu,
+    // the Track List right-click menu, and the mixer channel context menu.
+    // No default key bindings — users may bind them in Settings → Key
+    // Bindings or invoke them through the Command Palette.
+    FREEZE_FOCUSED_TRACK("Freeze Focused Track", Category.TRACKS, null),
+    UNFREEZE_FOCUSED_TRACK("Unfreeze Focused Track", Category.TRACKS, null),
+    FREEZE_SELECTED_TRACKS("Freeze All Selected Tracks", Category.TRACKS, null),
+    UNFREEZE_SELECTED_TRACKS("Unfreeze All Selected Tracks", Category.TRACKS, null),
 
     // ── Edit Tools ───────────────────────────────────────────────────────────
     TOOL_POINTER("Pointer Tool", Category.TOOLS,
