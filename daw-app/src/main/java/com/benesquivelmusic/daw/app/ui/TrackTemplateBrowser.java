@@ -64,6 +64,7 @@ public final class TrackTemplateBrowser extends Dialog<ButtonType> {
     public enum InitialTab { TEMPLATES, PRESETS }
 
     private final TrackTemplateController controller;
+    private final boolean restrictedToSingleTab;
 
     private final ListView<TrackTemplate> templateList = new ListView<>();
     private final ListView<ChannelStripPreset> presetList = new ListView<>();
@@ -79,13 +80,28 @@ public final class TrackTemplateBrowser extends Dialog<ButtonType> {
 
     /**
      * Creates a browser bound to the given controller (used for store
-     * access and notifications).
+     * access and notifications). Both tabs are shown.
      *
      * @param controller the owning controller
      * @param initialTab the tab to show on open
      */
     public TrackTemplateBrowser(TrackTemplateController controller, InitialTab initialTab) {
+        this(controller, initialTab, false);
+    }
+
+    /**
+     * Creates a browser bound to the given controller.
+     *
+     * @param controller           the owning controller
+     * @param initialTab           the tab to show on open
+     * @param restrictToInitialTab when {@code true} only the initial tab is
+     *                             shown — the other tab is hidden so users
+     *                             cannot Insert the wrong selection type
+     */
+    public TrackTemplateBrowser(TrackTemplateController controller, InitialTab initialTab,
+                                boolean restrictToInitialTab) {
         this.controller = Objects.requireNonNull(controller, "controller must not be null");
+        this.restrictedToSingleTab = restrictToInitialTab;
         Objects.requireNonNull(initialTab, "initialTab must not be null");
 
         setTitle("Templates and Presets");
@@ -99,6 +115,17 @@ public final class TrackTemplateBrowser extends Dialog<ButtonType> {
                 buildTab(presetList, presetPreview, false));
         presetsTab.setClosable(false);
         tabPane.getTabs().addAll(templatesTab, presetsTab);
+
+        // When restricted to a single tab (e.g. "Add Track from Template"
+        // or "Apply Channel Strip Preset" workflows), hide the other tab
+        // so users cannot Insert the wrong selection type.
+        if (restrictToInitialTab) {
+            if (initialTab == InitialTab.TEMPLATES) {
+                tabPane.getTabs().remove(presetsTab);
+            } else {
+                tabPane.getTabs().remove(templatesTab);
+            }
+        }
 
         DialogPane pane = getDialogPane();
         VBox content = new VBox(8, tabPane);

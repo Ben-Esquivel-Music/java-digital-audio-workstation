@@ -79,6 +79,7 @@ public final class TrackTemplateController {
 
     private final Host host;
     private final Supplier<TrackTemplateStore> storeSupplier;
+    private volatile TrackTemplateStore cachedStore;
 
     /**
      * Creates a controller backed by the user's default template store
@@ -102,9 +103,17 @@ public final class TrackTemplateController {
         this.storeSupplier = Objects.requireNonNull(storeSupplier, "storeSupplier must not be null");
     }
 
-    /** Returns the underlying store (loaded lazily). */
+    /**
+     * Returns the underlying store, creating it on first access and
+     * caching the result so subsequent calls return the same instance.
+     */
     public TrackTemplateStore store() {
-        return storeSupplier.get();
+        TrackTemplateStore s = cachedStore;
+        if (s == null) {
+            s = storeSupplier.get();
+            cachedStore = s;
+        }
+        return s;
     }
 
     // ── Save flows ──────────────────────────────────────────────────────────
@@ -175,7 +184,7 @@ public final class TrackTemplateController {
      * {@link AddTrackFromTemplateAction} is run through the undo manager.
      */
     public void addTrackFromTemplate() {
-        TrackTemplateBrowser browser = openBrowser(TrackTemplateBrowser.InitialTab.TEMPLATES);
+        TrackTemplateBrowser browser = openBrowser(TrackTemplateBrowser.InitialTab.TEMPLATES, true);
         TrackTemplate template = browser.getSelectedTemplate();
         if (template == null) {
             return;
@@ -203,7 +212,7 @@ public final class TrackTemplateController {
      */
     public void applyChannelStripPreset(MixerChannel channel) {
         Objects.requireNonNull(channel, "channel must not be null");
-        TrackTemplateBrowser browser = openBrowser(TrackTemplateBrowser.InitialTab.PRESETS);
+        TrackTemplateBrowser browser = openBrowser(TrackTemplateBrowser.InitialTab.PRESETS, true);
         ChannelStripPreset preset = browser.getSelectedPreset();
         if (preset == null) {
             return;
@@ -246,7 +255,7 @@ public final class TrackTemplateController {
      * happens — selection is informational.
      */
     public void openManager() {
-        openBrowser(TrackTemplateBrowser.InitialTab.TEMPLATES);
+        openBrowser(TrackTemplateBrowser.InitialTab.TEMPLATES, false);
     }
 
     // ── Loading helpers (also used by the browser) ──────────────────────────
@@ -277,8 +286,9 @@ public final class TrackTemplateController {
 
     // ── internals ───────────────────────────────────────────────────────────
 
-    private TrackTemplateBrowser openBrowser(TrackTemplateBrowser.InitialTab initialTab) {
-        TrackTemplateBrowser browser = new TrackTemplateBrowser(this, initialTab);
+    private TrackTemplateBrowser openBrowser(TrackTemplateBrowser.InitialTab initialTab,
+                                             boolean restrictToTab) {
+        TrackTemplateBrowser browser = new TrackTemplateBrowser(this, initialTab, restrictToTab);
         if (host.window() != null) {
             browser.initOwner(host.window());
         }

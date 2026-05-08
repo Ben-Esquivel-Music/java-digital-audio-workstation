@@ -163,9 +163,12 @@ public final class TrackTemplateStore {
     // ── Deletion ─────────────────────────────────────────────────────────────
 
     /**
-     * Deletes the user-authored template whose embedded name matches the
-     * given name. The on-disk filename is derived via
-     * {@link #sanitizeFileName(String)}.
+     * Deletes the user-authored template file whose filename is derived
+     * from the given display name via {@link #sanitizeFileName(String)}.
+     *
+     * <p><strong>Note:</strong> the lookup is filename-based, not by parsing
+     * the XML's embedded name. This means a template whose on-disk filename
+     * has been manually renamed outside of this store will not be found.</p>
      *
      * @param templateName the display name of the template to delete
      * @return {@code true} if a file was deleted, {@code false} if no
@@ -179,9 +182,12 @@ public final class TrackTemplateStore {
     }
 
     /**
-     * Deletes the user-authored preset whose embedded name matches the
-     * given name. The on-disk filename is derived via
-     * {@link #sanitizeFileName(String)}.
+     * Deletes the user-authored preset file whose filename is derived
+     * from the given display name via {@link #sanitizeFileName(String)}.
+     *
+     * <p><strong>Note:</strong> the lookup is filename-based, not by parsing
+     * the XML's embedded name. This means a preset whose on-disk filename
+     * has been manually renamed outside of this store will not be found.</p>
      *
      * @param presetName the display name of the preset to delete
      * @return {@code true} if a file was deleted, {@code false} if no

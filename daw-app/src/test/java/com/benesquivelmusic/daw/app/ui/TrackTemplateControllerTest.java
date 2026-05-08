@@ -43,6 +43,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class TrackTemplateControllerTest {
 
     private static <T> T runOnFxThread(java.util.concurrent.Callable<T> action) throws Exception {
+        if (Platform.isFxApplicationThread()) {
+            return action.call();
+        }
         AtomicReference<T> ref = new AtomicReference<>();
         AtomicReference<Throwable> err = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
@@ -193,8 +196,7 @@ class TrackTemplateControllerTest {
     }
 
     @Test
-    void browserConstructsWithTwoTabsAndInsertCloseButtons() throws Exception {
-        Path temp = Files.createTempDirectory("templateBrowserTest");
+    void browserConstructsWithTwoTabsAndInsertCloseButtons(@TempDir Path temp) throws Exception {
         DawProject project = new DawProject("Test", AudioFormat.STUDIO_QUALITY);
         TrackTemplateController controller = newController(project, new UndoManager(), temp);
 
