@@ -84,4 +84,33 @@ class VcaGroupActionsTest {
         unassign.undo();
         assertThat(manager.getById(drums.id()).hasMember(kick)).isTrue();
     }
+
+    @Test
+    void createVcaGroupActionAppliesColorAndPreservesAcrossUndoRedo() {
+        // The 4-arg (manager, name, color, members) constructor matches the
+        // call shape in the Story 153 issue: the right-click "Create VCA
+        // from selection" UX prompts for a name+color and dispatches this
+        // exact action through the UndoManager.
+        VcaGroupManager manager = new VcaGroupManager();
+        UUID kick = UUID.randomUUID();
+        com.benesquivelmusic.daw.core.track.TrackColor color =
+                com.benesquivelmusic.daw.core.track.TrackColor.MAGENTA;
+
+        CreateVcaGroupAction action = new CreateVcaGroupAction(
+                manager, "Drums", color, List.of(kick));
+        action.execute();
+
+        VcaGroup created = action.getGroup();
+        assertThat(created).isNotNull();
+        assertThat(created.color()).isEqualTo(color);
+        assertThat(created.memberChannelIds()).containsExactly(kick);
+
+        // Undo removes the group; redo restores it with the same id and color.
+        action.undo();
+        assertThat(manager.getVcaGroups()).isEmpty();
+        action.execute();
+        VcaGroup redone = manager.getById(created.id());
+        assertThat(redone).isNotNull();
+        assertThat(redone.color()).isEqualTo(color);
+    }
 }

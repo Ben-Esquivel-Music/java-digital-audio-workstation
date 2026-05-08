@@ -15,6 +15,7 @@ import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackColor;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.audio.AudioChannelInfo;
@@ -34,9 +35,12 @@ import javafx.scene.paint.Color;
 import javafx.scene.shape.Circle;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
 
 /**
  * A mixer view that displays all project tracks as vertical channel strips.
@@ -75,9 +79,18 @@ public final class MixerView extends VBox {
     private final UndoManager undoManager;
     private final HBox channelStrips;
     private final HBox returnBusStrips;
+    private final HBox vcaStrips;
     private final VBox masterStrip;
     private final List<InsertEffectRack> activeInsertRacks = new ArrayList<>();
     private final List<InputMeterStrip> activeInputMeterStrips = new ArrayList<>();
+    /**
+     * Channel UUIDs (track ids) currently selected via Ctrl/Shift-click on a
+     * channel strip. Used to seed the "Create VCA from selection" right-click
+     * menu so the engineer can create a VCA over several drum channels in one
+     * gesture, matching the issue's "select several channels → right-click →
+     * Create VCA" UX.
+     */
+    private final Set<UUID> selectedChannelIds = new HashSet<>();
     /**
      * Side panel listing saved mixer-scene snapshots (Story 103). Mounted
      * to the right of the channel strips; toggled via the "Snapshots"
@@ -229,6 +242,9 @@ public final class MixerView extends VBox {
         returnBusStrips = new HBox(6);
         returnBusStrips.setAlignment(Pos.TOP_LEFT);
 
+        vcaStrips = new HBox(6);
+        vcaStrips.setAlignment(Pos.TOP_LEFT);
+
         masterStrip = buildMasterStrip();
 
         HBox allStrips = new HBox(6);
@@ -238,7 +254,9 @@ public final class MixerView extends VBox {
                 new Separator(Orientation.VERTICAL),
                 returnBusStrips,
                 new Separator(Orientation.VERTICAL),
-                masterStrip);
+                masterStrip,
+                new Separator(Orientation.VERTICAL),
+                vcaStrips);
         HBox.setHgrow(channelStrips, Priority.ALWAYS);
 
         ScrollPane scrollPane = new ScrollPane(allStrips);
@@ -482,6 +500,19 @@ public final class MixerView extends VBox {
      * keep the mixer view synchronized with the project model.</p>
      */
     public void refresh() {
+        // Drop any stale selections referencing tracks that no longer exist
+        // so right-click "Create VCA from selection" can't pick up phantoms
+        // after a track removal.
+        Set<UUID> liveIds = new HashSet<>();
+        for (Track t : project.getTracks()) {
+            try {
+                liveIds.add(UUID.fromString(t.getId()));
+            } catch (IllegalArgumentException ignored) {
+                // non-UUID id — skip
+            }
+        }
+        selectedChannelIds.retainAll(liveIds);
+
         // Drop any stale solo-safe sync callbacks left over from the
         // previous build of strips so we don't poke discarded widgets.
         soloSafeSyncCallbacks.clear();
@@ -532,6 +563,33 @@ public final class MixerView extends VBox {
             refresh();
         });
         returnBusStrips.getChildren().add(addReturnBusBtn);
+
+        // ── VCA strips (right of master, story 153) ──────────────────────
+        vcaStrips.getChildren().clear();
+        VcaGroupManager vcaManager = project.getVcaGroupManager();
+        // Precompute a UUID→MixerChannel map with safe parsing so VCA strips
+        // can resolve member channels without crashing on non-UUID track ids.
+        java.util.Map<UUID, MixerChannel> channelMap = new java.util.HashMap<>();
+        for (Track t : project.getTracks()) {
+            try {
+                channelMap.put(UUID.fromString(t.getId()),
+                        project.getMixerChannelForTrack(t));
+            } catch (IllegalArgumentException ignored) {
+                // non-UUID track id — skip
+            }
+        }
+        java.util.function.Function<UUID, MixerChannel> channelLookup = channelMap::get;
+        for (VcaGroup vca : vcaManager.getVcaGroups()) {
+            vcaStrips.getChildren().add(new VcaStrip(
+                    vca, vcaManager, undoManager, channelLookup, this::refresh));
+        }
+    }
+
+    /**
+     * Returns the container holding the VCA group strips. Visible for testing.
+     */
+    HBox getVcaStrips() {
+        return vcaStrips;
     }
 
     /**
@@ -563,6 +621,108 @@ public final class MixerView extends VBox {
         strip.setAlignment(Pos.TOP_CENTER);
         strip.setPrefWidth(CHANNEL_WIDTH);
         strip.setMinWidth(CHANNEL_WIDTH);
+
+        // The channel-id used by VCA membership and drag/drop is the track's
+        // own UUID (its id is a UUID-formatted string per Track.java). Parse
+        // once up front; if the id is not a UUID (forged test fixture) the
+        // VCA wiring is skipped but the rest of the strip still renders.
+        UUID parsedId = null;
+        try {
+            parsedId = UUID.fromString(track.getId());
+        } catch (IllegalArgumentException ignored) {
+            // skip VCA wiring for non-UUID ids
+        }
+        final UUID channelId = parsedId;
+
+        if (channelId != null) {
+            applyChannelStripSelectionStyle(strip, channelId);
+        }
+
+        // ── Member-VCA badge(s) at the top of the strip ───────────────────
+        // Story 153: a small "VCA: <name>" label per group the channel is
+        // currently a member of. Background uses the VCA's color so the user
+        // can see at a glance which VCA(s) are riding this channel.
+        VcaGroupManager vcaMgr = project.getVcaGroupManager();
+        if (channelId != null) {
+            List<VcaGroup> memberOf = vcaMgr.getGroupsForChannel(channelId);
+            if (!memberOf.isEmpty()) {
+                VBox badges = new VBox(1);
+                badges.setAlignment(Pos.CENTER);
+                for (VcaGroup g : memberOf) {
+                    Label badge = new Label("VCA: " + g.label());
+                    badge.getStyleClass().add("mixer-channel-name");
+                    String hex = g.color() != null ? g.color().getHexColor() : "#9c27b0";
+                    badge.setStyle("-fx-background-color: " + hex + ";"
+                            + " -fx-text-fill: #ffffff; -fx-padding: 1 4 1 4;"
+                            + " -fx-font-size: 9px; -fx-background-radius: 3;");
+                    badge.setMaxWidth(CHANNEL_WIDTH - 12);
+                    badges.getChildren().add(badge);
+                }
+                strip.getChildren().add(badges);
+            }
+        }
+
+        // ── Click selection (Ctrl/Shift toggles, plain click selects only) ─
+        if (channelId != null) {
+            strip.setOnMouseClicked(e -> {
+                if (e.getButton() != javafx.scene.input.MouseButton.PRIMARY) return;
+                if (e.isShiftDown() || e.isControlDown() || e.isMetaDown()) {
+                    if (!selectedChannelIds.add(channelId)) {
+                        selectedChannelIds.remove(channelId);
+                    }
+                } else {
+                    selectedChannelIds.clear();
+                    selectedChannelIds.add(channelId);
+                }
+                // Cheap restyle of every visible channel strip — no full refresh.
+                for (Node n : channelStrips.getChildren()) {
+                    if (n instanceof VBox box && box.getUserData() instanceof UUID id) {
+                        applyChannelStripSelectionStyle(box, id);
+                    }
+                }
+            });
+            strip.setUserData(channelId);
+
+            // ── Drag source: publishes the channel id so VCA strips can assign ─
+            strip.setOnDragDetected(event -> {
+                javafx.scene.input.Dragboard db =
+                        strip.startDragAndDrop(javafx.scene.input.TransferMode.LINK);
+                javafx.scene.input.ClipboardContent content =
+                        new javafx.scene.input.ClipboardContent();
+                content.put(VcaStrip.CHANNEL_ID_FORMAT, channelId.toString());
+                content.putString(track.getName());
+                db.setContent(content);
+                event.consume();
+            });
+
+            // ── Right-click "Create VCA from selection" + assign submenu ───
+            ContextMenu stripMenu = new ContextMenu();
+            MenuItem createVcaItem = new MenuItem("Create VCA from selection");
+            createVcaItem.setOnAction(_ -> createVcaFromSelection(channelId));
+            stripMenu.getItems().add(createVcaItem);
+            if (!vcaMgr.getVcaGroups().isEmpty()) {
+                javafx.scene.control.Menu assignMenu =
+                        new javafx.scene.control.Menu("Assign to VCA");
+                for (VcaGroup g : vcaMgr.getVcaGroups()) {
+                    boolean already = g.hasMember(channelId);
+                    MenuItem item = new MenuItem((already ? "✓ " : "") + g.label());
+                    item.setOnAction(_ -> {
+                        AssignVcaMemberAction action = new AssignVcaMemberAction(
+                                vcaMgr, g.id(), channelId, !already);
+                        if (undoManager != null) {
+                            undoManager.execute(action);
+                        } else {
+                            action.execute();
+                        }
+                        refresh();
+                    });
+                    assignMenu.getItems().add(item);
+                }
+                stripMenu.getItems().add(assignMenu);
+            }
+            strip.setOnContextMenuRequested(e ->
+                    stripMenu.show(strip, e.getScreenX(), e.getScreenY()));
+        }
 
         // Channel name
         Label nameLabel = new Label(track.getName());
@@ -1335,5 +1495,68 @@ public final class MixerView extends VBox {
         for (Runnable r : soloSafeSyncCallbacks) {
             r.run();
         }
+    }
+
+    // ── VCA helpers (story 153) ────────────────────────────────────────────
+
+    /**
+     * Highlights a channel strip when it is part of the current
+     * {@link #selectedChannelIds} multi-selection. Used as a cheap restyle
+     * after Ctrl/Shift-click instead of a full {@link #refresh()}.
+     */
+    private void applyChannelStripSelectionStyle(VBox strip, UUID channelId) {
+        if (selectedChannelIds.contains(channelId)) {
+            strip.setStyle("-fx-background-color: rgba(124, 77, 255, 0.18);"
+                    + " -fx-border-color: #7c4dff; -fx-border-width: 2;");
+        } else {
+            strip.setStyle("");
+        }
+    }
+
+    /**
+     * Implements the issue's "select several channels → right-click → Create
+     * VCA" flow. Prompts for a name, then auto-assigns a palette color and
+     * dispatches a {@link CreateVcaGroupAction} (with the seed members)
+     * through the {@link UndoManager}. Falls back to the right-clicked
+     * channel when nothing is multi-selected.
+     */
+    private void createVcaFromSelection(UUID rightClickedChannelId) {
+        Set<UUID> seeds = new java.util.LinkedHashSet<>(selectedChannelIds);
+        if (seeds.isEmpty()) {
+            seeds.add(rightClickedChannelId);
+        } else if (!seeds.contains(rightClickedChannelId)) {
+            // The user right-clicked a strip that isn't in the selection —
+            // honor the right-click target as the primary intent and add it
+            // to the seeds so it doesn't get silently excluded.
+            seeds.add(rightClickedChannelId);
+        }
+
+        TextInputDialog nameDialog = new TextInputDialog("VCA " +
+                (project.getVcaGroupManager().getVcaGroups().size() + 1));
+        nameDialog.setTitle("Create VCA");
+        nameDialog.setHeaderText("Name the new VCA group");
+        nameDialog.setContentText("Name:");
+        Optional<String> result = nameDialog.showAndWait();
+        if (result.isEmpty() || result.get().isBlank()) {
+            return;
+        }
+        String name = result.get().trim();
+
+        // Auto-pick a palette color so the user gets a visible swatch
+        // immediately; they can always change it via the strip's color
+        // picker later. Cycling through the 16-color palette mirrors the
+        // automatic track-color rotation used by DawProject.
+        TrackColor color = TrackColor.fromPaletteIndex(
+                project.getVcaGroupManager().getVcaGroups().size());
+
+        CreateVcaGroupAction action = new CreateVcaGroupAction(
+                project.getVcaGroupManager(), name, color, new ArrayList<>(seeds));
+        if (undoManager != null) {
+            undoManager.execute(action);
+        } else {
+            action.execute();
+        }
+        selectedChannelIds.clear();
+        refresh();
     }
 }

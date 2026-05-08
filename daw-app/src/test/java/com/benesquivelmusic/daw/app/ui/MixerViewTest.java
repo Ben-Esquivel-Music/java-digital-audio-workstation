@@ -125,4 +125,51 @@ class MixerViewTest {
         runOnFxThread(view::refresh);
         assertThat(view.getChannelStrips().getChildren()).hasSize(4);
     }
+
+    // ── VCA strips (story 153) ────────────────────────────────────────────
+
+    @Test
+    void shouldRenderVcaStripsAfterMaster() throws Exception {
+        DawProject project = new DawProject("Test",
+                com.benesquivelmusic.daw.core.audio.AudioFormat.CD_QUALITY);
+        project.getVcaGroupManager().createVcaGroup("Drums");
+        project.getVcaGroupManager().createVcaGroup("Vox");
+
+        MixerView view = createOnFxThread(project);
+
+        assertThat(view.getVcaStrips().getChildren()).hasSize(2);
+        assertThat(view.getVcaStrips().getChildren().get(0))
+                .isInstanceOf(VcaStrip.class);
+        assertThat(((VcaStrip) view.getVcaStrips().getChildren().get(0))
+                .getGroup().label()).isEqualTo("Drums");
+    }
+
+    @Test
+    void shouldAddVcaStripWhenManagerGainsGroup() throws Exception {
+        DawProject project = new DawProject("Test",
+                com.benesquivelmusic.daw.core.audio.AudioFormat.CD_QUALITY);
+        MixerView view = createOnFxThread(project);
+        assertThat(view.getVcaStrips().getChildren()).isEmpty();
+
+        project.getVcaGroupManager().createVcaGroup("Drums");
+        runOnFxThread(view::refresh);
+        assertThat(view.getVcaStrips().getChildren()).hasSize(1);
+    }
+
+    @Test
+    void newVcasAppendToTheRightInManagerOrder() throws Exception {
+        DawProject project = new DawProject("Test",
+                com.benesquivelmusic.daw.core.audio.AudioFormat.CD_QUALITY);
+        project.getVcaGroupManager().createVcaGroup("Drums");
+        MixerView view = createOnFxThread(project);
+        project.getVcaGroupManager().createVcaGroup("Vox");
+        runOnFxThread(view::refresh);
+
+        assertThat(view.getVcaStrips().getChildren()).hasSize(2);
+        // Order matches VcaGroupManager.getVcaGroups() — new VCAs append.
+        assertThat(((VcaStrip) view.getVcaStrips().getChildren().get(0))
+                .getGroup().label()).isEqualTo("Drums");
+        assertThat(((VcaStrip) view.getVcaStrips().getChildren().get(1))
+                .getGroup().label()).isEqualTo("Vox");
+    }
 }
