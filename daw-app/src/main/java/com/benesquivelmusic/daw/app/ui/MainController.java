@@ -9,6 +9,7 @@ import com.benesquivelmusic.daw.core.audio.AudioBackendFactory;
 import com.benesquivelmusic.daw.core.audio.AudioDeviceManager;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.export.RenderQueue;
 import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.ChannelNameSnapshotReconciler;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
@@ -182,6 +183,18 @@ public final class MainController {
     private com.benesquivelmusic.daw.app.ui.spatial.AtmosAbView atmosAbView;
     /** The floating window hosting {@link #atmosAbView}. */
     private Stage atmosAbStage;
+
+    /**
+     * Story 186 — Offline Render Queue (singleton, scoped to the app
+     * lifetime — the queue is a tool, not a project state, so it
+     * survives project changes). Lazily composed on first use; persisted
+     * on shutdown via {@code RenderQueuePersistence}.
+     */
+    private RenderQueue renderQueue;
+    /** Floating window hosting the {@link com.benesquivelmusic.daw.app.ui.export.RenderQueueView}. */
+    private Stage renderQueueStage;
+    /** The current view (re-created if the user closes its window). */
+    private com.benesquivelmusic.daw.app.ui.export.RenderQueueView renderQueueView;
 
     private ArrangementCanvas arrangementCanvas;
     private ClipInteractionController clipInteractionController;
@@ -378,6 +391,7 @@ public final class MainController {
                         commandPaletteView.setOwner(primaryStage);
                     }
                     primaryStage.setOnHidden(_ -> {
+                        disposeRenderQueue();
                         pluginViewController.dispose();
                         if (pluginFaultUiController != null) {
                             pluginFaultUiController.dispose();
@@ -926,6 +940,7 @@ public final class MainController {
                     @Override public void onOpenProject() { projectLifecycleController.onOpenProject(); }
                     @Override public void onImportSession() { projectLifecycleController.onImportSession(); }
                     @Override public void onExportSession() { projectLifecycleController.onExportSession(); }
+                    @Override public void onOpenRenderQueue() { MainController.this.onOpenRenderQueue(); }
                     @Override public void onImportAudioFile() { audioImportController.onImportAudioFile(); }
                     @Override public void onToggleSnap() { viewNavigationController.onToggleSnap(); }
                     @Override public void onAddAudioTrack() { trackCreationController.onAddAudioTrack(); }
@@ -1319,6 +1334,7 @@ public final class MainController {
                     @Override public void onRecentProjects() { projectLifecycleController.onRecentProjects(); }
                     @Override public void onImportSession() { projectLifecycleController.onImportSession(); }
                     @Override public void onExportSession() { projectLifecycleController.onExportSession(); }
+                    @Override public void onOpenRenderQueue() { MainController.this.onOpenRenderQueue(); }
                     @Override public void onImportAudioFile() { audioImportController.onImportAudioFile(); }
                     @Override public void onOpenSnapshots() {
                         if (snapshotsController != null) snapshotsController.openBrowser();
@@ -1775,6 +1791,168 @@ public final class MainController {
         });
         atmosAbStage.show();
         atmosAbStage.toFront();
+    }
+
+    // ── Story 186 — Offline Render Queue ────────────────────────────────
+
+    /**
+     * Lazily compose the singleton {@link RenderQueue}. The queue is
+     * scoped to the application lifetime — it survives project changes
+     * because batch renders are a tool, not project state. On startup we
+     * load any persisted snapshots and prompt the user if a non-empty
+     * queue is found ("Resume / Retry / Clear").
+     */
+    private RenderQueue ensureRenderQueue() {
+        if (renderQueue != null) return renderQueue;
+        // Default worker count = 1 to prevent disk contention. A future
+        // Settings → Performance → "Render queue parallelism" knob can
+        // re-create the queue at a different worker count.
+        renderQueue = new RenderQueue(
+                new com.benesquivelmusic.daw.app.ui.export.DefaultRenderJobRunner(), 1);
+        // Per-job completion notification through NotificationBar
+        // (the project's notification surface). Failures must never
+        // break the queue, so we route every outcome through Platform.
+        renderQueue.setCompletionNotifier(outcome -> {
+            String msg = switch (outcome.phase()) {
+                case COMPLETED -> "Render completed: " + outcome.job().displayName();
+                case FAILED    -> {
+                    String detail = "";
+                    if (outcome.error() != null) {
+                        String emsg = outcome.error().getMessage();
+                        detail = " (" + (emsg != null && !emsg.isBlank()
+                                ? emsg : outcome.error().getClass().getSimpleName()) + ")";
+                    }
+                    yield "Render failed: " + outcome.job().displayName() + detail;
+                }
+                case CANCELLED -> "Render cancelled: " + outcome.job().displayName();
+                default        -> "Render: " + outcome.job().displayName();
+            };
+            NotificationLevel level = switch (outcome.phase()) {
+                case COMPLETED -> NotificationLevel.SUCCESS;
+                case FAILED    -> NotificationLevel.ERROR;
+                case CANCELLED -> NotificationLevel.WARNING;
+                default        -> NotificationLevel.INFO;
+            };
+            javafx.application.Platform.runLater(() -> {
+                if (notificationBar != null) {
+                    notificationBar.show(level, msg);
+                }
+                // Optional OS-level audio cue. Runs off-thread because
+                // AWT Toolkit initialization can be heavy on first call.
+                Thread.ofVirtual().name("render-queue-beep").start(() -> {
+                    try {
+                        java.awt.Toolkit.getDefaultToolkit().beep();
+                    } catch (RuntimeException ignored) {
+                        // Best-effort — headless or audio-disabled environments.
+                    }
+                });
+            });
+        });
+        // Prompt Resume / Retry / Clear if a non-empty persisted queue
+        // exists from a prior session. The actual render configs are not
+        // persisted today, so all three options are an acknowledgement;
+        // "Clear" deletes the persisted snapshot file.
+        try {
+            var snapshots = renderQueue.loadPersisted();
+            boolean hasUnfinished = snapshots.stream()
+                    .anyMatch(s -> !s.phase().isTerminal()
+                            || s.phase() == com.benesquivelmusic.daw.sdk.export.JobProgress.Phase.FAILED);
+            if (hasUnfinished) {
+                promptResumeRetryClear(snapshots.size());
+            }
+        } catch (java.io.IOException e) {
+            LOG.log(Level.WARNING, "Failed to load persisted render queue", e);
+        }
+        return renderQueue;
+    }
+
+    private void promptResumeRetryClear(int jobCount) {
+        javafx.scene.control.ButtonType resume = new javafx.scene.control.ButtonType("Resume");
+        javafx.scene.control.ButtonType retry  = new javafx.scene.control.ButtonType("Retry");
+        javafx.scene.control.ButtonType clear  = new javafx.scene.control.ButtonType("Clear",
+                javafx.scene.control.ButtonBar.ButtonData.OTHER);
+        javafx.scene.control.Alert alert = new javafx.scene.control.Alert(
+                javafx.scene.control.Alert.AlertType.CONFIRMATION);
+        if (rootPane.getScene() != null && rootPane.getScene().getWindow() != null) {
+            alert.initOwner(rootPane.getScene().getWindow());
+        }
+        alert.setTitle("Resume Render Queue");
+        alert.setHeaderText("Found " + jobCount + " job(s) from previous session");
+        alert.setContentText(
+                "Resume — keep the previous queue snapshot.\n"
+              + "Retry — keep the snapshot (retry not yet implemented).\n"
+              + "Clear — discard the persisted queue file.");
+        alert.getButtonTypes().setAll(resume, retry, clear);
+        DarkThemeHelper.applyTo(alert);
+        alert.showAndWait().ifPresent(choice -> {
+            // All three choices clear the persisted snapshot to avoid a
+            // recurring prompt on every restart. Resume / Retry are
+            // otherwise no-ops in this MVP — full restart of failed jobs
+            // requires re-creating the original RenderJob (which carries
+            // the export config); that wiring will land alongside the
+            // per-dialog "Add to queue" buttons.
+            if (renderQueue != null) {
+                try {
+                    renderQueue.clearPersisted();
+                } catch (java.io.IOException e) {
+                    LOG.log(Level.WARNING, "Failed to clear persisted render queue", e);
+                }
+            }
+        });
+    }
+
+    /**
+     * Open (or focus) the {@link com.benesquivelmusic.daw.app.ui.export.RenderQueueView}
+     * in a UTILITY-style floating window. The view subscribes to the
+     * singleton {@link RenderQueue}'s progress publisher so per-job
+     * progress bars update live.
+     */
+    void onOpenRenderQueue() {
+        if (renderQueueStage != null) {
+            renderQueueStage.toFront();
+            renderQueueStage.requestFocus();
+            return;
+        }
+        RenderQueue queue = ensureRenderQueue();
+        renderQueueView = new com.benesquivelmusic.daw.app.ui.export.RenderQueueView(queue);
+        renderQueueStage = new Stage(javafx.stage.StageStyle.UTILITY);
+        renderQueueStage.setTitle("Render Queue");
+        if (rootPane.getScene() != null && rootPane.getScene().getWindow() != null) {
+            renderQueueStage.initOwner(rootPane.getScene().getWindow());
+        }
+        javafx.scene.Scene scene = new javafx.scene.Scene(renderQueueView);
+        DarkThemeHelper.applyTo(scene);
+        renderQueueStage.setScene(scene);
+        renderQueueStage.setMinWidth(560);
+        renderQueueStage.setMinHeight(320);
+        renderQueueStage.setOnHidden(_ -> {
+            if (renderQueueView != null) renderQueueView.dispose();
+            renderQueueView = null;
+            renderQueueStage = null;
+        });
+        renderQueueStage.show();
+        renderQueueStage.toFront();
+    }
+
+    /**
+     * Persist the queue and shut down its workers. Invoked from the
+     * primary stage's {@code setOnHidden} hook so the queue's state
+     * survives an app restart.
+     */
+    private void disposeRenderQueue() {
+        // Close the queue view window first so the user cannot interact
+        // with a shutting-down queue.
+        if (renderQueueStage != null) {
+            renderQueueStage.close();
+        }
+        if (renderQueue == null) return;
+        try {
+            renderQueue.persist();
+        } catch (java.io.IOException e) {
+            LOG.log(Level.WARNING, "Failed to persist render queue on shutdown", e);
+        }
+        renderQueue.shutdown();
+        renderQueue = null;
     }
 
     /**

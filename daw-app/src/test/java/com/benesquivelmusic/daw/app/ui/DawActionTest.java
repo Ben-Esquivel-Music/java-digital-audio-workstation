@@ -45,7 +45,8 @@ class DawActionTest {
         java.util.Set<DawAction> nullBindingAllowed = java.util.Set.of(
                 DawAction.TOGGLE_PRE_ROLL, DawAction.TOGGLE_POST_ROLL,
                 DawAction.TIME_STRETCH_CLIP, DawAction.PITCH_SHIFT_CLIP,
-                DawAction.OPEN_IMMERSIVE_AB);
+                DawAction.OPEN_IMMERSIVE_AB,
+                DawAction.EXPORT_RENDER_QUEUE);
         for (DawAction action : DawAction.values()) {
             if (nullBindingAllowed.contains(action)) {
                 continue;

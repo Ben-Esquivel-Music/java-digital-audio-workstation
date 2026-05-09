@@ -38,6 +38,11 @@ final class KeyboardShortcutController {
         void onOpenProject();
         void onImportSession();
         void onExportSession();
+        /**
+         * Story 186 — Offline Render Queue. Default no-op so existing
+         * callers and tests can ignore the new action.
+         */
+        default void onOpenRenderQueue() { }
         void onImportAudioFile();
         void onToggleSnap();
         void onAddAudioTrack();
@@ -197,6 +202,7 @@ final class KeyboardShortcutController {
         actionHandlers.put(DawAction.OPEN_PROJECT, host::onOpenProject);
         actionHandlers.put(DawAction.IMPORT_SESSION, host::onImportSession);
         actionHandlers.put(DawAction.EXPORT_SESSION, host::onExportSession);
+        actionHandlers.put(DawAction.EXPORT_RENDER_QUEUE, host::onOpenRenderQueue);
         actionHandlers.put(DawAction.IMPORT_AUDIO_FILE, host::onImportAudioFile);
         actionHandlers.put(DawAction.TOGGLE_SNAP, host::onToggleSnap);
         actionHandlers.put(DawAction.ADD_AUDIO_TRACK, host::onAddAudioTrack);
