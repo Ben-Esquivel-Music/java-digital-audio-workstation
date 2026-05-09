@@ -105,7 +105,7 @@ public final class DefaultRenderJobRunner implements RenderJobRunner {
     }
 
     /** Whether a job's primary output is a single file or a directory. */
-    enum OutputShape { FILE, DIRECTORY }
+    public enum OutputShape { FILE, DIRECTORY }
 
     // ── shared progress + write path ────────────────────────────────────
 

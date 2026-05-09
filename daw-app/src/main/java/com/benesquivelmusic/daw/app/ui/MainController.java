@@ -1837,12 +1837,15 @@ public final class MainController {
                 if (notificationBar != null) {
                     notificationBar.show(level, msg);
                 }
-                // Optional OS-level audio cue via AWT Toolkit.beep().
-                try {
-                    java.awt.Toolkit.getDefaultToolkit().beep();
-                } catch (RuntimeException ignored) {
-                    // Best-effort — headless or audio-disabled environments.
-                }
+                // Optional OS-level audio cue. Runs off-thread because
+                // AWT Toolkit initialization can be heavy on first call.
+                Thread.ofVirtual().name("render-queue-beep").start(() -> {
+                    try {
+                        java.awt.Toolkit.getDefaultToolkit().beep();
+                    } catch (RuntimeException ignored) {
+                        // Best-effort — headless or audio-disabled environments.
+                    }
+                });
             });
         });
         // Prompt Resume / Retry / Clear if a non-empty persisted queue
@@ -1867,7 +1870,7 @@ public final class MainController {
         javafx.scene.control.ButtonType resume = new javafx.scene.control.ButtonType("Resume");
         javafx.scene.control.ButtonType retry  = new javafx.scene.control.ButtonType("Retry");
         javafx.scene.control.ButtonType clear  = new javafx.scene.control.ButtonType("Clear",
-                javafx.scene.control.ButtonBar.ButtonData.CANCEL_CLOSE);
+                javafx.scene.control.ButtonBar.ButtonData.OTHER);
         javafx.scene.control.Alert alert = new javafx.scene.control.Alert(
                 javafx.scene.control.Alert.AlertType.CONFIRMATION);
         if (rootPane.getScene() != null && rootPane.getScene().getWindow() != null) {
@@ -1882,17 +1885,19 @@ public final class MainController {
         alert.getButtonTypes().setAll(resume, retry, clear);
         DarkThemeHelper.applyTo(alert);
         alert.showAndWait().ifPresent(choice -> {
-            if (choice == clear && renderQueue != null) {
+            // All three choices clear the persisted snapshot to avoid a
+            // recurring prompt on every restart. Resume / Retry are
+            // otherwise no-ops in this MVP — full restart of failed jobs
+            // requires re-creating the original RenderJob (which carries
+            // the export config); that wiring will land alongside the
+            // per-dialog "Add to queue" buttons.
+            if (renderQueue != null) {
                 try {
                     renderQueue.clearPersisted();
                 } catch (java.io.IOException e) {
                     LOG.log(Level.WARNING, "Failed to clear persisted render queue", e);
                 }
             }
-            // Resume / Retry are no-ops in this MVP — full restart of
-            // failed jobs requires re-creating the original RenderJob
-            // (which carries the export config); that wiring will land
-            // alongside the per-dialog "Add to queue" buttons.
         });
     }
 
