@@ -642,6 +642,58 @@ public final class ProjectDeserializer {
             }
         }
 
+        // Parse cue buses (Story 135). The element is optional: legacy
+        // projects predating cue-bus support load with no cue buses because
+        // the manager starts empty. Mirrors the serializer's <cue-buses>
+        // section so cue-mix configurations round-trip across save/load.
+        List<Element> cueBusesContainers = getDirectChildElements(mixerElem, "cue-buses");
+        if (!cueBusesContainers.isEmpty()) {
+            CueBusManager cueManager = project.getCueBusManager();
+            for (Element busElem : getDirectChildElements(cueBusesContainers.getFirst(), "cue-bus")) {
+                String idAttr = busElem.getAttribute("id");
+                if (idAttr.isEmpty()) {
+                    continue;
+                }
+                java.util.UUID id;
+                try {
+                    id = java.util.UUID.fromString(idAttr);
+                } catch (IllegalArgumentException e) {
+                    continue;
+                }
+                String label = busElem.getAttribute("label");
+                if (label.isEmpty()) {
+                    label = "Cue";
+                }
+                int hardwareOutputIndex = (int) Math.max(0,
+                        parseDoubleAttr(busElem, "hardware-output-index", 0.0));
+                double masterGain = clampDouble(
+                        parseDoubleAttr(busElem, "master-gain", 1.0), 0.0, 1.0);
+                List<CueSend> sends = new ArrayList<>();
+                for (Element sendElem : getDirectChildElements(busElem, "cue-send")) {
+                    String trackAttr = sendElem.getAttribute("track-id");
+                    if (trackAttr.isEmpty()) {
+                        continue;
+                    }
+                    java.util.UUID trackId;
+                    try {
+                        trackId = java.util.UUID.fromString(trackAttr);
+                    } catch (IllegalArgumentException e) {
+                        continue;
+                    }
+                    double gain = clampDouble(parseDoubleAttr(sendElem, "gain", 0.0), 0.0, 1.0);
+                    double pan = clampDouble(parseDoubleAttr(sendElem, "pan", 0.0), -1.0, 1.0);
+                    boolean preFader = parseBooleanAttr(sendElem, "pre-fader", true);
+                    sends.add(new CueSend(trackId, gain, pan, preFader));
+                }
+                try {
+                    cueManager.addCueBus(new CueBus(id, label, hardwareOutputIndex, sends, masterGain));
+                } catch (IllegalArgumentException ignored) {
+                    // A duplicate id or hardware-output-index in the file is
+                    // malformed — skip the bus rather than failing the whole load.
+                }
+            }
+        }
+
         // Parse VCA groups. The element is optional: legacy projects predating
         // VCA support load with no VCAs because the manager starts empty.
         List<Element> vcaGroupsContainers = getDirectChildElements(mixerElem, "vca-groups");

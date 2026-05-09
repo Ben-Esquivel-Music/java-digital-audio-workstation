@@ -2,10 +2,13 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.core.mixer.CueBus;
+import com.benesquivelmusic.daw.core.mixer.CueBusManager;
 import com.benesquivelmusic.daw.core.recording.ClickSound;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.recording.MetronomeSettingsStore;
+import com.benesquivelmusic.daw.core.recording.MetronomeSideOutputRouter;
 import com.benesquivelmusic.daw.core.recording.Subdivision;
 import com.benesquivelmusic.daw.sdk.transport.ClickOutput;
 import javafx.scene.control.*;
@@ -46,6 +49,15 @@ final class MetronomeController {
     private final Label statusBarLabel;
     private final Preferences prefs;
     private final MetronomeSettingsStore settingsStore;
+    /** Story 135 — supplier of the live {@link CueBusManager} so the click
+     *  routing dialog can list cue buses without a hard reference to a
+     *  specific {@link com.benesquivelmusic.daw.core.project.DawProject}.
+     *  May be {@code null} when no project is wired (tests). */
+    private final java.util.function.Supplier<CueBusManager> cueBusManagerSupplier;
+    /** Story 135 — supplier of the active side-output router. The router is
+     *  owned by the audio engine; routing the click to a cue bus is achieved
+     *  by setting a per-bus level on it. May be {@code null}. */
+    private final java.util.function.Supplier<MetronomeSideOutputRouter> sideOutputRouterSupplier;
 
     private CountInMode countInMode;
 
@@ -63,6 +75,21 @@ final class MetronomeController {
     }
 
     /**
+     * Backward-compatible 6-arg constructor — no cue-bus or side-output
+     * router wiring. Story-135 cue-routing in the metronome dialog is
+     * suppressed when both suppliers are absent.
+     */
+    MetronomeController(Metronome metronome,
+                        Button metronomeButton,
+                        NotificationBar notificationBar,
+                        Label statusBarLabel,
+                        Preferences prefs,
+                        MetronomeSettingsStore settingsStore) {
+        this(metronome, metronomeButton, notificationBar, statusBarLabel, prefs,
+                settingsStore, null, null);
+    }
+
+    /**
      * Creates a fully-wired controller.
      *
      * @param metronome       the metronome instance this controller owns
@@ -75,19 +102,30 @@ final class MetronomeController {
      *                        {@link ClickOutput} across sessions to
      *                        {@code ~/.daw/metronome-settings.json}; {@code null}
      *                        skips global persistence (used by tests)
+     * @param cueBusManagerSupplier  story-135 supplier of the live cue-bus
+     *                               manager; {@code null} hides the cue-bus
+     *                               selector in the metronome routing dialog
+     * @param sideOutputRouterSupplier  story-135 supplier of the active
+     *                                  side-output router used to apply the
+     *                                  cue-bus selection; {@code null} skips
+     *                                  cue routing entirely
      */
     MetronomeController(Metronome metronome,
                         Button metronomeButton,
                         NotificationBar notificationBar,
                         Label statusBarLabel,
                         Preferences prefs,
-                        MetronomeSettingsStore settingsStore) {
+                        MetronomeSettingsStore settingsStore,
+                        java.util.function.Supplier<CueBusManager> cueBusManagerSupplier,
+                        java.util.function.Supplier<MetronomeSideOutputRouter> sideOutputRouterSupplier) {
         this.metronome = Objects.requireNonNull(metronome, "metronome must not be null");
         this.metronomeButton = Objects.requireNonNull(metronomeButton, "metronomeButton must not be null");
         this.notificationBar = Objects.requireNonNull(notificationBar, "notificationBar must not be null");
         this.statusBarLabel = Objects.requireNonNull(statusBarLabel, "statusBarLabel must not be null");
         this.prefs = Objects.requireNonNull(prefs, "prefs must not be null");
         this.settingsStore = settingsStore;
+        this.cueBusManagerSupplier = cueBusManagerSupplier;
+        this.sideOutputRouterSupplier = sideOutputRouterSupplier;
         this.countInMode = CountInMode.OFF;
         loadPreferences();
         loadGlobalSettings();
@@ -294,12 +332,48 @@ final class MetronomeController {
      * future sessions inherit it.
      */
     private void openClickRoutingDialog() {
+        // Story 135 — collect the live cue bus list and the click's currently
+        // selected cue bus (if any) so the dialog can render a "Send click to"
+        // selector. Nullable suppliers degrade gracefully to "no cue routing".
+        java.util.List<CueBus> cueBuses = java.util.List.of();
+        java.util.UUID currentCueBusId = null;
+        CueBusManager cueManager = cueBusManagerSupplier == null
+                ? null : cueBusManagerSupplier.get();
+        MetronomeSideOutputRouter router = sideOutputRouterSupplier == null
+                ? null : sideOutputRouterSupplier.get();
+        if (cueManager != null) {
+            cueBuses = cueManager.getCueBuses();
+            if (router != null) {
+                // First non-zero level wins as the currently-selected bus —
+                // the dialog only edits a single cue routing at a time, but
+                // the router's level map is the authoritative model so reading
+                // back from it keeps the dialog in sync after Apply.
+                for (java.util.Map.Entry<java.util.UUID, Double> e :
+                        router.cueBusLevels().entrySet()) {
+                    if (e.getValue() != null && e.getValue() > 0.0) {
+                        currentCueBusId = e.getKey();
+                        break;
+                    }
+                }
+            }
+        }
         MetronomeSettingsDialog dialog = new MetronomeSettingsDialog(
-                metronome.getClickOutput());
+                metronome.getClickOutput(), cueBuses, currentCueBusId);
         dialog.showAndWait().ifPresent(updated -> {
-            metronome.setClickOutput(updated);
+            metronome.setClickOutput(updated.clickOutput());
+            // Apply the cue routing: at most one cue bus carries the click —
+            // matching the dialog's single-select model. Clearing first
+            // ensures a previously-selected bus is silenced when the user
+            // picks "Main mix only".
+            if (router != null) {
+                router.clearCueBusLevels();
+                if (updated.cueBusId() != null) {
+                    router.setCueBusLevel(updated.cueBusId(), 1.0);
+                }
+            }
             saveGlobalSettings();
-            LOG.fine("Metronome click routing updated: " + updated);
+            LOG.fine("Metronome click routing updated: " + updated.clickOutput()
+                    + " cueBusId=" + updated.cueBusId());
         });
     }
 
