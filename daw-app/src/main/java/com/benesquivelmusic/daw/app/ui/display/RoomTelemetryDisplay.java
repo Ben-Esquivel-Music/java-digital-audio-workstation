@@ -1,7 +1,8 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
+import com.benesquivelmusic.daw.fx.GpuCanvas;
+import com.benesquivelmusic.daw.fx.GpuRenderContext;
 import com.benesquivelmusic.daw.sdk.telemetry.*;
-import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.Region;
@@ -34,9 +35,16 @@ import java.util.function.BiConsumer;
  * Z = height) to 2D screen space using a 30° dimetric projection, creating a
  * natural 3D perspective that shows the full recording space geometry.</p>
  *
- * <p>All animations are driven by a time-accumulator so the display can be
- * updated at any frame rate. Call {@link #updateAnimation(double)} each
- * frame to advance the animation state, then the canvas repaints.</p>
+ * <p>All animations are driven by a {@link GpuCanvas}-managed
+ * {@link javafx.animation.AnimationTimer}: the per-frame
+ * {@link GpuRenderContext#deltaSeconds()} is added to the local animation
+ * accumulator and the visualisation is repainted via the JavaFX
+ * {@link GraphicsContext} exposed by {@link GpuRenderContext#gc()}. The
+ * background fill ({@code #0a0a1e}) is configured once via
+ * {@link GpuCanvas#setClearColor(Color)} so the renderer no longer issues a
+ * per-frame {@code fillRect} for it. Toggle continuous animation with
+ * {@link GpuCanvas#setAnimated(boolean)}; call {@link #dispose()} when the
+ * panel is permanently detached.</p>
  */
 public final class RoomTelemetryDisplay extends Region {
 
@@ -94,7 +102,7 @@ public final class RoomTelemetryDisplay extends Region {
     private static final double AUDIENCE_LABEL_STAGGER = 12.0;
     private static final double MIC_AIM_LENGTH = 20.0;
 
-    private final Canvas canvas;
+    private final GpuCanvas gpuCanvas;
     private RoomTelemetryData telemetryData;
     private double animationTime;
 
@@ -155,7 +163,7 @@ public final class RoomTelemetryDisplay extends Region {
         Objects.requireNonNull(treatments, "treatments must not be null");
         this.treatmentOverlays.clear();
         this.treatmentOverlays.addAll(treatments);
-        render();
+        gpuCanvas.requestRender();
     }
 
     /** Returns an unmodifiable snapshot of the current treatment overlays. */
@@ -176,7 +184,7 @@ public final class RoomTelemetryDisplay extends Region {
         Objects.requireNonNull(overlays, "overlays must not be null");
         this.sbirOverlays.clear();
         this.sbirOverlays.putAll(overlays);
-        render();
+        gpuCanvas.requestRender();
     }
 
     /** Returns an unmodifiable snapshot of the current SBIR overlays. */
@@ -200,7 +208,7 @@ public final class RoomTelemetryDisplay extends Region {
         Objects.requireNonNull(snapshots, "snapshots must not be null");
         this.criticalDistanceSnapshots.clear();
         this.criticalDistanceSnapshots.putAll(snapshots);
-        render();
+        gpuCanvas.requestRender();
     }
 
     /**
@@ -222,7 +230,7 @@ public final class RoomTelemetryDisplay extends Region {
      */
     public void setModeSpectrumOverlay(ModeSpectrum spectrum) {
         this.modeSpectrumOverlay = spectrum;
-        render();
+        gpuCanvas.requestRender();
     }
 
     /** Returns the current mode-spectrum overlay, or {@code null}. */
@@ -234,17 +242,57 @@ public final class RoomTelemetryDisplay extends Region {
      * Creates a new room telemetry display.
      */
     public RoomTelemetryDisplay() {
-        canvas = new Canvas();
-        getChildren().add(canvas);
-        canvas.widthProperty().bind(widthProperty());
-        canvas.heightProperty().bind(heightProperty());
-        widthProperty().addListener((_, _, _) -> render());
-        heightProperty().addListener((_, _, _) -> render());
+        gpuCanvas = GpuCanvas.create()
+                .renderer(this::renderFrame)
+                .clearColor(BACKGROUND)
+                .build();
+        getChildren().add(gpuCanvas);
+        // GpuCanvas is itself a resizable Region; sync its size to ours so
+        // that setPrefSize/resize on the display propagates immediately
+        // even outside a live Scene (important for headless tests). The
+        // GpuCanvas's own size listeners trigger a coalesced re-render.
+        widthProperty().addListener((_, _, _) ->
+                gpuCanvas.resize(getWidth(), getHeight()));
+        heightProperty().addListener((_, _, _) ->
+                gpuCanvas.resize(getWidth(), getHeight()));
 
-        // Drag-and-drop mouse handlers
-        canvas.setOnMousePressed(this::handleMousePressed);
-        canvas.setOnMouseDragged(this::handleMouseDragged);
-        canvas.setOnMouseReleased(this::handleMouseReleased);
+        // Drag-and-drop mouse handlers — attached to the GpuCanvas Region so
+        // they receive events even though the underlying overlay JavaFX Canvas
+        // is mouse-transparent. Coordinates are local to the GpuCanvas, which
+        // shares the origin with this display.
+        gpuCanvas.setOnMousePressed(this::handleMousePressed);
+        gpuCanvas.setOnMouseDragged(this::handleMouseDragged);
+        gpuCanvas.setOnMouseReleased(this::handleMouseReleased);
+    }
+
+    /**
+     * Returns the underlying {@link GpuCanvas} that owns the per-frame render
+     * loop, off-heap pixel surface, and overlay JavaFX canvas. Callers may
+     * use {@link GpuCanvas#setAnimated(boolean) setAnimated(true)} to start
+     * the {@code AnimationTimer} when the view is mounted and
+     * {@code setAnimated(false)} when it is hidden.
+     *
+     * @return the embedded GPU-accelerated canvas
+     */
+    public GpuCanvas getGpuCanvas() {
+        return gpuCanvas;
+    }
+
+    /**
+     * GpuRenderer entry point. Reads timing from {@code ctx.deltaSeconds()},
+     * advances the animation accumulator, and repaints the visualisation
+     * onto the JavaFX {@link GraphicsContext} exposed by {@code ctx.gc()}.
+     * The pixel surface is left untouched — the {@link GpuCanvas} clears it
+     * to {@link #BACKGROUND} via {@link GpuCanvas#setClearColor(Color)}.
+     *
+     * @param ctx per-frame context supplied by the host {@link GpuCanvas}
+     */
+    private void renderFrame(GpuRenderContext ctx) {
+        double deltaSeconds = ctx.deltaSeconds();
+        if (deltaSeconds > 0.0) {
+            advanceAnimation(deltaSeconds);
+        }
+        renderInto(ctx.gc(), ctx.width(), ctx.height());
     }
 
     /**
@@ -268,18 +316,33 @@ public final class RoomTelemetryDisplay extends Region {
                 pathAnimators.put(key, new WaveParticleAnimator(0.2, speed, 1.8));
             }
         }
-        render();
+        gpuCanvas.requestRender();
     }
 
     /**
      * Advances all animations by the given delta and repaints.
      *
-     * <p>Call this from an {@link javafx.animation.AnimationTimer} on each
-     * frame for smooth, creative animations.</p>
+     * <p>This entry point is preserved for callers that drive the display
+     * from their own animation loop. The {@link GpuCanvas}-managed
+     * {@link javafx.animation.AnimationTimer} (enabled with
+     * {@link GpuCanvas#setAnimated(boolean)}) advances the same accumulator
+     * automatically, so most callers should prefer {@code setAnimated(true)}
+     * over invoking this directly.</p>
      *
      * @param deltaSeconds seconds since last frame
      */
     public void updateAnimation(double deltaSeconds) {
+        advanceAnimation(deltaSeconds);
+        gpuCanvas.requestRender();
+    }
+
+    /**
+     * Advances the animation accumulator without triggering a repaint.
+     * Invoked from both the GpuCanvas render loop (where the
+     * {@link GpuCanvas} drives the pulse) and from {@link #updateAnimation}
+     * (which then explicitly requests a render).
+     */
+    private void advanceAnimation(double deltaSeconds) {
         animationTime += deltaSeconds;
 
         // Update path particles
@@ -304,8 +367,17 @@ public final class RoomTelemetryDisplay extends Region {
         // Age ripples
         ripples.replaceAll(r -> new Ripple(r.roomX, r.roomY, r.roomZ, r.age + deltaSeconds));
         ripples.removeIf(r -> r.age >= RIPPLE_MAX_AGE);
+    }
 
-        render();
+    /**
+     * Stops the {@link GpuCanvas} render loop, unregisters its listeners,
+     * and releases the off-heap pixel surface. Must be called on the JavaFX
+     * Application Thread. Safe to call multiple times. After disposal the
+     * display will no longer paint or respond to {@link #setTelemetryData}.
+     */
+    public void dispose() {
+        gpuCanvas.setAnimated(false);
+        gpuCanvas.dispose();
     }
 
     /** Returns the current telemetry data. */
@@ -467,17 +539,15 @@ public final class RoomTelemetryDisplay extends Region {
 
     // ── Rendering ──────────────────────────────────────────────────
 
-    private void render() {
-        double w = canvas.getWidth();
-        double h = canvas.getHeight();
+    private void renderInto(GraphicsContext gc, double w, double h) {
         if (w <= 0 || h <= 0) return;
 
-        GraphicsContext gc = canvas.getGraphicsContext2D();
         gc.save();
 
-        // Background
-        gc.setFill(BACKGROUND);
-        gc.fillRect(0, 0, w, h);
+        // Background fill is now applied by GpuCanvas.setClearColor(BACKGROUND)
+        // on the underlying off-heap pixel surface; this overlay canvas is
+        // pre-cleared to fully transparent each frame so we no longer need a
+        // per-frame fillRect for the background.
 
         if (telemetryData == null) {
             drawPlaceholder(gc, w, h);
@@ -1501,8 +1571,9 @@ public final class RoomTelemetryDisplay extends Region {
 
     @Override
     protected void layoutChildren() {
-        super.layoutChildren();
-        render();
+        // GpuCanvas is itself a Region and re-renders on its own size change
+        // listeners, so we just resize it here to fill the display.
+        gpuCanvas.resizeRelocate(0, 0, getWidth(), getHeight());
     }
 
     // ── Ceiling shape overlay (iso-contour + side silhouette) ──────────
@@ -1539,7 +1610,7 @@ public final class RoomTelemetryDisplay extends Region {
             CeilingShape ceiling, double roomW, double roomL, double panelSize) {
 
         int size = (int) Math.ceil(panelSize);
-        Canvas offscreen = new Canvas(size, size);
+        javafx.scene.canvas.Canvas offscreen = new javafx.scene.canvas.Canvas(size, size);
         GraphicsContext gc = offscreen.getGraphicsContext2D();
 
         // Background card
@@ -1674,7 +1745,7 @@ public final class RoomTelemetryDisplay extends Region {
         ModeSpectrum spectrum = modeSpectrumOverlay;
         if (spectrum == null || spectrum.modes().isEmpty()) return;
 
-        final double w = canvas.getWidth();
+        final double w = gpuCanvas.getWidth();
         final double plotW = 180;
         final double plotH = 64;
         final double pad = 10;

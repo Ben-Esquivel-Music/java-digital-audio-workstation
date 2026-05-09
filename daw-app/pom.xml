@@ -27,6 +27,10 @@
             <artifactId>daw-sdk</artifactId>
         </dependency>
         <dependency>
+            <groupId>com.benesquivelmusic</groupId>
+            <artifactId>daw-fx</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.openjfx</groupId>
             <artifactId>javafx-controls</artifactId>
         </dependency>

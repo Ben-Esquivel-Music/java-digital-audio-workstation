@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.audio.performance.LatencyTelemetryCollector;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
+import com.benesquivelmusic.daw.fx.GpuPipeline;
 import com.benesquivelmusic.daw.sdk.audio.LatencyTelemetry;
 import com.benesquivelmusic.daw.sdk.audio.LatencyTelemetry.NodeKind;
 import javafx.animation.FadeTransition;
@@ -56,6 +57,7 @@ public final class LatencyTelemetryPanel extends BorderPane {
     private final double sampleRateHz;
     private final TreeView<String> tree;
     private final Label totalPdcLabel;
+    private final Label rendererLabel;
     private final CheckBox constrainToggle;
     private final Spinner<Integer> thresholdSpinner;
 
@@ -80,6 +82,12 @@ public final class LatencyTelemetryPanel extends BorderPane {
         this.totalPdcLabel = new Label("Session PDC: 0 samples (0.00 ms)");
         this.totalPdcLabel.getStyleClass().add("latency-total-pdc");
 
+        // Surface the active Prism backend (Direct3D 11 / Metal / OpenGL ES2 /
+        // Software) so users can confirm the GPU pipeline GpuCanvas is running
+        // through matches expectation on Windows / macOS / Linux.
+        this.rendererLabel = new Label("Renderer: " + formatRenderer(GpuPipeline.detect()));
+        this.rendererLabel.getStyleClass().add("latency-renderer");
+
         this.constrainToggle = new CheckBox("Constrain Delay Compensation");
         this.constrainToggle.setSelected(collector.isConstrainDelayCompensationEnabled());
 
@@ -101,7 +109,7 @@ public final class LatencyTelemetryPanel extends BorderPane {
         this.tree = new TreeView<>(new TreeItem<>("Mixer"));
         this.tree.setShowRoot(false);
 
-        VBox top = new VBox(4, totalPdcLabel, controls);
+        VBox top = new VBox(4, totalPdcLabel, rendererLabel, controls);
         top.setPadding(new Insets(6));
         setTop(top);
         setCenter(tree);
@@ -115,6 +123,31 @@ public final class LatencyTelemetryPanel extends BorderPane {
     /** Returns the threshold spinner, primarily for tests. */
     public Spinner<Integer> thresholdSpinner() {
         return thresholdSpinner;
+    }
+
+    /** Returns the "Renderer: …" label, primarily for tests. */
+    public Label rendererLabel() {
+        return rendererLabel;
+    }
+
+    /**
+     * Formats a {@link GpuPipeline} for display in the renderer label.
+     * Examples: {@code Direct3D 11 (GPU)}, {@code Metal (GPU)},
+     * {@code OpenGL ES2 (GPU)}, {@code Software}, {@code Unknown}.
+     *
+     * @param pipeline the detected pipeline (must not be {@code null})
+     * @return a short human-readable string suitable for the UI
+     */
+    public static String formatRenderer(GpuPipeline pipeline) {
+        Objects.requireNonNull(pipeline, "pipeline must not be null");
+        String suffix = pipeline.isHardwareAccelerated() ? " (GPU)" : "";
+        return switch (pipeline) {
+            case DIRECT3D -> "Direct3D 11" + suffix;
+            case METAL -> "Metal" + suffix;
+            case OPEN_GL -> "OpenGL ES2" + suffix;
+            case SOFTWARE -> "Software";
+            case UNKNOWN -> "Unknown";
+        };
     }
 
     /**

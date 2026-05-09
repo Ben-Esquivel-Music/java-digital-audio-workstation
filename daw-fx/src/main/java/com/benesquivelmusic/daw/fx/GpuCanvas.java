@@ -11,6 +11,8 @@ import javafx.beans.property.SimpleBooleanProperty;
 import javafx.beans.property.SimpleObjectProperty;
 import javafx.beans.value.ChangeListener;
 import javafx.scene.Scene;
+import javafx.scene.canvas.Canvas;
+import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.image.ImageView;
 import javafx.scene.image.PixelBuffer;
 import javafx.scene.image.PixelFormat;
@@ -107,6 +109,8 @@ public final class GpuCanvas extends Region {
     private static final int MAX_SURFACE_DIM = 16384;
 
     private final ImageView imageView = new ImageView();
+    private final Canvas overlayCanvas = new Canvas();
+    private final GraphicsContext overlayGc = overlayCanvas.getGraphicsContext2D();
 
     private final ObjectProperty<GpuRenderer> renderer =
             new SimpleObjectProperty<>(this, "renderer", GpuRenderer.NOOP);
@@ -148,6 +152,15 @@ public final class GpuCanvas extends Region {
         renderer.set(Objects.requireNonNull(initialRenderer, "initialRenderer"));
 
         getChildren().add(imageView);
+        // Overlay JavaFX Canvas sits on top of the pixel ImageView so renderers
+        // that prefer GraphicsContext-based drawing (lines, arcs, gradients,
+        // text) can use ctx.gc() while pixel-pathway renderers remain unchanged.
+        // The canvas starts each frame fully transparent (clearRect), so it
+        // never occludes the pixel surface unless the renderer explicitly draws.
+        getChildren().add(overlayCanvas);
+        overlayCanvas.widthProperty().bind(widthProperty());
+        overlayCanvas.heightProperty().bind(heightProperty());
+        overlayCanvas.setMouseTransparent(true);
         getStyleClass().add("gpu-canvas");
 
         // Size the displayed image to the Region. Using fit dimensions (rather
@@ -266,11 +279,17 @@ public final class GpuCanvas extends Region {
         }
 
         clearSurface();
+        // The overlay JavaFX Canvas always starts each frame fully transparent
+        // so anything drawn through ctx.gc() is layered cleanly on top of the
+        // pixel surface (which itself reflects clearColorProperty()).
+        if (surfaceWidth > 0 && surfaceHeight > 0) {
+            overlayGc.clearRect(0, 0, overlayCanvas.getWidth(), overlayCanvas.getHeight());
+        }
 
         long frame = frameCount.get();
         GpuRenderContext ctx = new GpuRenderContext(
                 pixels, surfaceWidth, surfaceHeight, surfaceStride,
-                nowNanos, deltaSeconds, frame);
+                nowNanos, deltaSeconds, frame, overlayGc);
         try {
             current.render(ctx);
         } catch (RuntimeException e) {
@@ -427,6 +446,8 @@ public final class GpuCanvas extends Region {
     protected void layoutChildren() {
         imageView.setLayoutX(0);
         imageView.setLayoutY(0);
+        overlayCanvas.setLayoutX(0);
+        overlayCanvas.setLayoutY(0);
     }
 
     @Override protected double computeMinWidth(double height)  { return DEFAULT_MIN_SIZE; }
@@ -462,6 +483,13 @@ public final class GpuCanvas extends Region {
         imageView.fitWidthProperty().unbind();
         imageView.fitHeightProperty().unbind();
         imageView.setImage(null);
+        overlayCanvas.widthProperty().unbind();
+        overlayCanvas.heightProperty().unbind();
+        // Final clear so the overlay does not retain stale pixels if the
+        // canvas is removed from but later re-added to the scene graph.
+        if (overlayCanvas.getWidth() > 0 && overlayCanvas.getHeight() > 0) {
+            overlayGc.clearRect(0, 0, overlayCanvas.getWidth(), overlayCanvas.getHeight());
+        }
         widthProperty().removeListener(sizeListener);
         heightProperty().removeListener(sizeListener);
         renderer.removeListener(repaintOnChange);
