@@ -188,6 +188,15 @@ public final class EditorView extends VBox {
     }
 
     /**
+     * Stops the embedded waveform display's render loop and releases its
+     * off-heap surface. Must be called from the JavaFX Application Thread.
+     * Safe to call multiple times.
+     */
+    public void dispose() {
+        audioEditorView.dispose();
+    }
+
+    /**
      * Returns the piano roll canvas used in MIDI editor mode.
      * Visible for testing.
      *
