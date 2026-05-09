@@ -404,15 +404,20 @@ class GpuCanvasTest {
 
     @Test
     void resizeReplacesTheUnderlyingSegment() throws InterruptedException {
+        AtomicReference<MemorySegment> captured = new AtomicReference<>();
+        AtomicReference<MemorySegment> firstRef = new AtomicReference<>();
+        GpuCanvas[] holder = new GpuCanvas[1];
+
         JavaFxToolkitExtension.runAndWait(() -> {
-            AtomicReference<MemorySegment> captured = new AtomicReference<>();
             GpuCanvas canvas = new GpuCanvas(ctx -> captured.set(ctx.pixels()));
+            holder[0] = canvas;
 
             canvas.resize(10, 10);
             canvas.requestRender();
             MemorySegment first = captured.get();
             assertThat(first).isNotNull();
             assertThat(first.byteSize()).isEqualTo(10L * 10 * 4);
+            firstRef.set(first);
 
             canvas.resize(20, 15);
             canvas.requestRender();
@@ -420,13 +425,18 @@ class GpuCanvasTest {
             assertThat(second).isNotNull();
             assertThat(second.byteSize()).isEqualTo(20L * 15 * 4);
             assertThat(second).isNotSameAs(first);
+        });
 
-            // The first segment's arena was closed when the second was
-            // allocated — accessing it must now throw.
+        // The old arena's close was deferred via Platform.runLater; drain
+        // the FX event queue so the close executes before we assert.
+        JavaFxToolkitExtension.runAndWait(() -> {
+            MemorySegment first = firstRef.get();
+            // The first segment's arena was closed on the previous pulse —
+            // accessing it must now throw.
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> first.get(ValueLayout.JAVA_BYTE, 0L));
 
-            canvas.dispose();
+            holder[0].dispose();
         });
     }
 
