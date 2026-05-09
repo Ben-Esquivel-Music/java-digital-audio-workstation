@@ -28,6 +28,7 @@ import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.*;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.GridPane;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
@@ -43,6 +44,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * A mixer view that displays all project tracks as vertical channel strips.
@@ -81,6 +83,7 @@ public final class MixerView extends VBox {
     private final UndoManager undoManager;
     private final HBox channelStrips;
     private final HBox returnBusStrips;
+    private final HBox cueBusStrips;
     private final HBox vcaStrips;
     private final VBox masterStrip;
     private final List<InsertEffectRack> activeInsertRacks = new ArrayList<>();
@@ -95,6 +98,13 @@ public final class MixerView extends VBox {
     private final Set<UUID> selectedChannelIds = new HashSet<>();
     /**
      * Per-channel-id slider/button references the {@link ChannelLinkManager}
+     * Story 135 — pre-mute gain per cue bus. When a cue bus is muted the
+     * master gain is set to 0.0 and the previous value is stashed here so
+     * unmute restores it correctly even after a {@link #refresh()} rebuilds
+     * the strip. Keyed by {@link CueBus#id()}.
+     */
+    private final Map<UUID, Double> cueBusPreMuteGain = new LinkedHashMap<>();
+    /**
      * propagation path uses to mirror UI state across a stereo pair without
      * a full strip rebuild. The {@code LinkedHashMap} preserves insertion
      * order to make iteration in tests deterministic. Cleared and
@@ -314,6 +324,14 @@ public final class MixerView extends VBox {
 
         mixerMenu.getItems().addAll(resetSoloSafeItem, snapshotsMenu);
 
+        // Story 135 — "New cue bus…" entry. Keeps the discovery affordance
+        // for cue mixes consistent with VCA / return-bus creation flows
+        // (Mixer menu) while also being available as a "+" button on the
+        // cue strip area itself.
+        MenuItem newCueBusItem = new MenuItem("New cue bus\u2026");
+        newCueBusItem.setOnAction(_ -> promptCreateCueBus());
+        mixerMenu.getItems().add(newCueBusItem);
+
         Region toolbarSpacer = new Region();
         HBox.setHgrow(toolbarSpacer, Priority.ALWAYS);
         HBox headerRow = new HBox(8,
@@ -329,6 +347,12 @@ public final class MixerView extends VBox {
         returnBusStrips = new HBox(6);
         returnBusStrips.setAlignment(Pos.TOP_LEFT);
 
+        // Story 135 — "Cue Mix Bus" strips. Sit between the return buses and
+        // the master so engineers see them next to the headphone routing
+        // they care about during tracking.
+        cueBusStrips = new HBox(6);
+        cueBusStrips.setAlignment(Pos.TOP_LEFT);
+
         vcaStrips = new HBox(6);
         vcaStrips.setAlignment(Pos.TOP_LEFT);
 
@@ -340,6 +364,8 @@ public final class MixerView extends VBox {
                 channelStrips,
                 new Separator(Orientation.VERTICAL),
                 returnBusStrips,
+                new Separator(Orientation.VERTICAL),
+                cueBusStrips,
                 new Separator(Orientation.VERTICAL),
                 masterStrip,
                 new Separator(Orientation.VERTICAL),
@@ -728,6 +754,30 @@ public final class MixerView extends VBox {
             refresh();
         });
         returnBusStrips.getChildren().add(addReturnBusBtn);
+
+        // ── Cue bus strips (Story 135) ──────────────────────────────────────
+        // Render each registered CueBus as its own headphone-mix strip with
+        // a label, hardware-output label, master fader, mute, "All Pre"
+        // toggle, copy-main-mix helper, and remove button. A trailing "+"
+        // button duplicates the Mixer-menu "New cue bus…" entry for quick
+        // access.
+        cueBusStrips.getChildren().clear();
+        CueBusManager cueManager = project.getCueBusManager();
+        // Prune cueBusPreMuteGain entries for buses that no longer exist
+        // (e.g. removed between refreshes or after a project reload).
+        Set<UUID> liveBusIds = cueManager.getCueBuses().stream()
+                .map(CueBus::id).collect(Collectors.toSet());
+        cueBusPreMuteGain.keySet().retainAll(liveBusIds);
+        int cueIndex = 1;
+        for (CueBus bus : cueManager.getCueBuses()) {
+            cueBusStrips.getChildren().add(buildCueBusStrip(bus, cueIndex));
+            cueIndex++;
+        }
+        Button addCueBusBtn = new Button("+");
+        addCueBusBtn.getStyleClass().add("track-arm-button");
+        addCueBusBtn.setTooltip(new Tooltip("New cue bus\u2026"));
+        addCueBusBtn.setOnAction(_ -> promptCreateCueBus());
+        cueBusStrips.getChildren().add(addCueBusBtn);
 
         // ── VCA strips (right of master, story 153) ──────────────────────
         vcaStrips.getChildren().clear();
@@ -1251,6 +1301,29 @@ public final class MixerView extends VBox {
             sendBox.getChildren().addAll(sendLabel, sliderRow);
         }
 
+        // ── Cue sends (Story 135) ──────────────────────────────────────────
+        // Per-channel cue sends — one row per registered CueBus. Default to
+        // PRE_FADER so a performer's monitor mix doesn't flinch when the
+        // engineer pulls down the control-room fader. The section is
+        // collapsible (suppressed entirely) when no cue buses exist.
+        UUID trackUuid = parseChannelId(track);
+        CueBusManager cueMgr = project.getCueBusManager();
+        if (trackUuid != null && !cueMgr.getCueBuses().isEmpty()) {
+            VBox cueSendsBox = new VBox(2);
+            Label cueHeader = new Label("CUE");
+            cueHeader.getStyleClass().add("mixer-channel-name");
+            cueHeader.setStyle("-fx-text-fill: #ffd54f; -fx-font-weight: bold;"
+                    + " -fx-font-size: 9px;");
+            cueSendsBox.getChildren().add(cueHeader);
+            int idx = 1;
+            for (CueBus cueBus : cueMgr.getCueBuses()) {
+                cueSendsBox.getChildren().add(
+                        buildCueSendRow(trackUuid, cueBus, idx));
+                idx++;
+            }
+            sendBox.getChildren().add(cueSendsBox);
+        }
+
         // Legacy send level control (for backward compatibility)
         Label sendLabel = new Label("SEND");
         sendLabel.getStyleClass().add("mixer-channel-name");
@@ -1329,6 +1402,78 @@ public final class MixerView extends VBox {
         }
 
         return strip;
+    }
+
+    /**
+     * Story 135 — builds a single cue-send row (gain slider + pan slider +
+     * pre/post tap toggle) for a track contributing to a {@link CueBus}. The
+     * tap toggle cycles between {@code PRE_FADER} (the cue-send default — a
+     * performer's mix is stable while the engineer chases the control-room
+     * mix) and {@code POST_FADER}. The row reads from
+     * {@link CueBus#findSend(UUID)} on every render so it always reflects the
+     * current snapshot in {@link CueBusManager}.
+     */
+    private HBox buildCueSendRow(UUID trackId, CueBus cueBus, int displayIndex) {
+        UUID busId = cueBus.id();
+        CueSend existing = cueBus.findSend(trackId);
+        double initialGain = existing != null ? existing.gain() : 0.0;
+        double initialPan = existing != null ? existing.pan() : 0.0;
+        boolean initialPre = existing == null || existing.preFader();
+
+        String shortLabel = "C" + displayIndex;
+        Label rowLabel = new Label(shortLabel);
+        rowLabel.getStyleClass().add("mixer-channel-name");
+        rowLabel.setStyle("-fx-font-size: 9px; -fx-text-fill: #ffd54f;");
+        Tooltip.install(rowLabel, new Tooltip(
+                "Cue send to "
+                        + (cueBus.label() == null || cueBus.label().isBlank()
+                                ? "Cue " + displayIndex : cueBus.label())));
+
+        Slider gainSlider = new Slider(0.0, 1.0, initialGain);
+        gainSlider.setPrefWidth(SEND_SLIDER_WIDTH);
+        gainSlider.getStyleClass().add("mixer-fader");
+        gainSlider.setTooltip(new Tooltip("Cue send gain"));
+
+        Slider panSlider = new Slider(-1.0, 1.0, initialPan);
+        panSlider.setPrefWidth(SEND_SLIDER_WIDTH / 2.0);
+        panSlider.getStyleClass().add("mixer-fader");
+        panSlider.setTooltip(new Tooltip("Cue send pan"));
+
+        Button tapBtn = new Button(initialPre ? "F" : "P");
+        tapBtn.setStyle("-fx-padding: 0 4 0 4; -fx-font-size: 10px;");
+        tapBtn.setTooltip(new Tooltip(
+                "Cue send tap point — click to cycle:\n"
+                        + "  F = pre-Fader (default for cue sends)\n"
+                        + "  P = Post-fader"));
+
+        Runnable applyToManager = () -> {
+            CueBus current = project.getCueBusManager().getById(busId);
+            if (current == null) return;
+            double g = gainSlider.getValue();
+            double p = panSlider.getValue();
+            CueBus updated;
+            if (g <= 0.0 && current.findSend(trackId) == null) {
+                // No existing send and the user hasn't moved the gain slider
+                // — skip creating a new zero-gain entry. Note: if a send
+                // already exists and the user drags gain to 0.0 it will
+                // remain in the model (allowing the user to adjust pan/tap
+                // without losing the entry).
+                return;
+            }
+            updated = current.withSend(new CueSend(trackId, g, p, "F".equals(tapBtn.getText())));
+            project.getCueBusManager().replace(updated);
+        };
+
+        gainSlider.valueProperty().addListener((_, _, _) -> applyToManager.run());
+        panSlider.valueProperty().addListener((_, _, _) -> applyToManager.run());
+        tapBtn.setOnAction(_ -> {
+            tapBtn.setText("F".equals(tapBtn.getText()) ? "P" : "F");
+            applyToManager.run();
+        });
+
+        HBox row = new HBox(2, rowLabel, gainSlider, panSlider, tapBtn);
+        row.setAlignment(Pos.CENTER_LEFT);
+        return row;
     }
 
     private VBox buildReturnBusStrip(MixerChannel returnBus) {
@@ -1455,6 +1600,240 @@ public final class MixerView extends VBox {
                 panLabel, panSlider, buttonRow);
 
         return strip;
+    }
+
+    /**
+     * Story 135 — builds a "CUE N" master strip for a {@link CueBus}.
+     *
+     * <p>The strip carries the cue label, a hardware-output label
+     * ("Out 3/4"), a master fader, mute, PFL (pre-fader listen) toggle,
+     * a "Copy main mix" helper that snapshots the current track faders
+     * into the cue's sends, and a remove button. Distinct visual treatment
+     * (yellow accent) separates cue strips from return-bus / master / VCA
+     * strips so engineers don't confuse them during a tracking session.
+     */
+    private VBox buildCueBusStrip(CueBus bus, int displayIndex) {
+        VBox strip = new VBox(4);
+        strip.getStyleClass().add("mixer-channel");
+        strip.setAlignment(Pos.TOP_CENTER);
+        strip.setPrefWidth(CHANNEL_WIDTH);
+        strip.setMinWidth(CHANNEL_WIDTH);
+        strip.setStyle("-fx-border-color: #ffd54f;");
+
+        Label kindLabel = new Label("CUE " + displayIndex);
+        kindLabel.getStyleClass().add("mixer-channel-name");
+        kindLabel.setStyle("-fx-text-fill: #ffd54f; -fx-font-weight: bold;");
+
+        String labelText = bus.label() == null || bus.label().isBlank()
+                ? "Cue " + displayIndex : bus.label();
+        Label nameLabel = new Label(labelText);
+        nameLabel.getStyleClass().add("mixer-channel-name");
+        nameLabel.setMaxWidth(CHANNEL_WIDTH - 12);
+
+        // Hardware-output label — story 135 routes a stereo pair to physical
+        // outputs (2N / 2N+1). Display 1-based numbers because that is what
+        // engineers see on the back of the audio interface.
+        int outA = bus.hardwareOutputIndex() * 2 + 1;
+        int outB = outA + 1;
+        Label outLabel = new Label("Out " + outA + "/" + outB);
+        outLabel.getStyleClass().add("mixer-channel-name");
+        outLabel.setStyle("-fx-font-size: 9px; -fx-text-fill: #aaaaaa;");
+
+        Slider masterFader = new Slider(0.0, 1.0, bus.masterGain());
+        masterFader.setOrientation(Orientation.VERTICAL);
+        masterFader.setPrefHeight(FADER_HEIGHT);
+        masterFader.getStyleClass().add("mixer-fader");
+        masterFader.setTooltip(new Tooltip("Cue Bus Master Gain"));
+        masterFader.valueProperty().addListener((_, _, v) -> {
+            CueBus current = project.getCueBusManager().getById(bus.id());
+            if (current != null) {
+                project.getCueBusManager().replace(current.withMasterGain(v.doubleValue()));
+            }
+        });
+
+        // Mute is implemented via masterGain=0; the pre-mute gain is persisted
+        // in cueBusPreMuteGain so it survives refresh() rebuilds.
+        boolean isMuted = bus.masterGain() <= 0.0;
+        if (!isMuted && bus.masterGain() > 0.0) {
+            cueBusPreMuteGain.put(bus.id(), bus.masterGain());
+        }
+        Button muteBtn = new Button("M");
+        muteBtn.getStyleClass().add("track-mute-button");
+        muteBtn.setTooltip(new Tooltip("Mute Cue Bus"));
+        muteBtn.setGraphic(IconNode.of(DawIcon.MUTE, CONTROL_ICON_SIZE));
+        muteBtn.setOnAction(_ -> {
+            CueBus current = project.getCueBusManager().getById(bus.id());
+            if (current == null) return;
+            boolean nowMuted = current.masterGain() > 0.0;
+            if (nowMuted) {
+                cueBusPreMuteGain.put(bus.id(), current.masterGain());
+                project.getCueBusManager().replace(current.withMasterGain(0.0));
+                masterFader.setValue(0.0);
+            } else {
+                double restore = cueBusPreMuteGain.getOrDefault(bus.id(), 1.0);
+                project.getCueBusManager().replace(current.withMasterGain(restore));
+                masterFader.setValue(restore);
+            }
+            muteBtn.setStyle(nowMuted
+                    ? "-fx-background-color: #ff9100; -fx-text-fill: #0d0d0d;" : "");
+        });
+        if (isMuted) {
+            muteBtn.setStyle("-fx-background-color: #ff9100; -fx-text-fill: #0d0d0d;");
+        }
+
+        // "All Pre" — forces every send on this bus to pre-fader (the
+        // headphone-mix default during tracking) so engineer fader moves
+        // never bleed into the performer's mix. This is a bulk toggle;
+        // individual per-send tap choices can still be changed afterwards.
+        ToggleButton allPreBtn = new ToggleButton("All Pre");
+        allPreBtn.setTooltip(new Tooltip(
+                "Force Pre-Fader — set every send on this cue bus to pre-fader"));
+        boolean allPre = !bus.sends().isEmpty()
+                && bus.sends().stream().allMatch(CueSend::preFader);
+        allPreBtn.setSelected(allPre);
+        allPreBtn.setOnAction(_ -> {
+            CueBus current = project.getCueBusManager().getById(bus.id());
+            if (current == null) return;
+            CueBus updated = current;
+            for (CueSend s : current.sends()) {
+                updated = updated.withSend(s.withPreFader(allPreBtn.isSelected()));
+            }
+            project.getCueBusManager().replace(updated);
+            refresh();
+        });
+
+        // "Copy main mix" — snapshots the current track-channel faders into
+        // this cue bus's sends. Common starting point during tracking; matches
+        // the issue's "Copy main mix to cue 1" helper.
+        Button copyBtn = new Button("Copy");
+        copyBtn.setTooltip(new Tooltip(
+                "Copy current main-mix fader/pan values into this cue bus's sends"));
+        copyBtn.setOnAction(_ -> copyMainMixToCueBus(bus.id()));
+
+        Button removeBtn = new Button("\u2715");
+        removeBtn.getStyleClass().add("track-arm-button");
+        removeBtn.setTooltip(new Tooltip("Remove Cue Bus"));
+        removeBtn.setOnAction(_ -> {
+            cueBusPreMuteGain.remove(bus.id());
+            project.getCueBusManager().removeCueBus(bus.id());
+            refresh();
+        });
+
+        HBox topButtons = new HBox(2, muteBtn, allPreBtn);
+        topButtons.setAlignment(Pos.CENTER);
+        HBox bottomButtons = new HBox(2, copyBtn, removeBtn);
+        bottomButtons.setAlignment(Pos.CENTER);
+
+        Label sendsCount = new Label(bus.sends().size() + " send"
+                + (bus.sends().size() == 1 ? "" : "s"));
+        sendsCount.getStyleClass().add("mixer-channel-name");
+        sendsCount.setStyle("-fx-font-size: 9px; -fx-text-fill: #888888;");
+
+        strip.getChildren().addAll(
+                kindLabel, nameLabel, outLabel,
+                masterFader, sendsCount, topButtons, bottomButtons);
+        return strip;
+    }
+
+    /**
+     * Snapshots every track-channel's current main-mix fader and pan into the
+     * cue bus identified by {@code cueBusId}, marking each send as pre-fader.
+     * Wraps {@link CueBusManager#copyMainMix(UUID, Map)}.
+     */
+    void copyMainMixToCueBus(UUID cueBusId) {
+        CueBusManager mgr = project.getCueBusManager();
+        if (mgr.getById(cueBusId) == null) {
+            return;
+        }
+        Map<UUID, CueBusManager.MainMixLevel> mainMix = new LinkedHashMap<>();
+        for (Track t : project.getTracks()) {
+            UUID id = parseChannelId(t);
+            if (id == null) continue;
+            MixerChannel ch = project.getMixerChannelForTrack(t);
+            if (ch == null) continue;
+            mainMix.put(id, new CueBusManager.MainMixLevel(
+                    Math.max(0.0, Math.min(1.0, ch.getVolume())),
+                    Math.max(-1.0, Math.min(1.0, ch.getPan()))));
+        }
+        mgr.copyMainMix(cueBusId, mainMix);
+        refresh();
+    }
+
+    /**
+     * Story 135 — opens a small modal prompt asking for a cue bus name and a
+     * hardware stereo-output index (0-based pair index, mapped to physical
+     * outputs {@code 2N / 2N+1} per {@link CueBus}). Creates the bus via
+     * {@link CueBusManager#createCueBus(String, int)} and refreshes the view.
+     */
+    void promptCreateCueBus() {
+        Dialog<javafx.util.Pair<String, Integer>> dialog = new Dialog<>();
+        dialog.setTitle("New Cue Bus");
+        dialog.setHeaderText("Create a headphone / cue mix bus");
+
+        TextField nameField = new TextField(
+                "Cue " + (project.getCueBusManager().getCueBuses().size() + 1));
+        nameField.setPrefWidth(200);
+        // Find the smallest unused stereo-output-pair index so two cue buses
+        // never end up routed to the same physical outputs by default. Caps
+        // at the spinner max (31) to avoid an initial-value-out-of-range
+        // exception when all pairs are occupied.
+        // TODO(story 215): derive maxPair dynamically from
+        // outputChannelInfoSupplier / ChannelGrouping.buildOptions() so the
+        // spinner reflects the active backend's real output count and labels
+        // instead of using a hard-coded 0..31 range.
+        int maxPair = 31;
+        int defaultPair = 0;
+        while (defaultPair < maxPair
+                && project.getCueBusManager().isHardwareOutputInUse(defaultPair)) {
+            defaultPair++;
+        }
+        Spinner<Integer> outSpinner = new Spinner<>(0, maxPair, defaultPair);
+        outSpinner.setEditable(true);
+        outSpinner.setPrefWidth(90);
+
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(8);
+        grid.setPadding(new Insets(12));
+        grid.add(new Label("Name:"), 0, 0);
+        grid.add(nameField, 1, 0);
+        grid.add(new Label("Hardware output pair:"), 0, 1);
+        grid.add(outSpinner, 1, 1);
+        Label hint = new Label(
+                "Pair index N maps to physical outputs " + "(2N+1) / (2N+2). " +
+                        "Each cue bus needs a unique pair.");
+        hint.setStyle("-fx-font-size: 10px; -fx-text-fill: #aaaaaa;");
+        hint.setWrapText(true);
+        grid.add(hint, 0, 2, 2, 1);
+        dialog.getDialogPane().setContent(grid);
+        dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
+        DarkThemeHelper.applyTo(dialog);
+
+        dialog.setResultConverter(button -> {
+            if (button == ButtonType.OK) {
+                String name = nameField.getText() == null || nameField.getText().isBlank()
+                        ? "Cue" : nameField.getText().trim();
+                int pair = outSpinner.getValue() == null ? 0 : Math.max(0, outSpinner.getValue());
+                return new javafx.util.Pair<>(name, pair);
+            }
+            return null;
+        });
+
+        dialog.showAndWait().ifPresent(pair -> {
+            try {
+                project.getCueBusManager().createCueBus(pair.getKey(), pair.getValue());
+                refresh();
+            } catch (IllegalArgumentException ex) {
+                Alert err = new Alert(Alert.AlertType.ERROR,
+                        "Could not create cue bus: " + ex.getMessage());
+                err.showAndWait();
+            }
+        });
+    }
+
+    /** Returns the container holding the cue-bus strips. Visible for testing. */
+    HBox getCueBusStrips() {
+        return cueBusStrips;
     }
 
     private VBox buildMasterStrip() {

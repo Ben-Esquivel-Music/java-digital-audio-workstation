@@ -441,11 +441,31 @@ public final class MainController {
     }
 
     private void createMetronomeController(Preferences prefs) {
+        // Story 135 — share a single MetronomeSideOutputRouter across the app
+        // so the click-to-cue routing chosen in MetronomeSettingsDialog
+        // survives project reloads and is observable by the audio engine
+        // through the same instance.
+        // TODO(story 136): wire metronomeSideOutputRouter into the audio
+        // engine's click-generation callback so the cue-bus routing and side
+        // output have an audible effect at runtime.  Currently route() is
+        // only exercised by MetronomeSideOutputRouterTest; the audio engine
+        // does not yet call it on each buffer cycle.
+        if (metronomeSideOutputRouter == null) {
+            metronomeSideOutputRouter =
+                    new com.benesquivelmusic.daw.core.recording.MetronomeSideOutputRouter();
+        }
         metronomeController = new MetronomeController(
                 metronome, metronomeButton, notificationBar,
                 statusBarLabel, prefs.node("metronome"),
-                new MetronomeSettingsStore());
+                new MetronomeSettingsStore(),
+                () -> project == null ? null : project.getCueBusManager(),
+                () -> metronomeSideOutputRouter);
     }
+
+    /** Story 135 — shared side-output router; lazily created in
+     *  {@link #createMetronomeController(Preferences)}. */
+    private com.benesquivelmusic.daw.core.recording.MetronomeSideOutputRouter
+            metronomeSideOutputRouter;
 
     private void createAnimationController() {
         animationController = new AnimationController(
@@ -510,9 +530,7 @@ public final class MainController {
         metronome = new Metronome(project.getFormat().sampleRate(), project.getFormat().channels());
         createTransportController();
         mountPreRollPostRollControls();
-        metronomeController = new MetronomeController(metronome, metronomeButton, notificationBar,
-                statusBarLabel, Preferences.userNodeForPackage(MainController.class).node("metronome"),
-                new MetronomeSettingsStore());
+        createMetronomeController(Preferences.userNodeForPackage(MainController.class));
         transportController.updateStatus();
         createTrackStripController();
         if (trackStripController != null) {
