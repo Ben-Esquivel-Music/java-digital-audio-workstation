@@ -27,6 +27,7 @@ public final class InsertSlot {
     private final DawPlugin plugin;
     private final PluginCapabilities capabilities;
     private volatile boolean bypassed;
+    private volatile boolean expensive;
     private MixerChannel sidechainSource;
 
     /**
@@ -72,6 +73,30 @@ public final class InsertSlot {
         this.plugin = plugin;
         this.capabilities = PluginCapabilityIntrospector.capabilitiesOf(processor);
         this.bypassed = false;
+        // Story 129 (UI): mark long-tail / oversampled / convolution
+        // built-in DSP "expensive" by default so the BypassExpensive
+        // degradation policy has sensible candidates without the user
+        // having to flag each insert manually. Conservative dynamics
+        // (compressor, gate, EQ) default to false and stay engaged.
+        this.expensive = isExpensiveByDefault(effectType);
+    }
+
+    private static boolean isExpensiveByDefault(InsertEffectType type) {
+        if (type == null) {
+            return false;
+        }
+        return switch (type) {
+            case CONVOLUTION_REVERB,
+                 REVERB,
+                 SPRING_REVERB,
+                 VELVET_NOISE_REVERB,
+                 ANALOG_DISTORTION,
+                 WAVESHAPER,
+                 PITCH_SHIFT,
+                 TIME_STRETCH,
+                 LESLIE -> true;
+            default -> false;
+        };
     }
 
     /**
@@ -155,6 +180,33 @@ public final class InsertSlot {
      */
     public void setBypassed(boolean bypassed) {
         this.bypassed = bypassed;
+    }
+
+    /**
+     * Returns whether this insert is flagged as "expensive" — i.e.
+     * eligible for selective bypass when the channel's per-track CPU
+     * budget triggers the
+     * {@link com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.BypassExpensive}
+     * policy (story 129 UI).
+     *
+     * <p>Inserts the user considers mandatory (limiters, de-essers,
+     * vocal compression) are left at {@code false} so that the engine
+     * never silently disables them under load.</p>
+     *
+     * @return {@code true} when the insert is flagged as expensive
+     */
+    public boolean isExpensive() {
+        return expensive;
+    }
+
+    /**
+     * Sets the "expensive" flag for this insert. See {@link #isExpensive()}.
+     *
+     * @param expensive {@code true} to mark the insert as eligible for
+     *                  bypass under {@code BypassExpensive}
+     */
+    public void setExpensive(boolean expensive) {
+        this.expensive = expensive;
     }
 
     /**

@@ -192,6 +192,36 @@ class ProjectSerializationRoundTripTest {
     }
 
     @Test
+    void shouldRoundTripInsertExpensiveFlag() throws IOException {
+        // Story 129 (UI): the per-insert "expensive" flag drives the
+        // BypassExpensive degradation policy. It must survive a save /
+        // load round-trip so the policy's eligible-set stays stable.
+        DawProject original = new DawProject("Expensive Test", AudioFormat.CD_QUALITY);
+        Track track = original.createAudioTrack("Drums");
+        MixerChannel channel = original.getMixerChannelForTrack(track);
+
+        InsertSlot comp = InsertEffectFactory.createSlot(
+                InsertEffectType.COMPRESSOR, 2, 44100.0);
+        // Compressor defaults to NOT expensive — flip it ON so we can
+        // distinguish "persisted true" from "default false".
+        comp.setExpensive(true);
+        channel.addInsert(comp);
+
+        InsertSlot eq = InsertEffectFactory.createSlot(
+                InsertEffectType.PARAMETRIC_EQ, 2, 44100.0);
+        // PARAMETRIC_EQ defaults to NOT expensive; do not change.
+        channel.addInsert(eq);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        MixerChannel restoredChannel = restored.getMixer().getChannels().get(0);
+        assertThat(restoredChannel.getInsertSlots()).hasSize(2);
+        assertThat(restoredChannel.getInsertSlots().get(0).isExpensive()).isTrue();
+        assertThat(restoredChannel.getInsertSlots().get(1).isExpensive()).isFalse();
+    }
+
+    @Test
     void shouldRoundTripSendTapPoints() throws IOException {
         // All three SendTap values must round-trip through XML, including
         // PRE_INSERTS (the new value introduced for cue/parallel sends).

@@ -475,6 +475,12 @@ public final class ProjectSerializer {
                 Element slotElem = document.createElement("insert");
                 slotElem.setAttribute("name", slot.getName());
                 slotElem.setAttribute("bypassed", String.valueOf(slot.isBypassed()));
+                if (slot.isExpensive()) {
+                    // Story 129 (UI): persist the per-insert "expensive"
+                    // flag so the BypassExpensive degradation policy
+                    // sees the same candidate set after a project reload.
+                    slotElem.setAttribute("expensive", "true");
+                }
                 InsertEffectType effectType = slot.getEffectType();
                 if (effectType != null) {
                     slotElem.setAttribute("effect-type", effectType.name());

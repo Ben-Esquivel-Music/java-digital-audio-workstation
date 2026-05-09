@@ -842,6 +842,13 @@ public final class ProjectDeserializer {
             if (parseBooleanAttr(elem, "bypassed")) {
                 slot.setBypassed(true);
             }
+            // Story 129 (UI): per-insert "expensive" flag drives the
+            // BypassExpensive degradation policy. Absent attribute keeps
+            // the factory default chosen by InsertSlot.
+            String expensiveAttr = elem.getAttribute("expensive");
+            if (expensiveAttr != null && !expensiveAttr.isEmpty()) {
+                slot.setExpensive(Boolean.parseBoolean(expensiveAttr));
+            }
 
             // Restore parameter values.
             //

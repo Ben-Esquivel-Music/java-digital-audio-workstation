@@ -171,6 +171,20 @@ public final class MixerView extends VBox {
      * controller also provides the cache-state tooltip.
      */
     private TrackFreezeController trackFreezeController;
+    /**
+     * Story 129 (UI) — Predicate that returns {@code true} when the
+     * channel currently associated with the given track id is in a
+     * "degraded" state (i.e. the per-track CPU budget enforcer has
+     * tripped its budget). When non-{@code null}, every degraded
+     * strip renders a small "⚠" badge under the channel name.
+     */
+    private java.util.function.Predicate<String> degradedTrackPredicate = _ -> false;
+    /**
+     * Story 129 (UI) — Optional handler invoked when the user picks
+     * "CPU Budget…" from the per-channel context menu. Receives the
+     * mixer channel; null hides the menu entry.
+     */
+    private java.util.function.Consumer<MixerChannel> onConfigureCpuBudget;
 
     /**
      * Creates a new mixer view bound to the given project.
@@ -530,6 +544,33 @@ public final class MixerView extends VBox {
     }
 
     /**
+     * Story 129 (UI) — Wires a predicate that decides whether a
+     * given track id should render the "⚠" CPU-degraded badge under
+     * its channel name. Pass {@code null} to disable the badge.
+     * Call {@link #refresh()} (or invoke from the binding's UI
+     * callback) to re-render strips after the predicate's result
+     * changes.
+     *
+     * @param predicate test invoked per channel strip rebuild; may be
+     *                  {@code null}
+     */
+    public void setDegradedTrackPredicate(java.util.function.Predicate<String> predicate) {
+        this.degradedTrackPredicate = (predicate != null) ? predicate : _ -> false;
+    }
+
+    /**
+     * Story 129 (UI) — Wires the "CPU Budget…" entry on the per-
+     * channel right-click menu. The handler receives the
+     * {@link MixerChannel} for the strip; pass {@code null} to hide
+     * the menu entry.
+     *
+     * @param handler invoked when the user picks the entry
+     */
+    public void setOnConfigureCpuBudget(java.util.function.Consumer<MixerChannel> handler) {
+        this.onConfigureCpuBudget = handler;
+    }
+
+    /**
      * Binds an {@link InputLevelMonitorRegistry} so that armed tracks show
      * an input-signal meter column with a latching clip LED (user story 137).
      *
@@ -874,6 +915,15 @@ public final class MixerView extends VBox {
                     freezeStrip.setDisable(isFrozen);
                     unfreezeStrip.setDisable(!isFrozen);
                 });
+            }
+            // Story 129 (UI) — "CPU Budget…" entry opens a small
+            // dialog to set the per-track maxFractionOfBlock and the
+            // DegradationPolicy. Hidden when no handler is wired.
+            if (onConfigureCpuBudget != null) {
+                stripMenu.getItems().add(new SeparatorMenuItem());
+                MenuItem cpuBudgetItem = new MenuItem("CPU Budget\u2026");
+                cpuBudgetItem.setOnAction(_ -> onConfigureCpuBudget.accept(mixerChannel));
+                stripMenu.getItems().add(cpuBudgetItem);
             }
             strip.setOnContextMenuRequested(e ->
                     stripMenu.show(strip, e.getScreenX(), e.getScreenY()));
@@ -1258,6 +1308,24 @@ public final class MixerView extends VBox {
             int insertAt = strip.getChildren().indexOf(nameLabel) + 1;
             if (lrBadge != null) insertAt += 1;
             strip.getChildren().add(insertAt, freezeBadge);
+        }
+
+        // Story 129 (UI) — "⚠" CPU-degraded badge. Rendered right
+        // under the channel name (after the L/R + freeze badges) when
+        // the per-track CPU budget enforcer reports the channel as
+        // degraded. Cleared on the next refresh once the binding sees
+        // a TrackRestored event.
+        if (degradedTrackPredicate.test(track.getId())) {
+            Label degradedBadge = new Label("\u26A0");
+            degradedBadge.getStyleClass().add("mixer-channel-degraded-badge");
+            degradedBadge.setStyle("-fx-text-fill: #ff9100; -fx-font-size: 12px;"
+                    + " -fx-padding: 0 2 0 2;");
+            Tooltip.install(degradedBadge,
+                    new Tooltip("Track exceeded CPU budget; degradation policy active"));
+            int insertAt = strip.getChildren().indexOf(nameLabel) + 1;
+            if (lrBadge != null) insertAt += 1;
+            if (freezeBadge != null) insertAt += 1;
+            strip.getChildren().add(insertAt, degradedBadge);
         }
 
         return strip;

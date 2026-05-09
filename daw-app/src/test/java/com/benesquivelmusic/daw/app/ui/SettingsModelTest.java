@@ -403,4 +403,53 @@ class SettingsModelTest {
         model.resetToDefaults();
         assertThat(model.getThemeId()).isEqualTo("dark-accessible");
     }
+
+    // ── Master CPU Budget (story 129 UI) ─────────────────────────────────────
+
+    @Test
+    void shouldDefaultMasterCpuBudgetToOneAndDoNothing() {
+        assertThat(model.getMasterCpuBudgetFraction()).isEqualTo(1.0);
+        assertThat(model.getMasterCpuBudgetPolicy())
+                .isInstanceOf(com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.DoNothing.class);
+    }
+
+    @Test
+    void shouldPersistMasterCpuBudgetAcrossInstances() {
+        model.setMasterCpuBudgetFraction(0.75);
+        model.setMasterCpuBudgetPolicy(
+                new com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.BypassExpensive());
+        SettingsModel reloaded = new SettingsModel(prefs);
+        assertThat(reloaded.getMasterCpuBudgetFraction()).isEqualTo(0.75);
+        assertThat(reloaded.getMasterCpuBudgetPolicy())
+                .isInstanceOf(com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.BypassExpensive.class);
+    }
+
+    @Test
+    void shouldRejectInvalidMasterCpuBudgetFraction() {
+        assertThatThrownBy(() -> model.setMasterCpuBudgetFraction(0.0))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> model.setMasterCpuBudgetFraction(-0.5))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> model.setMasterCpuBudgetFraction(1.5))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> model.setMasterCpuBudgetFraction(Double.NaN))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void shouldRejectNullMasterCpuBudgetPolicy() {
+        assertThatThrownBy(() -> model.setMasterCpuBudgetPolicy(null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void resetToDefaultsShouldRestoreMasterCpuBudget() {
+        model.setMasterCpuBudgetFraction(0.5);
+        model.setMasterCpuBudgetPolicy(
+                new com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.BypassExpensive());
+        model.resetToDefaults();
+        assertThat(model.getMasterCpuBudgetFraction()).isEqualTo(1.0);
+        assertThat(model.getMasterCpuBudgetPolicy())
+                .isInstanceOf(com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy.DoNothing.class);
+    }
 }

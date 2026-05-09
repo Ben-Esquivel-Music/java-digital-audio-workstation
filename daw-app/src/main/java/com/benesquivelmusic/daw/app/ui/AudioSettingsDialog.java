@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.sdk.audio.ClockSource;
 import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 import com.benesquivelmusic.daw.sdk.audio.SampleRateConverter.QualityTier;
+import com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy;
 
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
@@ -25,6 +26,7 @@ import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.Separator;
+import javafx.scene.control.Slider;
 import javafx.scene.control.Tooltip;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
@@ -124,6 +126,9 @@ public final class AudioSettingsDialog extends Dialog<Void> {
     private final ComboBox<QualityTier> srcQualityCombo;
     private final ComboBox<ClockSource> clockSourceCombo;
     private final ComboBox<Integer> workerPoolSizeCombo;
+    private final Slider masterCpuBudgetSlider;
+    private final ComboBox<String> masterCpuBudgetPolicyCombo;
+    private final Label masterCpuBudgetValueLabel;
     private final Label bufferLatencyLabel;
     private final Label sampleRateLatencyLabel;
     private final Label cpuLoadLabel;
@@ -196,6 +201,28 @@ public final class AudioSettingsDialog extends Dialog<Void> {
                         + "Changes take effect on the next engine restart (Apply will "
                         + "briefly interrupt playback)."));
         srcQualityCombo = new ComboBox<>();
+        // Story 129 (UI) — Master CPU budget controls. Slider is the
+        // global ceiling; combo is the cascade policy used when the
+        // master is exceeded.
+        masterCpuBudgetSlider = new Slider(0.05, 1.0, SettingsModel.DEFAULT_MASTER_CPU_BUDGET_FRACTION);
+        masterCpuBudgetSlider.setShowTickMarks(true);
+        masterCpuBudgetSlider.setShowTickLabels(true);
+        masterCpuBudgetSlider.setMajorTickUnit(0.25);
+        masterCpuBudgetSlider.setBlockIncrement(0.05);
+        masterCpuBudgetSlider.setTooltip(new Tooltip(
+                "Master CPU budget as a fraction of one audio block. "
+                        + "When the sum of per-track CPU exceeds this ceiling, the "
+                        + "highest-CPU tracks are shed first (cascading degradation). "
+                        + "1.0 disables the master cap (story 129 UI)."));
+        masterCpuBudgetValueLabel = new Label("100%");
+        masterCpuBudgetSlider.valueProperty().addListener((_, _, v) ->
+                masterCpuBudgetValueLabel.setText(String.format("%d%%",
+                        Math.round(v.doubleValue() * 100.0))));
+        masterCpuBudgetPolicyCombo = new ComboBox<>();
+        masterCpuBudgetPolicyCombo.getItems().addAll(
+                "DoNothing", "BypassExpensive", "ReduceOversampling", "SubstituteSimpleKernel");
+        masterCpuBudgetPolicyCombo.setTooltip(new Tooltip(
+                "Degradation policy applied to tracks shed by the master cascade."));
         srcQualityCombo.getItems().setAll(QualityTier.values());
         srcQualityCombo.setTooltip(new Tooltip(
                 "Sample-rate conversion quality used when a clip's native rate "
@@ -372,6 +399,21 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         grid.add(workerPoolSizeCombo, 1, row, 2, 1);
         row++;
 
+        // Story 129 (UI) — Master CPU budget section.
+        grid.add(new Separator(), 0, row, 3, 1);
+        row++;
+        Label cpuBudgetHeader = new Label("Master CPU Budget");
+        cpuBudgetHeader.setStyle("-fx-font-weight: bold;");
+        grid.add(cpuBudgetHeader, 0, row, 3, 1);
+        row++;
+        grid.add(new Label("Max fraction per block:"), 0, row);
+        grid.add(masterCpuBudgetSlider, 1, row);
+        grid.add(masterCpuBudgetValueLabel, 2, row);
+        row++;
+        grid.add(new Label("Cascade policy:"), 0, row);
+        grid.add(masterCpuBudgetPolicyCombo, 1, row, 2, 1);
+        row++;
+
         grid.add(latencyCompensationCheck, 0, row, 3, 1);
         row++;
 
@@ -435,6 +477,12 @@ public final class AudioSettingsDialog extends Dialog<Void> {
             }
             workerPoolSizeCombo.setValue(persistedPool > 0 ? persistedPool : 1);
             latencyCompensationCheck.setSelected(model.isApplyLatencyCompensation());
+            // Story 129 (UI) — seed master CPU budget controls.
+            masterCpuBudgetSlider.setValue(model.getMasterCpuBudgetFraction());
+            masterCpuBudgetValueLabel.setText(String.format("%d%%",
+                    Math.round(model.getMasterCpuBudgetFraction() * 100.0)));
+            masterCpuBudgetPolicyCombo.setValue(
+                    SettingsModel.policyName(model.getMasterCpuBudgetPolicy()));
 
             // Stash the persisted buffer size; refreshDeviceCapabilities
             // will rebuild the menu and snap the value into the
@@ -927,6 +975,18 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         // Host#isApplyLatencyCompensation() at recording start and
         // passes it to RecordingPipeline.setApplyLatencyCompensation().
         model.setApplyLatencyCompensation(latencyCompensationCheck.isSelected());
+        // Story 129 (UI) — persist master CPU budget settings. The
+        // engine reads them on next start (via SettingsModel) so a
+        // fresh enforcer is constructed with the new values.
+        double masterFraction = masterCpuBudgetSlider.getValue();
+        if (!Double.isNaN(masterFraction) && masterFraction > 0.0 && masterFraction <= 1.0) {
+            model.setMasterCpuBudgetFraction(masterFraction);
+        }
+        String policyName = masterCpuBudgetPolicyCombo.getValue();
+        if (policyName != null) {
+            DegradationPolicy policy = SettingsModel.parsePolicy(policyName);
+            model.setMasterCpuBudgetPolicy(policy);
+        }
 
         if (controller == null) {
             return;
