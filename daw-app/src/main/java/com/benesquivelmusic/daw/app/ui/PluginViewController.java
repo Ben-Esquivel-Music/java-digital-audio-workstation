@@ -225,6 +225,7 @@ final class PluginViewController {
             });
             builtInSpectrumWindow.getStage().setOnHidden(_ -> {
                 plugin.deactivate();
+                builtInSpectrumWindow.getDisplay().dispose();
                 builtInSpectrumWindow = null;
             });
         }
@@ -237,6 +238,7 @@ final class PluginViewController {
             tunerDisplayWindow.setOnReferencePitchChanged(plugin::setReferencePitchHz);
             tunerDisplayWindow.getStage().setOnHidden(_ -> {
                 plugin.deactivate();
+                tunerDisplayWindow.getDisplay().dispose();
                 tunerDisplayWindow = null;
             });
         }

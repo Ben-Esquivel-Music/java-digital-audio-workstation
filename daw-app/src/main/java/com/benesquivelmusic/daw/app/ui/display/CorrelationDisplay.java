@@ -2,10 +2,11 @@ package com.benesquivelmusic.daw.app.ui.display;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.fx.GpuCanvas;
+import com.benesquivelmusic.daw.fx.GpuRenderContext;
 import com.benesquivelmusic.daw.sdk.visualization.CorrelationData;
 import com.benesquivelmusic.daw.sdk.visualization.GoniometerData;
 
-import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.Label;
 import javafx.scene.layout.Region;
@@ -57,7 +58,7 @@ public final class CorrelationDisplay extends Region {
 
     private static final double OVERLAY_ICON_SIZE = 9;
 
-    private final Canvas canvas;
+    private final GpuCanvas gpuCanvas;
     private final double[] correlationHistory;
     private int historyIndex;
     private int historyCount;
@@ -80,17 +81,22 @@ public final class CorrelationDisplay extends Region {
 
     private boolean goniometerMode;
     private GoniometerData goniometerData;
+    private boolean disposed;
 
     /**
      * Creates a new correlation display.
      */
     public CorrelationDisplay() {
-        canvas = new Canvas();
-        getChildren().add(canvas);
-        canvas.widthProperty().bind(widthProperty());
-        canvas.heightProperty().bind(heightProperty());
-        widthProperty().addListener((_, _, _) -> render());
-        heightProperty().addListener((_, _, _) -> render());
+        // Compose a GpuCanvas (daw-fx) — owns size binding, per-frame
+        // AnimationTimer (gated on Scene attachment), and background clear.
+        // Callers that remove the display from the scene graph should call
+        // dispose() to release the off-heap surface and stop the timer.
+        gpuCanvas = GpuCanvas.create()
+                .renderer(this::renderFrame)
+                .clearColor(BACKGROUND)
+                .animated(true)
+                .build();
+        getChildren().add(gpuCanvas);
 
         correlationHistory = new double[HISTORY_SIZE];
         java.util.Arrays.fill(correlationHistory, 1.0);
@@ -135,7 +141,9 @@ public final class CorrelationDisplay extends Region {
         historyIndex = (historyIndex + 1) % HISTORY_SIZE;
         historyCount = Math.min(historyCount + 1, HISTORY_SIZE);
 
-        render();
+        if (getScene() == null) {
+            gpuCanvas.requestRender();
+        }
     }
 
     /**
@@ -145,7 +153,9 @@ public final class CorrelationDisplay extends Region {
      */
     public void updateGoniometer(GoniometerData data) {
         this.goniometerData = data;
-        render();
+        if (getScene() == null) {
+            gpuCanvas.requestRender();
+        }
     }
 
     /**
@@ -157,7 +167,7 @@ public final class CorrelationDisplay extends Region {
         this.goniometerMode = enabled;
         midLabel.setVisible(enabled);
         sideLabel.setVisible(enabled);
-        render();
+        gpuCanvas.requestRender();
     }
 
     /** Returns whether goniometer mode is active. */
@@ -166,19 +176,39 @@ public final class CorrelationDisplay extends Region {
     }
 
     /**
-     * Renders the correlation display.
+     * Returns the embedded {@link GpuCanvas}. Visible for tests.
      */
-    private void render() {
-        double w = canvas.getWidth();
-        double h = canvas.getHeight();
+    GpuCanvas getGpuCanvas() {
+        return gpuCanvas;
+    }
+
+    /**
+     * Stops the GpuCanvas render loop and releases its off-heap surface.
+     * Must be called from the JavaFX Application Thread. Safe to call
+     * multiple times.
+     */
+    public void dispose() {
+        if (disposed) return;
+        disposed = true;
+        gpuCanvas.setAnimated(false);
+        gpuCanvas.dispose();
+    }
+
+    /**
+     * Per-frame draw callback invoked by the GpuCanvas AnimationTimer.
+     * Background fill is provided by {@link GpuCanvas#setClearColor(Color)},
+     * so we do not issue a redundant background {@code fillRect}.
+     */
+    private void renderFrame(GpuRenderContext ctx) {
+        GraphicsContext gc = ctx.gc();
+        double w = ctx.width();
+        double h = ctx.height();
         if (w <= 0 || h <= 0) return;
 
-        GraphicsContext gc = canvas.getGraphicsContext2D();
+        renderInto(gc, w, h);
+    }
 
-        // Background
-        gc.setFill(BACKGROUND);
-        gc.fillRect(0, 0, w, h);
-
+    private void renderInto(GraphicsContext gc, double w, double h) {
         if (goniometerMode && goniometerData != null && goniometerData.pointCount() > 0) {
             renderGoniometer(gc, w, h);
         }
@@ -352,7 +382,10 @@ public final class CorrelationDisplay extends Region {
         double w = getWidth();
         double h = getHeight();
 
-        // The canvas width/height are already bound to the region dimensions; no explicit resize needed.
+        // GpuCanvas is itself a Region — resize it to fill the display.
+        // Its own size listeners drive the per-frame redraw.
+        gpuCanvas.resizeRelocate(0, 0, w, h);
+
         // Position icon overlay labels at the same coordinates used by the old fillText() calls.
         double topSection = h * 0.45;
         double meterY     = topSection + 80;
@@ -378,8 +411,6 @@ public final class CorrelationDisplay extends Region {
             // Side icon to the right of the goniometer circle.
             placeLabel(sideLabel, centerX + radius + 2,         centerY - iconHalf);
         }
-
-        render();
     }
 
     /** Moves a non-managed label to the given (x, y) top-left position. */
