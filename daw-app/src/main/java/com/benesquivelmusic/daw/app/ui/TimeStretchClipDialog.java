@@ -4,7 +4,6 @@ import com.benesquivelmusic.daw.core.audio.StretchQuality;
 
 import javafx.geometry.Insets;
 import javafx.scene.control.ButtonType;
-import javafx.scene.control.CheckBox;
 import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
@@ -57,9 +56,8 @@ public final class TimeStretchClipDialog {
      * @param ratio             stretch ratio (1.0 = no change, 2.0 = twice as long).
      *                          Always in {@code [MIN_RATIO, MAX_RATIO]}.
      * @param quality           algorithm quality.
-     * @param preserveFormants  forwarded to the processor; meaningful for vocal material.
      */
-    public record Result(double ratio, StretchQuality quality, boolean preserveFormants) {
+    public record Result(double ratio, StretchQuality quality) {
         public Result {
             Objects.requireNonNull(quality, "quality must not be null");
             if (!(ratio >= MIN_RATIO && ratio <= MAX_RATIO)) {
@@ -68,9 +66,9 @@ public final class TimeStretchClipDialog {
             }
         }
 
-        /** Default settings ({@code 1.0×}, MEDIUM quality, no formant preservation). */
+        /** Default settings ({@code 1.0×}, MEDIUM quality). */
         public static Result defaults() {
-            return new Result(1.0, StretchQuality.MEDIUM, false);
+            return new Result(1.0, StretchQuality.MEDIUM);
         }
     }
 
@@ -163,9 +161,6 @@ public final class TimeStretchClipDialog {
         qualityBox.getItems().setAll(StretchQuality.values());
         qualityBox.setValue(initial.quality());
 
-        CheckBox formants = new CheckBox("Preserve formants (recommended for vocals)");
-        formants.setSelected(initial.preserveFormants());
-
         // Two-way sync: when the user edits one, recompute the other.
         // Guard against feedback loops with a flag.
         boolean[] syncing = {false};
@@ -204,13 +199,11 @@ public final class TimeStretchClipDialog {
         grid.add(new Label("mm:ss.ms"), 2, row++);
         grid.add(new Label("Quality:"), 0, row);
         grid.add(qualityBox, 1, row++);
-        grid.add(formants, 0, row++, 3, 1);
 
         // Preview button — present per the issue spec. It is wired so it
         // never closes the dialog and never mutates the source clip; the
         // actual 2-second audition would be hooked by a controller callback
-        // in a follow-up. See unit test
-        // {@code previewButtonDoesNotMutateSourceClip}.
+        // in a follow-up.
         ButtonType previewType = new ButtonType("Preview", javafx.scene.control.ButtonBar.ButtonData.LEFT);
         dialog.getDialogPane().getButtonTypes().setAll(
                 previewType, ButtonType.OK, ButtonType.CANCEL);
@@ -223,7 +216,7 @@ public final class TimeStretchClipDialog {
             try {
                 double r = Double.parseDouble(ratioField.getText().trim());
                 r = Math.max(MIN_RATIO, Math.min(MAX_RATIO, r));
-                return new Result(r, qualityBox.getValue(), formants.isSelected());
+                return new Result(r, qualityBox.getValue());
             } catch (NumberFormatException e) {
                 return null;
             }

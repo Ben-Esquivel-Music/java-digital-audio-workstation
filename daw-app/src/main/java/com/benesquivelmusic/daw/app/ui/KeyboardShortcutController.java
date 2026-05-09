@@ -134,6 +134,10 @@ final class KeyboardShortcutController {
          * keeps existing test stubs source-compatible.
          */
         default void onMixerToggleAB() { }
+        /** Story 042 — open the Time-Stretch dialog for the selected clip(s). */
+        default void onTimeStretchClip() { }
+        /** Story 042 — open the Pitch-Shift dialog for the selected clip(s). */
+        default void onPitchShiftClip() { }
     }
 
     private final KeyBindingManager keyBindingManager;
@@ -229,6 +233,9 @@ final class KeyboardShortcutController {
         actionHandlers.put(DawAction.TOGGLE_DOCK_ARRANGEMENT, host::onToggleDockArrangement);
         // ── Mixer (Story 103 — Mixer Scene Snapshots and A/B Recall) ──────────
         actionHandlers.put(DawAction.MIXER_TOGGLE_AB, host::onMixerToggleAB);
+        // ── Clip operations (Story 042 — Time-Stretch / Pitch-Shift) ─────────
+        actionHandlers.put(DawAction.TIME_STRETCH_CLIP, host::onTimeStretchClip);
+        actionHandlers.put(DawAction.PITCH_SHIFT_CLIP, host::onPitchShiftClip);
         // ── Workspaces (Customizable Workspace Layouts) ──────────────────────
         actionHandlers.put(DawAction.WORKSPACE_SAVE_AS, host::onSaveWorkspaceAs);
         java.util.List<DawAction> slotActions = DawAction.workspaceSlotActions();

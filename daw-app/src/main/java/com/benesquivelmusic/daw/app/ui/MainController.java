@@ -885,6 +885,8 @@ public final class MainController {
                     @Override public void onUnfreezeFocusedTrack() { MainController.this.onUnfreezeFocusedTrack(); }
                     @Override public void onFreezeSelectedTracks() { MainController.this.onFreezeSelectedTracks(); }
                     @Override public void onUnfreezeSelectedTracks() { MainController.this.onUnfreezeSelectedTracks(); }
+                    @Override public void onTimeStretchClip() { MainController.this.onTimeStretchClip(); }
+                    @Override public void onPitchShiftClip() { MainController.this.onPitchShiftClip(); }
                     @Override public void onToggleCommandPalette() {
                         if (commandPaletteView != null) commandPaletteView.toggle();
                     }

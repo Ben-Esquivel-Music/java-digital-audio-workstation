@@ -443,7 +443,7 @@ class ClipEditControllerTest {
 
         controller.onTimeStretchSelected(_ -> java.util.Optional.of(
                 new TimeStretchClipDialog.Result(2.0,
-                        com.benesquivelmusic.daw.core.audio.StretchQuality.HIGH, false)));
+                        com.benesquivelmusic.daw.core.audio.StretchQuality.HIGH)));
 
         assertThat(clip.getTimeStretchRatio()).isCloseTo(2.0, within(1e-9));
         assertThat(clip.getStretchQuality())
@@ -474,7 +474,7 @@ class ClipEditControllerTest {
 
         controller.onTimeStretchSelected(_ -> java.util.Optional.of(
                 new TimeStretchClipDialog.Result(1.5,
-                        com.benesquivelmusic.daw.core.audio.StretchQuality.MEDIUM, false)));
+                        com.benesquivelmusic.daw.core.audio.StretchQuality.MEDIUM)));
 
         assertThat(clip.getSourceRateMetadata()).isSameAs(srm);
         assertThat(clip.getSourceRateMetadata().nativeRateHz()).isEqualTo(96_000);
@@ -518,7 +518,7 @@ class ClipEditControllerTest {
 
         // +5 semitones and +50 cents → +5.5 semitones combined.
         controller.onPitchShiftSelected(() -> java.util.Optional.of(
-                new PitchShiftClipDialog.Result(5, 50, true, false)));
+                new PitchShiftClipDialog.Result(5, 50, com.benesquivelmusic.daw.core.audio.StretchQuality.MEDIUM)));
 
         assertThat(clip.getPitchShiftSemitones()).isCloseTo(5.5, within(1e-9));
         assertThat(undoManager.canUndo()).isTrue();
@@ -548,7 +548,7 @@ class ClipEditControllerTest {
         ClipEditController controller = new ClipEditController(host);
 
         controller.onPitchShiftSelected(() -> java.util.Optional.of(
-                new PitchShiftClipDialog.Result(3, 0, true, false)));
+                new PitchShiftClipDialog.Result(3, 0, com.benesquivelmusic.daw.core.audio.StretchQuality.MEDIUM)));
 
         // All three clips updated…
         assertThat(a.getPitchShiftSemitones()).isCloseTo(3.0, within(1e-9));
@@ -584,7 +584,7 @@ class ClipEditControllerTest {
 
         controller.onTimeStretchSelected(_ -> java.util.Optional.of(
                 new TimeStretchClipDialog.Result(0.75,
-                        com.benesquivelmusic.daw.core.audio.StretchQuality.LOW, true)));
+                        com.benesquivelmusic.daw.core.audio.StretchQuality.LOW)));
 
         assertThat(a.getTimeStretchRatio()).isCloseTo(0.75, within(1e-9));
         assertThat(b.getTimeStretchRatio()).isCloseTo(0.75, within(1e-9));

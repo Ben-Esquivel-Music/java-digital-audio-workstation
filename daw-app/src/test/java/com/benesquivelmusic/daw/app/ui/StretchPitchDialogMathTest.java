@@ -64,10 +64,10 @@ class StretchPitchDialogMathTest {
     @Test
     void timeStretchResultValidatesRange() {
         assertThatThrownBy(() ->
-                new TimeStretchClipDialog.Result(3.0, StretchQuality.MEDIUM, false))
+                new TimeStretchClipDialog.Result(3.0, StretchQuality.MEDIUM))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() ->
-                new TimeStretchClipDialog.Result(0.1, StretchQuality.MEDIUM, false))
+                new TimeStretchClipDialog.Result(0.1, StretchQuality.MEDIUM))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -76,27 +76,27 @@ class StretchPitchDialogMathTest {
     @Test
     void pitchShiftResultCombinesSemitonesAndCents() {
         // +5 semitones, +50 cents = 5.5 semitones combined.
-        assertThat(new PitchShiftClipDialog.Result(5, 50, true, false).totalSemitones())
+        assertThat(new PitchShiftClipDialog.Result(5, 50, StretchQuality.MEDIUM).totalSemitones())
                 .isCloseTo(5.5, within(1e-9));
         // -3 semitones, -75 cents = -3.75 semitones combined.
-        assertThat(new PitchShiftClipDialog.Result(-3, -75, true, false).totalSemitones())
+        assertThat(new PitchShiftClipDialog.Result(-3, -75, StretchQuality.MEDIUM).totalSemitones())
                 .isCloseTo(-3.75, within(1e-9));
     }
 
     @Test
     void pitchShiftResultIsClampedToEngineRange() {
         // Engine accepts [-24, +24]. 24 semitones + 50 cents would overshoot.
-        double clamped = new PitchShiftClipDialog.Result(24, 50, true, false).totalSemitones();
+        double clamped = new PitchShiftClipDialog.Result(24, 50, StretchQuality.MEDIUM).totalSemitones();
         assertThat(clamped).isCloseTo(PitchShiftClipDialog.MAX_SEMITONES, within(1e-9));
     }
 
     @Test
     void pitchShiftResultValidatesPerFieldRanges() {
         assertThatThrownBy(() ->
-                new PitchShiftClipDialog.Result(25, 0, true, false))
+                new PitchShiftClipDialog.Result(25, 0, StretchQuality.MEDIUM))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() ->
-                new PitchShiftClipDialog.Result(0, 200, true, false))
+                new PitchShiftClipDialog.Result(0, 200, StretchQuality.MEDIUM))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 }

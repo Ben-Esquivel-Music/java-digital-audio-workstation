@@ -693,7 +693,7 @@ final class ClipEditController {
         }
         PitchShiftClipDialog.Result r = result.get();
         double total = r.totalSemitones();
-        StretchQuality quality = StretchQuality.MEDIUM; // dialog has no quality field — keep clip default
+        StretchQuality quality = r.quality();
         applyAsCompound(clips, "Pitch Shift " + clips.size() + " Clip(s)",
                 clip -> new PitchShiftClipAction(clip, total, quality));
         host.updateStatusBar(String.format(java.util.Locale.ROOT,

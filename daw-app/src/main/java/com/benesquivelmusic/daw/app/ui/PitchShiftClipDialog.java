@@ -5,7 +5,6 @@ import com.benesquivelmusic.daw.core.audio.StretchQuality;
 import javafx.geometry.Insets;
 import javafx.scene.control.ButtonBar;
 import javafx.scene.control.ButtonType;
-import javafx.scene.control.CheckBox;
 import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
@@ -48,16 +47,14 @@ public final class PitchShiftClipDialog {
      * The settings selected by the user. {@code null} from
      * {@link #showAndWait(Window, Result)} when the dialog is cancelled.
      *
-     * @param semitones        integer semitones in {@code [-24, +24]}.
-     * @param cents            fine-tune in {@code [-100, +100]}.
-     * @param preserveDuration when {@code true} the clip's duration on the
-     *                         timeline does not change (default behaviour).
-     * @param preserveFormants forwarded to the processor; meaningful for vocal
-     *                         material.
+     * @param semitones integer semitones in {@code [-24, +24]}.
+     * @param cents     fine-tune in {@code [-100, +100]}.
+     * @param quality   algorithm quality; forwarded to
+     *                  {@link com.benesquivelmusic.daw.core.audio.PitchShiftClipAction}.
      */
-    public record Result(int semitones, int cents,
-                         boolean preserveDuration, boolean preserveFormants) {
+    public record Result(int semitones, int cents, StretchQuality quality) {
         public Result {
+            Objects.requireNonNull(quality, "quality must not be null");
             if (semitones < -24 || semitones > 24) {
                 throw new IllegalArgumentException(
                         "semitones must be in [-24, 24]: " + semitones);
@@ -68,9 +65,9 @@ public final class PitchShiftClipDialog {
             }
         }
 
-        /** Default settings (no shift, preserve duration, don't preserve formants). */
+        /** Default settings (no shift, MEDIUM quality). */
         public static Result defaults() {
-            return new Result(0, 0, true, false);
+            return new Result(0, 0, StretchQuality.MEDIUM);
         }
 
         /**
@@ -115,13 +112,7 @@ public final class PitchShiftClipDialog {
 
         ChoiceBox<StretchQuality> qualityBox = new ChoiceBox<>();
         qualityBox.getItems().setAll(StretchQuality.values());
-        qualityBox.setValue(StretchQuality.MEDIUM);
-
-        CheckBox preserveDuration = new CheckBox("Preserve duration");
-        preserveDuration.setSelected(initial.preserveDuration());
-
-        CheckBox preserveFormants = new CheckBox("Preserve formants (recommended for vocals)");
-        preserveFormants.setSelected(initial.preserveFormants());
+        qualityBox.setValue(initial.quality());
 
         GridPane grid = new GridPane();
         grid.setHgap(8);
@@ -136,8 +127,6 @@ public final class PitchShiftClipDialog {
         grid.add(new Label("(-100 to +100)"), 2, row++);
         grid.add(new Label("Quality:"), 0, row);
         grid.add(qualityBox, 1, row++);
-        grid.add(preserveDuration, 0, row++, 3, 1);
-        grid.add(preserveFormants, 0, row++, 3, 1);
 
         // Preview button — present per the spec. It must not close the dialog
         // or mutate the source clip.
@@ -153,8 +142,7 @@ public final class PitchShiftClipDialog {
             return new Result(
                     semitonesSpinner.getValue(),
                     centsSpinner.getValue(),
-                    preserveDuration.isSelected(),
-                    preserveFormants.isSelected());
+                    qualityBox.getValue());
         });
 
         return dialog.showAndWait();
