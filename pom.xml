@@ -25,6 +25,7 @@
         <module>daw-sdk</module>
         <module>daw-core</module>
         <module>daw-acoustics</module>
+        <module>daw-fx</module>
         <module>daw-app</module>
     </modules>
 
@@ -81,11 +82,21 @@
                 <artifactId>daw-acoustics</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <dependency>
+                <groupId>com.benesquivelmusic</groupId>
+                <artifactId>daw-fx</artifactId>
+                <version>${project.version}</version>
+            </dependency>
 
             <!-- JavaFX -->
             <dependency>
                 <groupId>org.openjfx</groupId>
                 <artifactId>javafx-controls</artifactId>
+                <version>${javafx.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.openjfx</groupId>
+                <artifactId>javafx-graphics</artifactId>
                 <version>${javafx.version}</version>
             </dependency>
             <dependency>
