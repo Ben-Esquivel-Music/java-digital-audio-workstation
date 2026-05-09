@@ -38,7 +38,16 @@ class DawActionTest {
 
     @Test
     void allActionsShouldHaveDefaultBindings() {
+        // Story 134 introduced TOGGLE_PRE_ROLL / TOGGLE_POST_ROLL — these
+        // are surfaced primarily as toolbar toggle buttons and have no
+        // factory keyboard shortcut. The DawAction javadoc explicitly
+        // permits a {@code null} default for such actions.
+        java.util.Set<DawAction> nullBindingAllowed = java.util.Set.of(
+                DawAction.TOGGLE_PRE_ROLL, DawAction.TOGGLE_POST_ROLL);
         for (DawAction action : DawAction.values()) {
+            if (nullBindingAllowed.contains(action)) {
+                continue;
+            }
             assertThat(action.defaultBinding())
                     .as("defaultBinding for %s", action.name())
                     .isNotNull();

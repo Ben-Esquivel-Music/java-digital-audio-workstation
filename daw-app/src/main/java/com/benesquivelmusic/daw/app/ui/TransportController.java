@@ -19,11 +19,19 @@ import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
+import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 import javafx.animation.FadeTransition;
+import javafx.animation.PauseTransition;
+import javafx.geometry.Pos;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.Label;
+import javafx.scene.control.Spinner;
+import javafx.scene.control.SpinnerValueFactory;
+import javafx.scene.control.ToggleButton;
+import javafx.scene.control.Tooltip;
+import javafx.scene.layout.HBox;
 import javafx.util.Duration;
 
 import javax.sound.midi.MidiDevice;
@@ -112,6 +120,34 @@ final class TransportController {
     private RecordingPipeline recordingPipeline;
     private final Map<Track, MidiRecorder> activeMidiRecorders = new LinkedHashMap<>();
     private boolean loopEnabled;
+
+    /**
+     * Story 134 — Pre-roll / Post-Roll transport controls. The toggle
+     * buttons reflect whether the feature is currently enabled, and the
+     * spinners hold the bar counts (range 0–8, default 2). They are
+     * created lazily by {@link #createPreRollPostRollControls()}; if the
+     * controls are never mounted, the transport's pre/post-roll
+     * configuration remains at {@link PreRollPostRoll#DISABLED}.
+     */
+    private ToggleButton preRollToggle;
+    private ToggleButton postRollToggle;
+    private Spinner<Integer> preRollSpinner;
+    private Spinner<Integer> postRollSpinner;
+    /** Cached container returned by {@link #createPreRollPostRollControls()}. */
+    private HBox preRollControlsBox;
+
+    /** Default bar count used by the pre/post-roll spinners (range 0–8). */
+    static final int DEFAULT_BARS = 2;
+    /** Maximum bar count allowed by the pre/post-roll spinners. */
+    static final int MAX_BARS = 8;
+
+    /**
+     * Story 134 — Post-roll completion timer. Schedules
+     * {@link #finishPostRoll()} after the configured post-roll duration
+     * has elapsed. Kept as a field so a second stop request can cancel
+     * a pending timer before rescheduling.
+     */
+    private PauseTransition postRollTimer;
 
     TransportController(DawProject project,
                         AudioEngine audioEngine,
@@ -202,7 +238,36 @@ final class TransportController {
         // Finalize MIDI recording if any MIDI recorders are active
         stopMidiRecording();
 
-        project.getTransport().stop();
+        // Story 134 — use requestStop() so that a configured post-roll
+        // keeps the transport running for postBars × barLength before
+        // finally stopping. If no post-roll is configured (or disabled),
+        // requestStop() is equivalent to stop().
+        Transport transport = project.getTransport();
+        boolean enteredPostRoll = transport.requestStop();
+        if (enteredPostRoll) {
+            // Transport is still running in post-roll — schedule
+            // finishPostRoll() after the configured duration.
+            PreRollPostRoll prpr = transport.getPreRollPostRoll();
+            double postRollBeats = prpr.postRollBeats(
+                    transport.getTimeSignatureNumerator());
+            double postRollSeconds = postRollBeats * (60.0 / transport.getTempo());
+            statusBarLabel.setText(String.format(
+                    "Post-roll: %.1f beats — tail playing…", postRollBeats));
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.PLAY_CIRCLE, 12));
+            // Cancel any pending post-roll timer from a previous stop request
+            if (postRollTimer != null) {
+                postRollTimer.stop();
+            }
+            postRollTimer = new PauseTransition(
+                    Duration.seconds(postRollSeconds));
+            postRollTimer.setOnFinished(_ -> finishPostRoll());
+            postRollTimer.play();
+            // Don't stop the ticker yet — it drives the time display
+            // through the post-roll window.
+            updateStatus();
+            return;
+        }
+
         audioEngine.stopAudioOutput();
         host.stopTimeTicker();
         updateStatus();
@@ -215,6 +280,26 @@ final class TransportController {
         recordButton.setOpacity(1.0);
         recordButton.setStyle("");
         // Hide the REC indicator
+        recIndicator.setVisible(false);
+        recIndicator.setManaged(false);
+    }
+
+    /**
+     * Completes a post-roll window: stops the transport, audio engine
+     * and time ticker, and resets UI state. Called automatically by the
+     * {@link #postRollTimer} after the configured post-roll duration.
+     */
+    private void finishPostRoll() {
+        Transport transport = project.getTransport();
+        transport.finishPostRoll();
+        audioEngine.stopAudioOutput();
+        host.stopTimeTicker();
+        updateStatus();
+        timeDisplay.setText("00:00:00.0");
+        statusBarLabel.setText("Stopped");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.POWER, 12));
+        recordButton.setOpacity(1.0);
+        recordButton.setStyle("");
         recIndicator.setVisible(false);
         recIndicator.setManaged(false);
     }
@@ -362,6 +447,186 @@ final class TransportController {
         statusBarLabel.setGraphic(IconNode.of(DawIcon.LOOP, 12));
         LOG.fine(loopState);
     }
+
+    // ── Pre-Roll / Post-Roll (Story 134) ─────────────────────────────────────
+
+    /**
+     * Starts playback with pre-roll applied (Story 134). The transport
+     * is seeked back by the configured pre-roll bar count and playback
+     * begins. If pre-roll is disabled or {@code preBars == 0}, this is
+     * equivalent to {@link #onPlay()}.
+     *
+     * <p>During the pre-roll window the transport's
+     * {@link Transport#isInputCaptureGated()} flag is {@code true} —
+     * the recording pipeline reads it to suppress capture so the user
+     * hears context but no input is recorded.</p>
+     */
+    void onPlayWithPreRoll() {
+        try {
+            audioEngine.startAudioOutput();
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Failed to start audio output", e);
+            notificationBar.show(NotificationLevel.ERROR,
+                    "Audio device error: " + e.getMessage());
+        }
+        double shift = project.getTransport().playWithPreRoll();
+        host.startTimeTicker();
+        updateStatus();
+        if (shift > 0) {
+            statusBarLabel.setText(String.format(
+                    "Pre-roll: %.1f beats (monitoring only)…", shift));
+        } else {
+            statusBarLabel.setText("Playing...");
+        }
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.PLAY_CIRCLE, 12));
+    }
+
+    /**
+     * Toggles the pre-roll feature independently of post-roll. When
+     * toggling on and {@code preBars} is zero, seeds with
+     * {@value #DEFAULT_BARS}. When toggling off, sets {@code preBars}
+     * to zero. The {@code enabled} flag is derived: {@code true} iff
+     * either side has a non-zero bar count.
+     */
+    void onTogglePreRoll() {
+        Transport transport = project.getTransport();
+        PreRollPostRoll current = transport.getPreRollPostRoll();
+        boolean preActive = current.preBars() > 0;
+        int newPre = preActive ? 0 : Math.max(DEFAULT_BARS, current.preBars());
+        boolean newEnabled = newPre > 0 || current.postBars() > 0;
+        transport.setPreRollPostRoll(
+                new PreRollPostRoll(newPre, current.postBars(), newEnabled));
+        syncPreRollControls();
+        statusBarLabel.setText("Pre-roll: " + (!preActive ? "ON" : "OFF"));
+    }
+
+    /**
+     * Toggles the post-roll feature independently of pre-roll. When
+     * toggling on and {@code postBars} is zero, seeds with
+     * {@value #DEFAULT_BARS}. When toggling off, sets {@code postBars}
+     * to zero. The {@code enabled} flag is derived: {@code true} iff
+     * either side has a non-zero bar count.
+     */
+    void onTogglePostRoll() {
+        Transport transport = project.getTransport();
+        PreRollPostRoll current = transport.getPreRollPostRoll();
+        boolean postActive = current.postBars() > 0;
+        int newPost = postActive ? 0 : Math.max(DEFAULT_BARS, current.postBars());
+        boolean newEnabled = current.preBars() > 0 || newPost > 0;
+        transport.setPreRollPostRoll(
+                new PreRollPostRoll(current.preBars(), newPost, newEnabled));
+        syncPreRollControls();
+        statusBarLabel.setText("Post-roll: " + (!postActive ? "ON" : "OFF"));
+    }
+
+    /**
+     * Builds the toggle buttons and bar-count spinners for pre-roll and
+     * post-roll, returning an {@link HBox} suitable for mounting on the
+     * transport bar. The controls are wired bidirectionally with
+     * {@link Transport#setPreRollPostRoll}: changing a spinner updates
+     * the configuration; calling {@link #onTogglePreRoll()} updates the
+     * toggle state. Range 0–8, default {@value #DEFAULT_BARS}.
+     *
+     * <p>This method is package-private and idempotent: calling it more
+     * than once returns the <em>same</em> cached {@link HBox} instance,
+     * avoiding the JavaFX restriction that a {@code Node} can only have
+     * one parent.</p>
+     *
+     * @return an {@link HBox} containing the pre-roll and post-roll
+     *         toggles and spinners
+     */
+    HBox createPreRollPostRollControls() {
+        if (preRollControlsBox != null) {
+            return preRollControlsBox;
+        }
+        preRollToggle = new ToggleButton("Pre-Roll");
+        preRollToggle.getStyleClass().addAll("transport-button", "pre-roll-button");
+        preRollToggle.setGraphic(IconNode.of(DawIcon.REWIND, 12));
+        preRollToggle.setTooltip(new Tooltip(
+                "Pre-Roll: seek back by N bars before playback (Story 134)"));
+        preRollToggle.setOnAction(_ -> onTogglePreRoll());
+
+        postRollToggle = new ToggleButton("Post-Roll");
+        postRollToggle.getStyleClass().addAll("transport-button", "post-roll-button");
+        postRollToggle.setGraphic(IconNode.of(DawIcon.FAST_FORWARD, 12));
+        postRollToggle.setTooltip(new Tooltip(
+                "Post-Roll: keep playing for N bars after stop (Story 134)"));
+        postRollToggle.setOnAction(_ -> onTogglePostRoll());
+
+        preRollSpinner = createBarSpinner();
+        preRollSpinner.valueProperty().addListener((_, _, newVal) ->
+                applySpinnerChange(newVal, /*pre=*/true));
+
+        postRollSpinner = createBarSpinner();
+        postRollSpinner.valueProperty().addListener((_, _, newVal) ->
+                applySpinnerChange(newVal, /*pre=*/false));
+
+        syncPreRollControls();
+
+        preRollControlsBox = new HBox(4, preRollToggle, preRollSpinner,
+                postRollToggle, postRollSpinner);
+        preRollControlsBox.setAlignment(Pos.CENTER);
+        preRollControlsBox.getStyleClass().add("toolbar-button-group");
+        return preRollControlsBox;
+    }
+
+    private static Spinner<Integer> createBarSpinner() {
+        SpinnerValueFactory.IntegerSpinnerValueFactory factory =
+                new SpinnerValueFactory.IntegerSpinnerValueFactory(0, MAX_BARS, DEFAULT_BARS);
+        Spinner<Integer> spinner = new Spinner<>(factory);
+        spinner.setEditable(true);
+        spinner.setPrefWidth(64);
+        spinner.getStyleClass().add("pre-roll-spinner");
+        return spinner;
+    }
+
+    private void applySpinnerChange(Integer newVal, boolean pre) {
+        int v = (newVal == null) ? 0 : Math.max(0, Math.min(MAX_BARS, newVal));
+        Transport transport = project.getTransport();
+        PreRollPostRoll current = transport.getPreRollPostRoll();
+        int preBars = pre ? v : current.preBars();
+        int postBars = pre ? current.postBars() : v;
+        // Derive the enabled flag: true iff either side has a non-zero
+        // bar count. This keeps enabled state consistent when the user
+        // zeroes out a spinner.
+        boolean enabled = preBars > 0 || postBars > 0;
+        transport.setPreRollPostRoll(
+                new PreRollPostRoll(preBars, postBars, enabled));
+        syncPreRollControls();
+    }
+
+    /**
+     * Pushes the current {@link Transport#getPreRollPostRoll()} state onto
+     * the toggle buttons and spinners, if mounted. Safe to call when
+     * controls have not been built — it is a no-op.
+     */
+    void syncPreRollControls() {
+        if (preRollToggle == null) {
+            return;
+        }
+        PreRollPostRoll prpr = project.getTransport().getPreRollPostRoll();
+        preRollToggle.setSelected(prpr.enabled() && prpr.preBars() > 0);
+        postRollToggle.setSelected(prpr.enabled() && prpr.postBars() > 0);
+        // setValue fires the spinner listener; skip if value already matches
+        // to avoid feedback loops between Transport ↔ spinner.
+        if (preRollSpinner.getValue() == null
+                || preRollSpinner.getValue() != prpr.preBars()) {
+            preRollSpinner.getValueFactory().setValue(prpr.preBars());
+        }
+        if (postRollSpinner.getValue() == null
+                || postRollSpinner.getValue() != prpr.postBars()) {
+            postRollSpinner.getValueFactory().setValue(prpr.postBars());
+        }
+    }
+
+    /** Returns the pre-roll toggle button (for tests). May be {@code null}. */
+    ToggleButton preRollToggleForTest() { return preRollToggle; }
+    /** Returns the post-roll toggle button (for tests). May be {@code null}. */
+    ToggleButton postRollToggleForTest() { return postRollToggle; }
+    /** Returns the pre-roll spinner (for tests). May be {@code null}. */
+    Spinner<Integer> preRollSpinnerForTest() { return preRollSpinner; }
+    /** Returns the post-roll spinner (for tests). May be {@code null}. */
+    Spinner<Integer> postRollSpinnerForTest() { return postRollSpinner; }
 
     // ── MIDI recording helpers ───────────────────────────────────────────────
 
