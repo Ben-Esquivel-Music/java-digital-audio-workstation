@@ -185,7 +185,10 @@ public final class GpuCanvas extends Region {
 
     public final BooleanProperty animatedProperty() { return animated; }
     public final boolean isAnimated() { return animated.get(); }
-    public final void setAnimated(boolean value) { animated.set(value); }
+    public final void setAnimated(boolean value) {
+        requireFxThread("setAnimated");
+        animated.set(value);
+    }
 
     public final ObjectProperty<Color> clearColorProperty() { return clearColor; }
     public final Color getClearColor() { return clearColor.get(); }
@@ -332,7 +335,10 @@ public final class GpuCanvas extends Region {
 
     private void releaseSurface() {
         if (arena == null) return;
-        arena.close();
+        // Defer closing to the next FX pulse so that any in-flight Prism
+        // upload referencing the PixelBuffer's aliased ByteBuffer can
+        // complete before the backing MemorySegment is unmapped.
+        Arena old = arena;
         arena = null;
         pixels = null;
         pixelBuffer = null;
@@ -340,6 +346,7 @@ public final class GpuCanvas extends Region {
         surfaceHeight = 0;
         surfaceStride = 0;
         imageView.setImage(null);
+        Platform.runLater(old::close);
     }
 
     private void clearSurface() {
@@ -448,13 +455,17 @@ public final class GpuCanvas extends Region {
         animated.removeListener(animatedListener);
         sceneProperty().removeListener(sceneListener);
         if (arena != null) {
-            arena.close();
+            // Defer closing to the next FX pulse so that any in-flight Prism
+            // upload referencing the PixelBuffer's aliased ByteBuffer can
+            // complete before the backing MemorySegment is unmapped.
+            Arena old = arena;
             arena = null;
             pixels = null;
             pixelBuffer = null;
             surfaceWidth = 0;
             surfaceHeight = 0;
             surfaceStride = 0;
+            Platform.runLater(old::close);
         }
     }
 
