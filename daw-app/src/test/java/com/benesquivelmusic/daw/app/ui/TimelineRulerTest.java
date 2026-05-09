@@ -430,4 +430,116 @@ class TimelineRulerTest {
         assertThat(TimelineRuler.PUNCH_HANDLE_COLOR).isNotNull();
         assertThat(TimelineRuler.PUNCH_HANDLE_LINE_COLOR).isNotNull();
     }
+
+    // ── pre-roll / post-roll shading (Story 134) ────────────────────────────
+
+    @Test
+    void shouldDefinePreRollAndPostRollShadingColors() {
+        // Distinct from loop and punch palettes — the issue requires they
+        // be visually separable when stacked on the same ruler.
+        assertThat(TimelineRuler.PRE_ROLL_REGION_COLOR).isNotNull();
+        assertThat(TimelineRuler.POST_ROLL_REGION_COLOR).isNotNull();
+        assertThat(TimelineRuler.PRE_ROLL_REGION_COLOR)
+                .isNotEqualTo(TimelineRuler.LOOP_REGION_COLOR);
+        assertThat(TimelineRuler.PRE_ROLL_REGION_COLOR)
+                .isNotEqualTo(TimelineRuler.PUNCH_REGION_COLOR);
+        assertThat(TimelineRuler.POST_ROLL_REGION_COLOR)
+                .isNotEqualTo(TimelineRuler.PRE_ROLL_REGION_COLOR);
+    }
+
+    @Test
+    void shouldNotShadePreRollWhenDisabled() throws Exception {
+        Transport transport = new Transport();
+        transport.setPreRollPostRoll(
+                com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll.DISABLED);
+        TimelineRuler ruler = createOnFxThread(transport);
+
+        AtomicReference<double[]> bounds = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            ruler.resize(400, TimelineRuler.DEFAULT_HEIGHT);
+            ruler.setPlayheadPositionBeats(8.0);
+            bounds.set(ruler.computePreRollBounds(400.0));
+            latch.countDown();
+        });
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(bounds.get()).isNull();
+    }
+
+    @Test
+    void shouldShadePreRollLeadingIntoPlayhead() throws Exception {
+        // 4/4 time, 2-bar pre-roll, playhead at beat 8, BASE_PIXELS_PER_BEAT
+        // = 40 ⇒ pre-roll spans beats [0, 8] which is x ∈ [0, 320].
+        Transport transport = new Transport();
+        transport.setPreRollPostRoll(
+                com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll.enabled(2, 0));
+        TimelineRuler ruler = createOnFxThread(transport);
+
+        AtomicReference<double[]> bounds = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            ruler.resize(400, TimelineRuler.DEFAULT_HEIGHT);
+            ruler.setPlayheadPositionBeats(8.0);
+            ruler.redraw();
+            bounds.set(ruler.computePreRollBounds(400.0));
+            latch.countDown();
+        });
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(bounds.get()).isNotNull();
+        assertThat(bounds.get()[0]).isCloseTo(0.0, within(1e-6));
+        assertThat(bounds.get()[1])
+                .isCloseTo(8.0 * TimelineRuler.BASE_PIXELS_PER_BEAT, within(1e-6));
+    }
+
+    @Test
+    void shouldShadePostRollTrailingOutOfPlayhead() throws Exception {
+        // 4/4 time, 1-bar post-roll, playhead at beat 4 ⇒ post-roll spans
+        // beats [4, 8], i.e. x ∈ [160, 320] at BASE_PIXELS_PER_BEAT = 40.
+        Transport transport = new Transport();
+        transport.setPreRollPostRoll(
+                com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll.enabled(0, 1));
+        TimelineRuler ruler = createOnFxThread(transport);
+
+        AtomicReference<double[]> bounds = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            ruler.resize(400, TimelineRuler.DEFAULT_HEIGHT);
+            ruler.setPlayheadPositionBeats(4.0);
+            ruler.redraw();
+            bounds.set(ruler.computePostRollBounds(400.0));
+            latch.countDown();
+        });
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(bounds.get()).isNotNull();
+        assertThat(bounds.get()[0])
+                .isCloseTo(4.0 * TimelineRuler.BASE_PIXELS_PER_BEAT, within(1e-6));
+        assertThat(bounds.get()[1])
+                .isCloseTo(8.0 * TimelineRuler.BASE_PIXELS_PER_BEAT, within(1e-6));
+    }
+
+    @Test
+    void preRollShadingShouldClampToZeroBeforeStart() throws Exception {
+        // Playhead at beat 4, pre-roll = 8 bars × 4 beats = 32 beats; the
+        // band would start at beat -28 but must clamp to beat 0.
+        Transport transport = new Transport();
+        transport.setPreRollPostRoll(
+                com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll.enabled(8, 0));
+        TimelineRuler ruler = createOnFxThread(transport);
+
+        AtomicReference<double[]> bounds = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            ruler.resize(2000, TimelineRuler.DEFAULT_HEIGHT);
+            ruler.setPlayheadPositionBeats(4.0);
+            ruler.redraw();
+            bounds.set(ruler.computePreRollBounds(2000.0));
+            latch.countDown();
+        });
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(bounds.get()).isNotNull();
+        // Anchor=4 beats, clamped startBeat=0 → x1=0 px. End = 4 × 40 = 160 px.
+        assertThat(bounds.get()[0]).isCloseTo(0.0, within(1e-6));
+        assertThat(bounds.get()[1])
+                .isCloseTo(4.0 * TimelineRuler.BASE_PIXELS_PER_BEAT, within(1e-6));
+    }
 }

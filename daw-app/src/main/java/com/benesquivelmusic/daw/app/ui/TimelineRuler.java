@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.core.transport.TimeDisplayMode;
 import com.benesquivelmusic.daw.core.transport.TimelineRulerModel;
 import com.benesquivelmusic.daw.core.transport.Transport;
+import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
 import javafx.scene.canvas.Canvas;
@@ -60,6 +61,15 @@ public final class TimelineRuler extends Pane {
     static final Color PUNCH_REGION_COLOR = Color.web("#ff5555", 0.25);
     static final Color PUNCH_HANDLE_COLOR = Color.web("#ff5555", 0.9);
     static final Color PUNCH_HANDLE_LINE_COLOR = Color.web("#ff5555", 0.7);
+    /**
+     * Story 134 — pre-roll shading band leading into the punch-in (or
+     * playhead if no punch is armed). A soft amber tone, distinct from
+     * the loop ({@link #LOOP_REGION_COLOR}) and punch
+     * ({@link #PUNCH_REGION_COLOR}) bands.
+     */
+    static final Color PRE_ROLL_REGION_COLOR = Color.web("#ffb74d", 0.18);
+    /** Story 134 — post-roll shading band trailing out of the punch-out / playhead. */
+    static final Color POST_ROLL_REGION_COLOR = Color.web("#4dd0e1", 0.18);
 
     private static final Font LABEL_FONT = Font.font("Monospaced", 10);
     private static final Font TEMPO_FONT = Font.font("Monospaced", 9);
@@ -271,6 +281,8 @@ public final class TimelineRuler extends Pane {
         gc.fillRect(0, 0, w, h);
 
         drawLoopRegion(gc, w, h);
+        drawPreRollRegion(gc, w, h);
+        drawPostRollRegion(gc, w, h);
         drawPunchRegion(gc, w, h);
         drawTempoAndTimeSignature(gc, h);
         drawSubdivisions(gc, w, h);
@@ -446,6 +458,122 @@ public final class TimelineRuler extends Pane {
         Transport transport = model.getTransport();
         double seconds = frames / sampleRate;
         return transport.getTempoMap().secondsToBeats(seconds);
+    }
+
+    /**
+     * Story 134 — draws the soft-shaded band representing the pre-roll
+     * range leading into the punch-in (when armed) or the playhead. The
+     * band spans {@code preBars × beatsPerBar} beats and is clamped to
+     * the visible viewport. No-op when pre-roll is disabled or
+     * {@code preBars == 0}.
+     */
+    private void drawPreRollRegion(GraphicsContext gc, double w, double h) {
+        double[] bounds = computePreRollBounds(w);
+        if (bounds == null) {
+            return;
+        }
+        gc.setFill(PRE_ROLL_REGION_COLOR);
+        gc.fillRect(bounds[0], 0, bounds[1] - bounds[0], h);
+    }
+
+    /**
+     * Story 134 — draws the soft-shaded band representing the post-roll
+     * range trailing out of the punch-out (when armed) or the playhead.
+     * No-op when post-roll is disabled or {@code postBars == 0}.
+     */
+    private void drawPostRollRegion(GraphicsContext gc, double w, double h) {
+        double[] bounds = computePostRollBounds(w);
+        if (bounds == null) {
+            return;
+        }
+        gc.setFill(POST_ROLL_REGION_COLOR);
+        gc.fillRect(bounds[0], 0, bounds[1] - bounds[0], h);
+    }
+
+    /**
+     * Computes the on-screen pixel bounds {@code [x1, x2]} of the
+     * pre-roll shading band, clamped to {@code [0, w]}. Returns
+     * {@code null} when pre-roll is disabled, the bar count is zero,
+     * or the band is fully off-screen.
+     *
+     * <p>Package-private for testing — see {@code TimelineRulerTest}.</p>
+     */
+    double[] computePreRollBounds(double w) {
+        Transport transport = model.getTransport();
+        PreRollPostRoll prpr = transport.getPreRollPostRoll();
+        if (prpr == null || !prpr.enabled() || prpr.preBars() <= 0) {
+            return null;
+        }
+        double anchor = preRollPostRollAnchor();
+        double preBeats = prpr.preBars() * (double) transport.getTimeSignatureNumerator();
+        double startBeat = Math.max(0.0, anchor - preBeats);
+        double endBeat = anchor;
+        if (endBeat <= startBeat) {
+            return null;
+        }
+        double x1 = (startBeat - scrollOffsetBeats) * pixelsPerBeat;
+        double x2 = (endBeat - scrollOffsetBeats) * pixelsPerBeat;
+        double drawX1 = Math.max(0, x1);
+        double drawX2 = Math.min(w, x2);
+        if (drawX2 <= drawX1) {
+            return null;
+        }
+        return new double[]{drawX1, drawX2};
+    }
+
+    /**
+     * Computes the on-screen pixel bounds {@code [x1, x2]} of the
+     * post-roll shading band, clamped to {@code [0, w]}. Returns
+     * {@code null} when post-roll is disabled, the bar count is zero,
+     * or the band is fully off-screen.
+     *
+     * <p>Package-private for testing — see {@code TimelineRulerTest}.</p>
+     */
+    double[] computePostRollBounds(double w) {
+        Transport transport = model.getTransport();
+        PreRollPostRoll prpr = transport.getPreRollPostRoll();
+        if (prpr == null || !prpr.enabled() || prpr.postBars() <= 0) {
+            return null;
+        }
+        double anchor = postRollAnchor();
+        double postBeats = prpr.postBars() * (double) transport.getTimeSignatureNumerator();
+        double startBeat = anchor;
+        double endBeat = anchor + postBeats;
+        double x1 = (startBeat - scrollOffsetBeats) * pixelsPerBeat;
+        double x2 = (endBeat - scrollOffsetBeats) * pixelsPerBeat;
+        double drawX1 = Math.max(0, x1);
+        double drawX2 = Math.min(w, x2);
+        if (drawX2 <= drawX1) {
+            return null;
+        }
+        return new double[]{drawX1, drawX2};
+    }
+
+    /**
+     * Anchor for the pre-roll band: the punch-in beat when a punch
+     * region is armed (independent of its enabled flag — the user has
+     * defined boundaries), otherwise the current playhead position.
+     */
+    private double preRollPostRollAnchor() {
+        Transport transport = model.getTransport();
+        PunchRegion punch = transport.getPunchRegion();
+        if (punch != null) {
+            return framesToBeats(punch.startFrames());
+        }
+        return playheadPositionBeats;
+    }
+
+    /**
+     * Anchor for the post-roll band: the punch-out beat when a punch
+     * region is armed, otherwise the current playhead position.
+     */
+    private double postRollAnchor() {
+        Transport transport = model.getTransport();
+        PunchRegion punch = transport.getPunchRegion();
+        if (punch != null) {
+            return framesToBeats(punch.endFrames());
+        }
+        return playheadPositionBeats;
     }
 
     // ── Mouse interaction for loop handles ──────────────────────────────────

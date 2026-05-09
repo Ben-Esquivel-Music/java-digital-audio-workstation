@@ -35,6 +35,18 @@ public enum DawAction {
             new KeyCodeCombination(KeyCode.O)),
     TOGGLE_PUNCH("Toggle Punch", Category.TRANSPORT,
             new KeyCodeCombination(KeyCode.P, KeyCombination.SHIFT_DOWN)),
+    /**
+     * Story 134 — Play with pre-roll. Seeks the playhead back by
+     * {@code preBars × beatsPerBar} (clamped to 0) and starts playback,
+     * letting the performer hear context before a punch-in. Bound to
+     * {@code Shift+Space}; regular {@code Space} (PLAY_STOP) is unchanged.
+     */
+    PLAY_WITH_PRE_ROLL("Play with Pre-Roll", Category.TRANSPORT,
+            new KeyCodeCombination(KeyCode.SPACE, KeyCombination.SHIFT_DOWN)),
+    /** Story 134 — toggle the pre-roll feature on/off (no default shortcut). */
+    TOGGLE_PRE_ROLL("Toggle Pre-Roll", Category.TRANSPORT, null),
+    /** Story 134 — toggle the post-roll feature on/off (no default shortcut). */
+    TOGGLE_POST_ROLL("Toggle Post-Roll", Category.TRANSPORT, null),
 
     // ── Editing ──────────────────────────────────────────────────────────────
     UNDO("Undo", Category.EDITING,

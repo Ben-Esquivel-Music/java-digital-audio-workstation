@@ -66,6 +66,25 @@ class KeyBindingManagerTest {
                 .isInstanceOf(UnsupportedOperationException.class);
     }
 
+    /**
+     * Story 134 — Shift+Space must trigger {@code playWithPreRoll()},
+     * leaving plain Space ({@link DawAction#PLAY_STOP}) unaffected.
+     */
+    @Test
+    void playWithPreRollShouldDefaultToShiftSpace() {
+        KeyCombination expected = new KeyCodeCombination(
+                KeyCode.SPACE, KeyCombination.SHIFT_DOWN);
+        Optional<KeyCombination> binding = manager.getBinding(DawAction.PLAY_WITH_PRE_ROLL);
+        assertThat(binding).isPresent();
+        assertThat(binding.get().getName()).isEqualTo(expected.getName());
+
+        // PLAY_STOP must remain plain SPACE — Shift+Space must NOT collide.
+        Optional<KeyCombination> playStop = manager.getBinding(DawAction.PLAY_STOP);
+        assertThat(playStop).isPresent();
+        assertThat(playStop.get().getName())
+                .isEqualTo(new KeyCodeCombination(KeyCode.SPACE).getName());
+    }
+
     // ── Set binding ──────────────────────────────────────────────────────────
 
     @Test

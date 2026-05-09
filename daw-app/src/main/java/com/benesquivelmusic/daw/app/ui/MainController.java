@@ -240,6 +240,7 @@ public final class MainController {
         initializeNotificationBar();
         initializePluginFaultIsolation();
         createTransportController();
+        mountPreRollPostRollControls();
         createMetronomeController(prefs);
         createProjectLifecycleController();
         createAnimationController();
@@ -356,6 +357,33 @@ public final class MainController {
                 new ToolbarAppearanceController.OverflowGroups(
                         utilityGroup, undoRedoGroup),
                 rootPane, keyBindingManager);
+    }
+
+    /**
+     * Story 134 — Pre-Roll / Post-Roll transport bar controls. Builds the
+     * toggle buttons + bar-count spinners and inserts them into
+     * {@link #transportGroup}, immediately after the existing transport
+     * buttons (skip / play / pause / stop / record / loop). On subsequent
+     * project rebuilds the previous controls are replaced so the new
+     * {@link TransportController} owns the listener wiring.
+     */
+    private HBox preRollPostRollControlsContainer;
+
+    private void mountPreRollPostRollControls() {
+        if (transportGroup == null || transportController == null) {
+            return;
+        }
+        Node parent = transportGroup.getParent();
+        if (!(parent instanceof HBox transportBar)) {
+            return;
+        }
+        if (preRollPostRollControlsContainer != null) {
+            transportBar.getChildren().remove(preRollPostRollControlsContainer);
+        }
+        preRollPostRollControlsContainer =
+                transportController.createPreRollPostRollControls();
+        int idx = transportBar.getChildren().indexOf(transportGroup);
+        transportBar.getChildren().add(idx + 1, preRollPostRollControlsContainer);
     }
 
     private void createTransportController() {
@@ -481,6 +509,7 @@ public final class MainController {
         pluginViewController.onProjectChanged(project);
         metronome = new Metronome(project.getFormat().sampleRate(), project.getFormat().channels());
         createTransportController();
+        mountPreRollPostRollControls();
         metronomeController = new MetronomeController(metronome, metronomeButton, notificationBar,
                 statusBarLabel, Preferences.userNodeForPackage(MainController.class).node("metronome"),
                 new MetronomeSettingsStore());
@@ -782,6 +811,9 @@ public final class MainController {
                     @Override public void onPlay() { MainController.this.onPlay(); }
                     @Override public void onStop() { MainController.this.onStop(); }
                     @Override public void onRecord() { MainController.this.onRecord(); }
+                    @Override public void onPlayWithPreRoll() { transportController.onPlayWithPreRoll(); }
+                    @Override public void onTogglePreRoll() { transportController.onTogglePreRoll(); }
+                    @Override public void onTogglePostRoll() { transportController.onTogglePostRoll(); }
                     @Override public void onSkipBack() { transportController.onSkipBack(); }
                     @Override public void onSkipForward() { transportController.onSkipForward(); }
                     @Override public void onToggleLoop() { MainController.this.onToggleLoop(); }

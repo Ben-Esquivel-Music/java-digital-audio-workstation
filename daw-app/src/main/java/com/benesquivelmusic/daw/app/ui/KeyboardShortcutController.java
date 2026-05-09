@@ -120,6 +120,16 @@ final class KeyboardShortcutController {
         /** Show or hide the dockable arrangement panel ({@code F5}). */
         default void onToggleDockArrangement() { }
         /**
+         * Story 134 — Play with pre-roll. Seeks the playhead back by the
+         * configured pre-roll bar count and begins playback. Default no-op
+         * keeps existing test stubs source-compatible.
+         */
+        default void onPlayWithPreRoll() { }
+        /** Story 134 — toggle the pre-roll feature on/off. Default no-op. */
+        default void onTogglePreRoll() { }
+        /** Story 134 — toggle the post-roll feature on/off. Default no-op. */
+        default void onTogglePostRoll() { }
+        /**
          * Toggle the mixer's A/B snapshot slots — Story 103. Default no-op
          * keeps existing test stubs source-compatible.
          */
@@ -151,6 +161,9 @@ final class KeyboardShortcutController {
         });
         actionHandlers.put(DawAction.STOP, host::onStop);
         actionHandlers.put(DawAction.RECORD, host::onRecord);
+        actionHandlers.put(DawAction.PLAY_WITH_PRE_ROLL, host::onPlayWithPreRoll);
+        actionHandlers.put(DawAction.TOGGLE_PRE_ROLL, host::onTogglePreRoll);
+        actionHandlers.put(DawAction.TOGGLE_POST_ROLL, host::onTogglePostRoll);
         actionHandlers.put(DawAction.SKIP_TO_START, host::onSkipBack);
         actionHandlers.put(DawAction.SKIP_TO_END, host::onSkipForward);
         actionHandlers.put(DawAction.TOGGLE_LOOP, host::onToggleLoop);
