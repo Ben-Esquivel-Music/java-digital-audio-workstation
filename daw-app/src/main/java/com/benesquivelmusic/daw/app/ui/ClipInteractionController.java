@@ -134,6 +134,10 @@ final class ClipInteractionController {
     private double dragAutomationOriginalBeat;
     private double dragAutomationOriginalValue;
 
+    // Comp tool drag state
+    private CompToolHandler compToolHandler;
+    private Track compToolTrack;
+
     ClipInteractionController(ArrangementCanvas canvas, Host host) {
         this.canvas = Objects.requireNonNull(canvas, "canvas must not be null");
         this.host = Objects.requireNonNull(host, "host must not be null");
@@ -499,7 +503,7 @@ final class ClipInteractionController {
             case ERASER -> handleEraserPress(track, beat);
             case SCISSORS -> handleScissorsPress(track, beat);
             case GLUE -> handleGluePress(track, beat);
-            case COMP -> { /* MVP: comp tool gestures handled by CompToolHandler */ }
+            case COMP -> handleCompPress(track, beat, event);
         }
     }
 
@@ -616,6 +620,17 @@ final class ClipInteractionController {
 
         if (slipHandler.isSlipping()) {
             slipHandler.completeSlip(event.getX());
+            updateCursor();
+            return;
+        }
+
+        // Complete comp tool swipe
+        if (compToolHandler != null && compToolHandler.isSwipeActive()) {
+            double beat = beatAt(event.getX());
+            compToolHandler.endSwipe(beat);
+            compToolHandler = null;
+            compToolTrack = null;
+            host.refreshCanvas();
             updateCursor();
             return;
         }
@@ -1046,6 +1061,26 @@ final class ClipInteractionController {
                         + "' and '" + right.getName() + "'");
                 return;
             }
+        }
+    }
+
+    /**
+     * Handles a press with the {@link EditTool#COMP} tool. Alt+Click solos the
+     * track's first take lane for auditioning; a regular press begins a comp
+     * swipe on take lane 0 (the default lane).
+     */
+    private void handleCompPress(Track track, double beat, MouseEvent event) {
+        var takeComping = track.getTakeComping();
+        if (!takeComping.isActive()) {
+            return;
+        }
+        compToolHandler = new CompToolHandler(takeComping, host.undoManager());
+        compToolTrack = track;
+        if (event.isAltDown()) {
+            compToolHandler.altClickLane(0);
+            host.refreshCanvas();
+        } else {
+            compToolHandler.beginSwipe(0, beat);
         }
     }
 

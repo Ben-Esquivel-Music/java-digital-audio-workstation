@@ -124,16 +124,18 @@ class CompManagerTest {
         int xfade = (int) Math.round(0.002 * SAMPLE_RATE);
         int boundary = (int) Math.round(2.0 * SAMPLE_RATE);
 
-        // Mid-crossfade sample: combine take1's sample (already in buffer)
-        // with take2's sample at the equivalent source position via equal-power
-        // (cos/sin) gains.
+        // The crossfade zone is [boundary, boundary + xfade): the previous
+        // region extended xfade samples past its natural end (using take1's
+        // source data); these are then blended with the incoming region's
+        // leading samples (take2) via equal-power gains. Both sample sets
+        // are read from each take's source clip at positions within or just
+        // past their respective selected CompRegion ranges.
         int midOffset = xfade / 2;
-        int dstIdx = boundary - xfade + midOffset;
-        int srcStart2 = boundary; // take 2 starts at beat 4 = 2 s
+        int dstIdx = boundary + midOffset;
         double t = (midOffset + 1) / (double) xfade;
         double angle = t * Math.PI / 2.0;
-        float prevSample = take1[dstIdx];
-        float incomingSample = take2[srcStart2 - xfade + midOffset];
+        float prevSample = take1[boundary + midOffset]; // extended tail
+        float incomingSample = take2[boundary + midOffset]; // incoming head
         float expected = (float) (prevSample * Math.cos(angle)
                 + incomingSample * Math.sin(angle));
         assertThat(composite[0][dstIdx]).isEqualTo(expected);

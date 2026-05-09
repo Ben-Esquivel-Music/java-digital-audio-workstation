@@ -140,31 +140,25 @@ public final class CompManager {
 
             int xfade = 0;
             if (crossfadeSamples > 0 && regionStart == previousEnd) {
-                // Touching boundary — overlap by min(crossfadeSamples, half of
-                // each region) and apply equal-power crossfade.
                 xfade = Math.min(crossfadeSamples, regionLen / 2);
             }
 
             for (int ch = 0; ch < out.length; ch++) {
                 float[] srcCh = data[Math.min(ch, data.length - 1)];
                 float[] dstCh = out[ch];
-                // Crossfade region: equal-power mix with the previous region's
-                // trailing samples, which are already present in dstCh at
-                // positions [regionStart - xfade, regionStart).
-                for (int i = 0; i < xfade; i++) {
-                    int dstIdx = regionStart - xfade + i;
-                    int si = srcStart - xfade + i;
-                    if (dstIdx < 0 || dstIdx >= dstCh.length) {
-                        continue;
+                // Save the previous region's data at positions that the body
+                // loop is about to overwrite — needed for crossfade blending.
+                float[] prevTail = null;
+                if (xfade > 0) {
+                    prevTail = new float[xfade];
+                    for (int i = 0; i < xfade; i++) {
+                        int idx = regionStart + i;
+                        if (idx >= 0 && idx < dstCh.length) {
+                            prevTail[i] = dstCh[idx];
+                        }
                     }
-                    float prev = dstCh[dstIdx];
-                    float incoming = (si >= 0 && si < srcCh.length) ? srcCh[si] : 0f;
-                    double t = (i + 1) / (double) xfade;
-                    double angle = t * Math.PI / 2.0;
-                    dstCh[dstIdx] = (float) (prev * Math.cos(angle)
-                            + incoming * Math.sin(angle));
                 }
-                // Body: write at natural position.
+                // Body: write the full region at its natural position.
                 for (int i = 0; i < regionLen; i++) {
                     int dstIdx = regionStart + i;
                     int si = srcStart + i;
@@ -175,6 +169,42 @@ public final class CompManager {
                         dstCh[dstIdx] = 0f;
                     } else {
                         dstCh[dstIdx] = srcCh[si];
+                    }
+                }
+                // Crossfade: equal-power blend at the touching boundary.
+                // The zone is [regionStart, regionStart + xfade): the previous
+                // region's trailing samples (saved in prevTail) are faded out
+                // while the incoming region's leading samples (just written by
+                // the body loop) are faded in. Both sample sets fall within
+                // their respective selected CompRegion ranges.
+                if (xfade > 0 && prevTail != null) {
+                    for (int i = 0; i < xfade; i++) {
+                        int dstIdx = regionStart + i;
+                        if (dstIdx < 0 || dstIdx >= dstCh.length) {
+                            continue;
+                        }
+                        float prev = prevTail[i];
+                        float incoming = dstCh[dstIdx];
+                        double t = (i + 1) / (double) xfade;
+                        double angle = t * Math.PI / 2.0;
+                        dstCh[dstIdx] = (float) (prev * Math.cos(angle)
+                                + incoming * Math.sin(angle));
+                    }
+                }
+                // Extend: write xfade samples past the region end from the
+                // source clip so the *next* region's crossfade has data to
+                // blend with. These samples are overwritten by the next
+                // region's body loop when it arrives.
+                if (crossfadeSamples > 0) {
+                    for (int i = 0; i < crossfadeSamples; i++) {
+                        int dstIdx = regionEnd + i;
+                        int si = srcStart + regionLen + i;
+                        if (dstIdx < 0 || dstIdx >= dstCh.length) {
+                            continue;
+                        }
+                        if (si >= 0 && si < srcCh.length) {
+                            dstCh[dstIdx] = srcCh[si];
+                        }
                     }
                 }
             }
@@ -199,15 +229,16 @@ public final class CompManager {
         if (regions.isEmpty()) {
             return null;
         }
+        float[][] audio = renderComposite(sampleRate, tempoBpm);
+        if (audio.length == 0 || audio[0].length == 0) {
+            return null;
+        }
         regions.sort((a, b) -> Double.compare(a.startBeat(), b.startBeat()));
         double originBeat = regions.getFirst().startBeat();
         double endBeat = regions.stream().mapToDouble(CompRegion::endBeat).max().orElse(originBeat);
-        double duration = Math.max(endBeat - originBeat, 1.0 / sampleRate);
-        float[][] audio = renderComposite(sampleRate, tempoBpm);
+        double duration = endBeat - originBeat;
         AudioClip clip = new AudioClip("Comp", originBeat, duration, null);
-        if (audio.length > 0 && audio[0].length > 0) {
-            clip.setAudioData(audio);
-        }
+        clip.setAudioData(audio);
         return clip;
     }
 
@@ -238,7 +269,7 @@ public final class CompManager {
      */
     public void soloLane(int index) {
         List<TakeLane> lanes = comping.getTakeLanes();
-        if (index >= lanes.size()) {
+        if (index < -1 || index >= lanes.size()) {
             throw new IndexOutOfBoundsException("index out of range: " + index);
         }
         for (int i = 0; i < lanes.size(); i++) {
