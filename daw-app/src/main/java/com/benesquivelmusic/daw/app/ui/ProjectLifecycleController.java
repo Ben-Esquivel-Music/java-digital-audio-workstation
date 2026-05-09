@@ -8,6 +8,8 @@ import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
 import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
+import com.benesquivelmusic.daw.core.persistence.migration.MigrationException;
+import com.benesquivelmusic.daw.core.persistence.migration.MigrationReport;
 import com.benesquivelmusic.daw.core.persistence.archive.ArchivedProject;
 import com.benesquivelmusic.daw.core.persistence.archive.MissingAssetResolver;
 import com.benesquivelmusic.daw.core.persistence.archive.ProjectArchiveSummary;
@@ -30,14 +32,17 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.Stream;
 
 /**
  * Manages project lifecycle actions: creating, opening, saving, browsing
@@ -607,7 +612,22 @@ final class ProjectLifecycleController {
             notificationBar.show(NotificationLevel.SUCCESS,
                     "Opened project: " + projectDir.getFileName());
             LOG.info("Opened project from " + projectDir);
+            // Story 247 — surface the migration report dialog when the
+            // load triggered any registry-driven schema migrations. The
+            // dialog itself short-circuits when the user has already
+            // chosen "Don't show again" for this project.
+            maybeShowMigrationReport(projectDir);
             return true;
+        } catch (MigrationException e) {
+            // Unmapped or broken migration chain — surface as an error
+            // notification rather than letting the runtime exception
+            // bubble out of the menu/action handler.
+            statusBarLabel.setText("Migration failed: " + e.getMessage());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+            notificationBar.show(NotificationLevel.ERROR,
+                    "Migration failed: " + e.getMessage());
+            LOG.log(Level.WARNING, "Failed to migrate project on open", e);
+            return false;
         } catch (IOException e) {
             statusBarLabel.setText("Open failed: " + e.getMessage());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
@@ -615,6 +635,106 @@ final class ProjectLifecycleController {
                     "Open failed: " + e.getMessage());
             LOG.log(Level.WARNING, "Failed to open project", e);
             return false;
+        }
+    }
+
+    /**
+     * Invokes {@link MigrationReportDialog#showIfNeeded} for the just-loaded
+     * project when the load triggered any schema migrations. Wired with
+     * a roll-back action that restores the most recent sibling
+     * {@code project.daw.v<n>.*.bak} (created by the first save after a
+     * previous migrated load) and reloads the project. When no backup
+     * exists yet, rolling back simply abandons the in-memory migrated
+     * state — the on-disk file is still the pre-migration original.
+     *
+     * <p>Package-private so tests can drive it directly without going
+     * through a directory chooser.</p>
+     */
+    void maybeShowMigrationReport(Path projectDir) {
+        MigrationReport report = projectManager.getLastMigrationReport();
+        if (report == null || !report.wasMigrated()) {
+            return;
+        }
+        MigrationReportDialog.showIfNeeded(report, projectDir,
+                () -> rollbackMigration(projectDir, report));
+    }
+
+    /**
+     * Rolls back to the pre-migration version. If a sibling
+     * {@code project.daw.v<fromVersion>.*.bak} exists, the newest one
+     * is copied over {@code project.daw} and the project is reloaded
+     * (which will re-trigger the migration in memory, but the on-disk
+     * file once again carries the user's original schema). When no
+     * backup is found, the in-memory migrated project is discarded —
+     * the original file on disk has not been overwritten yet.
+     */
+    void rollbackMigration(Path projectDir, MigrationReport report) {
+        Path projectFile = projectDir.resolve("project.daw");
+        Optional<Path> newestBackup = findNewestBackup(projectDir, report.fromVersion());
+        try {
+            if (newestBackup.isPresent()) {
+                Files.copy(newestBackup.get(), projectFile,
+                        StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.COPY_ATTRIBUTES);
+                LOG.info("Rolled back migration: restored " + newestBackup.get()
+                        + " over " + projectFile);
+                if (loadProjectFromPath(projectDir)) {
+                    notificationBar.show(NotificationLevel.SUCCESS,
+                            "Rolled back to pre-migration version (v"
+                                    + report.fromVersion() + ")");
+                }
+            } else {
+                // No backup yet: the migrated DawProject lives only in
+                // memory, so abandoning is a complete rollback.
+                resetProjectState();
+                host.setProject(new DawProject("Untitled Project",
+                        AudioFormat.STUDIO_QUALITY));
+                host.setUndoManager(new UndoManager());
+                host.rebuildHistoryPanel();
+                host.resetTrackCounters();
+                host.setProjectDirty(false);
+                rebuildUI();
+                statusBarLabel.setText("Rolled back: discarded migrated project");
+                statusBarLabel.setGraphic(IconNode.of(DawIcon.INFO, 12));
+                notificationBar.show(NotificationLevel.SUCCESS,
+                        "Discarded in-memory migration; the on-disk file is "
+                                + "still the original (v" + report.fromVersion() + ")");
+                LOG.info("Rolled back migration by abandoning in-memory project (no .bak yet)");
+            }
+        } catch (IOException e) {
+            statusBarLabel.setText("Roll back failed: " + e.getMessage());
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+            notificationBar.show(NotificationLevel.ERROR,
+                    "Roll back failed: " + e.getMessage());
+            LOG.log(Level.WARNING, "Failed to roll back migration", e);
+        }
+    }
+
+    /**
+     * Finds the newest sibling {@code project.daw.v<fromVersion>.*.bak}
+     * file in the project directory, or empty if none exists.
+     */
+    private static Optional<Path> findNewestBackup(Path projectDir, int fromVersion) {
+        if (projectDir == null || !Files.isDirectory(projectDir)) {
+            return Optional.empty();
+        }
+        String prefix = "project.daw.v" + fromVersion + ".";
+        try (Stream<Path> entries = Files.list(projectDir)) {
+            return entries
+                    .filter(Files::isRegularFile)
+                    .filter(p -> {
+                        String name = p.getFileName().toString();
+                        return name.startsWith(prefix) && name.endsWith(".bak");
+                    })
+                    .max(Comparator.comparing(p -> {
+                        try {
+                            return Files.getLastModifiedTime(p);
+                        } catch (IOException e) {
+                            return java.nio.file.attribute.FileTime.fromMillis(0);
+                        }
+                    }));
+        } catch (IOException e) {
+            return Optional.empty();
         }
     }
 

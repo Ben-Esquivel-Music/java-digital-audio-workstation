@@ -169,6 +169,154 @@ class ProjectLifecycleControllerTest {
         assertThat(pm.getCurrentProject()).isNull();
     }
 
+    // ── Story 247: migration report dialog wiring ───────────────────────────
+
+    @Test
+    void loadProjectFromPathSurfacesSuppressedDialogWithoutBlocking() throws Exception {
+        // Build a manager whose registry forces every load to migrate, then
+        // pre-suppress the dialog for the project so showIfNeeded()
+        // short-circuits before any showAndWait() can block this headless test.
+        com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry registry =
+                buildForcedMigrationRegistry();
+        ProjectManager pm = new ProjectManager(
+                new CheckpointManager(AutoSaveConfig.DEFAULT),
+                null,
+                new com.benesquivelmusic.daw.core.persistence.ProjectLockManager(),
+                new com.benesquivelmusic.daw.core.persistence.ProjectDeserializer(registry));
+
+        // Bootstrap a v<CURRENT> project on disk.
+        var metadata = pm.createProject("Legacy", tempDir);
+        java.nio.file.Path projectFile = metadata.projectPath().resolve("project.daw");
+        java.nio.file.Files.writeString(projectFile,
+                new com.benesquivelmusic.daw.core.persistence.ProjectSerializer()
+                        .serialize(new DawProject("Legacy", AudioFormat.CD_QUALITY)));
+        pm.abandonProject();
+
+        // Suppress the dialog for this project at the synthetic target
+        // version so showIfNeeded never tries to call showAndWait().
+        com.benesquivelmusic.daw.core.persistence.migration.MigrationSuppression
+                .suppress(metadata.projectPath(),
+                        com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry
+                                .CURRENT_VERSION + 1);
+
+        AtomicReference<ProjectLifecycleController> ref = new AtomicReference<>();
+        AtomicReference<Boolean> loaded = new AtomicReference<>();
+        runOnFxThread(() -> {
+            ref.set(new ProjectLifecycleController(
+                    pm, dummySessionInterchange(), dummyNotificationBar(),
+                    dummyLabel(), dummyLabel(), dummyBorderPane(),
+                    dummyVBox(), dummyHost(), dummyArchiver()));
+            loaded.set(ref.get().loadProjectFromPath(metadata.projectPath()));
+        });
+
+        assertThat(loaded.get()).isTrue();
+        assertThat(pm.getLastMigrationReport().wasMigrated()).isTrue();
+    }
+
+    @Test
+    void rollbackMigrationRestoresExistingBackup() throws Exception {
+        com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry registry =
+                buildForcedMigrationRegistry();
+        ProjectManager pm = new ProjectManager(
+                new CheckpointManager(AutoSaveConfig.DEFAULT),
+                null,
+                new com.benesquivelmusic.daw.core.persistence.ProjectLockManager(),
+                new com.benesquivelmusic.daw.core.persistence.ProjectDeserializer(registry));
+
+        // Bootstrap and load the project, then save it once so a .bak
+        // is written by the manager's pre-migration backup logic.
+        var metadata = pm.createProject("WithBackup", tempDir);
+        java.nio.file.Path projectFile = metadata.projectPath().resolve("project.daw");
+        java.nio.file.Files.writeString(projectFile,
+                new com.benesquivelmusic.daw.core.persistence.ProjectSerializer()
+                        .serialize(new DawProject("WithBackup", AudioFormat.CD_QUALITY)));
+        String originalContent = java.nio.file.Files.readString(projectFile);
+        pm.abandonProject();
+
+        pm.openProject(metadata.projectPath());
+        var report = pm.getLastMigrationReport();
+        assertThat(report.wasMigrated()).isTrue();
+        // Trigger the .bak by saving the migrated project.
+        pm.saveDawProject(pm.getCurrentDawProject());
+        // Suppress so the post-rollback reload doesn't open another dialog.
+        com.benesquivelmusic.daw.core.persistence.migration.MigrationSuppression
+                .suppress(metadata.projectPath(), report.toVersion());
+
+        AtomicReference<ProjectLifecycleController> ref = new AtomicReference<>();
+        runOnFxThread(() -> ref.set(new ProjectLifecycleController(
+                pm, dummySessionInterchange(), dummyNotificationBar(),
+                dummyLabel(), dummyLabel(), dummyBorderPane(),
+                dummyVBox(), dummyHost(), dummyArchiver())));
+
+        // Confirm a .bak exists pre-rollback.
+        try (var entries = java.nio.file.Files.list(metadata.projectPath())) {
+            assertThat(entries.filter(p -> p.getFileName().toString().endsWith(".bak")))
+                    .isNotEmpty();
+        }
+
+        runOnFxThread(() -> ref.get().rollbackMigration(metadata.projectPath(), report));
+
+        // The on-disk file should match the original (pre-migration) content.
+        assertThat(java.nio.file.Files.readString(projectFile)).isEqualTo(originalContent);
+    }
+
+    @Test
+    void rollbackMigrationWithoutBackupAbandonsInMemoryProject() throws Exception {
+        com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry registry =
+                buildForcedMigrationRegistry();
+        ProjectManager pm = new ProjectManager(
+                new CheckpointManager(AutoSaveConfig.DEFAULT),
+                null,
+                new com.benesquivelmusic.daw.core.persistence.ProjectLockManager(),
+                new com.benesquivelmusic.daw.core.persistence.ProjectDeserializer(registry));
+
+        var metadata = pm.createProject("NoBackupYet", tempDir);
+        java.nio.file.Path projectFile = metadata.projectPath().resolve("project.daw");
+        java.nio.file.Files.writeString(projectFile,
+                new com.benesquivelmusic.daw.core.persistence.ProjectSerializer()
+                        .serialize(new DawProject("NoBackupYet", AudioFormat.CD_QUALITY)));
+        String originalContent = java.nio.file.Files.readString(projectFile);
+        pm.abandonProject();
+
+        pm.openProject(metadata.projectPath());
+        var report = pm.getLastMigrationReport();
+        assertThat(report.wasMigrated()).isTrue();
+
+        AtomicReference<ProjectLifecycleController> ref = new AtomicReference<>();
+        runOnFxThread(() -> ref.set(new ProjectLifecycleController(
+                pm, dummySessionInterchange(), dummyNotificationBar(),
+                dummyLabel(), dummyLabel(), dummyBorderPane(),
+                dummyVBox(), dummyHost(), dummyArchiver())));
+
+        runOnFxThread(() -> ref.get().rollbackMigration(metadata.projectPath(), report));
+
+        // No .bak existed yet, so the on-disk file must be untouched
+        // (it is still the pre-migration original).
+        assertThat(java.nio.file.Files.readString(projectFile)).isEqualTo(originalContent);
+        // And the in-memory project was reset.
+        assertThat(pm.getCurrentProject()).isNull();
+    }
+
+    /**
+     * Builds a registry whose target version is one above
+     * {@link com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry#CURRENT_VERSION},
+     * populated with no-op step migrations. Forces every load through
+     * the migration path.
+     */
+    private static com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry
+            buildForcedMigrationRegistry() {
+        int target = com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry
+                .CURRENT_VERSION + 1;
+        var builder = com.benesquivelmusic.daw.core.persistence.migration.MigrationRegistry
+                .builder(target);
+        for (int v = 1; v < target; v++) {
+            int from = v;
+            builder.add(com.benesquivelmusic.daw.core.persistence.migration.ProjectMigration
+                    .step(from, "v" + from + "->v" + (from + 1), d -> d));
+        }
+        return builder.build();
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static void runOnFxThread(Runnable action) throws Exception {

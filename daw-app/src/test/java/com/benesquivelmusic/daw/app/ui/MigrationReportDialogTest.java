@@ -129,4 +129,51 @@ class MigrationReportDialogTest {
 
         assertThat(MigrationReportDialog.showIfNeeded(sampleReport(), projectDir)).isFalse();
     }
+
+    @Test
+    void rollbackButtonAbsentWhenNoActionSupplied(@TempDir Path projectDir) throws Exception {
+        boolean hasRollback = onFx(() -> new MigrationReportDialog(sampleReport(), projectDir)
+                .getDialogPane().getButtonTypes()
+                .contains(MigrationReportDialog.ROLLBACK_BUTTON_TYPE));
+        assertThat(hasRollback).isFalse();
+    }
+
+    @Test
+    void rollbackButtonPresentWhenActionSupplied(@TempDir Path projectDir) throws Exception {
+        boolean hasRollback = onFx(() -> new MigrationReportDialog(
+                sampleReport(), projectDir, () -> { /* no-op */ })
+                .getDialogPane().getButtonTypes()
+                .contains(MigrationReportDialog.ROLLBACK_BUTTON_TYPE));
+        assertThat(hasRollback).isTrue();
+    }
+
+    @Test
+    void resultConverterRunsRollbackActionWhenRollbackButtonPicked(@TempDir Path projectDir)
+            throws Exception {
+        java.util.concurrent.atomic.AtomicInteger invoked =
+                new java.util.concurrent.atomic.AtomicInteger();
+        onFx(() -> {
+            MigrationReportDialog dialog = new MigrationReportDialog(
+                    sampleReport(), projectDir, invoked::incrementAndGet);
+            // Simulate the user choosing the Roll back button by going
+            // through the dialog's result converter directly — avoids
+            // showAndWait()/event-loop blocking in headless tests.
+            dialog.getResultConverter().call(MigrationReportDialog.ROLLBACK_BUTTON_TYPE);
+            return null;
+        });
+        assertThat(invoked.get()).isEqualTo(1);
+    }
+
+    @Test
+    void resultConverterDoesNotRunRollbackForOkButton(@TempDir Path projectDir) throws Exception {
+        java.util.concurrent.atomic.AtomicInteger invoked =
+                new java.util.concurrent.atomic.AtomicInteger();
+        onFx(() -> {
+            MigrationReportDialog dialog = new MigrationReportDialog(
+                    sampleReport(), projectDir, invoked::incrementAndGet);
+            dialog.getResultConverter().call(ButtonType.OK);
+            return null;
+        });
+        assertThat(invoked.get()).isZero();
+    }
 }
