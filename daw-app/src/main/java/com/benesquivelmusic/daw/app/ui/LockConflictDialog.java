@@ -79,7 +79,7 @@ public final class LockConflictDialog implements LockConflictHandler {
     }
 
     private LockConflictResolution showAndAwait(ProjectLock existingLock, boolean stale) {
-        String holder = existingLock.user() + "@" + existingLock.hostname();
+        String holder = holderIdentity(existingLock);
 
         ButtonType readOnlyBtn = new ButtonType("Open Read-Only", ButtonType.OK.getButtonData());
         ButtonType takeOverBtn = new ButtonType("Take Over (Steal Lock)");
@@ -111,7 +111,7 @@ public final class LockConflictDialog implements LockConflictHandler {
      * active, the warning is stronger to prevent accidental data loss.
      */
     private LockConflictResolution confirmTakeOver(ProjectLock existingLock, boolean stale) {
-        String holder = existingLock.user() + "@" + existingLock.hostname();
+        String holder = holderIdentity(existingLock);
         Alert confirm = new Alert(Alert.AlertType.WARNING);
         confirm.setTitle("Confirm Lock Take-Over");
         if (stale) {
@@ -158,6 +158,10 @@ public final class LockConflictDialog implements LockConflictHandler {
                       + "the write lock from the other session.");
         }
         return sb.toString();
+    }
+
+    private static String holderIdentity(ProjectLock lock) {
+        return lock.user() + "@" + lock.hostname();
     }
 
     private static String formatAge(Duration d) {
