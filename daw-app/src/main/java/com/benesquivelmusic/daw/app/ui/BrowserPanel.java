@@ -1,5 +1,8 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.drag.DragSourceKind;
+import com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor;
+import com.benesquivelmusic.daw.app.ui.drag.DropTargetKind;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import javafx.collections.FXCollections;
@@ -72,6 +75,13 @@ public final class BrowserPanel extends VBox {
     private final HBox previewControlBar;
 
     /**
+     * The shared {@link DragVisualAdvisor} consulted on every sample-drag
+     * gesture (story 197). Optional — when {@code null} the panel falls
+     * back to bare JavaFX drag-and-drop with no ghost / highlight.
+     */
+    private DragVisualAdvisor dragVisualAdvisor;
+
+    /**
      * Creates a new browser panel with default width.
      */
     public BrowserPanel() {
@@ -116,10 +126,12 @@ public final class BrowserPanel extends VBox {
                     ClipboardContent content = new ClipboardContent();
                     content.putString(filePath);
                     db.setContent(content);
+                    notifyAdvisorBeginSampleDrag(selected.getValue(), event.getScreenX(), event.getScreenY());
                 }
             }
             event.consume();
         });
+        fileSystemTree.setOnDragDone(this::notifyAdvisorEndDrag);
 
         Tab fileSystemTab = new Tab("Files");
         fileSystemTab.setClosable(false);
@@ -141,9 +153,11 @@ public final class BrowserPanel extends VBox {
                 ClipboardContent content = new ClipboardContent();
                 content.putString(selected);
                 db.setContent(content);
+                notifyAdvisorBeginSampleDrag(selected, event.getScreenX(), event.getScreenY());
             }
             event.consume();
         });
+        samplesListView.setOnDragDone(this::notifyAdvisorEndDrag);
 
         Tab samplesTab = new Tab("Samples");
         samplesTab.setClosable(false);
@@ -360,6 +374,102 @@ public final class BrowserPanel extends VBox {
             }
         }
         return false;
+    }
+
+    /**
+     * Installs the shared {@link DragVisualAdvisor}. When set, every
+     * sample drag from the file tree or samples list will consult the
+     * advisor so the application's drag-feedback layer (ghost preview,
+     * drop-zone highlight, snap indicator, modifier-key cursor) renders
+     * over the gesture — see user story 197.
+     *
+     * @param advisor the shared advisor, or {@code null} to disable
+     */
+    public void setDragVisualAdvisor(DragVisualAdvisor advisor) {
+        this.dragVisualAdvisor = advisor;
+    }
+
+    /** Returns the advisor, primarily for tests. */
+    DragVisualAdvisor getDragVisualAdvisor() {
+        return dragVisualAdvisor;
+    }
+
+    /**
+     * Begins a SAMPLE-kind drag on the shared advisor (no-op if no
+     * advisor is installed or a drag is already in progress on the
+     * advisor — the latter can happen if the previous gesture's
+     * drag-done event was lost).
+     */
+    private void notifyAdvisorBeginSampleDrag(String label, double screenX, double screenY) {
+        if (dragVisualAdvisor == null) {
+            return;
+        }
+        if (dragVisualAdvisor.state() != DragVisualAdvisor.State.IDLE) {
+            return;
+        }
+        try {
+            dragVisualAdvisor.beginDrag(
+                    DragSourceKind.SAMPLE,
+                    label == null || label.isEmpty() ? "sample" : label,
+                    screenX, screenY,
+                    /* ghostWidth */ 80, /* ghostHeight */ 24);
+        } catch (RuntimeException ignored) {
+            // Advisor must never break the underlying JavaFX drag.
+        }
+    }
+
+    /**
+     * Notifies the advisor when JavaFX signals the drag-done event
+     * (commit on a successful drop, otherwise cancel).
+     */
+    private void notifyAdvisorEndDrag(javafx.scene.input.DragEvent event) {
+        if (dragVisualAdvisor == null) {
+            return;
+        }
+        try {
+            switch (dragVisualAdvisor.state()) {
+                case DRAGGING -> {
+                    if (event.getTransferMode() != null) {
+                        dragVisualAdvisor.commit();
+                    } else {
+                        dragVisualAdvisor.cancel();
+                        // Sample drag has no source-position revert animation
+                        // to play (the source list-cell stays where it is);
+                        // immediately complete the revert so the advisor
+                        // returns to IDLE.
+                        dragVisualAdvisor.revertCompleted();
+                    }
+                }
+                case REVERTING -> dragVisualAdvisor.revertCompleted();
+                case IDLE -> { /* nothing to do */ }
+            }
+        } catch (RuntimeException ignored) {
+            // Advisor must never break the underlying JavaFX drag.
+        }
+    }
+
+    /**
+     * Returns true if a sample (or any other source) drag is currently
+     * in progress on the shared advisor. Helper for tests and
+     * presenters that need to know whether to render the overlay layer.
+     */
+    boolean isAdvisorDragging() {
+        return dragVisualAdvisor != null
+                && dragVisualAdvisor.state() == DragVisualAdvisor.State.DRAGGING;
+    }
+
+    /**
+     * Convenience to ask whether the given drop target is valid for a
+     * sample drag. Uses the advisor's pure {@code canDropOn} query so
+     * no mutable visual state is touched. Returns {@code false} when
+     * no advisor is installed or no drag is in progress.
+     */
+    boolean isOverValidSampleDropTarget(DropTargetKind target) {
+        if (dragVisualAdvisor == null
+                || dragVisualAdvisor.state() != DragVisualAdvisor.State.DRAGGING) {
+            return false;
+        }
+        return DragVisualAdvisor.canDropOn(DragSourceKind.SAMPLE, target);
     }
 
     private void applyFilter(String filterText) {

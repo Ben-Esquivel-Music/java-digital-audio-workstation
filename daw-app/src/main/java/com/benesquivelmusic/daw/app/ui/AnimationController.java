@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplay;
+import com.benesquivelmusic.daw.app.ui.drag.AnimationProfile;
+import com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 
 import javafx.animation.AnimationTimer;
@@ -45,6 +47,21 @@ final class AnimationController {
     private final TimeTickerAnimator timeTickerAnimator;
     private final ButtonPressAnimator buttonPressAnimator;
     private final Host host;
+
+    /**
+     * Single shared {@link AnimationProfile} used by every drag-related
+     * animation (clip, plugin, sample) so timing feels cohesive across
+     * the app — see user story 197.
+     */
+    private final AnimationProfile dragAnimationProfile = AnimationProfile.DEFAULT;
+
+    /**
+     * Single shared {@link DragVisualAdvisor} consulted by every drag
+     * source (clips in {@code ClipInteractionController}, plugins in
+     * {@code InsertEffectRack}, samples in {@code BrowserPanel}).
+     */
+    private final DragVisualAdvisor dragVisualAdvisor =
+            new DragVisualAdvisor(dragAnimationProfile);
 
     private AnimationTimer mainAnimTimer;
     private double glowAnimPhase;
@@ -116,6 +133,24 @@ final class AnimationController {
      */
     void setPlayheadUpdateCallback(Runnable callback) {
         this.playheadUpdateCallback = callback;
+    }
+
+    /**
+     * Returns the single shared {@link DragVisualAdvisor} instance — the
+     * one point of consultation for ghost previews, drop-zone highlights,
+     * snap indicators, and modifier-key cursor changes across every drag
+     * source in the application (user story 197).
+     */
+    DragVisualAdvisor dragVisualAdvisor() {
+        return dragVisualAdvisor;
+    }
+
+    /**
+     * Returns the shared {@link AnimationProfile} so external animators
+     * can match the drag-system timings (fade-in, cancel-revert, etc.).
+     */
+    AnimationProfile dragAnimationProfile() {
+        return dragAnimationProfile;
     }
 
     // ── Time ticker ──────────────────────────────────────────────────────────

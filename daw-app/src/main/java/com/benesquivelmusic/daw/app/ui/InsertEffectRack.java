@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.drag.DragSourceKind;
+import com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor;
 import com.benesquivelmusic.daw.core.mixer.*;
 import com.benesquivelmusic.daw.core.plugin.ExternalPluginEntry;
 import com.benesquivelmusic.daw.core.plugin.ExternalPluginLoader;
@@ -60,6 +62,12 @@ public final class InsertEffectRack extends VBox {
     private PluginRegistry pluginRegistry;
     private Mixer mixer;
     private Runnable onSlotsChanged;
+    /**
+     * Shared {@link DragVisualAdvisor} consulted during plugin
+     * reorder-drag gestures (story 197). Optional — when {@code null}
+     * the rack falls back to bare JavaFX drag-and-drop.
+     */
+    private DragVisualAdvisor dragVisualAdvisor;
 
     /**
      * Resources associated with an externally-loaded plugin that must be
@@ -325,6 +333,8 @@ public final class InsertEffectRack extends VBox {
             ClipboardContent content = new ClipboardContent();
             content.put(SLOT_INDEX_FORMAT, slotIndex);
             db.setContent(content);
+            notifyAdvisorBeginPluginDrag(
+                    nameLabel.getText(), event.getScreenX(), event.getScreenY());
             event.consume();
         });
         row.setOnDragOver(event -> {
@@ -333,11 +343,19 @@ public final class InsertEffectRack extends VBox {
                     && event.getGestureSource() instanceof javafx.scene.Node sourceNode
                     && sourceNode.getParent() == InsertEffectRack.this) {
                 event.acceptTransferModes(TransferMode.MOVE);
+                if (!row.getStyleClass().contains("drop-target-active")) {
+                    row.getStyleClass().add("drop-target-active");
+                }
             }
+            event.consume();
+        });
+        row.setOnDragExited(event -> {
+            row.getStyleClass().remove("drop-target-active");
             event.consume();
         });
         int targetIndex = slotIndex;
         row.setOnDragDropped(event -> {
+            row.getStyleClass().remove("drop-target-active");
             Dragboard db = event.getDragboard();
             Object content = db.getContent(SLOT_INDEX_FORMAT);
             if (content instanceof Integer fromIndex) {
@@ -350,6 +368,7 @@ public final class InsertEffectRack extends VBox {
             }
             event.consume();
         });
+        row.setOnDragDone(this::notifyAdvisorEndDrag);
 
         row.getChildren().addAll(bypassBtn, nameLabel);
 
@@ -601,6 +620,61 @@ public final class InsertEffectRack extends VBox {
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
+
+    /**
+     * Installs the shared {@link DragVisualAdvisor}. When set, every
+     * plugin reorder-drag will consult the advisor so the application's
+     * drag-feedback layer (ghost preview, drop-zone highlight, modifier
+     * cursor) renders over the gesture — see user story 197.
+     *
+     * @param advisor the shared advisor, or {@code null} to disable
+     */
+    public void setDragVisualAdvisor(DragVisualAdvisor advisor) {
+        this.dragVisualAdvisor = advisor;
+    }
+
+    /** Returns the advisor, primarily for tests. */
+    DragVisualAdvisor getDragVisualAdvisor() {
+        return dragVisualAdvisor;
+    }
+
+    private void notifyAdvisorBeginPluginDrag(String label, double screenX, double screenY) {
+        if (dragVisualAdvisor == null
+                || dragVisualAdvisor.state() != DragVisualAdvisor.State.IDLE) {
+            return;
+        }
+        try {
+            dragVisualAdvisor.beginDrag(
+                    DragSourceKind.PLUGIN,
+                    label == null || label.isEmpty() ? "plugin" : label,
+                    screenX, screenY,
+                    /* ghostWidth */ 100, /* ghostHeight */ 40);
+        } catch (RuntimeException ignored) {
+            // Advisor must never break the underlying JavaFX drag.
+        }
+    }
+
+    private void notifyAdvisorEndDrag(javafx.scene.input.DragEvent event) {
+        if (dragVisualAdvisor == null) {
+            return;
+        }
+        try {
+            switch (dragVisualAdvisor.state()) {
+                case DRAGGING -> {
+                    if (event.getTransferMode() != null) {
+                        dragVisualAdvisor.commit();
+                    } else {
+                        dragVisualAdvisor.cancel();
+                        dragVisualAdvisor.revertCompleted();
+                    }
+                }
+                case REVERTING -> dragVisualAdvisor.revertCompleted();
+                case IDLE -> { /* nothing to do */ }
+            }
+        } catch (RuntimeException ignored) {
+            // Advisor must never break the underlying JavaFX drag.
+        }
+    }
 
     /**
      * Best-effort disposal of an external plugin and its classloader.
