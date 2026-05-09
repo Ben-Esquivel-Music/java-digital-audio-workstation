@@ -211,6 +211,7 @@ final class ClipInteractionController {
             case ERASER -> Cursor.HAND;
             case SCISSORS -> Cursor.CROSSHAIR;
             case GLUE -> Cursor.HAND;
+            case COMP -> Cursor.CROSSHAIR;
         };
         canvas.setCursor(cursor);
     }
@@ -498,6 +499,7 @@ final class ClipInteractionController {
             case ERASER -> handleEraserPress(track, beat);
             case SCISSORS -> handleScissorsPress(track, beat);
             case GLUE -> handleGluePress(track, beat);
+            case COMP -> { /* MVP: comp tool gestures handled by CompToolHandler */ }
         }
     }
 
