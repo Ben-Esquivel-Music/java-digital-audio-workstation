@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class BackupRetentionControllerTest {
 
     @Test
-    void applyPolicyRemovesSnapshotsOlderThanMaxAge(@TempDir Path tempDir) throws IOException {
+    void applyPolicyWithNoBucketsDiscardsAllSnapshots(@TempDir Path tempDir) throws IOException {
         Path autosaves = Files.createDirectories(tempDir.resolve("autosaves"));
         Path globalPolicy = tempDir.resolve("backup-retention.json");
 
@@ -50,18 +50,16 @@ class BackupRetentionControllerTest {
         BackupRetentionController controller =
                 new BackupRetentionController(store, autosaves, scheduler, 60L);
         try {
-            // Persist a policy with maxAge = 1 day, no bucket retention so
-            // the only thing keeping a file is being inside the age cap.
+            // All bucket counts are zero, so no snapshot qualifies for any
+            // retention bucket — both are discarded regardless of age.
             BackupRetentionPolicy policy = new BackupRetentionPolicy(
                     0, 0, 0, 0,
                     Duration.ofDays(1),
                     0L);
-            int deleted = controller.saveAndApply(policy);
+            int candidates = controller.saveAndApply(policy);
 
-            assertThat(deleted).isEqualTo(2); // both fresh+old discarded (no bucket)
+            assertThat(candidates).isEqualTo(2);
             assertThat(Files.exists(old)).isFalse();
-            // fresh is also discarded because no bucket retains it; the test
-            // primarily asserts older-than-maxAge behaviour via `old`.
             assertThat(Files.exists(fresh)).isFalse();
         } finally {
             controller.shutdown();
@@ -109,6 +107,7 @@ class BackupRetentionControllerTest {
         // the periodic prune through ScheduledExecutorService correctly,
         // without making the test sleep for 60 seconds.
         AtomicInteger scheduleCalls = new AtomicInteger();
+        AtomicLong recordedInitialDelay = new AtomicLong(-1);
         AtomicLong recordedPeriod = new AtomicLong();
         AtomicReference<TimeUnit> recordedUnit = new AtomicReference<>();
         AtomicReference<Runnable> recordedTask = new AtomicReference<>();
@@ -119,6 +118,7 @@ class BackupRetentionControllerTest {
             public java.util.concurrent.ScheduledFuture<?> scheduleAtFixedRate(
                     Runnable command, long initialDelay, long period, TimeUnit unit) {
                 scheduleCalls.incrementAndGet();
+                recordedInitialDelay.set(initialDelay);
                 recordedPeriod.set(period);
                 recordedUnit.set(unit);
                 recordedTask.set(command);
@@ -134,6 +134,8 @@ class BackupRetentionControllerTest {
         try {
             controller.start();
             assertThat(scheduleCalls).hasValue(1);
+            assertThat(recordedInitialDelay).as("initial delay should be 0 for immediate startup prune")
+                    .hasValue(0L);
             assertThat(recordedPeriod).hasValue(1L);
             assertThat(recordedUnit.get()).isEqualTo(TimeUnit.MINUTES);
 

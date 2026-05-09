@@ -110,7 +110,8 @@ public final class BackupRetentionController {
      * once. Errors are logged but never propagated — pruning is best-effort
      * and must never break the surrounding workflow.
      *
-     * @return the number of snapshots actually deleted
+     * @return the number of snapshots marked for deletion (best-effort;
+     *         individual file deletions may fail silently)
      */
     public int applyNow() {
         BackupRetentionPolicy policy = currentPolicy();
@@ -120,7 +121,8 @@ public final class BackupRetentionController {
     /**
      * Applies the given policy to {@link #autosavesDirectory()} once.
      *
-     * @return the number of snapshots actually deleted (best-effort)
+     * @return the number of snapshots marked for deletion (best-effort;
+     *         individual file deletions may fail silently)
      */
     public int applyPolicy(BackupRetentionPolicy policy) {
         Objects.requireNonNull(policy, "policy must not be null");
@@ -130,13 +132,13 @@ public final class BackupRetentionController {
         try {
             BackupRetentionService.Plan plan =
                     new BackupRetentionService(policy).prune(autosavesDirectory);
-            int deleted = plan.discarded().size();
-            if (deleted > 0) {
+            int candidates = plan.discarded().size();
+            if (candidates > 0) {
                 LOG.log(Level.INFO,
-                        "Backup retention pruned {0} snapshots under {1}",
-                        new Object[]{deleted, autosavesDirectory});
+                        "Backup retention attempted to delete {0} snapshot(s) under {1}",
+                        new Object[]{candidates, autosavesDirectory});
             }
-            return deleted;
+            return candidates;
         } catch (IOException e) {
             LOG.log(Level.WARNING, "Failed to apply backup retention policy", e);
             return 0;
@@ -144,8 +146,10 @@ public final class BackupRetentionController {
     }
 
     /**
-     * Schedules the periodic prune task. Safe to call once; subsequent
-     * calls are no-ops.
+     * Schedules the periodic prune task. The first execution runs
+     * immediately (initial delay = 0) so backups left over from a
+     * previous session are pruned at startup on the scheduler thread
+     * (not the calling thread). Subsequent calls are no-ops.
      */
     public void start() {
         if (periodicTask != null) {
@@ -153,7 +157,7 @@ public final class BackupRetentionController {
         }
         periodicTask = scheduler.scheduleAtFixedRate(
                 this::applyNowQuietly,
-                periodMinutes, periodMinutes, TimeUnit.MINUTES);
+                0, periodMinutes, TimeUnit.MINUTES);
     }
 
     private void applyNowQuietly() {
@@ -190,7 +194,8 @@ public final class BackupRetentionController {
     /**
      * Opens the {@link BackupSettingsDialog} as a modal dialog, blocking
      * until the user clicks Apply or Cancel. On Apply the new policy is
-     * persisted and applied immediately.
+     * persisted and applied on a background thread so the FX thread is
+     * never blocked by filesystem I/O.
      *
      * @param owner            the owning window for modal placement, may be null
      * @param projectDirectory the active project directory (used by the
@@ -204,11 +209,15 @@ public final class BackupRetentionController {
             dialog.initOwner(owner);
         }
         dialog.showAndWait().ifPresent(updated -> {
-            try {
-                saveAndApply(updated);
-            } catch (IOException e) {
-                LOG.log(Level.WARNING, "Failed to save backup retention policy", e);
-            }
+            // Offload save + prune to the scheduler's daemon thread so the
+            // FX application thread is never blocked by filesystem I/O.
+            scheduler.execute(() -> {
+                try {
+                    saveAndApply(updated);
+                } catch (IOException e) {
+                    LOG.log(Level.WARNING, "Failed to save backup retention policy", e);
+                }
+            });
         });
     }
 }

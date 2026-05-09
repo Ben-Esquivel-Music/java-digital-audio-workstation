@@ -415,12 +415,12 @@ public final class MainController {
         });
         LOG.info("DAW initialized with studio quality format");
         // Story 191 — Auto-Backup Rotation. Initialize the global retention
-        // store, run the persisted policy once now so any backups left over
-        // from a previous session are pruned at startup, then schedule the
-        // hourly periodic prune. Shutdown is wired below in setOnHidden.
+        // store and schedule the hourly periodic prune. The initial
+        // applyNow() runs on the controller's daemon scheduler thread
+        // (not the FX thread) to avoid blocking startup on directory
+        // scanning and filesystem I/O.
         backupRetentionController = new BackupRetentionController();
         try {
-            backupRetentionController.applyNow();
             backupRetentionController.start();
         } catch (RuntimeException e) {
             LOG.log(Level.WARNING, "Failed to start backup retention controller", e);
