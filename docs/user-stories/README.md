@@ -269,6 +269,11 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 204 | [ZGC Tuning and Buffer-Pool Recycling](204-zgc-tuning-buffer-pool-recycling.md) | 🟡 Medium | Performance |
 | 205 | [Virtual Threads for Non-Realtime Workloads](205-virtual-threads-for-non-realtime.md) | 🟡 Medium | Performance |
 | 206 | [Rendered-Track Cache (Persistent Frozen-Track Audio)](206-rendered-track-cache.md) | 🟡 Medium | Performance |
+| 250 | [Migrate SoundWaveTelemetry RoomTelemetryDisplay to GpuCanvas (First daw-fx Consumer)](250-migrate-room-telemetry-display-to-gpu-canvas.md) | 🟠 High | GPU |
+| 251 | [Migrate Real-Time Level / Loudness / Input Meters to GpuCanvas](251-migrate-realtime-meters-to-gpu-canvas.md) | 🟡 Medium | GPU |
+| 252 | [Migrate Real-Time Spectrum / Correlation / Tuner Analyzers to GpuCanvas](252-migrate-realtime-analyzers-to-gpu-canvas.md) | 🟡 Medium | GPU |
+| 253 | [Migrate WaveformDisplay and Browser Sample Thumbnails to GpuCanvas](253-migrate-waveform-displays-to-gpu-canvas.md) | 🟡 Medium | GPU |
+| 254 | [Migrate SpatialPannerDisplay (3D Object Position View) to GpuCanvas](254-migrate-spatial-panner-display-to-gpu-canvas.md) | 🟡 Medium | GPU |
 
 ## Testing & CI
 
