@@ -10,12 +10,13 @@ import com.benesquivelmusic.daw.core.snapshot.SnapshotBrowserService;
 import com.benesquivelmusic.daw.core.snapshot.SnapshotDiff;
 import com.benesquivelmusic.daw.core.snapshot.SnapshotEntry;
 
+import javafx.beans.property.ReadOnlyObjectWrapper;
+import javafx.beans.property.ReadOnlyStringWrapper;
 import javafx.scene.Scene;
 import javafx.scene.control.Alert;
 import javafx.scene.control.TableColumn;
 import javafx.scene.control.TableView;
 import javafx.scene.control.TextInputDialog;
-import javafx.scene.control.cell.PropertyValueFactory;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
 
@@ -89,6 +90,9 @@ final class SnapshotsController {
     private final ProjectSerializer serializer = new ProjectSerializer();
     private final ProjectDeserializer deserializer = new ProjectDeserializer();
 
+    /** The last project checkpoint directory registered with the service,
+     *  tracked so it can be removed when a different project is opened. */
+    private Path lastRegisteredDirectory;
     private Stage browserStage;
     private SnapshotBrowser browserView;
 
@@ -117,19 +121,33 @@ final class SnapshotsController {
     /**
      * Wires the currently-open project's {@code checkpoints/} directory
      * into the snapshot service so on-disk autosaves emitted by
-     * {@link CheckpointManager} appear in the browser timeline. Safe to
-     * call repeatedly — the service de-duplicates registrations.
+     * {@link CheckpointManager} appear in the browser timeline.
+     *
+     * <p>When the project changes, the previously-registered directory is
+     * removed first so the browser never shows snapshots from a different
+     * project. In-memory user checkpoints and undo points are also cleared
+     * because they belong to the old project's state.</p>
      *
      * <p>Called by {@code MainController} after every project open / new
      * so a freshly loaded project's history is immediately discoverable.</p>
      */
     void registerCurrentProjectDirectory() {
+        // Remove the previous project's directory so the browser never
+        // mixes snapshot timelines from different projects.
+        if (lastRegisteredDirectory != null) {
+            service.removeAutosaveDirectory(lastRegisteredDirectory);
+            lastRegisteredDirectory = null;
+        }
+        // Clear in-memory snapshots belonging to the old project.
+        service.clearSession();
+
         ProjectMetadata current = projectManager.getCurrentProject();
         if (current == null || current.projectPath() == null) {
             return;
         }
         Path dir = current.projectPath().resolve("checkpoints");
         service.addAutosaveDirectory(dir);
+        lastRegisteredDirectory = dir;
         if (browserView != null) {
             browserView.refresh();
         }
@@ -270,14 +288,17 @@ final class SnapshotsController {
 
     private void showDiffDialog(SnapshotEntry entry, SnapshotDiff diff) {
         TableView<SnapshotDiff.Entry> table = new TableView<>();
+        // SnapshotDiff.Entry is a Java record — use explicit cell-value
+        // factories (not PropertyValueFactory) because records expose
+        // accessors (category()) rather than JavaBean getters (getCategory()).
         TableColumn<SnapshotDiff.Entry, String> categoryCol = new TableColumn<>("Category");
-        categoryCol.setCellValueFactory(new PropertyValueFactory<>("category"));
+        categoryCol.setCellValueFactory(cd -> new ReadOnlyStringWrapper(cd.getValue().category()));
         TableColumn<SnapshotDiff.Entry, String> identifierCol = new TableColumn<>("Item");
-        identifierCol.setCellValueFactory(new PropertyValueFactory<>("identifier"));
-        TableColumn<SnapshotDiff.Entry, Object> changeCol = new TableColumn<>("Change");
-        changeCol.setCellValueFactory(new PropertyValueFactory<>("changeType"));
+        identifierCol.setCellValueFactory(cd -> new ReadOnlyStringWrapper(cd.getValue().identifier()));
+        TableColumn<SnapshotDiff.Entry, SnapshotDiff.ChangeType> changeCol = new TableColumn<>("Change");
+        changeCol.setCellValueFactory(cd -> new ReadOnlyObjectWrapper<>(cd.getValue().changeType()));
         TableColumn<SnapshotDiff.Entry, String> descriptionCol = new TableColumn<>("Description");
-        descriptionCol.setCellValueFactory(new PropertyValueFactory<>("description"));
+        descriptionCol.setCellValueFactory(cd -> new ReadOnlyStringWrapper(cd.getValue().description()));
         descriptionCol.setPrefWidth(260);
         table.getColumns().addAll(categoryCol, identifierCol, changeCol, descriptionCol);
         table.getItems().setAll(diff.entries());

@@ -233,6 +233,20 @@ public final class MainController {
         project.getMixer().setMixPrecision(startupSettings.getMixPrecision());
 
         CheckpointManager checkpointManager = new CheckpointManager(AutoSaveConfig.DEFAULT);
+        // Story 190: wire a project data supplier so on-disk checkpoint
+        // files contain the full serialized project XML (not a text
+        // summary). This allows SnapshotsController.loadFromEntry() to
+        // deserialize checkpoint files via ProjectDeserializer.
+        com.benesquivelmusic.daw.core.persistence.ProjectSerializer checkpointSerializer =
+                new com.benesquivelmusic.daw.core.persistence.ProjectSerializer();
+        checkpointManager.setProjectDataSupplier(() -> {
+            try {
+                return checkpointSerializer.serialize(project);
+            } catch (java.io.IOException e) {
+                LOG.log(Level.WARNING, "Failed to serialize project for on-disk checkpoint", e);
+                return null;
+            }
+        });
         Preferences prefs = Preferences.userNodeForPackage(MainController.class);
         RecentProjectsStore recentProjectsStore = new RecentProjectsStore(prefs);
         projectManager = new ProjectManager(checkpointManager, recentProjectsStore);

@@ -166,6 +166,14 @@ class SnapshotBrowserServiceTest {
         Files.setLastModifiedTime(fresh,
                 FileTime.from(Instant.parse("2026-04-26T09:00:00Z")));
 
+        // On-disk checkpoint file with the naming convention used by
+        // CheckpointManager — must NOT be deleted by purge regardless
+        // of its age (user-checkpoints are retained indefinitely).
+        Path checkpointFile = tmp.resolve("checkpoint-001-20260420.daw");
+        Files.writeString(checkpointFile, "<project>checkpoint</project>");
+        Files.setLastModifiedTime(checkpointFile,
+                FileTime.from(Instant.parse("2026-04-20T10:00:00Z")));
+
         svc.addAutosaveDirectory(tmp);
         SnapshotEntry checkpoint = svc.createUserCheckpoint(
                 "Important", "<project/>");
@@ -174,8 +182,9 @@ class SnapshotBrowserServiceTest {
         assertThat(deleted).isEqualTo(1);
         assertThat(Files.exists(stale)).isFalse();
         assertThat(Files.exists(fresh)).isTrue();
-        // The user checkpoint must survive a purge no matter how aggressive
-        // the autosave retention setting.
+        // On-disk checkpoint file must survive the purge.
+        assertThat(Files.exists(checkpointFile)).isTrue();
+        // The in-memory user checkpoint must also survive.
         assertThat(svc.getEntries()).contains(checkpoint);
     }
 
