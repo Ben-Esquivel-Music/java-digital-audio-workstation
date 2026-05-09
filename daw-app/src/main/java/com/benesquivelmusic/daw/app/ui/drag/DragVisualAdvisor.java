@@ -285,7 +285,7 @@ public final class DragVisualAdvisor {
     }
 
     /** Compatibility matrix encoded as a static helper for testability. */
-    static boolean canDropOn(DragSourceKind kind, DropTargetKind target) {
+    public static boolean canDropOn(DragSourceKind kind, DropTargetKind target) {
         if (kind == null || target == null || target == DropTargetKind.NONE) {
             return false;
         }

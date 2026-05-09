@@ -69,7 +69,7 @@ class DragVisualAdvisorWiringTest {
     }
 
     @Test
-    void browserPanelTolaratesNullAdvisor() throws Exception {
+    void browserPanelToleratesNullAdvisor() throws Exception {
         BrowserPanel panel = runOnFxThread(BrowserPanel::new);
 
         // No advisor installed — getter should return null and the

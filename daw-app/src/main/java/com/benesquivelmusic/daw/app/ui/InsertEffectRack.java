@@ -343,7 +343,9 @@ public final class InsertEffectRack extends VBox {
                     && event.getGestureSource() instanceof javafx.scene.Node sourceNode
                     && sourceNode.getParent() == InsertEffectRack.this) {
                 event.acceptTransferModes(TransferMode.MOVE);
-                row.getStyleClass().add("drop-target-active");
+                if (!row.getStyleClass().contains("drop-target-active")) {
+                    row.getStyleClass().add("drop-target-active");
+                }
             }
             event.consume();
         });
@@ -659,7 +661,7 @@ public final class InsertEffectRack extends VBox {
         try {
             switch (dragVisualAdvisor.state()) {
                 case DRAGGING -> {
-                    if (event.isAccepted() && event.getTransferMode() != null) {
+                    if (event.getTransferMode() != null) {
                         dragVisualAdvisor.commit();
                     } else {
                         dragVisualAdvisor.cancel();

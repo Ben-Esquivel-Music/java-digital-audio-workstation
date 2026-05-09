@@ -1,6 +1,5 @@
 package com.benesquivelmusic.daw.app.ui;
 
-import com.benesquivelmusic.daw.app.ui.drag.DragModifier;
 import com.benesquivelmusic.daw.app.ui.drag.DragSourceKind;
 import com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor;
 import com.benesquivelmusic.daw.app.ui.drag.DropTargetKind;
@@ -21,7 +20,6 @@ import javafx.scene.layout.VBox;
 
 import java.io.File;
 import java.nio.file.Path;
-import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
 import java.util.logging.Logger;
@@ -431,7 +429,7 @@ public final class BrowserPanel extends VBox {
         try {
             switch (dragVisualAdvisor.state()) {
                 case DRAGGING -> {
-                    if (event.isAccepted() && event.getTransferMode() != null) {
+                    if (event.getTransferMode() != null) {
                         dragVisualAdvisor.commit();
                     } else {
                         dragVisualAdvisor.cancel();
@@ -461,18 +459,17 @@ public final class BrowserPanel extends VBox {
     }
 
     /**
-     * Convenience to ask the advisor whether the cursor is over a
-     * valid sample drop target. Returns {@code false} when no advisor
-     * is installed or no drag is in progress.
+     * Convenience to ask whether the given drop target is valid for a
+     * sample drag. Uses the advisor's pure {@code canDropOn} query so
+     * no mutable visual state is touched. Returns {@code false} when
+     * no advisor is installed or no drag is in progress.
      */
-    boolean isOverValidSampleDropTarget(DropTargetKind target, Set<DragModifier> modifiers) {
+    boolean isOverValidSampleDropTarget(DropTargetKind target) {
         if (dragVisualAdvisor == null
                 || dragVisualAdvisor.state() != DragVisualAdvisor.State.DRAGGING) {
             return false;
         }
-        return dragVisualAdvisor.update(target, 0, "off",
-                modifiers == null ? EnumSet.noneOf(DragModifier.class) : modifiers)
-                .highlight().valid();
+        return DragVisualAdvisor.canDropOn(DragSourceKind.SAMPLE, target);
     }
 
     private void applyFilter(String filterText) {

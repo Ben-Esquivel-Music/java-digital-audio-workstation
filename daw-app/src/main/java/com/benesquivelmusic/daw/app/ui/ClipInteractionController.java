@@ -188,6 +188,8 @@ final class ClipInteractionController {
         canvas.setOnMouseReleased(this::onMouseReleased);
         canvas.setOnMouseMoved(this::onMouseMoved);
         canvas.setSelectionModel(host.selectionModel());
+        // Ensure the canvas can receive key events so the Esc filter fires.
+        canvas.setFocusTraversable(true);
         // Esc cancels the in-progress clip drag with the cancel-revert
         // animation timings from the shared AnimationProfile (story 197).
         canvas.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, ev -> {
@@ -330,6 +332,10 @@ final class ClipInteractionController {
     // ── Mouse event handlers ─────────────────────────────────────────────────
 
     private void onMousePressed(MouseEvent event) {
+        // Ensure the canvas has focus so Esc key events are received.
+        if (!canvas.isFocused()) {
+            canvas.requestFocus();
+        }
         int trackIndex = trackIndexAt(event.getY());
         double beat = beatAt(event.getX());
 
@@ -1142,11 +1148,19 @@ final class ClipInteractionController {
         if (dragVisualAdvisor != null
                 && dragVisualAdvisor.state() == DragVisualAdvisor.State.DRAGGING) {
             try {
-                dragVisualAdvisor.cancel();
-                // The presenter would normally play the cancel-revert
-                // animation; tests can verify the REVERTING state and
-                // the duration via DragVisualAdvisor.CancelRevert.
-                dragVisualAdvisor.revertCompleted();
+                DragVisualAdvisor.CancelRevert revert = dragVisualAdvisor.cancel();
+                // Defer revertCompleted() until the cancel-revert animation
+                // duration has elapsed so the presenter can play the slide-
+                // back animation (Story 197). Uses PauseTransition which
+                // fires on the FX Application Thread.
+                javafx.animation.PauseTransition pause = new javafx.animation.PauseTransition(
+                        javafx.util.Duration.millis(revert.duration().toMillis()));
+                pause.setOnFinished(_ -> {
+                    if (dragVisualAdvisor.state() == DragVisualAdvisor.State.REVERTING) {
+                        dragVisualAdvisor.revertCompleted();
+                    }
+                });
+                pause.play();
             } catch (RuntimeException ignored) {
                 // never break the underlying drag
             }

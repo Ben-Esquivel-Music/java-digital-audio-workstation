@@ -362,6 +362,10 @@ public final class MainController {
         // visual feedback layer.
         viewNavigationController.getMixerView()
                 .setDragVisualAdvisor(animationController.dragVisualAdvisor());
+        // Story 197 — share the single advisor with the browser panel so
+        // sample-drag gestures use the unified visual feedback layer.
+        browserPanelController.getBrowserPanel()
+                .setDragVisualAdvisor(animationController.dragVisualAdvisor());
         // Story 137: bind the input-level-monitor registry into the mixer
         // so armed-track strips grow a second meter column with a latching
         // clip LED, and into the track-strip controller so armed tracks
@@ -1306,10 +1310,6 @@ public final class MainController {
 
     private void buildBrowserPanel(boolean initiallyVisible) {
         BrowserPanel browserPanel = new BrowserPanel();
-        if (animationController != null) {
-            // Story 197 — share the single advisor / animation profile.
-            browserPanel.setDragVisualAdvisor(animationController.dragVisualAdvisor());
-        }
         browserPanelController = new BrowserPanelController(browserPanel, browserButton, rootPane);
         browserPanelController.setOnVisibilityChanged(() -> {
             toolbarStateStore.saveBrowserVisible(browserPanelController.isPanelVisible());
