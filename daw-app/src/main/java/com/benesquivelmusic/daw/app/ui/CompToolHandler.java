@@ -77,11 +77,13 @@ public final class CompToolHandler {
             return null;
         }
         swipeActive = false;
-        double duration = endBeat - swipeStartBeat;
+        double lo = Math.min(swipeStartBeat, endBeat);
+        double hi = Math.max(swipeStartBeat, endBeat);
+        double duration = hi - lo;
         if (duration <= 0) {
             return null;
         }
-        CompRegion region = new CompRegion(swipeTakeIndex, swipeStartBeat, duration);
+        CompRegion region = new CompRegion(swipeTakeIndex, lo, duration);
         undoManager.execute(new SetCompRegionAction(comping, region));
         return region;
     }

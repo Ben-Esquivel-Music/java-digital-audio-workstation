@@ -50,6 +50,14 @@ class CompToolHandlerTest {
     }
 
     @Test
+    void backwardSwipeIsNormalizedToPositiveDuration() {
+        handler.beginSwipe(0, 3.0);
+        CompRegion region = handler.endSwipe(1.0);
+        assertThat(region).isEqualTo(new CompRegion(0, 1.0, 2.0));
+        assertThat(comping.getCompRegions()).contains(region);
+    }
+
+    @Test
     void altClickSolosOneLaneAndUnsolosOthers() {
         comping.getTakeLane(0).setSoloed(true);
         handler.altClickLane(2);

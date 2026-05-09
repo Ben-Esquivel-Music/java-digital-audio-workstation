@@ -43,8 +43,10 @@ public final class CreateTakeAction implements UndoableAction {
 
     @Override
     public void execute() {
-        createdLane = new TakeLane(takeName);
-        createdLane.addClip(audioClip);
+        if (createdLane == null) {
+            createdLane = new TakeLane(takeName);
+            createdLane.addClip(audioClip);
+        }
         insertedIndex = comping.getTakeLaneCount();
         comping.addTakeLane(createdLane);
     }
@@ -53,7 +55,6 @@ public final class CreateTakeAction implements UndoableAction {
     public void undo() {
         if (createdLane != null) {
             comping.removeTakeLane(createdLane);
-            createdLane = null;
             insertedIndex = -1;
         }
     }

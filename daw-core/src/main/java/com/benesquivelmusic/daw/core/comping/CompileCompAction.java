@@ -62,11 +62,12 @@ public final class CompileCompAction implements UndoableAction {
 
     @Override
     public void execute() {
-        previousMainLaneClips = List.copyOf(track.getClips());
         compiledClip = compManager.compileToClip(sampleRate, tempoBpm);
         if (compiledClip == null) {
+            previousMainLaneClips = null;
             return;
         }
+        previousMainLaneClips = List.copyOf(track.getClips());
         // Remove any existing main-lane clips that fall inside the composite
         // beat range — the composite replaces them. Clips outside the range
         // are left intact.

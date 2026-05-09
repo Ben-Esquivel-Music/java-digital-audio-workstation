@@ -118,7 +118,8 @@ public final class CompManager {
         // Track the natural end-sample of the previously written region so we
         // can detect touching boundaries that warrant an equal-power crossfade.
         int previousEnd = Integer.MIN_VALUE;
-        for (CompRegion region : regions) {
+        for (int rIdx = 0; rIdx < regions.size(); rIdx++) {
+            CompRegion region = regions.get(rIdx);
             AudioClip src = findSourceClip(region);
             if (src == null) {
                 continue;
@@ -173,10 +174,10 @@ public final class CompManager {
                 }
                 // Crossfade: equal-power blend at the touching boundary.
                 // The zone is [regionStart, regionStart + xfade): the previous
-                // region's trailing samples (saved in prevTail) are faded out
-                // while the incoming region's leading samples (just written by
-                // the body loop) are faded in. Both sample sets fall within
-                // their respective selected CompRegion ranges.
+                // region's trailing samples (saved in prevTail, which may
+                // include samples just past the previous region's selected end)
+                // are faded out while the incoming region's leading samples
+                // (just written by the body loop) are faded in.
                 if (xfade > 0 && prevTail != null) {
                     for (int i = 0; i < xfade; i++) {
                         int dstIdx = regionStart + i;
@@ -193,17 +194,22 @@ public final class CompManager {
                 }
                 // Extend: write xfade samples past the region end from the
                 // source clip so the *next* region's crossfade has data to
-                // blend with. These samples are overwritten by the next
-                // region's body loop when it arrives.
-                if (crossfadeSamples > 0) {
-                    for (int i = 0; i < crossfadeSamples; i++) {
-                        int dstIdx = regionEnd + i;
-                        int si = srcStart + regionLen + i;
-                        if (dstIdx < 0 || dstIdx >= dstCh.length) {
-                            continue;
-                        }
-                        if (si >= 0 && si < srcCh.length) {
-                            dstCh[dstIdx] = srcCh[si];
+                // blend with. Only extend when the next region starts exactly
+                // at this region's end (touching boundary); otherwise, leave
+                // the gap as silence to avoid leaking audio between regions.
+                if (crossfadeSamples > 0 && rIdx + 1 < regions.size()) {
+                    CompRegion nextRegion = regions.get(rIdx + 1);
+                    int nextStart = beatsToSamples(nextRegion.startBeat() - originBeat, tempoBpm, sampleRate);
+                    if (nextStart == regionEnd) {
+                        for (int i = 0; i < crossfadeSamples; i++) {
+                            int dstIdx = regionEnd + i;
+                            int si = srcStart + regionLen + i;
+                            if (dstIdx < 0 || dstIdx >= dstCh.length) {
+                                continue;
+                            }
+                            if (si >= 0 && si < srcCh.length) {
+                                dstCh[dstIdx] = srcCh[si];
+                            }
                         }
                     }
                 }

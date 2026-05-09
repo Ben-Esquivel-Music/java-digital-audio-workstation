@@ -136,7 +136,6 @@ final class ClipInteractionController {
 
     // Comp tool drag state
     private CompToolHandler compToolHandler;
-    private Track compToolTrack;
 
     ClipInteractionController(ArrangementCanvas canvas, Host host) {
         this.canvas = Objects.requireNonNull(canvas, "canvas must not be null");
@@ -629,7 +628,6 @@ final class ClipInteractionController {
             double beat = beatAt(event.getX());
             compToolHandler.endSwipe(beat);
             compToolHandler = null;
-            compToolTrack = null;
             host.refreshCanvas();
             updateCursor();
             return;
@@ -1075,9 +1073,9 @@ final class ClipInteractionController {
             return;
         }
         compToolHandler = new CompToolHandler(takeComping, host.undoManager());
-        compToolTrack = track;
         if (event.isAltDown()) {
             compToolHandler.altClickLane(0);
+            compToolHandler = null;
             host.refreshCanvas();
         } else {
             compToolHandler.beginSwipe(0, beat);
