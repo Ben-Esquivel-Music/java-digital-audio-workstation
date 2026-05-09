@@ -54,6 +54,11 @@ public final class DawMenuBarController {
         void onImportSession();
         void onExportSession();
         void onImportAudioFile();
+        // Story 190 — Snapshot History Browser
+        /** Open the snapshot history browser dialog. Default no-op for tests. */
+        default void onOpenSnapshots() { }
+        /** Capture an explicit user checkpoint of the current project. Default no-op for tests. */
+        default void onCreateCheckpoint() { }
 
         // Edit actions
         void onUndo();

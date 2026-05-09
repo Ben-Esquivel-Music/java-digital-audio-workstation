@@ -154,6 +154,13 @@ public final class MainController {
     private WorkspaceManager workspaceManager;
     private com.benesquivelmusic.daw.app.ui.dock.DockManager dockManager;
     /**
+     * Story 190 — Snapshot History Browser. Owns the data-only
+     * SnapshotBrowserService and the lazy SnapshotBrowser dialog;
+     * surfaces "File → Snapshots…" and "File → Create Checkpoint"
+     * (Ctrl+Alt+S) into the application.
+     */
+    private SnapshotsController snapshotsController;
+    /**
      * Story 100 — Track Templates and Channel-Strip Presets. Owns the
      * {@code TrackTemplateStore} (under {@code ~/.daw/templates} and
      * {@code .../presets}) and routes Save/Apply/Manage menu actions
@@ -229,6 +236,28 @@ public final class MainController {
         Preferences prefs = Preferences.userNodeForPackage(MainController.class);
         RecentProjectsStore recentProjectsStore = new RecentProjectsStore(prefs);
         projectManager = new ProjectManager(checkpointManager, recentProjectsStore);
+        // Story 190 — Snapshot History Browser. The data-only service
+        // and the (lazy) browser dialog are owned by SnapshotsController,
+        // which is composed here once for the lifetime of the session
+        // and reused after every project open / new.
+        snapshotsController = new SnapshotsController(
+                new com.benesquivelmusic.daw.core.snapshot.SnapshotBrowserService(),
+                checkpointManager,
+                projectManager,
+                new SnapshotsController.Host() {
+                    @Override public Stage ownerStage() {
+                        return rootPane.getScene() != null
+                                ? (Stage) rootPane.getScene().getWindow() : null;
+                    }
+                    @Override public DawProject currentProject() { return project; }
+                    @Override public boolean confirmDiscardUnsavedChanges() {
+                        return projectLifecycleController == null
+                                || projectLifecycleController.confirmDiscardUnsavedChanges();
+                    }
+                    @Override public void applyRestoredProject(DawProject restored, String label) {
+                        applySnapshotRestoredProject(restored, label);
+                    }
+                });
         toolbarStateStore = new ToolbarStateStore(prefs);
         keyBindingManager = new KeyBindingManager(prefs.node("keybindings"));
 
@@ -553,6 +582,38 @@ public final class MainController {
         }
         if (viewNavigationController.getActiveView() == DawView.MIXER) {
             rootPane.setCenter(newMixerView);
+        }
+        // Story 190 — re-register the freshly-loaded project's
+        // checkpoints/ directory with the snapshot service so its
+        // history shows up immediately in the browser.
+        if (snapshotsController != null) {
+            snapshotsController.registerCurrentProjectDirectory();
+        }
+    }
+
+    /**
+     * Story 190 — applies a project restored from the snapshot browser.
+     * Mirrors {@link ProjectLifecycleController#loadProjectFromPath} but
+     * skips the on-disk read because the {@link DawProject} has already
+     * been deserialized from the snapshot's stored XML.
+     */
+    private void applySnapshotRestoredProject(DawProject restored, String label) {
+        if (restored == null) return;
+        this.project = restored;
+        this.undoManager = new UndoManager();
+        if (historyPanelController != null) historyPanelController.rebuild();
+        if (trackCreationController != null) trackCreationController.resetCounters();
+        this.projectDirty = true;
+        trackListPanel.getChildren().clear();
+        Label header = new Label("TRACKS");
+        header.getStyleClass().add("panel-header");
+        header.setGraphic(IconNode.of(DawIcon.MIXER, PANEL_ICON_SIZE));
+        trackListPanel.getChildren().add(header);
+        MixerView newMixerView = new MixerView(project, undoManager);
+        handleProjectRebuild(newMixerView);
+        if (notificationBar != null && label != null) {
+            notificationBar.show(NotificationLevel.INFO,
+                    "Restored snapshot: " + label);
         }
     }
 
@@ -943,6 +1004,12 @@ public final class MainController {
                             viewNavigationController.getMixerView().toggleAB();
                         }
                     }
+                    @Override public void onCreateCheckpoint() {
+                        if (snapshotsController != null) snapshotsController.createCheckpoint();
+                    }
+                    @Override public void onOpenSnapshots() {
+                        if (snapshotsController != null) snapshotsController.openBrowser();
+                    }
                 });
         createCommandPaletteView();
     }
@@ -1239,6 +1306,12 @@ public final class MainController {
                     @Override public void onImportSession() { projectLifecycleController.onImportSession(); }
                     @Override public void onExportSession() { projectLifecycleController.onExportSession(); }
                     @Override public void onImportAudioFile() { audioImportController.onImportAudioFile(); }
+                    @Override public void onOpenSnapshots() {
+                        if (snapshotsController != null) snapshotsController.openBrowser();
+                    }
+                    @Override public void onCreateCheckpoint() {
+                        if (snapshotsController != null) snapshotsController.createCheckpoint();
+                    }
                     @Override public void onUndo() { MainController.this.onUndo(); }
                     @Override public void onRedo() { MainController.this.onRedo(); }
                     @Override public void onCopy() { clipEditController.onCopy(); }

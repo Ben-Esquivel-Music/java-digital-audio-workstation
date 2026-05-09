@@ -142,6 +142,18 @@ final class KeyboardShortcutController {
         default void onOpenImmersiveAb() { }
         /** Story 175 — toggle A/B monitoring between mix and reference. */
         default void onImmersiveAbToggle() { }
+        /**
+         * Story 190 — Snapshot History Browser. Captures the current
+         * project state as an explicit user-checkpoint that appears in
+         * the snapshot timeline. Default no-op keeps existing test stubs
+         * source-compatible.
+         */
+        default void onCreateCheckpoint() { }
+        /**
+         * Story 190 — opens the snapshot history browser. Default no-op
+         * keeps existing test stubs source-compatible.
+         */
+        default void onOpenSnapshots() { }
     }
 
     private final KeyBindingManager keyBindingManager;
@@ -179,6 +191,8 @@ final class KeyboardShortcutController {
         actionHandlers.put(DawAction.UNDO, host::onUndo);
         actionHandlers.put(DawAction.REDO, host::onRedo);
         actionHandlers.put(DawAction.SAVE, host::onSaveProject);
+        // ── Snapshot history (Story 190) ─────────────────────────────────────
+        actionHandlers.put(DawAction.CREATE_CHECKPOINT, host::onCreateCheckpoint);
         actionHandlers.put(DawAction.NEW_PROJECT, host::onNewProject);
         actionHandlers.put(DawAction.OPEN_PROJECT, host::onOpenProject);
         actionHandlers.put(DawAction.IMPORT_SESSION, host::onImportSession);
