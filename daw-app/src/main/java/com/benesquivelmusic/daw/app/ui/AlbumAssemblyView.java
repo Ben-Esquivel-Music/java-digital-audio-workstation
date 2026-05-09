@@ -29,7 +29,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-
 /**
  * Album assembly view for sequencing and assembling tracks into an album.
  *
@@ -67,6 +66,14 @@ public final class AlbumAssemblyView extends VBox {
     private final Button propagateArtistButton;
     private final Button autoIsrcButton;
     private final TextField firstIsrcField;
+
+    /**
+     * Tracks every {@link WaveformDisplay} created by {@link #buildTrackCard}
+     * so that {@link #refresh()} (which discards the previous track cards)
+     * and {@link #dispose()} can release each waveform's GpuCanvas-owned
+     * off-heap surface and stop its render-loop timer.
+     */
+    private final List<WaveformDisplay> trackWaveforms = new ArrayList<>();
 
     /**
      * Creates a new album assembly view with a default empty album sequence.
@@ -285,6 +292,15 @@ public final class AlbumAssemblyView extends VBox {
      * synchronized with the model.</p>
      */
     public void refresh() {
+        // Each refresh() rebuilds the entire row of track cards. Dispose of
+        // the previous WaveformDisplays first so their GpuCanvas timers
+        // stop and their off-heap pixel surfaces are released — otherwise
+        // the discarded cards would keep their AnimationTimers alive until
+        // the next GC.
+        for (WaveformDisplay w : trackWaveforms) {
+            w.dispose();
+        }
+        trackWaveforms.clear();
         trackContainer.getChildren().clear();
         List<AlbumTrackEntry> tracks = albumSequence.getTracks();
         for (int i = 0; i < tracks.size(); i++) {
@@ -304,6 +320,20 @@ public final class AlbumAssemblyView extends VBox {
      */
     public AlbumSequence getAlbumSequence() {
         return albumSequence;
+    }
+
+    /**
+     * Releases all per-track {@link WaveformDisplay} GpuCanvas surfaces
+     * and stops their render-loop timers. Must be called from the JavaFX
+     * Application Thread when the album-assembly dialog or panel is being
+     * torn down. Safe to call multiple times — subsequent calls find an
+     * empty waveform list and no-op.
+     */
+    public void dispose() {
+        for (WaveformDisplay w : trackWaveforms) {
+            w.dispose();
+        }
+        trackWaveforms.clear();
     }
 
     /**
@@ -505,6 +535,7 @@ public final class AlbumAssemblyView extends VBox {
         waveform.setPrefHeight(WAVEFORM_HEIGHT);
         waveform.setMinHeight(WAVEFORM_HEIGHT);
         waveform.setMaxHeight(WAVEFORM_HEIGHT);
+        trackWaveforms.add(waveform);
 
         // Duration label
         Label durationLabel = new Label(formatTime(entry.durationSeconds()));

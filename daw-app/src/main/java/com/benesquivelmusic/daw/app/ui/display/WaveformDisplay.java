@@ -1,7 +1,8 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
+import com.benesquivelmusic.daw.fx.GpuCanvas;
+import com.benesquivelmusic.daw.fx.GpuRenderContext;
 import com.benesquivelmusic.daw.sdk.visualization.WaveformData;
-import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
@@ -10,12 +11,25 @@ import javafx.scene.paint.Color;
  * Canvas-based waveform visualization component with smooth animations.
  *
  * <p>Renders audio waveform overviews using min/max peak envelopes and
- * RMS fills, with configurable colors and animated playback cursor.
+ * RMS fills, with configurable colors and an animated playback cursor.
  * Supports the waveform visualization requirements from the mastering
  * research (§2 — Critical Listening) and open-source DAW design patterns.</p>
  *
- * <p>Uses JavaFX {@link Canvas} for high-performance rendering without
- * scene graph overhead — ideal for real-time audio display.</p>
+ * <p>This display composes a {@link GpuCanvas} from the {@code daw-fx}
+ * module: the GpuCanvas owns the size binding, the per-frame
+ * {@link javafx.animation.AnimationTimer}, scene-attachment gating, and
+ * the background clear, so the display itself only contributes the
+ * per-frame draw routine. Property setters call
+ * {@link GpuCanvas#requestRender()} which coalesces multiple calls in a
+ * single FX pulse into one redraw — a sample-preview cursor that is
+ * updated 50 times per frame issues exactly one renderer invocation per
+ * frame, not 50.</p>
+ *
+ * <p>While a cursor is being animated (e.g. during browser sample preview
+ * playback) call {@link #setAnimated(boolean) setAnimated(true)} to drive
+ * the cursor advance off the GpuCanvas timer; the cursor velocity is
+ * integrated against {@link GpuRenderContext#deltaSeconds()} so the cursor
+ * speed is correct regardless of frame rate.</p>
  */
 public final class WaveformDisplay extends Region {
 
@@ -25,49 +39,98 @@ public final class WaveformDisplay extends Region {
     private static final Color DEFAULT_BACKGROUND = Color.web("#1a1a2e");
     private static final Color DEFAULT_CENTER_LINE = Color.web("#ffffff", 0.15);
 
-    private final Canvas canvas;
+    private final GpuCanvas gpuCanvas;
+
     private WaveformData data;
     private double cursorPosition; // 0.0 to 1.0
+    private double cursorVelocity; // normalized units per second; integrated when animated
 
     private Color peakColor = DEFAULT_PEAK_COLOR;
     private Color rmsColor = DEFAULT_RMS_COLOR;
     private Color cursorColor = DEFAULT_CURSOR_COLOR;
-    private Color backgroundColor = DEFAULT_BACKGROUND;
+
+    private boolean disposed;
 
     /**
      * Creates a new waveform display.
      */
     public WaveformDisplay() {
-        canvas = new Canvas();
-        getChildren().add(canvas);
-
-        // Bind canvas size to region size
-        canvas.widthProperty().bind(widthProperty());
-        canvas.heightProperty().bind(heightProperty());
-
-        // Re-render on resize
-        widthProperty().addListener((_, _, _) -> render());
-        heightProperty().addListener((_, _, _) -> render());
+        gpuCanvas = GpuCanvas.create()
+                .renderer(this::renderFrame)
+                .clearColor(DEFAULT_BACKGROUND)
+                .animated(false)
+                .build();
+        getChildren().add(gpuCanvas);
     }
 
     /**
-     * Updates the waveform data and re-renders.
+     * Updates the waveform data and requests a re-render.
      *
      * @param data the waveform data to display
      */
     public void setWaveformData(WaveformData data) {
         this.data = data;
-        render();
+        gpuCanvas.requestRender();
     }
 
     /**
-     * Sets the playback cursor position (0.0 to 1.0) and re-renders.
+     * Sets the playback cursor position (0.0 to 1.0) and requests a re-render.
+     *
+     * <p>Multiple calls within the same FX pulse are coalesced by
+     * {@link GpuCanvas#requestRender()} into a single renderer invocation.</p>
      *
      * @param position normalized cursor position
      */
     public void setCursorPosition(double position) {
-        this.cursorPosition = Math.max(0.0, Math.min(1.0, position));
-        render();
+        this.cursorPosition = clampPosition(position);
+        gpuCanvas.requestRender();
+    }
+
+    /**
+     * Returns the current normalized cursor position (0.0 to 1.0).
+     */
+    public double getCursorPosition() {
+        return cursorPosition;
+    }
+
+    /**
+     * Sets the cursor advance velocity in normalized units per second.
+     * When the GpuCanvas is animated ({@link #setAnimated(boolean)}), the
+     * cursor position is advanced by {@code velocity * deltaSeconds} every
+     * frame and clamped to {@code [0, 1]}. A velocity of {@code 0} (the
+     * default) freezes the cursor at its current position.
+     *
+     * @param velocity normalized units per second
+     */
+    public void setCursorVelocity(double velocity) {
+        this.cursorVelocity = velocity;
+    }
+
+    /**
+     * Returns the current cursor velocity in normalized units per second.
+     */
+    public double getCursorVelocity() {
+        return cursorVelocity;
+    }
+
+    /**
+     * Enables or disables the GpuCanvas animation timer. While animated
+     * the cursor is advanced off the FX pulse using the configured
+     * {@linkplain #setCursorVelocity(double) cursor velocity}; one-off
+     * renders triggered by setters do not advance the cursor.
+     *
+     * @param animated {@code true} to drive cursor animation off the FX
+     *                 timer, {@code false} to render only on demand
+     */
+    public void setAnimated(boolean animated) {
+        gpuCanvas.setAnimated(animated);
+    }
+
+    /**
+     * Returns whether the GpuCanvas animation timer is currently running.
+     */
+    public boolean isAnimated() {
+        return gpuCanvas.isAnimated();
     }
 
     /**
@@ -75,7 +138,7 @@ public final class WaveformDisplay extends Region {
      */
     public void setPeakColor(Color color) {
         this.peakColor = color;
-        render();
+        gpuCanvas.requestRender();
     }
 
     /**
@@ -83,7 +146,25 @@ public final class WaveformDisplay extends Region {
      */
     public void setRmsColor(Color color) {
         this.rmsColor = color;
-        render();
+        gpuCanvas.requestRender();
+    }
+
+    /**
+     * Sets the cursor color.
+     */
+    public void setCursorColor(Color color) {
+        this.cursorColor = color;
+        gpuCanvas.requestRender();
+    }
+
+    /**
+     * Sets the background color. The clear is performed by
+     * {@link GpuCanvas#setClearColor(Color)} so the renderer no longer
+     * issues a per-frame background fill; the GpuCanvas already requests
+     * a redraw when the clear color changes.
+     */
+    public void setBackgroundColor(Color color) {
+        gpuCanvas.setClearColor(color);
     }
 
     /**
@@ -93,22 +174,48 @@ public final class WaveformDisplay extends Region {
      * underlying audio data so the visual representation is updated.</p>
      */
     public void refresh() {
-        render();
+        gpuCanvas.requestRender();
     }
 
     /**
-     * Renders the waveform to the canvas.
+     * Returns the embedded {@link GpuCanvas}. Visible for tests.
      */
-    private void render() {
-        double w = canvas.getWidth();
-        double h = canvas.getHeight();
+    GpuCanvas getGpuCanvas() {
+        return gpuCanvas;
+    }
+
+    /**
+     * Stops the GpuCanvas render loop and releases its off-heap surface.
+     * Must be called from the JavaFX Application Thread. Safe to call
+     * multiple times.
+     */
+    public void dispose() {
+        if (disposed) return;
+        disposed = true;
+        gpuCanvas.setAnimated(false);
+        gpuCanvas.dispose();
+    }
+
+    // ── Rendering ───────────────────────────────────────────────────────
+
+    private void renderFrame(GpuRenderContext ctx) {
+        // Advance the cursor only when the timer drives this frame
+        // (deltaSeconds > 0). One-off requestRender() calls always supply
+        // deltaSeconds == 0 per the GpuCanvas contract, so coalesced
+        // setter-driven renders do not double-integrate the cursor.
+        if (ctx.deltaSeconds() > 0.0 && cursorVelocity != 0.0) {
+            cursorPosition = clampPosition(cursorPosition + cursorVelocity * ctx.deltaSeconds());
+        }
+        renderInto(ctx.gc(), ctx.width(), ctx.height());
+    }
+
+    /**
+     * Renders the waveform into the supplied graphics context. Background
+     * fill is provided by {@link GpuCanvas#setClearColor(Color)} so this
+     * method must not paint the background itself.
+     */
+    private void renderInto(GraphicsContext gc, double w, double h) {
         if (w <= 0 || h <= 0) return;
-
-        GraphicsContext gc = canvas.getGraphicsContext2D();
-
-        // Clear background
-        gc.setFill(backgroundColor);
-        gc.fillRect(0, 0, w, h);
 
         // Center line
         gc.setStroke(DEFAULT_CENTER_LINE);
@@ -159,9 +266,12 @@ public final class WaveformDisplay extends Region {
         }
     }
 
+    private static double clampPosition(double v) {
+        return Math.max(0.0, Math.min(1.0, v));
+    }
+
     @Override
     protected void layoutChildren() {
-        super.layoutChildren();
-        render();
+        gpuCanvas.resizeRelocate(0, 0, getWidth(), getHeight());
     }
 }
