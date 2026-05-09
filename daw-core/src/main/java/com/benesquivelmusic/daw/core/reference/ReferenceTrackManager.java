@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.reference;
 
+import com.benesquivelmusic.daw.sdk.spatial.ImmersiveFormat;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -215,5 +217,39 @@ public final class ReferenceTrackManager {
      */
     public boolean hasReferenceTracks() {
         return !referenceTracks.isEmpty();
+    }
+
+    /**
+     * Validates that the given reference track's channel layout is compatible
+     * with the existing multi-channel reference tracks. A layout mismatch is
+     * detected when the incoming track has a non-null {@link ImmersiveFormat}
+     * that differs from the format already used by at least one existing
+     * reference track.
+     *
+     * <p>This validation should be called before adding a multi-channel
+     * reference track to detect mismatched layouts early and report a clear
+     * error to the user.</p>
+     *
+     * @param candidate the reference track to validate
+     * @return an empty string if valid, or a human-readable error message
+     *         describing the layout mismatch
+     */
+    public String validateChannelLayout(ReferenceTrack candidate) {
+        Objects.requireNonNull(candidate, "candidate must not be null");
+        ImmersiveFormat candidateFormat = candidate.getImmersiveFormat();
+        if (candidateFormat == null) {
+            return "";
+        }
+        for (ReferenceTrack existing : referenceTracks) {
+            ImmersiveFormat existingFormat = existing.getImmersiveFormat();
+            if (existingFormat != null && existingFormat != candidateFormat) {
+                return "Channel layout mismatch: new reference uses "
+                        + candidateFormat.displayName()
+                        + " but existing reference \""
+                        + existing.getName() + "\" already uses "
+                        + existingFormat.displayName();
+            }
+        }
+        return "";
     }
 }

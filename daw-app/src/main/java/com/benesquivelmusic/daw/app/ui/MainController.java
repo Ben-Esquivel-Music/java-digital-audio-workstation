@@ -167,6 +167,14 @@ public final class MainController {
      * indicator that appears during the offline render.
      */
     private TrackFreezeController trackFreezeController;
+    /**
+     * Story 175 — Atmos A/B comparison view. Created on demand when the
+     * user opens "QC → Immersive A/B…" and disposed when the window is
+     * closed.
+     */
+    private com.benesquivelmusic.daw.app.ui.spatial.AtmosAbView atmosAbView;
+    /** The floating window hosting {@link #atmosAbView}. */
+    private Stage atmosAbStage;
 
     private ArrangementCanvas arrangementCanvas;
     private ClipInteractionController clipInteractionController;
@@ -887,6 +895,8 @@ public final class MainController {
                     @Override public void onUnfreezeSelectedTracks() { MainController.this.onUnfreezeSelectedTracks(); }
                     @Override public void onTimeStretchClip() { MainController.this.onTimeStretchClip(); }
                     @Override public void onPitchShiftClip() { MainController.this.onPitchShiftClip(); }
+                    @Override public void onOpenImmersiveAb() { MainController.this.onOpenImmersiveAb(); }
+                    @Override public void onImmersiveAbToggle() { MainController.this.onImmersiveAbToggle(); }
                     @Override public void onToggleCommandPalette() {
                         if (commandPaletteView != null) commandPaletteView.toggle();
                     }
@@ -1270,6 +1280,7 @@ public final class MainController {
                     @Override public void onUnfreezeSelectedTracks() { MainController.this.onUnfreezeSelectedTracks(); }
                     @Override public void onTimeStretchClip() { MainController.this.onTimeStretchClip(); }
                     @Override public void onPitchShiftClip() { MainController.this.onPitchShiftClip(); }
+                    @Override public void onOpenImmersiveAb() { MainController.this.onOpenImmersiveAb(); }
                     @Override public void onHelp() { MainController.this.onHelp(); }
                 },
                 keyBindingManager);
@@ -1646,6 +1657,51 @@ public final class MainController {
         clipEditController.onPitchShiftSelected(() ->
                 PitchShiftClipDialog.showAndWait(owner,
                         PitchShiftClipDialog.Result.defaults()));
+    }
+
+    // ── Story 175 — Immersive A/B Comparison ────────────────────────────────
+
+    /**
+     * Opens the {@link com.benesquivelmusic.daw.app.ui.spatial.AtmosAbView}
+     * in a separate utility window. The view is constructed on demand and
+     * disposed when the window is closed. Using a separate {@link Stage}
+     * avoids conflicts with the main view-navigation center pane.
+     */
+    void onOpenImmersiveAb() {
+        if (atmosAbStage != null) {
+            atmosAbStage.toFront();
+            atmosAbStage.requestFocus();
+            return;
+        }
+        atmosAbView = new com.benesquivelmusic.daw.app.ui.spatial.AtmosAbView(
+                project.getReferenceTrackManager());
+        atmosAbStage = new Stage(javafx.stage.StageStyle.UTILITY);
+        atmosAbStage.setTitle("Immersive A/B — QC");
+        javafx.scene.Scene scene = new javafx.scene.Scene(atmosAbView);
+        DarkThemeHelper.applyTo(scene);
+        atmosAbStage.setScene(scene);
+        atmosAbStage.setMinWidth(600);
+        atmosAbStage.setMinHeight(320);
+        atmosAbStage.setOnHidden(_ -> {
+            atmosAbView = null;
+            atmosAbStage = null;
+        });
+        atmosAbStage.show();
+        atmosAbStage.toFront();
+    }
+
+    /**
+     * Toggles A/B monitoring between the DAW's render and the reference
+     * playback. Delegates to the {@link com.benesquivelmusic.daw.app.ui.spatial.AtmosAbView}
+     * when it exists, otherwise directly toggles via the
+     * {@link com.benesquivelmusic.daw.core.reference.ReferenceTrackManager}.
+     */
+    void onImmersiveAbToggle() {
+        if (atmosAbView != null) {
+            atmosAbView.toggleAb();
+        } else {
+            project.getReferenceTrackManager().toggleAB();
+        }
     }
 
     /**

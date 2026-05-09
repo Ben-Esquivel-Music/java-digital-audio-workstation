@@ -95,6 +95,9 @@ public final class DawMenuBarController {
         void onTimeStretchClip();
         void onPitchShiftClip();
 
+        // QC actions (Story 175 — Immersive A/B Comparison)
+        default void onOpenImmersiveAb() { }
+
         // Help actions
         void onHelp();
     }

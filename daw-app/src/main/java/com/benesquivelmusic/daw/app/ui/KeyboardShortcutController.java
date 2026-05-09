@@ -138,6 +138,10 @@ final class KeyboardShortcutController {
         default void onTimeStretchClip() { }
         /** Story 042 — open the Pitch-Shift dialog for the selected clip(s). */
         default void onPitchShiftClip() { }
+        /** Story 175 — open the Immersive A/B comparison view. */
+        default void onOpenImmersiveAb() { }
+        /** Story 175 — toggle A/B monitoring between mix and reference. */
+        default void onImmersiveAbToggle() { }
     }
 
     private final KeyBindingManager keyBindingManager;
@@ -236,6 +240,9 @@ final class KeyboardShortcutController {
         // ── Clip operations (Story 042 — Time-Stretch / Pitch-Shift) ─────────
         actionHandlers.put(DawAction.TIME_STRETCH_CLIP, host::onTimeStretchClip);
         actionHandlers.put(DawAction.PITCH_SHIFT_CLIP, host::onPitchShiftClip);
+        // ── QC — Immersive A/B (Story 175) ───────────────────────────────────
+        actionHandlers.put(DawAction.OPEN_IMMERSIVE_AB, host::onOpenImmersiveAb);
+        actionHandlers.put(DawAction.IMMERSIVE_AB_TOGGLE, host::onImmersiveAbToggle);
         // ── Workspaces (Customizable Workspace Layouts) ──────────────────────
         actionHandlers.put(DawAction.WORKSPACE_SAVE_AS, host::onSaveWorkspaceAs);
         java.util.List<DawAction> slotActions = DawAction.workspaceSlotActions();
