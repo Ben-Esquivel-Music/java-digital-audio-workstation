@@ -125,11 +125,17 @@ public final class DawTaskRunner implements AutoCloseable {
                 try {
                     // Name the thread for JFR / debug snapshot visibility.
                     Thread.currentThread().setName(label);
-                    future.complete(task.work().call());
+                    T result = task.work().call();
+                    // Remove from active map before completing the future so
+                    // that callers who .get() the future see a consistent
+                    // snapshot (no stale active entries).
+                    active.remove(id);
+                    future.complete(result);
                 } catch (Throwable t) {
+                    active.remove(id);
                     future.completeExceptionally(t);
                 } finally {
-                    active.remove(id);
+                    active.remove(id); // idempotent, covers unexpected paths
                     Thread.currentThread().setName(previousName);
                 }
             });
