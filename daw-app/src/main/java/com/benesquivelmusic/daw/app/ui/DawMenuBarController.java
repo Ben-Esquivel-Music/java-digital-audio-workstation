@@ -67,6 +67,19 @@ public final class DawMenuBarController {
         /** Capture an explicit user checkpoint of the current project. Default no-op for tests. */
         default void onCreateCheckpoint() { }
 
+        // Story 189 — Project Archive (ZIP With Assets)
+        /**
+         * Bundle the current project plus every referenced asset into a
+         * portable {@code .dawz} archive at a user-chosen location.
+         * Default no-op for tests.
+         */
+        default void onArchiveProject() { }
+        /**
+         * Restore a {@code .dawz} archive into a user-chosen directory and
+         * load the restored project. Default no-op for tests.
+         */
+        default void onRestoreFromArchive() { }
+
         // Edit actions
         void onUndo();
         void onRedo();

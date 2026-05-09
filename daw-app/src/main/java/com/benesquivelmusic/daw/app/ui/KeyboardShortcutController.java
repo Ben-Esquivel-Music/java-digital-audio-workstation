@@ -43,6 +43,13 @@ final class KeyboardShortcutController {
          * callers and tests can ignore the new action.
          */
         default void onOpenRenderQueue() { }
+        /**
+         * Story 189 — Project Archive (ZIP With Assets). Default no-op for
+         * tests that do not exercise the archive/restore flow.
+         */
+        default void onArchiveProject() { }
+        /** Story 189 — Restore project from {@code .dawz} archive. */
+        default void onRestoreFromArchive() { }
         void onImportAudioFile();
         void onToggleSnap();
         void onAddAudioTrack();
@@ -203,6 +210,9 @@ final class KeyboardShortcutController {
         actionHandlers.put(DawAction.IMPORT_SESSION, host::onImportSession);
         actionHandlers.put(DawAction.EXPORT_SESSION, host::onExportSession);
         actionHandlers.put(DawAction.EXPORT_RENDER_QUEUE, host::onOpenRenderQueue);
+        // ── Project Archive (Story 189) ──────────────────────────────────────
+        actionHandlers.put(DawAction.ARCHIVE_PROJECT, host::onArchiveProject);
+        actionHandlers.put(DawAction.RESTORE_FROM_ARCHIVE, host::onRestoreFromArchive);
         actionHandlers.put(DawAction.IMPORT_AUDIO_FILE, host::onImportAudioFile);
         actionHandlers.put(DawAction.TOGGLE_SNAP, host::onToggleSnap);
         actionHandlers.put(DawAction.ADD_AUDIO_TRACK, host::onAddAudioTrack);
