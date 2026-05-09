@@ -2,10 +2,11 @@ package com.benesquivelmusic.daw.app.ui.display;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.fx.GpuCanvas;
+import com.benesquivelmusic.daw.fx.GpuRenderContext;
 import com.benesquivelmusic.daw.sdk.visualization.CorrelationData;
 import com.benesquivelmusic.daw.sdk.visualization.GoniometerData;
 
-import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.Label;
 import javafx.scene.layout.Region;
@@ -57,7 +58,21 @@ public final class CorrelationDisplay extends Region {
 
     private static final double OVERLAY_ICON_SIZE = 9;
 
-    private final Canvas canvas;
+    /**
+     * Phosphor-decay time constant. Chosen so that at a 60 Hz frame interval
+     * (deltaSeconds ≈ 1/60) one frame's alpha-fade fill renders the previous
+     * frame's pixels at ≈ 50% intensity: {@code (1/60) / ln 2 ≈ 0.024 s}.
+     * The per-frame fade alpha is {@code 1 - exp(-deltaSeconds / TAU)}.
+     */
+    static final double PHOSPHOR_DECAY_TAU_SECONDS = (1.0 / 60.0) / Math.log(2.0);
+
+    /**
+     * GpuCanvas host. The renderer field intentionally manages its own
+     * alpha-fade fill instead of relying on {@link GpuCanvas#setClearColor}
+     * because the goniometer phosphor trail depends on previous-frame
+     * pixels — see story 028 (Stereo Correlation Meter and Goniometer).
+     */
+    private final GpuCanvas gpuCanvas;
     private final double[] correlationHistory;
     private int historyIndex;
     private int historyCount;
@@ -80,17 +95,20 @@ public final class CorrelationDisplay extends Region {
 
     private boolean goniometerMode;
     private GoniometerData goniometerData;
+    private boolean disposed;
 
     /**
      * Creates a new correlation display.
      */
     public CorrelationDisplay() {
-        canvas = new Canvas();
-        getChildren().add(canvas);
-        canvas.widthProperty().bind(widthProperty());
-        canvas.heightProperty().bind(heightProperty());
-        widthProperty().addListener((_, _, _) -> render());
-        heightProperty().addListener((_, _, _) -> render());
+        // Compose a GpuCanvas (daw-fx) — see PHOSPHOR_DECAY_TAU_SECONDS for
+        // why clearColor is left null (the renderer issues its own
+        // alpha-fade fill so the goniometer phosphor trail is preserved).
+        gpuCanvas = GpuCanvas.create()
+                .renderer(this::renderFrame)
+                .animated(true)
+                .build();
+        getChildren().add(gpuCanvas);
 
         correlationHistory = new double[HISTORY_SIZE];
         java.util.Arrays.fill(correlationHistory, 1.0);
@@ -135,7 +153,7 @@ public final class CorrelationDisplay extends Region {
         historyIndex = (historyIndex + 1) % HISTORY_SIZE;
         historyCount = Math.min(historyCount + 1, HISTORY_SIZE);
 
-        render();
+        requestRender();
     }
 
     /**
@@ -145,7 +163,7 @@ public final class CorrelationDisplay extends Region {
      */
     public void updateGoniometer(GoniometerData data) {
         this.goniometerData = data;
-        render();
+        requestRender();
     }
 
     /**
@@ -157,7 +175,7 @@ public final class CorrelationDisplay extends Region {
         this.goniometerMode = enabled;
         midLabel.setVisible(enabled);
         sideLabel.setVisible(enabled);
-        render();
+        requestRender();
     }
 
     /** Returns whether goniometer mode is active. */
@@ -166,19 +184,65 @@ public final class CorrelationDisplay extends Region {
     }
 
     /**
-     * Renders the correlation display.
+     * Returns the embedded {@link GpuCanvas}. Visible for tests.
      */
-    private void render() {
-        double w = canvas.getWidth();
-        double h = canvas.getHeight();
+    GpuCanvas getGpuCanvas() {
+        return gpuCanvas;
+    }
+
+    /**
+     * Stops the GpuCanvas render loop and releases its off-heap surface.
+     * Must be called from the JavaFX Application Thread. Safe to call
+     * multiple times.
+     */
+    public void dispose() {
+        if (disposed) return;
+        disposed = true;
+        gpuCanvas.setAnimated(false);
+        gpuCanvas.dispose();
+    }
+
+    private void requestRender() {
+        if (disposed) return;
+        gpuCanvas.requestRender();
+    }
+
+    /**
+     * Computes the per-frame phosphor-fade alpha from the host's
+     * {@code deltaSeconds}. Exponential decay with time constant
+     * {@link #PHOSPHOR_DECAY_TAU_SECONDS} — at dt = 1/60 s the previous
+     * frame's pixels are attenuated by ≈ 50 %.
+     *
+     * <p>For one-shot renders ({@code deltaSeconds == 0}) the fill is
+     * fully opaque so the surface is cleanly cleared.
+     */
+    static double phosphorFadeAlpha(double deltaSeconds) {
+        if (deltaSeconds <= 0.0) return 1.0;
+        return 1.0 - Math.exp(-deltaSeconds / PHOSPHOR_DECAY_TAU_SECONDS);
+    }
+
+    /**
+     * Per-frame draw callback invoked by the GpuCanvas AnimationTimer.
+     * Issues an alpha-fade fill (clearColor is left {@code null} so the
+     * previous frame's pixels remain on the surface) before drawing the
+     * correlation arc, balance bar, history strip, and — when enabled —
+     * the goniometer Lissajous trail.
+     */
+    private void renderFrame(GpuRenderContext ctx) {
+        GraphicsContext gc = ctx.gc();
+        double w = ctx.width();
+        double h = ctx.height();
         if (w <= 0 || h <= 0) return;
 
-        GraphicsContext gc = canvas.getGraphicsContext2D();
-
-        // Background
-        gc.setFill(BACKGROUND);
+        // Phosphor alpha-fade fill: see PHOSPHOR_DECAY_TAU_SECONDS.
+        double fadeAlpha = phosphorFadeAlpha(ctx.deltaSeconds());
+        gc.setFill(BACKGROUND.deriveColor(0, 1, 1, fadeAlpha));
         gc.fillRect(0, 0, w, h);
 
+        renderInto(gc, w, h);
+    }
+
+    private void renderInto(GraphicsContext gc, double w, double h) {
         if (goniometerMode && goniometerData != null && goniometerData.pointCount() > 0) {
             renderGoniometer(gc, w, h);
         }
@@ -352,7 +416,10 @@ public final class CorrelationDisplay extends Region {
         double w = getWidth();
         double h = getHeight();
 
-        // The canvas width/height are already bound to the region dimensions; no explicit resize needed.
+        // GpuCanvas is itself a Region — resize it to fill the display.
+        // Its own size listeners drive the per-frame redraw.
+        gpuCanvas.resizeRelocate(0, 0, w, h);
+
         // Position icon overlay labels at the same coordinates used by the old fillText() calls.
         double topSection = h * 0.45;
         double meterY     = topSection + 80;
@@ -378,8 +445,6 @@ public final class CorrelationDisplay extends Region {
             // Side icon to the right of the goniometer circle.
             placeLabel(sideLabel, centerX + radius + 2,         centerY - iconHalf);
         }
-
-        render();
     }
 
     /** Moves a non-managed label to the given (x, y) top-left position. */
