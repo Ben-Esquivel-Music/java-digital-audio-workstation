@@ -147,6 +147,48 @@ class SnapshotBrowserServiceTest {
     }
 
     @Test
+    void purgeOlderThanOneDayRemovesOnlyAutosavesNotCheckpoints(@TempDir Path tmp)
+            throws IOException {
+        // Issue acceptance criterion: "Purge older than 1 day removes only
+        // autosaves older than 1 day, not checkpoints."
+        Clock fixed = Clock.fixed(Instant.parse("2026-04-26T10:00:00Z"),
+                ZoneId.of("UTC"));
+        SnapshotBrowserService svc =
+                new SnapshotBrowserService(Duration.ofDays(1), fixed);
+
+        Path stale = tmp.resolve("autosave-old.daw");
+        Files.writeString(stale, "old");
+        Files.setLastModifiedTime(stale,
+                FileTime.from(Instant.parse("2026-04-20T10:00:00Z")));
+
+        Path fresh = tmp.resolve("autosave-fresh.daw");
+        Files.writeString(fresh, "fresh");
+        Files.setLastModifiedTime(fresh,
+                FileTime.from(Instant.parse("2026-04-26T09:00:00Z")));
+
+        // On-disk checkpoint file with the naming convention used by
+        // CheckpointManager — must NOT be deleted by purge regardless
+        // of its age (user-checkpoints are retained indefinitely).
+        Path checkpointFile = tmp.resolve("checkpoint-001-20260420.daw");
+        Files.writeString(checkpointFile, "<project>checkpoint</project>");
+        Files.setLastModifiedTime(checkpointFile,
+                FileTime.from(Instant.parse("2026-04-20T10:00:00Z")));
+
+        svc.addAutosaveDirectory(tmp);
+        SnapshotEntry checkpoint = svc.createUserCheckpoint(
+                "Important", "<project/>");
+
+        int deleted = svc.purgeExpiredAutosaves();
+        assertThat(deleted).isEqualTo(1);
+        assertThat(Files.exists(stale)).isFalse();
+        assertThat(Files.exists(fresh)).isTrue();
+        // On-disk checkpoint file must survive the purge.
+        assertThat(Files.exists(checkpointFile)).isTrue();
+        // The in-memory user checkpoint must also survive.
+        assertThat(svc.getEntries()).contains(checkpoint);
+    }
+
+    @Test
     void restoringSnapshotProducesIdenticalContent() {
         SnapshotBrowserService svc = new SnapshotBrowserService();
         String content = "<project><track id=\"1\"/></project>";

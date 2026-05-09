@@ -55,6 +55,11 @@ public final class SnapshotBrowserService {
      */
     private static final String AUTOSAVE_GLOB = "{autosave*,checkpoint*,*.daw}";
 
+    /** Filename prefix for on-disk user-checkpoint files written by
+     *  {@link CheckpointManager}. Files with this prefix are excluded
+     *  from purge (user-checkpoints are retained indefinitely). */
+    private static final String CHECKPOINT_FILE_PREFIX = "checkpoint";
+
     private final List<SnapshotEntry> userCheckpoints = new ArrayList<>();
     private final List<SnapshotEntry> undoSnapshots = new ArrayList<>();
     private final List<Path> autosaveDirectories = new CopyOnWriteArrayList<>();
@@ -174,9 +179,9 @@ public final class SnapshotBrowserService {
 
     /**
      * Permanently deletes autosave files older than the configured
-     * retention. Only files matching the DAW's autosave / checkpoint
-     * naming pattern are touched, so registering a directory containing
-     * unrelated files is safe.
+     * retention. Only files matching the DAW's autosave naming pattern
+     * are touched — checkpoint files ({@code checkpoint-*}) are excluded
+     * so user-checkpoints are retained indefinitely per the issue spec.
      *
      * @return the number of files actually deleted
      */
@@ -188,6 +193,7 @@ public final class SnapshotBrowserService {
             try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir, AUTOSAVE_GLOB)) {
                 for (Path file : stream) {
                     if (!Files.isRegularFile(file)) continue;
+                    if (isCheckpointFile(file)) continue;
                     BasicFileAttributes attr =
                             Files.readAttributes(file, BasicFileAttributes.class);
                     Instant t = attr.lastModifiedTime().toInstant();
@@ -211,8 +217,8 @@ public final class SnapshotBrowserService {
     /**
      * Deletes <em>all</em> autosave files in registered directories
      * regardless of age. Used by the cleanup UI's "purge all" action.
-     * Only files matching the autosave / checkpoint naming pattern are
-     * touched.
+     * Checkpoint files ({@code checkpoint-*}) are excluded — only
+     * files matching the autosave naming pattern are touched.
      *
      * @return the number of files actually deleted
      */
@@ -223,6 +229,7 @@ public final class SnapshotBrowserService {
             try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir, AUTOSAVE_GLOB)) {
                 for (Path file : stream) {
                     if (!Files.isRegularFile(file)) continue;
+                    if (isCheckpointFile(file)) continue;
                     try {
                         if (Files.deleteIfExists(file)) {
                             deleted++;
@@ -298,5 +305,16 @@ public final class SnapshotBrowserService {
             }
         }
         return list;
+    }
+
+    /**
+     * Returns {@code true} if the given file has a name starting with
+     * {@code "checkpoint"}, indicating it is a user-checkpoint written
+     * by {@link CheckpointManager} and should not be deleted by the
+     * autosave purge methods.
+     */
+    private static boolean isCheckpointFile(Path file) {
+        String name = file.getFileName().toString();
+        return name.startsWith(CHECKPOINT_FILE_PREFIX);
     }
 }
