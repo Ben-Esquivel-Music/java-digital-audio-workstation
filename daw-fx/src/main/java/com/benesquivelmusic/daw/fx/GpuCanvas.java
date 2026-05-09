@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.fx;
 
 import javafx.animation.AnimationTimer;
+import javafx.application.Platform;
 import javafx.beans.InvalidationListener;
 import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.ObjectProperty;
@@ -10,46 +11,82 @@ import javafx.beans.property.SimpleBooleanProperty;
 import javafx.beans.property.SimpleObjectProperty;
 import javafx.beans.value.ChangeListener;
 import javafx.scene.Scene;
-import javafx.scene.canvas.Canvas;
-import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.image.ImageView;
+import javafx.scene.image.PixelBuffer;
+import javafx.scene.image.PixelFormat;
+import javafx.scene.image.WritableImage;
 import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
 
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
+import java.nio.ByteBuffer;
 import java.util.Objects;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
- * GPU-accelerated drawing surface.
+ * GPU-accelerated drawing surface backed by a Java FFM pixel pathway.
  *
- * <p>{@code GpuCanvas} is a resizable {@link Region} that wraps a JavaFX
- * {@link Canvas} and dispatches frames to a pluggable {@link GpuRenderer}.
- * The Canvas is rasterised by Prism, JavaFX's hardware pipeline (Direct3D 11
- * on Windows, Metal on macOS, OpenGL ES2 on Linux), so fills, strokes,
- * gradients, image draws, and clips are pushed to the GPU. The active
- * backend can be inspected with {@link GpuPipeline#detect()}.
+ * <p>{@code GpuCanvas} is a resizable {@link Region} that exposes an off-heap
+ * {@link MemorySegment} of <strong>BGRA pre-multiplied</strong> pixels to a
+ * pluggable {@link GpuRenderer}. After each render the segment is committed
+ * to a JavaFX {@link WritableImage} (via {@link PixelBuffer}) which is
+ * displayed by an internal {@link ImageView}. Prism — JavaFX's hardware
+ * pipeline (Direct3D 11 on Windows, Metal on macOS, OpenGL ES2 on Linux) —
+ * uploads that image to the GPU and rasterises it. The active backend can
+ * be inspected with {@link GpuPipeline#detect()}.
+ *
+ * <h2>Pixel pathway</h2>
+ * <ol>
+ *   <li>A confined {@link Arena} owned by the FX thread allocates a
+ *       {@link MemorySegment} of {@code height * stride} bytes (packed BGRA,
+ *       4 bytes/pixel, {@code stride == width * 4}).</li>
+ *   <li>Each frame: the host clears the segment to
+ *       {@link #clearColorProperty()} (or transparent zero if null) and
+ *       invokes the renderer.</li>
+ *   <li>The host calls {@code PixelBuffer.updateBuffer(...)} to mark the
+ *       full image dirty; Prism re-uploads it to the GPU on the next pulse.</li>
+ * </ol>
+ * BGRA pre is the native upload format on D3D and avoids a swizzle pass on
+ * other backends.
  *
  * <h2>Lifecycle</h2>
  * The internal {@link AnimationTimer} starts when {@link #animatedProperty()}
  * is {@code true} <em>and</em> the canvas is attached to a {@link Scene}, and
  * stops when either condition no longer holds. {@link #dispose()} unregisters
- * all listeners and stops the timer for good — call it when the canvas is
+ * all listeners, stops the timer, and closes the owning {@link Arena} —
+ * after which the {@link MemorySegment} (and the {@link ByteBuffer} view
+ * inside the {@link PixelBuffer}) become invalid and any access throws
+ * {@link IllegalStateException}. Call {@code dispose()} when the canvas is
  * permanently removed (e.g. the parent view is being destroyed).
  *
- * <h2>Rendering model</h2>
- * Each frame, the canvas is cleared (using {@link #clearColorProperty()} if
- * non-null, otherwise to fully transparent) and the current renderer is
- * invoked with a {@link GpuRenderContext}. When {@link #animatedProperty()}
- * is {@code false}, frames are only produced on demand via
- * {@link #requestRender()} or when the canvas is resized.
+ * <p>When the canvas shrinks to zero width or height the surface is released
+ * eagerly; the next non-zero size reallocates from scratch.
+ *
+ * <h2>Threading</h2>
+ * All public mutators, {@link #requestRender()}, {@link #dispose()}, and
+ * surface (re)allocation must occur on the JavaFX Application Thread.
+ * Calling {@code requestRender()} or {@code dispose()} from any other thread
+ * throws {@link IllegalStateException}. {@link PixelBuffer#updateBuffer}
+ * requires the FX thread, and the FFM {@link Arena#ofConfined()} pins
+ * ownership to it as well.
  *
  * @see GpuRenderer
+ * @see GpuRenderContext
  * @see GpuPipeline
  */
 public final class GpuCanvas extends Region {
 
+    private static final Logger LOG = Logger.getLogger(GpuCanvas.class.getName());
+
     private static final double DEFAULT_PREF_SIZE = 250.0;
     private static final double DEFAULT_MIN_SIZE = 50.0;
 
-    private final Canvas canvas = new Canvas();
+    private static final int BPP = 4;
+
+    private final ImageView imageView = new ImageView();
 
     private final ObjectProperty<GpuRenderer> renderer =
             new SimpleObjectProperty<>(this, "renderer", GpuRenderer.NOOP);
@@ -66,6 +103,20 @@ public final class GpuCanvas extends Region {
     private final ChangeListener<Boolean> animatedListener;
     private final ChangeListener<Scene> sceneListener;
 
+    // Off-heap pixel surface. Reallocated on resize, closed on dispose or
+    // when the canvas shrinks to zero width or height.
+    private Arena arena;
+    private MemorySegment pixels;
+    private PixelBuffer<ByteBuffer> pixelBuffer;
+    private int surfaceWidth;
+    private int surfaceHeight;
+    private int surfaceStride;
+
+    // Coalesces width+height changes from a single Region#resize call into
+    // one deferred render. Without this, each Region#resize allocates the
+    // surface twice (once when width changes, once when height changes).
+    private boolean coalescedSizeRenderPending = false;
+
     private long lastNanos = 0L;
     private boolean disposed = false;
 
@@ -76,14 +127,17 @@ public final class GpuCanvas extends Region {
     public GpuCanvas(GpuRenderer initialRenderer) {
         renderer.set(Objects.requireNonNull(initialRenderer, "initialRenderer"));
 
-        getChildren().add(canvas);
+        getChildren().add(imageView);
         getStyleClass().add("gpu-canvas");
 
-        // Track the Region's size so renders work whether the canvas is in a
-        // live scene (where layoutChildren runs) or driven directly via
-        // Region#resize from tests/embedding code.
-        canvas.widthProperty().bind(widthProperty());
-        canvas.heightProperty().bind(heightProperty());
+        // Size the displayed image to the Region. Using fit dimensions (rather
+        // than mutating from layoutChildren) keeps the ImageView correct even
+        // when there is no live Scene to drive the layout pulse — important
+        // for headless tests that drive the canvas via Region#resize.
+        imageView.fitWidthProperty().bind(widthProperty());
+        imageView.fitHeightProperty().bind(heightProperty());
+        imageView.setPreserveRatio(false);
+        imageView.setSmooth(false);
 
         timer = new AnimationTimer() {
             @Override
@@ -94,7 +148,7 @@ public final class GpuCanvas extends Region {
             }
         };
 
-        sizeListener = obs -> requestRender();
+        sizeListener = obs -> scheduleSizeChangeRender();
         widthProperty().addListener(sizeListener);
         heightProperty().addListener(sizeListener);
 
@@ -141,7 +195,8 @@ public final class GpuCanvas extends Region {
 
     /**
      * Renders one frame immediately on the current thread. Must be called on
-     * the JavaFX Application Thread. No-op if the canvas has been
+     * the JavaFX Application Thread; calling from any other thread throws
+     * {@link IllegalStateException}. No-op if the canvas has been
      * {@linkplain #dispose() disposed} or has zero width or height.
      *
      * <p>One-off renders always deliver {@link GpuRenderContext#deltaSeconds()}
@@ -149,36 +204,151 @@ public final class GpuCanvas extends Region {
      * {@link AnimationTimer}.
      */
     public void requestRender() {
+        requireFxThread("requestRender");
         if (disposed) return;
         renderOneFrame(System.nanoTime(), 0.0);
     }
 
+    /**
+     * Defers a render to the next FX pulse, coalescing repeated size-change
+     * notifications. {@code Region#resize(w, h)} fires the width and height
+     * listeners back-to-back; without coalescing each firing would allocate a
+     * fresh surface and immediately discard the previous one.
+     */
+    private void scheduleSizeChangeRender() {
+        if (disposed || coalescedSizeRenderPending) return;
+        coalescedSizeRenderPending = true;
+        Platform.runLater(() -> {
+            coalescedSizeRenderPending = false;
+            if (disposed) return;
+            renderOneFrame(System.nanoTime(), 0.0);
+        });
+    }
+
     private void renderOneFrame(long nowNanos, double deltaSeconds) {
+        if (disposed) return;
         GpuRenderer current = renderer.get();
         if (current == null) {
             return;
         }
-        double w = canvas.getWidth();
-        double h = canvas.getHeight();
-        if (w <= 0.0 || h <= 0.0) {
+        if (!ensureSurface()) {
             return;
         }
 
-        GraphicsContext gc = canvas.getGraphicsContext2D();
-        Color background = clearColor.get();
-        if (background == null) {
-            gc.clearRect(0, 0, w, h);
-        } else {
-            gc.setFill(background);
-            gc.fillRect(0, 0, w, h);
-        }
+        clearSurface();
 
         long frame = frameCount.get();
-        GpuRenderContext ctx = new GpuRenderContext(gc, w, h, nowNanos, deltaSeconds, frame);
+        GpuRenderContext ctx = new GpuRenderContext(
+                pixels, surfaceWidth, surfaceHeight, surfaceStride,
+                nowNanos, deltaSeconds, frame);
         try {
             current.render(ctx);
-        } finally {
-            frameCount.set(frame + 1);
+        } catch (RuntimeException e) {
+            // A throwing renderer would, if uncaught, propagate out of
+            // AnimationTimer#handle and detach the timer permanently — one bad
+            // frame would stop the entire render loop. Log, drop the frame,
+            // and stay alive. frameCount is not incremented for failed frames.
+            LOG.log(Level.WARNING, "GpuRenderer threw; frame discarded", e);
+            return;
+        }
+        // Mark the entire image dirty. PixelBuffer signals a full update when
+        // the callback returns null (vs. a partial Rectangle2D).
+        pixelBuffer.updateBuffer(pb -> null);
+        frameCount.set(frame + 1);
+    }
+
+    /**
+     * Allocates or reallocates the off-heap pixel surface to match the current
+     * Region size. Releases the surface when either dimension is non-positive.
+     * Returns {@code true} if a usable surface (positive size) exists on
+     * return.
+     */
+    private boolean ensureSurface() {
+        if (disposed) return false;
+        int w = (int) Math.floor(getWidth());
+        int h = (int) Math.floor(getHeight());
+        if (w <= 0 || h <= 0) {
+            releaseSurface();
+            return false;
+        }
+        if (pixels != null && w == surfaceWidth && h == surfaceHeight) {
+            return true;
+        }
+        // (Re)allocate atomically: build the new surface, then close the old
+        // arena. Anything that referenced the old segment is invalidated, but
+        // the renderer never retains it across calls (per GpuRenderContext
+        // contract) and the displayed image is replaced before the close.
+        Arena oldArena = arena;
+        int stride = w * BPP;
+        long byteSize = (long) h * stride;
+
+        Arena newArena = Arena.ofConfined();
+        MemorySegment newSegment = newArena.allocate(byteSize, BPP);
+        // Native-backed segments give a direct ByteBuffer that aliases the
+        // off-heap memory; Prism uploads from that address without copying.
+        // A non-native segment would force per-commit copies into a staging
+        // buffer, defeating the whole point of this pathway.
+        assert newSegment.isNative()
+                : "GpuCanvas surface must be backed by a native MemorySegment";
+        ByteBuffer newBuffer = newSegment.asByteBuffer();
+        PixelBuffer<ByteBuffer> newPixelBuffer = new PixelBuffer<>(
+                w, h, newBuffer, PixelFormat.getByteBgraPreInstance());
+        WritableImage newImage = new WritableImage(newPixelBuffer);
+
+        this.arena = newArena;
+        this.pixels = newSegment;
+        this.pixelBuffer = newPixelBuffer;
+        this.surfaceWidth = w;
+        this.surfaceHeight = h;
+        this.surfaceStride = stride;
+
+        imageView.setImage(newImage);
+
+        if (oldArena != null) {
+            oldArena.close();
+        }
+        return true;
+    }
+
+    private void releaseSurface() {
+        if (arena == null) return;
+        arena.close();
+        arena = null;
+        pixels = null;
+        pixelBuffer = null;
+        surfaceWidth = 0;
+        surfaceHeight = 0;
+        surfaceStride = 0;
+        imageView.setImage(null);
+    }
+
+    private void clearSurface() {
+        Color background = clearColor.get();
+        if (background == null) {
+            // Fully transparent: every byte is zero.
+            pixels.fill((byte) 0);
+            return;
+        }
+        // BGRA pre-multiplied: premultiply RGB by alpha, then write [B, G, R, A].
+        double a = background.getOpacity();
+        byte aByte = (byte) Math.round(a * 255.0);
+        byte rByte = (byte) Math.round(background.getRed()   * a * 255.0);
+        byte gByte = (byte) Math.round(background.getGreen() * a * 255.0);
+        byte bByte = (byte) Math.round(background.getBlue()  * a * 255.0);
+
+        // Write the first pixel, then tile by doubling — O(log n) MemorySegment
+        // bulk copies. Same-segment overlap is well-defined (memmove semantics).
+        long total = pixels.byteSize();
+        if (total < BPP) return;
+        pixels.set(ValueLayout.JAVA_BYTE, 0L, bByte);
+        pixels.set(ValueLayout.JAVA_BYTE, 1L, gByte);
+        pixels.set(ValueLayout.JAVA_BYTE, 2L, rByte);
+        pixels.set(ValueLayout.JAVA_BYTE, 3L, aByte);
+        long filled = BPP;
+        while (filled < total) {
+            long copy = Math.min(filled, total - filled);
+            MemorySegment.copy(pixels, 0L, pixels, filled, copy);
+            filled += copy;
         }
     }
 
@@ -193,14 +363,21 @@ public final class GpuCanvas extends Region {
         }
     }
 
+    private static void requireFxThread(String op) {
+        if (!Platform.isFxApplicationThread()) {
+            throw new IllegalStateException(
+                    op + " must be called on the JavaFX Application Thread");
+        }
+    }
+
     // ------------------------------------------------------------------
     // Layout
     // ------------------------------------------------------------------
 
     @Override
     protected void layoutChildren() {
-        canvas.setLayoutX(0);
-        canvas.setLayoutY(0);
+        imageView.setLayoutX(0);
+        imageView.setLayoutY(0);
     }
 
     @Override protected double computeMinWidth(double height)  { return DEFAULT_MIN_SIZE; }
@@ -217,22 +394,40 @@ public final class GpuCanvas extends Region {
     // ------------------------------------------------------------------
 
     /**
-     * Stops the render loop and unregisters all listeners. Must be called on
-     * the JavaFX Application Thread. Safe to call multiple times; further
-     * property mutations have no effect after disposal.
+     * Stops the render loop, unregisters all listeners, and releases the
+     * off-heap pixel surface. Must be called on the JavaFX Application Thread;
+     * calling from any other thread throws {@link IllegalStateException}. Safe
+     * to call multiple times; further property mutations and
+     * {@link #requestRender()} calls have no effect after disposal.
+     *
+     * <p>After disposal, any retained reference to the prior
+     * {@link GpuRenderContext#pixels()} segment becomes invalid — accessing
+     * it throws {@link IllegalStateException}.
      */
     public void dispose() {
+        requireFxThread("dispose");
         if (disposed) return;
         disposed = true;
         timer.stop();
-        canvas.widthProperty().unbind();
-        canvas.heightProperty().unbind();
+        lastNanos = 0L;
+        imageView.fitWidthProperty().unbind();
+        imageView.fitHeightProperty().unbind();
+        imageView.setImage(null);
         widthProperty().removeListener(sizeListener);
         heightProperty().removeListener(sizeListener);
         renderer.removeListener(repaintOnChange);
         clearColor.removeListener(repaintOnChange);
         animated.removeListener(animatedListener);
         sceneProperty().removeListener(sceneListener);
+        if (arena != null) {
+            arena.close();
+            arena = null;
+            pixels = null;
+            pixelBuffer = null;
+            surfaceWidth = 0;
+            surfaceHeight = 0;
+            surfaceStride = 0;
+        }
     }
 
     // ------------------------------------------------------------------
@@ -249,9 +444,7 @@ public final class GpuCanvas extends Region {
         private GpuRenderer renderer = GpuRenderer.NOOP;
         private boolean animated = false;
         private Color clearColor = null;
-        private boolean prefSizeSet = false;
-        private double prefWidth;
-        private double prefHeight;
+        private double[] prefSize = null;
 
         private Builder() { }
 
@@ -271,9 +464,7 @@ public final class GpuCanvas extends Region {
         }
 
         public Builder prefSize(double width, double height) {
-            this.prefWidth = width;
-            this.prefHeight = height;
-            this.prefSizeSet = true;
+            this.prefSize = new double[]{ width, height };
             return this;
         }
 
@@ -281,8 +472,8 @@ public final class GpuCanvas extends Region {
             GpuCanvas c = new GpuCanvas(renderer);
             c.setClearColor(clearColor);
             c.setAnimated(animated);
-            if (prefSizeSet) {
-                c.setPrefSize(prefWidth, prefHeight);
+            if (prefSize != null) {
+                c.setPrefSize(prefSize[0], prefSize[1]);
             }
             return c;
         }
