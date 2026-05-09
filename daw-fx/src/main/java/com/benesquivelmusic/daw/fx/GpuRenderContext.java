@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.fx;
 
+import javafx.scene.canvas.GraphicsContext;
+
 import java.lang.foreign.MemorySegment;
 
 /**
@@ -42,6 +44,24 @@ import java.lang.foreign.MemorySegment;
  * <p>Both {@code nowNanos} and {@link System#nanoTime()} read the same
  * monotonic clock, so renderers can compare them safely.
  *
+ * <h2>Choosing a drawing surface</h2>
+ * Renderers may write to either of the two surfaces exposed by this context:
+ * <ul>
+ *   <li>{@link #pixels()} &mdash; the off-heap BGRA-pre {@link MemorySegment}
+ *       described above. Use this for pixel-exact output (procedural
+ *       shaders, image processing, FFM-driven DSP visualisations).</li>
+ *   <li>{@link #gc()} &mdash; a JavaFX {@link GraphicsContext} backed by an
+ *       overlay {@link javafx.scene.canvas.Canvas} the same size as the
+ *       region. Use this for vector / scene-graph drawing primitives
+ *       (lines, arcs, gradients, text). The host calls
+ *       {@link GraphicsContext#clearRect(double, double, double, double)
+ *       clearRect} before invoking the renderer, so the overlay starts each
+ *       frame fully transparent. Anything drawn here is composited on top
+ *       of the {@link #pixels()} surface.</li>
+ * </ul>
+ * Renderers may use one or both surfaces in the same frame; the {@code gc}
+ * overlay is always composited on top of the pixel buffer.
+ *
  * @param pixels        off-heap BGRA-pre pixel buffer of size
  *                      {@code height * stride} bytes; renderer-writable
  * @param width         current canvas width in pixels
@@ -52,6 +72,9 @@ import java.lang.foreign.MemorySegment;
  * @param deltaSeconds  seconds elapsed since the previous frame (0.0 for the
  *                      very first frame and for one-off renders)
  * @param frameNumber   monotonically increasing frame index, starting at 0
+ * @param gc            {@link GraphicsContext} for the overlay JavaFX canvas
+ *                      (cleared to fully transparent before {@code render}
+ *                      is invoked); never {@code null}
  */
 public record GpuRenderContext(
         MemorySegment pixels,
@@ -60,5 +83,6 @@ public record GpuRenderContext(
         int stride,
         long nowNanos,
         double deltaSeconds,
-        long frameNumber) {
+        long frameNumber,
+        GraphicsContext gc) {
 }

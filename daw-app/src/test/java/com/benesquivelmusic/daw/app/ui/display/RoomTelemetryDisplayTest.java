@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
 import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
+import com.benesquivelmusic.daw.fx.GpuRenderer;
 import com.benesquivelmusic.daw.sdk.telemetry.Position3D;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomDimensions;
 import com.benesquivelmusic.daw.sdk.telemetry.RoomTelemetryData;
@@ -267,5 +268,88 @@ class RoomTelemetryDisplayTest {
 
         assertThat(back[0]).isLessThan(front[0])
                 .as("Larger Y should produce smaller screen X (further left in isometric)");
+    }
+
+    // ── GpuCanvas substrate migration ──────────────────────────────
+
+    private static RoomTelemetryData deterministicData() {
+        RoomDimensions dims = new RoomDimensions(10.0, 8.0, 3.0);
+        SoundWavePath path = new SoundWavePath(
+                "S", "M",
+                List.of(new Position3D(2, 2, 1.5), new Position3D(8, 6, 1.5)),
+                7.0, 0.02, -5.0, false);
+        return RoomTelemetryData.withoutAudience(dims, List.of(path), 0.4, List.of());
+    }
+
+    @Test
+    void shouldExposeUnderlyingGpuCanvasWithCustomRenderer() throws Exception {
+        RoomTelemetryDisplay display = createOnFxThread();
+
+        runOnFxThread(() -> {
+            assertThat(display.getGpuCanvas()).isNotNull();
+            // The renderer must not be the no-op renderer — it must be the
+            // RoomTelemetryDisplay's own per-frame entry point.
+            assertThat(display.getGpuCanvas().getRenderer())
+                    .isNotSameAs(GpuRenderer.NOOP);
+        });
+    }
+
+    @Test
+    void requestRenderShouldAdvanceFrameCounter() throws Exception {
+        RoomTelemetryDisplay display = createOnFxThread();
+
+        runOnFxThread(() -> {
+            display.setPrefSize(400, 300);
+            display.resize(400, 300);
+            display.setTelemetryData(deterministicData());
+            // A request from setTelemetryData has already executed; force two
+            // explicit additional renders so we observe a monotonic advance.
+            long baseline = display.getGpuCanvas().getFrameCount();
+            display.getGpuCanvas().requestRender();
+            display.getGpuCanvas().requestRender();
+            assertThat(display.getGpuCanvas().getFrameCount())
+                    .isGreaterThanOrEqualTo(baseline + 2);
+        });
+    }
+
+    @Test
+    void setAnimatedFalseShouldNotAdvanceFrameCounterOnIdleTick() throws Exception {
+        RoomTelemetryDisplay display = createOnFxThread();
+
+        runOnFxThread(() -> {
+            display.setPrefSize(200, 150);
+            display.resize(200, 150);
+            display.setTelemetryData(deterministicData());
+            display.getGpuCanvas().setAnimated(false);
+        });
+
+        // Drain a couple of FX pulses; with animation disabled and no
+        // explicit requestRender, the frame counter must stay still.
+        long[] before = { -1L };
+        runOnFxThread(() -> before[0] = display.getGpuCanvas().getFrameCount());
+        runOnFxThread(() -> { /* drain */ });
+        runOnFxThread(() -> assertThat(display.getGpuCanvas().getFrameCount())
+                .isEqualTo(before[0]));
+    }
+
+    @Test
+    void disposeShouldStopFurtherRenders() throws Exception {
+        RoomTelemetryDisplay display = createOnFxThread();
+
+        runOnFxThread(() -> {
+            display.setPrefSize(200, 150);
+            display.resize(200, 150);
+            display.setTelemetryData(deterministicData());
+        });
+
+        long[] beforeDispose = { -1L };
+        runOnFxThread(() -> {
+            beforeDispose[0] = display.getGpuCanvas().getFrameCount();
+            display.dispose();
+            // Post-dispose requestRender must be a no-op.
+            display.getGpuCanvas().requestRender();
+        });
+        runOnFxThread(() -> assertThat(display.getGpuCanvas().getFrameCount())
+                .isEqualTo(beforeDispose[0]));
     }
 }

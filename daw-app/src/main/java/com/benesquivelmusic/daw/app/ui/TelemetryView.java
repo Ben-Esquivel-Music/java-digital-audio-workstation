@@ -7,7 +7,6 @@ import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
 import com.benesquivelmusic.daw.core.telemetry.SoundWaveTelemetryEngine;
 import com.benesquivelmusic.daw.sdk.telemetry.*;
-import javafx.animation.AnimationTimer;
 import javafx.animation.PauseTransition;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -35,9 +34,12 @@ import javafx.util.Duration;
  * telemetry data. The resulting data is passed to the display and the view
  * transitions to display state.</p>
  *
- * <p>An internal {@link AnimationTimer} drives continuous rendering of
+ * <p>An internal {@link com.benesquivelmusic.daw.fx.GpuCanvas}-managed
+ * {@link javafx.animation.AnimationTimer} drives continuous rendering of
  * particle animations, sonar ripples, and RT60 glow effects. The timer
- * runs only while the view is in display state.</p>
+ * runs only while the view is in display state and is toggled via
+ * {@link RoomTelemetryDisplay#getGpuCanvas()}'s
+ * {@link com.benesquivelmusic.daw.fx.GpuCanvas#setAnimated(boolean)}.</p>
  *
  * <p>Uses existing CSS classes: {@code .content-area}, {@code .panel-header},
  * {@code .placeholder-label}.</p>
@@ -60,12 +62,10 @@ public final class TelemetryView extends VBox {
 
     private final TelemetrySetupPanel setupPanel;
     private final RoomTelemetryDisplay display;
-    private final AnimationTimer animationTimer;
     private final HBox headerBar;
     private final Button reconfigureButton;
     private final Button generateButton;
     private final Label generateErrorLabel;
-    private long lastNanos;
     private boolean displayingTelemetry;
     private RoomConfiguration lastConfig;
     private DawProject project;
@@ -138,19 +138,9 @@ public final class TelemetryView extends VBox {
             }
         });
 
-        // Animation timer drives particle/ripple/pulse animations
-        animationTimer = new AnimationTimer() {
-            @Override
-            public void handle(long now) {
-                if (lastNanos == 0) {
-                    lastNanos = now;
-                    return;
-                }
-                double deltaSecs = (now - lastNanos) / 1_000_000_000.0;
-                lastNanos = now;
-                display.updateAnimation(deltaSecs);
-            }
-        };
+        // Animation pulses are driven by the GpuCanvas-managed AnimationTimer.
+        // It is enabled when the view is in display state and disabled in
+        // setup state (and on dispose), via setAnimated(true/false) below.
 
         // Start in setup state
         showSetupState();
@@ -164,7 +154,7 @@ public final class TelemetryView extends VBox {
      */
     private void showSetupState() {
         displayingTelemetry = false;
-        animationTimer.stop();
+        display.getGpuCanvas().setAnimated(false);
         reconfigureButton.setVisible(false);
         reconfigureButton.setManaged(false);
         getChildren().setAll(headerBar, setupPanel, generateErrorLabel, generateButton);
@@ -181,8 +171,7 @@ public final class TelemetryView extends VBox {
         generateErrorLabel.setVisible(false);
         generateErrorLabel.setManaged(false);
         getChildren().setAll(headerBar, display);
-        lastNanos = 0;
-        animationTimer.start();
+        display.getGpuCanvas().setAnimated(true);
     }
 
     // ── Generate telemetry ───────────────────────────────────────────
@@ -457,8 +446,7 @@ public final class TelemetryView extends VBox {
      */
     public void startAnimation() {
         if (displayingTelemetry) {
-            lastNanos = 0;
-            animationTimer.start();
+            display.getGpuCanvas().setAnimated(true);
         }
     }
 
@@ -467,7 +455,18 @@ public final class TelemetryView extends VBox {
      * Call this when the user switches away from the telemetry view.
      */
     public void stopAnimation() {
-        animationTimer.stop();
+        display.getGpuCanvas().setAnimated(false);
+    }
+
+    /**
+     * Disposes the underlying {@link RoomTelemetryDisplay}, stopping its
+     * GpuCanvas animation timer and releasing the off-heap pixel surface.
+     * Call when this view is permanently detached (e.g. on application
+     * shutdown or when the parent panel is destroyed).
+     */
+    public void dispose() {
+        display.getGpuCanvas().setAnimated(false);
+        display.dispose();
     }
 
     // ── Project integration ──────────────────────────────────────────
