@@ -465,7 +465,14 @@ class GpuCanvasTest {
             assertThat(aliveRef.get()).isNotNull();
         });
 
-        int callsAfterFirst = calls.get();
+        // Drain any pending coalesced size-change renders posted by the
+        // initial resize(50, 50) before sampling the baseline call count.
+        // Without this, a deferred renderOneFrame from the size-change
+        // listener could fire between runAndWait blocks and inflate
+        // calls.get() relative to callsAfterFirst.
+        int[] callsAfterFirstHolder = new int[1];
+        JavaFxToolkitExtension.runAndWait(() -> callsAfterFirstHolder[0] = calls.get());
+        int callsAfterFirst = callsAfterFirstHolder[0];
 
         // Shrink to zero — surface released (deferred), render is a no-op.
         JavaFxToolkitExtension.runAndWait(() -> {
