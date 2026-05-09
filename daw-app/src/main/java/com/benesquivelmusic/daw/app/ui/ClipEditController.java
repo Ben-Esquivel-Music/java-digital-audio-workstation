@@ -6,6 +6,9 @@ import com.benesquivelmusic.daw.core.audio.CutClipsAction;
 import com.benesquivelmusic.daw.core.audio.DuplicateClipsAction;
 import com.benesquivelmusic.daw.core.audio.NudgeClipsAction;
 import com.benesquivelmusic.daw.core.audio.PasteClipsAction;
+import com.benesquivelmusic.daw.core.audio.PitchShiftClipAction;
+import com.benesquivelmusic.daw.core.audio.StretchQuality;
+import com.benesquivelmusic.daw.core.audio.TimeStretchClipAction;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.project.edit.NudgeService;
 import com.benesquivelmusic.daw.core.project.edit.NudgeSettings;
@@ -14,6 +17,7 @@ import com.benesquivelmusic.daw.core.project.edit.RippleEditService;
 import com.benesquivelmusic.daw.core.project.edit.RippleValidationException;
 import com.benesquivelmusic.daw.core.project.edit.SlipEditService;
 import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.undo.CompoundUndoableAction;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata;
@@ -22,6 +26,7 @@ import com.benesquivelmusic.daw.sdk.edit.RippleMode;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.OptionalDouble;
 
 /**
@@ -604,7 +609,154 @@ final class ClipEditController {
         host.markProjectDirty();
     }
 
-    // ── Helpers ────────────────────────���───────────────────────────��─────────
+    // ── Time-stretch / Pitch-shift (Story 042) ───────────────────────────────
+
+    /**
+     * Functional callback that surfaces the time-stretch dialog and returns
+     * the user's chosen settings. The controller invokes this on the JavaFX
+     * application thread. Tests inject a stub so the operation logic can be
+     * exercised without instantiating the FX dialog.
+     *
+     * @see TimeStretchClipDialog
+     */
+    @FunctionalInterface
+    interface TimeStretchPrompter {
+        /**
+         * Prompts the user for time-stretch settings.
+         *
+         * @param sourceSeconds duration of the (first) selected clip in seconds,
+         *                      used to pre-populate the target-duration field
+         * @return the chosen settings, or empty if the user cancelled
+         */
+        java.util.Optional<TimeStretchClipDialog.Result> prompt(double sourceSeconds);
+    }
+
+    /** Prompter for the pitch-shift dialog. See {@link TimeStretchPrompter}. */
+    @FunctionalInterface
+    interface PitchShiftPrompter {
+        java.util.Optional<PitchShiftClipDialog.Result> prompt();
+    }
+
+    /**
+     * Story 042 — surfaces {@link TimeStretchClipDialog} for the currently
+     * selected audio clip(s) and applies the chosen settings as a single
+     * undoable step (a {@link CompoundUndoableAction} when more than one
+     * clip is selected).
+     *
+     * <p>Per the issue, {@link com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata}
+     * is preserved through the operation: the clip's native rate is unchanged
+     * because the operation is musical (stretch ratio metadata only), not a
+     * sample-rate change.</p>
+     *
+     * @param prompter callback that obtains the user's settings; supplied by
+     *                 the host so tests can inject a deterministic stub
+     */
+    void onTimeStretchSelected(TimeStretchPrompter prompter) {
+        Objects.requireNonNull(prompter, "prompter must not be null");
+        List<AudioClip> clips = collectSelectedAudioClips();
+        if (clips.isEmpty()) {
+            host.showNotification(NotificationLevel.INFO,
+                    "Select an audio clip to time-stretch");
+            return;
+        }
+        double sourceSeconds = estimateClipSeconds(clips.get(0));
+        java.util.Optional<TimeStretchClipDialog.Result> result = prompter.prompt(sourceSeconds);
+        if (result.isEmpty()) {
+            return;
+        }
+        TimeStretchClipDialog.Result r = result.get();
+        applyAsCompound(clips, "Time Stretch " + clips.size() + " Clip(s)",
+                clip -> new TimeStretchClipAction(clip, r.ratio(), r.quality()));
+        host.updateStatusBar(String.format(java.util.Locale.ROOT,
+                "Time-stretched %d clip(s) by %.3f×", clips.size(), r.ratio()), null);
+    }
+
+    /**
+     * Story 042 — surfaces {@link PitchShiftClipDialog} for the currently
+     * selected audio clip(s) and applies the chosen settings as a single
+     * undoable step.
+     *
+     * @param prompter callback that obtains the user's settings; supplied by
+     *                 the host so tests can inject a deterministic stub
+     */
+    void onPitchShiftSelected(PitchShiftPrompter prompter) {
+        Objects.requireNonNull(prompter, "prompter must not be null");
+        List<AudioClip> clips = collectSelectedAudioClips();
+        if (clips.isEmpty()) {
+            host.showNotification(NotificationLevel.INFO,
+                    "Select an audio clip to pitch-shift");
+            return;
+        }
+        java.util.Optional<PitchShiftClipDialog.Result> result = prompter.prompt();
+        if (result.isEmpty()) {
+            return;
+        }
+        PitchShiftClipDialog.Result r = result.get();
+        double total = r.totalSemitones();
+        StretchQuality quality = StretchQuality.MEDIUM; // dialog has no quality field — keep clip default
+        applyAsCompound(clips, "Pitch Shift " + clips.size() + " Clip(s)",
+                clip -> new PitchShiftClipAction(clip, total, quality));
+        host.updateStatusBar(String.format(java.util.Locale.ROOT,
+                "Pitch-shifted %d clip(s) by %+.2f semitones", clips.size(), total), null);
+    }
+
+    /**
+     * Resolves the current selection to its audio clips, ignoring any MIDI
+     * clips. Returns an empty list when nothing is selected.
+     */
+    private List<AudioClip> collectSelectedAudioClips() {
+        List<ClipboardEntry> selected = host.selectionModel().getSelectedClips();
+        if (selected.isEmpty()) {
+            return List.of();
+        }
+        List<AudioClip> clips = new ArrayList<>(selected.size());
+        for (ClipboardEntry entry : selected) {
+            clips.add(entry.clip());
+        }
+        return clips;
+    }
+
+    /**
+     * Builds one {@link UndoableAction} per clip and either pushes it
+     * directly (single clip) or wraps the lot in {@link CompoundUndoableAction}
+     * (multi-clip) so the user sees one undo step.
+     */
+    private void applyAsCompound(List<AudioClip> clips, String description,
+                                 java.util.function.Function<AudioClip, UndoableAction> factory) {
+        UndoableAction action;
+        if (clips.size() == 1) {
+            action = factory.apply(clips.get(0));
+        } else {
+            List<UndoableAction> children = new ArrayList<>(clips.size());
+            for (AudioClip clip : clips) {
+                children.add(factory.apply(clip));
+            }
+            action = new CompoundUndoableAction(description, children);
+        }
+        host.undoManager().execute(action);
+        host.refreshArrangementCanvas();
+        host.updateUndoRedoState();
+        host.markProjectDirty();
+    }
+
+    /**
+     * Estimates a clip's source duration in seconds, preferring its
+     * {@link SourceRateMetadata} when available and falling back to the
+     * timeline duration converted via the project tempo.
+     */
+    private double estimateClipSeconds(AudioClip clip) {
+        SourceRateMetadata meta = clip.getSourceRateMetadata();
+        if (meta != null && meta.framesPerChannel() > 0 && meta.nativeRateHz() > 0) {
+            return (double) meta.framesPerChannel() / meta.nativeRateHz();
+        }
+        double bpm = host.project().getTransport().getTempo();
+        if (bpm > 0) {
+            return clip.getDurationBeats() * 60.0 / bpm;
+        }
+        return clip.getDurationBeats();
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────────────
 
     private Track resolveTrack(Track source, List<Track> currentTracks) {
         if (currentTracks.contains(source)) {

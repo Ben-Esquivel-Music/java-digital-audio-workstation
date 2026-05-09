@@ -424,6 +424,201 @@ class ClipEditControllerTest {
         assertThat(undoManager.canUndo()).isFalse();
     }
 
+    // ── Story 042 — Time-Stretch / Pitch-Shift ──────────────────────────────
+
+    @Test
+    void timeStretchSelectedAppliesRatioAndQualityToSelectedClip() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        project.addTrack(track);
+        AudioClip clip = new AudioClip("clip", 0.0, 4.0, null);
+        track.addClip(clip);
+
+        UndoManager undoManager = new UndoManager();
+        SelectionModel selectionModel = new SelectionModel();
+        selectionModel.selectClip(track, clip);
+
+        TestHost host = new TestHost(project, undoManager, selectionModel);
+        ClipEditController controller = new ClipEditController(host);
+
+        controller.onTimeStretchSelected(_ -> java.util.Optional.of(
+                new TimeStretchClipDialog.Result(2.0,
+                        com.benesquivelmusic.daw.core.audio.StretchQuality.HIGH, false)));
+
+        assertThat(clip.getTimeStretchRatio()).isCloseTo(2.0, within(1e-9));
+        assertThat(clip.getStretchQuality())
+                .isEqualTo(com.benesquivelmusic.daw.core.audio.StretchQuality.HIGH);
+        assertThat(undoManager.canUndo()).isTrue();
+    }
+
+    @Test
+    void timeStretchPreservesSourceRateMetadata() {
+        // Per the issue: "the clips' SourceRateMetadata is preserved correctly
+        // through the stretch / shift; the resulting clip's native rate is
+        // unchanged (the operation is musical, not sample-rate)."
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        project.addTrack(track);
+        AudioClip clip = new AudioClip("clip", 0.0, 4.0, null);
+        com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata srm =
+                new com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata(96_000, 2, 192_000L);
+        clip.setSourceRateMetadata(srm);
+        track.addClip(clip);
+
+        UndoManager undoManager = new UndoManager();
+        SelectionModel selectionModel = new SelectionModel();
+        selectionModel.selectClip(track, clip);
+
+        TestHost host = new TestHost(project, undoManager, selectionModel);
+        ClipEditController controller = new ClipEditController(host);
+
+        controller.onTimeStretchSelected(_ -> java.util.Optional.of(
+                new TimeStretchClipDialog.Result(1.5,
+                        com.benesquivelmusic.daw.core.audio.StretchQuality.MEDIUM, false)));
+
+        assertThat(clip.getSourceRateMetadata()).isSameAs(srm);
+        assertThat(clip.getSourceRateMetadata().nativeRateHz()).isEqualTo(96_000);
+    }
+
+    @Test
+    void timeStretchCancelLeavesClipUnchanged() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        project.addTrack(track);
+        AudioClip clip = new AudioClip("clip", 0.0, 4.0, null);
+        track.addClip(clip);
+
+        UndoManager undoManager = new UndoManager();
+        SelectionModel selectionModel = new SelectionModel();
+        selectionModel.selectClip(track, clip);
+
+        TestHost host = new TestHost(project, undoManager, selectionModel);
+        ClipEditController controller = new ClipEditController(host);
+
+        controller.onTimeStretchSelected(_ -> java.util.Optional.empty());
+
+        assertThat(clip.getTimeStretchRatio()).isCloseTo(1.0, within(1e-9));
+        assertThat(undoManager.canUndo()).isFalse();
+    }
+
+    @Test
+    void pitchShiftSelectedAppliesCombinedSemitonesPlusCentsToSelectedClip() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        project.addTrack(track);
+        AudioClip clip = new AudioClip("clip", 0.0, 4.0, null);
+        track.addClip(clip);
+
+        UndoManager undoManager = new UndoManager();
+        SelectionModel selectionModel = new SelectionModel();
+        selectionModel.selectClip(track, clip);
+
+        TestHost host = new TestHost(project, undoManager, selectionModel);
+        ClipEditController controller = new ClipEditController(host);
+
+        // +5 semitones and +50 cents → +5.5 semitones combined.
+        controller.onPitchShiftSelected(() -> java.util.Optional.of(
+                new PitchShiftClipDialog.Result(5, 50, true, false)));
+
+        assertThat(clip.getPitchShiftSemitones()).isCloseTo(5.5, within(1e-9));
+        assertThat(undoManager.canUndo()).isTrue();
+    }
+
+    @Test
+    void multiClipPitchShiftProducesSingleUndoStep() {
+        // Per the issue acceptance criterion: "Test confirms multi-clip
+        // pitch-shift produces one undo step."
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        project.addTrack(track);
+        AudioClip a = new AudioClip("a", 0.0, 4.0, null);
+        AudioClip b = new AudioClip("b", 8.0, 4.0, null);
+        AudioClip c = new AudioClip("c", 16.0, 4.0, null);
+        track.addClip(a);
+        track.addClip(b);
+        track.addClip(c);
+
+        UndoManager undoManager = new UndoManager();
+        SelectionModel selectionModel = new SelectionModel();
+        selectionModel.selectClip(track, a);
+        selectionModel.toggleClipSelection(track, b);
+        selectionModel.toggleClipSelection(track, c);
+
+        TestHost host = new TestHost(project, undoManager, selectionModel);
+        ClipEditController controller = new ClipEditController(host);
+
+        controller.onPitchShiftSelected(() -> java.util.Optional.of(
+                new PitchShiftClipDialog.Result(3, 0, true, false)));
+
+        // All three clips updated…
+        assertThat(a.getPitchShiftSemitones()).isCloseTo(3.0, within(1e-9));
+        assertThat(b.getPitchShiftSemitones()).isCloseTo(3.0, within(1e-9));
+        assertThat(c.getPitchShiftSemitones()).isCloseTo(3.0, within(1e-9));
+
+        // …but a single undo restores all of them.
+        assertThat(undoManager.canUndo()).isTrue();
+        undoManager.undo();
+        assertThat(a.getPitchShiftSemitones()).isCloseTo(0.0, within(1e-9));
+        assertThat(b.getPitchShiftSemitones()).isCloseTo(0.0, within(1e-9));
+        assertThat(c.getPitchShiftSemitones()).isCloseTo(0.0, within(1e-9));
+        assertThat(undoManager.canUndo()).isFalse();
+    }
+
+    @Test
+    void multiClipTimeStretchProducesSingleUndoStep() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        project.addTrack(track);
+        AudioClip a = new AudioClip("a", 0.0, 4.0, null);
+        AudioClip b = new AudioClip("b", 8.0, 4.0, null);
+        track.addClip(a);
+        track.addClip(b);
+
+        UndoManager undoManager = new UndoManager();
+        SelectionModel selectionModel = new SelectionModel();
+        selectionModel.selectClip(track, a);
+        selectionModel.toggleClipSelection(track, b);
+
+        TestHost host = new TestHost(project, undoManager, selectionModel);
+        ClipEditController controller = new ClipEditController(host);
+
+        controller.onTimeStretchSelected(_ -> java.util.Optional.of(
+                new TimeStretchClipDialog.Result(0.75,
+                        com.benesquivelmusic.daw.core.audio.StretchQuality.LOW, true)));
+
+        assertThat(a.getTimeStretchRatio()).isCloseTo(0.75, within(1e-9));
+        assertThat(b.getTimeStretchRatio()).isCloseTo(0.75, within(1e-9));
+
+        undoManager.undo();
+        assertThat(a.getTimeStretchRatio()).isCloseTo(1.0, within(1e-9));
+        assertThat(b.getTimeStretchRatio()).isCloseTo(1.0, within(1e-9));
+        assertThat(undoManager.canUndo()).isFalse();
+    }
+
+    @Test
+    void timeStretchWithNoSelectionShowsInfoNotificationAndDoesNothing() {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        Track track = new Track("Track 1", TrackType.AUDIO);
+        project.addTrack(track);
+        AudioClip clip = new AudioClip("clip", 0.0, 4.0, null);
+        track.addClip(clip);
+
+        UndoManager undoManager = new UndoManager();
+        SelectionModel selectionModel = new SelectionModel();
+
+        TestHost host = new TestHost(project, undoManager, selectionModel);
+        ClipEditController controller = new ClipEditController(host);
+
+        boolean[] prompted = {false};
+        controller.onTimeStretchSelected(_ -> { prompted[0] = true; return java.util.Optional.empty(); });
+
+        assertThat(prompted[0]).isFalse();
+        assertThat(clip.getTimeStretchRatio()).isCloseTo(1.0, within(1e-9));
+        assertThat(undoManager.canUndo()).isFalse();
+        assertThat(host.lastNotificationLevel).isEqualTo(NotificationLevel.INFO);
+        assertThat(host.lastNotificationMessage).contains("time-stretch");
+    }
+
     private static final class TestHost implements ClipEditController.Host {
         private final DawProject project;
         private final UndoManager undoManager;

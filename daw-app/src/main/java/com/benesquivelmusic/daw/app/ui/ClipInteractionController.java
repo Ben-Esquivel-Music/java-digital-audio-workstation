@@ -58,6 +58,19 @@ final class ClipInteractionController {
         void showNotification(NotificationLevel level, String message);
         /** Returns the current project tempo in BPM, for slip-edit source-length math. */
         double projectTempoBpm();
+
+        /**
+         * Story 042 — Open the time-stretch dialog for the currently-selected
+         * clip(s). Invoked from the clip right-click context menu. Optional
+         * with a default no-op so existing tests/hosts compile unchanged.
+         */
+        default void onTimeStretchClip() { }
+
+        /**
+         * Story 042 — Open the pitch-shift dialog for the currently-selected
+         * clip(s). Invoked from the clip right-click context menu.
+         */
+        default void onPitchShiftClip() { }
     }
 
     private final ArrangementCanvas canvas;
@@ -361,6 +374,28 @@ final class ClipInteractionController {
             ClipFadeHandler.HandleHit fadeHit = fadeHandler.hitTestHandle(event.getX(), event.getY());
             if (fadeHit != null) {
                 showFadeCurveContextMenu(fadeHit, event);
+                return;
+            }
+        }
+
+        // Right-click on a clip body → show clip context menu (Story 042 —
+        // entry point for Time-Stretch / Pitch-Shift dialogs).
+        if (event.getButton() == MouseButton.SECONDARY
+                && host.activeTool() == EditTool.POINTER && trackIndex >= 0) {
+            Track ctxTrack = host.tracks().get(trackIndex);
+            AudioClip ctxClip = clipAt(ctxTrack, beat);
+            if (ctxClip != null) {
+                // Ensure the right-clicked clip is part of the selection so
+                // the controller acts on it (mirrors common DAW behaviour).
+                SelectionModel sm = host.selectionModel();
+                boolean alreadySelected = sm.getSelectedClips().stream()
+                        .anyMatch(e -> e.clip() == ctxClip);
+                if (!alreadySelected) {
+                    sm.clearClipSelection();
+                    sm.selectClip(ctxTrack, ctxClip);
+                    host.refreshCanvas();
+                }
+                showClipContextMenu(event);
                 return;
             }
         }
@@ -1010,6 +1045,25 @@ final class ClipInteractionController {
             case EQUAL_POWER -> "Equal Power";
             case S_CURVE -> "S-Curve";
         };
+    }
+
+    // ── Clip body context menu (Story 042) ───────────────────────────────────
+
+    /**
+     * Shows the clip right-click context menu — currently exposes the
+     * Time-Stretch and Pitch-Shift dialogs from Story 042. Additional clip
+     * actions can be added here as new stories arrive.
+     */
+    private void showClipContextMenu(MouseEvent event) {
+        ContextMenu menu = new ContextMenu();
+
+        MenuItem timeStretch = new MenuItem("Time-Stretch\u2026");
+        timeStretch.setOnAction(_ -> host.onTimeStretchClip());
+        MenuItem pitchShift = new MenuItem("Pitch-Shift\u2026");
+        pitchShift.setOnAction(_ -> host.onPitchShiftClip());
+
+        menu.getItems().addAll(timeStretch, pitchShift);
+        menu.show(canvas, event.getScreenX(), event.getScreenY());
     }
 
 }

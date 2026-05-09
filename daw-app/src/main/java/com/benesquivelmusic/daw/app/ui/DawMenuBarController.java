@@ -91,6 +91,10 @@ public final class DawMenuBarController {
         void onFreezeSelectedTracks();
         void onUnfreezeSelectedTracks();
 
+        // Clip actions (Story 042 — Time-Stretching and Pitch-Shifting)
+        void onTimeStretchClip();
+        void onPitchShiftClip();
+
         // Help actions
         void onHelp();
     }

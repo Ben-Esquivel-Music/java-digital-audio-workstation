@@ -1194,6 +1194,8 @@ public final class MainController {
                     @Override public void showNotification(NotificationLevel level, String message) {
                         notificationBar.show(level, message);
                     }
+                    @Override public void onTimeStretchClip() { MainController.this.onTimeStretchClip(); }
+                    @Override public void onPitchShiftClip() { MainController.this.onPitchShiftClip(); }
                 },
                 this::seekToPosition);
         arrangementCanvas = result.canvas();
@@ -1264,6 +1266,8 @@ public final class MainController {
                     @Override public void onUnfreezeFocusedTrack() { MainController.this.onUnfreezeFocusedTrack(); }
                     @Override public void onFreezeSelectedTracks() { MainController.this.onFreezeSelectedTracks(); }
                     @Override public void onUnfreezeSelectedTracks() { MainController.this.onUnfreezeSelectedTracks(); }
+                    @Override public void onTimeStretchClip() { MainController.this.onTimeStretchClip(); }
+                    @Override public void onPitchShiftClip() { MainController.this.onPitchShiftClip(); }
                     @Override public void onHelp() { MainController.this.onHelp(); }
                 },
                 keyBindingManager);
@@ -1611,6 +1615,35 @@ public final class MainController {
         AudioSettingsDialog dialog = new AudioSettingsDialog(settingsModel, audioEngineController);
         dialog.showAndWait();
         status("Audio settings closed", DawIcon.STATUS);
+    }
+
+    // ── Story 042 — Time-Stretch / Pitch-Shift dispatch ─────────────────────
+
+    /**
+     * Surfaces {@link TimeStretchClipDialog} for the current selection and
+     * delegates the actual application of the chosen settings to
+     * {@link ClipEditController#onTimeStretchSelected}. The compound undo
+     * step is built by the controller. Story 042.
+     */
+    void onTimeStretchClip() {
+        var owner = rootPane != null && rootPane.getScene() != null
+                ? rootPane.getScene().getWindow() : null;
+        clipEditController.onTimeStretchSelected(sourceSeconds ->
+                TimeStretchClipDialog.showAndWait(owner,
+                        TimeStretchClipDialog.Result.defaults(), sourceSeconds));
+    }
+
+    /**
+     * Surfaces {@link PitchShiftClipDialog} for the current selection and
+     * delegates the actual application of the chosen settings to
+     * {@link ClipEditController#onPitchShiftSelected}. Story 042.
+     */
+    void onPitchShiftClip() {
+        var owner = rootPane != null && rootPane.getScene() != null
+                ? rootPane.getScene().getWindow() : null;
+        clipEditController.onPitchShiftSelected(() ->
+                PitchShiftClipDialog.showAndWait(owner,
+                        PitchShiftClipDialog.Result.defaults()));
     }
 
     /**

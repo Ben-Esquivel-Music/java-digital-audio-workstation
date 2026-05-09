@@ -128,6 +128,9 @@ class DawMenuBarControllerTest {
         @Override public void onUnfreezeFocusedTrack() { /* not used */ }
         @Override public void onFreezeSelectedTracks() { /* not used */ }
         @Override public void onUnfreezeSelectedTracks() { /* not used */ }
+        // Story 042 — clip stretch / shift entries (not exercised here)
+        @Override public void onTimeStretchClip() { /* not used */ }
+        @Override public void onPitchShiftClip() { /* not used */ }
         @Override public void onHelp() { helpCalls++; }
     }
 
