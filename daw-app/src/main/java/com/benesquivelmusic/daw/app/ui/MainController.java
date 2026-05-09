@@ -15,6 +15,7 @@ import com.benesquivelmusic.daw.core.persistence.ChannelNameSnapshotReconciler;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
+import com.benesquivelmusic.daw.core.persistence.archive.ProjectArchiver;
 import com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin;
 import com.benesquivelmusic.daw.core.plugin.PluginInvocationSupervisor;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
@@ -581,7 +582,8 @@ public final class MainController {
                     @Override public void onProjectUIRebuild(MixerView newMixerView) {
                         handleProjectRebuild(newMixerView);
                     }
-                });
+                },
+                new ProjectArchiver());
     }
 
     private void handleProjectRebuild(MixerView newMixerView) {
