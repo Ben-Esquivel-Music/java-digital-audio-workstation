@@ -53,6 +53,45 @@ class InsertSlotTest {
         assertThat(slot.getCapabilities().reportsGainReduction()).isFalse();
     }
 
+    @Test
+    void shouldDefaultExpensiveToFalseForRawProcessorConstructor() {
+        // Story 129 (UI): a slot constructed without an effect type
+        // (legacy two-arg constructor / direct AudioProcessor) defaults
+        // to "not expensive" so existing built-in dynamics stay engaged
+        // under the BypassExpensive policy.
+        InsertSlot slot = new InsertSlot("Stub", new StubProcessor());
+        assertThat(slot.isExpensive()).isFalse();
+    }
+
+    @Test
+    void shouldDefaultExpensiveToTrueForLongTailReverbType() {
+        // Story 129 (UI): convolution-style / long-tail reverbs are
+        // flagged expensive by default so the BypassExpensive policy
+        // has sensible candidates without manual user intervention.
+        InsertSlot slot = new InsertSlot(
+                "Conv Reverb", new StubProcessor(), InsertEffectType.CONVOLUTION_REVERB);
+        assertThat(slot.isExpensive()).isTrue();
+    }
+
+    @Test
+    void shouldDefaultExpensiveToFalseForCheapDynamics() {
+        // Compressors / EQs / gates remain at false so they continue
+        // to engage even when the per-track CPU budget trips.
+        InsertSlot slot = new InsertSlot(
+                "Comp", new StubProcessor(), InsertEffectType.COMPRESSOR);
+        assertThat(slot.isExpensive()).isFalse();
+    }
+
+    @Test
+    void shouldToggleExpensiveFlag() {
+        InsertSlot slot = new InsertSlot(
+                "Comp", new StubProcessor(), InsertEffectType.COMPRESSOR);
+        slot.setExpensive(true);
+        assertThat(slot.isExpensive()).isTrue();
+        slot.setExpensive(false);
+        assertThat(slot.isExpensive()).isFalse();
+    }
+
     // --- Stub processor ---
 
     private static class StubProcessor implements AudioProcessor {

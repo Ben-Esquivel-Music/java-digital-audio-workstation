@@ -475,6 +475,12 @@ public final class ProjectSerializer {
                 Element slotElem = document.createElement("insert");
                 slotElem.setAttribute("name", slot.getName());
                 slotElem.setAttribute("bypassed", String.valueOf(slot.isBypassed()));
+                // Story 129 (UI): always persist the per-insert "expensive"
+                // flag (true or false) so user overrides survive a round-
+                // trip. Previously we only wrote the attribute when true,
+                // which silently re-enabled the flag on types that default
+                // to expensive (e.g. REVERB) after the user cleared it.
+                slotElem.setAttribute("expensive", String.valueOf(slot.isExpensive()));
                 InsertEffectType effectType = slot.getEffectType();
                 if (effectType != null) {
                     slotElem.setAttribute("effect-type", effectType.name());

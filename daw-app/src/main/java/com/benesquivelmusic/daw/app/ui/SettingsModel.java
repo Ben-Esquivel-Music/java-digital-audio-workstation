@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.audio.SampleRateConverter.QualityTier;
+import com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy;
 
 import java.util.Objects;
 import java.util.prefs.Preferences;
@@ -26,6 +27,10 @@ public final class SettingsModel {
     private static final String KEY_APPLY_LATENCY_COMPENSATION = "audio.applyLatencyCompensation";
     private static final String KEY_SRC_QUALITY = "audio.srcQuality";
     private static final String KEY_WORKER_POOL_SIZE = "audio.workerPoolSize";
+
+    // ── Master CPU budget keys (story 129 UI) ────────────────────────────────
+    private static final String KEY_MASTER_CPU_BUDGET_FRACTION = "audio.masterCpuBudgetFraction";
+    private static final String KEY_MASTER_CPU_BUDGET_POLICY = "audio.masterCpuBudgetPolicy";
 
     // ── Project keys ─────────────────────────────────────────────────────────
     private static final String KEY_AUTO_SAVE_INTERVAL_SECONDS = "project.autoSaveIntervalSeconds";
@@ -97,6 +102,24 @@ public final class SettingsModel {
     static final int DEFAULT_WORKER_POOL_SIZE =
             Math.max(1, Runtime.getRuntime().availableProcessors() - 2);
 
+    /**
+     * Default master CPU budget fraction. {@code 1.0} = "no master
+     * cap" — preserves the engine's pre-story-129 behaviour. Users
+     * configure a tighter ceiling (e.g. 0.8) from the Audio Settings
+     * dialog to enable cascading shedding of the highest-CPU tracks
+     * when the cap is exceeded.
+     */
+    static final double DEFAULT_MASTER_CPU_BUDGET_FRACTION = 1.0;
+
+    /**
+     * Default master CPU degradation policy. {@code DoNothing} so that
+     * when the master ceiling is exceeded the cascade only marks the
+     * highest-CPU tracks as shed (publishing TrackDegraded events for
+     * UI feedback) without altering audio output. Users opt in to
+     * {@code BypassExpensive} from the Audio Settings dialog.
+     */
+    static final String DEFAULT_MASTER_CPU_BUDGET_POLICY = "DoNothing";
+
     private final Preferences prefs;
 
     private double sampleRate;
@@ -114,6 +137,8 @@ public final class SettingsModel {
     private boolean applyLatencyCompensation;
     private QualityTier srcQuality;
     private int workerPoolSize;
+    private double masterCpuBudgetFraction;
+    private DegradationPolicy masterCpuBudgetPolicy;
     private KeyBindingManager keyBindingManager;
 
     /**
@@ -159,6 +184,41 @@ public final class SettingsModel {
         srcQuality = resolvedSrcQuality;
         int storedWorkerPool = prefs.getInt(KEY_WORKER_POOL_SIZE, DEFAULT_WORKER_POOL_SIZE);
         workerPoolSize = storedWorkerPool > 0 ? storedWorkerPool : DEFAULT_WORKER_POOL_SIZE;
+        // Master CPU budget (story 129 UI). Clamp to the legal open
+        // interval (0, 1] so a corrupted preferences node never trips
+        // the enforcer's invariants.
+        double storedMasterFraction = prefs.getDouble(
+                KEY_MASTER_CPU_BUDGET_FRACTION, DEFAULT_MASTER_CPU_BUDGET_FRACTION);
+        if (Double.isNaN(storedMasterFraction) || storedMasterFraction <= 0.0
+                || storedMasterFraction > 1.0) {
+            storedMasterFraction = DEFAULT_MASTER_CPU_BUDGET_FRACTION;
+        }
+        masterCpuBudgetFraction = storedMasterFraction;
+        masterCpuBudgetPolicy = parsePolicy(
+                prefs.get(KEY_MASTER_CPU_BUDGET_POLICY, DEFAULT_MASTER_CPU_BUDGET_POLICY));
+    }
+
+    /** Parses a persisted policy short-name into a {@link DegradationPolicy}. Forward compatible. */
+    static DegradationPolicy parsePolicy(String name) {
+        if (name == null) {
+            return new DegradationPolicy.DoNothing();
+        }
+        return switch (name) {
+            case "BypassExpensive" -> new DegradationPolicy.BypassExpensive();
+            case "ReduceOversampling" -> new DegradationPolicy.ReduceOversampling(1);
+            case "SubstituteSimpleKernel" -> new DegradationPolicy.SubstituteSimpleKernel("simple");
+            default -> new DegradationPolicy.DoNothing();
+        };
+    }
+
+    /** Returns the short-name used to persist a {@link DegradationPolicy}. */
+    static String policyName(DegradationPolicy policy) {
+        return switch (policy) {
+            case DegradationPolicy.BypassExpensive _ -> "BypassExpensive";
+            case DegradationPolicy.ReduceOversampling _ -> "ReduceOversampling";
+            case DegradationPolicy.SubstituteSimpleKernel _ -> "SubstituteSimpleKernel";
+            case DegradationPolicy.DoNothing _ -> "DoNothing";
+        };
     }
 
     // ── Audio ────────────────────────────────────────────────────────────────
@@ -355,6 +415,55 @@ public final class SettingsModel {
         prefs.putInt(KEY_WORKER_POOL_SIZE, workerPoolSize);
     }
 
+    /**
+     * Returns the master (global) CPU budget fraction in the open
+     * interval {@code (0, 1]} — story 129 UI. {@code 1.0} disables
+     * the master ceiling. When set below {@code 1.0}, the engine's
+     * {@link com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer
+     * TrackCpuBudgetEnforcer} sheds the highest-CPU tracks first when
+     * the sum of all per-track CPU fractions exceeds this value.
+     *
+     * @return the master CPU budget fraction
+     */
+    public double getMasterCpuBudgetFraction() {
+        return masterCpuBudgetFraction;
+    }
+
+    /**
+     * Sets the master CPU budget fraction and persists the change.
+     * Takes effect on the next engine restart.
+     *
+     * @param fraction CPU fraction in {@code (0.0, 1.0]}
+     */
+    public void setMasterCpuBudgetFraction(double fraction) {
+        if (Double.isNaN(fraction) || fraction <= 0.0 || fraction > 1.0) {
+            throw new IllegalArgumentException(
+                    "masterCpuBudgetFraction must be in (0.0, 1.0]: " + fraction);
+        }
+        this.masterCpuBudgetFraction = fraction;
+        prefs.putDouble(KEY_MASTER_CPU_BUDGET_FRACTION, fraction);
+    }
+
+    /**
+     * Returns the configured master degradation policy applied to
+     * tracks shed by the master cascade. Story 129 UI.
+     *
+     * @return the master degradation policy (never {@code null})
+     */
+    public DegradationPolicy getMasterCpuBudgetPolicy() {
+        return masterCpuBudgetPolicy;
+    }
+
+    /**
+     * Sets the master degradation policy and persists the change.
+     *
+     * @param policy the policy (must not be {@code null})
+     */
+    public void setMasterCpuBudgetPolicy(DegradationPolicy policy) {
+        this.masterCpuBudgetPolicy = Objects.requireNonNull(policy, "policy must not be null");
+        prefs.put(KEY_MASTER_CPU_BUDGET_POLICY, policyName(policy));
+    }
+
     // ── Project ──────────────────────────────────────────────────────────────
 
     /** Returns the auto-save interval in seconds. */
@@ -494,5 +603,7 @@ public final class SettingsModel {
         setApplyLatencyCompensation(DEFAULT_APPLY_LATENCY_COMPENSATION);
         setSrcQuality(DEFAULT_SRC_QUALITY);
         setWorkerPoolSize(DEFAULT_WORKER_POOL_SIZE);
+        setMasterCpuBudgetFraction(DEFAULT_MASTER_CPU_BUDGET_FRACTION);
+        setMasterCpuBudgetPolicy(parsePolicy(DEFAULT_MASTER_CPU_BUDGET_POLICY));
     }
 }

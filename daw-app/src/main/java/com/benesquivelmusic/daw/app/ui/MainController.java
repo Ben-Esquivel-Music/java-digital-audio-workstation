@@ -107,6 +107,10 @@ public final class MainController {
     // mixer's input-meter column and the arrangement-view clip indicator.
     private final InputLevelMonitorRegistry inputLevelMonitorRegistry = new InputLevelMonitorRegistry();
     private DefaultAudioEngineController audioEngineController;
+    /** Per-track CPU budget enforcer wired into the engine (story 129 UI). */
+    private com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer cpuBudgetEnforcer;
+    /** UI binding that subscribes to enforcer events and surfaces badges/notifications. */
+    private TrackBudgetUiBinding trackBudgetUiBinding;
     /** Cached settings model for transport-controller access to latency compensation toggle. */
     private SettingsModel settingsModel;
     private NotificationBar notificationBar;
@@ -197,7 +201,14 @@ public final class MainController {
         } catch (RuntimeException e) {
             LOG.log(Level.WARNING, "Failed to create audio backend; playback will use UI timer only", e);
         }
-        audioEngineController = new DefaultAudioEngineController(audioEngine, this::updateProjectInfo);
+        audioEngineController = new DefaultAudioEngineController(audioEngine, () -> {
+            updateProjectInfo();
+            // Story 129 (UI): reinstall the per-track CPU budget enforcer
+            // whenever the engine is reconfigured (sample rate / buffer size
+            // change in AudioSettingsDialog → applyConfiguration) so the
+            // enforcer's blockBudgetNanos stays in sync with the live format.
+            installTrackCpuBudgetEnforcer();
+        });
 
         // Apply the persisted mix precision from user preferences to the
         // project's mixer so that a previously-saved FLOAT_32 choice is
@@ -289,6 +300,13 @@ public final class MainController {
         }
         viewNavigationController.getMixerView()
                 .setTrackFreezeController(trackFreezeController);
+        // Story 129 (UI): construct the per-track CPU budget enforcer
+        // and wire it into the engine + the mixer view so the policy
+        // actually engages and the UI surfaces a "⚠" badge on degraded
+        // strips. Composed here (after the MixerView is alive but
+        // before transport/menu wiring) so every later refresh sees
+        // the binding.
+        installTrackCpuBudgetEnforcer();
         createArrangementCanvas();
         viewNavigationController.setOnEditToolChanged(() -> {
             if (clipInteractionController != null) clipInteractionController.updateCursor();
@@ -456,6 +474,10 @@ public final class MainController {
         notifyChannelNameMismatchOnce();
         viewNavigationController.setMixerView(newMixerView);
         viewNavigationController.onProjectChanged();
+        // Story 129 (UI): a fresh project means a fresh set of tracks
+        // and possibly a different sample-rate / buffer-size — rewire
+        // the per-track CPU budget enforcer and its UI binding.
+        installTrackCpuBudgetEnforcer();
         pluginViewController.onProjectChanged(project);
         metronome = new Metronome(project.getFormat().sampleRate(), project.getFormat().channels());
         createTransportController();
@@ -905,6 +927,142 @@ public final class MainController {
         notificationBar.setHistoryService(notificationHistoryService);
         notificationBarContainer.getChildren().add(notificationBar);
         HBox.setHgrow(notificationBar, Priority.ALWAYS);
+    }
+
+    /**
+     * Story 129 (UI) — Composes a {@link com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer
+     * TrackCpuBudgetEnforcer} for the current project, registers every
+     * mixer channel with its persisted budget, attaches a
+     * {@link TrackBudgetUiBinding} that surfaces toast notifications and
+     * "⚠" badges, and installs the enforcer on the live audio engine.
+     *
+     * <p>Re-entrant: when a project is reloaded, the previous binding
+     * and enforcer are closed before fresh ones are constructed.</p>
+     */
+    private void installTrackCpuBudgetEnforcer() {
+        try {
+            // Tear down any pre-existing enforcer / binding so a project
+            // reload does not leak subscribers.
+            if (trackBudgetUiBinding != null) {
+                trackBudgetUiBinding.close();
+                trackBudgetUiBinding = null;
+            }
+            if (cpuBudgetEnforcer != null) {
+                if (audioEngine != null) {
+                    audioEngine.setCpuBudgetEnforcer(null);
+                }
+                cpuBudgetEnforcer.close();
+                cpuBudgetEnforcer = null;
+            }
+
+            double sampleRate = audioEngine.getFormat().sampleRate();
+            int bufferSize = audioEngine.getFormat().bufferSize();
+            double masterFraction = settingsModel != null
+                    ? settingsModel.getMasterCpuBudgetFraction()
+                    : SettingsModel.DEFAULT_MASTER_CPU_BUDGET_FRACTION;
+            // Clamp defensively to the enforcer's legal interval —
+            // zero / NaN / >1 would throw and crash startup.
+            if (Double.isNaN(masterFraction) || masterFraction <= 0.0 || masterFraction > 1.0) {
+                masterFraction = 1.0;
+            }
+            cpuBudgetEnforcer = new com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer(
+                    sampleRate, bufferSize, masterFraction, System::nanoTime);
+
+            // Register every existing mixer channel with its persisted
+            // budget. Channels created later (new tracks) get registered
+            // through the same call site after creation.
+            registerAllChannelsWithEnforcer();
+
+            // Subscribe a UI binding that throttles toast notifications
+            // (one per track per 30 s) and refreshes the mixer view's
+            // degraded badge set on the JavaFX thread.
+            NotificationManager toastSink = message -> {
+                if (notificationBar != null) {
+                    javafx.application.Platform.runLater(() -> notificationBar.show(
+                            NotificationLevel.WARNING, message));
+                }
+            };
+            trackBudgetUiBinding = new TrackBudgetUiBinding(
+                    toastSink,
+                    this::trackNameFor,
+                    _ -> {
+                        MixerView mv = viewNavigationController != null
+                                ? viewNavigationController.getMixerView()
+                                : null;
+                        if (mv != null) {
+                            mv.refresh();
+                        }
+                    },
+                    javafx.application.Platform::runLater,
+                    System::nanoTime);
+            cpuBudgetEnforcer.performanceEvents().subscribe(trackBudgetUiBinding);
+
+            // Wire the predicate and the "CPU Budget…" menu handler
+            // into the mixer view so degraded strips render the badge
+            // and the user can edit per-channel budgets.
+            MixerView mv = viewNavigationController != null
+                    ? viewNavigationController.getMixerView()
+                    : null;
+            if (mv != null) {
+                final TrackBudgetUiBinding binding = trackBudgetUiBinding;
+                mv.setDegradedTrackPredicate(binding::isDegraded);
+                mv.setOnConfigureCpuBudget(this::openChannelCpuBudgetDialog);
+            }
+
+            audioEngine.setCpuBudgetEnforcer(cpuBudgetEnforcer);
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Failed to install per-track CPU budget enforcer", e);
+        }
+    }
+
+    /** Re-registers every mixer channel with the live enforcer. */
+    private void registerAllChannelsWithEnforcer() {
+        if (cpuBudgetEnforcer == null || project == null) {
+            return;
+        }
+        // Use the track id as the enforcer's track id so the binding's
+        // notification text and the strip badge line up with the mixer.
+        for (Track track : project.getTracks()) {
+            com.benesquivelmusic.daw.core.mixer.MixerChannel ch =
+                    project.getMixerChannelForTrack(track);
+            if (ch != null) {
+                cpuBudgetEnforcer.registerTrack(track.getId(), ch.getCpuBudget());
+            }
+        }
+    }
+
+    /** Returns the human display name for the given track id, or the id itself if unknown. */
+    private String trackNameFor(String trackId) {
+        if (project == null || trackId == null) {
+            return trackId;
+        }
+        for (Track track : project.getTracks()) {
+            if (trackId.equals(track.getId())) {
+                return track.getName();
+            }
+        }
+        return trackId;
+    }
+
+    /** Opens the per-channel CPU-budget dialog. Re-registers the channel on Apply. */
+    private void openChannelCpuBudgetDialog(com.benesquivelmusic.daw.core.mixer.MixerChannel channel) {
+        if (channel == null) {
+            return;
+        }
+        ChannelCpuBudgetDialog dialog = new ChannelCpuBudgetDialog(channel, () -> {
+            if (cpuBudgetEnforcer == null || project == null) {
+                return;
+            }
+            // Find the matching track id so the enforcer key stays
+            // aligned with the mixer/binding.
+            for (Track track : project.getTracks()) {
+                if (project.getMixerChannelForTrack(track) == channel) {
+                    cpuBudgetEnforcer.registerTrack(track.getId(), channel.getCpuBudget());
+                    return;
+                }
+            }
+        });
+        dialog.showAndWait();
     }
 
     /**

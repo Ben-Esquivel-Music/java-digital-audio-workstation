@@ -192,6 +192,62 @@ class ProjectSerializationRoundTripTest {
     }
 
     @Test
+    void shouldRoundTripInsertExpensiveFlag() throws IOException {
+        // Story 129 (UI): the per-insert "expensive" flag drives the
+        // BypassExpensive degradation policy. It must survive a save /
+        // load round-trip so the policy's eligible-set stays stable.
+        DawProject original = new DawProject("Expensive Test", AudioFormat.CD_QUALITY);
+        Track track = original.createAudioTrack("Drums");
+        MixerChannel channel = original.getMixerChannelForTrack(track);
+
+        InsertSlot comp = InsertEffectFactory.createSlot(
+                InsertEffectType.COMPRESSOR, 2, 44100.0);
+        // Compressor defaults to NOT expensive — flip it ON so we can
+        // distinguish "persisted true" from "default false".
+        comp.setExpensive(true);
+        channel.addInsert(comp);
+
+        InsertSlot eq = InsertEffectFactory.createSlot(
+                InsertEffectType.PARAMETRIC_EQ, 2, 44100.0);
+        // PARAMETRIC_EQ defaults to NOT expensive; do not change.
+        channel.addInsert(eq);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        MixerChannel restoredChannel = restored.getMixer().getChannels().get(0);
+        assertThat(restoredChannel.getInsertSlots()).hasSize(2);
+        assertThat(restoredChannel.getInsertSlots().get(0).isExpensive()).isTrue();
+        assertThat(restoredChannel.getInsertSlots().get(1).isExpensive()).isFalse();
+    }
+
+    @Test
+    void shouldRoundTripExpensiveFlagClearedOnDefaultExpensiveType() throws IOException {
+        // Story 129 (UI): when the user *clears* the "expensive" flag on a
+        // type that defaults to expensive=true (e.g. REVERB), the false
+        // override must survive the round-trip. Previously the serializer
+        // only wrote the attribute when true, so clearing it reverted to
+        // the factory default (true) on reload.
+        DawProject original = new DawProject("Expensive Override Test", AudioFormat.CD_QUALITY);
+        Track track = original.createAudioTrack("Keys");
+        MixerChannel channel = original.getMixerChannelForTrack(track);
+
+        InsertSlot reverb = InsertEffectFactory.createSlot(
+                InsertEffectType.REVERB, 2, 44100.0);
+        // REVERB defaults to expensive=true; clear it to false.
+        assertThat(reverb.isExpensive()).isTrue();
+        reverb.setExpensive(false);
+        channel.addInsert(reverb);
+
+        String xml = serializer.serialize(original);
+        DawProject restored = deserializer.deserialize(xml);
+
+        MixerChannel restoredChannel = restored.getMixer().getChannels().get(0);
+        assertThat(restoredChannel.getInsertSlots()).hasSize(1);
+        assertThat(restoredChannel.getInsertSlots().get(0).isExpensive()).isFalse();
+    }
+
+    @Test
     void shouldRoundTripSendTapPoints() throws IOException {
         // All three SendTap values must round-trip through XML, including
         // PRE_INSERTS (the new value introduced for cue/parallel sends).
