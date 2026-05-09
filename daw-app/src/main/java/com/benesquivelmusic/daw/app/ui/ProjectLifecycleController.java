@@ -2,23 +2,37 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
+import com.benesquivelmusic.daw.core.persistence.ProjectSerializer;
 import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
+import com.benesquivelmusic.daw.core.persistence.archive.ArchivedProject;
+import com.benesquivelmusic.daw.core.persistence.archive.MissingAssetResolver;
+import com.benesquivelmusic.daw.core.persistence.archive.ProjectArchiveSummary;
+import com.benesquivelmusic.daw.core.persistence.archive.ProjectArchiver;
 import com.benesquivelmusic.daw.core.project.DawProject;
+import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.session.SessionExportResult;
 import com.benesquivelmusic.daw.sdk.session.SessionImportResult;
+import javafx.application.Platform;
 import javafx.scene.control.*;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.VBox;
 import javafx.stage.DirectoryChooser;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
+import javafx.stage.Window;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -67,6 +81,8 @@ final class ProjectLifecycleController {
     private final BorderPane rootPane;
     private final VBox trackListPanel;
     private final Host host;
+    /** Story 189 — engine for {@code .dawz} archive save/restore. */
+    private final ProjectArchiver projectArchiver;
 
     ProjectLifecycleController(ProjectManager projectManager,
                                SessionInterchangeController sessionInterchangeController,
@@ -75,7 +91,8 @@ final class ProjectLifecycleController {
                                Label checkpointLabel,
                                BorderPane rootPane,
                                VBox trackListPanel,
-                               Host host) {
+                               Host host,
+                               ProjectArchiver projectArchiver) {
         this.projectManager = Objects.requireNonNull(projectManager, "projectManager must not be null");
         this.sessionInterchangeController = Objects.requireNonNull(sessionInterchangeController,
                 "sessionInterchangeController must not be null");
@@ -85,6 +102,7 @@ final class ProjectLifecycleController {
         this.rootPane = Objects.requireNonNull(rootPane, "rootPane must not be null");
         this.trackListPanel = Objects.requireNonNull(trackListPanel, "trackListPanel must not be null");
         this.host = Objects.requireNonNull(host, "host must not be null");
+        this.projectArchiver = Objects.requireNonNull(projectArchiver, "projectArchiver must not be null");
     }
 
     // ── Project action handlers ──────────────────────────────────────────────
@@ -278,6 +296,257 @@ final class ProjectLifecycleController {
         }
     }
 
+    // ── Project Archive (Story 189 — Project Archive (ZIP With Assets)) ────
+
+    /**
+     * "File → Archive Project…" — bundles the current project together
+     * with every referenced asset into a single self-contained
+     * {@code .dawz} ZIP at a user-chosen location.
+     *
+     * <p>Walks every {@link AudioClip} and {@link SoundFontAssignment}
+     * referenced by the project to detect missing asset files. If any
+     * are missing, asks the user whether to abort or proceed with those
+     * assets simply omitted from the archive. The ZIP I/O runs on a
+     * background virtual thread with a modeless
+     * {@link TaskProgressIndicator} so the UI stays responsive. On
+     * success, surfaces a notification with the asset count and total
+     * size.</p>
+     */
+    void onArchiveProject() {
+        DawProject current = host.project();
+        if (current == null) {
+            notificationBar.show(NotificationLevel.ERROR, "No project to archive");
+            return;
+        }
+
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Archive Project");
+        chooser.setInitialFileName(safeFileName(current.getName()) + ProjectArchiver.ARCHIVE_EXTENSION);
+        chooser.getExtensionFilters().add(
+                new FileChooser.ExtensionFilter("DAW Archive (*.dawz)", "*.dawz"));
+        Stage stage = (Stage) rootPane.getScene().getWindow();
+        java.io.File selected = chooser.showSaveDialog(stage);
+        if (selected == null) {
+            return;
+        }
+        Path archivePath = selected.toPath();
+        // FileChooser on some platforms does not append the extension.
+        if (!archivePath.getFileName().toString().toLowerCase(java.util.Locale.ROOT)
+                .endsWith(ProjectArchiver.ARCHIVE_EXTENSION)) {
+            archivePath = archivePath.resolveSibling(
+                    archivePath.getFileName() + ProjectArchiver.ARCHIVE_EXTENSION);
+        }
+
+        // Pre-archive plan: detect missing referenced assets and let the
+        // user abort or continue. Missing assets are simply omitted by
+        // ProjectArchiver, so this dialog is purely informational.
+        List<String> missing = collectMissingAssetPaths(current);
+        if (!missing.isEmpty() && !ArchiveSummaryDialog.confirmMissingAssets(missing)) {
+            statusBarLabel.setText("Archive cancelled");
+            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+            return;
+        }
+
+        // Run the potentially expensive ZIP I/O on a background virtual
+        // thread so the JavaFX application thread stays responsive.
+        // Progress is surfaced through a modeless TaskProgressIndicator
+        // following the same pattern used by TrackFreezeController.
+        Window owner = rootPane.getScene().getWindow();
+        TaskProgressIndicator progress = new TaskProgressIndicator(owner, "Archiving project\u2026");
+        progress.hideCancelButton();
+        progress.show();
+        progress.update(-1.0, "Writing archive\u2026");
+
+        Path finalArchivePath = archivePath;
+        Thread.ofVirtual()
+                .name("daw-archive-worker")
+                .start(() -> {
+                    try {
+                        ProjectArchiveSummary summary = projectArchiver.saveAsArchive(
+                                current, finalArchivePath);
+                        String headline = ArchiveSummaryDialog.formatHeadline(summary);
+                        Platform.runLater(() -> {
+                            progress.close();
+                            statusBarLabel.setText(headline);
+                            statusBarLabel.setGraphic(IconNode.of(DawIcon.UPLOAD, 12));
+                            notificationBar.show(NotificationLevel.SUCCESS,
+                                    headline + " \u2014 "
+                                            + ArchiveSummaryDialog.archivePathDisplay(finalArchivePath));
+                            ArchiveSummaryDialog.showSummary(summary);
+                        });
+                        LOG.info(() -> "Archived project to " + summary.outputPath()
+                                + " (" + summary.uniqueAssetCount() + " assets, "
+                                + summary.totalAssetBytes() + " bytes)");
+                    } catch (IOException | IllegalArgumentException e) {
+                        Platform.runLater(() -> {
+                            progress.close();
+                            statusBarLabel.setText("Archive failed: " + e.getMessage());
+                            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+                            notificationBar.show(NotificationLevel.ERROR,
+                                    "Archive failed: " + e.getMessage());
+                        });
+                        LOG.log(Level.WARNING, "Failed to archive project", e);
+                    }
+                });
+    }
+
+    /**
+     * "File → Restore from Archive…" — opens a {@code .dawz} archive,
+     * extracts it into a user-chosen destination directory, and loads
+     * the restored project (which goes into the recent-projects list
+     * via {@link ProjectManager#openProject}).
+     *
+     * <p>The extraction and XML-rewrite work runs on a background
+     * virtual thread with a modeless {@link TaskProgressIndicator} so
+     * large archives do not freeze the UI. The restored project is
+     * then loaded on the JavaFX application thread via
+     * {@link #loadProjectFromPath}, and the success notification is
+     * only shown if that load actually succeeds.</p>
+     */
+    void onRestoreFromArchive() {
+        if (!confirmDiscardUnsavedChanges()) {
+            return;
+        }
+        FileChooser fileChooser = new FileChooser();
+        fileChooser.setTitle("Restore from Archive");
+        fileChooser.getExtensionFilters().add(
+                new FileChooser.ExtensionFilter("DAW Archive (*.dawz)", "*.dawz"));
+        Stage stage = (Stage) rootPane.getScene().getWindow();
+        java.io.File archiveSelected = fileChooser.showOpenDialog(stage);
+        if (archiveSelected == null) {
+            return;
+        }
+        Path archivePath = archiveSelected.toPath();
+
+        // Default destination: ~/Documents/<archive-stem>-<timestamp>/
+        Path defaultRoot = defaultRestoreRoot();
+        DirectoryChooser dirChooser = new DirectoryChooser();
+        dirChooser.setTitle("Choose restore destination directory");
+        if (defaultRoot != null && Files.isDirectory(defaultRoot)) {
+            dirChooser.setInitialDirectory(defaultRoot.toFile());
+        }
+        java.io.File parentDir = dirChooser.showDialog(stage);
+        if (parentDir == null) {
+            return;
+        }
+        String stem = archivePath.getFileName().toString();
+        if (stem.toLowerCase(java.util.Locale.ROOT).endsWith(ProjectArchiver.ARCHIVE_EXTENSION)) {
+            stem = stem.substring(0, stem.length() - ProjectArchiver.ARCHIVE_EXTENSION.length());
+        }
+        String stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+        Path destination = parentDir.toPath().resolve(stem + "-" + stamp);
+
+        // Run the potentially expensive ZIP extraction on a background
+        // virtual thread. UI updates (load + notification) happen via
+        // Platform.runLater once extraction is complete.
+        Window owner = rootPane.getScene().getWindow();
+        TaskProgressIndicator progress = new TaskProgressIndicator(owner, "Restoring archive\u2026");
+        progress.hideCancelButton();
+        progress.show();
+        progress.update(-1.0, "Extracting archive\u2026");
+
+        Thread.ofVirtual()
+                .name("daw-restore-worker")
+                .start(() -> {
+                    try {
+                        ArchivedProject archived = projectArchiver.openArchive(
+                                archivePath, destination, MissingAssetResolver.none());
+                        // openArchive resolves the project's relative
+                        // "assets/<sha>_*" references to absolute paths inside
+                        // the destination directory. We must write this
+                        // resolved project document back to
+                        // {destination}/project.daw so that
+                        // ProjectManager.openProject — which only reads the
+                        // file from disk — picks up the absolute asset paths
+                        // instead of the archive-internal relative ones.
+                        String xml = new ProjectSerializer().serialize(archived.project());
+                        Files.writeString(destination.resolve("project.daw"), xml);
+
+                        int missingCount = archived.missingAssets().size();
+                        String projectName = archived.header().projectName();
+
+                        // Load the restored project on the FX thread; only
+                        // show the success notification if loading succeeded.
+                        Platform.runLater(() -> {
+                            progress.close();
+                            boolean loaded = loadProjectFromPath(destination);
+                            if (loaded) {
+                                String message = "Restored archive: " + projectName
+                                        + (missingCount == 0 ? ""
+                                        : " (" + missingCount + " missing assets)");
+                                notificationBar.show(
+                                        missingCount == 0 ? NotificationLevel.SUCCESS
+                                                : NotificationLevel.WARNING,
+                                        message);
+                            }
+                        });
+                        LOG.info(() -> "Restored archive " + archivePath
+                                + " into " + destination);
+                    } catch (IOException e) {
+                        Platform.runLater(() -> {
+                            progress.close();
+                            statusBarLabel.setText("Restore failed: " + e.getMessage());
+                            statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
+                            notificationBar.show(NotificationLevel.ERROR,
+                                    "Restore failed: " + e.getMessage());
+                        });
+                        LOG.log(Level.WARNING, "Failed to restore archive", e);
+                    }
+                });
+    }
+
+    /**
+     * Walks the project for asset references whose path no longer points
+     * at a regular file on disk. Mirrors the iteration order of
+     * {@link ProjectArchiver} so the user sees the same set the archiver
+     * will end up skipping.
+     *
+     * <p>Package-private for unit tests.</p>
+     */
+    static List<String> collectMissingAssetPaths(DawProject project) {
+        List<String> missing = new ArrayList<>();
+        for (Track track : project.getTracks()) {
+            for (AudioClip clip : track.getClips()) {
+                String p = clip.getSourceFilePath();
+                if (p != null && !p.isBlank() && !isRegularFile(p)) {
+                    missing.add(p);
+                }
+            }
+            SoundFontAssignment sf = track.getSoundFontAssignment();
+            if (sf != null && sf.soundFontPath() != null) {
+                Path sfPath = sf.soundFontPath();
+                if (!Files.isRegularFile(sfPath)) {
+                    missing.add(sfPath.toString());
+                }
+            }
+        }
+        return missing;
+    }
+
+    private static boolean isRegularFile(String path) {
+        try {
+            return Files.isRegularFile(Paths.get(path));
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    private static String safeFileName(String name) {
+        if (name == null || name.isBlank()) {
+            return "project";
+        }
+        return name.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
+    }
+
+    private static Path defaultRestoreRoot() {
+        String home = System.getProperty("user.home");
+        if (home == null || home.isBlank()) {
+            return null;
+        }
+        Path docs = Paths.get(home, "Documents");
+        return Files.isDirectory(docs) ? docs : Paths.get(home);
+    }
+
     // ── Supporting methods ───────────────────────────────────────────────────
 
     /**
@@ -310,7 +579,14 @@ final class ProjectLifecycleController {
         return true;
     }
 
-    void loadProjectFromPath(Path projectDir) {
+    /**
+     * Loads a project from the given directory.
+     *
+     * @return {@code true} if the project loaded successfully,
+     *         {@code false} if it failed (error is already surfaced
+     *         in the status bar and notification bar)
+     */
+    boolean loadProjectFromPath(Path projectDir) {
         try {
             resetProjectState();
             projectManager.openProject(projectDir);
@@ -331,12 +607,14 @@ final class ProjectLifecycleController {
             notificationBar.show(NotificationLevel.SUCCESS,
                     "Opened project: " + projectDir.getFileName());
             LOG.info("Opened project from " + projectDir);
+            return true;
         } catch (IOException e) {
             statusBarLabel.setText("Open failed: " + e.getMessage());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
             notificationBar.show(NotificationLevel.ERROR,
                     "Open failed: " + e.getMessage());
             LOG.log(Level.WARNING, "Failed to open project", e);
+            return false;
         }
     }
 

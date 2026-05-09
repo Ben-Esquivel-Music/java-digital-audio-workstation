@@ -143,6 +143,12 @@ final class MenuConstructionService {
         MenuItem createCheckpoint = menuItem("Create Checkpoint\u2026", DawIcon.HISTORY,
                 DawAction.CREATE_CHECKPOINT, host::onCreateCheckpoint);
 
+        // Story 189 — Project Archive (ZIP With Assets)
+        MenuItem archiveProject = menuItem("Archive Project\u2026", DawIcon.UPLOAD,
+                DawAction.ARCHIVE_PROJECT, host::onArchiveProject);
+        MenuItem restoreArchive = menuItem("Restore from Archive\u2026", DawIcon.DOWNLOAD,
+                DawAction.RESTORE_FROM_ARCHIVE, host::onRestoreFromArchive);
+
         fileMenu.getItems().addAll(
                 newProject, openProject, recentProjects,
                 new SeparatorMenuItem(),
@@ -151,6 +157,8 @@ final class MenuConstructionService {
                 new SeparatorMenuItem(),
                 importSession, exportSessionItem,
                 renderQueueItem,
+                new SeparatorMenuItem(),
+                archiveProject, restoreArchive,
                 new SeparatorMenuItem(),
                 importAudioFileItem
         );

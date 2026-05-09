@@ -46,7 +46,9 @@ class DawActionTest {
                 DawAction.TOGGLE_PRE_ROLL, DawAction.TOGGLE_POST_ROLL,
                 DawAction.TIME_STRETCH_CLIP, DawAction.PITCH_SHIFT_CLIP,
                 DawAction.OPEN_IMMERSIVE_AB,
-                DawAction.EXPORT_RENDER_QUEUE);
+                DawAction.EXPORT_RENDER_QUEUE,
+                // Story 189 — File-menu only, no keyboard accelerator.
+                DawAction.ARCHIVE_PROJECT, DawAction.RESTORE_FROM_ARCHIVE);
         for (DawAction action : DawAction.values()) {
             if (nullBindingAllowed.contains(action)) {
                 continue;

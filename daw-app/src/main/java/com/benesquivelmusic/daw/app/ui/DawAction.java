@@ -122,6 +122,20 @@ public enum DawAction {
     // and surfaces per-job pause / resume / cancel controls.
     EXPORT_RENDER_QUEUE("Render Queue\u2026", Category.EDITING, null),
 
+    // ── Project archive (Story 189 — Project Archive (ZIP With Assets)) ─────
+    /**
+     * Open a save-file dialog and bundle the current project together with
+     * every referenced asset into a portable {@code .dawz} archive. No
+     * default shortcut — surfaced via the File menu and the Command Palette.
+     */
+    ARCHIVE_PROJECT("Archive Project\u2026", Category.EDITING, null),
+    /**
+     * Open a {@code .dawz} archive and restore it into a chosen destination
+     * directory, then load the restored project. No default shortcut —
+     * surfaced via the File menu and the Command Palette.
+     */
+    RESTORE_FROM_ARCHIVE("Restore from Archive\u2026", Category.EDITING, null),
+
     // ── Audio file import ───────────────────────────────────────────────────
     IMPORT_AUDIO_FILE("Import Audio File", Category.EDITING,
             new KeyCodeCombination(KeyCode.I, KeyCombination.SHORTCUT_DOWN)),

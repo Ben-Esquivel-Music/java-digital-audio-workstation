@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.persistence.AutoSaveConfig;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
+import com.benesquivelmusic.daw.core.persistence.archive.ProjectArchiver;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 
@@ -42,7 +43,7 @@ class ProjectLifecycleControllerTest {
                 .isThrownBy(() -> new ProjectLifecycleController(
                         null, dummySessionInterchange(), dummyNotificationBar(),
                         dummyLabel(), dummyLabel(), dummyBorderPane(),
-                        dummyVBox(), dummyHost()))
+                        dummyVBox(), dummyHost(), dummyArchiver()))
                 .withMessageContaining("projectManager"));
     }
 
@@ -53,7 +54,7 @@ class ProjectLifecycleControllerTest {
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), null, dummyNotificationBar(),
                         dummyLabel(), dummyLabel(), dummyBorderPane(),
-                        dummyVBox(), dummyHost()))
+                        dummyVBox(), dummyHost(), dummyArchiver()))
                 .withMessageContaining("sessionInterchangeController"));
     }
 
@@ -64,7 +65,7 @@ class ProjectLifecycleControllerTest {
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), dummySessionInterchange(), null,
                         dummyLabel(), dummyLabel(), dummyBorderPane(),
-                        dummyVBox(), dummyHost()))
+                        dummyVBox(), dummyHost(), dummyArchiver()))
                 .withMessageContaining("notificationBar"));
     }
 
@@ -75,7 +76,7 @@ class ProjectLifecycleControllerTest {
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), dummySessionInterchange(), dummyNotificationBar(),
                         null, dummyLabel(), dummyBorderPane(),
-                        dummyVBox(), dummyHost()))
+                        dummyVBox(), dummyHost(), dummyArchiver()))
                 .withMessageContaining("statusBarLabel"));
     }
 
@@ -86,7 +87,7 @@ class ProjectLifecycleControllerTest {
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), dummySessionInterchange(), dummyNotificationBar(),
                         dummyLabel(), null, dummyBorderPane(),
-                        dummyVBox(), dummyHost()))
+                        dummyVBox(), dummyHost(), dummyArchiver()))
                 .withMessageContaining("checkpointLabel"));
     }
 
@@ -97,7 +98,7 @@ class ProjectLifecycleControllerTest {
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), dummySessionInterchange(), dummyNotificationBar(),
                         dummyLabel(), dummyLabel(), null,
-                        dummyVBox(), dummyHost()))
+                        dummyVBox(), dummyHost(), dummyArchiver()))
                 .withMessageContaining("rootPane"));
     }
 
@@ -108,7 +109,7 @@ class ProjectLifecycleControllerTest {
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), dummySessionInterchange(), dummyNotificationBar(),
                         dummyLabel(), dummyLabel(), dummyBorderPane(),
-                        null, dummyHost()))
+                        null, dummyHost(), dummyArchiver()))
                 .withMessageContaining("trackListPanel"));
     }
 
@@ -119,8 +120,19 @@ class ProjectLifecycleControllerTest {
                 .isThrownBy(() -> new ProjectLifecycleController(
                         dummyProjectManager(), dummySessionInterchange(), dummyNotificationBar(),
                         dummyLabel(), dummyLabel(), dummyBorderPane(),
-                        dummyVBox(), null))
+                        dummyVBox(), null, dummyArchiver()))
                 .withMessageContaining("host"));
+    }
+
+    @Test
+    void constructorRejectsNullProjectArchiver() throws Exception {
+        runOnFxThread(() ->
+            assertThatNullPointerException()
+                .isThrownBy(() -> new ProjectLifecycleController(
+                        dummyProjectManager(), dummySessionInterchange(), dummyNotificationBar(),
+                        dummyLabel(), dummyLabel(), dummyBorderPane(),
+                        dummyVBox(), dummyHost(), null))
+                .withMessageContaining("projectArchiver"));
     }
 
     // ── resetProjectState ────────────────────────────────────────────────────
@@ -136,7 +148,7 @@ class ProjectLifecycleControllerTest {
         runOnFxThread(() -> ref.set(new ProjectLifecycleController(
                 pm, dummySessionInterchange(), dummyNotificationBar(),
                 dummyLabel(), dummyLabel(), dummyBorderPane(),
-                dummyVBox(), dummyHost())));
+                dummyVBox(), dummyHost(), dummyArchiver())));
 
         ref.get().resetProjectState();
 
@@ -151,7 +163,7 @@ class ProjectLifecycleControllerTest {
         runOnFxThread(() -> ref.set(new ProjectLifecycleController(
                 pm, dummySessionInterchange(), dummyNotificationBar(),
                 dummyLabel(), dummyLabel(), dummyBorderPane(),
-                dummyVBox(), dummyHost())));
+                dummyVBox(), dummyHost(), dummyArchiver())));
 
         ref.get().resetProjectState();
         assertThat(pm.getCurrentProject()).isNull();
@@ -205,6 +217,10 @@ class ProjectLifecycleControllerTest {
 
     private static javafx.scene.layout.VBox dummyVBox() {
         return new javafx.scene.layout.VBox();
+    }
+
+    private static ProjectArchiver dummyArchiver() {
+        return new ProjectArchiver();
     }
 
     private static ProjectLifecycleController.Host dummyHost() {

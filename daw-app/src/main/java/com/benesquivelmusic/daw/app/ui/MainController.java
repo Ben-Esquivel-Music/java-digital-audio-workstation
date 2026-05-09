@@ -15,6 +15,7 @@ import com.benesquivelmusic.daw.core.persistence.ChannelNameSnapshotReconciler;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
 import com.benesquivelmusic.daw.core.persistence.RecentProjectsStore;
+import com.benesquivelmusic.daw.core.persistence.archive.ProjectArchiver;
 import com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin;
 import com.benesquivelmusic.daw.core.plugin.PluginInvocationSupervisor;
 import com.benesquivelmusic.daw.core.plugin.PluginRegistry;
@@ -581,7 +582,8 @@ public final class MainController {
                     @Override public void onProjectUIRebuild(MixerView newMixerView) {
                         handleProjectRebuild(newMixerView);
                     }
-                });
+                },
+                new ProjectArchiver());
     }
 
     private void handleProjectRebuild(MixerView newMixerView) {
@@ -961,6 +963,8 @@ public final class MainController {
                     @Override public void onOpenProject() { projectLifecycleController.onOpenProject(); }
                     @Override public void onImportSession() { projectLifecycleController.onImportSession(); }
                     @Override public void onExportSession() { projectLifecycleController.onExportSession(); }
+                    @Override public void onArchiveProject() { projectLifecycleController.onArchiveProject(); }
+                    @Override public void onRestoreFromArchive() { projectLifecycleController.onRestoreFromArchive(); }
                     @Override public void onOpenRenderQueue() { MainController.this.onOpenRenderQueue(); }
                     @Override public void onImportAudioFile() { audioImportController.onImportAudioFile(); }
                     @Override public void onToggleSnap() { viewNavigationController.onToggleSnap(); }
@@ -1363,6 +1367,8 @@ public final class MainController {
                     @Override public void onCreateCheckpoint() {
                         if (snapshotsController != null) snapshotsController.createCheckpoint();
                     }
+                    @Override public void onArchiveProject() { projectLifecycleController.onArchiveProject(); }
+                    @Override public void onRestoreFromArchive() { projectLifecycleController.onRestoreFromArchive(); }
                     @Override public void onUndo() { MainController.this.onUndo(); }
                     @Override public void onRedo() { MainController.this.onRedo(); }
                     @Override public void onCopy() { clipEditController.onCopy(); }
