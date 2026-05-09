@@ -301,11 +301,18 @@ public final class InsertEffectRack extends VBox {
         // the BypassExpensive degradation policy can pick this insert
         // for selective bypass when the per-track CPU budget trips.
         // CheckMenuItem renders a tick when the slot is currently
-        // marked expensive; the change persists via ProjectSerializer.
+        // marked expensive; the change is undoable via UndoManager.
         javafx.scene.control.CheckMenuItem expensiveItem =
                 new javafx.scene.control.CheckMenuItem("Expensive (eligible for bypass)");
         expensiveItem.setSelected(slot.isExpensive());
-        expensiveItem.setOnAction(_ -> slot.setExpensive(expensiveItem.isSelected()));
+        expensiveItem.setOnAction(_ -> {
+            boolean newExpensive = expensiveItem.isSelected();
+            if (undoManager != null) {
+                undoManager.execute(new ToggleExpensiveAction(channel, slotIndex, newExpensive));
+            } else {
+                slot.setExpensive(newExpensive);
+            }
+        });
         MenuItem removeItem = new MenuItem("Remove");
         removeItem.setOnAction(_ -> removeEffect(slotIndex));
         contextMenu.getItems().addAll(expensiveItem, new SeparatorMenuItem(), removeItem);

@@ -201,7 +201,14 @@ public final class MainController {
         } catch (RuntimeException e) {
             LOG.log(Level.WARNING, "Failed to create audio backend; playback will use UI timer only", e);
         }
-        audioEngineController = new DefaultAudioEngineController(audioEngine, this::updateProjectInfo);
+        audioEngineController = new DefaultAudioEngineController(audioEngine, () -> {
+            updateProjectInfo();
+            // Story 129 (UI): reinstall the per-track CPU budget enforcer
+            // whenever the engine is reconfigured (sample rate / buffer size
+            // change in AudioSettingsDialog → applyConfiguration) so the
+            // enforcer's blockBudgetNanos stays in sync with the live format.
+            installTrackCpuBudgetEnforcer();
+        });
 
         // Apply the persisted mix precision from user preferences to the
         // project's mixer so that a previously-saved FLOAT_32 choice is
@@ -948,8 +955,8 @@ public final class MainController {
                 cpuBudgetEnforcer = null;
             }
 
-            double sampleRate = project.getFormat().sampleRate();
-            int bufferSize = project.getFormat().bufferSize();
+            double sampleRate = audioEngine.getFormat().sampleRate();
+            int bufferSize = audioEngine.getFormat().bufferSize();
             double masterFraction = settingsModel != null
                     ? settingsModel.getMasterCpuBudgetFraction()
                     : SettingsModel.DEFAULT_MASTER_CPU_BUDGET_FRACTION;

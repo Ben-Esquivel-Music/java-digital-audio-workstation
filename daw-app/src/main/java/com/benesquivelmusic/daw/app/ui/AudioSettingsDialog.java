@@ -204,7 +204,7 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         // Story 129 (UI) — Master CPU budget controls. Slider is the
         // global ceiling; combo is the cascade policy used when the
         // master is exceeded.
-        masterCpuBudgetSlider = new Slider(0.05, 1.0, SettingsModel.DEFAULT_MASTER_CPU_BUDGET_FRACTION);
+        masterCpuBudgetSlider = new Slider(0.01, 1.0, SettingsModel.DEFAULT_MASTER_CPU_BUDGET_FRACTION);
         masterCpuBudgetSlider.setShowTickMarks(true);
         masterCpuBudgetSlider.setShowTickLabels(true);
         masterCpuBudgetSlider.setMajorTickUnit(0.25);
