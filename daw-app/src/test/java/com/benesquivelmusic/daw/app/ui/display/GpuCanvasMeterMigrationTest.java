@@ -143,7 +143,9 @@ class GpuCanvasMeterMigrationTest {
 
         try {
             assertThat(display.getGpuCanvas()).isNotNull();
-            assertThat(display.getGpuCanvas().isAnimated()).isTrue();
+            // LoudnessDisplay uses animated(false) — renders are driven by
+            // update()/setTarget()/resize, not every FX pulse.
+            assertThat(display.getGpuCanvas().isAnimated()).isFalse();
             long before = display.getGpuCanvas().getFrameCount();
             onFxRun(() -> display.update(new LoudnessData(
                     -14.0, -14.5, -15.0, 5.0, -1.5)));

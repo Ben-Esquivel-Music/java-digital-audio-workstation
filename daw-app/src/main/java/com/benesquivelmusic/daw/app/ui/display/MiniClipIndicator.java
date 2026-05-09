@@ -124,11 +124,9 @@ public final class MiniClipIndicator extends Region {
         // Poll the monitor each frame. Even when the indicator is hidden the
         // timer is gated by Scene attachment (see GpuCanvas), so a temporarily
         // hidden indicator can still latch a clip the moment it becomes
-        // visible again.
-        InputLevelMeter snap = monitor.snapshot();
-        if (snap != null) {
-            lastSnapshot = snap;
-        }
+        // visible again. snapshot() is guaranteed non-null (returns
+        // InputLevelMeter.SILENCE before first process()).
+        lastSnapshot = monitor.snapshot();
         renderInto(ctx.gc(), ctx.width(), ctx.height());
     }
 

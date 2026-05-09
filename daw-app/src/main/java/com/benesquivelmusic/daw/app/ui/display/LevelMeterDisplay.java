@@ -87,9 +87,13 @@ public final class LevelMeterDisplay extends Region {
         pendingRmsDb = data.rmsDb();
         pendingPeakDb = data.peakDb();
         clipping = data.clipping();
-        // Request an immediate render so the new value appears even when the
-        // animation timer is gated off (e.g. one-shot updates from tests).
-        gpuCanvas.requestRender();
+        // When the animation timer is running (scene-attached), the next
+        // timer frame will pick up the new snapshot — no extra render needed.
+        // When the timer is gated off (e.g. one-shot updates from tests),
+        // request an immediate render so the value is visible.
+        if (getScene() == null) {
+            gpuCanvas.requestRender();
+        }
     }
 
     /**

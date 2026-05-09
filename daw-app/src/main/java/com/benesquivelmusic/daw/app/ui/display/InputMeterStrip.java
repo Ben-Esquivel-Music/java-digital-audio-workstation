@@ -155,10 +155,9 @@ public final class InputMeterStrip extends Region {
     private void renderFrame(GpuRenderContext ctx) {
         // Poll the monitor each frame inside the renderer. The monitor itself
         // owns real-time metering, so no audio-thread work happens here.
-        InputLevelMeter snap = monitor.snapshot();
-        if (snap != null) {
-            lastSnapshot = snap;
-        }
+        // snapshot() is guaranteed non-null (returns InputLevelMeter.SILENCE
+        // before first process()).
+        lastSnapshot = monitor.snapshot();
         renderInto(ctx.gc(), ctx.width(), ctx.height());
     }
 

@@ -75,7 +75,7 @@ public final class LoudnessDisplay extends Region {
         gpuCanvas = GpuCanvas.create()
                 .renderer(this::renderFrame)
                 .clearColor(BACKGROUND)
-                .animated(true)
+                .animated(false)
                 .build();
         getChildren().add(gpuCanvas);
     }
