@@ -44,6 +44,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * A mixer view that displays all project tracks as vertical channel strips.
@@ -756,11 +757,17 @@ public final class MixerView extends VBox {
 
         // ── Cue bus strips (Story 135) ──────────────────────────────────────
         // Render each registered CueBus as its own headphone-mix strip with
-        // a label, hardware-output label, master fader, mute, PFL toggle,
-        // copy-main-mix helper, and remove button. A trailing "+" button
-        // duplicates the Mixer-menu "New cue bus…" entry for quick access.
+        // a label, hardware-output label, master fader, mute, "All Pre"
+        // toggle, copy-main-mix helper, and remove button. A trailing "+"
+        // button duplicates the Mixer-menu "New cue bus…" entry for quick
+        // access.
         cueBusStrips.getChildren().clear();
         CueBusManager cueManager = project.getCueBusManager();
+        // Prune cueBusPreMuteGain entries for buses that no longer exist
+        // (e.g. removed between refreshes or after a project reload).
+        Set<UUID> liveBusIds = cueManager.getCueBuses().stream()
+                .map(CueBus::id).collect(Collectors.toSet());
+        cueBusPreMuteGain.keySet().retainAll(liveBusIds);
         int cueIndex = 1;
         for (CueBus bus : cueManager.getCueBuses()) {
             cueBusStrips.getChildren().add(buildCueBusStrip(bus, cueIndex));
@@ -1446,8 +1453,11 @@ public final class MixerView extends VBox {
             double p = panSlider.getValue();
             CueBus updated;
             if (g <= 0.0 && current.findSend(trackId) == null) {
-                // Avoid creating a no-op send — leave the bus unchanged so the
-                // serializer does not write a redundant <cue-send gain="0.0"/>.
+                // No existing send and the user hasn't moved the gain slider
+                // — skip creating a new zero-gain entry. Note: if a send
+                // already exists and the user drags gain to 0.0 it will
+                // remain in the model (allowing the user to adjust pan/tap
+                // without losing the entry).
                 return;
             }
             updated = current.withSend(new CueSend(trackId, g, p, "F".equals(tapBtn.getText())));
@@ -1689,6 +1699,7 @@ public final class MixerView extends VBox {
                 updated = updated.withSend(s.withPreFader(allPreBtn.isSelected()));
             }
             project.getCueBusManager().replace(updated);
+            refresh();
         });
 
         // "Copy main mix" — snapshots the current track-channel faders into
@@ -1703,6 +1714,7 @@ public final class MixerView extends VBox {
         removeBtn.getStyleClass().add("track-arm-button");
         removeBtn.setTooltip(new Tooltip("Remove Cue Bus"));
         removeBtn.setOnAction(_ -> {
+            cueBusPreMuteGain.remove(bus.id());
             project.getCueBusManager().removeCueBus(bus.id());
             refresh();
         });
@@ -1765,6 +1777,10 @@ public final class MixerView extends VBox {
         // never end up routed to the same physical outputs by default. Caps
         // at the spinner max (31) to avoid an initial-value-out-of-range
         // exception when all pairs are occupied.
+        // TODO(story 215): derive maxPair dynamically from
+        // outputChannelInfoSupplier / ChannelGrouping.buildOptions() so the
+        // spinner reflects the active backend's real output count and labels
+        // instead of using a hard-coded 0..31 range.
         int maxPair = 31;
         int defaultPair = 0;
         while (defaultPair < maxPair

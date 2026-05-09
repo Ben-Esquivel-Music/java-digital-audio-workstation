@@ -445,6 +445,11 @@ public final class MainController {
         // so the click-to-cue routing chosen in MetronomeSettingsDialog
         // survives project reloads and is observable by the audio engine
         // through the same instance.
+        // TODO(story 136): wire metronomeSideOutputRouter into the audio
+        // engine's click-generation callback so the cue-bus routing and side
+        // output have an audible effect at runtime.  Currently route() is
+        // only exercised by MetronomeSideOutputRouterTest; the audio engine
+        // does not yet call it on each buffer cycle.
         if (metronomeSideOutputRouter == null) {
             metronomeSideOutputRouter =
                     new com.benesquivelmusic.daw.core.recording.MetronomeSideOutputRouter();

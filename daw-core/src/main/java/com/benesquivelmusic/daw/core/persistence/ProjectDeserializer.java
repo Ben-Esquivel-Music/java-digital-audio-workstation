@@ -664,8 +664,8 @@ public final class ProjectDeserializer {
                 if (label.isEmpty()) {
                     label = "Cue";
                 }
-                int hardwareOutputIndex = (int) Math.max(0,
-                        parseDoubleAttr(busElem, "hardware-output-index", 0.0));
+                int hardwareOutputIndex = Math.max(0,
+                        parseIntAttr(busElem, "hardware-output-index", 0));
                 double masterGain = clampDouble(
                         parseDoubleAttr(busElem, "master-gain", 1.0), 0.0, 1.0);
                 List<CueSend> sends = new ArrayList<>();
