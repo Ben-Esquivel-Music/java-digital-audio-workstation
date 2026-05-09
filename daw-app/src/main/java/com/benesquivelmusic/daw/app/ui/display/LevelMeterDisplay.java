@@ -1,7 +1,9 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
+import com.benesquivelmusic.daw.fx.GpuCanvas;
+import com.benesquivelmusic.daw.fx.GpuRenderContext;
 import com.benesquivelmusic.daw.sdk.visualization.LevelData;
-import javafx.scene.canvas.Canvas;
+
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
@@ -12,14 +14,16 @@ import javafx.scene.paint.Stop;
 /**
  * Animated peak/RMS level meter display with professional ballistics.
  *
- * <p>Renders a vertical or horizontal level meter with:
- * <ul>
- *   <li>Gradient-colored bar (green → yellow → red)</li>
- *   <li>Peak-hold indicator with configurable decay</li>
- *   <li>RMS bar for average level visualization</li>
- *   <li>Clip indicator (turns red on signal overload)</li>
- *   <li>dB scale markings</li>
- * </ul>
+ * <p>Renders a vertical or horizontal level meter with gradient bar
+ * (green → yellow → red), peak-hold indicator, RMS bar, clip indicator,
+ * and dB scale markings.
+ *
+ * <p>This display composes a {@link GpuCanvas} from the {@code daw-fx}
+ * module: the GpuCanvas owns the size binding, per-frame
+ * {@link javafx.animation.AnimationTimer}, scene-attachment gating, and
+ * background clear, so the display itself only contributes the per-frame
+ * draw routine. The {@link MeterAnimator} ballistics are advanced from
+ * {@link GpuRenderContext#deltaSeconds()} on each frame.
  *
  * <p>Supports the metering requirements from the mastering-techniques
  * research (§4 — Dynamics Processing, §8 — Loudness Standards).</p>
@@ -34,14 +38,15 @@ public final class LevelMeterDisplay extends Region {
     private static final double MIN_DB = -60.0;
     private static final double MAX_DB = 6.0;
 
-    private final Canvas canvas;
+    private final GpuCanvas gpuCanvas;
     private final MeterAnimator rmsAnimator;
     private final MeterAnimator peakAnimator;
     private final boolean vertical;
 
-    private double currentRmsDb = -120.0;
-    private double currentPeakDb = -120.0;
+    private double pendingRmsDb = -120.0;
+    private double pendingPeakDb = -120.0;
     private boolean clipping;
+    private boolean disposed;
 
     /**
      * Creates a level meter display.
@@ -50,15 +55,15 @@ public final class LevelMeterDisplay extends Region {
      */
     public LevelMeterDisplay(boolean vertical) {
         this.vertical = vertical;
-        canvas = new Canvas();
-        getChildren().add(canvas);
-        canvas.widthProperty().bind(widthProperty());
-        canvas.heightProperty().bind(heightProperty());
-        widthProperty().addListener((_, _, _) -> render());
-        heightProperty().addListener((_, _, _) -> render());
-
         rmsAnimator = new MeterAnimator(0.01, 0.15, 0);
         peakAnimator = new MeterAnimator(0.001, 0.5, 1.5);
+
+        gpuCanvas = GpuCanvas.create()
+                .renderer(this::renderFrame)
+                .clearColor(BACKGROUND)
+                .animated(true)
+                .build();
+        getChildren().add(gpuCanvas);
     }
 
     /**
@@ -69,36 +74,77 @@ public final class LevelMeterDisplay extends Region {
     }
 
     /**
-     * Updates the meter with new level data and animates.
+     * Updates the meter with a new level snapshot.
      *
-     * @param data          the current level data
-     * @param deltaNanos    time since last update in nanoseconds
+     * <p>Stores the snapshot for the next render frame; the GpuCanvas-driven
+     * per-frame loop advances the {@link MeterAnimator} ballistics using
+     * {@link GpuRenderContext#deltaSeconds()}.
+     *
+     * @param data the current level data
      */
-    public void update(LevelData data, long deltaNanos) {
-        if (data == null) return;
-        currentRmsDb = data.rmsDb();
-        currentPeakDb = data.peakDb();
+    public void update(LevelData data) {
+        if (data == null || disposed) return;
+        pendingRmsDb = data.rmsDb();
+        pendingPeakDb = data.peakDb();
         clipping = data.clipping();
-
-        double rmsNorm = dbToNormalized(currentRmsDb);
-        double peakNorm = dbToNormalized(currentPeakDb);
-        rmsAnimator.update(rmsNorm, deltaNanos);
-        peakAnimator.update(peakNorm, deltaNanos);
-
-        render();
+        // When the animation timer is running (scene-attached), the next
+        // timer frame will pick up the new snapshot — no extra render needed.
+        // When the timer is gated off (e.g. one-shot updates from tests),
+        // request an immediate render so the value is visible.
+        if (getScene() == null) {
+            gpuCanvas.requestRender();
+        }
     }
 
     /**
-     * Renders the meter to the canvas.
+     * Returns the embedded {@link GpuCanvas} that owns the per-frame render
+     * loop and off-heap pixel surface. Visible for tests.
      */
-    private void render() {
-        double w = canvas.getWidth();
-        double h = canvas.getHeight();
-        if (w <= 0 || h <= 0) return;
+    GpuCanvas getGpuCanvas() {
+        return gpuCanvas;
+    }
 
-        GraphicsContext gc = canvas.getGraphicsContext2D();
-        gc.setFill(BACKGROUND);
-        gc.fillRect(0, 0, w, h);
+    /** Returns the RMS ballistic animator. Visible for tests. */
+    MeterAnimator getRmsAnimator() {
+        return rmsAnimator;
+    }
+
+    /** Returns the peak ballistic animator. Visible for tests. */
+    MeterAnimator getPeakAnimator() {
+        return peakAnimator;
+    }
+
+    /**
+     * Stops the GpuCanvas render loop and releases its off-heap surface.
+     * Must be called from the JavaFX Application Thread. Safe to call
+     * multiple times.
+     */
+    public void dispose() {
+        if (disposed) return;
+        disposed = true;
+        gpuCanvas.setAnimated(false);
+        gpuCanvas.dispose();
+    }
+
+    private void renderFrame(GpuRenderContext ctx) {
+        // Advance ballistics from the host's per-frame delta. The MeterAnimator
+        // API operates on deltaNanos, so convert from deltaSeconds.
+        long deltaNanos = (long) (ctx.deltaSeconds() * 1_000_000_000.0);
+        double rmsNorm = dbToNormalized(pendingRmsDb);
+        double peakNorm = dbToNormalized(pendingPeakDb);
+        rmsAnimator.update(rmsNorm, deltaNanos);
+        peakAnimator.update(peakNorm, deltaNanos);
+
+        renderInto(ctx.gc(), ctx.width(), ctx.height());
+    }
+
+    /**
+     * Renders the meter into the supplied graphics context. Background fill
+     * is provided by {@link GpuCanvas#setClearColor(Color)} so we do not
+     * issue a redundant background {@code fillRect} here.
+     */
+    private void renderInto(GraphicsContext gc, double w, double h) {
+        if (w <= 0 || h <= 0) return;
 
         double rmsLevel = rmsAnimator.getCurrentValue();
         double peakLevel = peakAnimator.getCurrentValue();
@@ -197,7 +243,8 @@ public final class LevelMeterDisplay extends Region {
 
     @Override
     protected void layoutChildren() {
-        super.layoutChildren();
-        render();
+        // GpuCanvas is itself a Region and re-renders on its own size change
+        // listeners, so we just resize it here to fill the display.
+        gpuCanvas.resizeRelocate(0, 0, getWidth(), getHeight());
     }
 }

@@ -1,9 +1,10 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
+import com.benesquivelmusic.daw.fx.GpuCanvas;
+import com.benesquivelmusic.daw.fx.GpuRenderContext;
 import com.benesquivelmusic.daw.sdk.visualization.LoudnessData;
 import com.benesquivelmusic.daw.sdk.visualization.LoudnessTarget;
 
-import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
@@ -15,19 +16,15 @@ import javafx.scene.text.TextAlignment;
  *
  * <p>Renders a rolling graph of momentary, short-term, and integrated LUFS
  * values with horizontal target lines for streaming platform compliance.
- * Supports the loudness standards from the mastering-techniques
- * research (§8 — Loudness Standards and Metering).</p>
  *
- * <p>Features:
- * <ul>
- *   <li>Rolling loudness history graph with three traces</li>
- *   <li>Momentary (cyan), short-term (green), and integrated (yellow) traces</li>
- *   <li>Simultaneous momentary, short-term, and integrated LUFS readouts</li>
- *   <li>Loudness range (LRA) indicator</li>
- *   <li>True-peak indicator</li>
- *   <li>Platform target presets (Spotify, Apple Music, YouTube, CD, Broadcast)</li>
- *   <li>Color-coded integrated reading based on target compliance</li>
- * </ul>
+ * <p>This display composes a {@link GpuCanvas} from the {@code daw-fx}
+ * module: the GpuCanvas owns the size binding, per-frame
+ * {@link javafx.animation.AnimationTimer}, scene-attachment gating, and
+ * background clear, so the display itself only contributes the per-frame
+ * draw routine.
+ *
+ * <p>Supports the loudness standards from the mastering-techniques
+ * research (§8 — Loudness Standards and Metering).</p>
  */
 public final class LoudnessDisplay extends Region {
 
@@ -48,7 +45,7 @@ public final class LoudnessDisplay extends Region {
     private static final int HISTORY_SIZE = 300;
     private static final double COMPLIANCE_TOLERANCE_LU = 1.0;
 
-    private final Canvas canvas;
+    private final GpuCanvas gpuCanvas;
     private final double[] momentaryHistory;
     private final double[] shortTermHistory;
     private final double[] integratedHistory;
@@ -62,24 +59,25 @@ public final class LoudnessDisplay extends Region {
     private double truePeakDbfs = Double.NEGATIVE_INFINITY;
     private double targetLufs = -14.0; // Default: Spotify/YouTube
     private String targetName = "Spotify";
+    private boolean disposed;
 
     /**
      * Creates a new loudness display.
      */
     public LoudnessDisplay() {
-        canvas = new Canvas();
-        getChildren().add(canvas);
-        canvas.widthProperty().bind(widthProperty());
-        canvas.heightProperty().bind(heightProperty());
-        widthProperty().addListener((_, _, _) -> render());
-        heightProperty().addListener((_, _, _) -> render());
-
         momentaryHistory = new double[HISTORY_SIZE];
         shortTermHistory = new double[HISTORY_SIZE];
         integratedHistory = new double[HISTORY_SIZE];
         java.util.Arrays.fill(momentaryHistory, MIN_LUFS);
         java.util.Arrays.fill(shortTermHistory, MIN_LUFS);
         java.util.Arrays.fill(integratedHistory, MIN_LUFS);
+
+        gpuCanvas = GpuCanvas.create()
+                .renderer(this::renderFrame)
+                .clearColor(BACKGROUND)
+                .animated(false)
+                .build();
+        getChildren().add(gpuCanvas);
     }
 
     /**
@@ -88,7 +86,7 @@ public final class LoudnessDisplay extends Region {
      * @param data the latest loudness measurement
      */
     public void update(LoudnessData data) {
-        if (data == null) return;
+        if (data == null || disposed) return;
 
         momentaryHistory[historyIndex] = Math.max(data.momentaryLufs(), MIN_LUFS);
         shortTermHistory[historyIndex] = Math.max(data.shortTermLufs(), MIN_LUFS);
@@ -102,7 +100,7 @@ public final class LoudnessDisplay extends Region {
         loudnessRange = data.loudnessRange();
         truePeakDbfs = data.truePeakDbfs();
 
-        render();
+        gpuCanvas.requestRender();
     }
 
     /**
@@ -112,7 +110,7 @@ public final class LoudnessDisplay extends Region {
      */
     public void setTargetLufs(double lufs) {
         this.targetLufs = lufs;
-        render();
+        gpuCanvas.requestRender();
     }
 
     /**
@@ -124,13 +122,11 @@ public final class LoudnessDisplay extends Region {
         if (target == null) return;
         this.targetLufs = target.targetIntegratedLufs();
         this.targetName = target.displayName();
-        render();
+        gpuCanvas.requestRender();
     }
 
     /**
      * Returns the current target name being displayed.
-     *
-     * @return the target display name
      */
     public String getTargetName() {
         return targetName;
@@ -138,8 +134,6 @@ public final class LoudnessDisplay extends Region {
 
     /**
      * Returns the current target integrated loudness in LUFS.
-     *
-     * @return the target loudness
      */
     public double getTargetLufs() {
         return targetLufs;
@@ -150,8 +144,6 @@ public final class LoudnessDisplay extends Region {
      * loudness and the active target, in loudness units (LU). Returns
      * {@link Double#NaN} if no integrated loudness has been measured
      * yet.
-     *
-     * @return signed delta in LU, or {@code NaN} if not measurable
      */
     public double getTargetDeltaLu() {
         if (integratedLufs <= MIN_LUFS) {
@@ -161,18 +153,34 @@ public final class LoudnessDisplay extends Region {
     }
 
     /**
-     * Renders the loudness display.
+     * Returns the embedded {@link GpuCanvas}. Visible for tests.
      */
-    private void render() {
-        double w = canvas.getWidth();
-        double h = canvas.getHeight();
+    GpuCanvas getGpuCanvas() {
+        return gpuCanvas;
+    }
+
+    /**
+     * Stops the GpuCanvas render loop and releases its off-heap surface.
+     * Must be called from the JavaFX Application Thread. Safe to call
+     * multiple times.
+     */
+    public void dispose() {
+        if (disposed) return;
+        disposed = true;
+        gpuCanvas.setAnimated(false);
+        gpuCanvas.dispose();
+    }
+
+    private void renderFrame(GpuRenderContext ctx) {
+        renderInto(ctx.gc(), ctx.width(), ctx.height());
+    }
+
+    /**
+     * Renders the loudness display into the supplied graphics context.
+     * Background fill is provided by {@link GpuCanvas#setClearColor(Color)}.
+     */
+    private void renderInto(GraphicsContext gc, double w, double h) {
         if (w <= 0 || h <= 0) return;
-
-        GraphicsContext gc = canvas.getGraphicsContext2D();
-
-        // Background
-        gc.setFill(BACKGROUND);
-        gc.fillRect(0, 0, w, h);
 
         double graphH = h - 48; // Reserve space for three rows of labels
         double graphY = 10;
@@ -327,7 +335,6 @@ public final class LoudnessDisplay extends Region {
 
     @Override
     protected void layoutChildren() {
-        super.layoutChildren();
-        render();
+        gpuCanvas.resizeRelocate(0, 0, getWidth(), getHeight());
     }
 }

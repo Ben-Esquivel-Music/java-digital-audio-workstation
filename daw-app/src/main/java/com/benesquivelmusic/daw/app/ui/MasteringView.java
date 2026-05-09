@@ -428,7 +428,7 @@ public final class MasteringView extends VBox {
                     return;
                 }
                 lastUpdate = now;
-                updateMeters(elapsed);
+                updateMeters();
             }
         };
         meterTimer.start();
@@ -447,11 +447,12 @@ public final class MasteringView extends VBox {
     /**
      * Reads metering data from the mastering chain and updates UI labels
      * and meters. Called from the JavaFX application thread by the
-     * animation timer.
-     *
-     * @param deltaNanos the actual elapsed time in nanoseconds since last update
+     * animation timer. Each {@link LevelMeterDisplay} is now backed by a
+     * {@link com.benesquivelmusic.daw.fx.GpuCanvas} that drives ballistics
+     * from its own per-frame {@code deltaSeconds()}, so we no longer need
+     * to compute or pass an elapsed delta here.
      */
-    private void updateMeters(long deltaNanos) {
+    private void updateMeters() {
         int stageCount = masteringChain.size();
         for (int i = 0; i < Math.min(stageCount, grLabels.size()); i++) {
             double gr = masteringChain.getStageGainReductionDb(i);
@@ -462,7 +463,7 @@ public final class MasteringView extends VBox {
                     ? Math.pow(10.0, outputDb / 20.0)
                     : 0.0;
             LevelData levelData = new LevelData(linear, linear, outputDb, outputDb, outputDb > 0.0);
-            levelMeters.get(i).update(levelData, deltaNanos);
+            levelMeters.get(i).update(levelData);
         }
     }
 }
