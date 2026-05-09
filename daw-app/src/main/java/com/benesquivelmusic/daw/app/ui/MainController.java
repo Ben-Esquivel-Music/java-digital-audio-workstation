@@ -31,6 +31,8 @@ import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioChannelInfo;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
 import javafx.animation.FadeTransition;
+import javafx.animation.KeyFrame;
+import javafx.animation.Timeline;
 import javafx.fxml.FXML;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
@@ -120,6 +122,17 @@ public final class MainController {
     private Metronome metronome;
     private PluginInvocationSupervisor pluginSupervisor;
     private PluginFaultUiController pluginFaultUiController;
+
+    /**
+     * Story 187 — title-bar lock state badge mounted next to the project
+     * name. Created in {@link #initialize()} and inserted into the status
+     * bar HBox immediately after {@link #projectInfoLabel}; refreshed via
+     * a {@link #lockIndicatorTimeline 5 s timer} and after every project
+     * open / save so the user always sees lock state at a glance.
+     */
+    private LockStatusIndicator lockStatusIndicator;
+    /** Periodic refresher for {@link #lockStatusIndicator} (5 s, per spec). */
+    private Timeline lockIndicatorTimeline;
 
     private final ClipboardManager clipboardManager = new ClipboardManager();
     private final SelectionModel selectionModel = new SelectionModel();
@@ -271,6 +284,11 @@ public final class MainController {
         Preferences prefs = Preferences.userNodeForPackage(MainController.class);
         RecentProjectsStore recentProjectsStore = new RecentProjectsStore(prefs);
         projectManager = new ProjectManager(checkpointManager, recentProjectsStore);
+        // Story 187 — install the JavaFX lock-conflict dialog so opening a
+        // project that is already locked by another session prompts the
+        // user with Open Read-Only / Take Over / Cancel rather than
+        // throwing ProjectLockedException unconditionally.
+        projectManager.setLockConflictHandler(new LockConflictDialog());
         // Story 190 — Snapshot History Browser. The data-only service
         // and the (lazy) browser dialog are owned by SnapshotsController,
         // which is composed here once for the lifetime of the session
@@ -333,6 +351,7 @@ public final class MainController {
         transportController.updateStatus();
         updateTempoDisplay();
         updateProjectInfo();
+        mountLockStatusIndicator();
         updateCheckpointStatus();
         updateUndoRedoState();
         installIoLatencyClickHandler();
@@ -2180,6 +2199,43 @@ public final class MainController {
         DawIcon routingIcon = (fmt.sampleRate() >= 96_000.0) ? DawIcon.THUNDERBOLT : DawIcon.USB;
         ioRoutingLabel.setGraphic(IconNode.of(routingIcon, 12));
         ioRoutingLabel.setText(String.format("%.0f kHz I/O", fmt.sampleRate() / 1000.0));
+        refreshLockStatusIndicator();
+    }
+
+    /**
+     * Story 187 — inserts the {@link LockStatusIndicator} into the status
+     * bar HBox immediately after {@link #projectInfoLabel} (the project-name
+     * label) and starts a 5 s refresh timeline so the badge stays in sync
+     * with {@link com.benesquivelmusic.daw.core.persistence.ProjectLockManager}.
+     */
+    private void mountLockStatusIndicator() {
+        if (lockStatusIndicator != null || projectInfoLabel == null) {
+            return;
+        }
+        Node parent = projectInfoLabel.getParent();
+        if (!(parent instanceof HBox bar)) {
+            return;
+        }
+        lockStatusIndicator = new LockStatusIndicator();
+        int idx = bar.getChildren().indexOf(projectInfoLabel);
+        bar.getChildren().add(idx + 1, lockStatusIndicator);
+        refreshLockStatusIndicator();
+
+        // Periodic refresh — ProjectLockManager has no Flow.Publisher today,
+        // so a low-frequency 5 s poll is the cheapest way to surface a
+        // stolen lock or a take-over without changing the core API.
+        lockIndicatorTimeline = new Timeline(
+                new KeyFrame(Duration.seconds(5), _ -> refreshLockStatusIndicator()));
+        lockIndicatorTimeline.setCycleCount(Timeline.INDEFINITE);
+        lockIndicatorTimeline.play();
+    }
+
+    /** Repaints the lock badge from the current {@code ProjectLockManager} status. */
+    private void refreshLockStatusIndicator() {
+        if (lockStatusIndicator == null || projectManager == null) {
+            return;
+        }
+        lockStatusIndicator.refresh(projectManager.getLockManager());
     }
 
     private void updateCheckpointStatus() {
