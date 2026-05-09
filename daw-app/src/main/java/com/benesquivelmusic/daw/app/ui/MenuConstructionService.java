@@ -308,10 +308,25 @@ final class MenuConstructionService {
         windowMenu.getItems().addAll(
                 arrangement, mixer, editor, mastering,
                 new SeparatorMenuItem(),
-                toggleBrowser, toggleHistory, toggleNotifications, toggleViz
+                toggleBrowser, toggleHistory, toggleNotifications, toggleViz,
+                new SeparatorMenuItem(),
+                buildQcMenu()
         );
 
         return windowMenu;
+    }
+
+    // ── QC Sub-Menu (Story 175 — Immersive A/B Comparison) ──────────────────
+
+    private Menu buildQcMenu() {
+        Menu qcMenu = new Menu("QC");
+        qcMenu.getStyleClass().add("daw-menu");
+
+        MenuItem immersiveAb = menuItem("Immersive A/B\u2026", DawIcon.SURROUND,
+                DawAction.OPEN_IMMERSIVE_AB, host::onOpenImmersiveAb);
+
+        qcMenu.getItems().addAll(immersiveAb);
+        return qcMenu;
     }
 
     // ── Help Menu ────────────────────────────────────────────────────────────

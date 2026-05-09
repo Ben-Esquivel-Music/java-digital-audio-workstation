@@ -260,7 +260,21 @@ public enum DawAction {
      * No default shortcut — surfaced via the Clip menu and the clip
      * right-click context menu. Story 042.
      */
-    PITCH_SHIFT_CLIP("Pitch-Shift Clip\u2026", Category.EDITING, null);
+    PITCH_SHIFT_CLIP("Pitch-Shift Clip\u2026", Category.EDITING, null),
+
+    // ── QC — Immersive A/B (Story 175) ──────────────────────────────────────
+    /**
+     * Open the Immersive A/B comparison view. No default shortcut —
+     * surfaced via the Window menu's QC sub-menu. Story 175.
+     */
+    OPEN_IMMERSIVE_AB("Immersive A/B\u2026", Category.VIEWS, null),
+    /**
+     * Toggle the A/B monitoring between the DAW's render and the reference
+     * playback with level-matched output. Default backtick ({@code `});
+     * configurable via {@link KeyBindingManager}. Story 175.
+     */
+    IMMERSIVE_AB_TOGGLE("Toggle Immersive A/B", Category.VIEWS,
+            new KeyCodeCombination(KeyCode.BACK_QUOTE));
 
     /**
      * Returns the nine numbered workspace-switch actions in slot order

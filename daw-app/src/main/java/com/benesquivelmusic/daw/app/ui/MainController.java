@@ -167,6 +167,12 @@ public final class MainController {
      * indicator that appears during the offline render.
      */
     private TrackFreezeController trackFreezeController;
+    /**
+     * Story 175 — Atmos A/B comparison view. Created on demand when the
+     * user opens "QC → Immersive A/B…" and disposed when the containing
+     * tab / dock pane is closed.
+     */
+    private com.benesquivelmusic.daw.app.ui.spatial.AtmosAbView atmosAbView;
 
     private ArrangementCanvas arrangementCanvas;
     private ClipInteractionController clipInteractionController;
@@ -887,6 +893,8 @@ public final class MainController {
                     @Override public void onUnfreezeSelectedTracks() { MainController.this.onUnfreezeSelectedTracks(); }
                     @Override public void onTimeStretchClip() { MainController.this.onTimeStretchClip(); }
                     @Override public void onPitchShiftClip() { MainController.this.onPitchShiftClip(); }
+                    @Override public void onOpenImmersiveAb() { MainController.this.onOpenImmersiveAb(); }
+                    @Override public void onImmersiveAbToggle() { MainController.this.onImmersiveAbToggle(); }
                     @Override public void onToggleCommandPalette() {
                         if (commandPaletteView != null) commandPaletteView.toggle();
                     }
@@ -1270,6 +1278,7 @@ public final class MainController {
                     @Override public void onUnfreezeSelectedTracks() { MainController.this.onUnfreezeSelectedTracks(); }
                     @Override public void onTimeStretchClip() { MainController.this.onTimeStretchClip(); }
                     @Override public void onPitchShiftClip() { MainController.this.onPitchShiftClip(); }
+                    @Override public void onOpenImmersiveAb() { MainController.this.onOpenImmersiveAb(); }
                     @Override public void onHelp() { MainController.this.onHelp(); }
                 },
                 keyBindingManager);
@@ -1646,6 +1655,60 @@ public final class MainController {
         clipEditController.onPitchShiftSelected(() ->
                 PitchShiftClipDialog.showAndWait(owner,
                         PitchShiftClipDialog.Result.defaults()));
+    }
+
+    // ── Story 175 — Immersive A/B Comparison ────────────────────────────────
+
+    /**
+     * Opens the {@link com.benesquivelmusic.daw.app.ui.spatial.AtmosAbView}
+     * in a new tab inside the centre content area. The view is constructed on
+     * demand and disposed when the tab is closed.
+     */
+    void onOpenImmersiveAb() {
+        if (atmosAbView == null) {
+            atmosAbView = new com.benesquivelmusic.daw.app.ui.spatial.AtmosAbView(
+                    project.getReferenceTrackManager());
+        }
+        // If the view is already showing (e.g. already in a tab), just
+        // re-focus it. Otherwise, wrap it in a tab.
+        if (atmosAbView.getParent() != null) {
+            atmosAbView.requestFocus();
+            return;
+        }
+        javafx.scene.control.Tab tab = new javafx.scene.control.Tab("Immersive A/B", atmosAbView);
+        tab.setClosable(true);
+        tab.setOnClosed(_ -> atmosAbView = null);
+        // Find or create a TabPane in the centre area of the rootPane.
+        Node centre = rootPane.getCenter();
+        javafx.scene.control.TabPane tabPane;
+        if (centre instanceof javafx.scene.control.TabPane tp) {
+            tabPane = tp;
+        } else {
+            tabPane = new javafx.scene.control.TabPane();
+            if (centre != null) {
+                javafx.scene.control.Tab existingTab =
+                        new javafx.scene.control.Tab("Main", centre);
+                existingTab.setClosable(false);
+                tabPane.getTabs().add(existingTab);
+            }
+            rootPane.setCenter(tabPane);
+        }
+        tabPane.getTabs().add(tab);
+        tabPane.getSelectionModel().select(tab);
+    }
+
+    /**
+     * Toggles A/B monitoring between the DAW's render and the reference
+     * playback. Delegates to the {@link com.benesquivelmusic.daw.app.ui.spatial.AtmosAbView}
+     * when it exists, otherwise directly toggles via the
+     * {@link com.benesquivelmusic.daw.core.reference.ReferenceTrackManager}.
+     */
+    void onImmersiveAbToggle() {
+        if (atmosAbView != null) {
+            atmosAbView.toggleAb();
+        } else {
+            project.getReferenceTrackManager().toggleAB();
+        }
     }
 
     /**

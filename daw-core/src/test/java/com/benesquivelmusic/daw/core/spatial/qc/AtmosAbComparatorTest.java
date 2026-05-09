@@ -117,6 +117,88 @@ class AtmosAbComparatorTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    // ── Story 175 acceptance tests ──────────────────────────────────────────
+
+    /**
+     * Headless test: create a synthesised 7.1.4 (12-channel) reference with
+     * known per-channel levels and verify the comparator reports per-channel
+     * RMS values matching the synthesised levels within tolerance.
+     */
+    @Test
+    void sevenOneFourSynthesisedLevelsMatchWithinTolerance() {
+        int channels = 12; // 7.1.4
+        int frames = 48_000; // 1 second at 48 kHz
+        float[][] reference = new float[channels][frames];
+        double[] expectedRmsDb = new double[channels];
+
+        Random rng = new Random(0xBEEF);
+        for (int c = 0; c < channels; c++) {
+            // Each channel has a different amplitude: -6 dB per channel step
+            double linearGain = Math.pow(10.0, -(c * 3.0) / 20.0);
+            for (int i = 0; i < frames; i++) {
+                reference[c][i] = (float) (rng.nextGaussian() * 0.25 * linearGain);
+            }
+            // Compute expected RMS in dB
+            double sumSq = 0;
+            for (int i = 0; i < frames; i++) {
+                sumSq += reference[c][i] * (double) reference[c][i];
+            }
+            double rms = Math.sqrt(sumSq / frames);
+            expectedRmsDb[c] = 20.0 * Math.log10(rms);
+        }
+
+        // Compare identical buffers — per-channel levels should match
+        AbComparisonResult r = new AtmosAbComparator(SAMPLE_RATE)
+                .compare(reference, deepCopy(reference));
+
+        for (int c = 0; c < channels; c++) {
+            assertThat(r.mixRmsDb()[c])
+                    .as("channel %d RMS dB", c)
+                    .isCloseTo(expectedRmsDb[c], org.assertj.core.data.Offset.offset(0.1));
+            assertThat(r.refRmsDb()[c])
+                    .as("channel %d ref RMS dB", c)
+                    .isCloseTo(expectedRmsDb[c], org.assertj.core.data.Offset.offset(0.1));
+            assertThat(r.deltasDb()[c])
+                    .as("channel %d delta", c)
+                    .isCloseTo(0.0, org.assertj.core.data.Offset.offset(1e-9));
+        }
+    }
+
+    /**
+     * Auto-trim should bring per-channel delta below 0.1 dB for an
+     * artificially -3 dB skewed channel on a 7.1.4 bed.
+     */
+    @Test
+    void autoTrimBringsSkewedChannelDeltaBelowPointOneDe() {
+        int channels = 12; // 7.1.4
+        float[][] reference = whiteNoiseBed(channels, 48_000, 0xCAFE);
+        float[][] mix = deepCopy(reference);
+
+        // Skew channel 5 by -3 dB
+        double linear = Math.pow(10.0, -3.0 / 20.0);
+        for (int i = 0; i < mix[5].length; i++) {
+            mix[5][i] *= (float) linear;
+        }
+
+        AtmosAbComparator comparator = new AtmosAbComparator(SAMPLE_RATE);
+        double[] trim = comparator.estimateAutoTrim(mix, reference);
+
+        // Apply the trim and re-compare
+        float[][] trimmedMix = deepCopy(mix);
+        for (int c = 0; c < channels; c++) {
+            double gain = Math.pow(10.0, trim[c] / 20.0);
+            for (int i = 0; i < trimmedMix[c].length; i++) {
+                trimmedMix[c][i] *= (float) gain;
+            }
+        }
+        AbComparisonResult r = comparator.compare(trimmedMix, reference);
+        for (int c = 0; c < channels; c++) {
+            assertThat(Math.abs(r.deltasDb()[c]))
+                    .as("channel %d delta after trim", c)
+                    .isLessThan(0.1);
+        }
+    }
+
     // ----- helpers -----
 
     private static float[][] sineBed(int channels, int frames, double freqHz) {

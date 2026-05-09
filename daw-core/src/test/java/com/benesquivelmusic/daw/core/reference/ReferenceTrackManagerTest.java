@@ -256,4 +256,52 @@ class ReferenceTrackManagerTest {
         assertThat(manager.getReferenceTrackCount()).isEqualTo(3);
         assertThat(manager.getReferenceTracks()).containsExactly(ref1, ref2, ref3);
     }
+
+    // ── Channel layout validation tests (Story 175) ─────────────────────────
+
+    @Test
+    void shouldAcceptCompatibleChannelLayout() {
+        ReferenceTrack existing = new ReferenceTrack("Existing", "/audio/existing.wav");
+        existing.setImmersiveFormat(com.benesquivelmusic.daw.sdk.spatial.ImmersiveFormat.FORMAT_7_1_4);
+        manager.addReferenceTrack(existing);
+
+        ReferenceTrack candidate = new ReferenceTrack("Candidate", "/audio/candidate.wav");
+        candidate.setImmersiveFormat(com.benesquivelmusic.daw.sdk.spatial.ImmersiveFormat.FORMAT_7_1_4);
+
+        assertThat(manager.validateChannelLayout(candidate)).isEmpty();
+    }
+
+    @Test
+    void shouldRejectMismatchedChannelLayout() {
+        ReferenceTrack existing = new ReferenceTrack("Existing", "/audio/existing.wav");
+        existing.setImmersiveFormat(com.benesquivelmusic.daw.sdk.spatial.ImmersiveFormat.FORMAT_7_1_4);
+        manager.addReferenceTrack(existing);
+
+        ReferenceTrack candidate = new ReferenceTrack("Candidate", "/audio/candidate.wav");
+        candidate.setImmersiveFormat(com.benesquivelmusic.daw.sdk.spatial.ImmersiveFormat.FORMAT_9_1_6);
+
+        String error = manager.validateChannelLayout(candidate);
+        assertThat(error).isNotEmpty();
+        assertThat(error).contains("9.1.6").contains("7.1.4");
+    }
+
+    @Test
+    void shouldAcceptStereoReferenceWithoutValidation() {
+        ReferenceTrack existing = new ReferenceTrack("Existing", "/audio/existing.wav");
+        existing.setImmersiveFormat(com.benesquivelmusic.daw.sdk.spatial.ImmersiveFormat.FORMAT_7_1_4);
+        manager.addReferenceTrack(existing);
+
+        ReferenceTrack candidate = new ReferenceTrack("Stereo", "/audio/stereo.wav");
+        // No immersive format set — stereo reference
+
+        assertThat(manager.validateChannelLayout(candidate)).isEmpty();
+    }
+
+    @Test
+    void shouldAcceptWhenNoExistingMultiChannel() {
+        ReferenceTrack candidate = new ReferenceTrack("First", "/audio/first.wav");
+        candidate.setImmersiveFormat(com.benesquivelmusic.daw.sdk.spatial.ImmersiveFormat.FORMAT_7_1_4);
+
+        assertThat(manager.validateChannelLayout(candidate)).isEmpty();
+    }
 }
