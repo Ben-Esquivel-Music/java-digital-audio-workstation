@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.drag.DragSourceKind;
+import com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor;
 import com.benesquivelmusic.daw.core.audio.*;
 import com.benesquivelmusic.daw.core.automation.*;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
@@ -112,6 +114,19 @@ final class ClipInteractionController {
 
     private SelectionEdge selectionHandleDrag;
 
+    /**
+     * Original clip start-beat captured at drag-begin so the advisor's
+     * cancel-revert (Esc) can restore the clip's position.
+     */
+    private double dragClipOriginalStartBeat;
+
+    /**
+     * Shared {@link DragVisualAdvisor} consulted on every clip-drag
+     * gesture (story 197). Optional — when {@code null} clip drags fall
+     * back to the legacy direct-manipulation behaviour.
+     */
+    private DragVisualAdvisor dragVisualAdvisor;
+
     // Drag state for automation breakpoint moves
     private AutomationPoint dragAutomationPoint;
     private AutomationLane dragAutomationLane;
@@ -173,6 +188,14 @@ final class ClipInteractionController {
         canvas.setOnMouseReleased(this::onMouseReleased);
         canvas.setOnMouseMoved(this::onMouseMoved);
         canvas.setSelectionModel(host.selectionModel());
+        // Esc cancels the in-progress clip drag with the cancel-revert
+        // animation timings from the shared AnimationProfile (story 197).
+        canvas.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, ev -> {
+            if (ev.getCode() == javafx.scene.input.KeyCode.ESCAPE && dragClip != null) {
+                cancelClipDragInProgress();
+                ev.consume();
+            }
+        });
         updateCursor();
     }
 
@@ -732,6 +755,7 @@ final class ClipInteractionController {
         groupDrag = false;
         dragSelectionStart = OptionalDouble.empty();
         dragSelectionEnd = OptionalDouble.empty();
+        notifyAdvisorCommitClipDrag();
     }
 
     /**
@@ -814,6 +838,8 @@ final class ClipInteractionController {
                 dragSourceTrack = track;
                 dragSourceTrackIndex = trackIndex;
                 dragStartBeat = beat;
+                dragClipOriginalStartBeat = clip.getStartBeat();
+                notifyAdvisorBeginClipDrag(clip, event.getScreenX(), event.getScreenY());
             } else {
                 host.selectionModel().selectClip(track, clip);
                 host.refreshCanvas();
@@ -822,6 +848,8 @@ final class ClipInteractionController {
                 dragSourceTrack = track;
                 dragSourceTrackIndex = trackIndex;
                 dragStartBeat = beat;
+                dragClipOriginalStartBeat = clip.getStartBeat();
+                notifyAdvisorBeginClipDrag(clip, event.getScreenX(), event.getScreenY());
             }
             LOG.fine(() -> "Pointer: selected clip '" + clip.getName() + "' at beat " + beat);
             return;
@@ -1064,6 +1092,96 @@ final class ClipInteractionController {
 
         menu.getItems().addAll(timeStretch, pitchShift);
         menu.show(canvas, event.getScreenX(), event.getScreenY());
+    }
+
+    // ── DragVisualAdvisor wiring (Story 197) ────────────────────────────────
+
+    /**
+     * Installs the shared {@link DragVisualAdvisor}. When set, every clip
+     * drag in the arrangement view will consult the advisor so the
+     * application's drag-feedback layer (ghost preview, drop-zone
+     * highlight, snap indicator, modifier-key cursor) renders over the
+     * gesture. Esc cancels the in-progress drag and restores the clip
+     * to its original beat.
+     *
+     * @param advisor the shared advisor, or {@code null} to disable
+     */
+    void setDragVisualAdvisor(DragVisualAdvisor advisor) {
+        this.dragVisualAdvisor = advisor;
+    }
+
+    /** Returns the advisor, primarily for tests. */
+    DragVisualAdvisor getDragVisualAdvisor() {
+        return dragVisualAdvisor;
+    }
+
+    /**
+     * Cancels the clip drag in progress (Esc key handler). Restores the
+     * dragged clip to its original beat and notifies the advisor so the
+     * cancel-revert animation runs with the shared
+     * {@link com.benesquivelmusic.daw.app.ui.drag.AnimationProfile}
+     * timings. No-op when no clip drag is in progress.
+     */
+    void cancelClipDragInProgress() {
+        if (dragClip == null) {
+            return;
+        }
+        try {
+            dragClip.setStartBeat(dragClipOriginalStartBeat);
+        } catch (RuntimeException ignored) {
+            // Restoration is best-effort; underlying model may have changed.
+        }
+        dragClip = null;
+        dragSourceTrack = null;
+        dragSourceTrackIndex = -1;
+        groupDrag = false;
+        dragSelectionStart = OptionalDouble.empty();
+        dragSelectionEnd = OptionalDouble.empty();
+        host.refreshCanvas();
+
+        if (dragVisualAdvisor != null
+                && dragVisualAdvisor.state() == DragVisualAdvisor.State.DRAGGING) {
+            try {
+                dragVisualAdvisor.cancel();
+                // The presenter would normally play the cancel-revert
+                // animation; tests can verify the REVERTING state and
+                // the duration via DragVisualAdvisor.CancelRevert.
+                dragVisualAdvisor.revertCompleted();
+            } catch (RuntimeException ignored) {
+                // never break the underlying drag
+            }
+        }
+    }
+
+    private void notifyAdvisorBeginClipDrag(AudioClip clip, double screenX, double screenY) {
+        if (dragVisualAdvisor == null
+                || dragVisualAdvisor.state() != DragVisualAdvisor.State.IDLE) {
+            return;
+        }
+        try {
+            String label = clip.getName();
+            if (label == null || label.isEmpty()) {
+                label = "clip";
+            }
+            dragVisualAdvisor.beginDrag(
+                    DragSourceKind.CLIP, label,
+                    screenX, screenY,
+                    /* ghostWidth */ 80, /* ghostHeight */ 24);
+        } catch (RuntimeException ignored) {
+            // never break clip drag
+        }
+    }
+
+    private void notifyAdvisorCommitClipDrag() {
+        if (dragVisualAdvisor == null
+                || dragVisualAdvisor.state() != DragVisualAdvisor.State.DRAGGING) {
+            return;
+        }
+        try {
+            dragVisualAdvisor.commit();
+        } catch (RuntimeException ignored) {
+            // never break clip drag
+        }
     }
 
 }

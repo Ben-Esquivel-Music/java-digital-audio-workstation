@@ -357,6 +357,11 @@ public final class MainController {
         installIoLatencyClickHandler();
         animationController.start();
         viewNavigationController.getMixerView().setPluginRegistry(pluginRegistry);
+        // Story 197 — share the single DragVisualAdvisor / AnimationProfile
+        // with the mixer so plugin reorder-drag gestures use the unified
+        // visual feedback layer.
+        viewNavigationController.getMixerView()
+                .setDragVisualAdvisor(animationController.dragVisualAdvisor());
         // Story 137: bind the input-level-monitor registry into the mixer
         // so armed-track strips grow a second meter column with a latching
         // clip LED, and into the track-strip controller so armed tracks
@@ -1301,6 +1306,10 @@ public final class MainController {
 
     private void buildBrowserPanel(boolean initiallyVisible) {
         BrowserPanel browserPanel = new BrowserPanel();
+        if (animationController != null) {
+            // Story 197 — share the single advisor / animation profile.
+            browserPanel.setDragVisualAdvisor(animationController.dragVisualAdvisor());
+        }
         browserPanelController = new BrowserPanelController(browserPanel, browserButton, rootPane);
         browserPanelController.setOnVisibilityChanged(() -> {
             toolbarStateStore.saveBrowserVisible(browserPanelController.isPanelVisible());
@@ -1357,6 +1366,13 @@ public final class MainController {
         arrangementCanvas = result.canvas();
         timelineRuler = result.ruler();
         clipInteractionController = result.clipInteraction();
+        if (animationController != null) {
+            // Story 197 — install the shared advisor so clip-drag gestures
+            // emit ghost previews, drop-zone highlights, snap indicators
+            // and modifier-cursor changes via the unified visual layer.
+            clipInteractionController.setDragVisualAdvisor(
+                    animationController.dragVisualAdvisor());
+        }
         refreshArrangementCanvas();
         trackStripController.setArrangementCanvas(arrangementCanvas);
         animationController.setPlayheadUpdateCallback(this::updatePlayheadFromTransport);

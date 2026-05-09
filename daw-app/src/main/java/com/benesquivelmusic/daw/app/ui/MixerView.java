@@ -162,6 +162,13 @@ public final class MixerView extends VBox {
      */
     private final com.benesquivelmusic.daw.core.undo.UndoHistoryListener undoHistoryListener;
     private PluginRegistry pluginRegistry;
+    /**
+     * Shared {@link com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor}
+     * propagated to every {@link InsertEffectRack} created by this view so
+     * plugin reorder-drag gestures get the unified visual feedback layer
+     * (story 197).
+     */
+    private com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor dragVisualAdvisor;
     private InputLevelMonitorRegistry inputLevelMonitorRegistry;
     private java.util.function.Supplier<List<AudioChannelInfo>> inputChannelInfoSupplier =
             () -> List.of();
@@ -543,6 +550,23 @@ public final class MixerView extends VBox {
         this.pluginRegistry = registry;
         for (InsertEffectRack rack : activeInsertRacks) {
             rack.setPluginRegistry(registry);
+        }
+    }
+
+    /**
+     * Installs the shared {@link com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor}
+     * for plugin reorder-drag visual feedback (ghost preview, drop-zone
+     * highlight, modifier cursor) — see user story 197. Propagates the
+     * advisor to all currently-active and future {@link InsertEffectRack}
+     * instances.
+     *
+     * @param advisor the shared advisor, or {@code null} to disable
+     */
+    public void setDragVisualAdvisor(
+            com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor advisor) {
+        this.dragVisualAdvisor = advisor;
+        for (InsertEffectRack rack : activeInsertRacks) {
+            rack.setDragVisualAdvisor(advisor);
         }
     }
 
@@ -1350,6 +1374,7 @@ public final class MixerView extends VBox {
         InsertEffectRack insertRack = new InsertEffectRack(mixerChannel, channels, sr, bs, undoManager);
         insertRack.setPluginRegistry(pluginRegistry);
         insertRack.setMixer(project.getMixer());
+        insertRack.setDragVisualAdvisor(dragVisualAdvisor);
         activeInsertRacks.add(insertRack);
 
         // Per-channel latency label for plugin delay compensation (PDC)
@@ -1581,6 +1606,7 @@ public final class MixerView extends VBox {
         InsertEffectRack insertRack = new InsertEffectRack(returnBus, channels, sr, bs, undoManager);
         insertRack.setPluginRegistry(pluginRegistry);
         insertRack.setMixer(project.getMixer());
+        insertRack.setDragVisualAdvisor(dragVisualAdvisor);
         activeInsertRacks.add(insertRack);
 
         // Per-bus latency label for plugin delay compensation (PDC)

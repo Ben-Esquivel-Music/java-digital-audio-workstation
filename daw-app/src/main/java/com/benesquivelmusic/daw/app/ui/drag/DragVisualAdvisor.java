@@ -67,6 +67,7 @@ public final class DragVisualAdvisor {
     private double originY;
     private double ghostWidth;
     private double ghostHeight;
+    private DragVisualState lastState;
 
     /** Constructs an advisor with the given animation profile. */
     public DragVisualAdvisor(AnimationProfile profile) {
@@ -125,11 +126,13 @@ public final class DragVisualAdvisor {
         this.ghostHeight = ghostHeight;
         this.state = State.DRAGGING;
 
-        return new DragVisualState(
+        DragVisualState s = new DragVisualState(
                 buildGhost(),
                 DropTargetHighlight.NONE,
                 DragCursor.DEFAULT,
                 SnapIndicator.HIDDEN);
+        this.lastState = s;
+        return s;
     }
 
     /**
@@ -177,7 +180,9 @@ public final class DragVisualAdvisor {
         SnapIndicator snap = computeSnap(target, snappedXPx, snapValueLabel,
                 mods.contains(DragModifier.DISABLE_SNAP));
 
-        return new DragVisualState(buildGhost(), highlight, cursor, snap);
+        DragVisualState s = new DragVisualState(buildGhost(), highlight, cursor, snap);
+        this.lastState = s;
+        return s;
     }
 
     /**
@@ -258,6 +263,25 @@ public final class DragVisualAdvisor {
         originY = 0;
         ghostWidth = 0;
         ghostHeight = 0;
+        lastState = null;
+    }
+
+    /**
+     * Returns the current visual state — the value most recently produced
+     * by {@link #beginDrag} or {@link #update} — for tests and observers
+     * that need to inspect what the advisor is currently telling presenters
+     * to render. Empty when {@link #state()} is {@link State#IDLE}.
+     */
+    public Optional<DragVisualState> currentVisualState() {
+        return Optional.ofNullable(lastState);
+    }
+
+    /**
+     * Returns the source kind of the drag in progress, or empty when
+     * idle. Convenience accessor for tests that only care about the kind.
+     */
+    public Optional<DragSourceKind> currentSourceKind() {
+        return Optional.ofNullable(sourceKind);
     }
 
     /** Compatibility matrix encoded as a static helper for testability. */

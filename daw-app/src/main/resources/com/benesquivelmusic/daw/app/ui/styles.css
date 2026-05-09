@@ -1407,3 +1407,25 @@
     -fx-background-color: #444;
     -fx-text-fill: white;
 }
+
+/* ── Story 197 — Drag visual feedback (DragVisualAdvisor) ── */
+/*
+ * Applied to a Node by the presenter while the cursor is over a valid
+ * drop target. Picks up the dark-theme accent so the highlight matches
+ * the rest of the UI without bespoke per-call-site styling.
+ */
+.drop-target-active {
+    -fx-background-color: rgba(95, 168, 255, 0.25);
+    -fx-border-color: #5fa8ff;
+    -fx-border-width: 1;
+    -fx-border-style: dashed;
+}
+
+/*
+ * Applied to a Node by the presenter when the advisor reports
+ * DragCursor.NO_DROP — i.e. the cursor is over an incompatible
+ * target. Mirrors the JavaFX Cursor.DISAPPEAR red-circle convention.
+ */
+.drag-no-drop {
+    -fx-cursor: disappear;
+}
