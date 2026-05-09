@@ -105,6 +105,7 @@ public final class RoomTelemetryDisplay extends Region {
     private final GpuCanvas gpuCanvas;
     private RoomTelemetryData telemetryData;
     private double animationTime;
+    private boolean disposed;
 
     // Per-path particle animators (keyed by "sourceName→micName:reflected")
     private final Map<String, WaveParticleAnimator> pathAnimators = new HashMap<>();
@@ -301,6 +302,7 @@ public final class RoomTelemetryDisplay extends Region {
      * @param data the latest telemetry snapshot
      */
     public void setTelemetryData(RoomTelemetryData data) {
+        if (disposed) return;
         this.telemetryData = data;
         pathAnimators.clear();
         ripples.clear();
@@ -332,6 +334,7 @@ public final class RoomTelemetryDisplay extends Region {
      * @param deltaSeconds seconds since last frame
      */
     public void updateAnimation(double deltaSeconds) {
+        if (disposed) return;
         advanceAnimation(deltaSeconds);
         gpuCanvas.requestRender();
     }
@@ -376,6 +379,7 @@ public final class RoomTelemetryDisplay extends Region {
      * display will no longer paint or respond to {@link #setTelemetryData}.
      */
     public void dispose() {
+        disposed = true;
         gpuCanvas.setAnimated(false);
         gpuCanvas.dispose();
     }

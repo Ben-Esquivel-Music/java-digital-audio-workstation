@@ -126,6 +126,8 @@ public final class GpuCanvas extends Region {
     private final InvalidationListener repaintOnChange;
     private final ChangeListener<Boolean> animatedListener;
     private final ChangeListener<Scene> sceneListener;
+    private final ChangeListener<Number> overlayWidthListener;
+    private final ChangeListener<Number> overlayHeightListener;
 
     // Off-heap pixel surface. Reallocated on resize, closed on dispose or
     // when the canvas shrinks to zero width or height.
@@ -158,8 +160,20 @@ public final class GpuCanvas extends Region {
         // The canvas starts each frame fully transparent (clearRect), so it
         // never occludes the pixel surface unless the renderer explicitly draws.
         getChildren().add(overlayCanvas);
-        overlayCanvas.widthProperty().bind(widthProperty());
-        overlayCanvas.heightProperty().bind(heightProperty());
+        // Clamp the overlay Canvas to the same MAX_SURFACE_DIM as the pixel
+        // surface so both surfaces stay consistent and the safeguard against
+        // unbounded Prism allocations remains effective.
+        overlayWidthListener = (_, _, w) ->
+                overlayCanvas.setWidth(Math.min(w.doubleValue(), MAX_SURFACE_DIM));
+        overlayHeightListener = (_, _, h) ->
+                overlayCanvas.setHeight(Math.min(h.doubleValue(), MAX_SURFACE_DIM));
+        widthProperty().addListener(overlayWidthListener);
+        heightProperty().addListener(overlayHeightListener);
+        // Initialise to the clamped size in case the region already has a
+        // non-zero size when constructed (e.g. tests that call resize before
+        // the first layout pulse).
+        overlayCanvas.setWidth(Math.min(getWidth(), MAX_SURFACE_DIM));
+        overlayCanvas.setHeight(Math.min(getHeight(), MAX_SURFACE_DIM));
         overlayCanvas.setMouseTransparent(true);
         getStyleClass().add("gpu-canvas");
 
@@ -483,8 +497,6 @@ public final class GpuCanvas extends Region {
         imageView.fitWidthProperty().unbind();
         imageView.fitHeightProperty().unbind();
         imageView.setImage(null);
-        overlayCanvas.widthProperty().unbind();
-        overlayCanvas.heightProperty().unbind();
         // Final clear so the overlay does not retain stale pixels if the
         // canvas is removed from but later re-added to the scene graph.
         if (overlayCanvas.getWidth() > 0 && overlayCanvas.getHeight() > 0) {
@@ -492,6 +504,8 @@ public final class GpuCanvas extends Region {
         }
         widthProperty().removeListener(sizeListener);
         heightProperty().removeListener(sizeListener);
+        widthProperty().removeListener(overlayWidthListener);
+        heightProperty().removeListener(overlayHeightListener);
         renderer.removeListener(repaintOnChange);
         clearColor.removeListener(repaintOnChange);
         animated.removeListener(animatedListener);
