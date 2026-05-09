@@ -88,8 +88,10 @@ public final class SpectrumDisplay extends Region {
         // Compose a GpuCanvas (daw-fx) — it owns the size binding, per-frame
         // AnimationTimer, scene-attachment gating, and the background clear via
         // setClearColor(BACKGROUND), so this display only contributes the draw
-        // routine. The animator is gated on Scene attachment so it stops when
-        // the host panel (VisualizationPanelController) is detached or hidden.
+        // routine. The AnimationTimer is gated on Scene attachment (not on
+        // visibility or Stage showing state); callers that remove the display
+        // from the scene graph should call dispose() to release the off-heap
+        // surface and stop the timer.
         gpuCanvas = GpuCanvas.create()
                 .renderer(this::renderFrame)
                 .clearColor(BACKGROUND)
@@ -165,7 +167,13 @@ public final class SpectrumDisplay extends Region {
                     + (1.0 - AVG_SMOOTHING) * smoothedBins[bar]);
         }
 
-        requestRender();
+        // When the animation timer is running (scene-attached), the next
+        // timer frame will pick up the new snapshot — no extra render needed.
+        // When the timer is gated off (e.g. one-shot updates from tests),
+        // request an immediate render so the value is visible.
+        if (getScene() == null) {
+            gpuCanvas.requestRender();
+        }
     }
 
     /**
@@ -275,9 +283,9 @@ public final class SpectrumDisplay extends Region {
 
     /**
      * Requests a one-shot render on the FX thread; no-op if disposed.
-     * The animator continues to run while the canvas is scene-attached, so
-     * this is mainly used to flush state changes to the surface immediately
-     * (e.g. when no scene is attached during tests).
+     * Used for property changes that should be visible immediately
+     * (average trace toggle, logarithmic scale), regardless of whether
+     * the animation timer is running.
      */
     private void requestRender() {
         if (disposed) return;

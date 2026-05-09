@@ -60,6 +60,8 @@ public final class TunerDisplay extends Region {
     public TunerDisplay() {
         // Compose a GpuCanvas (daw-fx) — owns size binding, per-frame
         // AnimationTimer (gated on Scene attachment), and background clear.
+        // Callers that remove the display from the scene graph should call
+        // dispose() to release the off-heap surface and stop the timer.
         gpuCanvas = GpuCanvas.create()
                 .renderer(this::renderFrame)
                 .clearColor(BACKGROUND)
@@ -75,7 +77,13 @@ public final class TunerDisplay extends Region {
      */
     public void update(TuningResult result) {
         this.currentResult = result;
-        requestRender();
+        // When the animation timer is running (scene-attached), the next
+        // timer frame will pick up the new snapshot — no extra render needed.
+        // When the timer is gated off (e.g. one-shot updates from tests),
+        // request an immediate render so the value is visible.
+        if (getScene() == null) {
+            gpuCanvas.requestRender();
+        }
     }
 
     /**
@@ -95,11 +103,6 @@ public final class TunerDisplay extends Region {
         disposed = true;
         gpuCanvas.setAnimated(false);
         gpuCanvas.dispose();
-    }
-
-    private void requestRender() {
-        if (disposed) return;
-        gpuCanvas.requestRender();
     }
 
     /**

@@ -58,20 +58,6 @@ public final class CorrelationDisplay extends Region {
 
     private static final double OVERLAY_ICON_SIZE = 9;
 
-    /**
-     * Phosphor-decay time constant. Chosen so that at a 60 Hz frame interval
-     * (deltaSeconds ≈ 1/60) one frame's alpha-fade fill renders the previous
-     * frame's pixels at ≈ 50% intensity: {@code (1/60) / ln 2 ≈ 0.024 s}.
-     * The per-frame fade alpha is {@code 1 - exp(-deltaSeconds / TAU)}.
-     */
-    static final double PHOSPHOR_DECAY_TAU_SECONDS = (1.0 / 60.0) / Math.log(2.0);
-
-    /**
-     * GpuCanvas host. The renderer field intentionally manages its own
-     * alpha-fade fill instead of relying on {@link GpuCanvas#setClearColor}
-     * because the goniometer phosphor trail depends on previous-frame
-     * pixels — see story 028 (Stereo Correlation Meter and Goniometer).
-     */
     private final GpuCanvas gpuCanvas;
     private final double[] correlationHistory;
     private int historyIndex;
@@ -101,11 +87,13 @@ public final class CorrelationDisplay extends Region {
      * Creates a new correlation display.
      */
     public CorrelationDisplay() {
-        // Compose a GpuCanvas (daw-fx) — see PHOSPHOR_DECAY_TAU_SECONDS for
-        // why clearColor is left null (the renderer issues its own
-        // alpha-fade fill so the goniometer phosphor trail is preserved).
+        // Compose a GpuCanvas (daw-fx) — owns size binding, per-frame
+        // AnimationTimer (gated on Scene attachment), and background clear.
+        // Callers that remove the display from the scene graph should call
+        // dispose() to release the off-heap surface and stop the timer.
         gpuCanvas = GpuCanvas.create()
                 .renderer(this::renderFrame)
+                .clearColor(BACKGROUND)
                 .animated(true)
                 .build();
         getChildren().add(gpuCanvas);
@@ -153,7 +141,9 @@ public final class CorrelationDisplay extends Region {
         historyIndex = (historyIndex + 1) % HISTORY_SIZE;
         historyCount = Math.min(historyCount + 1, HISTORY_SIZE);
 
-        requestRender();
+        if (getScene() == null) {
+            gpuCanvas.requestRender();
+        }
     }
 
     /**
@@ -163,7 +153,9 @@ public final class CorrelationDisplay extends Region {
      */
     public void updateGoniometer(GoniometerData data) {
         this.goniometerData = data;
-        requestRender();
+        if (getScene() == null) {
+            gpuCanvas.requestRender();
+        }
     }
 
     /**
@@ -175,7 +167,7 @@ public final class CorrelationDisplay extends Region {
         this.goniometerMode = enabled;
         midLabel.setVisible(enabled);
         sideLabel.setVisible(enabled);
-        requestRender();
+        gpuCanvas.requestRender();
     }
 
     /** Returns whether goniometer mode is active. */
@@ -202,42 +194,16 @@ public final class CorrelationDisplay extends Region {
         gpuCanvas.dispose();
     }
 
-    private void requestRender() {
-        if (disposed) return;
-        gpuCanvas.requestRender();
-    }
-
-    /**
-     * Computes the per-frame phosphor-fade alpha from the host's
-     * {@code deltaSeconds}. Exponential decay with time constant
-     * {@link #PHOSPHOR_DECAY_TAU_SECONDS} — at dt = 1/60 s the previous
-     * frame's pixels are attenuated by ≈ 50 %.
-     *
-     * <p>For one-shot renders ({@code deltaSeconds == 0}) the fill is
-     * fully opaque so the surface is cleanly cleared.
-     */
-    static double phosphorFadeAlpha(double deltaSeconds) {
-        if (deltaSeconds <= 0.0) return 1.0;
-        return 1.0 - Math.exp(-deltaSeconds / PHOSPHOR_DECAY_TAU_SECONDS);
-    }
-
     /**
      * Per-frame draw callback invoked by the GpuCanvas AnimationTimer.
-     * Issues an alpha-fade fill (clearColor is left {@code null} so the
-     * previous frame's pixels remain on the surface) before drawing the
-     * correlation arc, balance bar, history strip, and — when enabled —
-     * the goniometer Lissajous trail.
+     * Background fill is provided by {@link GpuCanvas#setClearColor(Color)},
+     * so we do not issue a redundant background {@code fillRect}.
      */
     private void renderFrame(GpuRenderContext ctx) {
         GraphicsContext gc = ctx.gc();
         double w = ctx.width();
         double h = ctx.height();
         if (w <= 0 || h <= 0) return;
-
-        // Phosphor alpha-fade fill: see PHOSPHOR_DECAY_TAU_SECONDS.
-        double fadeAlpha = phosphorFadeAlpha(ctx.deltaSeconds());
-        gc.setFill(BACKGROUND.deriveColor(0, 1, 1, fadeAlpha));
-        gc.fillRect(0, 0, w, h);
 
         renderInto(gc, w, h);
     }

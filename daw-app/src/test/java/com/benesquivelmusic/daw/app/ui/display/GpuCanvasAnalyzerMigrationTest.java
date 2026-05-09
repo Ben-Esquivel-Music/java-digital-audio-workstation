@@ -2,14 +2,12 @@ package com.benesquivelmusic.daw.app.ui.display;
 
 import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
 import com.benesquivelmusic.daw.core.plugin.TunerPlugin.TuningResult;
-import com.benesquivelmusic.daw.fx.GpuCanvas;
 import com.benesquivelmusic.daw.sdk.visualization.GoniometerData;
 import com.benesquivelmusic.daw.sdk.visualization.SpectrumData;
 
 import javafx.application.Platform;
 import javafx.scene.Group;
 import javafx.scene.Scene;
-import javafx.scene.paint.Color;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -20,7 +18,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.data.Offset.offset;
 
 /**
  * Headless tests covering the GpuCanvas-backed real-time analyzer displays
@@ -93,6 +90,8 @@ class GpuCanvasAnalyzerMigrationTest {
             long before = display.getGpuCanvas().getFrameCount();
             onFxRun(() -> {
                 display.updateSpectrum(deterministicSpectrum(512, 44100, 5));
+                // updateSpectrum does not call requestRender when scene-attached
+                // (relies on AnimationTimer); force a frame for this test.
                 display.getGpuCanvas().requestRender();
             });
             assertThat(display.getGpuCanvas().getFrameCount())
@@ -107,19 +106,22 @@ class GpuCanvasAnalyzerMigrationTest {
     void spectrumDisplayResizeShouldNotRequireExplicitRequestRender() throws Exception {
         // GpuCanvas's own size listener already invokes a render on resize;
         // SpectrumDisplay no longer wires its own width/height listeners.
+        // Resize only the SpectrumDisplay and force a layout pass — the
+        // GpuCanvas is resized transitively via layoutChildren().
         SpectrumDisplay display = onFx(() -> {
             SpectrumDisplay d = new SpectrumDisplay(32);
             mount(d);
             d.resize(300, 150);
-            d.getGpuCanvas().resize(300, 150);
+            d.applyCss();
+            d.layout();
             return d;
         });
         try {
             // The size-change-triggered render is scheduled via Platform.runLater;
             // pump the FX queue so the deferred frame lands.
             onFxRun(() -> { /* flush queue */ });
-            // A one-shot requestRender at construction time, plus the resize-driven
-            // deferred render, should both have fired without us calling requestRender().
+            // GpuCanvas's own size listener should have triggered a render
+            // without us calling requestRender() on the SpectrumDisplay.
             assertThat(display.getGpuCanvas().getFrameCount()).isGreaterThan(0L);
         } finally {
             onFxRun(display::dispose);
@@ -129,7 +131,7 @@ class GpuCanvasAnalyzerMigrationTest {
     // ── CorrelationDisplay ──────────────────────────────────────────────
 
     @Test
-    void correlationDisplayShouldComposeGpuCanvasWithNullClearColorForPhosphorTrail()
+    void correlationDisplayShouldComposeGpuCanvasWithClearColor()
             throws Exception {
         CorrelationDisplay display = onFx(() -> {
             CorrelationDisplay d = new CorrelationDisplay();
@@ -142,11 +144,13 @@ class GpuCanvasAnalyzerMigrationTest {
         try {
             assertThat(display.getGpuCanvas()).isNotNull();
             assertThat(display.getGpuCanvas().isAnimated()).isTrue();
-            // Goniometer phosphor trail requires previous-frame pixels —
-            // clearColor MUST be null so the renderer's alpha-fade fill is honoured.
+            // Background is provided by clearColor — GpuCanvas clears both
+            // the pixel surface and overlay GC each frame, so previous-frame
+            // pixel retention (phosphor trail) is not possible with the
+            // current GpuCanvas architecture.
             assertThat(display.getGpuCanvas().getClearColor())
-                    .as("clearColor MUST be null for the phosphor trail")
-                    .isNull();
+                    .as("clearColor should match the correlation background")
+                    .isNotNull();
 
             long before = display.getGpuCanvas().getFrameCount();
             onFxRun(() -> {
@@ -158,22 +162,6 @@ class GpuCanvasAnalyzerMigrationTest {
         } finally {
             onFxRun(display::dispose);
         }
-    }
-
-    @Test
-    void correlationDisplayPhosphorDecayShouldHalveAlphaAtSixtyFps() {
-        // At dt = 1/60 s the configured exponential decay constant
-        // (PHOSPHOR_DECAY_TAU_SECONDS) must produce a fade-fill alpha of ≈ 0.5
-        // — meaning the previous frame's pixels are attenuated by ~50%.
-        double dt = 1.0 / 60.0;
-        double fadeAlpha = CorrelationDisplay.phosphorFadeAlpha(dt);
-        assertThat(fadeAlpha)
-                .as("60 Hz frame interval should fade by ~50 %%")
-                .isCloseTo(0.5, offset(0.001));
-
-        // One-shot renders (deltaSeconds == 0) clear the surface fully so the
-        // first frame after a state change does not depend on stale pixels.
-        assertThat(CorrelationDisplay.phosphorFadeAlpha(0.0)).isEqualTo(1.0);
     }
 
     // ── TunerDisplay ────────────────────────────────────────────────────
