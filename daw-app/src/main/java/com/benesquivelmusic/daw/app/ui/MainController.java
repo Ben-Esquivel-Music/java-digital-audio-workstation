@@ -39,6 +39,7 @@ import javafx.scene.layout.*;
 import javafx.stage.Stage;
 import javafx.util.Duration;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -175,6 +176,12 @@ public final class MainController {
      * indicator that appears during the offline render.
      */
     private TrackFreezeController trackFreezeController;
+    /**
+     * Story 191 — Auto-Backup Rotation. Owns the persisted retention
+     * policy, runs a periodic prune of {@code ~/.daw/autosaves/}, and
+     * surfaces the {@link BackupSettingsDialog} from the Edit menu.
+     */
+    private BackupRetentionController backupRetentionController;
     /**
      * Story 175 — Atmos A/B comparison view. Created on demand when the
      * user opens "QC → Immersive A/B…" and disposed when the window is
@@ -399,11 +406,25 @@ public final class MainController {
                         if (pluginSupervisor != null) {
                             pluginSupervisor.close();
                         }
+                        if (backupRetentionController != null) {
+                            backupRetentionController.shutdown();
+                        }
                     });
                 }
             }
         });
         LOG.info("DAW initialized with studio quality format");
+        // Story 191 — Auto-Backup Rotation. Initialize the global retention
+        // store, run the persisted policy once now so any backups left over
+        // from a previous session are pruned at startup, then schedule the
+        // hourly periodic prune. Shutdown is wired below in setOnHidden.
+        backupRetentionController = new BackupRetentionController();
+        try {
+            backupRetentionController.applyNow();
+            backupRetentionController.start();
+        } catch (RuntimeException e) {
+            LOG.log(Level.WARNING, "Failed to start backup retention controller", e);
+        }
     }
 
     private void createToolbarAppearanceController() {
@@ -1353,6 +1374,7 @@ public final class MainController {
                     @Override public void onManagePlugins() { pluginViewController.onManagePlugins(pluginRegistry); }
                     @Override public void onOpenSettings() { MainController.this.onOpenSettings(); }
                     @Override public void onOpenAudioSettings() { MainController.this.onOpenAudioSettings(); }
+                    @Override public void onOpenBackupSettings() { MainController.this.onOpenBackupSettings(); }
                     @Override public void onActivateBuiltInPlugin(Class<? extends BuiltInDawPlugin> pluginClass) {
                         pluginViewController.onActivateBuiltInPlugin(pluginClass);
                     }
@@ -1731,6 +1753,29 @@ public final class MainController {
         AudioSettingsDialog dialog = new AudioSettingsDialog(settingsModel, audioEngineController);
         dialog.showAndWait();
         status("Audio settings closed", DawIcon.STATUS);
+    }
+
+    /**
+     * Story 191 — opens {@link BackupSettingsDialog} bound to the persisted
+     * {@link com.benesquivelmusic.daw.sdk.persistence.BackupRetentionPolicy}.
+     * On Apply the new policy is saved through
+     * {@link com.benesquivelmusic.daw.core.persistence.backup.BackupRetentionPolicyStore}
+     * and applied immediately to {@code ~/.daw/autosaves/}.
+     */
+    void onOpenBackupSettings() {
+        status("Opening backup settings...", DawIcon.FOLDER);
+        if (backupRetentionController == null) {
+            // Defensive: should always be created during initialize().
+            backupRetentionController = new BackupRetentionController();
+        }
+        var owner = rootPane != null && rootPane.getScene() != null
+                ? rootPane.getScene().getWindow() : null;
+        Path projectDir = null;
+        if (projectManager != null && projectManager.getCurrentProject() != null) {
+            projectDir = projectManager.getCurrentProject().projectPath();
+        }
+        backupRetentionController.openDialog(owner, projectDir);
+        status("Backup settings closed", DawIcon.STATUS);
     }
 
     // ── Story 042 — Time-Stretch / Pitch-Shift dispatch ─────────────────────
