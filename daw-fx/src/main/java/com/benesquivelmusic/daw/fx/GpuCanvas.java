@@ -95,6 +95,14 @@ public final class GpuCanvas extends Region {
 
     private static final int BPP = 4;
 
+    /**
+     * Maximum surface dimension in pixels. Matches the common GPU texture
+     * limit (16384) and prevents runaway allocations from a misconfigured
+     * parent layout. Also keeps {@code stride = width * BPP} safely below
+     * {@link Integer#MAX_VALUE}.
+     */
+    private static final int MAX_SURFACE_DIM = 16384;
+
     private final ImageView imageView = new ImageView();
 
     private final ObjectProperty<GpuRenderer> renderer =
@@ -284,8 +292,8 @@ public final class GpuCanvas extends Region {
      */
     private boolean ensureSurface() {
         if (disposed) return false;
-        int w = (int) Math.floor(getWidth());
-        int h = (int) Math.floor(getHeight());
+        int w = Math.min((int) Math.floor(getWidth()), MAX_SURFACE_DIM);
+        int h = Math.min((int) Math.floor(getHeight()), MAX_SURFACE_DIM);
         if (w <= 0 || h <= 0) {
             releaseSurface();
             return false;
@@ -307,8 +315,11 @@ public final class GpuCanvas extends Region {
         // off-heap memory; Prism uploads from that address without copying.
         // A non-native segment would force per-commit copies into a staging
         // buffer, defeating the whole point of this pathway.
-        assert newSegment.isNative()
-                : "GpuCanvas surface must be backed by a native MemorySegment";
+        if (!newSegment.isNative()) {
+            newArena.close();
+            throw new IllegalStateException(
+                    "GpuCanvas surface must be backed by a native MemorySegment");
+        }
         ByteBuffer newBuffer = newSegment.asByteBuffer();
         PixelBuffer<ByteBuffer> newPixelBuffer = new PixelBuffer<>(
                 w, h, newBuffer, PixelFormat.getByteBgraPreInstance());
@@ -507,6 +518,11 @@ public final class GpuCanvas extends Region {
             return this;
         }
 
+        /**
+         * Builds and returns the configured {@code GpuCanvas}. Must be called
+         * on the JavaFX Application Thread (the underlying property setters
+         * enforce this constraint).
+         */
         public GpuCanvas build() {
             GpuCanvas c = new GpuCanvas(renderer);
             c.setClearColor(clearColor);
