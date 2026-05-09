@@ -67,12 +67,15 @@ import java.util.logging.Logger;
  *
  * <h2>HiDPI</h2>
  * The surface is allocated at <strong>logical-pixel</strong> resolution
- * ({@code (int) Math.floor(getWidth())} × {@code (int) Math.floor(getHeight())}).
- * On HiDPI displays Prism scales the {@link ImageView} to device pixels,
- * so the canvas effectively renders at half (or quarter) the device
- * resolution. This is a known limitation — callers that need device-pixel
- * fidelity should query {@code getScene().getWindow().getOutputScaleX()/Y()}
- * and pre-scale their renderer output accordingly.
+ * ({@code (int) Math.floor(getWidth())} × {@code (int) Math.floor(getHeight())}),
+ * clamped to {@link #MAX_SURFACE_DIM} (16 384) pixels per axis to prevent
+ * unbounded native allocations and {@code int} overflow in the stride
+ * calculation. On HiDPI displays Prism scales the {@link ImageView} to
+ * device pixels, so the canvas effectively renders at half (or quarter) the
+ * device resolution. This is a known limitation — callers that need
+ * device-pixel fidelity should query
+ * {@code getScene().getWindow().getOutputScaleX()/Y()} and pre-scale their
+ * renderer output accordingly.
  *
  * <h2>Threading</h2>
  * All public mutators, {@link #requestRender()}, {@link #dispose()}, and
