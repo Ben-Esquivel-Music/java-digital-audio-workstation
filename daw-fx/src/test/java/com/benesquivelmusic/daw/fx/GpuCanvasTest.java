@@ -470,9 +470,9 @@ class GpuCanvasTest {
         // Without this, a deferred renderOneFrame from the size-change
         // listener could fire between runAndWait blocks and inflate
         // calls.get() relative to callsAfterFirst.
-        int[] callsAfterFirstHolder = new int[1];
-        JavaFxToolkitExtension.runAndWait(() -> callsAfterFirstHolder[0] = calls.get());
-        int callsAfterFirst = callsAfterFirstHolder[0];
+        AtomicInteger callsAfterFirstHolder = new AtomicInteger();
+        JavaFxToolkitExtension.runAndWait(() -> callsAfterFirstHolder.set(calls.get()));
+        int callsAfterFirst = callsAfterFirstHolder.get();
 
         // Shrink to zero — surface released (deferred), render is a no-op.
         JavaFxToolkitExtension.runAndWait(() -> {
