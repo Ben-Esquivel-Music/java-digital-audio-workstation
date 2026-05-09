@@ -525,9 +525,7 @@ public final class MainController {
         metronome = new Metronome(project.getFormat().sampleRate(), project.getFormat().channels());
         createTransportController();
         mountPreRollPostRollControls();
-        metronomeController = new MetronomeController(metronome, metronomeButton, notificationBar,
-                statusBarLabel, Preferences.userNodeForPackage(MainController.class).node("metronome"),
-                new MetronomeSettingsStore());
+        createMetronomeController(Preferences.userNodeForPackage(MainController.class));
         transportController.updateStatus();
         createTrackStripController();
         if (trackStripController != null) {

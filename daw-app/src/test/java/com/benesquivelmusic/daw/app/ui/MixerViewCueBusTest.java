@@ -37,7 +37,9 @@ class MixerViewCueBusTest {
                 latch.countDown();
             }
         });
-        latch.await(5, TimeUnit.SECONDS);
+        assertThat(latch.await(5, TimeUnit.SECONDS))
+                .as("FX thread timed out in createOnFxThread")
+                .isTrue();
         return ref.get();
     }
 
@@ -50,7 +52,9 @@ class MixerViewCueBusTest {
                 latch.countDown();
             }
         });
-        latch.await(5, TimeUnit.SECONDS);
+        assertThat(latch.await(5, TimeUnit.SECONDS))
+                .as("FX thread timed out in runOnFxThread")
+                .isTrue();
     }
 
     @Test

@@ -33,7 +33,9 @@ class MetronomeSettingsDialogCueBusTest {
             catch (Throwable t) { err.set(t); }
             finally { latch.countDown(); }
         });
-        latch.await(5, TimeUnit.SECONDS);
+        assertThat(latch.await(5, TimeUnit.SECONDS))
+                .as("FX thread timed out in runOnFxAndGet")
+                .isTrue();
         if (err.get() != null) {
             throw new RuntimeException(err.get());
         }

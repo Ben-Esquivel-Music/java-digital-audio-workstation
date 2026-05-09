@@ -97,6 +97,13 @@ public final class MixerView extends VBox {
     private final Set<UUID> selectedChannelIds = new HashSet<>();
     /**
      * Per-channel-id slider/button references the {@link ChannelLinkManager}
+     * Story 135 — pre-mute gain per cue bus. When a cue bus is muted the
+     * master gain is set to 0.0 and the previous value is stashed here so
+     * unmute restores it correctly even after a {@link #refresh()} rebuilds
+     * the strip. Keyed by {@link CueBus#id()}.
+     */
+    private final Map<UUID, Double> cueBusPreMuteGain = new LinkedHashMap<>();
+    /**
      * propagation path uses to mirror UI state across a stereo pair without
      * a full strip rebuild. The {@code LinkedHashMap} preserves insertion
      * order to make iteration in tests deterministic. Cleared and
@@ -1634,11 +1641,12 @@ public final class MixerView extends VBox {
             }
         });
 
-        // Mute is implemented via masterGain=0; storing the previous value in
-        // a mutable holder lets the user toggle the bus on/off without
-        // losing the previous fader position.
-        boolean[] muted = { bus.masterGain() <= 0.0 };
-        double[] preMuteGain = { bus.masterGain() > 0.0 ? bus.masterGain() : 1.0 };
+        // Mute is implemented via masterGain=0; the pre-mute gain is persisted
+        // in cueBusPreMuteGain so it survives refresh() rebuilds.
+        boolean isMuted = bus.masterGain() <= 0.0;
+        if (!isMuted && bus.masterGain() > 0.0) {
+            cueBusPreMuteGain.put(bus.id(), bus.masterGain());
+        }
         Button muteBtn = new Button("M");
         muteBtn.getStyleClass().add("track-mute-button");
         muteBtn.setTooltip(new Tooltip("Mute Cue Bus"));
@@ -1646,38 +1654,39 @@ public final class MixerView extends VBox {
         muteBtn.setOnAction(_ -> {
             CueBus current = project.getCueBusManager().getById(bus.id());
             if (current == null) return;
-            muted[0] = !muted[0];
-            if (muted[0]) {
-                preMuteGain[0] = current.masterGain() > 0.0 ? current.masterGain() : 1.0;
+            boolean nowMuted = current.masterGain() > 0.0;
+            if (nowMuted) {
+                cueBusPreMuteGain.put(bus.id(), current.masterGain());
                 project.getCueBusManager().replace(current.withMasterGain(0.0));
                 masterFader.setValue(0.0);
             } else {
-                project.getCueBusManager().replace(current.withMasterGain(preMuteGain[0]));
-                masterFader.setValue(preMuteGain[0]);
+                double restore = cueBusPreMuteGain.getOrDefault(bus.id(), 1.0);
+                project.getCueBusManager().replace(current.withMasterGain(restore));
+                masterFader.setValue(restore);
             }
-            muteBtn.setStyle(muted[0]
+            muteBtn.setStyle(nowMuted
                     ? "-fx-background-color: #ff9100; -fx-text-fill: #0d0d0d;" : "");
         });
-        if (muted[0]) {
+        if (isMuted) {
             muteBtn.setStyle("-fx-background-color: #ff9100; -fx-text-fill: #0d0d0d;");
         }
 
-        // PFL — pre-fader listen. Toggles every send on this bus to pre-fader
-        // (the headphone-mix default during tracking) so engineer fader moves
-        // never bleed into the performer's mix. A single toggle is the
-        // simplest UX that satisfies the issue's "PFL toggle" requirement.
-        ToggleButton pflBtn = new ToggleButton("PFL");
-        pflBtn.setTooltip(new Tooltip(
-                "Pre-Fader Listen — force every send on this cue bus pre-fader"));
+        // "All Pre" — forces every send on this bus to pre-fader (the
+        // headphone-mix default during tracking) so engineer fader moves
+        // never bleed into the performer's mix. This is a bulk toggle;
+        // individual per-send tap choices can still be changed afterwards.
+        ToggleButton allPreBtn = new ToggleButton("All Pre");
+        allPreBtn.setTooltip(new Tooltip(
+                "Force Pre-Fader — set every send on this cue bus to pre-fader"));
         boolean allPre = !bus.sends().isEmpty()
                 && bus.sends().stream().allMatch(CueSend::preFader);
-        pflBtn.setSelected(allPre);
-        pflBtn.setOnAction(_ -> {
+        allPreBtn.setSelected(allPre);
+        allPreBtn.setOnAction(_ -> {
             CueBus current = project.getCueBusManager().getById(bus.id());
             if (current == null) return;
             CueBus updated = current;
             for (CueSend s : current.sends()) {
-                updated = updated.withSend(s.withPreFader(pflBtn.isSelected()));
+                updated = updated.withSend(s.withPreFader(allPreBtn.isSelected()));
             }
             project.getCueBusManager().replace(updated);
         });
@@ -1698,7 +1707,7 @@ public final class MixerView extends VBox {
             refresh();
         });
 
-        HBox topButtons = new HBox(2, muteBtn, pflBtn);
+        HBox topButtons = new HBox(2, muteBtn, allPreBtn);
         topButtons.setAlignment(Pos.CENTER);
         HBox bottomButtons = new HBox(2, copyBtn, removeBtn);
         bottomButtons.setAlignment(Pos.CENTER);
@@ -1754,14 +1763,15 @@ public final class MixerView extends VBox {
         nameField.setPrefWidth(200);
         // Find the smallest unused stereo-output-pair index so two cue buses
         // never end up routed to the same physical outputs by default. Caps
-        // at MAX_CHANNEL_SPINNER for the same reason as the metronome
-        // routing dialog (covers typical interfaces without imposing a hard
-        // ceiling).
+        // at the spinner max (31) to avoid an initial-value-out-of-range
+        // exception when all pairs are occupied.
+        int maxPair = 31;
         int defaultPair = 0;
-        while (project.getCueBusManager().isHardwareOutputInUse(defaultPair)) {
+        while (defaultPair < maxPair
+                && project.getCueBusManager().isHardwareOutputInUse(defaultPair)) {
             defaultPair++;
         }
-        Spinner<Integer> outSpinner = new Spinner<>(0, 31, defaultPair);
+        Spinner<Integer> outSpinner = new Spinner<>(0, maxPair, defaultPair);
         outSpinner.setEditable(true);
         outSpinner.setPrefWidth(90);
 
