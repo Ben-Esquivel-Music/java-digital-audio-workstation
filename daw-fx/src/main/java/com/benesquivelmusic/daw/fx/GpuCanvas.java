@@ -65,6 +65,15 @@ import java.util.logging.Logger;
  * <p>When the canvas shrinks to zero width or height the surface is released
  * eagerly; the next non-zero size reallocates from scratch.
  *
+ * <h2>HiDPI</h2>
+ * The surface is allocated at <strong>logical-pixel</strong> resolution
+ * ({@code (int) Math.floor(getWidth())} × {@code (int) Math.floor(getHeight())}).
+ * On HiDPI displays Prism scales the {@link ImageView} to device pixels,
+ * so the canvas effectively renders at half (or quarter) the device
+ * resolution. This is a known limitation — callers that need device-pixel
+ * fidelity should query {@code getScene().getWindow().getOutputScaleX()/Y()}
+ * and pre-scale their renderer output accordingly.
+ *
  * <h2>Threading</h2>
  * All public mutators, {@link #requestRender()}, {@link #dispose()}, and
  * surface (re)allocation must occur on the JavaFX Application Thread.
@@ -170,22 +179,29 @@ public final class GpuCanvas extends Region {
     public final ObjectProperty<GpuRenderer> rendererProperty() { return renderer; }
     public final GpuRenderer getRenderer() { return renderer.get(); }
     public final void setRenderer(GpuRenderer r) {
+        requireFxThread("setRenderer");
         renderer.set(Objects.requireNonNull(r, "renderer"));
     }
 
     public final BooleanProperty animatedProperty() { return animated; }
     public final boolean isAnimated() { return animated.get(); }
-    public final void setAnimated(boolean value) { animated.set(value); }
+    public final void setAnimated(boolean value) {
+        requireFxThread("setAnimated");
+        animated.set(value);
+    }
 
     public final ObjectProperty<Color> clearColorProperty() { return clearColor; }
     public final Color getClearColor() { return clearColor.get(); }
-    public final void setClearColor(Color color) { clearColor.set(color); }
+    public final void setClearColor(Color color) {
+        requireFxThread("setClearColor");
+        clearColor.set(color);
+    }
 
     public final ReadOnlyLongProperty frameCountProperty() { return frameCount.getReadOnlyProperty(); }
     public final long getFrameCount() { return frameCount.get(); }
 
     /** Reports the active Prism backend; equivalent to {@link GpuPipeline#detect()}. */
-    public GpuPipeline getActivePipeline() {
+    public final GpuPipeline getActivePipeline() {
         return GpuPipeline.detect();
     }
 
@@ -227,6 +243,9 @@ public final class GpuCanvas extends Region {
 
     private void renderOneFrame(long nowNanos, double deltaSeconds) {
         if (disposed) return;
+        // Defensive: renderer is never null (setRenderer rejects null and the
+        // field is initialised to GpuRenderer.NOOP), but guard against a
+        // hypothetical future code path that clears the property directly.
         GpuRenderer current = renderer.get();
         if (current == null) {
             return;
@@ -304,15 +323,22 @@ public final class GpuCanvas extends Region {
 
         imageView.setImage(newImage);
 
+        // Defer closing the old arena to the next FX pulse so that any
+        // in-flight Prism upload that still references the previous
+        // PixelBuffer's ByteBuffer (which aliases the old MemorySegment)
+        // can complete before the memory is unmapped.
         if (oldArena != null) {
-            oldArena.close();
+            Platform.runLater(oldArena::close);
         }
         return true;
     }
 
     private void releaseSurface() {
         if (arena == null) return;
-        arena.close();
+        // Defer closing to the next FX pulse so that any in-flight Prism
+        // upload referencing the PixelBuffer's aliased ByteBuffer can
+        // complete before the backing MemorySegment is unmapped.
+        Arena old = arena;
         arena = null;
         pixels = null;
         pixelBuffer = null;
@@ -320,6 +346,7 @@ public final class GpuCanvas extends Region {
         surfaceHeight = 0;
         surfaceStride = 0;
         imageView.setImage(null);
+        Platform.runLater(old::close);
     }
 
     private void clearSurface() {
@@ -336,8 +363,16 @@ public final class GpuCanvas extends Region {
         byte gByte = (byte) Math.round(background.getGreen() * a * 255.0);
         byte bByte = (byte) Math.round(background.getBlue()  * a * 255.0);
 
+        // Fully-transparent clear color (e.g. Color.color(r, g, b, 0)):
+        // all premultiplied bytes are zero — use the fast bulk fill path.
+        if (aByte == 0 && rByte == 0 && gByte == 0 && bByte == 0) {
+            pixels.fill((byte) 0);
+            return;
+        }
+
         // Write the first pixel, then tile by doubling — O(log n) MemorySegment
-        // bulk copies. Same-segment overlap is well-defined (memmove semantics).
+        // bulk copies. The source region [0, copy) and destination region
+        // [filled, filled + copy) never overlap because copy ≤ filled.
         long total = pixels.byteSize();
         if (total < BPP) return;
         pixels.set(ValueLayout.JAVA_BYTE, 0L, bByte);
@@ -420,13 +455,17 @@ public final class GpuCanvas extends Region {
         animated.removeListener(animatedListener);
         sceneProperty().removeListener(sceneListener);
         if (arena != null) {
-            arena.close();
+            // Defer closing to the next FX pulse so that any in-flight Prism
+            // upload referencing the PixelBuffer's aliased ByteBuffer can
+            // complete before the backing MemorySegment is unmapped.
+            Arena old = arena;
             arena = null;
             pixels = null;
             pixelBuffer = null;
             surfaceWidth = 0;
             surfaceHeight = 0;
             surfaceStride = 0;
+            Platform.runLater(old::close);
         }
     }
 
