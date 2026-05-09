@@ -2,10 +2,10 @@ package com.benesquivelmusic.daw.app.ui.display;
 
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitor;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
+import com.benesquivelmusic.daw.fx.GpuCanvas;
+import com.benesquivelmusic.daw.fx.GpuRenderContext;
 import com.benesquivelmusic.daw.sdk.analysis.InputLevelMeter;
 
-import javafx.animation.AnimationTimer;
-import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.input.MouseButton;
 import javafx.scene.layout.Region;
@@ -31,9 +31,11 @@ import java.util.Objects;
  *     bound {@link InputLevelMonitorRegistry} ("clear all clips" gesture).</li>
  * </ul>
  *
- * <p>The strip is driven by a lightweight {@link AnimationTimer} that polls
- * {@link InputLevelMonitor#snapshot()} each frame; the monitor itself owns
- * real-time metering, so no audio-thread work happens in the UI layer.</p>
+ * <p>The strip composes a {@link GpuCanvas} from the {@code daw-fx} module:
+ * the GpuCanvas owns the size binding, per-frame
+ * {@link javafx.animation.AnimationTimer}, and scene-attachment gating. The
+ * per-frame poll of {@link InputLevelMonitor#snapshot()} happens inside the
+ * GpuRenderer, so there is exactly one timer per strip.</p>
  */
 public final class InputMeterStrip extends Region {
 
@@ -58,12 +60,12 @@ public final class InputMeterStrip extends Region {
     private static final Color CLIP_OFF = Color.web("#2a0000");
     private static final Color LED_BORDER = Color.web("#000000", 0.4);
 
-    private final Canvas canvas = new Canvas();
+    private final GpuCanvas gpuCanvas;
     private final InputLevelMonitor monitor;
     private final InputLevelMonitorRegistry registry;
 
     private InputLevelMeter lastSnapshot = InputLevelMeter.SILENCE;
-    private AnimationTimer timer;
+    private boolean disposed;
 
     /**
      * Creates a strip bound to a specific monitor and registry.
@@ -77,11 +79,12 @@ public final class InputMeterStrip extends Region {
         this.monitor = Objects.requireNonNull(monitor, "monitor must not be null");
         this.registry = Objects.requireNonNull(registry, "registry must not be null");
 
-        getChildren().add(canvas);
-        canvas.widthProperty().bind(widthProperty());
-        canvas.heightProperty().bind(heightProperty());
-        widthProperty().addListener((_, _, _) -> render());
-        heightProperty().addListener((_, _, _) -> render());
+        gpuCanvas = GpuCanvas.create()
+                .renderer(this::renderFrame)
+                .clearColor(BACKGROUND)
+                .animated(true)
+                .build();
+        getChildren().add(gpuCanvas);
 
         setOnMouseClicked(event -> {
             if (event.getButton() != MouseButton.PRIMARY) {
@@ -100,36 +103,38 @@ public final class InputMeterStrip extends Region {
             }
             // Reflect immediately in the UI without waiting for next tick.
             lastSnapshot = monitor.snapshot();
-            render();
+            gpuCanvas.requestRender();
         });
-
-        start();
     }
 
-    /** Starts the redraw timer. Idempotent. */
+    /**
+     * Starts the redraw loop (re-enables the GpuCanvas {@code AnimationTimer}).
+     * Idempotent. Note: the timer is gated by Scene attachment, so calling
+     * this on a detached strip does not actually start polling.
+     */
     public void start() {
-        if (timer != null) {
-            return;
-        }
-        timer = new AnimationTimer() {
-            @Override
-            public void handle(long now) {
-                InputLevelMeter snap = monitor.snapshot();
-                if (snap != lastSnapshot) {
-                    lastSnapshot = snap;
-                    render();
-                }
-            }
-        };
-        timer.start();
+        if (disposed) return;
+        gpuCanvas.setAnimated(true);
     }
 
-    /** Stops the redraw timer so this strip can be garbage-collected cleanly. */
+    /**
+     * Stops the redraw loop and disposes the GpuCanvas so this strip can be
+     * garbage-collected cleanly. After {@code stop()} the strip will no
+     * longer paint or poll the monitor.
+     */
     public void stop() {
-        if (timer != null) {
-            timer.stop();
-            timer = null;
-        }
+        dispose();
+    }
+
+    /**
+     * Stops the GpuCanvas render loop and releases its off-heap surface.
+     * Safe to call multiple times. Equivalent to {@link #stop()}.
+     */
+    public void dispose() {
+        if (disposed) return;
+        disposed = true;
+        gpuCanvas.setAnimated(false);
+        gpuCanvas.dispose();
     }
 
     /** Returns the monitor this strip is bound to. */
@@ -137,22 +142,30 @@ public final class InputMeterStrip extends Region {
         return monitor;
     }
 
-    @Override
-    protected void layoutChildren() {
-        super.layoutChildren();
-        render();
+    /** Returns the embedded {@link GpuCanvas}. Visible for tests. */
+    GpuCanvas getGpuCanvas() {
+        return gpuCanvas;
     }
 
-    private void render() {
-        double w = canvas.getWidth();
-        double h = canvas.getHeight();
+    @Override
+    protected void layoutChildren() {
+        gpuCanvas.resizeRelocate(0, 0, getWidth(), getHeight());
+    }
+
+    private void renderFrame(GpuRenderContext ctx) {
+        // Poll the monitor each frame inside the renderer. The monitor itself
+        // owns real-time metering, so no audio-thread work happens here.
+        InputLevelMeter snap = monitor.snapshot();
+        if (snap != null) {
+            lastSnapshot = snap;
+        }
+        renderInto(ctx.gc(), ctx.width(), ctx.height());
+    }
+
+    private void renderInto(GraphicsContext gc, double w, double h) {
         if (w <= 0 || h <= 0) {
             return;
         }
-
-        GraphicsContext gc = canvas.getGraphicsContext2D();
-        gc.setFill(BACKGROUND);
-        gc.fillRect(0, 0, w, h);
 
         double clipTop = 0.0;
         double clipBottom = CLIP_LED_HEIGHT;

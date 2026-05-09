@@ -57,7 +57,9 @@ final class IdleVisualizationAnimator {
         computeSpectrumBins(phaseSeconds, bins);
         spectrumDisplay.updateSpectrum(new SpectrumData(bins, IDLE_FFT_SIZE, IDLE_SAMPLE_RATE));
         LevelData level = computeLevelData(phaseSeconds);
-        levelMeterDisplay.update(level, (long) (deltaSeconds * 1_000_000_000L));
+        // The LevelMeterDisplay's GpuCanvas drives ballistics from its own
+        // per-frame deltaSeconds, so callers no longer compute deltas here.
+        levelMeterDisplay.update(level);
     }
 
     /**
