@@ -117,6 +117,10 @@ public enum DawAction {
             new KeyCodeCombination(KeyCode.I, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
     EXPORT_SESSION("Export Session", Category.EDITING,
             new KeyCodeCombination(KeyCode.E, KeyCombination.SHORTCUT_DOWN, KeyCombination.SHIFT_DOWN)),
+    // Story 186 — Offline Render Queue. Opens the dockable RenderQueueView
+    // which lists every queued / running / completed offline render job
+    // and surfaces per-job pause / resume / cancel controls.
+    EXPORT_RENDER_QUEUE("Render Queue\u2026", Category.EDITING, null),
 
     // ── Audio file import ───────────────────────────────────────────────────
     IMPORT_AUDIO_FILE("Import Audio File", Category.EDITING,

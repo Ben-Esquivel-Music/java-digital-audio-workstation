@@ -76,6 +76,11 @@ final class MenuConstructionService {
                 DawAction.SAVE, host::onSaveProject);
         MenuItem exportSessionItem = menuItem("Export Session\u2026", DawIcon.UPLOAD,
                 DawAction.EXPORT_SESSION, host::onExportSession);
+        // Story 186 — Offline Render Queue. Always-available entry that
+        // opens the queue UI even when no project is loaded (the queue is
+        // a tool, not a project state).
+        MenuItem renderQueueItem = menuItem("Render Queue\u2026", DawIcon.UPLOAD,
+                DawAction.EXPORT_RENDER_QUEUE, host::onOpenRenderQueue);
         MenuItem importAudioFileItem = menuItem("Import Audio File\u2026", DawIcon.WAVEFORM,
                 DawAction.IMPORT_AUDIO_FILE, host::onImportAudioFile);
 
@@ -101,7 +106,7 @@ final class MenuConstructionService {
                 duplicateItem, deleteItem);
 
         List<Menu> menus = List.of(
-                buildFileMenu(saveItem, exportSessionItem, importAudioFileItem),
+                buildFileMenu(saveItem, exportSessionItem, renderQueueItem, importAudioFileItem),
                 buildEditMenu(undoItem, redoItem, copyItem, cutItem,
                         pasteItem, duplicateItem, deleteItem),
                 buildTracksMenu(),
@@ -118,6 +123,7 @@ final class MenuConstructionService {
 
     private Menu buildFileMenu(MenuItem saveItem,
                                MenuItem exportSessionItem,
+                               MenuItem renderQueueItem,
                                MenuItem importAudioFileItem) {
         Menu fileMenu = new Menu("File");
         fileMenu.getStyleClass().add("daw-menu");
@@ -144,6 +150,7 @@ final class MenuConstructionService {
                 createCheckpoint, snapshots,
                 new SeparatorMenuItem(),
                 importSession, exportSessionItem,
+                renderQueueItem,
                 new SeparatorMenuItem(),
                 importAudioFileItem
         );

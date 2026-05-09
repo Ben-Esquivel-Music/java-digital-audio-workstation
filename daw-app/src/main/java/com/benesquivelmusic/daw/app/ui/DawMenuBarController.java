@@ -53,6 +53,13 @@ public final class DawMenuBarController {
         void onRecentProjects();
         void onImportSession();
         void onExportSession();
+        /**
+         * Story 186 — Offline Render Queue. Opens the {@code RenderQueueView}
+         * which displays every queued / running / completed render job and
+         * surfaces per-job pause / resume / cancel controls. Default no-op
+         * for tests.
+         */
+        default void onOpenRenderQueue() { }
         void onImportAudioFile();
         // Story 190 — Snapshot History Browser
         /** Open the snapshot history browser dialog. Default no-op for tests. */
