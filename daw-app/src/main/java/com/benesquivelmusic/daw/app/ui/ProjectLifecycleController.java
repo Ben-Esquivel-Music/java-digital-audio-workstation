@@ -680,8 +680,9 @@ final class ProjectLifecycleController {
                         + " over " + projectFile);
                 if (loadProjectFromPath(projectDir)) {
                     notificationBar.show(NotificationLevel.SUCCESS,
-                            "Rolled back to pre-migration version (v"
-                                    + report.fromVersion() + ")");
+                            "Restored on-disk project file to v"
+                                    + report.fromVersion()
+                                    + " (in-memory migrations were re-applied)");
                 }
             } else {
                 // No backup yet: the migrated DawProject lives only in
@@ -726,13 +727,7 @@ final class ProjectLifecycleController {
                         String name = p.getFileName().toString();
                         return name.startsWith(prefix) && name.endsWith(".bak");
                     })
-                    .max(Comparator.comparing(p -> {
-                        try {
-                            return Files.getLastModifiedTime(p);
-                        } catch (IOException e) {
-                            return java.nio.file.attribute.FileTime.fromMillis(0);
-                        }
-                    }));
+                    .max(Comparator.comparing(p -> p.getFileName().toString()));
         } catch (IOException e) {
             return Optional.empty();
         }

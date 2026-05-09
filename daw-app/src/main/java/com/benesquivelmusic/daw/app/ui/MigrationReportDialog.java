@@ -75,12 +75,14 @@ public final class MigrationReportDialog extends Dialog<Void> {
                 + report.fromVersion() + " to " + report.toVersion());
         setGraphic(IconNode.of(DawIcon.INFO, 24));
 
-        Label intro = new Label(
-                "The project file uses an older schema. The following migrations "
-                        + "were applied in memory. Nothing has been written to disk yet \u2014 "
-                        + "saving the project will commit the migration and back up the "
-                        + "original file as a sibling .bak. You can also roll back now to "
-                        + "discard the migrated version.");
+        String introText = "The project file uses an older schema. The following migrations "
+                + "were applied in memory. Nothing has been written to disk yet \u2014 "
+                + "saving the project will commit the migration and back up the "
+                + "original file as a sibling .bak.";
+        if (rollbackAction != null) {
+            introText += " You can also roll back now to discard the migrated version.";
+        }
+        Label intro = new Label(introText);
         intro.setWrapText(true);
         intro.setMaxWidth(480);
 
@@ -138,8 +140,11 @@ public final class MigrationReportDialog extends Dialog<Void> {
         confirm.setTitle("Roll back migration?");
         confirm.setHeaderText("Discard the migrated version?");
         confirm.setContentText(
-                "This will reload the pre-migration project file. Any in-memory "
-                        + "changes since the migrated load will be lost.");
+                "If a pre-migration backup (.bak) exists on disk, it will be "
+                        + "restored and the project will be reloaded. Otherwise, the "
+                        + "in-memory migrated project will be discarded (the on-disk "
+                        + "file has not been overwritten yet). Any unsaved changes "
+                        + "will be lost.");
         confirm.getButtonTypes().setAll(ButtonType.CANCEL, ButtonType.OK);
         DarkThemeHelper.applyTo(confirm);
         Optional<ButtonType> result = confirm.showAndWait();
