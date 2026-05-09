@@ -43,7 +43,8 @@ class DawActionTest {
         // factory keyboard shortcut. The DawAction javadoc explicitly
         // permits a {@code null} default for such actions.
         java.util.Set<DawAction> nullBindingAllowed = java.util.Set.of(
-                DawAction.TOGGLE_PRE_ROLL, DawAction.TOGGLE_POST_ROLL);
+                DawAction.TOGGLE_PRE_ROLL, DawAction.TOGGLE_POST_ROLL,
+                DawAction.TIME_STRETCH_CLIP, DawAction.PITCH_SHIFT_CLIP);
         for (DawAction action : DawAction.values()) {
             if (nullBindingAllowed.contains(action)) {
                 continue;

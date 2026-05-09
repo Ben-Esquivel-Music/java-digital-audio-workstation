@@ -128,6 +128,9 @@ class DawMenuBarControllerTest {
         @Override public void onUnfreezeFocusedTrack() { /* not used */ }
         @Override public void onFreezeSelectedTracks() { /* not used */ }
         @Override public void onUnfreezeSelectedTracks() { /* not used */ }
+        // Story 042 — clip stretch / shift entries (not exercised here)
+        @Override public void onTimeStretchClip() { /* not used */ }
+        @Override public void onPitchShiftClip() { /* not used */ }
         @Override public void onHelp() { helpCalls++; }
     }
 
@@ -318,7 +321,7 @@ class DawMenuBarControllerTest {
                     new DawMenuBarController(host, freshKeyBindingManager());
             controller.build();
 
-            Menu pluginsMenu = controller.getMenuBar().getMenus().get(2);
+            Menu pluginsMenu = controller.getMenuBar().getMenus().get(4);
             List<String> itemTexts = pluginsMenu.getItems().stream()
                     .filter(item -> !(item instanceof SeparatorMenuItem))
                     .map(MenuItem::getText)
@@ -340,7 +343,7 @@ class DawMenuBarControllerTest {
                     new DawMenuBarController(host, freshKeyBindingManager());
             controller.build();
 
-            Menu pluginsMenu = controller.getMenuBar().getMenus().get(2);
+            Menu pluginsMenu = controller.getMenuBar().getMenus().get(4);
             List<String> itemTexts = pluginsMenu.getItems().stream()
                     .filter(item -> !(item instanceof SeparatorMenuItem))
                     .map(MenuItem::getText)
@@ -358,7 +361,7 @@ class DawMenuBarControllerTest {
                     new DawMenuBarController(host, freshKeyBindingManager());
             controller.build();
 
-            Menu pluginsMenu = controller.getMenuBar().getMenus().get(2);
+            Menu pluginsMenu = controller.getMenuBar().getMenus().get(4);
             List<String> itemTexts = pluginsMenu.getItems().stream()
                     .filter(item -> !(item instanceof SeparatorMenuItem))
                     .map(MenuItem::getText)
@@ -376,7 +379,7 @@ class DawMenuBarControllerTest {
                     new DawMenuBarController(host, freshKeyBindingManager());
             controller.build();
 
-            Menu pluginsMenu = controller.getMenuBar().getMenus().get(2);
+            Menu pluginsMenu = controller.getMenuBar().getMenus().get(4);
             List<MenuItem> nonSeparators = pluginsMenu.getItems().stream()
                     .filter(item -> !(item instanceof SeparatorMenuItem))
                     .toList();
@@ -393,7 +396,7 @@ class DawMenuBarControllerTest {
                     new DawMenuBarController(host, freshKeyBindingManager());
             controller.build();
 
-            Menu pluginsMenu = controller.getMenuBar().getMenus().get(2);
+            Menu pluginsMenu = controller.getMenuBar().getMenus().get(4);
             long separatorCount = pluginsMenu.getItems().stream()
                     .filter(item -> item instanceof SeparatorMenuItem)
                     .count();
@@ -418,7 +421,7 @@ class DawMenuBarControllerTest {
                     new DawMenuBarController(host, freshKeyBindingManager());
             controller.build();
 
-            Menu pluginsMenu = controller.getMenuBar().getMenus().get(2);
+            Menu pluginsMenu = controller.getMenuBar().getMenus().get(4);
             // Find the first built-in plugin menu item (not Plugin Manager)
             List<BuiltInDawPlugin.MenuEntry> entries = BuiltInDawPlugin.menuEntries();
             assertThat(entries)
@@ -444,7 +447,7 @@ class DawMenuBarControllerTest {
                     new DawMenuBarController(host, freshKeyBindingManager());
             controller.build();
 
-            Menu pluginsMenu = controller.getMenuBar().getMenus().get(2);
+            Menu pluginsMenu = controller.getMenuBar().getMenus().get(4);
             MenuItem managePlugins = pluginsMenu.getItems().stream()
                     .filter(item -> "Plugin Manager\u2026".equals(item.getText()))
                     .findFirst().orElseThrow();
@@ -464,7 +467,7 @@ class DawMenuBarControllerTest {
                     new DawMenuBarController(host, freshKeyBindingManager());
             controller.build();
 
-            Menu windowMenu = controller.getMenuBar().getMenus().get(3);
+            Menu windowMenu = controller.getMenuBar().getMenus().get(5);
             List<String> itemTexts = windowMenu.getItems().stream()
                     .filter(item -> !(item instanceof SeparatorMenuItem))
                     .map(MenuItem::getText)
@@ -675,7 +678,7 @@ class DawMenuBarControllerTest {
                     new DawMenuBarController(host, freshKeyBindingManager());
             controller.build();
 
-            Menu windowMenu = controller.getMenuBar().getMenus().get(3);
+            Menu windowMenu = controller.getMenuBar().getMenus().get(5);
             MenuItem arrangement = windowMenu.getItems().stream()
                     .filter(item -> "Arrangement".equals(item.getText()))
                     .findFirst().orElseThrow();

@@ -105,6 +105,7 @@ final class MenuConstructionService {
                 buildEditMenu(undoItem, redoItem, copyItem, cutItem,
                         pasteItem, duplicateItem, deleteItem),
                 buildTracksMenu(),
+                buildClipMenu(),
                 buildPluginsMenu(),
                 buildWindowMenu(),
                 buildHelpMenu()
@@ -214,6 +215,27 @@ final class MenuConstructionService {
                 freezeItem, unfreezeItem, freezeAllSel, unfreezeAllSel);
 
         return tracksMenu;
+    }
+
+    // ── Clip Menu (Story 042 — Time-Stretching and Pitch-Shifting) ──────────
+
+    /**
+     * Builds the top-level <strong>Clip</strong> menu, which surfaces
+     * non-destructive operations on the currently-selected audio clip(s).
+     * Items are always enabled — the controller shows an info notification
+     * when nothing audio-shaped is selected.
+     */
+    private Menu buildClipMenu() {
+        Menu clipMenu = new Menu("Clip");
+        clipMenu.getStyleClass().add("daw-menu");
+
+        MenuItem timeStretch = menuItem("Time-Stretch\u2026", null,
+                DawAction.TIME_STRETCH_CLIP, host::onTimeStretchClip);
+        MenuItem pitchShift = menuItem("Pitch-Shift\u2026", null,
+                DawAction.PITCH_SHIFT_CLIP, host::onPitchShiftClip);
+
+        clipMenu.getItems().addAll(timeStretch, pitchShift);
+        return clipMenu;
     }
 
     // ── Plugins Menu ─────────────────────────────────────────────────────────

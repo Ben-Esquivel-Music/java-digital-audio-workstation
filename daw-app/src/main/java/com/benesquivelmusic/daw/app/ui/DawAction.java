@@ -246,7 +246,21 @@ public enum DawAction {
      * Settings → Key Bindings.
      */
     MIXER_TOGGLE_AB("Toggle Mixer A/B Snapshot", Category.MIXER,
-            new KeyCodeCombination(KeyCode.A, KeyCombination.SHIFT_DOWN));
+            new KeyCodeCombination(KeyCode.A, KeyCombination.SHIFT_DOWN)),
+
+    // ── Clip operations (Story 042 — Audio Time-Stretching and Pitch-Shifting) ─
+    /**
+     * Open the Time-Stretch dialog for the currently-selected audio clip(s).
+     * No default shortcut — surfaced via the Clip menu and the clip
+     * right-click context menu. Story 042.
+     */
+    TIME_STRETCH_CLIP("Time-Stretch Clip\u2026", Category.EDITING, null),
+    /**
+     * Open the Pitch-Shift dialog for the currently-selected audio clip(s).
+     * No default shortcut — surfaced via the Clip menu and the clip
+     * right-click context menu. Story 042.
+     */
+    PITCH_SHIFT_CLIP("Pitch-Shift Clip\u2026", Category.EDITING, null);
 
     /**
      * Returns the nine numbered workspace-switch actions in slot order

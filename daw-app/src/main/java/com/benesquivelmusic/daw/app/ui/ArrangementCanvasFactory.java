@@ -32,6 +32,9 @@ final class ArrangementCanvasFactory {
         void updateStatusBar(String text);
         RippleMode rippleMode();
         void showNotification(NotificationLevel level, String message);
+        // Story 042 — Time-Stretching and Pitch-Shifting clip context menu.
+        void onTimeStretchClip();
+        void onPitchShiftClip();
     }
 
     record Result(ArrangementCanvas canvas, TimelineRuler ruler, ClipInteractionController clipInteraction) {}
@@ -76,6 +79,8 @@ final class ArrangementCanvasFactory {
                     @Override public double projectTempoBpm() {
                         return host.project().getTransport().getTempo();
                     }
+                    @Override public void onTimeStretchClip() { host.onTimeStretchClip(); }
+                    @Override public void onPitchShiftClip() { host.onPitchShiftClip(); }
                 });
         clipInteraction.install();
 
