@@ -429,6 +429,10 @@ public final class MainController {
                         if (backupRetentionController != null) {
                             backupRetentionController.shutdown();
                         }
+                        if (lockIndicatorTimeline != null) {
+                            lockIndicatorTimeline.stop();
+                            lockIndicatorTimeline = null;
+                        }
                     });
                 }
             }
