@@ -96,20 +96,44 @@ class TransportControllerTest {
     void onTogglePreRollTwiceShouldDisablePreservingBarCounts() throws Exception {
         DawProject project = new DawProject("test",
                 new AudioFormat(48000, 2, 16, 256));
+        // Start with pre=3, post=1 enabled.
         project.getTransport().setPreRollPostRoll(PreRollPostRoll.enabled(3, 1));
         TransportController controller = newController(project);
 
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
-            controller.onTogglePreRoll(); // toggles enabled flag → false
+            controller.onTogglePreRoll(); // toggles pre off → preBars becomes 0
             latch.countDown();
         });
         assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
 
         PreRollPostRoll prpr = project.getTransport().getPreRollPostRoll();
-        assertThat(prpr.enabled()).isFalse();
-        assertThat(prpr.preBars()).isEqualTo(3);
+        // Pre is now off; post is untouched.
+        assertThat(prpr.preBars()).isEqualTo(0);
         assertThat(prpr.postBars()).isEqualTo(1);
+        // enabled is derived: still true because postBars > 0.
+        assertThat(prpr.enabled()).isTrue();
+    }
+
+    @Test
+    void onTogglePostRollShouldBeIndependentOfPreRoll() throws Exception {
+        DawProject project = new DawProject("test",
+                new AudioFormat(48000, 2, 16, 256));
+        // Pre-roll is active with 2 bars, post-roll is off.
+        project.getTransport().setPreRollPostRoll(PreRollPostRoll.enabled(2, 0));
+        TransportController controller = newController(project);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            controller.onTogglePostRoll(); // enables post independently
+            latch.countDown();
+        });
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+
+        PreRollPostRoll prpr = project.getTransport().getPreRollPostRoll();
+        assertThat(prpr.preBars()).isEqualTo(2);  // unchanged
+        assertThat(prpr.postBars()).isEqualTo(TransportController.DEFAULT_BARS);
+        assertThat(prpr.enabled()).isTrue();
     }
 
     @Test
@@ -161,10 +185,57 @@ class TransportControllerTest {
         });
         assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
 
-        // Spinner edits propagate to the transport configuration without
-        // changing the (currently disabled) enabled flag.
+        // Spinner edits propagate to the transport configuration; the
+        // enabled flag is derived (true because preBars = 5 > 0).
         PreRollPostRoll prpr = project.getTransport().getPreRollPostRoll();
         assertThat(prpr.preBars()).isEqualTo(5);
+        assertThat(prpr.enabled()).isTrue();
+    }
+
+    @Test
+    void spinnerSetToZeroShouldUpdateToggleState() throws Exception {
+        DawProject project = new DawProject("test",
+                new AudioFormat(48000, 2, 16, 256));
+        // Start with pre-roll active.
+        project.getTransport().setPreRollPostRoll(PreRollPostRoll.enabled(3, 0));
+        TransportController controller = newController(project);
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            controller.createPreRollPostRollControls();
+            // Pre-roll toggle should initially be selected.
+            assertThat(controller.preRollToggleForTest().isSelected()).isTrue();
+            // Set pre-roll spinner to 0 — should deselect the toggle.
+            controller.preRollSpinnerForTest().getValueFactory().setValue(0);
+            assertThat(controller.preRollToggleForTest().isSelected()).isFalse();
+            latch.countDown();
+        });
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+
+        PreRollPostRoll prpr = project.getTransport().getPreRollPostRoll();
+        assertThat(prpr.preBars()).isEqualTo(0);
         assertThat(prpr.enabled()).isFalse();
+    }
+
+    @Test
+    void postRollStopShouldUseRequestStop() throws Exception {
+        DawProject project = new DawProject("test",
+                new AudioFormat(48000, 2, 16, 256));
+        Transport transport = project.getTransport();
+        transport.setPreRollPostRoll(PreRollPostRoll.enabled(0, 2));
+        transport.play(); // Transport must be playing for requestStop to enter post-roll.
+
+        TransportController controller = newController(project);
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            controller.onStop();
+            latch.countDown();
+        });
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+
+        // Transport should be in post-roll (still playing), not stopped.
+        assertThat(transport.isInPostRoll()).isTrue();
+        assertThat(transport.getState()).isEqualTo(
+                com.benesquivelmusic.daw.core.transport.TransportState.PLAYING);
     }
 }
