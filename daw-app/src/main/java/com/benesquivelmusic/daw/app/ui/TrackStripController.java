@@ -104,6 +104,28 @@ final class TrackStripController {
      * UI).
      */
     private TrackTemplateController trackTemplateController;
+    /**
+     * Story 035 — Track Freeze and Unfreeze for CPU Management. When
+     * set, the per-track right-click menu grows "Freeze track" /
+     * "Unfreeze track" entries and the ❄ snowflake glyph is shown
+     * on frozen tracks. When {@code null}, both the menu items and
+     * the indicator are suppressed.
+     */
+    private TrackFreezeController trackFreezeController;
+    /**
+     * Per-track ❄ snowflake glyph mounted on each track strip. The
+     * label is always present in the strip but its visibility is
+     * driven from {@link Track#isFrozen()} <b>and</b> from
+     * {@code trackFreezeController != null} — the indicator is hidden
+     * whenever the controller is not wired (e.g. in tests).
+     *
+     * <p>Uses a {@link java.util.WeakHashMap} so entries are
+     * automatically collected when a track strip is removed and the
+     * {@link Track} instance is no longer strongly referenced
+     * elsewhere, preventing memory leaks on long sessions with
+     * frequent add/remove-track operations.</p>
+     */
+    private final java.util.Map<Track, Label> freezeIndicatorByTrack = new java.util.WeakHashMap<>();
 
     TrackStripController(DawProject project,
                          UndoManager undoManager,
@@ -157,6 +179,44 @@ final class TrackStripController {
         this.trackTemplateController = controller;
     }
 
+    /**
+     * Story 035 — wire the freeze controller used by both the
+     * right-click "Freeze track" / "Unfreeze track" menu items and the
+     * snowflake-tooltip cache-state lookup. Pass {@code null} to hide
+     * the entries and indicators.
+     */
+    void setTrackFreezeController(TrackFreezeController controller) {
+        this.trackFreezeController = controller;
+        refreshAllFreezeIndicators();
+    }
+
+    /**
+     * Updates the ❄ snowflake glyph on the given track's strip after
+     * its frozen state has changed. The indicator is only visible when
+     * the track is frozen <b>and</b> the freeze controller is wired.
+     * Safe to call when no strip exists for the track.
+     */
+    void refreshFreezeIndicator(Track track) {
+        Label indicator = freezeIndicatorByTrack.get(track);
+        if (indicator == null) return;
+        boolean show = track.isFrozen() && trackFreezeController != null;
+        indicator.setVisible(show);
+        indicator.setManaged(show);
+        if (show) {
+            String tip = trackFreezeController.tooltipFor(track);
+            if (!tip.isEmpty()) {
+                Tooltip.install(indicator, new Tooltip(tip));
+            }
+        }
+    }
+
+    /** Refreshes every track's snowflake indicator (post-batch-freeze). */
+    void refreshAllFreezeIndicators() {
+        for (Track t : freezeIndicatorByTrack.keySet()) {
+            refreshFreezeIndicator(t);
+        }
+    }
+
     HBox addTrackToUI(Track track) {
         return addTrackToUI(track, -1);
     }
@@ -196,6 +256,26 @@ final class TrackStripController {
             }
         });
         nameLabel.setTooltip(new Tooltip("Double-click to rename"));
+
+        // ── ❄ Snowflake "frozen" status indicator (Story 035) ──────────────
+        // Mounted on every track strip but only visible when the track
+        // is frozen. The tooltip distinguishes story-206 cache-hit
+        // freezes ("Loaded from cache") from fresh renders ("Rendered
+        // fresh, cached at <ISO timestamp>").
+        Label freezeIndicator = new Label("\u2744");
+        freezeIndicator.getStyleClass().add("track-freeze-indicator");
+        freezeIndicator.setStyle("-fx-text-fill: #5fa8ff; -fx-font-size: 14px;"
+                + " -fx-padding: 0 2 0 2;");
+        boolean showFrozen = track.isFrozen() && trackFreezeController != null;
+        freezeIndicator.setVisible(showFrozen);
+        freezeIndicator.setManaged(showFrozen);
+        if (showFrozen) {
+            String tip = trackFreezeController.tooltipFor(track);
+            if (tip != null && !tip.isEmpty()) {
+                Tooltip.install(freezeIndicator, new Tooltip(tip));
+            }
+        }
+        freezeIndicatorByTrack.put(track, freezeIndicator);
 
         // ── I/O routing indicator (Connectivity category) ───────────────────
         DawIcon ioIcon = switch (track.getType()) {
@@ -522,7 +602,7 @@ final class TrackStripController {
                 contextMenu.show(trackItem, e.getScreenX(), e.getScreenY()));
 
         trackItem.getChildren().addAll(
-                typeIcon, ioLabel, nameLabel, insertChain, volRow, panRow,
+                typeIcon, ioLabel, nameLabel, freezeIndicator, insertChain, volRow, panRow,
                 autoBtn, foldBtn, paramSelector, spacer, clipIndicatorSlot,
                 outputLabel, phaseBtn, muteBtn, soloBtn, armBtn, removeBtn);
         if (uiIndex >= 0 && uiIndex < trackListPanel.getChildren().size()) {
@@ -1275,6 +1355,26 @@ final class TrackStripController {
             }
         });
 
+        // ── Story 035: Freeze / Unfreeze entries on the track context menu ──
+        // Both items use a Unicode snowflake glyph because the icon
+        // pack does not yet have a dedicated snowflake SVG. The items
+        // delegate to TrackFreezeController which is responsible for
+        // running the offline render on a virtual thread, surfacing a
+        // modeless TaskProgressIndicator, and wrapping the freeze in
+        // a single undo step.
+        MenuItem freezeItem = new MenuItem("\u2744 Freeze track");
+        freezeItem.setOnAction(_ -> {
+            if (trackFreezeController != null) {
+                trackFreezeController.freezeTrack(track);
+            }
+        });
+        MenuItem unfreezeItem = new MenuItem("\u2744 Unfreeze track");
+        unfreezeItem.setOnAction(_ -> {
+            if (trackFreezeController != null) {
+                trackFreezeController.unfreezeTrack(track);
+            }
+        });
+
         menu.getItems().addAll(
                 copyItem, pasteItem, new SeparatorMenuItem(),
                 splitItem, trimItem, cropItem, moveItem, reverseItem, new SeparatorMenuItem(),
@@ -1287,6 +1387,13 @@ final class TrackStripController {
                 favoriteItem, playlistItem, filmScoreItem, notifyItem, repeatOneItem, renameItem);
         if (trackTemplateController != null) {
             menu.getItems().addAll(new SeparatorMenuItem(), saveAsTemplateItem);
+        }
+        // Story 035 — append Freeze / Unfreeze (always available when
+        // the freeze controller is wired). The items toggle their
+        // disabled state based on the track's current frozen flag so
+        // the user is never offered a no-op action.
+        if (trackFreezeController != null) {
+            menu.getItems().addAll(new SeparatorMenuItem(), freezeItem, unfreezeItem);
         }
 
         // Recalculate dynamic enabled/disabled states each time the menu is shown
@@ -1326,6 +1433,13 @@ final class TrackStripController {
 
             exportWav.setDisable(noClips);
             exportWav.setStyle(noClips ? "-fx-opacity: 0.5;" : "");
+
+            // Story 035 — freeze and unfreeze are mutually exclusive.
+            boolean isFrozen = track.isFrozen();
+            freezeItem.setDisable(isFrozen);
+            freezeItem.setStyle(isFrozen ? "-fx-opacity: 0.5;" : "");
+            unfreezeItem.setDisable(!isFrozen);
+            unfreezeItem.setStyle(!isFrozen ? "-fx-opacity: 0.5;" : "");
         });
 
         return menu;

@@ -164,6 +164,13 @@ public final class MixerView extends VBox {
      * {@code null} hides the entries.
      */
     private TrackTemplateController trackTemplateController;
+    /**
+     * Story 035 — When wired, the per-channel right-click menu grows
+     * "Freeze track" / "Unfreeze track" entries and the channel-name
+     * area shows a small ❄ snowflake glyph for frozen tracks. The
+     * controller also provides the cache-state tooltip.
+     */
+    private TrackFreezeController trackFreezeController;
 
     /**
      * Creates a new mixer view bound to the given project.
@@ -511,6 +518,18 @@ public final class MixerView extends VBox {
     }
 
     /**
+     * Wires the {@link TrackFreezeController} that powers the per-channel
+     * "Freeze track" / "Unfreeze track" right-click entries and the
+     * inline ❄ snowflake glyph next to the channel name (Story 035).
+     * Pass {@code null} to suppress both the context-menu entries and
+     * the snowflake badge. {@link #refresh()} must be called after
+     * binding so the strips are rebuilt with the new state.
+     */
+    public void setTrackFreezeController(TrackFreezeController controller) {
+        this.trackFreezeController = controller;
+    }
+
+    /**
      * Binds an {@link InputLevelMonitorRegistry} so that armed tracks show
      * an input-signal meter column with a latching clip LED (user story 137).
      *
@@ -842,6 +861,20 @@ public final class MixerView extends VBox {
                         .applyChannelStripPreset(mixerChannel));
                 stripMenu.getItems().addAll(saveStripItem, applyStripItem);
             }
+            // ── Story 035: Freeze / Unfreeze on the mixer strip menu ────────
+            if (trackFreezeController != null) {
+                stripMenu.getItems().add(new SeparatorMenuItem());
+                MenuItem freezeStrip = new MenuItem("\u2744 Freeze track");
+                freezeStrip.setOnAction(_ -> trackFreezeController.freezeTrack(track));
+                MenuItem unfreezeStrip = new MenuItem("\u2744 Unfreeze track");
+                unfreezeStrip.setOnAction(_ -> trackFreezeController.unfreezeTrack(track));
+                stripMenu.getItems().addAll(freezeStrip, unfreezeStrip);
+                stripMenu.setOnShowing(_ -> {
+                    boolean isFrozen = track.isFrozen();
+                    freezeStrip.setDisable(isFrozen);
+                    unfreezeStrip.setDisable(!isFrozen);
+                });
+            }
             strip.setOnContextMenuRequested(e ->
                     stripMenu.show(strip, e.getScreenX(), e.getScreenY()));
         }
@@ -850,6 +883,22 @@ public final class MixerView extends VBox {
         Label nameLabel = new Label(track.getName());
         nameLabel.getStyleClass().add("mixer-channel-name");
         nameLabel.setMaxWidth(CHANNEL_WIDTH - 12);
+
+        // ── ❄ Snowflake "frozen" status indicator (Story 035) ──────────────
+        // A small snowflake badge is mounted just under the channel
+        // name on every frozen track, but only when the freeze
+        // controller is wired. When null, the badge is suppressed so
+        // the API contract of setTrackFreezeController is honoured.
+        Label freezeBadge = null;
+        if (track.isFrozen() && trackFreezeController != null) {
+            freezeBadge = new Label("\u2744");
+            freezeBadge.setStyle("-fx-text-fill: #5fa8ff; -fx-font-size: 12px;"
+                    + " -fx-padding: 0 2 0 2;");
+            String tip = trackFreezeController.tooltipFor(track);
+            if (tip != null && !tip.isEmpty()) {
+                Tooltip.install(freezeBadge, new Tooltip(tip));
+            }
+        }
 
         // ── L / R badge for a member of a stereo pair (Story 159) ─────────
         // The chain-link manager owns the (left, right) ordering — render
@@ -1201,6 +1250,14 @@ public final class MixerView extends VBox {
         if (lrBadge != null) {
             strip.getChildren().add(
                     strip.getChildren().indexOf(nameLabel) + 1, lrBadge);
+        }
+        // ❄ Snowflake "frozen" badge (Story 035) — inserted right after
+        // nameLabel (and after the L/R badge if any) so it renders
+        // immediately beneath the channel name on frozen tracks.
+        if (freezeBadge != null) {
+            int insertAt = strip.getChildren().indexOf(nameLabel) + 1;
+            if (lrBadge != null) insertAt += 1;
+            strip.getChildren().add(insertAt, freezeBadge);
         }
 
         return strip;

@@ -194,9 +194,24 @@ final class MenuConstructionService {
         MenuItem manageTemplates = menuItem("Manage Templates\u2026", DawIcon.LIBRARY,
                 null, host::onManageTemplates);
 
+        // Story 035 — Track Freeze and Unfreeze for CPU Management.
+        // Operates on the focused track (single-track variants) or every
+        // currently-selected track (batch variants). Batch freeze invokes
+        // BatchFreezeTracksAction so the entire batch is one undo step.
+        MenuItem freezeItem = menuItem("Freeze Focused Track", null,
+                DawAction.FREEZE_FOCUSED_TRACK, host::onFreezeFocusedTrack);
+        MenuItem unfreezeItem = menuItem("Unfreeze Focused Track", null,
+                DawAction.UNFREEZE_FOCUSED_TRACK, host::onUnfreezeFocusedTrack);
+        MenuItem freezeAllSel = menuItem("Freeze All Selected", null,
+                DawAction.FREEZE_SELECTED_TRACKS, host::onFreezeSelectedTracks);
+        MenuItem unfreezeAllSel = menuItem("Unfreeze All Selected", null,
+                DawAction.UNFREEZE_SELECTED_TRACKS, host::onUnfreezeSelectedTracks);
+
         tracksMenu.getItems().addAll(foldFocused, foldSelected,
                 new SeparatorMenuItem(), foldAllAutomation,
-                new SeparatorMenuItem(), addFromTemplate, manageTemplates);
+                new SeparatorMenuItem(), addFromTemplate, manageTemplates,
+                new SeparatorMenuItem(),
+                freezeItem, unfreezeItem, freezeAllSel, unfreezeAllSel);
 
         return tracksMenu;
     }

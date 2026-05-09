@@ -216,6 +216,19 @@ public final class UndoManager {
         fireHistoryChanged();
     }
 
+    /**
+     * Clears only the redo stack, leaving the undo stack intact.
+     *
+     * <p>Useful when a cancelled or partially-executed action has been
+     * undone and should not remain available as a "redo" option —
+     * for example after a batch-freeze was cancelled mid-way and the
+     * partial result was rolled back.</p>
+     */
+    public void clearRedoStack() {
+        redoStack.clear();
+        fireHistoryChanged();
+    }
+
     /** Returns the maximum history depth. */
     public int getMaxHistory() {
         return maxHistory;
