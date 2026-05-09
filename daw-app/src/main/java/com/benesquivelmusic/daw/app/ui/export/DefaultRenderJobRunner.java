@@ -37,8 +37,9 @@ import java.util.Objects;
  * progress is emitted, partial outputs are deleted on cancel, and the
  * queue is persisted across restarts.</p>
  *
- * <p>This class is package-private to the {@code export} UI sub-package
- * because it is an integration adapter, not part of the SDK API.</p>
+ * <p>This class is public so {@code MainController} (in a sibling
+ * package) can instantiate it. It is an application integration adapter,
+ * not part of the SDK API.</p>
  */
 public final class DefaultRenderJobRunner implements RenderJobRunner {
 
@@ -75,29 +76,36 @@ public final class DefaultRenderJobRunner implements RenderJobRunner {
     // ── per-type handlers ───────────────────────────────────────────────
 
     private void renderStereoMaster(RenderJob.StereoMasterJob job, JobControl control) throws Exception {
-        runWithStandardPhases(job.primaryOutput(), control,
+        runWithStandardPhases(job.primaryOutput(), OutputShape.FILE, control,
                 "Stereo master: " + job.displayName());
     }
 
     private void renderStemBundle(RenderJob.StemBundleJob job, JobControl control) throws Exception {
-        runWithStandardPhases(job.primaryOutput(), control,
+        // StemBundleJob.primaryOutput() is the directory that receives
+        // one rendered file per StemSpec.
+        runWithStandardPhases(job.primaryOutput(), OutputShape.DIRECTORY, control,
                 "Stems: " + job.displayName() + " (" + job.stems().size() + ")");
     }
 
     private void renderAtmosBundle(RenderJob.AtmosBundleJob job, JobControl control) throws Exception {
-        runWithStandardPhases(job.primaryOutput(), control,
+        // AtmosBundleJob.primaryOutput() is a single ADM BWF file.
+        runWithStandardPhases(job.primaryOutput(), OutputShape.FILE, control,
                 "ADM BWF: " + job.displayName());
     }
 
     private void renderDdpImage(RenderJob.DdpImageJob job, JobControl control) throws Exception {
-        runWithStandardPhases(job.primaryOutput(), control,
+        // DDP images are directory-shaped (one folder with descriptor + data files).
+        runWithStandardPhases(job.primaryOutput(), OutputShape.DIRECTORY, control,
                 "DDP image: " + job.displayName());
     }
 
     private void renderBundleDeliverable(RenderJob.BundleDeliverableJob job, JobControl control) throws Exception {
-        runWithStandardPhases(job.primaryOutput(), control,
+        runWithStandardPhases(job.primaryOutput(), OutputShape.FILE, control,
                 "Deliverable bundle: " + job.displayName());
     }
+
+    /** Whether a job's primary output is a single file or a directory. */
+    enum OutputShape { FILE, DIRECTORY }
 
     // ── shared progress + write path ────────────────────────────────────
 
@@ -108,7 +116,8 @@ public final class DefaultRenderJobRunner implements RenderJobRunner {
      * touched disk. Each phase performs a cooperative checkpoint so
      * pause / cancel take effect promptly.
      */
-    private void runWithStandardPhases(Path primaryOutput, JobControl control, String label) throws Exception {
+    private void runWithStandardPhases(Path primaryOutput, OutputShape shape,
+                                       JobControl control, String label) throws Exception {
         // Register the output for cleanup BEFORE we touch it, so cancelling
         // immediately after this call still tears down any partial write.
         control.registerCleanupPath(primaryOutput);
@@ -121,7 +130,7 @@ public final class DefaultRenderJobRunner implements RenderJobRunner {
         // even though the placeholder write is essentially instantaneous.
         control.publishProgress(label + " — encoding", 0.60);
 
-        fs.writePlaceholder(primaryOutput, label);
+        fs.writePlaceholder(primaryOutput, shape, label);
 
         control.publishProgress(label + " — finalizing", 0.90);
         control.publishProgress(label + " — done", 1.00);
@@ -140,14 +149,8 @@ public final class DefaultRenderJobRunner implements RenderJobRunner {
                 Files.createDirectories(parent);
             }
         }
-        default void writePlaceholder(Path output, String label) throws IOException {
-            // A render job's primary output may be a directory (stems,
-            // DDP image, ADM BWF folder). Treat directory-shaped outputs
-            // by creating the directory; treat file-shaped outputs (any
-            // extension) by writing a small marker file.
-            String name = output.getFileName() == null ? "" : output.getFileName().toString();
-            int dot = name.lastIndexOf('.');
-            if (dot < 0) {
+        default void writePlaceholder(Path output, OutputShape shape, String label) throws IOException {
+            if (shape == OutputShape.DIRECTORY) {
                 Files.createDirectories(output);
             } else {
                 Files.writeString(output, "render-queue placeholder: " + label + System.lineSeparator());

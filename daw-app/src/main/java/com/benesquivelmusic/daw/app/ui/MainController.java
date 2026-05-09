@@ -1815,8 +1815,15 @@ public final class MainController {
         renderQueue.setCompletionNotifier(outcome -> {
             String msg = switch (outcome.phase()) {
                 case COMPLETED -> "Render completed: " + outcome.job().displayName();
-                case FAILED    -> "Render failed: " + outcome.job().displayName()
-                        + (outcome.error() == null ? "" : " (" + outcome.error().getMessage() + ")");
+                case FAILED    -> {
+                    String detail = "";
+                    if (outcome.error() != null) {
+                        String emsg = outcome.error().getMessage();
+                        detail = " (" + (emsg != null && !emsg.isBlank()
+                                ? emsg : outcome.error().getClass().getSimpleName()) + ")";
+                    }
+                    yield "Render failed: " + outcome.job().displayName() + detail;
+                }
                 case CANCELLED -> "Render cancelled: " + outcome.job().displayName();
                 default        -> "Render: " + outcome.job().displayName();
             };
@@ -1830,8 +1837,7 @@ public final class MainController {
                 if (notificationBar != null) {
                     notificationBar.show(level, msg);
                 }
-                // Optional OS-level audio toast — uses the AWT Toolkit beep
-                // which is the same pattern used elsewhere in the codebase.
+                // Optional OS-level audio cue via AWT Toolkit.beep().
                 try {
                     java.awt.Toolkit.getDefaultToolkit().beep();
                 } catch (RuntimeException ignored) {
@@ -1864,11 +1870,14 @@ public final class MainController {
                 javafx.scene.control.ButtonBar.ButtonData.CANCEL_CLOSE);
         javafx.scene.control.Alert alert = new javafx.scene.control.Alert(
                 javafx.scene.control.Alert.AlertType.CONFIRMATION);
+        if (rootPane.getScene() != null && rootPane.getScene().getWindow() != null) {
+            alert.initOwner(rootPane.getScene().getWindow());
+        }
         alert.setTitle("Resume Render Queue");
         alert.setHeaderText("Found " + jobCount + " job(s) from previous session");
         alert.setContentText(
                 "Resume — keep the previous queue snapshot.\n"
-              + "Retry — keep the snapshot and re-attempt failed jobs.\n"
+              + "Retry — keep the snapshot (retry not yet implemented).\n"
               + "Clear — discard the persisted queue file.");
         alert.getButtonTypes().setAll(resume, retry, clear);
         DarkThemeHelper.applyTo(alert);
@@ -1903,6 +1912,9 @@ public final class MainController {
         renderQueueView = new com.benesquivelmusic.daw.app.ui.export.RenderQueueView(queue);
         renderQueueStage = new Stage(javafx.stage.StageStyle.UTILITY);
         renderQueueStage.setTitle("Render Queue");
+        if (rootPane.getScene() != null && rootPane.getScene().getWindow() != null) {
+            renderQueueStage.initOwner(rootPane.getScene().getWindow());
+        }
         javafx.scene.Scene scene = new javafx.scene.Scene(renderQueueView);
         DarkThemeHelper.applyTo(scene);
         renderQueueStage.setScene(scene);
@@ -1923,6 +1935,11 @@ public final class MainController {
      * survives an app restart.
      */
     private void disposeRenderQueue() {
+        // Close the queue view window first so the user cannot interact
+        // with a shutting-down queue.
+        if (renderQueueStage != null) {
+            renderQueueStage.close();
+        }
         if (renderQueue == null) return;
         try {
             renderQueue.persist();
