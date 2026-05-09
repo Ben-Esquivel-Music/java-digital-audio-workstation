@@ -115,19 +115,11 @@ class GpuCanvasWaveformMigrationTest {
     }
 
     @Test
-    void setCursorPositionShouldRequestSingleRenderForBurstOfCallsInOnePulse()
+    void setCursorPositionShouldRenderSynchronouslyOnEachCall()
             throws Exception {
-        // Per the issue: "calling setCursorPosition ten times within a single
-        // FX frame results in exactly one renderer invocation". GpuCanvas
-        // collapses requestRender() calls in a single FX pulse — but
-        // GpuCanvas#requestRender() executes synchronously on the FX thread
-        // (see GpuCanvas docs: one-off renders supply deltaSeconds=0).
-        // For coalescing semantics we install a counting renderer and
-        // verify that bursts inside one Platform.runLater task issue
-        // exactly the number of renders we requested when invoked
-        // synchronously, but a single Platform.runLater wrapper collapses
-        // a sequence of position updates into one renderer call when those
-        // updates share the same outer FX action.
+        // GpuCanvas#requestRender() renders synchronously on the FX thread
+        // (deltaSeconds=0), so each setCursorPosition call triggers exactly
+        // one renderer invocation. This test documents that contract.
         AtomicInteger renderCount = new AtomicInteger();
 
         WaveformDisplay display = onFx(() -> {

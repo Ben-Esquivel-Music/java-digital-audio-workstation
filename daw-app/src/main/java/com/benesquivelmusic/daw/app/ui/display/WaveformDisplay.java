@@ -8,7 +8,7 @@ import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
 
 /**
- * Canvas-based waveform visualization component with smooth animations.
+ * GPU-accelerated waveform visualization component with smooth animations.
  *
  * <p>Renders audio waveform overviews using min/max peak envelopes and
  * RMS fills, with configurable colors and an animated playback cursor.
@@ -20,10 +20,10 @@ import javafx.scene.paint.Color;
  * {@link javafx.animation.AnimationTimer}, scene-attachment gating, and
  * the background clear, so the display itself only contributes the
  * per-frame draw routine. Property setters call
- * {@link GpuCanvas#requestRender()} which coalesces multiple calls in a
- * single FX pulse into one redraw — a sample-preview cursor that is
- * updated 50 times per frame issues exactly one renderer invocation per
- * frame, not 50.</p>
+ * {@link GpuCanvas#requestRender()} to trigger a redraw.
+ * {@code requestRender()} renders synchronously on the FX thread (with
+ * {@code deltaSeconds == 0}); callers that need frame-rate-independent
+ * cursor advance should use {@link #setAnimated(boolean)} instead.</p>
  *
  * <p>While a cursor is being animated (e.g. during browser sample preview
  * playback) call {@link #setAnimated(boolean) setAnimated(true)} to drive
@@ -76,8 +76,10 @@ public final class WaveformDisplay extends Region {
     /**
      * Sets the playback cursor position (0.0 to 1.0) and requests a re-render.
      *
-     * <p>Multiple calls within the same FX pulse are coalesced by
-     * {@link GpuCanvas#requestRender()} into a single renderer invocation.</p>
+     * <p>{@link GpuCanvas#requestRender()} renders synchronously on the FX
+     * thread, so each call triggers one renderer invocation. For
+     * frame-rate-independent cursor advance, prefer
+     * {@link #setAnimated(boolean)} with {@link #setCursorVelocity(double)}.</p>
      *
      * @param position normalized cursor position
      */

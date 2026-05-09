@@ -146,10 +146,6 @@ final class AudioEditorView extends VBox {
     }
 
     /**
-     * Enables or disables the Trim, Fade In, and Fade Out buttons based on
-     * whether the selected track is an audio track with at least one clip.
-     */
-    /**
      * Stops the embedded {@link WaveformDisplay}'s render loop and
      * releases its off-heap surface. Must be called from the JavaFX
      * Application Thread. Safe to call multiple times.
@@ -158,6 +154,10 @@ final class AudioEditorView extends VBox {
         waveformDisplay.dispose();
     }
 
+    /**
+     * Enables or disables the Trim, Fade In, and Fade Out buttons based on
+     * whether the selected track is an audio track with at least one clip.
+     */
     private void updateAudioHandleButtons() {
         boolean disabled = selectedTrack == null
                 || selectedTrack.getType() == TrackType.MIDI
