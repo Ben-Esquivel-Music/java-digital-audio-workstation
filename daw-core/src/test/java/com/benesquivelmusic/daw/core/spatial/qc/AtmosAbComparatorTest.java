@@ -133,7 +133,7 @@ class AtmosAbComparatorTest {
 
         Random rng = new Random(0xBEEF);
         for (int c = 0; c < channels; c++) {
-            // Each channel has a different amplitude: -6 dB per channel step
+            // Each channel has a different amplitude: -3 dB per channel step
             double linearGain = Math.pow(10.0, -(c * 3.0) / 20.0);
             for (int i = 0; i < frames; i++) {
                 reference[c][i] = (float) (rng.nextGaussian() * 0.25 * linearGain);
@@ -169,7 +169,7 @@ class AtmosAbComparatorTest {
      * artificially -3 dB skewed channel on a 7.1.4 bed.
      */
     @Test
-    void autoTrimBringsSkewedChannelDeltaBelowPointOneDe() {
+    void autoTrimBringsSkewedChannelDeltaBelowPointOneDb() {
         int channels = 12; // 7.1.4
         float[][] reference = whiteNoiseBed(channels, 48_000, 0xCAFE);
         float[][] mix = deepCopy(reference);

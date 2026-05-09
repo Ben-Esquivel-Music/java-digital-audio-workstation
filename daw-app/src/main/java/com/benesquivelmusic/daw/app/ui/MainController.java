@@ -169,10 +169,12 @@ public final class MainController {
     private TrackFreezeController trackFreezeController;
     /**
      * Story 175 — Atmos A/B comparison view. Created on demand when the
-     * user opens "QC → Immersive A/B…" and disposed when the containing
-     * tab / dock pane is closed.
+     * user opens "QC → Immersive A/B…" and disposed when the window is
+     * closed.
      */
     private com.benesquivelmusic.daw.app.ui.spatial.AtmosAbView atmosAbView;
+    /** The floating window hosting {@link #atmosAbView}. */
+    private Stage atmosAbStage;
 
     private ArrangementCanvas arrangementCanvas;
     private ClipInteractionController clipInteractionController;
@@ -1661,40 +1663,31 @@ public final class MainController {
 
     /**
      * Opens the {@link com.benesquivelmusic.daw.app.ui.spatial.AtmosAbView}
-     * in a new tab inside the centre content area. The view is constructed on
-     * demand and disposed when the tab is closed.
+     * in a separate utility window. The view is constructed on demand and
+     * disposed when the window is closed. Using a separate {@link Stage}
+     * avoids conflicts with the main view-navigation center pane.
      */
     void onOpenImmersiveAb() {
-        if (atmosAbView == null) {
-            atmosAbView = new com.benesquivelmusic.daw.app.ui.spatial.AtmosAbView(
-                    project.getReferenceTrackManager());
-        }
-        // If the view is already showing (e.g. already in a tab), just
-        // re-focus it. Otherwise, wrap it in a tab.
-        if (atmosAbView.getParent() != null) {
-            atmosAbView.requestFocus();
+        if (atmosAbStage != null) {
+            atmosAbStage.toFront();
+            atmosAbStage.requestFocus();
             return;
         }
-        javafx.scene.control.Tab tab = new javafx.scene.control.Tab("Immersive A/B", atmosAbView);
-        tab.setClosable(true);
-        tab.setOnClosed(_ -> atmosAbView = null);
-        // Find or create a TabPane in the centre area of the rootPane.
-        Node centre = rootPane.getCenter();
-        javafx.scene.control.TabPane tabPane;
-        if (centre instanceof javafx.scene.control.TabPane tp) {
-            tabPane = tp;
-        } else {
-            tabPane = new javafx.scene.control.TabPane();
-            if (centre != null) {
-                javafx.scene.control.Tab existingTab =
-                        new javafx.scene.control.Tab("Main", centre);
-                existingTab.setClosable(false);
-                tabPane.getTabs().add(existingTab);
-            }
-            rootPane.setCenter(tabPane);
-        }
-        tabPane.getTabs().add(tab);
-        tabPane.getSelectionModel().select(tab);
+        atmosAbView = new com.benesquivelmusic.daw.app.ui.spatial.AtmosAbView(
+                project.getReferenceTrackManager());
+        atmosAbStage = new Stage(javafx.stage.StageStyle.UTILITY);
+        atmosAbStage.setTitle("Immersive A/B — QC");
+        javafx.scene.Scene scene = new javafx.scene.Scene(atmosAbView);
+        DarkThemeHelper.applyTo(scene);
+        atmosAbStage.setScene(scene);
+        atmosAbStage.setMinWidth(600);
+        atmosAbStage.setMinHeight(320);
+        atmosAbStage.setOnHidden(_ -> {
+            atmosAbView = null;
+            atmosAbStage = null;
+        });
+        atmosAbStage.show();
+        atmosAbStage.toFront();
     }
 
     /**

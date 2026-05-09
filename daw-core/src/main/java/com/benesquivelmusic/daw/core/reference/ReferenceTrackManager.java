@@ -243,10 +243,10 @@ public final class ReferenceTrackManager {
         for (ReferenceTrack existing : referenceTracks) {
             ImmersiveFormat existingFormat = existing.getImmersiveFormat();
             if (existingFormat != null && existingFormat != candidateFormat) {
-                return "Channel layout mismatch: reference uses "
+                return "Channel layout mismatch: new reference uses "
                         + candidateFormat.displayName()
                         + " but existing reference \""
-                        + existing.getName() + "\" uses "
+                        + existing.getName() + "\" already uses "
                         + existingFormat.displayName();
             }
         }
