@@ -496,6 +496,47 @@ final class DefaultAudioEngineController implements AudioEngineController {
         backend.deviceEvents().subscribe(new DeviceEventSubscriber());
     }
 
+    /**
+     * Routes a sample-rate change to the SDK backend identified by
+     * {@code backendName} (story 220). Resolves the backend through
+     * the {@link AudioBackendSelector} — the same lookup used by
+     * {@link #listDevices(String)} — so the call reaches the
+     * {@link com.benesquivelmusic.daw.sdk.audio.AsioBackend}'s
+     * {@code ASIOSetSampleRate} bridge. Backends that do not support
+     * sample-rate selection (legacy {@code "PortAudio"} /
+     * {@code "Java Sound"}, or any backend whose default
+     * {@link AudioBackend#setSampleRate(DeviceId, double)} throws
+     * {@link UnsupportedOperationException}) are treated as a no-op so
+     * the dialog flow still falls through to the model-only update.
+     *
+     * <p>{@link com.benesquivelmusic.daw.sdk.audio.AudioBackendException}
+     * is rethrown so the dialog can suppress the model update and
+     * surface a notification, matching the issue's contract.</p>
+     */
+    @Override
+    public void setSampleRate(String backendName, String outputDeviceName, double rate) {
+        if (backendName == null || backendName.isBlank() || BACKEND_NONE.equals(backendName)) {
+            return;
+        }
+        // Skip the legacy NativeAudioBackend names — those backends
+        // negotiate the rate at stream open and have no separate
+        // setter; the dialog's reconfigure step will reopen them.
+        if ("PortAudio".equals(backendName) || "Java Sound".equals(backendName)) {
+            return;
+        }
+        try (AudioBackend sdk = backendSelector.selectByName(backendName)) {
+            if (sdk == null) {
+                return;
+            }
+            DeviceId deviceId = new DeviceId(backendName,
+                    outputDeviceName == null ? "" : outputDeviceName);
+            sdk.setSampleRate(deviceId, rate);
+        } catch (UnsupportedOperationException ignored) {
+            // Backend does not support live sample-rate selection;
+            // fall through and let the dialog persist the new rate.
+        }
+    }
+
     /** Returns the device this controller is currently watching, or empty when none is bound. */
     Optional<DeviceId> getActiveDevice() {
         return Optional.ofNullable(activeDevice.get());

@@ -455,6 +455,31 @@ public interface AudioEngineController {
     }
 
     /**
+     * Asks the active backend to switch the named output device to the
+     * given sample rate. The Audio Settings dialog calls this when the
+     * user picks a new entry in the Sample Rate combo, *before*
+     * persisting the value to the {@link SettingsModel}, so that a
+     * driver rejection keeps the previously persisted rate and the
+     * engine never reopens at a rate the driver is not actually
+     * running at (story 220).
+     *
+     * <p>The default implementation is a no-op which is safe for test
+     * stubs and for backends that fix the rate at stream open
+     * (WASAPI / JDK mixer).</p>
+     *
+     * @param backendName       backend name (e.g. {@code "ASIO"})
+     * @param outputDeviceName  output device name; empty for the
+     *                          default device
+     * @param rate              the requested sample rate in Hz; must
+     *                          be positive and finite
+     * @throws com.benesquivelmusic.daw.sdk.audio.AudioBackendException
+     *         if the driver rejects the requested rate
+     */
+    default void setSampleRate(String backendName, String outputDeviceName, double rate) {
+        // no-op for test stubs
+    }
+
+    /**
      * Returns a {@link Flow.Publisher} that emits a
      * {@link com.benesquivelmusic.daw.sdk.audio.ClockLockEvent} every
      * time the active backend reports a change in external-clock lock
