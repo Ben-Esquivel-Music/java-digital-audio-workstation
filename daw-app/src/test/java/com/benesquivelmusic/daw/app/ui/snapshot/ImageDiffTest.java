@@ -47,7 +47,7 @@ class ImageDiffTest {
     }
 
     @Test
-    void channelDeltaAboveToleranceCountsButPassesIfFewPixels() {
+    void singleDifferingPixelExceedsDefaultFraction() {
         // 1 differing pixel out of 100 = 1.0% > 0.5% → fails by default.
         BufferedImage e = solid(10, 10, 0xff000000);
         BufferedImage a = solid(10, 10, 0xff000000);

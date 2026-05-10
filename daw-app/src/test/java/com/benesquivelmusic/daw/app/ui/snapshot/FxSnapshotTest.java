@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui.snapshot;
 
+import com.benesquivelmusic.daw.app.ui.DarkThemeHelper;
 import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
 import com.benesquivelmusic.daw.app.ui.theme.Theme;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeJson;
@@ -164,10 +165,14 @@ public abstract class FxSnapshotTest {
             root.setMinSize(width, height);
             root.setMaxSize(width, height);
             applyThemeStyle(root, theme);
+            root.getStyleClass().add("root-pane");
             Scene scene = new Scene(root, width, height,
                     theme == null
                             ? Color.web("#1a1a2e")
                             : Color.web(backgroundHex(theme)));
+            // Attach the real application stylesheet so snapshots
+            // exercise the same CSS selectors users see at runtime.
+            DarkThemeHelper.applyTo(scene);
             scene.getRoot().applyCss();
             scene.getRoot().layout();
             // Warm-up snapshot: triggers css/layout, lets image
@@ -260,8 +265,7 @@ public abstract class FxSnapshotTest {
             throw new IllegalStateException("WritableImage has no pixel reader");
         }
         int[] row = new int[w];
-        // Use a PixelFormat compatible with TYPE_INT_ARGB: BYTE_BGRA_PRE on
-        // the FX side serialises to ARGB ints when read with INT_ARGB_PRE.
+        // INT_ARGB (non-premultiplied) matches BufferedImage.TYPE_INT_ARGB.
         var fmt = javafx.scene.image.PixelFormat.getIntArgbInstance();
         for (int y = 0; y < h; y++) {
             reader.getPixels(0, y, w, 1, fmt, row, 0, w);
