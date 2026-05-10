@@ -1,9 +1,10 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
+import com.benesquivelmusic.daw.fx.GpuCanvas;
+import com.benesquivelmusic.daw.fx.GpuRenderContext;
 import com.benesquivelmusic.daw.sdk.spatial.SpatialPannerData;
 import com.benesquivelmusic.daw.sdk.spatial.SpatialPosition;
 
-import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
@@ -16,7 +17,7 @@ import javafx.scene.text.TextAlignment;
 import java.util.List;
 
 /**
- * Canvas-based 3D spatial panner widget for immersive audio positioning.
+ * GpuCanvas-backed 3D spatial panner widget for immersive audio positioning.
  *
  * <p>Renders a top-down (X/Y) view of the spatial environment showing:
  * <ul>
@@ -68,20 +69,32 @@ public final class SpatialPannerDisplay extends Region {
     private static final Font READOUT_FONT = Font.font("Monospace", 11);
     private static final Font HEADER_FONT = Font.font("Monospace", 10);
 
-    private final Canvas canvas;
+    private final GpuCanvas gpuCanvas;
 
     private SpatialPannerData pannerData;
+    private boolean disposed;
 
     /**
      * Creates a new spatial panner display.
+     *
+     * <p>Composes a {@link GpuCanvas} (daw-fx, story 250) — owns size binding,
+     * per-frame {@link javafx.animation.AnimationTimer AnimationTimer} (gated
+     * on Scene attachment <em>and</em> {@link #setPlaying(boolean)} so the
+     * pulse only runs while object-panner automation is playing back), and
+     * the background clear. Callers that remove the display from the scene
+     * graph should call {@link #dispose()} to release the off-heap surface
+     * and stop the timer.
      */
     public SpatialPannerDisplay() {
-        canvas = new Canvas();
-        getChildren().add(canvas);
-        canvas.widthProperty().bind(widthProperty());
-        canvas.heightProperty().bind(heightProperty());
-        widthProperty().addListener((obs, oldVal, newVal) -> render());
-        heightProperty().addListener((obs, oldVal, newVal) -> render());
+        gpuCanvas = GpuCanvas.create()
+                .renderer(this::renderFrame)
+                .clearColor(BACKGROUND)
+                // Static dot when transport is stopped — no need to spin the
+                // pulse. setPlaying(true) flips this on while playback advances
+                // the trajectory dot between automation breakpoints.
+                .animated(false)
+                .build();
+        getChildren().add(gpuCanvas);
         getStyleClass().add("spatial-panner-display");
     }
 
@@ -92,7 +105,16 @@ public final class SpatialPannerDisplay extends Region {
      */
     public void update(SpatialPannerData data) {
         this.pannerData = data;
-        render();
+        if (disposed) {
+            return;
+        }
+        // While the AnimationTimer is running it will pick up the new data on
+        // the next pulse; while stopped (the common case — transport is not
+        // playing) we still need a one-shot render so the dot reflects the
+        // latest mouse drag.
+        if (!gpuCanvas.isAnimated()) {
+            gpuCanvas.requestRender();
+        }
     }
 
     /**
@@ -105,12 +127,46 @@ public final class SpatialPannerDisplay extends Region {
     }
 
     /**
-     * Returns the canvas used for rendering. Package-private for testing.
+     * Toggles the per-frame render pulse. Pass {@code true} while object-panner
+     * automation is playing back (so the trajectory dot interpolates smoothly
+     * between breakpoints) and {@code false} when transport is stopped — the
+     * dot is static, so animating it would just burn frames. The render loop
+     * is also gated on Scene attachment, so attaching/detaching the display
+     * automatically starts/stops the pulse without further wiring.
      *
-     * @return the canvas
+     * @param playing whether transport is currently playing back
      */
-    Canvas getCanvas() {
-        return canvas;
+    public void setPlaying(boolean playing) {
+        if (disposed) {
+            return;
+        }
+        gpuCanvas.setAnimated(playing);
+    }
+
+    /** Returns whether the per-frame render pulse is currently engaged. */
+    public boolean isPlaying() {
+        return gpuCanvas.isAnimated();
+    }
+
+    /**
+     * Stops the GpuCanvas render loop and releases its off-heap surface.
+     * Must be called from the JavaFX Application Thread. Safe to call
+     * multiple times.
+     */
+    public void dispose() {
+        if (disposed) {
+            return;
+        }
+        disposed = true;
+        gpuCanvas.setAnimated(false);
+        gpuCanvas.dispose();
+    }
+
+    /**
+     * Returns the embedded {@link GpuCanvas}. Package-private for testing.
+     */
+    GpuCanvas getGpuCanvas() {
+        return gpuCanvas;
     }
 
     // ── Coordinate mapping (package-private for testing) ──────────
@@ -237,18 +293,27 @@ public final class SpatialPannerDisplay extends Region {
 
     // ── Rendering ─────────────────────────────────────────────────
 
-    private void render() {
-        double w = canvas.getWidth();
-        double h = canvas.getHeight();
+    /**
+     * Per-frame draw callback invoked by the GpuCanvas AnimationTimer (or
+     * by {@link GpuCanvas#requestRender()} for one-off refreshes). The
+     * background fill is provided by {@link GpuCanvas#setClearColor(Color)},
+     * so we do not issue a redundant background {@code fillRect}.
+     *
+     * <p>The trajectory-dot interpolation reads
+     * {@link GpuRenderContext#deltaSeconds()} and
+     * {@link GpuRenderContext#frameNumber()} from the context — currently the
+     * dot snaps to the panner's source position, so neither value affects the
+     * output, but the hooks are wired for the breakpoint-interpolation
+     * pulse described in story 172 / 239.
+     */
+    private void renderFrame(GpuRenderContext ctx) {
+        double w = ctx.width();
+        double h = ctx.height();
         if (w <= 0 || h <= 0) {
             return;
         }
 
-        GraphicsContext gc = canvas.getGraphicsContext2D();
-
-        // Clear background
-        gc.setFill(BACKGROUND);
-        gc.fillRect(0, 0, w, h);
+        GraphicsContext gc = ctx.gc();
 
         double drawHeight = h - READOUT_HEIGHT;
         if (drawHeight <= 0) {
@@ -459,7 +524,9 @@ public final class SpatialPannerDisplay extends Region {
 
     @Override
     protected void layoutChildren() {
-        super.layoutChildren();
-        render();
+        // GpuCanvas is itself a Region — resize it to fill the display. Its
+        // own size listeners drive the per-frame redraw, so there is no need
+        // to invoke the renderer manually here.
+        gpuCanvas.resizeRelocate(0, 0, getWidth(), getHeight());
     }
 }

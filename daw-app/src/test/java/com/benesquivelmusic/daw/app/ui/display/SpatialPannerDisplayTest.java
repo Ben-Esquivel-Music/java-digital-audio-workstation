@@ -1,10 +1,20 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
+import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
+
+import javafx.application.Platform;
+
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
+@ExtendWith(JavaFxToolkitExtension.class)
 class SpatialPannerDisplayTest {
 
     // ── Coordinate mapping: spatialX ↔ pixelX ─────────────────────
@@ -208,9 +218,34 @@ class SpatialPannerDisplayTest {
     // ── getPannerData ─────────────────────────────────────────────
 
     @Test
-    void getPannerDataShouldReturnNullWhenNotSet() {
-        SpatialPannerDisplay display = new SpatialPannerDisplay();
-        assertThat(display.getPannerData()).isNull();
+    void getPannerDataShouldReturnNullWhenNotSet() throws Exception {
+        // GpuCanvas property setters in the SpatialPannerDisplay constructor
+        // (setClearColor, setAnimated, etc.) must run on the FX thread, so
+        // construct the display via Platform.runLater.
+        AtomicReference<SpatialPannerDisplay> ref = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try {
+                ref.set(new SpatialPannerDisplay());
+            } finally {
+                latch.countDown();
+            }
+        });
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+        SpatialPannerDisplay display = ref.get();
+        try {
+            assertThat(display.getPannerData()).isNull();
+        } finally {
+            CountDownLatch disposeLatch = new CountDownLatch(1);
+            Platform.runLater(() -> {
+                try {
+                    display.dispose();
+                } finally {
+                    disposeLatch.countDown();
+                }
+            });
+            assertThat(disposeLatch.await(5, TimeUnit.SECONDS)).isTrue();
+        }
     }
 
     // ── Symmetric round-trip across all axes ──────────────────────

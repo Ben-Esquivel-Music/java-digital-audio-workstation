@@ -9,10 +9,14 @@ import com.benesquivelmusic.daw.core.track.AutomationMode;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import com.benesquivelmusic.daw.sdk.spatial.ObjectParameter;
 import com.benesquivelmusic.daw.sdk.spatial.SpatialPosition;
+import javafx.application.Platform;
 import javafx.scene.control.MenuItem;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -24,7 +28,13 @@ import static org.assertj.core.api.Assertions.within;
  * {@link SpatialPannerController} for story 172 (record-trajectory mode,
  * "Automate &lt;param&gt;" context-menu items, ADM-bound trajectory
  * lanes).
+ *
+ * <p>{@link com.benesquivelmusic.daw.app.ui.display.SpatialPannerDisplay}
+ * now composes a {@link com.benesquivelmusic.daw.fx.GpuCanvas} (story 250),
+ * so controller construction and {@code setSourcePosition()} (which calls
+ * {@code display.update()}) must run on the JavaFX Application Thread.</p>
  */
+@ExtendWith(JavaFxToolkitExtension.class)
 class SpatialPannerControllerAutomationTest {
 
     private static final String OBJECT_ID = "spatial-track-7";
@@ -46,165 +56,217 @@ class SpatialPannerControllerAutomationTest {
         return controller;
     }
 
-    @Test
-    void buildAutomationMenuItemsAlwaysReturnsAllParameters() {
-        SpatialPannerController controller = createController();
-
-        List<MenuItem> items = controller.buildAutomationMenuItems();
-
-        assertThat(items).hasSize(ObjectParameter.values().length);
-        for (int i = 0; i < items.size(); i++) {
-            assertThat(items.get(i).getText())
-                    .isEqualTo("Automate " + ObjectParameter.values()[i].displayName());
+    /** Runs {@code body} synchronously on the JavaFX Application Thread. */
+    private static void onFx(Runnable body) throws Exception {
+        AtomicReference<Throwable> err = new AtomicReference<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try { body.run(); } catch (Throwable t) { err.set(t); } finally { latch.countDown(); }
+        });
+        if (!latch.await(5, TimeUnit.SECONDS)) {
+            throw new AssertionError("FX thread task timed out");
         }
+        Throwable t = err.get();
+        if (t instanceof RuntimeException re) throw re;
+        if (t instanceof Error e) throw e;
+        if (t != null) throw new AssertionError("FX action threw", t);
     }
 
     @Test
-    void targetForShouldThrowWhenNoContextWired() {
-        SpatialPannerController controller = createController();
-        assertThatThrownBy(() -> controller.targetFor(ObjectParameter.X))
-                .isInstanceOf(IllegalStateException.class);
+    void buildAutomationMenuItemsAlwaysReturnsAllParameters() throws Exception {
+        onFx(() -> {
+            SpatialPannerController controller = createController();
+
+            List<MenuItem> items = controller.buildAutomationMenuItems();
+
+            assertThat(items).hasSize(ObjectParameter.values().length);
+            for (int i = 0; i < items.size(); i++) {
+                assertThat(items.get(i).getText())
+                        .isEqualTo("Automate " + ObjectParameter.values()[i].displayName());
+            }
+            controller.getDisplay().dispose();
+        });
     }
 
     @Test
-    void automateParameterShouldCreateLane() {
-        AutomationData data = new AutomationData();
-        AutomationRecorder recorder = new AutomationRecorder(data);
-        SpatialPannerController controller = createControllerWithContext(data, recorder);
-
-        AutomationLane lane = controller.automateParameter(ObjectParameter.X);
-
-        assertThat(lane).isNotNull();
-        assertThat(lane.isVisible()).isTrue();
-        assertThat(data.getObjectLane(new ObjectParameterTarget(OBJECT_ID, ObjectParameter.X)))
-                .isSameAs(lane);
+    void targetForShouldThrowWhenNoContextWired() throws Exception {
+        onFx(() -> {
+            SpatialPannerController controller = createController();
+            assertThatThrownBy(() -> controller.targetFor(ObjectParameter.X))
+                    .isInstanceOf(IllegalStateException.class);
+            controller.getDisplay().dispose();
+        });
     }
 
     @Test
-    void automateParameterIsIdempotent() {
-        AutomationData data = new AutomationData();
-        AutomationRecorder recorder = new AutomationRecorder(data);
-        SpatialPannerController controller = createControllerWithContext(data, recorder);
+    void automateParameterShouldCreateLane() throws Exception {
+        onFx(() -> {
+            AutomationData data = new AutomationData();
+            AutomationRecorder recorder = new AutomationRecorder(data);
+            SpatialPannerController controller = createControllerWithContext(data, recorder);
 
-        AutomationLane first = controller.automateParameter(ObjectParameter.Y);
-        AutomationLane second = controller.automateParameter(ObjectParameter.Y);
+            AutomationLane lane = controller.automateParameter(ObjectParameter.X);
 
-        assertThat(first).isSameAs(second);
-        assertThat(data.getObjectLaneCount()).isEqualTo(1);
+            assertThat(lane).isNotNull();
+            assertThat(lane.isVisible()).isTrue();
+            assertThat(data.getObjectLane(new ObjectParameterTarget(OBJECT_ID, ObjectParameter.X)))
+                    .isSameAs(lane);
+            controller.getDisplay().dispose();
+        });
     }
 
     @Test
-    void clickingMenuItemCreatesLane() {
-        AutomationData data = new AutomationData();
-        AutomationRecorder recorder = new AutomationRecorder(data);
-        SpatialPannerController controller = createControllerWithContext(data, recorder);
+    void automateParameterIsIdempotent() throws Exception {
+        onFx(() -> {
+            AutomationData data = new AutomationData();
+            AutomationRecorder recorder = new AutomationRecorder(data);
+            SpatialPannerController controller = createControllerWithContext(data, recorder);
 
-        MenuItem zItem = controller.buildAutomationMenuItems().stream()
-                .filter(it -> it.getText().equals("Automate Z"))
-                .findFirst().orElseThrow();
-        zItem.fire();
+            AutomationLane first = controller.automateParameter(ObjectParameter.Y);
+            AutomationLane second = controller.automateParameter(ObjectParameter.Y);
 
-        assertThat(data.getObjectLane(new ObjectParameterTarget(OBJECT_ID, ObjectParameter.Z)))
-                .isNotNull();
+            assertThat(first).isSameAs(second);
+            assertThat(data.getObjectLaneCount()).isEqualTo(1);
+            controller.getDisplay().dispose();
+        });
     }
 
     @Test
-    void recordTrajectoryArmShouldStartAndStopRecorder() {
-        AutomationData data = new AutomationData();
-        AutomationRecorder recorder = new AutomationRecorder(data);
-        SpatialPannerController controller = createControllerWithContext(data, recorder);
+    void clickingMenuItemCreatesLane() throws Exception {
+        onFx(() -> {
+            AutomationData data = new AutomationData();
+            AutomationRecorder recorder = new AutomationRecorder(data);
+            SpatialPannerController controller = createControllerWithContext(data, recorder);
 
-        assertThat(controller.isRecordTrajectoryArmed()).isFalse();
-        controller.setRecordTrajectoryArmed(true);
-        assertThat(controller.isRecordTrajectoryArmed()).isTrue();
-        assertThat(recorder.isRecording()).isTrue();
+            MenuItem zItem = controller.buildAutomationMenuItems().stream()
+                    .filter(it -> it.getText().equals("Automate Z"))
+                    .findFirst().orElseThrow();
+            zItem.fire();
 
-        UndoableAction action = controller.setRecordTrajectoryArmed(false);
-        assertThat(controller.isRecordTrajectoryArmed()).isFalse();
-        assertThat(recorder.isRecording()).isFalse();
-        // No frames captured — finishRecording returns null.
-        assertThat(action).isNull();
+            assertThat(data.getObjectLane(new ObjectParameterTarget(OBJECT_ID, ObjectParameter.Z)))
+                    .isNotNull();
+            controller.getDisplay().dispose();
+        });
     }
 
     @Test
-    void recordTrajectoryShouldCaptureMouseDragSequence() {
-        AutomationData data = new AutomationData();
-        AutomationRecorder recorder = new AutomationRecorder(data);
-        SpatialPannerController controller = createControllerWithContext(data, recorder);
+    void recordTrajectoryArmShouldStartAndStopRecorder() throws Exception {
+        onFx(() -> {
+            AutomationData data = new AutomationData();
+            AutomationRecorder recorder = new AutomationRecorder(data);
+            SpatialPannerController controller = createControllerWithContext(data, recorder);
 
-        // Simulate the host's transport — beats advance with each frame.
-        AtomicReference<Double> playhead = new AtomicReference<>(0.0);
-        controller.setPlayheadBeatsSupplier(playhead::get);
+            assertThat(controller.isRecordTrajectoryArmed()).isFalse();
+            controller.setRecordTrajectoryArmed(true);
+            assertThat(controller.isRecordTrajectoryArmed()).isTrue();
+            assertThat(recorder.isRecording()).isTrue();
 
-        controller.setRecordTrajectoryMode(AutomationMode.WRITE);
-        controller.setRecordTrajectoryArmed(true);
-
-        // Three drag frames: "user" moves the panner from (-0.5, -0.5) to
-        // (0.5, 0.5) while transport runs.
-        playhead.set(0.0);
-        controller.setSourcePosition(SpatialPosition.fromCartesian(-0.5, -0.5, 0.0));
-        playhead.set(1.0);
-        controller.setSourcePosition(SpatialPosition.fromCartesian(0.0, 0.0, 0.25));
-        playhead.set(2.0);
-        controller.setSourcePosition(SpatialPosition.fromCartesian(0.5, 0.5, 0.5));
-
-        UndoableAction action = controller.setRecordTrajectoryArmed(false);
-
-        // X / Y / Z lanes each have three captured points.
-        AutomationLane xLane = data.getObjectLane(
-                new ObjectParameterTarget(OBJECT_ID, ObjectParameter.X));
-        AutomationLane zLane = data.getObjectLane(
-                new ObjectParameterTarget(OBJECT_ID, ObjectParameter.Z));
-        assertThat(xLane.getPointCount()).isEqualTo(3);
-        assertThat(zLane.getPointCount()).isEqualTo(3);
-        assertThat(xLane.getPoints().get(0).getValue()).isCloseTo(-0.5, within(1e-6));
-        assertThat(xLane.getPoints().get(2).getValue()).isCloseTo(0.5, within(1e-6));
-        assertThat(zLane.getPoints().get(2).getValue()).isCloseTo(0.5, within(1e-6));
-        assertThat(action).isNotNull();
+            UndoableAction action = controller.setRecordTrajectoryArmed(false);
+            assertThat(controller.isRecordTrajectoryArmed()).isFalse();
+            assertThat(recorder.isRecording()).isFalse();
+            // No frames captured — finishRecording returns null.
+            assertThat(action).isNull();
+            controller.getDisplay().dispose();
+        });
     }
 
     @Test
-    void captureTrajectoryFrameIsNoOpWhenNotArmed() {
-        AutomationData data = new AutomationData();
-        AutomationRecorder recorder = new AutomationRecorder(data);
-        SpatialPannerController controller = createControllerWithContext(data, recorder);
+    void recordTrajectoryShouldCaptureMouseDragSequence() throws Exception {
+        onFx(() -> {
+            AutomationData data = new AutomationData();
+            AutomationRecorder recorder = new AutomationRecorder(data);
+            SpatialPannerController controller = createControllerWithContext(data, recorder);
 
-        // Not armed — moving the panner must not create lanes or points.
-        controller.setSourcePosition(SpatialPosition.fromCartesian(0.5, 0.5, 0.5));
+            // Simulate the host's transport — beats advance with each frame.
+            AtomicReference<Double> playhead = new AtomicReference<>(0.0);
+            controller.setPlayheadBeatsSupplier(playhead::get);
 
-        assertThat(data.getObjectLaneCount()).isZero();
+            controller.setRecordTrajectoryMode(AutomationMode.WRITE);
+            controller.setRecordTrajectoryArmed(true);
+
+            // Three drag frames: "user" moves the panner from (-0.5, -0.5) to
+            // (0.5, 0.5) while transport runs.
+            playhead.set(0.0);
+            controller.setSourcePosition(SpatialPosition.fromCartesian(-0.5, -0.5, 0.0));
+            playhead.set(1.0);
+            controller.setSourcePosition(SpatialPosition.fromCartesian(0.0, 0.0, 0.25));
+            playhead.set(2.0);
+            controller.setSourcePosition(SpatialPosition.fromCartesian(0.5, 0.5, 0.5));
+
+            UndoableAction action = controller.setRecordTrajectoryArmed(false);
+
+            // X / Y / Z lanes each have three captured points.
+            AutomationLane xLane = data.getObjectLane(
+                    new ObjectParameterTarget(OBJECT_ID, ObjectParameter.X));
+            AutomationLane zLane = data.getObjectLane(
+                    new ObjectParameterTarget(OBJECT_ID, ObjectParameter.Z));
+            assertThat(xLane.getPointCount()).isEqualTo(3);
+            assertThat(zLane.getPointCount()).isEqualTo(3);
+            assertThat(xLane.getPoints().get(0).getValue()).isCloseTo(-0.5, within(1e-6));
+            assertThat(xLane.getPoints().get(2).getValue()).isCloseTo(0.5, within(1e-6));
+            assertThat(zLane.getPoints().get(2).getValue()).isCloseTo(0.5, within(1e-6));
+            assertThat(action).isNotNull();
+            controller.getDisplay().dispose();
+        });
     }
 
     @Test
-    void recordTrajectoryWithoutContextIsNoOp() {
-        SpatialPannerController controller = createController();
-        // Should not throw — graceful no-op.
-        UndoableAction action = controller.setRecordTrajectoryArmed(true);
-        assertThat(action).isNull();
-        assertThat(controller.isRecordTrajectoryArmed()).isFalse();
+    void captureTrajectoryFrameIsNoOpWhenNotArmed() throws Exception {
+        onFx(() -> {
+            AutomationData data = new AutomationData();
+            AutomationRecorder recorder = new AutomationRecorder(data);
+            SpatialPannerController controller = createControllerWithContext(data, recorder);
+
+            // Not armed — moving the panner must not create lanes or points.
+            controller.setSourcePosition(SpatialPosition.fromCartesian(0.5, 0.5, 0.5));
+
+            assertThat(data.getObjectLaneCount()).isZero();
+            controller.getDisplay().dispose();
+        });
     }
 
     @Test
-    void setRecordTrajectoryModeRejectsReadMode() {
-        SpatialPannerController controller = createController();
-        assertThatThrownBy(() -> controller.setRecordTrajectoryMode(AutomationMode.READ))
-                .isInstanceOf(IllegalArgumentException.class);
+    void recordTrajectoryWithoutContextIsNoOp() throws Exception {
+        onFx(() -> {
+            SpatialPannerController controller = createController();
+            // Should not throw — graceful no-op.
+            UndoableAction action = controller.setRecordTrajectoryArmed(true);
+            assertThat(action).isNull();
+            assertThat(controller.isRecordTrajectoryArmed()).isFalse();
+            controller.getDisplay().dispose();
+        });
     }
 
     @Test
-    void getTrajectoryOverlayReturnsNullWithoutContext() {
-        SpatialPannerController controller = createController();
-        assertThat(controller.getTrajectoryOverlay()).isNull();
+    void setRecordTrajectoryModeRejectsReadMode() throws Exception {
+        onFx(() -> {
+            SpatialPannerController controller = createController();
+            assertThatThrownBy(() -> controller.setRecordTrajectoryMode(AutomationMode.READ))
+                    .isInstanceOf(IllegalArgumentException.class);
+            controller.getDisplay().dispose();
+        });
     }
 
     @Test
-    void getTrajectoryOverlayReturnsSamplerWithContext() {
-        AutomationData data = new AutomationData();
-        AutomationRecorder recorder = new AutomationRecorder(data);
-        SpatialPannerController controller = createControllerWithContext(data, recorder);
+    void getTrajectoryOverlayReturnsNullWithoutContext() throws Exception {
+        onFx(() -> {
+            SpatialPannerController controller = createController();
+            assertThat(controller.getTrajectoryOverlay()).isNull();
+            controller.getDisplay().dispose();
+        });
+    }
 
-        assertThat(controller.getTrajectoryOverlay()).isNotNull();
-        assertThat(controller.getObjectInstanceId()).isEqualTo(OBJECT_ID);
-        assertThat(controller.getAutomationData()).isSameAs(data);
+    @Test
+    void getTrajectoryOverlayReturnsSamplerWithContext() throws Exception {
+        onFx(() -> {
+            AutomationData data = new AutomationData();
+            AutomationRecorder recorder = new AutomationRecorder(data);
+            SpatialPannerController controller = createControllerWithContext(data, recorder);
+
+            assertThat(controller.getTrajectoryOverlay()).isNotNull();
+            assertThat(controller.getObjectInstanceId()).isEqualTo(OBJECT_ID);
+            assertThat(controller.getAutomationData()).isSameAs(data);
+            controller.getDisplay().dispose();
+        });
     }
 }

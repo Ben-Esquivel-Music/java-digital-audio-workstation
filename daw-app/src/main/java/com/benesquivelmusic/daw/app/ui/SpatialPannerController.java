@@ -116,6 +116,11 @@ public final class SpatialPannerController {
     /**
      * Opens the 3D panner display in a new floating window.
      *
+     * <p>Registers an {@code onHidden} hook that calls
+     * {@link SpatialPannerDisplay#dispose() display.dispose()} when the
+     * window is closed so the GpuCanvas timer is unregistered and its
+     * off-heap pixel surface is released.</p>
+     *
      * @return the created stage
      */
     public Stage openWindow() {
@@ -129,6 +134,11 @@ public final class SpatialPannerController {
         stage.setScene(scene);
         stage.setMinWidth(360);
         stage.setMinHeight(260);
+        // Release the GpuCanvas timer / off-heap surface when the floating
+        // window is closed (story 250 lifecycle): the display is no longer
+        // attached to a live Scene, so the timer would already auto-pause,
+        // but dispose() is required to free the confined Arena.
+        stage.setOnHidden(e -> display.dispose());
         stage.show();
 
         refreshDisplay();
