@@ -2,6 +2,11 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplay;
+import com.benesquivelmusic.daw.app.ui.help.HelpControls;
+import com.benesquivelmusic.daw.app.ui.help.HelpKeyHandler;
+import com.benesquivelmusic.daw.app.ui.help.HelpOverlay;
+import com.benesquivelmusic.daw.app.ui.help.HelpRegistry;
+import com.benesquivelmusic.daw.app.ui.help.QuickHelpBar;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
@@ -223,6 +228,15 @@ public final class MainController {
     private SpectrumDisplay spectrumDisplay;
     private LevelMeterDisplay levelMeterDisplay;
 
+    /** Contextual help registry — loads markdown topics from {@code resources/help/}. */
+    private final HelpRegistry helpRegistry = HelpRegistry.loadDefault();
+    /** Right-side overlay displaying the active help topic; lazily created with the scene. */
+    private HelpOverlay helpOverlay;
+    /** Bottom Quick Help bar — toggled with {@code Shift+F1}. */
+    private QuickHelpBar quickHelpBar;
+    /** F1 / Shift+F1 key handler installed on the primary scene. */
+    private HelpKeyHandler helpKeyHandler;
+
     @FXML
     private void initialize() {
         project = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
@@ -422,6 +436,7 @@ public final class MainController {
         playButton.sceneProperty().addListener((_, _, scene) -> {
             if (scene != null) {
                 keyboardShortcutController.register(scene);
+                installContextualHelp(scene);
                 if (scene.getWindow() instanceof Stage primaryStage) {
                     if (commandPaletteView != null) {
                         commandPaletteView.setOwner(primaryStage);
@@ -2192,6 +2207,49 @@ public final class MainController {
         status("Opening help...", DawIcon.INFO);
         new HelpDialog().showAndWait();
         status("Help closed", DawIcon.STATUS);
+    }
+
+    /**
+     * Installs contextual help on {@code scene} the first time the play
+     * button enters the scene graph: lazy-initialises the {@link HelpOverlay}
+     * + {@link QuickHelpBar}, registers the F1 / Shift+F1 key handler, and
+     * tags transport / arrangement / mixer controls with help topics.
+     *
+     * <p>This is a single, idempotent entry-point — calling it twice (e.g.
+     * if the rootPane briefly leaves and re-enters its scene) is safe.</p>
+     */
+    private void installContextualHelp(javafx.scene.Scene scene) {
+        if (helpOverlay == null) {
+            helpOverlay = new HelpOverlay(helpRegistry);
+            quickHelpBar = new QuickHelpBar(helpRegistry);
+            helpKeyHandler = new HelpKeyHandler(helpRegistry, helpOverlay, quickHelpBar);
+        }
+        helpKeyHandler.installOn(scene);
+        quickHelpBar.attachTo(scene);
+
+        // Tag the most prominent controls so F1 lands on a useful topic.
+        tagHelpTopic(playButton, "transport");
+        tagHelpTopic(stopButton, "transport");
+        tagHelpTopic(recordButton, "transport");
+        tagHelpTopic(loopButton, "transport");
+        tagHelpTopic(metronomeButton, "transport");
+        tagHelpTopic(skipBackButton, "transport");
+        tagHelpTopic(skipForwardButton, "transport");
+        tagHelpTopic(snapButton, "arrangement");
+        tagHelpTopic(addAudioTrackButton, "arrangement");
+        tagHelpTopic(addMidiTrackButton, "arrangement");
+
+        // Mirror the same mapping in the registry so other code can resolve
+        // controls by ID (e.g. the command palette → "Help on…" entries).
+        if (playButton != null && playButton.getId() != null) {
+            helpRegistry.registerControl(playButton.getId(), "transport");
+        }
+    }
+
+    private void tagHelpTopic(Node node, String slug) {
+        if (node != null) {
+            HelpControls.setHelpTopic(node, slug);
+        }
     }
 
     public DawView getActiveView() { return viewNavigationController.getActiveView(); }
