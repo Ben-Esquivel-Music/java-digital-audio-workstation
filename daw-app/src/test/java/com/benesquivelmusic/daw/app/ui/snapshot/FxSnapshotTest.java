@@ -70,9 +70,13 @@ import static org.junit.jupiter.api.Assertions.fail;
  * {@code -Dprism.order=sw} and {@code -Dprism.lcdtext=false} so JavaFX
  * uses the software rasterizer with grayscale text antialiasing — this
  * keeps goldens reproducible across machines (per the issue, Linux-CI
- * is the reference platform). The default tolerance of 0.5% differing
- * pixels with a per-channel Δ of 4 still absorbs minor
- * font-rasterization noise.</p>
+ * is the reference platform). On top of that, {@link ImageDiff} compares
+ * each pixel against a {@code (2r+1)×(2r+1)} bidirectional window in the
+ * other image (default {@code r=3}); this absorbs the multi-pixel font-
+ * metric drift JavaFX exhibits across operating systems (which pick
+ * different default fonts and line metrics) while still surfacing
+ * layout regressions larger than ~3 pixels. The fraction tolerance
+ * (default 0.5%) catches anything that survives the windowed match.</p>
  *
  * <h2>Headless</h2>
  *

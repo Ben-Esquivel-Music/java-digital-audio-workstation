@@ -134,7 +134,17 @@ class DefaultAudioEngineControllerTest {
         // Yank the device.
         backend.simulateDeviceRemoved(active);
 
-        waitFor(() -> controller.engineState() == EngineState.DEVICE_LOST);
+        // The state-flip and the notification are emitted from the same
+        // device-event thread but in two separate steps; polling on state
+        // alone races with the notify call. Wait for both.
+        waitFor(() -> {
+            if (controller.engineState() != EngineState.DEVICE_LOST) {
+                return false;
+            }
+            synchronized (notifications) {
+                return notifications.stream().anyMatch(m -> m.contains("disconnected"));
+            }
+        });
         assertThat(controller.engineState()).isEqualTo(EngineState.DEVICE_LOST);
         synchronized (notifications) {
             assertThat(notifications).anyMatch(m -> m.contains("disconnected"));
