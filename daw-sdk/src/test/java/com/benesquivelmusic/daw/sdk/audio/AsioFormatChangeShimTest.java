@@ -1,14 +1,19 @@
 package com.benesquivelmusic.daw.sdk.audio;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 
+import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.lang.foreign.SymbolLookup;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Unit tests for {@link AsioFormatChangeShim} — story 218 FFM upcall
@@ -28,8 +33,62 @@ class AsioFormatChangeShimTest {
             // require any platform library.
             assertThat(shim.upcallStub()).isNotNull();
             assertThat(shim.upcallStub().equals(MemorySegment.NULL)).isFalse();
-            // Registration must transparently no-op when asioshim is missing.
-            assertThat(shim.isRegistered()).isFalse();
+            // Registration transparently no-ops when asioshim is missing
+            // (the typical case off-Windows and on a fresh Windows
+            // checkout). On the dedicated Windows-with-shim CI lane the
+            // companion test {@code shimRegistersAgainstBundledAsioshimDll}
+            // asserts the inverse.
+            if (!asioshimAvailable()) {
+                assertThat(shim.isRegistered()).isFalse();
+            }
+        }
+    }
+
+    /**
+     * Story 224 — on the dedicated Windows-with-shim CI lane (the
+     * {@code windows-asioshim.yml} workflow exports
+     * {@code DAW_REQUIRE_ASIOSHIM=1}) the bundled {@code asioshim.dll}
+     * must be loadable and the FFM upcall registration must succeed.
+     * On developer workstations and other CI lanes the env var is
+     * unset and this test cleanly skips when the shim is missing.
+     */
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void shimRegistersAgainstBundledAsioshimDll() {
+        boolean available = asioshimAvailable();
+        if ("1".equals(System.getenv("DAW_REQUIRE_ASIOSHIM"))) {
+            assertThat(available)
+                    .as("DAW_REQUIRE_ASIOSHIM=1 — asioshim.dll must be on the "
+                            + "FFM library path. Build the native libs with "
+                            + "-DASIO_SDK_DIR=... before mvn verify.")
+                    .isTrue();
+        } else {
+            assumeTrue(available,
+                    "asioshim.dll not on java.library.path — skip "
+                            + "(set DAW_REQUIRE_ASIOSHIM=1 to fail instead of skip)");
+        }
+        AsioBackend backend = new AsioBackend();
+        AudioBackendSupport support = new AudioBackendSupport();
+        try (AsioFormatChangeShim shim = new AsioFormatChangeShim(backend, support, DEVICE)) {
+            assertThat(shim.isRegistered())
+                    .as("AsioFormatChangeShim must successfully register its "
+                            + "upcall against the bundled asioshim.dll")
+                    .isTrue();
+        }
+    }
+
+    /**
+     * Lightweight existence probe for the {@code asioshim} FFM library —
+     * mirrors the logic used by {@code NativeLibraryDetector.isAvailable},
+     * but inlined here because {@code daw-sdk} does not depend on
+     * {@code daw-core}.
+     */
+    private static boolean asioshimAvailable() {
+        try (Arena arena = Arena.ofConfined()) {
+            SymbolLookup.libraryLookup("asioshim", arena);
+            return true;
+        } catch (IllegalArgumentException | UnsatisfiedLinkError ignored) {
+            return false;
         }
     }
 

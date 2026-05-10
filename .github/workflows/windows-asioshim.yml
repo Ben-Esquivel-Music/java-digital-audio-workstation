@@ -1,0 +1,165 @@
+name: Windows asioshim Build & Bundle
+
+# Story 224 — build the Steinberg ASIO bridge (`asioshim.dll`) on Windows
+# CI and verify it lands in the bundled distribution under
+# `daw-app/target/dist/native/windows-x64/`. End users on Windows rely on
+# the shim for the ASIO control-panel launcher (story 212), driver-reported
+# buffer-size / sample-rate enumeration (story 213), driver-reported
+# channel names (story 215), hardware clock-source selection (story 216),
+# and driver-initiated reset handling (story 218). Without this CI lane
+# every PR could silently regress the shim and ship a Windows build that
+# falls back to the no-shim degradation paths.
+#
+# The Steinberg ASIO SDK licence forbids us from redistributing the SDK
+# source tree, so the SDK itself is delivered to CI via the
+# `ASIO_SDK_ZIP_BASE64` repository secret (a base64-encoded ZIP of a
+# Steinberg-licensed SDK extract). The job decodes the secret, expands
+# it under the runner workspace, and points `ASIO_SDK_DIR` at the
+# extracted root before invoking Maven. PRs from forks that lack the
+# secret are detected and the job exits early with a clear notice
+# (the main-branch push of any merged PR will then exercise the build
+# in this repository's secret-aware context).
+#
+# CI lane contract:
+#   * `DAW_REQUIRE_ASIOSHIM=1` is exported so the env-gated tests
+#     (`NativeLibraryDetectorTest`, `AsioFormatChangeShimTest`) flip
+#     their `Assumptions.assumeTrue(...)` calls to hard `assertTrue(...)`
+#     assertions. Absence of `asioshim.dll` on the FFM library path
+#     therefore fails the job rather than silently skipping the test.
+#   * The final `Verify bundled distribution` step asserts the
+#     packaged DLL exists under `daw-app/target/dist/native/windows-x64/`.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'daw-core/native/asio/**'
+      - 'daw-sdk/src/main/java/com/benesquivelmusic/daw/sdk/audio/Asio*.java'
+      - 'lib/CMakeLists.txt'
+      - '.github/workflows/windows-asioshim.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'daw-core/native/asio/**'
+      - 'daw-sdk/src/main/java/com/benesquivelmusic/daw/sdk/audio/Asio*.java'
+      - 'lib/CMakeLists.txt'
+      - '.github/workflows/windows-asioshim.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  windows-asioshim:
+    name: Build asioshim.dll & bundle into distribution
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 26
+        uses: actions/setup-java@v4
+        with:
+          java-version: '26'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      # Visual Studio 2022 is preinstalled on `windows-latest` runners, so the
+      # MSVC toolchain that the asioshim CMake target needs is already
+      # available; no additional install step is required for the C++ build.
+
+      - name: Provision Steinberg ASIO SDK (from secret)
+        id: sdk
+        shell: pwsh
+        env:
+          ASIO_SDK_ZIP_BASE64: ${{ secrets.ASIO_SDK_ZIP_BASE64 }}
+        run: |
+          if ([string]::IsNullOrEmpty($env:ASIO_SDK_ZIP_BASE64)) {
+            Write-Host "::warning::ASIO_SDK_ZIP_BASE64 secret is not configured for this run (likely a PR from a fork). Skipping the asioshim CI lane — main-branch runs in the upstream repo will exercise it."
+            "skipped=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            exit 0
+          }
+          $sdkRoot = Join-Path $env:RUNNER_TEMP "asiosdk"
+          $zipPath = Join-Path $env:RUNNER_TEMP "asiosdk.zip"
+          [System.IO.File]::WriteAllBytes($zipPath, [System.Convert]::FromBase64String($env:ASIO_SDK_ZIP_BASE64))
+          New-Item -ItemType Directory -Force -Path $sdkRoot | Out-Null
+          Expand-Archive -Path $zipPath -DestinationPath $sdkRoot -Force
+          # The Steinberg ZIP unpacks into a single versioned root
+          # (e.g. asiosdk_2.3.3_2019-06-14). The CMake script expects
+          # ASIO_SDK_DIR to point at the directory containing
+          # common/, host/, host/pc/, so locate that automatically.
+          $candidate = Get-ChildItem -Path $sdkRoot -Directory |
+              Where-Object {
+                  (Test-Path (Join-Path $_.FullName 'common')) -and
+                  (Test-Path (Join-Path $_.FullName 'host')) -and
+                  (Test-Path (Join-Path $_.FullName 'host/pc'))
+              } |
+              Select-Object -First 1
+          if ($null -eq $candidate) {
+              # Fall back: the user may have zipped the SDK without a
+              # versioned root directory (i.e. the ZIP contents *are*
+              # the SDK tree).
+              if ((Test-Path (Join-Path $sdkRoot 'common')) -and
+                  (Test-Path (Join-Path $sdkRoot 'host')) -and
+                  (Test-Path (Join-Path $sdkRoot 'host/pc'))) {
+                  $extracted = $sdkRoot
+              } else {
+                  Write-Error "ASIO_SDK_ZIP_BASE64 secret did not unpack to a Steinberg ASIO SDK tree (missing common/, host/, host/pc/ subdirectories)."
+                  exit 1
+              }
+          } else {
+              $extracted = $candidate.FullName
+          }
+          Write-Host "ASIO_SDK_DIR=$extracted"
+          "ASIO_SDK_DIR=$extracted" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "skipped=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Build & verify (with asioshim required)
+        if: steps.sdk.outputs.skipped != 'true'
+        shell: pwsh
+        env:
+          # Flip the env-gated assertions in NativeLibraryDetectorTest and
+          # AsioFormatChangeShimTest from assumeTrue (skip) to assertTrue
+          # (fail) — see daw-core/native/asio/README.md.
+          DAW_REQUIRE_ASIOSHIM: '1'
+        run: |
+          mvn -B -DskipTests=false verify
+
+      - name: Verify bundled distribution contains asioshim.dll
+        if: steps.sdk.outputs.skipped != 'true'
+        shell: pwsh
+        run: |
+          $bundled = "daw-app/target/dist/native/windows-x64/asioshim.dll"
+          $cmakeOut = "target/build/native/asioshim.dll"
+          $missing = @()
+          if (-not (Test-Path $bundled))  { $missing += $bundled  }
+          if (-not (Test-Path $cmakeOut)) { $missing += $cmakeOut }
+          if ($missing.Count -gt 0) {
+              Write-Error "Expected asioshim.dll outputs are missing: $($missing -join ', ')"
+              Write-Host "Contents of daw-app/target/dist/native/:"
+              if (Test-Path "daw-app/target/dist/native") {
+                  Get-ChildItem -Recurse "daw-app/target/dist/native" | ForEach-Object { Write-Host "  $($_.FullName)" }
+              }
+              exit 1
+          }
+          Write-Host "OK — asioshim.dll present at:"
+          Write-Host "  $bundled  ($((Get-Item $bundled).Length) bytes)"
+          Write-Host "  $cmakeOut ($((Get-Item $cmakeOut).Length) bytes)"
+
+      - name: Upload bundled native libs (on success)
+        if: steps.sdk.outputs.skipped != 'true' && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-native-libs
+          path: daw-app/target/dist/native/windows-x64/**
+          retention-days: 14
+
+      - name: Upload test reports
+        if: steps.sdk.outputs.skipped != 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-asioshim-test-reports
+          path: '**/target/surefire-reports/**'
+          retention-days: 14

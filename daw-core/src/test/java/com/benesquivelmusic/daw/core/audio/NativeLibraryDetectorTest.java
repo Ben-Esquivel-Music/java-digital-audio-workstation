@@ -120,9 +120,7 @@ class NativeLibraryDetectorTest {
     @Test
     @EnabledOnOs(OS.WINDOWS)
     void asioshimShouldBeResolvableOnWindowsWhenBundled() {
-        assumeTrue(NativeLibraryDetector.isAvailable("asioshim"),
-                "asioshim.dll not on java.library.path — skip "
-                        + "(build the native libs with -DASIO_SDK_DIR=...)");
+        requireOrAssumeAsioshim();
         List<NativeLibraryStatus> results = NativeLibraryDetector.detectAll();
         NativeLibraryStatus asioshim = results.stream()
                 .filter(s -> s.libraryName().equals("asioshim"))
@@ -143,9 +141,7 @@ class NativeLibraryDetectorTest {
     @Test
     @EnabledOnOs(OS.WINDOWS)
     void asioshimExportsRequiredSymbolsOnWindows() {
-        assumeTrue(NativeLibraryDetector.isAvailable("asioshim"),
-                "asioshim.dll not on java.library.path — skip "
-                        + "(build the native libs with -DASIO_SDK_DIR=...)");
+        requireOrAssumeAsioshim();
         try (var arena = java.lang.foreign.Arena.ofConfined()) {
             var lookup = java.lang.foreign.SymbolLookup.libraryLookup("asioshim", arena);
             assertThat(lookup.find("installAsioMessageCallback"))
@@ -167,6 +163,35 @@ class NativeLibraryDetectorTest {
             assertThat(names).contains("asioshim");
         } else {
             assertThat(names).doesNotContain("asioshim");
+        }
+    }
+
+    /**
+     * Story 224 — gates the dedicated Windows-with-shim CI lane (the
+     * {@code windows-asioshim.yml} workflow exports
+     * {@code DAW_REQUIRE_ASIOSHIM=1}).
+     *
+     * <p>When the env var is set, an absent {@code asioshim.dll}
+     * triggers a hard {@link org.opentest4j.AssertionFailedError} so the
+     * CI job fails — the whole point of that lane is to verify the shim
+     * is bundled. On developer workstations and non-asioshim CI lanes
+     * the env var is unset, so the call degrades to
+     * {@link org.junit.jupiter.api.Assumptions#assumeTrue(boolean, String)}
+     * and the test cleanly skips when the shim is unavailable.</p>
+     */
+    private static void requireOrAssumeAsioshim() {
+        boolean available = NativeLibraryDetector.isAvailable("asioshim");
+        if ("1".equals(System.getenv("DAW_REQUIRE_ASIOSHIM"))) {
+            assertThat(available)
+                    .as("DAW_REQUIRE_ASIOSHIM=1 — asioshim.dll must be on the "
+                            + "FFM library path. Ensure the native build ran "
+                            + "with -DASIO_SDK_DIR=... before mvn verify.")
+                    .isTrue();
+        } else {
+            assumeTrue(available,
+                    "asioshim.dll not on java.library.path — skip "
+                            + "(build the native libs with -DASIO_SDK_DIR=...; "
+                            + "set DAW_REQUIRE_ASIOSHIM=1 to fail instead of skip)");
         }
     }
 }
