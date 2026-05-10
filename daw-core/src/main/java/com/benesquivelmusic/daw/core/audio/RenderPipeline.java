@@ -324,17 +324,25 @@ public final class RenderPipeline {
      * AudioBackend, CueBusManager) router.route(...)} on every scheduled
      * beat (and subdivision) that lands inside this block, summing the
      * returned {@link RoutedClick#mainMixBuffer() main-mix buffer} into
-     * the engine's mix buffer at the sample-accurate offset, writing
-     * each {@link RoutedClick#cueBusBuffers() cue-bus contribution} to
-     * the matching {@link CueBus#hardwareOutputIndex()} stereo pair on
-     * {@code backend}, and letting the router emit the side output via
-     * {@link AudioBackend#writeToChannel(int, float[])} on
-     * {@link com.benesquivelmusic.daw.sdk.transport.ClickOutput#hardwareChannelIndex()}.
+     * the engine's mix buffer at the sample-accurate offset, and writing
+     * the returned {@link RoutedClick#sideOutputBuffer() side-output buffer}
+     * and each {@link RoutedClick#cueBusBuffers() cue-bus contribution} to
+     * the matching hardware channels on {@code backend} via
+     * {@link AudioBackend#writeToChannel(int, float[])} with leading-zero
+     * alignment so every destination is sample-accurate within the block.
      *
      * <p>When {@code metronome}, {@code router}, or {@code transport} is
      * {@code null}, or when the transport is not playing/recording, no
      * click is generated and this overload is bit-identical to the
      * 11-arg one above.</p>
+     *
+     * <h4>Allocation note</h4>
+     * <p>This overload is <em>not</em> allocation-free when clicks are
+     * generated: {@link Metronome#generateClick(boolean)} and
+     * {@link MetronomeSideOutputRouter#route} each allocate short-lived
+     * buffers, and the aligned hardware-write buffers are freshly
+     * allocated per click per destination. The allocations are bounded
+     * (typically 0–2 per block at musical tempos) and short-lived.</p>
      *
      * @param metronome      the metronome producing the click samples; may be
      *                       {@code null} to skip click generation
@@ -347,7 +355,6 @@ public final class RenderPipeline {
      *                       cue-bus hardware writes; may be {@code null} —
      *                       cue-bus and side-output writes are then dropped
      */
-    @RealTimeSafe
     public void renderBlock(float[][] inputBuffer,
                             float[][] outputBuffer,
                             int numFrames,
@@ -497,13 +504,12 @@ public final class RenderPipeline {
      * AudioBackend, CueBusManager)}. The returned
      * {@link RoutedClick#mainMixBuffer() main-mix buffer} is summed
      * into {@link #mixBuffer} at the sample-accurate offset; the
-     * {@link RoutedClick#cueBusBuffers() cue-bus buffers} are written
-     * to each bus's {@link CueBus#hardwareOutputIndex() hardware
-     * output} stereo pair via
-     * {@link AudioBackend#writeToChannel(int, float[])} so that the
-     * drummer's cue mix is audibly fed the click. The router itself
-     * writes the side-output to the {@code ClickOutput.hardwareChannelIndex()}
-     * channel.
+     * returned {@link RoutedClick#sideOutputBuffer() side-output buffer}
+     * and each {@link RoutedClick#cueBusBuffers() cue-bus contribution}
+     * are written by the pipeline to the appropriate hardware channels
+     * via {@link AudioBackend#writeToChannel(int, float[])} with
+     * leading-zero alignment so every destination is sample-accurate
+     * within the block.
      *
      * <p>All three destinations share the same source buffer, so
      * timing across them is inherently sample-accurate.</p>

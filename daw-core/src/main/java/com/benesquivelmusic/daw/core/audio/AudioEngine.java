@@ -882,21 +882,30 @@ public final class AudioEngine {
      * behavior).</p>
      *
      * <p>This method is designed to be called from the audio callback
-     * thread. When no {@link TrackCpuBudgetEnforcer} is configured, it
-     * performs zero allocations and zero lock acquisitions — all buffers
-     * are pre-allocated during {@link #start()}, and the
+     * thread. The core track-mixdown/master-chain path performs zero
+     * allocations and zero lock acquisitions — all buffers are
+     * pre-allocated during {@link #start()}, and the
      * {@link RenderPipeline} reads only from volatile snapshots of the
      * transport, mixer, track list, and MIDI renderer. When an enforcer
      * is present, per-track CPU timing occurs and the enforcer acquires
      * an internal lock for each measurement; the enforcer pre-allocates
      * its own buffers to minimize GC pressure on the audio thread.</p>
      *
+     * <p><b>Allocation note (story 136):</b> when a metronome and
+     * side-output router are attached and clicks are scheduled in this
+     * block, bounded short-lived allocations occur for click generation
+     * and routing buffers (see
+     * {@link RenderPipeline#renderBlock(float[][], float[][], int,
+     * Transport, Mixer, java.util.List, MidiTrackRenderer, EffectsChain,
+     * RecordingCallback, PerformanceMonitor, TrackCpuBudgetEnforcer,
+     * Metronome, MetronomeSideOutputRouter, CueBusManager,
+     * AudioBackend)}).</p>
+     *
      * @param inputBuffer  the input audio data {@code [channel][frame]}
      * @param outputBuffer the output audio data {@code [channel][frame]}
      * @param numFrames    the number of sample frames to process
      * @throws IllegalStateException if the engine is not running
      */
-    @RealTimeSafe
     public void processBlock(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         if (!running.get()) {
             throw new IllegalStateException("Engine is not running");

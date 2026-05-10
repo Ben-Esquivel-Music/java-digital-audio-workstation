@@ -20,26 +20,39 @@ import java.util.concurrent.atomic.AtomicReference;
  * (the audio engine for main-bus playback, the count-in driver for pre-roll,
  * a unit test for validation) generates the click via
  * {@link Metronome#generateClick(boolean)} and hands the buffer to
- * {@link #route(float[][], AudioBackend, CueBusManager)}. All three destinations
- * share the same source buffer, so timing across them is inherently sample-accurate.</p>
+ * {@link #route(Metronome, float[][], AudioBackend, CueBusManager)}. The
+ * router returns a {@link RoutedClick} carrying the main-mix buffer,
+ * side-output buffer, and per-cue-bus contributions; the <em>caller</em> is
+ * responsible for writing the side-output and cue-bus buffers to the
+ * appropriate hardware channels (e.g. via
+ * {@link AudioBackend#writeToChannel(int, float[])}) with sample-accurate
+ * alignment within the current block.</p>
  *
  * <h2>Destinations</h2>
  * <ol>
- *   <li><b>Main mix</b> — returned as a separate buffer from
- *       {@link RoutedClick#mainMixBuffer()}, or {@code null} when the metronome
- *       is disabled or {@link ClickOutput#mainMixEnabled()} is {@code false}.
- *       The audio engine sums this buffer into the master bus at the scheduled
- *       beat position.</li>
- *   <li><b>Side output</b> — written directly to
- *       {@link AudioBackend#writeToChannel(int, float[])} on
- *       {@link ClickOutput#hardwareChannelIndex()} at
- *       {@link ClickOutput#gain()}, bypassing every track and bus. Gated by
- *       {@link ClickOutput#sideOutputEnabled()}.</li>
+ *   <li><b>Main mix</b> — returned as {@link RoutedClick#mainMixBuffer()},
+ *       or {@code null} when the metronome is disabled or
+ *       {@link ClickOutput#mainMixEnabled()} is {@code false}. The audio
+ *       engine sums this buffer into the master bus at the scheduled beat
+ *       position.</li>
+ *   <li><b>Side output</b> — returned as
+ *       {@link RoutedClick#sideOutputBuffer()} with the target channel in
+ *       {@link RoutedClick#sideChannelIndex()}. The caller writes the
+ *       buffer to the hardware channel with appropriate alignment. Gated by
+ *       {@link ClickOutput#sideOutputEnabled()}; skipped when no
+ *       {@link AudioBackend} is attached.</li>
  *   <li><b>Cue-bus contributions</b> — returned as a
  *       {@code Map<UUID, float[]>} keyed by cue bus id, each entry carrying a
- *       gained-down mono click that the cue-bus renderer adds into the cue
- *       mix at the same scheduled beat.</li>
+ *       gained-down mono click that the caller writes to the cue bus's
+ *       hardware output pair at the same scheduled beat.</li>
  * </ol>
+ *
+ * <h2>Thread safety</h2>
+ * <p>Cue-bus levels are stored in an
+ * {@link java.util.concurrent.atomic.AtomicReference AtomicReference} with
+ * copy-on-write semantics. The audio thread reads a consistent immutable
+ * snapshot while the UI thread mutates levels, eliminating
+ * {@link java.util.ConcurrentModificationException} risk.</p>
  */
 public final class MetronomeSideOutputRouter {
 
@@ -145,20 +158,18 @@ public final class MetronomeSideOutputRouter {
 
         float[][] mainMix = cfg.mainMixEnabled() ? click : null;
 
-        // Compute the side-output mono buffer (gain-scaled) but do NOT
-        // write it to the backend here — the caller (RenderPipeline)
-        // handles sample-accurate alignment by prepending the correct
-        // number of leading-zero samples before writing.
+        // Lazily compute the mono downmix only once, reusing it for both
+        // the side output and any cue-bus contributions that need it.
+        float[] sharedMono = null;
+
+        // Compute the side-output mono buffer (gain-scaled) only when
+        // the backend is actually attached — there is no point building
+        // the buffer if the caller will discard it.
         float[] sideOutput = null;
         int sideChannelIndex = -1;
-        if (cfg.sideOutputEnabled()) {
-            sideOutput = monoMix(click);
-            float sideGain = (float) cfg.gain();
-            if (sideGain != 1.0f) {
-                for (int i = 0; i < sideOutput.length; i++) {
-                    sideOutput[i] = sideOutput[i] * sideGain;
-                }
-            }
+        if (cfg.sideOutputEnabled() && backend != null) {
+            sharedMono = monoMix(click);
+            sideOutput = applyGain(sharedMono, (float) cfg.gain());
             sideChannelIndex = cfg.hardwareChannelIndex();
         }
 
@@ -166,16 +177,18 @@ public final class MetronomeSideOutputRouter {
         Map<UUID, Double> levels = cueBusLevelsRef.get();
         if (cueBusManager != null && !levels.isEmpty()) {
             cueContributions = new LinkedHashMap<>(levels.size());
-            float[] mono = monoMix(click);
+            if (sharedMono == null) {
+                sharedMono = monoMix(click);
+            }
             for (Map.Entry<UUID, Double> entry : levels.entrySet()) {
                 CueBus bus = cueBusManager.getById(entry.getKey());
                 if (bus == null) {
                     continue;
                 }
                 float g = entry.getValue().floatValue();
-                float[] scaled = new float[mono.length];
+                float[] scaled = new float[sharedMono.length];
                 for (int i = 0; i < scaled.length; i++) {
-                    scaled[i] = mono[i] * g;
+                    scaled[i] = sharedMono[i] * g;
                 }
                 cueContributions.put(entry.getKey(), scaled);
             }
@@ -202,6 +215,21 @@ public final class MetronomeSideOutputRouter {
             }
         }
         return mono;
+    }
+
+    /**
+     * Returns a gain-scaled copy of {@code mono}, or {@code mono} itself
+     * when {@code gain == 1.0f} (avoiding a redundant copy).
+     */
+    private static float[] applyGain(float[] mono, float gain) {
+        if (gain == 1.0f) {
+            return mono.clone();
+        }
+        float[] scaled = new float[mono.length];
+        for (int i = 0; i < scaled.length; i++) {
+            scaled[i] = mono[i] * gain;
+        }
+        return scaled;
     }
 
     /**
