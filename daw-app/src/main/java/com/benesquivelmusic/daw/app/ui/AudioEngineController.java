@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
+import com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.BufferSizeRange;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
@@ -527,5 +528,35 @@ public interface AudioEngineController {
      */
     default void bindBackendDeviceEvents(AudioBackend backend, DeviceId activeDevice) {
         // no-op for test stubs
+    }
+
+    /**
+     * Returns a {@link Flow.Publisher} that re-emits the active
+     * backend's {@link AudioBackend#deviceEvents()} stream so UI
+     * components (notably {@link AudioSettingsDialog}) can react to
+     * driver-initiated capability changes without depending on the
+     * concrete backend wiring.
+     *
+     * <p>This is used by the Audio Settings dialog to refresh its
+     * buffer-size and sample-rate dropdowns when the driver fires a
+     * {@link AudioDeviceEvent.FormatChangeRequested} (for example
+     * because the user picked a new buffer size in the ASIO control
+     * panel and the panel returned before the user closed it, or
+     * because the driver issued a {@code kAsioResetRequest} on a USB
+     * streaming-mode change). See story 221.</p>
+     *
+     * <p>The default implementation returns an empty publisher that
+     * never emits, which is safe for test doubles that do not need
+     * device-event reporting.</p>
+     *
+     * @return a publisher of {@link AudioDeviceEvent}s; never {@code null}
+     */
+    default Flow.Publisher<AudioDeviceEvent> deviceEvents() {
+        return subscriber -> {
+            subscriber.onSubscribe(new Flow.Subscription() {
+                @Override public void request(long n) { /* no-op */ }
+                @Override public void cancel() { /* no-op */ }
+            });
+        };
     }
 }
