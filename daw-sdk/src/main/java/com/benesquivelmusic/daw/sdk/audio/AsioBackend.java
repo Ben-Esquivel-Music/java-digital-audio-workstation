@@ -539,6 +539,98 @@ public final class AsioBackend implements AudioBackend {
     }
 
     /**
+     * Routes a sample-rate change to {@code ASIOSetSampleRate(double)}
+     * via the {@link AsioCapabilityShim} on a dedicated daemon platform
+     * thread (story 220), consistent with stories 216 / 218 — the
+     * native driver call must not run on the audio render thread. The
+     * method blocks on {@link CompletableFuture#join()}, so callers
+     * must invoke it off the JavaFX application thread (the Audio
+     * Settings dialog already routes through a background thread when
+     * applying settings).
+     *
+     * <p>A {@code false} return from the shim ({@code ASE_OK} not
+     * received) is translated into an {@link AudioBackendException}
+     * carrying the {@code ASE_InvalidMode} marker the issue mandates —
+     * that is the failure case the dialog surfaces as a
+     * {@link com.benesquivelmusic.daw.sdk.audio.AudioBackendException}
+     * notification when the driver refuses to switch rates while the
+     * stream is open or the requested rate is outside the driver's
+     * supported set.</p>
+     *
+     * @param device target device id; must not be null
+     * @param rate   the requested sample rate in Hz; must be positive
+     *               and finite
+     * @throws IllegalArgumentException      if {@code rate} is not
+     *                                       positive / finite
+     * @throws UnsupportedOperationException if the native shim is not
+     *                                       available in this build
+     * @throws AudioBackendException         if the driver rejects the
+     *                                       requested rate
+     */
+    @Override
+    public void setSampleRate(DeviceId device, double rate) {
+        Objects.requireNonNull(device, "device must not be null");
+        if (!Double.isFinite(rate) || rate <= 0.0) {
+            throw new IllegalArgumentException(
+                    "rate must be a positive finite Hz value: " + rate);
+        }
+        CompletableFuture<Void> result = new CompletableFuture<>();
+        Thread.ofPlatform()
+                .name("asio-set-sample-rate")
+                .daemon(true)
+                .start(() -> {
+                    try (AsioCapabilityShim shim = capabilityShimFactory.get()) {
+                        if (!shim.isAvailable()) {
+                            result.completeExceptionally(new UnsupportedOperationException(
+                                    "ASIO sample-rate change requires the native shim "
+                                            + "under daw-core/native/asio/ which is not present "
+                                            + "in this build."));
+                            return;
+                        }
+                        if (shim.setSampleRate(rate)) {
+                            result.complete(null);
+                            return;
+                        }
+                        result.completeExceptionally(new AudioBackendException(
+                                "Driver rejected sample rate " + formatRate(rate)
+                                        + ": ASE_InvalidMode"));
+                    } catch (Throwable e) {
+                        result.completeExceptionally(new AudioBackendException(
+                                "ASIO sample-rate change failed: "
+                                        + (e.getMessage() == null
+                                                ? e.getClass().getSimpleName()
+                                                : e.getMessage()),
+                                e));
+                    }
+                });
+        try {
+            result.join();
+        } catch (CompletionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof UnsupportedOperationException uoe) {
+                throw uoe;
+            }
+            if (cause instanceof AudioBackendException abe) {
+                throw abe;
+            }
+            throw new AudioBackendException(
+                    "ASIO sample-rate change failed", cause);
+        }
+    }
+
+    /**
+     * Formats a sample rate as a compact integer string when it is a
+     * whole number (the canonical 44 100 / 48 000 / 96 000 / ... menu),
+     * falling back to the default {@code Double#toString} otherwise.
+     */
+    private static String formatRate(double rate) {
+        if (rate == Math.floor(rate) && !Double.isInfinite(rate)) {
+            return Long.toString((long) rate);
+        }
+        return Double.toString(rate);
+    }
+
+    /**
      * Maps a driver-reported clock-source display name to a
      * {@link ClockKind}. The heuristic is the standard table the issue
      * specifies — case-insensitive substring matches against the well

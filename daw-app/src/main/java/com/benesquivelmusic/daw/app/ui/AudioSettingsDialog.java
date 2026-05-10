@@ -941,6 +941,35 @@ public final class AudioSettingsDialog extends Dialog<Void> {
 
         String effectiveBackend = effectiveBackendName();
 
+        // Story 220: ask the driver to switch sample rates *before*
+        // persisting the new value. If the driver rejects the rate,
+        // keep the previously persisted value and surface a warning
+        // so the dialog and model stay coherent — opening a stream at
+        // a rate the driver is not actually running at would cause
+        // pitch-shifted playback or ASE_InvalidMode failures.
+        if (controller != null && effectiveBackend != null) {
+            try {
+                controller.setSampleRate(effectiveBackend,
+                        unwrapDefault(outputDeviceCombo.getValue()),
+                        sampleRate);
+            } catch (RuntimeException e) {
+                LOG.log(Level.WARNING, "Sample rate selection rejected by driver", e);
+                String reason = e.getMessage() == null
+                        ? e.getClass().getSimpleName() : e.getMessage();
+                notify("Sample rate " + sampleRate + " Hz rejected by driver: " + reason);
+                // Restore the combo to the previously persisted rate
+                // so the user sees the actual value the driver and
+                // model agree on, not the rejected choice.
+                suppressChangeEvents = true;
+                try {
+                    sampleRateCombo.setValue((int) model.getSampleRate());
+                } finally {
+                    suppressChangeEvents = false;
+                }
+                return;
+            }
+        }
+
         // Persist user choices first so a crash in the reconfigure does not lose them
         model.setSampleRate(sampleRate);
         model.setBufferSize(bufferFrames);

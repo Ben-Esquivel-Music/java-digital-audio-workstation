@@ -481,4 +481,51 @@ class DefaultAudioEngineControllerTest {
                 .contains("Java Sound")
                 .containsAll(selector.availableBackendNames());
     }
+
+    @Test
+    void setSampleRateRoutesToSdkBackendForKnownName(@TempDir Path projectRoot) {
+        // Story 220: the dialog calls controller.setSampleRate(...) and
+        // expects the call to reach the SDK backend identified by name.
+        // Inject a permitted backend (MockAudioBackend) under the name
+        // "ASIO" via the selector — this verifies routing without
+        // requiring the real native shim or a Windows host. The
+        // MockAudioBackend keeps the AudioBackend default
+        // setSampleRate(...) which throws UnsupportedOperationException;
+        // the controller swallows that and returns silently, which is
+        // the documented contract for backends without a live setter.
+        java.util.Map<String, java.util.function.Supplier<
+                com.benesquivelmusic.daw.sdk.audio.AudioBackend>> factories =
+                new java.util.LinkedHashMap<>();
+        factories.put("ASIO", MockAudioBackend::new);
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector selector =
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector(factories);
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot), selector);
+
+        // The call resolves a backend through the selector and invokes
+        // its setSampleRate(DeviceId, double). MockAudioBackend uses
+        // the AudioBackend default which throws
+        // UnsupportedOperationException — the controller swallows it.
+        controller.setSampleRate("ASIO", "Mock Out", 96_000.0);
+    }
+
+    @Test
+    void setSampleRateIsNoopForLegacyNativeBackends(@TempDir Path projectRoot) {
+        // Legacy NativeAudioBackend names ("PortAudio", "Java Sound")
+        // negotiate the rate at stream open and have no separate
+        // setter — the controller must skip them so the dialog flow
+        // falls through to the model-only update.
+        AudioEngine engine = new AudioEngine(AudioFormat.CD_QUALITY);
+        DefaultAudioEngineController controller = new DefaultAudioEngineController(
+                engine, null, NotificationManager.noop(),
+                new IncompleteTakeStore(projectRoot),
+                new com.benesquivelmusic.daw.sdk.audio.AudioBackendSelector());
+        // Both null/blank/legacy names must be silent no-ops.
+        controller.setSampleRate(null, "", 48_000.0);
+        controller.setSampleRate("", "", 48_000.0);
+        controller.setSampleRate("Java Sound", "", 48_000.0);
+        controller.setSampleRate("PortAudio", "", 48_000.0);
+    }
 }

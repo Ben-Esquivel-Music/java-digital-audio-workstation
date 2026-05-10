@@ -516,6 +516,35 @@ public sealed interface AudioBackend extends AutoCloseable
     }
 
     /**
+     * Asks the backend to switch the named device to the given sample
+     * rate. On ASIO this maps to {@code ASIOSetSampleRate(double)}; on
+     * CoreAudio it maps to {@code kAudioDevicePropertyNominalSampleRate};
+     * on WASAPI it is a no-op (the rate is fixed at stream open).
+     *
+     * <p>The Audio Settings dialog calls this when the user picks a new
+     * sample rate from the combo, *before* writing the value to the
+     * {@code SettingsModel}, so that a driver rejection keeps the old
+     * persisted rate and never opens a stream against a driver running
+     * at a different rate.</p>
+     *
+     * <p>The default implementation throws
+     * {@link UnsupportedOperationException}, which is appropriate for
+     * backends that fix the rate at stream open. Callers must catch it
+     * and fall through to the model-only update.</p>
+     *
+     * @param device target device id; must not be null
+     * @param rate   the requested sample rate in Hz; must be positive
+     * @throws UnsupportedOperationException if this backend has no
+     *                                       sample-rate selection API
+     * @throws AudioBackendException         if the driver rejects the
+     *                                       requested rate
+     */
+    default void setSampleRate(DeviceId device, double rate) {
+        throw new UnsupportedOperationException(
+                "Backend " + name() + " does not support sample-rate selection");
+    }
+
+    /**
      * Returns a {@link Flow.Publisher} that emits a
      * {@link ClockLockEvent} every time the driver reports a change in
      * external-clock lock state.
