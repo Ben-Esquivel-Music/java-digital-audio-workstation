@@ -126,6 +126,38 @@ class AudioSettingsDialogTest {
     }
 
     @Test
+    void shouldRevertSampleRateComboWhenDriverRejectsRate() throws Exception {
+        // Story 220: when the driver rejects a sample-rate change, the
+        // dialog must keep the previously persisted rate, revert the
+        // combo, and surface a notification — the model must NOT be
+        // updated with the rejected value.
+        model.setSampleRate(44_100);
+        stub.setSampleRateFailure = new com.benesquivelmusic.daw.sdk.audio.AudioBackendException(
+                "Driver rejected sample rate 96000: ASE_InvalidMode");
+        CopyOnWriteArrayList<String> notifications = new CopyOnWriteArrayList<>();
+        AudioSettingsDialog dialog = onFxThread(() -> {
+            AudioSettingsDialog d = new AudioSettingsDialog(model, stub);
+            d.setNotificationListener(notifications::add);
+            return d;
+        });
+        runOnFxAndWait(() -> {
+            dialog.getSampleRateCombo().setValue(96_000);
+            dialog.applyNow();
+        });
+        // Model must retain the old rate — the rejected value must not
+        // be persisted.
+        assertThat(model.getSampleRate()).isEqualTo(44_100.0);
+        // Combo must revert to the old persisted rate.
+        assertThat(dialog.getSampleRateCombo().getValue()).isEqualTo(44_100);
+        // A notification must have been emitted so the user knows why.
+        assertThat(notifications).isNotEmpty();
+        assertThat(notifications.getFirst()).contains("rejected by driver");
+        // applyConfiguration must NOT have been called — the early
+        // return should prevent the engine from reopening.
+        assertThat(stub.applyCount).isZero();
+    }
+
+    @Test
     void shouldInvokeTestTone() throws Exception {
         AudioSettingsDialog dialog = onFxThread(() -> new AudioSettingsDialog(model, stub));
         runOnFxAndWait(() -> {
@@ -415,6 +447,10 @@ class AudioSettingsDialogTest {
         List<ClockSource> clockSources = List.of();
         /** Last clock source id passed to {@link #selectClockSource}; -1 when never called. */
         int lastSelectedClockSourceId = -1;
+        /** Last sample rate passed to {@link #setSampleRate}; NaN when never called. */
+        double lastSetSampleRate = Double.NaN;
+        /** When non-null, {@link #setSampleRate} throws this exception. */
+        com.benesquivelmusic.daw.sdk.audio.AudioBackendException setSampleRateFailure;
 
         @Override
         public String getActiveBackendName() {
@@ -499,6 +535,14 @@ class AudioSettingsDialogTest {
         @Override
         public void selectClockSource(String backendName, String outputDeviceName, int sourceId) {
             lastSelectedClockSourceId = sourceId;
+        }
+
+        @Override
+        public void setSampleRate(String backendName, String outputDeviceName, double rate) {
+            lastSetSampleRate = rate;
+            if (setSampleRateFailure != null) {
+                throw setSampleRateFailure;
+            }
         }
     }
 }

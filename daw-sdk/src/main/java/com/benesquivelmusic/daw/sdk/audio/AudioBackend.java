@@ -517,9 +517,8 @@ public sealed interface AudioBackend extends AutoCloseable
 
     /**
      * Asks the backend to switch the named device to the given sample
-     * rate. On ASIO this maps to {@code ASIOSetSampleRate(double)}; on
-     * CoreAudio it maps to {@code kAudioDevicePropertyNominalSampleRate};
-     * on WASAPI it is a no-op (the rate is fixed at stream open).
+     * rate. Only backends that support live sample-rate selection
+     * override this — ASIO maps it to {@code ASIOSetSampleRate(double)}.
      *
      * <p>The Audio Settings dialog calls this when the user picks a new
      * sample rate from the combo, *before* writing the value to the
@@ -529,15 +528,20 @@ public sealed interface AudioBackend extends AutoCloseable
      *
      * <p>The default implementation throws
      * {@link UnsupportedOperationException}, which is appropriate for
-     * backends that fix the rate at stream open. Callers must catch it
-     * and fall through to the model-only update.</p>
+     * backends that negotiate the rate at stream open (WASAPI, JDK
+     * mixer, JACK). Callers (the controller layer) catch
+     * {@code UnsupportedOperationException} and fall through to the
+     * model-only update; {@link AudioBackendException} propagates to
+     * the dialog so it can revert and notify.</p>
      *
      * @param device target device id; must not be null
      * @param rate   the requested sample rate in Hz; must be positive
      * @throws UnsupportedOperationException if this backend has no
      *                                       sample-rate selection API
      * @throws AudioBackendException         if the driver rejects the
-     *                                       requested rate
+     *                                       requested rate or the
+     *                                       required native shim is
+     *                                       not present
      */
     default void setSampleRate(DeviceId device, double rate) {
         throw new UnsupportedOperationException(

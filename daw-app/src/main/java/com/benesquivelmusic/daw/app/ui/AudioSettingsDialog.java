@@ -952,7 +952,7 @@ public final class AudioSettingsDialog extends Dialog<Void> {
                 controller.setSampleRate(effectiveBackend,
                         unwrapDefault(outputDeviceCombo.getValue()),
                         sampleRate);
-            } catch (RuntimeException e) {
+            } catch (com.benesquivelmusic.daw.sdk.audio.AudioBackendException e) {
                 LOG.log(Level.WARNING, "Sample rate selection rejected by driver", e);
                 String reason = e.getMessage() == null
                         ? e.getClass().getSimpleName() : e.getMessage();

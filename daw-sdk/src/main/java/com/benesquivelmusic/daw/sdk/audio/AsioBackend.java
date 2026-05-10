@@ -562,10 +562,9 @@ public final class AsioBackend implements AudioBackend {
      *               and finite
      * @throws IllegalArgumentException      if {@code rate} is not
      *                                       positive / finite
-     * @throws UnsupportedOperationException if the native shim is not
-     *                                       available in this build
-     * @throws AudioBackendException         if the driver rejects the
-     *                                       requested rate
+     * @throws AudioBackendException if the native shim is not available
+     *                               in this build or the driver rejects
+     *                               the requested rate
      */
     @Override
     public void setSampleRate(DeviceId device, double rate) {
@@ -581,7 +580,7 @@ public final class AsioBackend implements AudioBackend {
                 .start(() -> {
                     try (AsioCapabilityShim shim = capabilityShimFactory.get()) {
                         if (!shim.isAvailable()) {
-                            result.completeExceptionally(new UnsupportedOperationException(
+                            result.completeExceptionally(new AudioBackendException(
                                     "ASIO sample-rate change requires the native shim "
                                             + "under daw-core/native/asio/ which is not present "
                                             + "in this build."));
@@ -607,9 +606,6 @@ public final class AsioBackend implements AudioBackend {
             result.join();
         } catch (CompletionException e) {
             Throwable cause = e.getCause();
-            if (cause instanceof UnsupportedOperationException uoe) {
-                throw uoe;
-            }
             if (cause instanceof AudioBackendException abe) {
                 throw abe;
             }

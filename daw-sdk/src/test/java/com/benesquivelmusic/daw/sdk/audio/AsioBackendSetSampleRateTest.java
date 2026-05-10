@@ -59,10 +59,10 @@ class AsioBackendSetSampleRateTest {
     }
 
     @Test
-    void setSampleRateThrowsUnsupportedWhenShimUnavailable() {
+    void setSampleRateThrowsAudioBackendExceptionWhenShimUnavailable() {
         AsioBackend.setCapabilityShimFactory(StubShim::unavailable);
         assertThatThrownBy(() -> new AsioBackend().setSampleRate(DEVICE, 48_000.0))
-                .isInstanceOf(UnsupportedOperationException.class)
+                .isInstanceOf(AudioBackendException.class)
                 .hasMessageContaining("native shim");
     }
 
