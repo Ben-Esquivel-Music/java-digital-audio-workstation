@@ -133,6 +133,16 @@ public final class RenderPipeline {
     private volatile QualityTier srcQualityTier = QualityTier.MEDIUM;
 
     /**
+     * Story 215 — maximum number of physical output channels reported by
+     * the active audio backend. When positive, the cue-bus write loop
+     * skips any bus whose {@code hardwareOutputIndex * 2 + 1} exceeds
+     * this limit, preventing writes to non-existent driver channels.
+     * Zero (the default) disables the guard — all writes are attempted,
+     * matching the pre-story-215 behavior.
+     */
+    private volatile int outputChannelCount;
+
+    /**
      * Creates a render pipeline with pre-allocated scratch buffers.
      *
      * @param format    the audio format describing channel count and sample rate
@@ -211,6 +221,27 @@ public final class RenderPipeline {
     /** Returns the SRC quality tier currently in effect. */
     public QualityTier getSrcQualityTier() {
         return srcQualityTier;
+    }
+
+    /**
+     * Story 215 — sets the number of physical output channels reported
+     * by the active audio backend. Used by the cue-bus write loop to
+     * skip writes to channels that do not exist on the current device.
+     *
+     * @param count the total number of output channels ({@code &ge; 0});
+     *              zero disables the guard (all writes attempted)
+     */
+    public void setOutputChannelCount(int count) {
+        if (count < 0) {
+            throw new IllegalArgumentException(
+                    "outputChannelCount must not be negative: " + count);
+        }
+        this.outputChannelCount = count;
+    }
+
+    /** Returns the configured output channel count, or 0 if unset. */
+    public int getOutputChannelCount() {
+        return outputChannelCount;
     }
 
     /**
@@ -652,12 +683,20 @@ public final class RenderPipeline {
             // hears it centered.
             if (backend != null && cueBusManager != null
                     && !routed.cueBusBuffers().isEmpty()) {
+                int outChCount = this.outputChannelCount;
                 for (Map.Entry<UUID, float[]> e : routed.cueBusBuffers().entrySet()) {
                     CueBus bus = cueBusManager.getById(e.getKey());
                     if (bus == null) {
                         continue;
                     }
                     int leftCh = bus.hardwareOutputIndex() * 2;
+                    // Story 215 — skip writes to channels beyond the
+                    // device's reported output count to avoid hitting a
+                    // non-existent driver channel. The guard is disabled
+                    // (outChCount == 0) when no channel info is available.
+                    if (outChCount > 0 && leftCh + 1 >= outChCount) {
+                        continue;
+                    }
                     float[] mono = e.getValue();
                     float[] aligned = new float[sampleOffset + mono.length];
                     System.arraycopy(mono, 0, aligned, sampleOffset, mono.length);
