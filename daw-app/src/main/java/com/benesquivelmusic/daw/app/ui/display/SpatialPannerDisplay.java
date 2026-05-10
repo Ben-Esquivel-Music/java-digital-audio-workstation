@@ -143,7 +143,14 @@ public final class SpatialPannerDisplay extends Region {
         gpuCanvas.setAnimated(playing);
     }
 
-    /** Returns whether the per-frame render pulse is currently engaged. */
+    /**
+     * Returns the requested animation state — i.e. whether
+     * {@link #setPlaying(boolean)} was last called with {@code true}.
+     * Note that the actual render pulse may still be paused even when this
+     * returns {@code true} if the display is not attached to a
+     * {@link javafx.scene.Scene} (the {@link GpuCanvas} timer is also
+     * gated on Scene attachment).
+     */
     public boolean isPlaying() {
         return gpuCanvas.isAnimated();
     }

@@ -23,8 +23,10 @@ import static org.assertj.core.api.Assertions.*;
  * Controller-level tests. Since {@link com.benesquivelmusic.daw.app.ui.display.SpatialPannerDisplay}
  * now composes a {@link com.benesquivelmusic.daw.fx.GpuCanvas} (story 250),
  * its construction and {@code update()} path call FX-thread-required setters
- * on {@code GpuCanvas}; each test body therefore runs on the JavaFX
- * Application Thread via {@link #onFxRun(Runnable)}.
+ * on {@code GpuCanvas}; tests that construct a controller or call
+ * {@code setSourcePosition()} run on the JavaFX Application Thread via
+ * {@link #onFxRun(Runnable)}. Pure-logic tests (null guards, default-panner
+ * factory) that never touch the display run on the test thread directly.
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class SpatialPannerControllerTest {
