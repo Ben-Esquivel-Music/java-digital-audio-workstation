@@ -234,4 +234,59 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!--
+            ─────────────────────────────────────────────────────────────
+            long-tests profile (story 209)
+            ─────────────────────────────────────────────────────────────
+            Long-running end-to-end render / export tests that take
+            minutes per test (full master render, 20-track batch export,
+            DDP image validation, ADM BWF round-trip, deliverable bundle
+            export). Excluded from the default fast feedback loop and
+            invoked nightly or on `main` pushes via the long-tests CI
+            workflow.
+
+            Per-module activation:
+              * daw-app  — adds `src/test/long/java` + `src/test/long/resources`
+                           as the test source set (see daw-app/pom.xml).
+              * daw-core — enables the strict DSP regression coverage
+                           gate (see daw-core/pom.xml).
+              * other modules — no-op (no `src/test/long/` directory; the
+                                surefire report just shows zero tests).
+
+            Reports land in `target/long-test-reports/` so they don't
+            collide with the standard surefire output.
+
+            Run locally with:
+                mvn -Plong-tests verify
+        -->
+        <profile>
+            <id>long-tests</id>
+            <properties>
+                <!-- Set to true when CI is rebaselining golden artifacts. Tests
+                     should overwrite golden files instead of comparing. -->
+                <longtests.rebaseline>false</longtests.rebaseline>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <reportsDirectory>${project.build.directory}/long-test-reports</reportsDirectory>
+                            <!-- Generous fork timeout to accommodate the full
+                                 5-track / 20-track / bundle pipelines. Per-test
+                                 wall-clock budgets are enforced inside the
+                                 LongTestHarness (2× the documented budget). -->
+                            <forkedProcessTimeoutInSeconds>1800</forkedProcessTimeoutInSeconds>
+                            <systemPropertyVariables>
+                                <longtests.rebaseline>${longtests.rebaseline}</longtests.rebaseline>
+                            </systemPropertyVariables>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

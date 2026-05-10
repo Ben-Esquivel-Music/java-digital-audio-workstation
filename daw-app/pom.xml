@@ -210,4 +210,82 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!--
+            ─────────────────────────────────────────────────────────────
+            long-tests profile contribution (story 209)
+            ─────────────────────────────────────────────────────────────
+            Composes with the root `long-tests` profile (same id). When
+            active:
+
+              * The default test source set under `src/test/java` is
+                excluded from compilation (so fast unit tests do not
+                run during a long-test pipeline).
+              * `src/test/long/java` is added as the test source root
+                via build-helper-maven-plugin, and
+                `src/test/long/resources` is added as a test resource
+                root.
+
+            This satisfies story 209 without touching the regular
+            `src/test/java` layout, and without the profile needing to
+            redefine `<testSourceDirectory>` (which Maven does not
+            permit inside a profile build section).
+        -->
+        <profile>
+            <id>long-tests</id>
+            <dependencies>
+                <!-- Used by LongTestHarnessSelfTest to drive synthetic
+                     probe test classes through a real JUnit Platform
+                     launcher (avoids fabricating an ExtensionContext
+                     fake that drifts with each Jupiter release). -->
+                <dependency>
+                    <groupId>org.junit.platform</groupId>
+                    <artifactId>junit-platform-launcher</artifactId>
+                    <version>${junit.version}</version>
+                    <scope>test</scope>
+                </dependency>
+            </dependencies>
+            <build>
+                <testResources>
+                    <testResource>
+                        <directory>src/test/long/resources</directory>
+                    </testResource>
+                </testResources>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>build-helper-maven-plugin</artifactId>
+                        <version>3.6.0</version>
+                        <executions>
+                            <execution>
+                                <id>add-long-test-source</id>
+                                <phase>generate-test-sources</phase>
+                                <goals><goal>add-test-source</goal></goals>
+                                <configuration>
+                                    <sources>
+                                        <source>src/test/long/java</source>
+                                    </sources>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-compiler-plugin</artifactId>
+                        <configuration>
+                            <!-- Only compile the long-tests source set (added
+                                 above by build-helper) — the regular fast unit
+                                 tests under src/test/java are skipped while
+                                 this profile is active so the long-tests run
+                                 produces a clean, distinct surefire report. -->
+                            <testIncludes>
+                                <testInclude>com/benesquivelmusic/daw/app/longtests/**/*.java</testInclude>
+                            </testIncludes>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>
