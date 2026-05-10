@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.BufferSizeRange;
 import com.benesquivelmusic.daw.sdk.audio.ClockSource;
@@ -952,7 +953,7 @@ public final class AudioSettingsDialog extends Dialog<Void> {
                 controller.setSampleRate(effectiveBackend,
                         unwrapDefault(outputDeviceCombo.getValue()),
                         sampleRate);
-            } catch (com.benesquivelmusic.daw.sdk.audio.AudioBackendException e) {
+            } catch (AudioBackendException e) {
                 LOG.log(Level.WARNING, "Sample rate selection rejected by driver", e);
                 String reason = e.getMessage() == null
                         ? e.getClass().getSimpleName() : e.getMessage();

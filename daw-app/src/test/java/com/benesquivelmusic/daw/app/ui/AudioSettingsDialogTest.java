@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.BufferSizeRange;
 import com.benesquivelmusic.daw.sdk.audio.ClockKind;
@@ -132,7 +133,7 @@ class AudioSettingsDialogTest {
         // combo, and surface a notification — the model must NOT be
         // updated with the rejected value.
         model.setSampleRate(44_100);
-        stub.setSampleRateFailure = new com.benesquivelmusic.daw.sdk.audio.AudioBackendException(
+        stub.setSampleRateFailure = new AudioBackendException(
                 "Driver rejected sample rate 96000: ASE_InvalidMode");
         CopyOnWriteArrayList<String> notifications = new CopyOnWriteArrayList<>();
         AudioSettingsDialog dialog = onFxThread(() -> {
@@ -450,7 +451,7 @@ class AudioSettingsDialogTest {
         /** Last sample rate passed to {@link #setSampleRate}; NaN when never called. */
         double lastSetSampleRate = Double.NaN;
         /** When non-null, {@link #setSampleRate} throws this exception. */
-        com.benesquivelmusic.daw.sdk.audio.AudioBackendException setSampleRateFailure;
+        AudioBackendException setSampleRateFailure;
 
         @Override
         public String getActiveBackendName() {
