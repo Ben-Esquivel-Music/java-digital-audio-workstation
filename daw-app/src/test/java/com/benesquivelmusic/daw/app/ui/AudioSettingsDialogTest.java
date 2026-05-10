@@ -1,10 +1,13 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
+import com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.BufferSizeRange;
 import com.benesquivelmusic.daw.sdk.audio.ClockKind;
 import com.benesquivelmusic.daw.sdk.audio.ClockSource;
+import com.benesquivelmusic.daw.sdk.audio.DeviceId;
+import com.benesquivelmusic.daw.sdk.audio.FormatChangeReason;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 
 import javafx.application.Platform;
@@ -21,6 +24,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Flow;
+import java.util.concurrent.SubmissionPublisher;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -315,6 +320,109 @@ class AudioSettingsDialogTest {
     }
 
     @Test
+    void refreshCapabilitiesShouldUpdateDropdownsWhenSupportedSetsChange() throws Exception {
+        // Story 221: refreshCapabilities() re-queries the active backend
+        // and rebuilds the buffer-size and sample-rate dropdowns. Simulates
+        // the user changing buffer/rate in the ASIO control panel and the
+        // dialog reflecting that without a close/reopen cycle.
+        model.setAudioOutputDevice("Main Out");
+        stub.bufferRanges.put("Main Out", new BufferSizeRange(64, 1024, 256, 64));
+        stub.supportedRates.put("Main Out", Set.of(44_100, 48_000));
+
+        AudioSettingsDialog dialog = onFxThread(() -> new AudioSettingsDialog(model, stub));
+        runOnFxAndWait(() -> dialog.getOutputDeviceCombo().setValue("Main Out"));
+
+        // Sanity check — initial capabilities reflect the first set.
+        assertThat(dialog.getCurrentBufferRange().preferred()).isEqualTo(256);
+        assertThat(dialog.getCurrentSupportedSampleRates()).containsExactlyInAnyOrder(44_100, 48_000);
+
+        // Driver re-table: smaller range, more rates (the user picked
+        // 128 frames and 96 kHz in the vendor panel).
+        stub.bufferRanges.put("Main Out", new BufferSizeRange(64, 512, 128, 64));
+        stub.supportedRates.put("Main Out", Set.of(44_100, 48_000, 96_000));
+
+        runOnFxAndWait(dialog::refreshCapabilities);
+
+        assertThat(dialog.getCurrentBufferRange().preferred()).isEqualTo(128);
+        assertThat(dialog.getCurrentSupportedSampleRates())
+                .containsExactlyInAnyOrder(44_100, 48_000, 96_000);
+        assertThat(dialog.getBufferSizeOptions()).contains(128, 192, 256, 384, 512);
+    }
+
+    @Test
+    void refreshCapabilitiesUnsupportedBufferSizeFallsBackWithSingleNotification() throws Exception {
+        // Story 221: a previously-selected buffer size that disappears
+        // from the supported set falls back to the driver's preferred
+        // value with exactly one notification — not one per dropdown
+        // (rate menu isn't notified about because the rate is still valid).
+        model.setAudioOutputDevice("Main Out");
+        stub.bufferRanges.put("Main Out", new BufferSizeRange(64, 1024, 256, 64));
+        stub.supportedRates.put("Main Out", Set.of(44_100, 48_000));
+
+        CopyOnWriteArrayList<String> notifications = new CopyOnWriteArrayList<>();
+        AudioSettingsDialog dialog = onFxThread(() -> {
+            AudioSettingsDialog d = new AudioSettingsDialog(model, stub);
+            d.setNotificationListener(notifications::add);
+            return d;
+        });
+        runOnFxAndWait(() -> {
+            dialog.getOutputDeviceCombo().setValue("Main Out");
+            dialog.getBufferSizeCombo().setValue(256);
+            dialog.getSampleRateCombo().setValue(48_000);
+        });
+        notifications.clear();
+
+        // Driver re-table: 256 frames is no longer accepted; 48 kHz still is.
+        stub.bufferRanges.put("Main Out", new BufferSizeRange(64, 192, 128, 64));
+
+        runOnFxAndWait(dialog::refreshCapabilities);
+
+        // Buffer size fell back to the new preferred value.
+        assertThat(dialog.getBufferSizeCombo().getValue()).isEqualTo(128);
+        // Sample rate (still valid) is preserved.
+        assertThat(dialog.getSampleRateCombo().getValue()).isEqualTo(48_000);
+        // Exactly one notification fired (not one per dropdown).
+        assertThat(notifications).hasSize(1);
+        assertThat(notifications.get(0)).contains("256").contains("128");
+    }
+
+    @Test
+    void deviceEventsSubscriptionUnsubscribesAfterFirstFormatChangeRequested() throws Exception {
+        // Story 221: the one-shot subscription opened by the
+        // "Open Driver Control Panel" handler must cancel itself after
+        // the first matching FormatChangeRequested event so subsequent
+        // events do not double-fire the refresh.
+        AudioSettingsDialog dialog = onFxThread(() -> new AudioSettingsDialog(model, stub));
+
+        AtomicReference<Flow.Subscription> subRef = new AtomicReference<>();
+        runOnFxAndWait(() -> subRef.set(dialog.subscribeForRefreshOneShotForTests()));
+
+        // One subscriber on the publisher initially.
+        assertThat(stub.deviceEventsPublisher.getNumberOfSubscribers()).isEqualTo(1);
+
+        // Publish a matching FormatChangeRequested event.
+        DeviceId deviceId = new DeviceId("PortAudio", "Main Out");
+        stub.deviceEventsPublisher.submit(new AudioDeviceEvent.FormatChangeRequested(
+                deviceId, java.util.Optional.empty(), new FormatChangeReason.DriverReset()));
+
+        // Wait for the publisher to finish delivering and the subscription
+        // to cancel itself.
+        long deadline = System.currentTimeMillis() + 2_000;
+        while (stub.deviceEventsPublisher.getNumberOfSubscribers() > 0
+                && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(stub.deviceEventsPublisher.getNumberOfSubscribers()).isZero();
+
+        // Subsequent events do not re-attach a subscriber — the dialog
+        // is no longer listening.
+        stub.deviceEventsPublisher.submit(new AudioDeviceEvent.FormatChangeRequested(
+                deviceId, java.util.Optional.empty(), new FormatChangeReason.BufferSizeChange()));
+        Thread.sleep(50);
+        assertThat(stub.deviceEventsPublisher.getNumberOfSubscribers()).isZero();
+    }
+
+    @Test
     void wasapiCheckboxShouldRefreshDeviceCapabilitiesWhenToggled() throws Exception {
         // Story 213: the dialog refreshes both lists when the WASAPI
         // mode toggle changes. We simulate that by registering different
@@ -453,6 +561,14 @@ class AudioSettingsDialogTest {
         /** When non-null, {@link #setSampleRate} throws this exception. */
         AudioBackendException setSampleRateFailure;
 
+        /**
+         * Backend-side device-events publisher (story 218 + 221). Tests
+         * publish synthetic {@link AudioDeviceEvent.FormatChangeRequested}
+         * events through this so the dialog's one-shot subscription path
+         * can be exercised end-to-end.
+         */
+        final SubmissionPublisher<AudioDeviceEvent> deviceEventsPublisher = new SubmissionPublisher<>();
+
         @Override
         public String getActiveBackendName() {
             return "PortAudio";
@@ -544,6 +660,11 @@ class AudioSettingsDialogTest {
             if (setSampleRateFailure != null) {
                 throw setSampleRateFailure;
             }
+        }
+
+        @Override
+        public Flow.Publisher<AudioDeviceEvent> deviceEvents() {
+            return deviceEventsPublisher;
         }
     }
 }

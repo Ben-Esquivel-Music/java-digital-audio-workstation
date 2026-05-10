@@ -3,9 +3,11 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
+import com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.BufferSizeRange;
 import com.benesquivelmusic.daw.sdk.audio.ClockSource;
+import com.benesquivelmusic.daw.sdk.audio.FormatChangeReason;
 import com.benesquivelmusic.daw.sdk.audio.MixPrecision;
 import com.benesquivelmusic.daw.sdk.audio.SampleRate;
 import com.benesquivelmusic.daw.sdk.audio.SampleRateConverter.QualityTier;
@@ -42,6 +44,8 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.Flow;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -613,6 +617,34 @@ public final class AudioSettingsDialog extends Dialog<Void> {
     }
 
     /**
+     * Re-queries the active backend's capabilities for the currently
+     * selected output device — buffer-size range, supported sample
+     * rates, and (when applicable) clock sources — and rebuilds the
+     * corresponding dropdowns. Currently selected values that remain
+     * valid are preserved; values that have disappeared from the
+     * driver-supported set fall back to the driver's preferred value
+     * with a single user-visible notification (matching story 213's
+     * fall-back-with-notification convention).
+     *
+     * <p>Wired by the "Open Driver Control Panel" handler so any
+     * change the user made in the vendor's panel (buffer size, sample
+     * rate, clock source) is reflected in the dialog without forcing
+     * a close-and-reopen cycle. Also intended to be called by other
+     * capability-changing flows (sample-rate change, clock-source
+     * selection) so the same code path keeps the UI in sync.</p>
+     *
+     * <p>Cheap enough to run on the JavaFX application thread — the
+     * underlying {@code bufferSizeRange} and {@code supportedSampleRates}
+     * getters complete in single-digit milliseconds even on cold
+     * caches. Story 221.</p>
+     */
+    public void refreshCapabilities() {
+        refreshDevicesForBackend(backendCombo.getValue());
+        refreshDeviceCapabilities(currentBufferSizeOrDefault(), currentSampleRateOrDefault());
+        refreshLatencyLabels();
+    }
+
+    /**
      * Re-queries the active backend for the current output device's
      * {@link BufferSizeRange} and supported sample-rate set, then
      * rebuilds the buffer-size and sample-rate dropdowns to honour
@@ -910,26 +942,99 @@ public final class AudioSettingsDialog extends Dialog<Void> {
             return;
         }
         Runnable runnable = action.get();
+        // Subscribe (one-shot) to deviceEvents() so we also catch
+        // driver-initiated resets that may fire while the panel is
+        // still open — common on USB streaming-mode changes (story 218
+        // engine-side, story 221 dialog-side). The subscription cancels
+        // itself on the first matching FormatChangeRequested event so
+        // subsequent events do not double-fire the refresh.
+        Flow.Subscription pending = subscribeOneShotForRefresh();
         // Run on a background virtual thread so blocking native UI calls
         // never stall the JavaFX application thread or the audio render
         // callback. After the runnable returns, refresh device capabilities
         // on the FX thread. Some implementations return immediately after
-        // spawning the panel process, so this refresh is best-effort.
+        // spawning the panel process, so this refresh is best-effort and
+        // is complemented by the deviceEvents() subscription above.
         Thread.ofVirtual().name("audio-control-panel").start(() -> {
             try {
                 runnable.run();
                 Platform.runLater(() -> {
-                    refreshDevicesForBackend(backendCombo.getValue());
-                    refreshDeviceCapabilities(currentBufferSizeOrDefault(),
-                            currentSampleRateOrDefault());
+                    // Cancel the pending subscription before calling
+                    // refreshCapabilities() so it doesn't fire again
+                    // when the same refresh has already happened.
+                    if (pending != null) {
+                        pending.cancel();
+                    }
+                    refreshCapabilities();
                 });
             } catch (RuntimeException e) {
+                if (pending != null) {
+                    pending.cancel();
+                }
                 LOG.log(Level.WARNING, "Driver control panel launch failed", e);
                 showError("Driver Control Panel Failed",
                         "Could not open the driver control panel: "
                                 + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
             }
         });
+    }
+
+    /**
+     * Subscribes to the controller's {@link AudioEngineController#deviceEvents()}
+     * publisher and triggers exactly one {@link #refreshCapabilities()}
+     * call on the FX thread on the first
+     * {@link AudioDeviceEvent.FormatChangeRequested} event whose reason
+     * is {@link FormatChangeReason.DriverReset},
+     * {@link FormatChangeReason.BufferSizeChange},
+     * {@link FormatChangeReason.SampleRateChange}, or
+     * {@link FormatChangeReason.ClockSourceChange}. The subscription
+     * cancels itself after the first matching event so subsequent
+     * events do not double-fire the refresh.
+     *
+     * @return the {@link Flow.Subscription} that the caller may cancel
+     *         early (e.g. when the synchronous post-runnable refresh
+     *         already covers the change); never {@code null}
+     */
+    private Flow.Subscription subscribeOneShotForRefresh() {
+        AtomicReference<Flow.Subscription> ref = new AtomicReference<>();
+        controller.deviceEvents().subscribe(new Flow.Subscriber<>() {
+            @Override
+            public void onSubscribe(Flow.Subscription subscription) {
+                ref.set(subscription);
+                subscription.request(Long.MAX_VALUE);
+            }
+
+            @Override
+            public void onNext(AudioDeviceEvent event) {
+                if (event instanceof AudioDeviceEvent.FormatChangeRequested(
+                        var ignoredDevice, var ignoredFormat, FormatChangeReason reason)
+                        && isCapabilityChanging(reason)) {
+                    Flow.Subscription s = ref.get();
+                    if (s != null) {
+                        s.cancel();
+                    }
+                    Platform.runLater(AudioSettingsDialog.this::refreshCapabilities);
+                }
+            }
+
+            @Override
+            public void onError(Throwable throwable) {
+                LOG.log(Level.WARNING, "deviceEvents() subscription failed", throwable);
+            }
+
+            @Override
+            public void onComplete() { /* no-op */ }
+        });
+        return ref.get();
+    }
+
+    private static boolean isCapabilityChanging(FormatChangeReason reason) {
+        return switch (reason) {
+            case FormatChangeReason.DriverReset _,
+                 FormatChangeReason.BufferSizeChange _,
+                 FormatChangeReason.SampleRateChange _,
+                 FormatChangeReason.ClockSourceChange _ -> true;
+        };
     }
 
     /**
@@ -1235,9 +1340,19 @@ public final class AudioSettingsDialog extends Dialog<Void> {
             return false;
         }
         action.get().run();
-        refreshDevicesForBackend(backendCombo.getValue());
-        refreshDeviceCapabilities(currentBufferSizeOrDefault(), currentSampleRateOrDefault());
+        refreshCapabilities();
         return true;
+    }
+
+    /**
+     * Test hook — exposes the one-shot {@code deviceEvents()}
+     * subscription used by {@link #onOpenControlPanel()} so tests can
+     * verify it cancels itself after the first matching
+     * {@link AudioDeviceEvent.FormatChangeRequested} event without
+     * spawning a virtual thread or running the control-panel runnable.
+     */
+    Flow.Subscription subscribeForRefreshOneShotForTests() {
+        return subscribeOneShotForRefresh();
     }
 
     /**
