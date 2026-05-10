@@ -544,9 +544,9 @@ public final class AsioBackend implements AudioBackend {
      * thread (story 220), consistent with stories 216 / 218 — the
      * native driver call must not run on the audio render thread. The
      * method blocks on {@link CompletableFuture#join()}, so callers
-     * must invoke it off the JavaFX application thread (the Audio
-     * Settings dialog already routes through a background thread when
-     * applying settings).
+     * should invoke it off the JavaFX application thread to avoid
+     * freezing the UI. The Audio Settings dialog dispatches its Apply
+     * flow to a background virtual thread for this reason.
      *
      * <p>A {@code false} return from the shim ({@code ASE_OK} not
      * received) is translated into an {@link AudioBackendException}

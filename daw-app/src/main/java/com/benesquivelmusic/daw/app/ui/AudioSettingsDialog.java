@@ -932,89 +932,160 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         });
     }
 
+    /**
+     * Captures current combo values on the FX thread and dispatches
+     * the blocking driver + engine work to a background virtual thread.
+     * UI updates (combo revert, notification, capability refresh) are
+     * posted back via {@link Platform#runLater}. This keeps the
+     * JavaFX application thread responsive while native calls like
+     * {@code ASIOSetSampleRate} block on a platform thread.
+     */
     private void applyAndReconfigure() {
+        ApplySnapshot snapshot = captureSnapshot();
+        if (snapshot == null) {
+            return;
+        }
+        Thread.ofVirtual().name("audio-apply-settings").start(
+                () -> doApplyWork(snapshot));
+    }
+
+    /**
+     * Synchronous apply path — captures and executes immediately on
+     * the calling thread, used by the {@link #applyNow()} test hook.
+     */
+    private void applyAndReconfigureSync() {
+        ApplySnapshot snapshot = captureSnapshot();
+        if (snapshot == null) {
+            return;
+        }
+        doApplyWork(snapshot);
+    }
+
+    /**
+     * Captures all combo / slider / check-box values from the FX
+     * controls into an immutable snapshot that can be safely consumed
+     * on a background thread. Returns {@code null} when a required
+     * value is missing (sample rate, buffer size, or bit depth).
+     */
+    private ApplySnapshot captureSnapshot() {
         Integer sampleRate = sampleRateCombo.getValue();
         Integer bufferFrames = bufferSizeCombo.getValue();
         Integer bitDepth = bitDepthCombo.getValue();
         if (sampleRate == null || bufferFrames == null || bitDepth == null) {
-            return;
+            return null;
         }
+        return new ApplySnapshot(
+                sampleRate,
+                bufferFrames,
+                bitDepth,
+                effectiveBackendName(),
+                unwrapDefault(outputDeviceCombo.getValue()),
+                mixPrecisionCombo.getValue(),
+                srcQualityCombo.getValue(),
+                workerPoolSizeCombo.getValue(),
+                inputDeviceCombo.getValue(),
+                outputDeviceCombo.getValue(),
+                latencyCompensationCheck.isSelected(),
+                masterCpuBudgetSlider.getValue(),
+                masterCpuBudgetPolicyCombo.getValue());
+    }
 
-        String effectiveBackend = effectiveBackendName();
+    private record ApplySnapshot(
+            int sampleRate,
+            int bufferFrames,
+            int bitDepth,
+            String effectiveBackend,
+            String outputDeviceName,
+            MixPrecision mixPrecision,
+            QualityTier srcQuality,
+            Integer workerPoolSize,
+            String inputDevice,
+            String rawOutputDevice,
+            boolean applyLatencyCompensation,
+            double masterCpuBudgetFraction,
+            String masterCpuBudgetPolicyName) {}
 
+    /**
+     * Executes the driver change, model persistence, and engine
+     * reconfiguration. Safe to call from any thread — UI updates are
+     * posted via {@link Platform#runLater} when not already on the
+     * FX application thread.
+     */
+    private void doApplyWork(ApplySnapshot s) {
         // Story 220: ask the driver to switch sample rates *before*
         // persisting the new value. If the driver rejects the rate,
         // keep the previously persisted value and surface a warning
         // so the dialog and model stay coherent — opening a stream at
         // a rate the driver is not actually running at would cause
         // pitch-shifted playback or ASE_InvalidMode failures.
-        if (controller != null && effectiveBackend != null) {
+        if (controller != null && s.effectiveBackend() != null) {
             try {
-                controller.setSampleRate(effectiveBackend,
-                        unwrapDefault(outputDeviceCombo.getValue()),
-                        sampleRate);
+                controller.setSampleRate(s.effectiveBackend(),
+                        s.outputDeviceName(), s.sampleRate());
             } catch (AudioBackendException e) {
                 LOG.log(Level.WARNING, "Sample rate selection rejected by driver", e);
                 String reason = e.getMessage() == null
                         ? e.getClass().getSimpleName() : e.getMessage();
-                notify("Sample rate " + sampleRate + " Hz rejected by driver: " + reason);
+                notify("Sample rate " + s.sampleRate() + " Hz rejected by driver: " + reason);
                 // Restore the combo to the previously persisted rate
                 // so the user sees the actual value the driver and
                 // model agree on, not the rejected choice.
-                suppressChangeEvents = true;
-                try {
-                    sampleRateCombo.setValue((int) model.getSampleRate());
-                } finally {
-                    suppressChangeEvents = false;
-                }
+                runOnFx(() -> {
+                    suppressChangeEvents = true;
+                    try {
+                        sampleRateCombo.setValue((int) model.getSampleRate());
+                    } finally {
+                        suppressChangeEvents = false;
+                    }
+                });
                 return;
             }
+            // After a successful rate change, refresh device capabilities
+            // — some drivers vary the available buffer sizes and sample
+            // rates depending on the active rate.
+            runOnFx(() -> refreshDeviceCapabilities(
+                    currentBufferSizeOrDefault(), s.sampleRate()));
         }
 
         // Persist user choices first so a crash in the reconfigure does not lose them
-        model.setSampleRate(sampleRate);
-        model.setBufferSize(bufferFrames);
-        model.setBitDepth(bitDepth);
-        MixPrecision mixPrecision = mixPrecisionCombo.getValue();
-        if (mixPrecision != null) {
-            model.setMixPrecision(mixPrecision);
+        model.setSampleRate(s.sampleRate());
+        model.setBufferSize(s.bufferFrames());
+        model.setBitDepth(s.bitDepth());
+        if (s.mixPrecision() != null) {
+            model.setMixPrecision(s.mixPrecision());
         }
-        QualityTier srcQuality = srcQualityCombo.getValue();
-        if (srcQuality != null) {
-            model.setSrcQuality(srcQuality);
+        if (s.srcQuality() != null) {
+            model.setSrcQuality(s.srcQuality());
         }
         // Story 125: persist the worker-pool size so the next engine
         // start consumes it via the SettingsModel-driven Request below.
-        Integer workerPoolSize = workerPoolSizeCombo.getValue();
-        if (workerPoolSize != null && workerPoolSize > 0) {
-            model.setWorkerPoolSize(workerPoolSize);
+        if (s.workerPoolSize() != null && s.workerPoolSize() > 0) {
+            model.setWorkerPoolSize(s.workerPoolSize());
         }
-        if (effectiveBackend != null) {
-            model.setAudioBackend(effectiveBackend);
+        if (s.effectiveBackend() != null) {
+            model.setAudioBackend(s.effectiveBackend());
         }
-        String inputDevice = inputDeviceCombo.getValue();
-        if (inputDevice != null) {
-            model.setAudioInputDevice("(default)".equals(inputDevice) ? "" : inputDevice);
+        if (s.inputDevice() != null) {
+            model.setAudioInputDevice("(default)".equals(s.inputDevice()) ? "" : s.inputDevice());
         }
-        String outputDevice = outputDeviceCombo.getValue();
-        if (outputDevice != null) {
-            model.setAudioOutputDevice("(default)".equals(outputDevice) ? "" : outputDevice);
+        if (s.rawOutputDevice() != null) {
+            model.setAudioOutputDevice("(default)".equals(s.rawOutputDevice()) ? "" : s.rawOutputDevice());
         }
         // Persist the "Apply latency compensation to recorded takes"
         // toggle. The TransportController reads this value via
         // Host#isApplyLatencyCompensation() at recording start and
         // passes it to RecordingPipeline.setApplyLatencyCompensation().
-        model.setApplyLatencyCompensation(latencyCompensationCheck.isSelected());
+        model.setApplyLatencyCompensation(s.applyLatencyCompensation());
         // Story 129 (UI) — persist master CPU budget settings. The
         // engine reads them on next start (via SettingsModel) so a
         // fresh enforcer is constructed with the new values.
-        double masterFraction = masterCpuBudgetSlider.getValue();
-        if (!Double.isNaN(masterFraction) && masterFraction > 0.0 && masterFraction <= 1.0) {
-            model.setMasterCpuBudgetFraction(masterFraction);
+        if (!Double.isNaN(s.masterCpuBudgetFraction())
+                && s.masterCpuBudgetFraction() > 0.0
+                && s.masterCpuBudgetFraction() <= 1.0) {
+            model.setMasterCpuBudgetFraction(s.masterCpuBudgetFraction());
         }
-        String policyName = masterCpuBudgetPolicyCombo.getValue();
-        if (policyName != null) {
-            DegradationPolicy policy = SettingsModel.parsePolicy(policyName);
+        if (s.masterCpuBudgetPolicyName() != null) {
+            DegradationPolicy policy = SettingsModel.parsePolicy(s.masterCpuBudgetPolicyName());
             model.setMasterCpuBudgetPolicy(policy);
         }
 
@@ -1025,20 +1096,20 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         // Apply mix precision directly — it does not require an engine
         // restart so it is applied outside the Request/applyConfiguration
         // path which stops and restarts the audio stream.
-        if (mixPrecision != null) {
-            controller.applyMixPrecision(mixPrecision);
+        if (s.mixPrecision() != null) {
+            controller.applyMixPrecision(s.mixPrecision());
         }
-        if (srcQuality != null) {
-            controller.applySrcQuality(srcQuality);
+        if (s.srcQuality() != null) {
+            controller.applySrcQuality(s.srcQuality());
         }
 
         AudioEngineController.Request request = new AudioEngineController.Request(
-                effectiveBackend == null ? controller.getActiveBackendName() : effectiveBackend,
+                s.effectiveBackend() == null ? controller.getActiveBackendName() : s.effectiveBackend(),
                 model.getAudioInputDevice(),
                 model.getAudioOutputDevice(),
-                SampleRate.fromHz(sampleRate),
-                bufferFrames,
-                bitDepth,
+                SampleRate.fromHz(s.sampleRate()),
+                s.bufferFrames(),
+                s.bitDepth(),
                 model.getWorkerPoolSize());
 
         try {
@@ -1047,6 +1118,20 @@ public final class AudioSettingsDialog extends Dialog<Void> {
             LOG.log(Level.WARNING, "Failed to apply audio configuration", e);
             showError("Audio Configuration Failed",
                     "Could not apply new audio settings: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Runs the given action on the JavaFX application thread. If the
+     * current thread is already the FX thread (synchronous test path),
+     * the action runs inline; otherwise it is posted via
+     * {@link Platform#runLater}.
+     */
+    private static void runOnFx(Runnable action) {
+        if (Platform.isFxApplicationThread()) {
+            action.run();
+        } else {
+            Platform.runLater(action);
         }
     }
 
@@ -1119,9 +1204,9 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         return cpuLoadLabel;
     }
 
-    /** Test hook — applies the current dialog state to the model & controller. */
+    /** Test hook — applies the current dialog state to the model & controller synchronously. */
     void applyNow() {
-        applyAndReconfigure();
+        applyAndReconfigureSync();
     }
 
     /** Test hook — fires the test-tone button action. */
