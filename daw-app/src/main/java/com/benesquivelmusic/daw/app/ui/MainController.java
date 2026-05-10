@@ -6,6 +6,8 @@ import com.benesquivelmusic.daw.app.ui.help.HelpControls;
 import com.benesquivelmusic.daw.app.ui.help.HelpKeyHandler;
 import com.benesquivelmusic.daw.app.ui.help.HelpOverlay;
 import com.benesquivelmusic.daw.app.ui.help.HelpRegistry;
+import com.benesquivelmusic.daw.app.ui.help.OnboardingState;
+import com.benesquivelmusic.daw.app.ui.help.OnboardingTour;
 import com.benesquivelmusic.daw.app.ui.help.QuickHelpBar;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
@@ -2223,9 +2225,24 @@ public final class MainController {
             helpOverlay = new HelpOverlay(helpRegistry);
             quickHelpBar = new QuickHelpBar(helpRegistry);
             helpKeyHandler = new HelpKeyHandler(helpRegistry, helpOverlay, quickHelpBar);
+
+            // Mount the Quick Help bar into the bottom VBox so it is visible.
+            Node bottom = rootPane.getBottom();
+            if (bottom instanceof VBox bottomBox) {
+                bottomBox.getChildren().addFirst(quickHelpBar);
+            }
         }
         helpKeyHandler.installOn(scene);
         quickHelpBar.attachTo(scene);
+
+        // Anchor the overlay to the primary window when it becomes available.
+        if (scene.getWindow() != null) {
+            helpOverlay.anchorTo(scene.getWindow());
+        } else {
+            scene.windowProperty().addListener((_, _, w) -> {
+                if (w != null) { helpOverlay.anchorTo(w); }
+            });
+        }
 
         // Tag the most prominent controls so F1 lands on a useful topic.
         tagHelpTopic(playButton, "transport");
@@ -2243,6 +2260,18 @@ public final class MainController {
         // controls by ID (e.g. the command palette → "Help on…" entries).
         if (playButton != null && playButton.getId() != null) {
             helpRegistry.registerControl(playButton.getId(), "transport");
+        }
+
+        // First-launch onboarding tour — highlights the main controls and
+        // opens the help topic for each in sequence.
+        var onboardingState = OnboardingState.defaultLocation();
+        if (onboardingState.shouldRunTour()) {
+            var tour = new OnboardingTour(helpOverlay, onboardingState)
+                    .addStep("transport", playButton)
+                    .addStep("arrangement", snapButton)
+                    .addStep("mixer", null)
+                    .addStep("browser", null);
+            tour.start(false);
         }
     }
 

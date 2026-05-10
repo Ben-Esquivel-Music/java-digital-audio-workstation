@@ -126,7 +126,7 @@ public final class HelpOverlay {
         if (owner == null) {
             return;
         }
-        if (stage.getOwner() == null) {
+        if (stage.getOwner() == null && !stage.isShowing()) {
             stage.initOwner(owner);
         }
         double x = owner.getX() + owner.getWidth() - stage.getWidth();

@@ -17,15 +17,20 @@ class HelpControlsTest {
 
     private static <T> T onFx(java.util.concurrent.Callable<T> callable) throws Exception {
         AtomicReference<T> ref = new AtomicReference<>();
-        AtomicReference<Exception> err = new AtomicReference<>();
+        AtomicReference<Throwable> err = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
             try { ref.set(callable.call()); }
-            catch (Exception e) { err.set(e); }
+            catch (Throwable e) { err.set(e); }
             finally { latch.countDown(); }
         });
-        latch.await(5, TimeUnit.SECONDS);
-        if (err.get() != null) throw err.get();
+        assertThat(latch.await(5, TimeUnit.SECONDS))
+                .as("FX thread runnable must complete within 5 s")
+                .isTrue();
+        if (err.get() != null) {
+            if (err.get() instanceof Exception ex) throw ex;
+            throw new RuntimeException(err.get());
+        }
         return ref.get();
     }
 

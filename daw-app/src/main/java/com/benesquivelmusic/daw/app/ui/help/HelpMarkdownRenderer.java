@@ -35,8 +35,9 @@ import java.util.regex.Pattern;
  *       inert hyperlinks (the host can wire them up)</li>
  * </ul>
  *
- * <p>The renderer is stateless and thread-safe between calls; instantiate
- * once and reuse.</p>
+ * <p>The renderer is not thread-safe — it holds a mutable
+ * {@link #setLinkHandler(Consumer) link handler} and must be used from the
+ * JavaFX Application Thread. Instantiate once per overlay and reuse.</p>
  */
 public final class HelpMarkdownRenderer {
 
@@ -177,7 +178,7 @@ public final class HelpMarkdownRenderer {
         label.setFont(Font.font("Monospaced", label.getFont().getSize()));
         label.setStyle("-fx-background-color: #2b2b2b; -fx-text-fill: #e0e0e0; "
                 + "-fx-padding: 6 8; -fx-background-radius: 4;");
-        label.setWrapText(false);
+        label.setWrapText(true);
         box.getChildren().add(label);
         code.setLength(0);
     }
