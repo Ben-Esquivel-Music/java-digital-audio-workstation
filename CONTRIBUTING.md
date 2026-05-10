@@ -171,3 +171,71 @@ When extracting a focused service:
 - PR descriptions list motivation, goals, and non-goals.
 - Run the relevant module's tests under `xvfb-run` before pushing UI
   changes.
+
+## Long-running render tests (`long-tests` profile)
+
+End-to-end render and export tests live in a separate Maven profile so
+they don't slow the per-PR feedback loop. They are kept under
+`daw-app/src/test/long/` and compiled / run only when the `long-tests`
+profile is active.
+
+Run the suite locally:
+
+```bash
+mvn -Plong-tests verify
+# or, equivalently:
+make long-tests
+```
+
+The pipeline currently includes:
+
+- 5-track full master render (`FullRenderLongTest`)
+- 20-track batch stem export (`BatchExportLongTest`, story 186)
+- DDP image export validation (`DdpExportLongTest`)
+- ADM BWF export + re-import round-trip (`AdmBwfRoundTripLongTest`,
+  story 170)
+- Deliverable bundle export (`BundleExportLongTest`, story 181)
+- Harness self-tests (`LongTestHarnessSelfTest`) — verify the
+  harness cleans up temp directories and detects file-handle leaks.
+
+Each long test declares an expected wall-clock budget via
+`@LongRenderTest(budgetSeconds = …)`. The `LongTestHarness` extension
+fails the test with a *performance-regression* message if the actual
+wall clock exceeds **2 ×** that budget — so a slow change is caught
+before it lands.
+
+### When to run long tests locally
+
+Run `make long-tests` before pushing changes that touch:
+
+- the audio engine (`daw-core/src/main/java/.../audio/`),
+- any exporter (`daw-core/src/main/java/.../export/`),
+- the mastering chain (`daw-core/src/main/java/.../mastering/`),
+- the bundle / stem rendering pipeline,
+- the ADM BWF / object-based audio pipeline.
+
+CI also runs `mvn -Plong-tests verify` automatically on every push to
+`main` (workflow: `.github/workflows/long-tests.yml`) and on a daily
+schedule (03:30 UTC). PRs do **not** trigger this workflow — keep the
+fast loop fast.
+
+### Updating golden files
+
+Several long tests compare a rendered artefact byte-for-byte against
+a golden file under `daw-app/src/test/long/resources/golden/`. When an
+exporter intentionally changes byte layout, regenerate the goldens:
+
+```bash
+make rebaseline-long-tests
+```
+
+Then review the diff carefully — unintentional changes here are
+exactly the regressions long-tests are designed to catch:
+
+```bash
+git diff daw-app/src/test/long/resources/golden/
+```
+
+Commit the regenerated goldens in the *same* commit as the code change
+that caused the diff, with a short note in the commit message
+explaining why the bytes shifted.
