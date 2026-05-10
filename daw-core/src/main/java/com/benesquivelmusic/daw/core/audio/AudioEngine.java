@@ -906,6 +906,7 @@ public final class AudioEngine {
      * @param numFrames    the number of sample frames to process
      * @throws IllegalStateException if the engine is not running
      */
+    @RealTimeSafe
     public void processBlock(float[][] inputBuffer, float[][] outputBuffer, int numFrames) {
         if (!running.get()) {
             throw new IllegalStateException("Engine is not running");
