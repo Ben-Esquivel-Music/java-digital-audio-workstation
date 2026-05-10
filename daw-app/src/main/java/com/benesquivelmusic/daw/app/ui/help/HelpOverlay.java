@@ -44,6 +44,8 @@ public final class HelpOverlay {
 
     private final ReadOnlyStringWrapper currentSlug = new ReadOnlyStringWrapper();
     private final List<String> history = new ArrayList<>();
+    private boolean ownerAssigned;
+    private String pendingSlug;
 
     private final TextField searchField = new TextField();
     private final ListView<HelpTopic> resultsList = new ListView<>();
@@ -119,28 +121,45 @@ public final class HelpOverlay {
     }
 
     /**
-     * Position the overlay flush against the right edge of {@code owner}.
-     * No-op when {@code owner} is {@code null} or has no scene.
+     * Sets the owner window for the overlay and positions it flush against
+     * the right edge of {@code owner}. Must be called before the first
+     * {@link #showTopic(String)} — any topic requested before this call is
+     * queued and shown automatically once the owner is set.
+     *
+     * <p>No-op when {@code owner} is {@code null}.</p>
      */
     public void anchorTo(Window owner) {
         if (owner == null) {
             return;
         }
-        if (stage.getOwner() == null && !stage.isShowing()) {
+        if (!ownerAssigned) {
             stage.initOwner(owner);
+            ownerAssigned = true;
         }
         double x = owner.getX() + owner.getWidth() - stage.getWidth();
         double y = owner.getY();
         stage.setX(x);
         stage.setY(y);
         stage.setHeight(Math.max(360, owner.getHeight()));
+        if (pendingSlug != null) {
+            String slug = pendingSlug;
+            pendingSlug = null;
+            showTopic(slug);
+        }
     }
 
     /**
      * Shows {@code slug} (or the index, if unknown) and brings the overlay
      * to the front without grabbing focus from the main window.
+     *
+     * <p>If the owner has not yet been set via {@link #anchorTo(Window)},
+     * the slug is queued and will be shown once the owner is assigned.</p>
      */
     public void showTopic(String slug) {
+        if (!ownerAssigned) {
+            pendingSlug = slug;
+            return;
+        }
         HelpTopic topic = registry.resolve(slug);
         String resolved = topic.slug();
         currentSlug.set(resolved);
@@ -249,5 +268,13 @@ public final class HelpOverlay {
             }
         }
         return labels;
+    }
+
+    /**
+     * Visible for testing — marks the overlay as owner-ready so
+     * {@link #showTopic} renders immediately without a real window.
+     */
+    void testMarkOwnerReady() {
+        ownerAssigned = true;
     }
 }

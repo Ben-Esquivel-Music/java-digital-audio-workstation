@@ -41,6 +41,7 @@ class HelpOverlayTest {
     void showTopicUpdatesCurrentSlug() throws Exception {
         String slug = onFx(() -> {
             HelpOverlay overlay = new HelpOverlay(HelpRegistry.loadDefault());
+            overlay.testMarkOwnerReady();
             overlay.showTopic("mixer");
             return overlay.currentSlug();
         });
@@ -51,6 +52,7 @@ class HelpOverlayTest {
     void unknownSlugFallsBackToIndex() throws Exception {
         String slug = onFx(() -> {
             HelpOverlay overlay = new HelpOverlay(HelpRegistry.loadDefault());
+            overlay.testMarkOwnerReady();
             overlay.showTopic("nope-no-such-thing");
             return overlay.currentSlug();
         });
@@ -61,6 +63,7 @@ class HelpOverlayTest {
     void breadcrumbAlwaysIncludesIndex() throws Exception {
         List<String> labels = onFx(() -> {
             HelpOverlay overlay = new HelpOverlay(HelpRegistry.loadDefault());
+            overlay.testMarkOwnerReady();
             overlay.showTopic("transport");
             overlay.showTopic("mixer");
             return overlay.testBreadcrumbLabels();
@@ -73,6 +76,7 @@ class HelpOverlayTest {
     void searchPopulatesResultsList() throws Exception {
         int count = onFx(() -> {
             HelpOverlay overlay = new HelpOverlay(HelpRegistry.loadDefault());
+            overlay.testMarkOwnerReady();
             overlay.testSearch("Transport");
             return overlay.testResults().size();
         });

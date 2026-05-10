@@ -41,6 +41,7 @@ class HelpKeyHandlerTest {
         String slug = onFx(() -> {
             HelpRegistry registry = HelpRegistry.loadDefault();
             HelpOverlay overlay = new HelpOverlay(registry);
+            overlay.testMarkOwnerReady();
             QuickHelpBar bar = new QuickHelpBar(registry);
             HelpKeyHandler handler = new HelpKeyHandler(registry, overlay, bar);
 
@@ -60,6 +61,7 @@ class HelpKeyHandlerTest {
         String slug = onFx(() -> {
             HelpRegistry registry = HelpRegistry.loadDefault();
             HelpOverlay overlay = new HelpOverlay(registry);
+            overlay.testMarkOwnerReady();
             HelpKeyHandler handler = new HelpKeyHandler(registry, overlay, new QuickHelpBar(registry));
 
             Button broken = new Button("Mystery");
@@ -78,6 +80,7 @@ class HelpKeyHandlerTest {
         String slug = onFx(() -> {
             HelpRegistry registry = HelpRegistry.loadDefault();
             HelpOverlay overlay = new HelpOverlay(registry);
+            overlay.testMarkOwnerReady();
             HelpKeyHandler handler = new HelpKeyHandler(registry, overlay, new QuickHelpBar(registry));
 
             handler.openHelpFor(null);
@@ -92,6 +95,7 @@ class HelpKeyHandlerTest {
         String slug = onFx(() -> {
             HelpRegistry registry = HelpRegistry.loadDefault();
             HelpOverlay overlay = new HelpOverlay(registry);
+            overlay.testMarkOwnerReady();
             HelpKeyHandler handler = new HelpKeyHandler(registry, overlay, new QuickHelpBar(registry));
 
             Button focused = new Button("Untagged");
@@ -112,7 +116,9 @@ class HelpKeyHandlerTest {
         Boolean enabledAfterToggle = onFx(() -> {
             HelpRegistry registry = HelpRegistry.loadDefault();
             QuickHelpBar bar = new QuickHelpBar(registry);
-            HelpKeyHandler handler = new HelpKeyHandler(registry, new HelpOverlay(registry), bar);
+            HelpOverlay overlay = new HelpOverlay(registry);
+            overlay.testMarkOwnerReady();
+            HelpKeyHandler handler = new HelpKeyHandler(registry, overlay, bar);
 
             Scene scene = new Scene(new VBox(bar), 200, 200);
             handler.installOn(scene);

@@ -45,6 +45,7 @@ class OnboardingTourTest {
         String slugAfterStart = onFx(() -> {
             HelpRegistry registry = HelpRegistry.loadDefault();
             HelpOverlay overlay = new HelpOverlay(registry);
+            overlay.testMarkOwnerReady();
 
             Button transportBtn = new Button("Play");
             Button mixerBtn = new Button("Fader");
@@ -67,6 +68,7 @@ class OnboardingTourTest {
 
         boolean active = onFx(() -> {
             HelpOverlay overlay = new HelpOverlay(HelpRegistry.loadDefault());
+            overlay.testMarkOwnerReady();
             OnboardingTour tour = new OnboardingTour(overlay, state)
                     .addStep("transport", null);
             tour.start(false);
@@ -82,6 +84,7 @@ class OnboardingTourTest {
 
         boolean completedAfter = onFx(() -> {
             HelpOverlay overlay = new HelpOverlay(HelpRegistry.loadDefault());
+            overlay.testMarkOwnerReady();
             OnboardingTour tour = new OnboardingTour(overlay, state)
                     .addStep("transport", null);
             tour.start(false);

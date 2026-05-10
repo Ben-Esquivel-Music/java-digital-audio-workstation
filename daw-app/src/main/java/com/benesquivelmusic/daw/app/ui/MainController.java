@@ -47,6 +47,7 @@ import javafx.scene.control.Label;
 import javafx.scene.control.Tooltip;
 import javafx.scene.layout.*;
 import javafx.stage.Stage;
+import javafx.stage.Window;
 import javafx.util.Duration;
 
 import java.nio.file.Path;
@@ -232,6 +233,7 @@ public final class MainController {
 
     /** Contextual help registry — loads markdown topics from {@code resources/help/}. */
     private final HelpRegistry helpRegistry = HelpRegistry.loadDefault();
+    private static final String HELP_WINDOW_LISTENER_KEY = "help.windowListenerInstalled";
     /** Right-side overlay displaying the active help topic; lazily created with the scene. */
     private HelpOverlay helpOverlay;
     /** Bottom Quick Help bar — toggled with {@code Shift+F1}. */
@@ -2235,15 +2237,6 @@ public final class MainController {
         helpKeyHandler.installOn(scene);
         quickHelpBar.attachTo(scene);
 
-        // Anchor the overlay to the primary window when it becomes available.
-        if (scene.getWindow() != null) {
-            helpOverlay.anchorTo(scene.getWindow());
-        } else {
-            scene.windowProperty().addListener((_, _, w) -> {
-                if (w != null) { helpOverlay.anchorTo(w); }
-            });
-        }
-
         // Tag the most prominent controls so F1 lands on a useful topic.
         tagHelpTopic(playButton, "transport");
         tagHelpTopic(stopButton, "transport");
@@ -2256,22 +2249,57 @@ public final class MainController {
         tagHelpTopic(addAudioTrackButton, "arrangement");
         tagHelpTopic(addMidiTrackButton, "arrangement");
 
-        // Mirror the same mapping in the registry so other code can resolve
+        // Register control IDs in the registry so other code can resolve
         // controls by ID (e.g. the command palette → "Help on…" entries).
-        if (playButton != null && playButton.getId() != null) {
-            helpRegistry.registerControl(playButton.getId(), "transport");
-        }
+        registerHelpControl(playButton, "transport");
+        registerHelpControl(stopButton, "transport");
+        registerHelpControl(recordButton, "transport");
+        registerHelpControl(loopButton, "transport");
+        registerHelpControl(metronomeButton, "transport");
+        registerHelpControl(skipBackButton, "transport");
+        registerHelpControl(skipForwardButton, "transport");
+        registerHelpControl(snapButton, "arrangement");
+        registerHelpControl(addAudioTrackButton, "arrangement");
+        registerHelpControl(addMidiTrackButton, "arrangement");
 
-        // First-launch onboarding tour — highlights the main controls and
-        // opens the help topic for each in sequence.
-        var onboardingState = OnboardingState.defaultLocation();
-        if (onboardingState.shouldRunTour()) {
-            var tour = new OnboardingTour(helpOverlay, onboardingState)
-                    .addStep("transport", playButton)
-                    .addStep("arrangement", snapButton)
-                    .addStep("mixer", null)
-                    .addStep("browser", null);
-            tour.start(false);
+        // Anchor overlay and start the onboarding tour once the window is
+        // available.  Use a scene property key to prevent duplicate listeners
+        // if installContextualHelp is called again for the same scene.
+        String listenerKey = HELP_WINDOW_LISTENER_KEY;
+        if (scene.getProperties().containsKey(listenerKey)) {
+            return;
+        }
+        scene.getProperties().put(listenerKey, Boolean.TRUE);
+
+        Runnable onWindowReady = () -> {
+            Window window = scene.getWindow();
+            helpOverlay.anchorTo(window);
+
+            // First-launch onboarding tour — highlights the main controls
+            // and opens the help topic for each in sequence.
+            var onboardingState = OnboardingState.defaultLocation();
+            if (onboardingState.shouldRunTour()) {
+                var tour = new OnboardingTour(helpOverlay, onboardingState)
+                        .addStep("transport", playButton)
+                        .addStep("arrangement", snapButton)
+                        .addStep("mixer", null)
+                        .addStep("browser", null);
+                tour.start(false);
+            }
+        };
+
+        if (scene.getWindow() != null) {
+            onWindowReady.run();
+        } else {
+            scene.windowProperty().addListener((_, _, w) -> {
+                if (w != null) { onWindowReady.run(); }
+            });
+        }
+    }
+
+    private void registerHelpControl(Node node, String slug) {
+        if (node != null && node.getId() != null) {
+            helpRegistry.registerControl(node.getId(), slug);
         }
     }
 
