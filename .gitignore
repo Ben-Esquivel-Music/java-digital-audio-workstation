@@ -19,6 +19,10 @@
 *.tar.gz
 *.rar
 
+# Long-test golden artefacts (story 209) — these zips are intentionally
+# tracked because they are the bit-accuracy reference outputs.
+!daw-app/src/test/long/resources/golden/*.zip
+
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 replay_pid*
