@@ -639,9 +639,7 @@ public final class AudioSettingsDialog extends Dialog<Void> {
      * caches. Story 221.</p>
      */
     public void refreshCapabilities() {
-        refreshDevicesForBackend(backendCombo.getValue());
         refreshDeviceCapabilities(currentBufferSizeOrDefault(), currentSampleRateOrDefault());
-        refreshLatencyLabels();
     }
 
     /**
@@ -962,15 +960,11 @@ public final class AudioSettingsDialog extends Dialog<Void> {
                     // Cancel the pending subscription before calling
                     // refreshCapabilities() so it doesn't fire again
                     // when the same refresh has already happened.
-                    if (pending != null) {
-                        pending.cancel();
-                    }
+                    pending.cancel();
                     refreshCapabilities();
                 });
             } catch (RuntimeException e) {
-                if (pending != null) {
-                    pending.cancel();
-                }
+                pending.cancel();
                 LOG.log(Level.WARNING, "Driver control panel launch failed", e);
                 showError("Driver Control Panel Failed",
                         "Could not open the driver control panel: "
@@ -991,16 +985,48 @@ public final class AudioSettingsDialog extends Dialog<Void> {
      * cancels itself after the first matching event so subsequent
      * events do not double-fire the refresh.
      *
-     * @return the {@link Flow.Subscription} that the caller may cancel
-     *         early (e.g. when the synchronous post-runnable refresh
-     *         already covers the change); never {@code null}
+     * @return a proxy {@link Flow.Subscription} that the caller may
+     *         cancel early (e.g. when the synchronous post-runnable
+     *         refresh already covers the change); never {@code null}
+     *         — the proxy buffers {@code cancel()} until the real
+     *         subscription arrives via {@code onSubscribe}
      */
     private Flow.Subscription subscribeOneShotForRefresh() {
-        AtomicReference<Flow.Subscription> ref = new AtomicReference<>();
+        // Proxy that buffers cancel() until the real subscription arrives
+        // via onSubscribe, which Flow does not guarantee runs synchronously.
+        var proxy = new Flow.Subscription() {
+            private final AtomicReference<Flow.Subscription> delegate = new AtomicReference<>();
+            private volatile boolean cancelled;
+
+            void setDelegate(Flow.Subscription real) {
+                delegate.set(real);
+                if (cancelled) {
+                    real.cancel();
+                }
+            }
+
+            @Override
+            public void request(long n) {
+                Flow.Subscription d = delegate.get();
+                if (d != null) {
+                    d.request(n);
+                }
+            }
+
+            @Override
+            public void cancel() {
+                cancelled = true;
+                Flow.Subscription d = delegate.get();
+                if (d != null) {
+                    d.cancel();
+                }
+            }
+        };
+
         controller.deviceEvents().subscribe(new Flow.Subscriber<>() {
             @Override
             public void onSubscribe(Flow.Subscription subscription) {
-                ref.set(subscription);
+                proxy.setDelegate(subscription);
                 subscription.request(Long.MAX_VALUE);
             }
 
@@ -1009,10 +1035,7 @@ public final class AudioSettingsDialog extends Dialog<Void> {
                 if (event instanceof AudioDeviceEvent.FormatChangeRequested(
                         var ignoredDevice, var ignoredFormat, FormatChangeReason reason)
                         && isCapabilityChanging(reason)) {
-                    Flow.Subscription s = ref.get();
-                    if (s != null) {
-                        s.cancel();
-                    }
+                    proxy.cancel();
                     Platform.runLater(AudioSettingsDialog.this::refreshCapabilities);
                 }
             }
@@ -1025,7 +1048,7 @@ public final class AudioSettingsDialog extends Dialog<Void> {
             @Override
             public void onComplete() { /* no-op */ }
         });
-        return ref.get();
+        return proxy;
     }
 
     private static boolean isCapabilityChanging(FormatChangeReason reason) {

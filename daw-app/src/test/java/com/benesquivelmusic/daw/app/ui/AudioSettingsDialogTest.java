@@ -215,13 +215,13 @@ class AudioSettingsDialogTest {
         // vendor UI (sample rates, buffer sizes) is reflected.
         stub.controlPanelAction = Optional.of(() -> stub.controlPanelInvocations.incrementAndGet());
         AudioSettingsDialog dialog = onFxThread(() -> new AudioSettingsDialog(model, stub));
-        int devicesBefore = stub.listDevicesCalls;
+        int capBefore = stub.bufferSizeRangeCalls;
         AtomicReference<Boolean> ran = new AtomicReference<>();
         runOnFxAndWait(() -> ran.set(dialog.fireOpenControlPanelSync()));
         assertThat(ran.get()).isTrue();
         assertThat(stub.controlPanelInvocations.get()).isEqualTo(1);
-        // listDevices(backendName) is called by refreshDevicesForBackend
-        assertThat(stub.listDevicesCalls).isGreaterThan(devicesBefore);
+        // bufferSizeRange is called by refreshDeviceCapabilities
+        assertThat(stub.bufferSizeRangeCalls).isGreaterThan(capBefore);
     }
 
     @Test
