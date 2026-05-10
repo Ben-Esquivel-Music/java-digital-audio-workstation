@@ -9,8 +9,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class EditToolTest {
 
     @Test
-    void shouldHaveFiveTools() {
-        assertThat(EditTool.values()).hasSize(5);
+    void shouldHaveSixTools() {
+        assertThat(EditTool.values()).hasSize(6);
     }
 
     @Test
@@ -21,7 +21,8 @@ class EditToolTest {
                         EditTool.PENCIL,
                         EditTool.ERASER,
                         EditTool.SCISSORS,
-                        EditTool.GLUE);
+                        EditTool.GLUE,
+                        EditTool.COMP);
     }
 
     @ParameterizedTest

@@ -134,6 +134,9 @@ final class ClipInteractionController {
     private double dragAutomationOriginalBeat;
     private double dragAutomationOriginalValue;
 
+    // Comp tool drag state
+    private CompToolHandler compToolHandler;
+
     ClipInteractionController(ArrangementCanvas canvas, Host host) {
         this.canvas = Objects.requireNonNull(canvas, "canvas must not be null");
         this.host = Objects.requireNonNull(host, "host must not be null");
@@ -211,6 +214,7 @@ final class ClipInteractionController {
             case ERASER -> Cursor.HAND;
             case SCISSORS -> Cursor.CROSSHAIR;
             case GLUE -> Cursor.HAND;
+            case COMP -> Cursor.CROSSHAIR;
         };
         canvas.setCursor(cursor);
     }
@@ -498,6 +502,7 @@ final class ClipInteractionController {
             case ERASER -> handleEraserPress(track, beat);
             case SCISSORS -> handleScissorsPress(track, beat);
             case GLUE -> handleGluePress(track, beat);
+            case COMP -> handleCompPress(track, beat, event);
         }
     }
 
@@ -614,6 +619,16 @@ final class ClipInteractionController {
 
         if (slipHandler.isSlipping()) {
             slipHandler.completeSlip(event.getX());
+            updateCursor();
+            return;
+        }
+
+        // Complete comp tool swipe
+        if (compToolHandler != null && compToolHandler.isSwipeActive()) {
+            double beat = Math.max(0.0, beatAt(event.getX()));
+            compToolHandler.endSwipe(beat);
+            compToolHandler = null;
+            host.refreshCanvas();
             updateCursor();
             return;
         }
@@ -1044,6 +1059,32 @@ final class ClipInteractionController {
                         + "' and '" + right.getName() + "'");
                 return;
             }
+        }
+    }
+
+    /**
+     * Handles a press with the {@link EditTool#COMP} tool. Alt+Click solos the
+     * track's first take lane for auditioning (without retaining handler state);
+     * a regular press begins a comp swipe on take lane 0 (the default lane).
+     * The beat is clamped to {@code >= 0} to avoid negative-position exceptions.
+     */
+    private void handleCompPress(Track track, double beat, MouseEvent event) {
+        var takeComping = track.getTakeComping();
+        if (!takeComping.isActive()) {
+            return;
+        }
+        double clampedBeat = Math.max(0.0, beat);
+        if (event.isAltDown()) {
+            // TODO: derive take-lane index from pointer Y once take lanes are
+            //       hit-testable; for now, solo lane 0 as the default.
+            var handler = new CompToolHandler(takeComping, host.undoManager());
+            handler.altClickLane(0);
+            host.refreshCanvas();
+        } else {
+            // TODO: derive take-lane index from pointer Y once take lanes are
+            //       hit-testable; for now, swipe on lane 0 as the default.
+            compToolHandler = new CompToolHandler(takeComping, host.undoManager());
+            compToolHandler.beginSwipe(0, clampedBeat);
         }
     }
 

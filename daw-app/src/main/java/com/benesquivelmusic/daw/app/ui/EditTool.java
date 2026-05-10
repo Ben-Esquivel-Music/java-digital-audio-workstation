@@ -22,5 +22,15 @@ public enum EditTool {
     SCISSORS,
 
     /** Join adjacent clips. */
-    GLUE
+    GLUE,
+
+    /**
+     * Multi-take comping tool.
+     *
+     * <p>With this tool active, click-and-drag across a take's waveform
+     * defines a {@link com.benesquivelmusic.daw.core.comping.CompRegion} on
+     * that take and automatically deselects the same time range on every
+     * other take of the same track (swipe comping).</p>
+     */
+    COMP
 }
