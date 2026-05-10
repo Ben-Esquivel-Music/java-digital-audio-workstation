@@ -34,12 +34,15 @@ class MetronomeSideOutputRouterTest {
         metronome.setClickOutput(new ClickOutput(3, 1.0, false, true));
         float[][] click = metronome.generateClick(true);
 
-        router.route(metronome, click, backend, null);
+        MetronomeSideOutputRouter.RoutedClick routed =
+                router.route(metronome, click, backend, null);
 
-        float[] captured = backend.recordedChannelOutput(3);
         // The router mixes stereo clicks down to mono (L+R)/2 before sending
         // them to the single physical channel, then scales by gain. With
         // gain=1.0 the result is bit-identical to that mono mix.
+        assertThat(routed.hasSideOutput()).isTrue();
+        assertThat(routed.sideChannelIndex()).isEqualTo(3);
+        float[] captured = routed.sideOutputBuffer();
         assertThat(captured).hasSize(click[0].length);
         for (int i = 0; i < captured.length; i++) {
             float expected = (click[0][i] + click[1][i]) * 0.5f;
@@ -52,9 +55,12 @@ class MetronomeSideOutputRouterTest {
         metronome.setClickOutput(new ClickOutput(1, 0.25, false, true));
         float[][] click = metronome.generateClick(true);
 
-        router.route(metronome, click, backend, null);
+        MetronomeSideOutputRouter.RoutedClick routed =
+                router.route(metronome, click, backend, null);
 
-        float[] captured = backend.recordedChannelOutput(1);
+        assertThat(routed.hasSideOutput()).isTrue();
+        assertThat(routed.sideChannelIndex()).isEqualTo(1);
+        float[] captured = routed.sideOutputBuffer();
         for (int i = 0; i < captured.length; i++) {
             float expected = (click[0][i] + click[1][i]) * 0.5f * 0.25f;
             assertThat(captured[i]).isCloseTo(expected, within(1e-7f));
@@ -95,7 +101,7 @@ class MetronomeSideOutputRouterTest {
 
         assertThat(routed.mainMixBuffer()).isNull();
         assertThat(routed.cueBusBuffers()).isEmpty();
-        assertThat(backend.recordedChannelOutput(4)).isEmpty();
+        assertThat(routed.hasSideOutput()).isFalse();
     }
 
     @Test
@@ -103,9 +109,10 @@ class MetronomeSideOutputRouterTest {
         metronome.setClickOutput(new ClickOutput(5, 1.0, true, false));
         float[][] click = metronome.generateClick(true);
 
-        router.route(metronome, click, backend, null);
+        MetronomeSideOutputRouter.RoutedClick routed =
+                router.route(metronome, click, backend, null);
 
-        assertThat(backend.recordedChannelOutput(5)).isEmpty();
+        assertThat(routed.hasSideOutput()).isFalse();
     }
 
     @Test
@@ -113,12 +120,12 @@ class MetronomeSideOutputRouterTest {
         metronome.setClickOutput(new ClickOutput(7, 1.0, false, true));
         float[][] click = metronome.generateClick(true);
 
-        router.route(metronome, click, backend, null);
+        MetronomeSideOutputRouter.RoutedClick routed =
+                router.route(metronome, click, backend, null);
 
-        assertThat(backend.recordedChannelOutput(7)).isNotEmpty();
-        assertThat(backend.recordedChannelOutput(0)).isEmpty();
-        assertThat(backend.recordedChannelOutput(6)).isEmpty();
-        assertThat(backend.recordedChannelOutput(8)).isEmpty();
+        assertThat(routed.hasSideOutput()).isTrue();
+        assertThat(routed.sideChannelIndex()).isEqualTo(7);
+        assertThat(routed.sideOutputBuffer()).isNotEmpty();
     }
 
     @Test
@@ -132,7 +139,7 @@ class MetronomeSideOutputRouterTest {
         MetronomeSideOutputRouter.RoutedClick routed =
                 router.route(metronome, click, backend, null);
 
-        float[] captured = backend.recordedChannelOutput(0);
+        float[] captured = routed.sideOutputBuffer();
         assertThat(captured).hasSize(routed.mainMixBuffer()[0].length);
         for (int i = 0; i < captured.length; i++) {
             float mainMono = (routed.mainMixBuffer()[0][i]

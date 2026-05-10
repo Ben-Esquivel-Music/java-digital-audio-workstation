@@ -446,6 +446,11 @@ public final class RenderPipeline {
         if (playbackActive && metronome != null && router != null) {
             mixMetronomeClicks(transport, metronome, router,
                     cueBusManager, backend, numFrames);
+        } else {
+            // Clear any pending click-tail so stray clicks do not leak
+            // into the first block when playback resumes or when the
+            // metronome/router is disconnected.
+            clearClickTail();
         }
 
         // Notify recording callback with the captured input
@@ -503,27 +508,31 @@ public final class RenderPipeline {
      * <p>All three destinations share the same source buffer, so
      * timing across them is inherently sample-accurate.</p>
      *
-     * <h4>RT-safety</h4>
-     * <p>The router uses pre-allocated buffers and an immutable
-     * {@link java.util.LinkedHashMap LinkedHashMap}-snapshot of cue-bus
-     * levels, but each invocation of
-     * {@link Metronome#generateClick(boolean)} and
-     * {@link MetronomeSideOutputRouter#route} allocates the click
+     * <h4>Allocation note</h4>
+     * <p>Each invocation of {@link Metronome#generateClick(boolean)}
+     * and {@link MetronomeSideOutputRouter#route} allocates the click
      * buffer and per-bus mono buffer respectively. These allocations
      * are short-lived and bounded (one per scheduled subdivision per
-     * block — typically 0–2 per block at musical tempos) and accepted
-     * for now under the same realistic budget the surrounding render
-     * pipeline tolerates.</p>
+     * block — typically 0–2 per block at musical tempos). This method
+     * is therefore <em>not</em> allocation-free, unlike the rest of
+     * the render pipeline's live path.</p>
      */
-    @RealTimeSafe
     private void mixMetronomeClicks(Transport transport,
                                     Metronome metronome,
                                     MetronomeSideOutputRouter router,
                                     CueBusManager cueBusManager,
                                     AudioBackend backend,
                                     int numFrames) {
-        // First, drain any pending click-tail left over from the
-        // previous block so a click that overflowed plays gap-free.
+        // If the metronome is disabled, clear any pending click-tail
+        // so disabling immediately silences every destination — no
+        // stray tail samples leak into subsequent blocks.
+        if (!metronome.isEnabled()) {
+            clearClickTail();
+            return;
+        }
+
+        // Drain any pending click-tail left over from the previous
+        // block so a click that overflowed plays gap-free.
         if (clickTailFrames > 0) {
             int copy = Math.min(clickTailFrames, numFrames);
             int channels = Math.min(clickTail.length, mixBuffer.length);
@@ -535,22 +544,13 @@ public final class RenderPipeline {
                     dst[s] += src[s];
                 }
                 if (remaining > 0) {
-                    // Shift the still-pending tail down to start at 0
-                    // so next-block overflow writes can be additive
-                    // from index 0 (subsequent clicks always start
-                    // their next-block contribution at sample 0).
                     System.arraycopy(src, copy, src, 0, remaining);
                 }
-                // Always clear the now-vacated positions so subsequent
-                // additive overflow writes start from a clean slate.
                 java.util.Arrays.fill(src, remaining, remaining + copy, 0.0f);
             }
             clickTailFrames = remaining;
         }
 
-        if (!metronome.isEnabled()) {
-            return;
-        }
         double samplesPerBeat = format.sampleRate() * 60.0 / transport.getTempo();
         if (samplesPerBeat <= 0.0) {
             return;
@@ -626,11 +626,24 @@ public final class RenderPipeline {
                 }
             }
 
+            // Write the side-output to its hardware channel with
+            // sample-accurate alignment: prepend sampleOffset zeros so
+            // the click lands at the same intra-block position as the
+            // main-mix contribution.
+            if (backend != null && routed.hasSideOutput()) {
+                float[] sideRaw = routed.sideOutputBuffer();
+                float[] aligned = new float[sampleOffset + sideRaw.length];
+                System.arraycopy(sideRaw, 0, aligned, sampleOffset, sideRaw.length);
+                backend.writeToChannel(routed.sideChannelIndex(), aligned);
+            }
+
             // Write each cue-bus contribution to its hardware output
             // stereo pair (CueBus.hardwareOutputIndex is a stereo-pair
-            // index; physical channels are 2N / 2N+1). The contribution
-            // is mono — both channels of the pair receive the same
-            // attenuated click so the drummer hears it centered.
+            // index; physical channels are 2N / 2N+1). Prepend leading
+            // zeros for sample-accurate alignment, matching the main-mix
+            // offset. The contribution is mono — both channels of the
+            // pair receive the same attenuated click so the drummer
+            // hears it centered.
             if (backend != null && cueBusManager != null
                     && !routed.cueBusBuffers().isEmpty()) {
                 for (Map.Entry<UUID, float[]> e : routed.cueBusBuffers().entrySet()) {
@@ -640,10 +653,27 @@ public final class RenderPipeline {
                     }
                     int leftCh = bus.hardwareOutputIndex() * 2;
                     float[] mono = e.getValue();
-                    backend.writeToChannel(leftCh, mono);
-                    backend.writeToChannel(leftCh + 1, mono);
+                    float[] aligned = new float[sampleOffset + mono.length];
+                    System.arraycopy(mono, 0, aligned, sampleOffset, mono.length);
+                    backend.writeToChannel(leftCh, aligned);
+                    backend.writeToChannel(leftCh + 1, aligned);
                 }
             }
+        }
+    }
+
+    /**
+     * Zeros the click-tail buffer and resets the pending frame count.
+     * Called when playback stops, the metronome is disabled, or the
+     * metronome/router is disconnected — prevents stray clicks from
+     * leaking into a subsequent block.
+     */
+    private void clearClickTail() {
+        if (clickTailFrames > 0) {
+            for (float[] ch : clickTail) {
+                java.util.Arrays.fill(ch, 0, clickTailFrames, 0.0f);
+            }
+            clickTailFrames = 0;
         }
     }
 

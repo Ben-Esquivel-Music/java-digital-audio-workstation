@@ -826,11 +826,14 @@ public final class AudioEngine {
      * Story 136 — sets the {@link MetronomeSideOutputRouter} that gates
      * each generated click into (a) the main mix, (b) a direct hardware
      * channel via {@link AudioBackend#writeToChannel(int, float[])}, and
-     * (c) any cue-bus contributions configured by the user. The same
-     * router instance must be visible to the metronome settings dialog
-     * (UI thread) and the audio callback (audio thread); a single
-     * shared instance held under a {@code volatile} field provides that
-     * publication.
+     * (c) any cue-bus contributions configured by the user.
+     *
+     * <p>The router is thread-safe: its internal cue-bus level map is
+     * published via {@link java.util.concurrent.atomic.AtomicReference}
+     * using copy-on-write semantics, so the UI thread can mutate levels
+     * while the audio callback reads a consistent immutable snapshot
+     * without locking and without risking
+     * {@link java.util.ConcurrentModificationException}.</p>
      *
      * <p>Pass {@code null} to bypass routing — no click is summed into
      * the main mix and no side-output is written.</p>
@@ -909,6 +912,10 @@ public final class AudioEngine {
         PerformanceMonitor monitor = this.performanceMonitor;
         TrackCpuBudgetEnforcer enforcer = this.cpuBudgetEnforcer;
         InputLevelMonitorRegistry inputRegistry = this.inputLevelMonitorRegistry;
+        Metronome currentMetronome = this.metronome;
+        MetronomeSideOutputRouter currentRouter = this.metronomeSideOutputRouter;
+        CueBusManager currentCueBusManager = this.cueBusManager;
+        AudioBackend currentBackend = this.sdkBackend;
 
         // Story 137: tap the raw input signal per armed track BEFORE any
         // processing so the mixer's input-meter column and the clip LED
@@ -922,8 +929,8 @@ public final class AudioEngine {
                 currentTransport, currentMixer, currentTracks,
                 currentMidiRenderer, masterChain, cb, monitor,
                 enforcer,
-                this.metronome, this.metronomeSideOutputRouter,
-                this.cueBusManager, this.sdkBackend);
+                currentMetronome, currentRouter,
+                currentCueBusManager, currentBackend);
     }
 
     /**
