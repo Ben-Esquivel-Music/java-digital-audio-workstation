@@ -76,6 +76,9 @@ public final class CompToolHandler {
         if (!swipeActive) {
             return null;
         }
+        if (endBeat < 0) {
+            throw new IllegalArgumentException("endBeat must be >= 0: " + endBeat);
+        }
         swipeActive = false;
         double lo = Math.min(swipeStartBeat, endBeat);
         double hi = Math.max(swipeStartBeat, endBeat);

@@ -86,6 +86,13 @@ class CompToolHandlerTest {
                 .isInstanceOf(IndexOutOfBoundsException.class);
     }
 
+    @Test
+    void endSwipeRejectsNegativeEndBeat() {
+        handler.beginSwipe(0, 1.0);
+        assertThatThrownBy(() -> handler.endSwipe(-1.0))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     private static TakeLane laneWithClip(String name) {
         TakeLane lane = new TakeLane(name);
         lane.addClip(new AudioClip(name, 0.0, 8.0, null));

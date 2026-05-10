@@ -625,7 +625,7 @@ final class ClipInteractionController {
 
         // Complete comp tool swipe
         if (compToolHandler != null && compToolHandler.isSwipeActive()) {
-            double beat = beatAt(event.getX());
+            double beat = Math.max(0.0, beatAt(event.getX()));
             compToolHandler.endSwipe(beat);
             compToolHandler = null;
             host.refreshCanvas();
@@ -1064,21 +1064,27 @@ final class ClipInteractionController {
 
     /**
      * Handles a press with the {@link EditTool#COMP} tool. Alt+Click solos the
-     * track's first take lane for auditioning; a regular press begins a comp
-     * swipe on take lane 0 (the default lane).
+     * track's first take lane for auditioning (without retaining handler state);
+     * a regular press begins a comp swipe on take lane 0 (the default lane).
+     * The beat is clamped to {@code >= 0} to avoid negative-position exceptions.
      */
     private void handleCompPress(Track track, double beat, MouseEvent event) {
         var takeComping = track.getTakeComping();
         if (!takeComping.isActive()) {
             return;
         }
-        compToolHandler = new CompToolHandler(takeComping, host.undoManager());
+        double clampedBeat = Math.max(0.0, beat);
         if (event.isAltDown()) {
-            compToolHandler.altClickLane(0);
-            compToolHandler = null;
+            // TODO: derive take-lane index from pointer Y once take lanes are
+            //       hit-testable; for now, solo lane 0 as the default.
+            var handler = new CompToolHandler(takeComping, host.undoManager());
+            handler.altClickLane(0);
             host.refreshCanvas();
         } else {
-            compToolHandler.beginSwipe(0, beat);
+            // TODO: derive take-lane index from pointer Y once take lanes are
+            //       hit-testable; for now, swipe on lane 0 as the default.
+            compToolHandler = new CompToolHandler(takeComping, host.undoManager());
+            compToolHandler.beginSwipe(0, clampedBeat);
         }
     }
 
