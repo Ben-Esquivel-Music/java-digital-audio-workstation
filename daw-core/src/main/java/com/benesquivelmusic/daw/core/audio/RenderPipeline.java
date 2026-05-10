@@ -4,16 +4,23 @@ import com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer;
 import com.benesquivelmusic.daw.core.automation.AutomationData;
 import com.benesquivelmusic.daw.core.automation.AutomationParameter;
 import com.benesquivelmusic.daw.core.automation.PluginParameterTarget;
+import com.benesquivelmusic.daw.core.mixer.CueBus;
+import com.benesquivelmusic.daw.core.mixer.CueBusManager;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
+import com.benesquivelmusic.daw.core.recording.Metronome;
+import com.benesquivelmusic.daw.core.recording.MetronomeSideOutputRouter;
+import com.benesquivelmusic.daw.core.recording.MetronomeSideOutputRouter.RoutedClick;
+import com.benesquivelmusic.daw.core.recording.Subdivision;
 import com.benesquivelmusic.daw.core.track.AutomationMode;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
+import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.ClipGainEnvelope;
 import com.benesquivelmusic.daw.sdk.audio.SampleRateConverter;
 import com.benesquivelmusic.daw.sdk.audio.SampleRateConverter.QualityTier;
@@ -24,6 +31,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -95,6 +103,15 @@ public final class RenderPipeline {
     // never needs to allocate even when an envelope is present.
     private final float[] gainScratch;
 
+    // Story 136 — buffer holding the trailing samples of the most recent
+    // metronome-click main-mix contribution that did not fit inside the
+    // current block. The next block's mixMetronomeClicks() copies any
+    // remaining samples into mixBuffer at offset 0 so a click that
+    // straddles a buffer boundary plays gap-free at the typical
+    // 256/512-frame low-latency buffer sizes.
+    private final float[][] clickTail;
+    private int clickTailFrames;
+
     // One-shot warning flag for exceeding return bus cap
     private boolean returnBusCapWarningLogged;
 
@@ -136,6 +153,14 @@ public final class RenderPipeline {
         this.trackBuffers = new float[maxTracks][channels][blockSize];
         this.returnBuffers = new float[Mixer.MAX_RETURN_BUSES][channels][blockSize];
         this.gainScratch = new float[blockSize];
+        // Story 136 — pre-allocated tail for clicks that overflow the
+        // current block (e.g. a 20 ms click is 882 samples at 44.1 kHz,
+        // which exceeds typical low-latency buffer sizes of 256/512).
+        // Sized at one full second of audio, generous enough to hold any
+        // realistic click or count-in tail without ever allocating on
+        // the audio thread.
+        int tailFrames = Math.max(blockSize, (int) format.sampleRate());
+        this.clickTail = new float[channels][tailFrames];
     }
 
     /**
@@ -288,6 +313,56 @@ public final class RenderPipeline {
                             AudioEngine.RecordingCallback recordingCallback,
                             PerformanceMonitor performanceMonitor,
                             TrackCpuBudgetEnforcer cpuBudgetEnforcer) {
+        renderBlock(inputBuffer, outputBuffer, numFrames, transport, mixer, tracks,
+                midiRenderer, masterChain, recordingCallback, performanceMonitor,
+                cpuBudgetEnforcer, null, null, null, null);
+    }
+
+    /**
+     * Story 136 — overload that additionally invokes
+     * {@link MetronomeSideOutputRouter#route(Metronome, float[][],
+     * AudioBackend, CueBusManager) router.route(...)} on every scheduled
+     * beat (and subdivision) that lands inside this block, summing the
+     * returned {@link RoutedClick#mainMixBuffer() main-mix buffer} into
+     * the engine's mix buffer at the sample-accurate offset, writing
+     * each {@link RoutedClick#cueBusBuffers() cue-bus contribution} to
+     * the matching {@link CueBus#hardwareOutputIndex()} stereo pair on
+     * {@code backend}, and letting the router emit the side output via
+     * {@link AudioBackend#writeToChannel(int, float[])} on
+     * {@link com.benesquivelmusic.daw.sdk.transport.ClickOutput#hardwareChannelIndex()}.
+     *
+     * <p>When {@code metronome}, {@code router}, or {@code transport} is
+     * {@code null}, or when the transport is not playing/recording, no
+     * click is generated and this overload is bit-identical to the
+     * 11-arg one above.</p>
+     *
+     * @param metronome      the metronome producing the click samples; may be
+     *                       {@code null} to skip click generation
+     * @param router         the side-output router governing routing; may be
+     *                       {@code null} to skip click generation
+     * @param cueBusManager  the cue bus manager used to look up each
+     *                       contributing cue bus's hardware output pair; may
+     *                       be {@code null} to drop cue-bus contributions
+     * @param backend        the audio backend used for the side output and
+     *                       cue-bus hardware writes; may be {@code null} —
+     *                       cue-bus and side-output writes are then dropped
+     */
+    @RealTimeSafe
+    public void renderBlock(float[][] inputBuffer,
+                            float[][] outputBuffer,
+                            int numFrames,
+                            Transport transport,
+                            Mixer mixer,
+                            List<Track> tracks,
+                            MidiTrackRenderer midiRenderer,
+                            EffectsChain masterChain,
+                            AudioEngine.RecordingCallback recordingCallback,
+                            PerformanceMonitor performanceMonitor,
+                            TrackCpuBudgetEnforcer cpuBudgetEnforcer,
+                            Metronome metronome,
+                            MetronomeSideOutputRouter router,
+                            CueBusManager cueBusManager,
+                            AudioBackend backend) {
         Objects.requireNonNull(outputBuffer, "outputBuffer must not be null");
         Objects.requireNonNull(masterChain, "masterChain must not be null");
 
@@ -357,6 +432,22 @@ public final class RenderPipeline {
             }
         }
 
+        // Story 136 — schedule per-beat (and per-subdivision) metronome
+        // clicks that fall inside this block, route them through the
+        // side-output router, and sum the returned main-mix contribution
+        // into the mix buffer at the sample-accurate offset. The router
+        // also writes the side output and we write each cue-bus
+        // contribution to the bus's hardware output stereo pair so the
+        // drummer's cue mix is audibly fed the click. This must run
+        // before the master chain (so the click flows through master
+        // inserts) and BEFORE the transport position is advanced
+        // further down (so beat scheduling sees the start-of-block
+        // position).
+        if (playbackActive && metronome != null && router != null) {
+            mixMetronomeClicks(transport, metronome, router,
+                    cueBusManager, backend, numFrames);
+        }
+
         // Notify recording callback with the captured input
         if (recordingCallback != null && inputBuffer != null) {
             recordingCallback.onAudioCaptured(inputBuffer, numFrames);
@@ -389,6 +480,170 @@ public final class RenderPipeline {
         // Evaluate master budget after all per-track recordings for this block
         if (cpuBudgetEnforcer != null && playbackActive) {
             cpuBudgetEnforcer.evaluateMasterBudget();
+        }
+    }
+
+    /**
+     * Story 136 — schedules every metronome click whose beat (or
+     * subdivision) position falls inside this block, generates the
+     * click sample via {@link Metronome#generateClick(boolean)}, and
+     * delegates routing to
+     * {@link MetronomeSideOutputRouter#route(Metronome, float[][],
+     * AudioBackend, CueBusManager)}. The returned
+     * {@link RoutedClick#mainMixBuffer() main-mix buffer} is summed
+     * into {@link #mixBuffer} at the sample-accurate offset; the
+     * {@link RoutedClick#cueBusBuffers() cue-bus buffers} are written
+     * to each bus's {@link CueBus#hardwareOutputIndex() hardware
+     * output} stereo pair via
+     * {@link AudioBackend#writeToChannel(int, float[])} so that the
+     * drummer's cue mix is audibly fed the click. The router itself
+     * writes the side-output to the {@code ClickOutput.hardwareChannelIndex()}
+     * channel.
+     *
+     * <p>All three destinations share the same source buffer, so
+     * timing across them is inherently sample-accurate.</p>
+     *
+     * <h4>RT-safety</h4>
+     * <p>The router uses pre-allocated buffers and an immutable
+     * {@link java.util.LinkedHashMap LinkedHashMap}-snapshot of cue-bus
+     * levels, but each invocation of
+     * {@link Metronome#generateClick(boolean)} and
+     * {@link MetronomeSideOutputRouter#route} allocates the click
+     * buffer and per-bus mono buffer respectively. These allocations
+     * are short-lived and bounded (one per scheduled subdivision per
+     * block — typically 0–2 per block at musical tempos) and accepted
+     * for now under the same realistic budget the surrounding render
+     * pipeline tolerates.</p>
+     */
+    @RealTimeSafe
+    private void mixMetronomeClicks(Transport transport,
+                                    Metronome metronome,
+                                    MetronomeSideOutputRouter router,
+                                    CueBusManager cueBusManager,
+                                    AudioBackend backend,
+                                    int numFrames) {
+        // First, drain any pending click-tail left over from the
+        // previous block so a click that overflowed plays gap-free.
+        if (clickTailFrames > 0) {
+            int copy = Math.min(clickTailFrames, numFrames);
+            int channels = Math.min(clickTail.length, mixBuffer.length);
+            int remaining = clickTailFrames - copy;
+            for (int ch = 0; ch < channels; ch++) {
+                float[] src = clickTail[ch];
+                float[] dst = mixBuffer[ch];
+                for (int s = 0; s < copy; s++) {
+                    dst[s] += src[s];
+                }
+                if (remaining > 0) {
+                    // Shift the still-pending tail down to start at 0
+                    // so next-block overflow writes can be additive
+                    // from index 0 (subsequent clicks always start
+                    // their next-block contribution at sample 0).
+                    System.arraycopy(src, copy, src, 0, remaining);
+                }
+                // Always clear the now-vacated positions so subsequent
+                // additive overflow writes start from a clean slate.
+                java.util.Arrays.fill(src, remaining, remaining + copy, 0.0f);
+            }
+            clickTailFrames = remaining;
+        }
+
+        if (!metronome.isEnabled()) {
+            return;
+        }
+        double samplesPerBeat = format.sampleRate() * 60.0 / transport.getTempo();
+        if (samplesPerBeat <= 0.0) {
+            return;
+        }
+        Subdivision subdivision = metronome.getSubdivision();
+        int clicksPerBeat = subdivision.getClicksPerBeat();
+        if (clicksPerBeat <= 0) {
+            return;
+        }
+        int beatsPerBar = transport.getTimeSignatureNumerator();
+        if (beatsPerBar <= 0) {
+            beatsPerBar = 4;
+        }
+        double pos0 = transport.getPositionInBeats();
+        double pos1 = pos0 + numFrames / samplesPerBeat;
+
+        // Subdivision indices [firstIdx, lastIdxExclusive) whose
+        // beat-positions land inside [pos0, pos1). Inclusive on the
+        // left so a block that begins exactly on a beat fires its click
+        // at sample 0 (sample-accurate downbeat).
+        long firstIdx = (long) Math.ceil(pos0 * clicksPerBeat - 1e-9);
+        long lastIdxExclusive = (long) Math.ceil(pos1 * clicksPerBeat - 1e-9);
+
+        for (long idx = firstIdx; idx < lastIdxExclusive; idx++) {
+            double beatPos = idx / (double) clicksPerBeat;
+            int sampleOffset = (int) Math.round((beatPos - pos0) * samplesPerBeat);
+            if (sampleOffset < 0 || sampleOffset >= numFrames) {
+                continue;
+            }
+            boolean isMainBeat = (idx % clicksPerBeat == 0);
+            boolean accent = isMainBeat
+                    && ((idx / clicksPerBeat) % beatsPerBar == 0);
+
+            float[][] click = metronome.generateClick(accent);
+            RoutedClick routed = router.route(metronome, click, backend, cueBusManager);
+
+            // Sum the main-mix click into the engine's mix buffer at
+            // the sample-accurate offset, parking any tail that does
+            // not fit in this block into clickTail so the next block
+            // can drain it (story 136: clicks > buffer size still play
+            // continuously at typical 256/512-frame low-latency sizes).
+            if (routed.hasMainMix()) {
+                float[][] main = routed.mainMixBuffer();
+                if (main.length > 0) {
+                    int clickLen = main[0].length;
+                    int writeable = Math.min(clickLen, numFrames - sampleOffset);
+                    int channels = Math.min(main.length, mixBuffer.length);
+                    for (int ch = 0; ch < channels; ch++) {
+                        float[] src = main[ch];
+                        float[] dst = mixBuffer[ch];
+                        for (int s = 0; s < writeable; s++) {
+                            dst[sampleOffset + s] += src[s];
+                        }
+                    }
+                    int overflow = clickLen - writeable;
+                    if (overflow > 0) {
+                        int tailCh = Math.min(channels, clickTail.length);
+                        int tailCap = clickTail[0].length;
+                        // Sum overflow into existing tail (a previous
+                        // click may not have fully drained yet at fast
+                        // subdivisions — be additive, not destructive).
+                        for (int ch = 0; ch < tailCh; ch++) {
+                            float[] src = main[ch];
+                            float[] dst = clickTail[ch];
+                            int n = Math.min(overflow, tailCap);
+                            for (int s = 0; s < n; s++) {
+                                dst[s] += src[writeable + s];
+                            }
+                        }
+                        clickTailFrames = Math.max(clickTailFrames,
+                                Math.min(overflow, tailCap));
+                    }
+                }
+            }
+
+            // Write each cue-bus contribution to its hardware output
+            // stereo pair (CueBus.hardwareOutputIndex is a stereo-pair
+            // index; physical channels are 2N / 2N+1). The contribution
+            // is mono — both channels of the pair receive the same
+            // attenuated click so the drummer hears it centered.
+            if (backend != null && cueBusManager != null
+                    && !routed.cueBusBuffers().isEmpty()) {
+                for (Map.Entry<UUID, float[]> e : routed.cueBusBuffers().entrySet()) {
+                    CueBus bus = cueBusManager.getById(e.getKey());
+                    if (bus == null) {
+                        continue;
+                    }
+                    int leftCh = bus.hardwareOutputIndex() * 2;
+                    float[] mono = e.getValue();
+                    backend.writeToChannel(leftCh, mono);
+                    backend.writeToChannel(leftCh + 1, mono);
+                }
+            }
         }
     }
 
