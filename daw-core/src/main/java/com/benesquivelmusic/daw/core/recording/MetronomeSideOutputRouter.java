@@ -186,11 +186,7 @@ public final class MetronomeSideOutputRouter {
                     continue;
                 }
                 float g = entry.getValue().floatValue();
-                float[] scaled = new float[sharedMono.length];
-                for (int i = 0; i < scaled.length; i++) {
-                    scaled[i] = sharedMono[i] * g;
-                }
-                cueContributions.put(entry.getKey(), scaled);
+                cueContributions.put(entry.getKey(), applyGain(sharedMono, g));
             }
             cueContributions = java.util.Collections.unmodifiableMap(cueContributions);
         }
@@ -218,8 +214,9 @@ public final class MetronomeSideOutputRouter {
     }
 
     /**
-     * Returns a gain-scaled copy of {@code mono}, or {@code mono} itself
-     * when {@code gain == 1.0f} (avoiding a redundant copy).
+     * Returns a gain-scaled copy of {@code mono}. When {@code gain == 1.0f}
+     * the returned array is still a fresh copy so the caller can safely
+     * mutate it without affecting the shared source.
      */
     private static float[] applyGain(float[] mono, float gain) {
         if (gain == 1.0f) {
