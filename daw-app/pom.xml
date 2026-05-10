@@ -42,6 +42,34 @@
             <groupId>org.openjfx</groupId>
             <artifactId>javafx-media</artifactId>
         </dependency>
+
+        <!-- ── Test-only: visual regression / snapshot testing ──────── -->
+        <!-- TestFX provides headless JavaFX test infrastructure; we use
+             it on the test classpath alongside the project's existing
+             JavaFxToolkitExtension so future interaction tests (click,
+             drag, key) can drop in without further build changes. -->
+        <dependency>
+            <groupId>org.testfx</groupId>
+            <artifactId>testfx-core</artifactId>
+            <version>4.0.18</version>
+            <scope>test</scope>
+            <exclusions>
+                <!-- We pull JavaFX from the parent's dependencyManagement
+                     to keep versions aligned with javafx.version=26. -->
+                <exclusion>
+                    <groupId>org.openjfx</groupId>
+                    <artifactId>javafx-base</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.openjfx</groupId>
+                    <artifactId>javafx-graphics</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.openjfx</groupId>
+                    <artifactId>javafx-controls</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
     </dependencies>
 
     <properties>
@@ -65,6 +93,25 @@
             </resource>
         </resources>
         <plugins>
+            <!-- ── Surefire: configure software rendering for snapshot
+                 stability across machines. The parent POM already sets
+                 argLine for native access; we add daw-app-specific
+                 system properties here so JavaFX uses the software
+                 pipeline (no GPU dependency under xvfb) and disables
+                 LCD subpixel text antialiasing — both are required to
+                 keep golden PNGs reproducible. ──────────────────────── -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <prism.order>sw</prism.order>
+                        <prism.lcdtext>false</prism.lcdtext>
+                        <prism.text>t2k</prism.text>
+                        <java.awt.headless>true</java.awt.headless>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
             <!-- Copy native libraries from CMake output to a distribution
                  directory under target/dist/native/<os-arch>/. The set of
                  files is not hardcoded — everything in the native output

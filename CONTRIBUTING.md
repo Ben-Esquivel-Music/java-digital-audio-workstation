@@ -12,6 +12,62 @@ On headless systems use `xvfb-run`:
 xvfb-run -a mvn verify
 ```
 
+### Visual regression / snapshot tests
+
+`daw-app` ships visual-regression tests that render JavaFX views into
+PNGs and compare them pixel-by-pixel against committed *golden* images
+under `daw-app/src/test/resources/snapshots/<TestClass>/<method>[.<theme>].png`.
+
+Snapshots cover `ArrangementCanvas`, `MixerView`, `EditorView`,
+`TelemetrySetupPanel`, and `MasteringView` in each of the bundled
+themes (`dark-accessible`, `light-accessible`, `high-contrast`).
+The infrastructure lives under
+`daw-app/src/test/java/com/benesquivelmusic/daw/app/ui/snapshot/` —
+extend `FxSnapshotTest` to add new snapshot tests.
+
+The default tolerance is **≤ 0.5 % differing pixels with a per-channel
+Δ ≤ 4**, which absorbs subpixel rendering noise without hiding real
+regressions.
+
+**Reference platform:** Linux + JDK 26 + JavaFX 26 with
+`-Dprism.order=sw -Dprism.lcdtext=false` (configured in
+`daw-app/pom.xml`). CI runs under `xvfb-run` on Ubuntu — the same
+environment used to generate the goldens. Snapshots may differ on
+macOS/Windows because of platform font rasterization and are not
+expected to be cross-OS reproducible.
+
+#### When a snapshot test fails
+
+The test reports a per-snapshot diff message. The actual, expected,
+and a red-highlighted diff PNG are written under
+`daw-app/target/snapshot-failures/<TestClass>/`:
+
+```
+daw-app/target/snapshot-failures/MixerViewSnapshotTest/
+  mixerWithTwoTracks.dark-accessible.expected.png
+  mixerWithTwoTracks.dark-accessible.actual.png
+  mixerWithTwoTracks.dark-accessible.diff.png
+```
+
+Open the diff PNG to see which pixels changed. If the change is an
+**unintended regression**, fix the code — do not edit the golden.
+
+#### Rebaselining (after an *intentional* UI change)
+
+1. Inspect the diff to confirm the change is desired.
+2. Regenerate the affected golden(s) with `-Dsnapshots.update=true`:
+   ```bash
+   xvfb-run -a mvn -pl daw-app test \
+       -Dtest=MixerViewSnapshotTest -Dsnapshots.update=true
+   ```
+   Or, equivalently, delete the golden file(s) and rerun the test —
+   missing goldens are auto-baselined.
+3. Review the new PNG(s) (`git diff --stat -- daw-app/src/test/resources/snapshots`)
+   and commit them alongside the code change.
+
+To **disable** auto-baselining in CI (so missing goldens fail rather
+than silently regenerate), set `-Dsnapshots.autoBaseline=false`.
+
 ## Code style
 
 ### Controller-class size: ~200-line soft cap
