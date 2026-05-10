@@ -124,12 +124,28 @@ public final class MixerView extends VBox {
     private final Map<UUID, Double> cueBusPreMuteGain = new LinkedHashMap<>();
     /**
      * Story 215 — cue-bus IDs whose persisted {@code hardwareOutputIndex}
-     * is no longer present in the live driver. Populated by
+     * is no longer present in the live driver. Recomputed from scratch by
      * {@link #validateCueBusesAgainstDevice(NotificationManager)} and
      * consulted by {@link #buildCueBusStrip(CueBus, int)} to render the
-     * affected strips greyed out with an explanatory tooltip.
+     * affected strips with a warning banner while keeping the remove
+     * button interactive so the user can still delete or reconfigure.
      */
     private final Set<UUID> disabledCueBusIds = new HashSet<>();
+    /**
+     * Story 215 — bus IDs for which a stale-output notification has
+     * already been emitted. Prevents spamming the same warning on every
+     * {@link #refresh()} while still re-notifying when a <em>new</em>
+     * bus becomes stale (e.g. after a device change).
+     */
+    private final Set<UUID> notifiedStaleCueBusIds = new HashSet<>();
+    /**
+     * Story 215 — optional notification manager wired from the outside.
+     * Used by {@link #refresh()} to invoke
+     * {@link #validateCueBusesAgainstDevice(NotificationManager)}
+     * automatically so that stale cue buses are surfaced on every
+     * refresh (project load, device change, etc.).
+     */
+    private NotificationManager notificationManager;
     /**
      * propagation path uses to mirror UI state across a stereo pair without
      * a full strip rebuild. The {@code LinkedHashMap} preserves insertion
@@ -706,6 +722,18 @@ public final class MixerView extends VBox {
     }
 
     /**
+     * Story 215 — wires the notification manager used by
+     * {@link #validateCueBusesAgainstDevice(NotificationManager)} when it
+     * is called automatically during {@link #refresh()}.
+     *
+     * @param manager the notification manager; may be {@code null} to
+     *                disable automatic cue-bus validation during refresh
+     */
+    public void setNotificationManager(NotificationManager manager) {
+        this.notificationManager = manager;
+    }
+
+    /**
      * Rebuilds the channel strips from the current project tracks and return
      * buses.
      *
@@ -813,6 +841,11 @@ public final class MixerView extends VBox {
         // access.
         cueBusStrips.getChildren().clear();
         CueBusManager cueManager = project.getCueBusManager();
+        // Story 215 — recompute the disabled-bus set before building
+        // strips so buildCueBusStrip sees the current state.
+        if (notificationManager != null) {
+            validateCueBusesAgainstDevice(notificationManager);
+        }
         // Prune cueBusPreMuteGain entries for buses that no longer exist
         // (e.g. removed between refreshes or after a project reload).
         Set<UUID> liveBusIds = cueManager.getCueBuses().stream()
@@ -1673,16 +1706,17 @@ public final class MixerView extends VBox {
         strip.setStyle("-fx-border-color: #ffd54f;");
 
         // Story 215 — strips for buses whose hardware output pair is no
-        // longer present in the live driver render greyed out and
-        // tooltipped so the user knows the bus is silently inactive
-        // until they reconfigure it.
+        // longer present in the live driver are visually flagged so the
+        // user knows the bus is silently inactive. Only the fader is
+        // disabled — the remove and copy buttons stay interactive so
+        // the user can still delete or reconfigure the bus.
         boolean unrouted = disabledCueBusIds.contains(bus.id());
         if (unrouted) {
-            strip.setDisable(true);
             strip.setOpacity(0.55);
+            strip.setStyle("-fx-border-color: #ff5252;");
             Tooltip.install(strip, new Tooltip(
                     "Cue bus output pair is not present on the current "
-                            + "audio device — re-assign to enable."));
+                            + "audio device — remove or re-assign to fix."));
         }
 
         Label kindLabel = new Label("CUE " + displayIndex);
@@ -1709,6 +1743,9 @@ public final class MixerView extends VBox {
         masterFader.setPrefHeight(FADER_HEIGHT);
         masterFader.getStyleClass().add("mixer-fader");
         masterFader.setTooltip(new Tooltip("Cue Bus Master Gain"));
+        if (unrouted) {
+            masterFader.setDisable(true);
+        }
         masterFader.valueProperty().addListener((_, _, v) -> {
             CueBus current = project.getCueBusManager().getById(bus.id());
             if (current != null) {
@@ -2087,19 +2124,32 @@ public final class MixerView extends VBox {
             return 0;
         }
         int pairCount = live.size() / 2;
-        List<CueBus> stale = new ArrayList<>();
+
+        // Recompute from scratch so that buses whose pair came back
+        // into range (e.g. user switched to a device with more outputs,
+        // or reconfigured the bus) are re-enabled.
+        disabledCueBusIds.clear();
+        // Prune notified-set: IDs no longer stale should be eligible for
+        // re-notification if they become stale again later.
+        notifiedStaleCueBusIds.retainAll(
+                project.getCueBusManager().getCueBuses().stream()
+                        .map(CueBus::id).collect(Collectors.toSet()));
+
+        List<CueBus> newlyStale = new ArrayList<>();
         for (CueBus bus : project.getCueBusManager().getCueBuses()) {
-            if (bus.hardwareOutputIndex() >= pairCount
-                    && disabledCueBusIds.add(bus.id())) {
-                stale.add(bus);
+            if (bus.hardwareOutputIndex() >= pairCount) {
+                disabledCueBusIds.add(bus.id());
+                if (notifiedStaleCueBusIds.add(bus.id())) {
+                    newlyStale.add(bus);
+                }
             }
         }
-        if (stale.isEmpty()) {
+        if (newlyStale.isEmpty()) {
             return 0;
         }
         StringBuilder msg = new StringBuilder();
-        for (int i = 0; i < stale.size(); i++) {
-            CueBus bus = stale.get(i);
+        for (int i = 0; i < newlyStale.size(); i++) {
+            CueBus bus = newlyStale.get(i);
             if (i > 0) {
                 msg.append("; ");
             }
@@ -2112,7 +2162,7 @@ public final class MixerView extends VBox {
                     .append(" — bus disabled");
         }
         notifier.notify(msg.toString());
-        return stale.size();
+        return newlyStale.size();
     }
 
     /** Visible for testing — returns an unmodifiable view of the disabled cue-bus IDs. */

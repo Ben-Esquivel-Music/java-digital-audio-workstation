@@ -107,10 +107,10 @@ class MixerViewCueBusOutputPickerTest {
     }
 
     @Test
-    void promptCreateCueBusFallbackOpensSpinnerWhenSupplierEmpty() throws Exception {
+    void legacyFallbackOptionsAvailableWhenSupplierEmpty() throws Exception {
         // Even with an empty supplier the dialog must still open — exercised
         // here by computing the underlying picker options through the same
-        // code path as promptCreateCueBus.
+        // code path as promptCreateCueBus (ComboBox + legacy fallback).
         DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
         MixerView view = createOnFxThread(project);
         runOnFxThread(() -> view.setOutputChannelInfoSupplier(List::of));
@@ -172,6 +172,35 @@ class MixerViewCueBusOutputPickerTest {
 
         assertThat(disabled).isZero();
         assertThat(messages).isEmpty();
+        assertThat(view.getDisabledCueBusIds()).isEmpty();
+    }
+
+    @Test
+    void disabledCueBusIdsAreReEnabledWhenDeviceGainsOutputs() throws Exception {
+        DawProject project = new DawProject("Test", AudioFormat.CD_QUALITY);
+        project.getCueBusManager().createCueBus("Drum HP", 5);
+
+        MixerView view = createOnFxThread(project);
+        // Start with a 2-channel device (pair 0 only).
+        runOnFxThread(() -> view.setOutputChannelInfoSupplier(() -> List.of(
+                new AudioChannelInfo(0, "Main Out L"),
+                new AudioChannelInfo(1, "Main Out R"))));
+
+        List<String> messages = new ArrayList<>();
+        view.validateCueBusesAgainstDevice(messages::add);
+        assertThat(view.getDisabledCueBusIds()).hasSize(1);
+
+        // Now simulate switching to a 12-channel device — pair 5 is in
+        // range so the bus should be re-enabled.
+        runOnFxThread(() -> view.setOutputChannelInfoSupplier(() -> {
+            List<AudioChannelInfo> channels = new ArrayList<>();
+            for (int i = 0; i < 12; i++) {
+                channels.add(new AudioChannelInfo(i, "Ch " + (i + 1)));
+            }
+            return channels;
+        }));
+
+        view.validateCueBusesAgainstDevice(messages::add);
         assertThat(view.getDisabledCueBusIds()).isEmpty();
     }
 }
