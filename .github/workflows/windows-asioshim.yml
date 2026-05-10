@@ -35,6 +35,8 @@ on:
     paths:
       - 'daw-core/native/asio/**'
       - 'daw-sdk/src/main/java/com/benesquivelmusic/daw/sdk/audio/Asio*.java'
+      - 'daw-sdk/src/test/java/com/benesquivelmusic/daw/sdk/audio/Asio*.java'
+      - 'daw-core/src/test/java/com/benesquivelmusic/daw/core/audio/NativeLibraryDetectorTest.java'
       - 'lib/CMakeLists.txt'
       - '.github/workflows/windows-asioshim.yml'
   pull_request:
@@ -42,6 +44,8 @@ on:
     paths:
       - 'daw-core/native/asio/**'
       - 'daw-sdk/src/main/java/com/benesquivelmusic/daw/sdk/audio/Asio*.java'
+      - 'daw-sdk/src/test/java/com/benesquivelmusic/daw/sdk/audio/Asio*.java'
+      - 'daw-core/src/test/java/com/benesquivelmusic/daw/core/audio/NativeLibraryDetectorTest.java'
       - 'lib/CMakeLists.txt'
       - '.github/workflows/windows-asioshim.yml'
   workflow_dispatch: {}

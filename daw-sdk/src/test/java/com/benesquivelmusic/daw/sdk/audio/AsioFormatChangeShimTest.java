@@ -33,40 +33,38 @@ class AsioFormatChangeShimTest {
             // require any platform library.
             assertThat(shim.upcallStub()).isNotNull();
             assertThat(shim.upcallStub().equals(MemorySegment.NULL)).isFalse();
-            // Registration transparently no-ops when asioshim is missing
-            // (the typical case off-Windows and on a fresh Windows
-            // checkout). On the dedicated Windows-with-shim CI lane the
-            // companion test {@code shimRegistersAgainstBundledAsioshimDll}
-            // asserts the inverse.
-            if (!asioshimAvailable()) {
-                assertThat(shim.isRegistered()).isFalse();
-            }
+            // Registration must transparently no-op when asioshim is missing.
+            assertThat(shim.isRegistered()).isFalse();
         }
     }
 
+    @Test
+    void closeIsIdempotent() {
+        AsioBackend backend = new AsioBackend();
+        AudioBackendSupport support = new AudioBackendSupport();
+        AsioFormatChangeShim shim = new AsioFormatChangeShim(backend, support, DEVICE);
+        shim.close();
+        shim.close(); // must not throw
+    }
+
     /**
-     * Story 224 — on the dedicated Windows-with-shim CI lane (the
-     * {@code windows-asioshim.yml} workflow exports
-     * {@code DAW_REQUIRE_ASIOSHIM=1}) the bundled {@code asioshim.dll}
-     * must be loadable and the FFM upcall registration must succeed.
-     * On developer workstations and other CI lanes the env var is
-     * unset and this test cleanly skips when the shim is missing.
+     * Story 224 — positive-case registration test. When the bundled
+     * {@code asioshim.dll} is present on the FFM library path, the
+     * shim must successfully install its upcall callback. This test
+     * uses {@code assumeTrue} (never hard-fails) because
+     * {@code daw-sdk} executes in the Maven reactor before
+     * {@code daw-core}'s {@code generate-resources} phase, which is
+     * where the CMake native build produces the DLL. The hard-failure
+     * env-gated assertions live in {@code NativeLibraryDetectorTest}
+     * inside {@code daw-core} (which runs after the native build and
+     * has {@code -Djava.library.path=${native.libs.dir}} set).
      */
     @Test
     @EnabledOnOs(OS.WINDOWS)
-    void shimRegistersAgainstBundledAsioshimDll() {
-        boolean available = asioshimAvailable();
-        if ("1".equals(System.getenv("DAW_REQUIRE_ASIOSHIM"))) {
-            assertThat(available)
-                    .as("DAW_REQUIRE_ASIOSHIM=1 — asioshim.dll must be on the "
-                            + "FFM library path. Build the native libs with "
-                            + "-DASIO_SDK_DIR=... before mvn verify.")
-                    .isTrue();
-        } else {
-            assumeTrue(available,
-                    "asioshim.dll not on java.library.path — skip "
-                            + "(set DAW_REQUIRE_ASIOSHIM=1 to fail instead of skip)");
-        }
+    void shimRegistersWhenAsioshimIsAvailable() {
+        assumeTrue(asioshimAvailable(),
+                "asioshim.dll not on java.library.path — skip "
+                        + "(build native libs with -DASIO_SDK_DIR=...)");
         AsioBackend backend = new AsioBackend();
         AudioBackendSupport support = new AudioBackendSupport();
         try (AsioFormatChangeShim shim = new AsioFormatChangeShim(backend, support, DEVICE)) {
@@ -78,10 +76,16 @@ class AsioFormatChangeShimTest {
     }
 
     /**
-     * Lightweight existence probe for the {@code asioshim} FFM library —
-     * mirrors the logic used by {@code NativeLibraryDetector.isAvailable},
-     * but inlined here because {@code daw-sdk} does not depend on
-     * {@code daw-core}.
+     * Lightweight FFM probe for the {@code asioshim} library. Uses a
+     * bare {@link SymbolLookup#libraryLookup} call — this does not
+     * scan {@code java.library.path} directories or try platform
+     * filename variants the way {@code NativeLibraryDetector} does,
+     * but it is sufficient here because {@code daw-core}'s Surefire
+     * config places the native output directory on
+     * {@code java.library.path} for tests that run after the native
+     * build. When the DLL is on the path, the bare lookup succeeds;
+     * when it is not, the test skips via the {@code assumeTrue}
+     * guard.
      */
     private static boolean asioshimAvailable() {
         try (Arena arena = Arena.ofConfined()) {
@@ -90,15 +94,6 @@ class AsioFormatChangeShimTest {
         } catch (IllegalArgumentException | UnsatisfiedLinkError ignored) {
             return false;
         }
-    }
-
-    @Test
-    void closeIsIdempotent() {
-        AsioBackend backend = new AsioBackend();
-        AudioBackendSupport support = new AudioBackendSupport();
-        AsioFormatChangeShim shim = new AsioFormatChangeShim(backend, support, DEVICE);
-        shim.close();
-        shim.close(); // must not throw
     }
 
     @Test
