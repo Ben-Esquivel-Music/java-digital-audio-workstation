@@ -44,6 +44,9 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
 /**
@@ -70,6 +73,21 @@ import java.util.stream.Collectors;
  * {@code .mixer-channel-name}, {@code .mixer-fader}.</p>
  */
 public final class MixerView extends VBox {
+
+    private static final Logger LOG = Logger.getLogger(MixerView.class.getName());
+    /**
+     * Story 215 — guard so the "no driver-reported output channels yet,
+     * falling back to legacy 0..31 cue-bus pair range" message logs at
+     * most once per JVM rather than on every dialog open.
+     */
+    private static final AtomicBoolean LOGGED_EMPTY_OUTPUT_FALLBACK = new AtomicBoolean(false);
+
+    /**
+     * Spinner upper bound (and ComboBox legacy-fallback upper bound) for
+     * the cue-bus hardware-output-pair picker when no driver channel
+     * info is available — preserves the historical 0..31 range.
+     */
+    static final int LEGACY_MAX_CUE_BUS_PAIR = 31;
 
     private static final double FADER_HEIGHT = 150;
     private static final double CHANNEL_WIDTH = 80;
@@ -104,6 +122,14 @@ public final class MixerView extends VBox {
      * the strip. Keyed by {@link CueBus#id()}.
      */
     private final Map<UUID, Double> cueBusPreMuteGain = new LinkedHashMap<>();
+    /**
+     * Story 215 — cue-bus IDs whose persisted {@code hardwareOutputIndex}
+     * is no longer present in the live driver. Populated by
+     * {@link #validateCueBusesAgainstDevice(NotificationManager)} and
+     * consulted by {@link #buildCueBusStrip(CueBus, int)} to render the
+     * affected strips greyed out with an explanatory tooltip.
+     */
+    private final Set<UUID> disabledCueBusIds = new HashSet<>();
     /**
      * propagation path uses to mirror UI state across a stereo pair without
      * a full strip rebuild. The {@code LinkedHashMap} preserves insertion
@@ -1646,6 +1672,19 @@ public final class MixerView extends VBox {
         strip.setMinWidth(CHANNEL_WIDTH);
         strip.setStyle("-fx-border-color: #ffd54f;");
 
+        // Story 215 — strips for buses whose hardware output pair is no
+        // longer present in the live driver render greyed out and
+        // tooltipped so the user knows the bus is silently inactive
+        // until they reconfigure it.
+        boolean unrouted = disabledCueBusIds.contains(bus.id());
+        if (unrouted) {
+            strip.setDisable(true);
+            strip.setOpacity(0.55);
+            Tooltip.install(strip, new Tooltip(
+                    "Cue bus output pair is not present on the current "
+                            + "audio device — re-assign to enable."));
+        }
+
         Label kindLabel = new Label("CUE " + displayIndex);
         kindLabel.getStyleClass().add("mixer-channel-name");
         kindLabel.setStyle("-fx-text-fill: #ffd54f; -fx-font-weight: bold;");
@@ -1790,6 +1829,14 @@ public final class MixerView extends VBox {
      * hardware stereo-output index (0-based pair index, mapped to physical
      * outputs {@code 2N / 2N+1} per {@link CueBus}). Creates the bus via
      * {@link CueBusManager#createCueBus(String, int)} and refreshes the view.
+     *
+     * <p>Story 215 — the output-pair picker is now derived from the live
+     * driver-reported {@link #outputChannelInfoSupplier} instead of a
+     * hard-coded 0..31 spinner. Each entry is labelled with the driver's
+     * stem name (e.g. {@code "Phones 1 (Output 7 / 8)"}) and inactive
+     * channels are greyed with a {@code "Disabled in driver"} tooltip.
+     * When the supplier returns no channels (driver not yet open) the
+     * dialog falls back to the legacy {@code 0..31} integer range.</p>
      */
     void promptCreateCueBus() {
         Dialog<javafx.util.Pair<String, Integer>> dialog = new Dialog<>();
@@ -1799,23 +1846,40 @@ public final class MixerView extends VBox {
         TextField nameField = new TextField(
                 "Cue " + (project.getCueBusManager().getCueBuses().size() + 1));
         nameField.setPrefWidth(200);
-        // Find the smallest unused stereo-output-pair index so two cue buses
-        // never end up routed to the same physical outputs by default. Caps
-        // at the spinner max (31) to avoid an initial-value-out-of-range
-        // exception when all pairs are occupied.
-        // TODO(story 215): derive maxPair dynamically from
-        // outputChannelInfoSupplier / ChannelGrouping.buildOptions() so the
-        // spinner reflects the active backend's real output count and labels
-        // instead of using a hard-coded 0..31 range.
-        int maxPair = 31;
-        int defaultPair = 0;
-        while (defaultPair < maxPair
-                && project.getCueBusManager().isHardwareOutputInUse(defaultPair)) {
-            defaultPair++;
+
+        // Story 215 — derive the available pairs from the driver's
+        // current output channel list. The supplier returns a fresh
+        // snapshot at dialog-open time; live driver-change updates while
+        // the dialog is open are out of scope per the story's spec.
+        List<AudioChannelInfo> liveOutputs = outputChannelInfoSupplier.get();
+        if (liveOutputs == null) {
+            liveOutputs = List.of();
         }
-        Spinner<Integer> outSpinner = new Spinner<>(0, maxPair, defaultPair);
-        outSpinner.setEditable(true);
-        outSpinner.setPrefWidth(90);
+        List<CueBusPairOption> pairOptions = buildCueBusOutputPairOptions(
+                liveOutputs,
+                idx -> project.getCueBusManager().isHardwareOutputInUse(idx));
+        if (liveOutputs.isEmpty()
+                && LOGGED_EMPTY_OUTPUT_FALLBACK.compareAndSet(false, true)) {
+            LOG.log(Level.INFO,
+                    "Cue-bus output-pair picker: outputChannelInfoSupplier "
+                            + "returned no channels; falling back to legacy "
+                            + "0..{0} integer range.",
+                    LEGACY_MAX_CUE_BUS_PAIR);
+        }
+
+        // Pick the first option whose pair is not already in use.
+        CueBusPairOption defaultOption = pairOptions.stream()
+                .filter(o -> !project.getCueBusManager().isHardwareOutputInUse(o.pairIndex())
+                        && o.active())
+                .findFirst()
+                .orElse(pairOptions.getFirst());
+
+        ComboBox<CueBusPairOption> outCombo = new ComboBox<>();
+        outCombo.getItems().addAll(pairOptions);
+        outCombo.setCellFactory(_ -> cueBusPairCell());
+        outCombo.setButtonCell(cueBusPairCell());
+        outCombo.getSelectionModel().select(defaultOption);
+        outCombo.setPrefWidth(220);
 
         GridPane grid = new GridPane();
         grid.setHgap(10);
@@ -1824,7 +1888,7 @@ public final class MixerView extends VBox {
         grid.add(new Label("Name:"), 0, 0);
         grid.add(nameField, 1, 0);
         grid.add(new Label("Hardware output pair:"), 0, 1);
-        grid.add(outSpinner, 1, 1);
+        grid.add(outCombo, 1, 1);
         Label hint = new Label(
                 "Pair index N maps to physical outputs " + "(2N+1) / (2N+2). " +
                         "Each cue bus needs a unique pair.");
@@ -1839,7 +1903,8 @@ public final class MixerView extends VBox {
             if (button == ButtonType.OK) {
                 String name = nameField.getText() == null || nameField.getText().isBlank()
                         ? "Cue" : nameField.getText().trim();
-                int pair = outSpinner.getValue() == null ? 0 : Math.max(0, outSpinner.getValue());
+                CueBusPairOption sel = outCombo.getSelectionModel().getSelectedItem();
+                int pair = sel == null ? 0 : Math.max(0, sel.pairIndex());
                 return new javafx.util.Pair<>(name, pair);
             }
             return null;
@@ -1855,6 +1920,204 @@ public final class MixerView extends VBox {
                 err.showAndWait();
             }
         });
+    }
+
+    /**
+     * Story 215 — one entry in the cue-bus hardware-output-pair picker.
+     *
+     * @param pairIndex   zero-based stereo-pair index (output {@code 2N}/{@code 2N+1})
+     * @param displayName the label shown in the picker — e.g.
+     *                    {@code "Phones 1 (Output 7 / 8)"} when the driver
+     *                    reports a stereo stem, otherwise
+     *                    {@code "Output 2N+1 / 2N+2"}
+     * @param active      {@code false} when the driver reports either
+     *                    channel of the pair as disabled — the picker
+     *                    greys these entries and tooltips
+     *                    {@code "Disabled in driver"}
+     */
+    record CueBusPairOption(int pairIndex, String displayName, boolean active) {
+        CueBusPairOption {
+            Objects.requireNonNull(displayName, "displayName must not be null");
+            if (pairIndex < 0) {
+                throw new IllegalArgumentException(
+                        "pairIndex must be >= 0: " + pairIndex);
+            }
+        }
+    }
+
+    /**
+     * Story 215 — derives the cue-bus output-pair picker entries from the
+     * driver-reported {@link AudioChannelInfo} list.
+     *
+     * <p>The list is paired up two channels at a time: indices {@code 2N}
+     * and {@code 2N+1} form pair {@code N}. When a stereo stem name is
+     * recovered via {@link ChannelGrouping#buildOptions(List)} (e.g.
+     * {@code "Phones 1"}) it is used as the display label; otherwise the
+     * generic {@code "Output 2N+1 / 2N+2"} label is used so the user can
+     * still pick the pair. A pair is marked inactive when either channel
+     * is reported inactive by the driver.</p>
+     *
+     * <p>When {@code channels} is empty the legacy {@code 0..LEGACY_MAX_CUE_BUS_PAIR}
+     * range is returned so the dialog still opens before the audio
+     * device has been initialized for the first time.</p>
+     *
+     * @param channels       driver-reported output channels in their native
+     *                       order; must not be null (may be empty)
+     * @param pairInUseTest  predicate consulted to optionally annotate the
+     *                       label of pairs already taken by another cue
+     *                       bus; may be null to skip the annotation
+     * @return picker options in pair-index order; never null, never empty
+     */
+    static List<CueBusPairOption> buildCueBusOutputPairOptions(
+            List<AudioChannelInfo> channels,
+            java.util.function.IntPredicate pairInUseTest) {
+        Objects.requireNonNull(channels, "channels must not be null");
+        if (channels.isEmpty()) {
+            List<CueBusPairOption> legacy = new ArrayList<>(LEGACY_MAX_CUE_BUS_PAIR + 1);
+            for (int n = 0; n <= LEGACY_MAX_CUE_BUS_PAIR; n++) {
+                legacy.add(new CueBusPairOption(
+                        n, "Output " + (2 * n + 1) + " / " + (2 * n + 2), true));
+            }
+            return List.copyOf(legacy);
+        }
+
+        // Build a map from firstChannel → stereo stem name for any
+        // L/R-paired entries the heuristic recognized.
+        Map<Integer, String> stemByFirstChannel = new LinkedHashMap<>();
+        for (ChannelGrouping.Option opt : ChannelGrouping.buildOptions(channels)) {
+            if (opt.channelCount() == 2) {
+                String name = opt.displayName();
+                // ChannelGrouping suffixes "(Stereo)"; strip it so the
+                // cue-bus label can compose its own "(Output X / Y)" tail.
+                String stem = name.endsWith(" (Stereo)")
+                        ? name.substring(0, name.length() - " (Stereo)".length())
+                        : name;
+                stemByFirstChannel.put(opt.firstChannel(), stem);
+            }
+        }
+
+        // Index channels by their reported zero-based index for O(1) lookup
+        // — drivers may not always report channels in strict 0,1,2,... order.
+        Map<Integer, AudioChannelInfo> byIndex = new LinkedHashMap<>();
+        for (AudioChannelInfo info : channels) {
+            byIndex.put(info.index(), info);
+        }
+
+        int pairCount = channels.size() / 2;
+        List<CueBusPairOption> out = new ArrayList<>(Math.max(1, pairCount));
+        for (int n = 0; n < pairCount; n++) {
+            AudioChannelInfo a = byIndex.get(2 * n);
+            AudioChannelInfo b = byIndex.get(2 * n + 1);
+            String label;
+            String stem = stemByFirstChannel.get(2 * n);
+            if (stem != null) {
+                label = stem + " (Output " + (2 * n + 1) + " / " + (2 * n + 2) + ")";
+            } else {
+                label = "Output " + (2 * n + 1) + " / " + (2 * n + 2);
+            }
+            if (pairInUseTest != null && pairInUseTest.test(n)) {
+                label = label + " — in use";
+            }
+            boolean active = (a == null || a.active()) && (b == null || b.active());
+            out.add(new CueBusPairOption(n, label, active));
+        }
+        if (out.isEmpty()) {
+            // Driver reported a single channel — keep at least pair 0
+            // available so the dialog stays usable.
+            out.add(new CueBusPairOption(0, "Output 1 / 2", true));
+        }
+        return List.copyOf(out);
+    }
+
+    /**
+     * Renders a {@link CueBusPairOption} in the picker. Inactive entries
+     * are greyed out and tooltipped with {@code "Disabled in driver"}, the
+     * same convention used by {@link #ioCell()} for the per-channel
+     * routing dropdowns (story 215).
+     */
+    private static ListCell<CueBusPairOption> cueBusPairCell() {
+        return new ListCell<>() {
+            @Override
+            protected void updateItem(CueBusPairOption item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                    setTooltip(null);
+                    setDisable(false);
+                    setStyle("");
+                    return;
+                }
+                setText(item.displayName());
+                if (!item.active()) {
+                    setDisable(true);
+                    setStyle("-fx-text-fill: #888888;");
+                    setTooltip(new Tooltip("Disabled in driver"));
+                } else {
+                    setDisable(false);
+                    setStyle("");
+                    setTooltip(null);
+                }
+            }
+        };
+    }
+
+    /**
+     * Story 215 — validates every saved {@link CueBus} against the live
+     * driver's current output-pair count. Buses whose
+     * {@link CueBus#hardwareOutputIndex()} exceeds the device's pair
+     * count are added to {@link #disabledCueBusIds} (so their strips
+     * render greyed out with an explanatory tooltip) and a single
+     * combined warning is emitted via {@code notifier}.
+     *
+     * <p>One call to this method emits at most one notification — the
+     * intent is to surface the problem when a project is loaded onto a
+     * machine whose audio device has fewer outputs than the project
+     * expects, without spamming the user once per affected bus.</p>
+     *
+     * @param notifier where to send the user-facing warning; must not be null
+     * @return the number of cue buses newly marked as disabled by this call
+     */
+    public int validateCueBusesAgainstDevice(NotificationManager notifier) {
+        Objects.requireNonNull(notifier, "notifier must not be null");
+        List<AudioChannelInfo> live = outputChannelInfoSupplier.get();
+        if (live == null || live.isEmpty()) {
+            // No driver info yet — nothing to validate against. We do not
+            // disable any buses on an empty channel list because that would
+            // wrongly disable everything before the device finishes opening.
+            return 0;
+        }
+        int pairCount = live.size() / 2;
+        List<CueBus> stale = new ArrayList<>();
+        for (CueBus bus : project.getCueBusManager().getCueBuses()) {
+            if (bus.hardwareOutputIndex() >= pairCount
+                    && disabledCueBusIds.add(bus.id())) {
+                stale.add(bus);
+            }
+        }
+        if (stale.isEmpty()) {
+            return 0;
+        }
+        StringBuilder msg = new StringBuilder();
+        for (int i = 0; i < stale.size(); i++) {
+            CueBus bus = stale.get(i);
+            if (i > 0) {
+                msg.append("; ");
+            }
+            msg.append("Cue bus '").append(bus.label())
+                    .append("' was on output pair ")
+                    .append(bus.hardwareOutputIndex() + 1)
+                    .append("; current device has ")
+                    .append(pairCount)
+                    .append(" pair").append(pairCount == 1 ? "" : "s")
+                    .append(" — bus disabled");
+        }
+        notifier.notify(msg.toString());
+        return stale.size();
+    }
+
+    /** Visible for testing — returns an unmodifiable view of the disabled cue-bus IDs. */
+    Set<UUID> getDisabledCueBusIds() {
+        return java.util.Collections.unmodifiableSet(disabledCueBusIds);
     }
 
     /** Returns the container holding the cue-bus strips. Visible for testing. */
