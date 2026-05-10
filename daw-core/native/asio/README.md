@@ -76,6 +76,26 @@ target is silently skipped; FFM `SymbolLookup` then fails to find the
 library and the Java side falls back to `BufferSizeRange.DEFAULT_RANGE`
 and the canonical sample-rate menu.
 
+## Continuous integration
+
+The dedicated **`.github/workflows/windows-asioshim.yml`** lane
+provisions the Steinberg ASIO SDK from the `ASIO_SDK_ZIP_BASE64`
+repository secret, sets `ASIO_SDK_DIR`, runs `mvn -B verify`, and
+asserts that `daw-app/target/dist/native/windows-x64/asioshim.dll`
+exists after the assembly phase. The job is path-filtered so it only
+runs when the ASIO surface (`daw-core/native/asio/`,
+`daw-sdk/.../Asio*.java`, `lib/CMakeLists.txt`, the workflow itself)
+changes — the rest of the PR feedback loop stays on `ci.yml`.
+
+That lane exports **`DAW_REQUIRE_ASIOSHIM=1`** so the env-gated
+assertions in `NativeLibraryDetectorTest` and `AsioFormatChangeShimTest`
+flip from `Assumptions.assumeTrue(...)` (skip) to hard `assertTrue(...)`
+checks. Absent `asioshim.dll` therefore fails the CI lane rather than
+silently degrading to the no-shim fallback path. On developer
+workstations the env var is unset and those same tests remain
+`assumeTrue` skips, so a fresh clone without the SDK still produces a
+green build.
+
 ## Threading
 
 All FFM downcalls run on the calling thread (typically the JavaFX

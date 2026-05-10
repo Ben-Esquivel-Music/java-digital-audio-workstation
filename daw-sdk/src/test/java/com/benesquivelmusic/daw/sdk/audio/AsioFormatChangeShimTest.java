@@ -1,14 +1,19 @@
 package com.benesquivelmusic.daw.sdk.audio;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 
+import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.lang.foreign.SymbolLookup;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Unit tests for {@link AsioFormatChangeShim} — story 218 FFM upcall
@@ -40,6 +45,55 @@ class AsioFormatChangeShimTest {
         AsioFormatChangeShim shim = new AsioFormatChangeShim(backend, support, DEVICE);
         shim.close();
         shim.close(); // must not throw
+    }
+
+    /**
+     * Story 224 — positive-case registration test. When the bundled
+     * {@code asioshim.dll} is present on the FFM library path, the
+     * shim must successfully install its upcall callback. This test
+     * uses {@code assumeTrue} (never hard-fails) because
+     * {@code daw-sdk} executes in the Maven reactor before
+     * {@code daw-core}'s {@code generate-resources} phase, which is
+     * where the CMake native build produces the DLL. The hard-failure
+     * env-gated assertions live in {@code NativeLibraryDetectorTest}
+     * inside {@code daw-core} (which runs after the native build and
+     * has {@code -Djava.library.path=${native.libs.dir}} set).
+     */
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    void shimRegistersWhenAsioshimIsAvailable() {
+        assumeTrue(asioshimAvailable(),
+                "asioshim.dll not on java.library.path — skip "
+                        + "(build native libs with -DASIO_SDK_DIR=...)");
+        AsioBackend backend = new AsioBackend();
+        AudioBackendSupport support = new AudioBackendSupport();
+        try (AsioFormatChangeShim shim = new AsioFormatChangeShim(backend, support, DEVICE)) {
+            assertThat(shim.isRegistered())
+                    .as("AsioFormatChangeShim must successfully register its "
+                            + "upcall against the bundled asioshim.dll")
+                    .isTrue();
+        }
+    }
+
+    /**
+     * Lightweight FFM probe for the {@code asioshim} library. Uses a
+     * bare {@link SymbolLookup#libraryLookup} call — this does not
+     * scan {@code java.library.path} directories or try platform
+     * filename variants the way {@code NativeLibraryDetector} does,
+     * but it is sufficient here because {@code daw-core}'s Surefire
+     * config places the native output directory on
+     * {@code java.library.path} for tests that run after the native
+     * build. When the DLL is on the path, the bare lookup succeeds;
+     * when it is not, the test skips via the {@code assumeTrue}
+     * guard.
+     */
+    private static boolean asioshimAvailable() {
+        try (Arena arena = Arena.ofConfined()) {
+            SymbolLookup.libraryLookup("asioshim", arena);
+            return true;
+        } catch (IllegalArgumentException | UnsatisfiedLinkError ignored) {
+            return false;
+        }
     }
 
     @Test
