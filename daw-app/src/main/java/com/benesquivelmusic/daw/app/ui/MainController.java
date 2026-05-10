@@ -2,6 +2,13 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplay;
+import com.benesquivelmusic.daw.app.ui.help.HelpControls;
+import com.benesquivelmusic.daw.app.ui.help.HelpKeyHandler;
+import com.benesquivelmusic.daw.app.ui.help.HelpOverlay;
+import com.benesquivelmusic.daw.app.ui.help.HelpRegistry;
+import com.benesquivelmusic.daw.app.ui.help.OnboardingState;
+import com.benesquivelmusic.daw.app.ui.help.OnboardingTour;
+import com.benesquivelmusic.daw.app.ui.help.QuickHelpBar;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
@@ -40,6 +47,7 @@ import javafx.scene.control.Label;
 import javafx.scene.control.Tooltip;
 import javafx.scene.layout.*;
 import javafx.stage.Stage;
+import javafx.stage.Window;
 import javafx.util.Duration;
 
 import java.nio.file.Path;
@@ -222,6 +230,16 @@ public final class MainController {
     private TimelineRuler timelineRuler;
     private SpectrumDisplay spectrumDisplay;
     private LevelMeterDisplay levelMeterDisplay;
+
+    /** Contextual help registry — loads markdown topics from {@code resources/help/}. */
+    private final HelpRegistry helpRegistry = HelpRegistry.loadDefault();
+    private static final String HELP_WINDOW_LISTENER_KEY = "help.windowListenerInstalled";
+    /** Right-side overlay displaying the active help topic; lazily created with the scene. */
+    private HelpOverlay helpOverlay;
+    /** Bottom Quick Help bar — toggled with {@code Shift+F1}. */
+    private QuickHelpBar quickHelpBar;
+    /** F1 / Shift+F1 key handler installed on the primary scene. */
+    private HelpKeyHandler helpKeyHandler;
 
     @FXML
     private void initialize() {
@@ -422,6 +440,7 @@ public final class MainController {
         playButton.sceneProperty().addListener((_, _, scene) -> {
             if (scene != null) {
                 keyboardShortcutController.register(scene);
+                installContextualHelp(scene);
                 if (scene.getWindow() instanceof Stage primaryStage) {
                     if (commandPaletteView != null) {
                         commandPaletteView.setOwner(primaryStage);
@@ -2192,6 +2211,102 @@ public final class MainController {
         status("Opening help...", DawIcon.INFO);
         new HelpDialog().showAndWait();
         status("Help closed", DawIcon.STATUS);
+    }
+
+    /**
+     * Installs contextual help on {@code scene} the first time the play
+     * button enters the scene graph: lazy-initialises the {@link HelpOverlay}
+     * + {@link QuickHelpBar}, registers the F1 / Shift+F1 key handler, and
+     * tags transport / arrangement / mixer controls with help topics.
+     *
+     * <p>This is a single, idempotent entry-point — calling it twice (e.g.
+     * if the rootPane briefly leaves and re-enters its scene) is safe.</p>
+     */
+    private void installContextualHelp(javafx.scene.Scene scene) {
+        if (helpOverlay == null) {
+            helpOverlay = new HelpOverlay(helpRegistry);
+            quickHelpBar = new QuickHelpBar(helpRegistry);
+            helpKeyHandler = new HelpKeyHandler(helpRegistry, helpOverlay, quickHelpBar);
+
+            // Mount the Quick Help bar into the bottom VBox so it is visible.
+            Node bottom = rootPane.getBottom();
+            if (bottom instanceof VBox bottomBox) {
+                bottomBox.getChildren().addFirst(quickHelpBar);
+            }
+        }
+        helpKeyHandler.installOn(scene);
+        quickHelpBar.attachTo(scene);
+
+        // Tag the most prominent controls so F1 lands on a useful topic.
+        tagHelpTopic(playButton, "transport");
+        tagHelpTopic(stopButton, "transport");
+        tagHelpTopic(recordButton, "transport");
+        tagHelpTopic(loopButton, "transport");
+        tagHelpTopic(metronomeButton, "transport");
+        tagHelpTopic(skipBackButton, "transport");
+        tagHelpTopic(skipForwardButton, "transport");
+        tagHelpTopic(snapButton, "arrangement");
+        tagHelpTopic(addAudioTrackButton, "arrangement");
+        tagHelpTopic(addMidiTrackButton, "arrangement");
+
+        // Register control IDs in the registry so other code can resolve
+        // controls by ID (e.g. the command palette → "Help on…" entries).
+        registerHelpControl(playButton, "transport");
+        registerHelpControl(stopButton, "transport");
+        registerHelpControl(recordButton, "transport");
+        registerHelpControl(loopButton, "transport");
+        registerHelpControl(metronomeButton, "transport");
+        registerHelpControl(skipBackButton, "transport");
+        registerHelpControl(skipForwardButton, "transport");
+        registerHelpControl(snapButton, "arrangement");
+        registerHelpControl(addAudioTrackButton, "arrangement");
+        registerHelpControl(addMidiTrackButton, "arrangement");
+
+        // Anchor overlay and start the onboarding tour once the window is
+        // available.  Use a scene property key to prevent duplicate listeners
+        // if installContextualHelp is called again for the same scene.
+        String listenerKey = HELP_WINDOW_LISTENER_KEY;
+        if (scene.getProperties().containsKey(listenerKey)) {
+            return;
+        }
+        scene.getProperties().put(listenerKey, Boolean.TRUE);
+
+        Runnable onWindowReady = () -> {
+            Window window = scene.getWindow();
+            helpOverlay.anchorTo(window);
+
+            // First-launch onboarding tour — highlights the main controls
+            // and opens the help topic for each in sequence.
+            var onboardingState = OnboardingState.defaultLocation();
+            if (onboardingState.shouldRunTour()) {
+                var tour = new OnboardingTour(helpOverlay, onboardingState)
+                        .addStep("transport", playButton)
+                        .addStep("arrangement", snapButton)
+                        .addStep("mixer", null)
+                        .addStep("browser", null);
+                tour.start(false);
+            }
+        };
+
+        if (scene.getWindow() != null) {
+            onWindowReady.run();
+        } else {
+            scene.windowProperty().addListener((_, _, w) -> {
+                if (w != null) { onWindowReady.run(); }
+            });
+        }
+    }
+
+    private void registerHelpControl(Node node, String slug) {
+        if (node != null && node.getId() != null) {
+            helpRegistry.registerControl(node.getId(), slug);
+        }
+    }
+
+    private void tagHelpTopic(Node node, String slug) {
+        if (node != null) {
+            HelpControls.setHelpTopic(node, slug);
+        }
     }
 
     public DawView getActiveView() { return viewNavigationController.getActiveView(); }
