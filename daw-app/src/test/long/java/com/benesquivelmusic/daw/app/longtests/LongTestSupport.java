@@ -58,9 +58,9 @@ public final class LongTestSupport {
 
     /**
      * Generates a deterministic pseudo-random noise buffer using a
-     * linear congruential generator so the bytes are reproducible and
-     * portable (unlike {@link java.util.Random}, which can drift across
-     * JDK versions for secondary distributions).
+     * SplitMix64 generator so the bytes are reproducible and portable
+     * (unlike {@link java.util.Random}, which can drift across JDK
+     * versions for secondary distributions).
      */
     public static float[] noise(long seed, double amplitude, int numFrames) {
         float[] out = new float[numFrames];
@@ -126,9 +126,13 @@ public final class LongTestSupport {
         }
     }
 
-    /** Returns the repo-source path of a golden file, for rebaselining. */
+    /**
+     * Returns a fixed relative path into the daw-app source tree for a
+     * golden file, resolved to an absolute path. Used by rebaseline mode
+     * to overwrite the on-disk golden so {@code git diff} surfaces the
+     * new bytes for the developer to review.
+     */
     public static Path repoGoldenPath(String goldenName) {
-        // Walk up from target/test-classes/golden/<name> into the source tree.
         return Path.of("src", "test", "long", "resources", "golden", goldenName)
                 .toAbsolutePath();
     }

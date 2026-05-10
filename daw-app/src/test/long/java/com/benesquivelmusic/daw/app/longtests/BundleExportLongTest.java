@@ -122,19 +122,32 @@ final class BundleExportLongTest {
         LongTestSupport.assertMatchesGolden(bundle, "bundle-export.bundle.zip");
     }
 
-    /** Reproducible zip: sorted entries, fixed dos-time, no extra fields. */
+    /**
+     * Reproducible zip: sorted entries, STORED method (no compression),
+     * fixed dos-time, pre-computed CRC/size. Using STORED avoids
+     * dependence on the JDK/zlib deflate implementation — the output
+     * bytes are fully deterministic across JDK versions.
+     */
     private static void zipDeterministic(Path stage, Path output) throws IOException {
         try (var out = new ZipOutputStream(Files.newOutputStream(output));
              var walk = Files.walk(stage)) {
+            out.setMethod(ZipOutputStream.STORED);
             walk.filter(Files::isRegularFile)
                 .sorted()
                 .forEach(p -> {
                     String name = stage.relativize(p).toString().replace('\\', '/');
                     try {
+                        byte[] data = Files.readAllBytes(p);
                         ZipEntry e = new ZipEntry(name);
                         e.setTime(0L);                         // epoch
+                        e.setMethod(ZipEntry.STORED);
+                        e.setSize(data.length);
+                        e.setCompressedSize(data.length);
+                        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+                        crc.update(data);
+                        e.setCrc(crc.getValue());
                         out.putNextEntry(e);
-                        Files.copy(p, out);
+                        out.write(data);
                         out.closeEntry();
                     } catch (IOException ioe) {
                         throw new UncheckedIOException(ioe);

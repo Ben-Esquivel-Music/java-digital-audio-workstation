@@ -252,8 +252,10 @@
                            as the test source set (see daw-app/pom.xml).
               * daw-core — enables the strict DSP regression coverage
                            gate (see daw-core/pom.xml).
-              * other modules — no-op (no `src/test/long/` directory; the
-                                surefire report just shows zero tests).
+              * other modules — run their regular unit tests with the
+                                longer fork timeout and report directory
+                                from this profile; no additional test
+                                sources are added.
 
             Reports land in `target/long-test-reports/` so they don't
             collide with the standard surefire output.

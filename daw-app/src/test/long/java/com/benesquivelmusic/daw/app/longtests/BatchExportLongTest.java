@@ -16,9 +16,9 @@ import org.junit.jupiter.api.Test;
  * back-to-back to a single output directory. Mirrors the user-facing
  * "Export All Stems" workflow when a session has many tracks.
  *
- * <p>Each stem is a deterministic synthetic source so the SHA-256 of
- * the manifest of {@code (filename, size, sha256)} is bit-stable, and
- * we compare it to the golden manifest under
+ * <p>Each stem is a deterministic synthetic source so the manifest of
+ * {@code (filename, size)} is bit-stable, and we compare its SHA-256
+ * to the golden manifest under
  * {@code daw-app/src/test/long/resources/golden/}.</p>
  */
 @LongRenderTest(

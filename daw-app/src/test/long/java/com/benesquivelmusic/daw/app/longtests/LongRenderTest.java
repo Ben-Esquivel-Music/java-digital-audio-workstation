@@ -15,11 +15,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
  * <p>Activates the {@link LongTestHarness} JUnit 5 extension which:</p>
  * <ul>
  *   <li>Provisions a per-test temporary working directory and
- *       {@linkplain LongTestHarness#workDir() exposes it} via
- *       parameter resolution.</li>
- *   <li>Records open file-descriptor and temp-file counts at
- *       {@code @BeforeEach} and re-checks them at {@code @AfterEach},
- *       failing if either leaks.</li>
+ *       injects it as a {@link java.nio.file.Path} parameter via
+ *       {@link LongTestHarness}'s {@code ParameterResolver}.</li>
+ *   <li>Records open file-descriptor counts at {@code @BeforeEach}
+ *       and re-checks them at {@code @AfterEach}, failing if the
+ *       count grows beyond a small slack threshold.</li>
  *   <li>Enforces the {@link #budgetSeconds()} wall-clock budget — a
  *       test that exceeds {@code 2 ×} its budget fails with a
  *       performance-regression message.</li>
