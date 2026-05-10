@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Routes a generated metronome click to the main mix bus, the direct-to-hardware
@@ -19,30 +20,50 @@ import java.util.UUID;
  * (the audio engine for main-bus playback, the count-in driver for pre-roll,
  * a unit test for validation) generates the click via
  * {@link Metronome#generateClick(boolean)} and hands the buffer to
- * {@link #route(float[][], AudioBackend, CueBusManager)}. All three destinations
- * share the same source buffer, so timing across them is inherently sample-accurate.</p>
+ * {@link #route(Metronome, float[][], AudioBackend, CueBusManager)}. The
+ * router returns a {@link RoutedClick} carrying the main-mix buffer,
+ * side-output buffer, and per-cue-bus contributions; the <em>caller</em> is
+ * responsible for writing the side-output and cue-bus buffers to the
+ * appropriate hardware channels (e.g. via
+ * {@link AudioBackend#writeToChannel(int, float[])}) with sample-accurate
+ * alignment within the current block.</p>
  *
  * <h2>Destinations</h2>
  * <ol>
- *   <li><b>Main mix</b> — returned as a separate buffer from
- *       {@link RoutedClick#mainMixBuffer()}, or {@code null} when the metronome
- *       is disabled or {@link ClickOutput#mainMixEnabled()} is {@code false}.
- *       The audio engine sums this buffer into the master bus at the scheduled
- *       beat position.</li>
- *   <li><b>Side output</b> — written directly to
- *       {@link AudioBackend#writeToChannel(int, float[])} on
- *       {@link ClickOutput#hardwareChannelIndex()} at
- *       {@link ClickOutput#gain()}, bypassing every track and bus. Gated by
- *       {@link ClickOutput#sideOutputEnabled()}.</li>
+ *   <li><b>Main mix</b> — returned as {@link RoutedClick#mainMixBuffer()},
+ *       or {@code null} when the metronome is disabled or
+ *       {@link ClickOutput#mainMixEnabled()} is {@code false}. The audio
+ *       engine sums this buffer into the master bus at the scheduled beat
+ *       position.</li>
+ *   <li><b>Side output</b> — returned as
+ *       {@link RoutedClick#sideOutputBuffer()} with the target channel in
+ *       {@link RoutedClick#sideChannelIndex()}. The caller writes the
+ *       buffer to the hardware channel with appropriate alignment. Gated by
+ *       {@link ClickOutput#sideOutputEnabled()}; skipped when no
+ *       {@link AudioBackend} is attached.</li>
  *   <li><b>Cue-bus contributions</b> — returned as a
  *       {@code Map<UUID, float[]>} keyed by cue bus id, each entry carrying a
- *       gained-down mono click that the cue-bus renderer adds into the cue
- *       mix at the same scheduled beat.</li>
+ *       gained-down mono click that the caller writes to the cue bus's
+ *       hardware output pair at the same scheduled beat.</li>
  * </ol>
+ *
+ * <h2>Thread safety</h2>
+ * <p>Cue-bus levels are stored in an
+ * {@link java.util.concurrent.atomic.AtomicReference AtomicReference} with
+ * copy-on-write semantics. The audio thread reads a consistent immutable
+ * snapshot while the UI thread mutates levels, eliminating
+ * {@link java.util.ConcurrentModificationException} risk.</p>
  */
 public final class MetronomeSideOutputRouter {
 
-    private final Map<UUID, Double> cueBusLevels = new LinkedHashMap<>();
+    /**
+     * Immutable snapshot of the cue-bus levels. Mutating methods replace
+     * the reference atomically so the audio thread can read a consistent
+     * map without locking and without risking
+     * {@link java.util.ConcurrentModificationException}.
+     */
+    private final AtomicReference<Map<UUID, Double>> cueBusLevelsRef =
+            new AtomicReference<>(Map.of());
 
     /**
      * Sets the click contribution level for a cue bus.
@@ -56,11 +77,21 @@ public final class MetronomeSideOutputRouter {
         if (level < 0.0 || level > 1.0) {
             throw new IllegalArgumentException("level must be between 0.0 and 1.0: " + level);
         }
+        // Copy-on-write: build a new immutable map and publish atomically
+        // so the audio thread never sees a partially-updated state.
+        Map<UUID, Double> prev = cueBusLevelsRef.get();
+        Map<UUID, Double> next;
         if (level == 0.0) {
-            cueBusLevels.remove(cueBusId);
+            if (!prev.containsKey(cueBusId)) {
+                return; // nothing to remove
+            }
+            next = new LinkedHashMap<>(prev);
+            next.remove(cueBusId);
         } else {
-            cueBusLevels.put(cueBusId, level);
+            next = new LinkedHashMap<>(prev);
+            next.put(cueBusId, level);
         }
+        cueBusLevelsRef.set(java.util.Collections.unmodifiableMap(next));
     }
 
     /**
@@ -72,14 +103,14 @@ public final class MetronomeSideOutputRouter {
      */
     public double getCueBusLevel(UUID cueBusId) {
         Objects.requireNonNull(cueBusId, "cueBusId must not be null");
-        return cueBusLevels.getOrDefault(cueBusId, 0.0);
+        return cueBusLevelsRef.get().getOrDefault(cueBusId, 0.0);
     }
 
     /**
      * Removes every cue-bus click contribution.
      */
     public void clearCueBusLevels() {
-        cueBusLevels.clear();
+        cueBusLevelsRef.set(Map.of());
     }
 
     /**
@@ -88,7 +119,7 @@ public final class MetronomeSideOutputRouter {
      * @return map of cue bus id → click gain
      */
     public Map<UUID, Double> cueBusLevels() {
-        return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(cueBusLevels));
+        return cueBusLevelsRef.get();
     }
 
     /**
@@ -127,37 +158,40 @@ public final class MetronomeSideOutputRouter {
 
         float[][] mainMix = cfg.mainMixEnabled() ? click : null;
 
+        // Lazily compute the mono downmix only once, reusing it for both
+        // the side output and any cue-bus contributions that need it.
+        float[] sharedMono = null;
+
+        // Compute the side-output mono buffer (gain-scaled) only when
+        // the backend is actually attached — there is no point building
+        // the buffer if the caller will discard it.
+        float[] sideOutput = null;
+        int sideChannelIndex = -1;
         if (cfg.sideOutputEnabled() && backend != null) {
-            float[] mono = monoMix(click);
-            float sideGain = (float) cfg.gain();
-            if (sideGain != 1.0f) {
-                for (int i = 0; i < mono.length; i++) {
-                    mono[i] = mono[i] * sideGain;
-                }
-            }
-            backend.writeToChannel(cfg.hardwareChannelIndex(), mono);
+            sharedMono = monoMix(click);
+            sideOutput = applyGain(sharedMono, (float) cfg.gain());
+            sideChannelIndex = cfg.hardwareChannelIndex();
         }
 
         Map<UUID, float[]> cueContributions = Map.of();
-        if (cueBusManager != null && !cueBusLevels.isEmpty()) {
-            cueContributions = new LinkedHashMap<>(cueBusLevels.size());
-            float[] mono = monoMix(click);
-            for (Map.Entry<UUID, Double> entry : cueBusLevels.entrySet()) {
+        Map<UUID, Double> levels = cueBusLevelsRef.get();
+        if (cueBusManager != null && !levels.isEmpty()) {
+            cueContributions = new LinkedHashMap<>(levels.size());
+            if (sharedMono == null) {
+                sharedMono = monoMix(click);
+            }
+            for (Map.Entry<UUID, Double> entry : levels.entrySet()) {
                 CueBus bus = cueBusManager.getById(entry.getKey());
                 if (bus == null) {
                     continue;
                 }
                 float g = entry.getValue().floatValue();
-                float[] scaled = new float[mono.length];
-                for (int i = 0; i < scaled.length; i++) {
-                    scaled[i] = mono[i] * g;
-                }
-                cueContributions.put(entry.getKey(), scaled);
+                cueContributions.put(entry.getKey(), applyGain(sharedMono, g));
             }
             cueContributions = java.util.Collections.unmodifiableMap(cueContributions);
         }
 
-        return new RoutedClick(mainMix, cueContributions);
+        return new RoutedClick(mainMix, cueContributions, sideOutput, sideChannelIndex);
     }
 
     private static float[] monoMix(float[][] click) {
@@ -180,22 +214,46 @@ public final class MetronomeSideOutputRouter {
     }
 
     /**
-     * Result of routing one click: the optional main-mix buffer and a
-     * per-cue-bus contribution map. Immutable.
+     * Returns a gain-scaled copy of {@code mono}. When {@code gain == 1.0f}
+     * the returned array is still a fresh copy so the caller can safely
+     * mutate it without affecting the shared source.
+     */
+    private static float[] applyGain(float[] mono, float gain) {
+        if (gain == 1.0f) {
+            return mono.clone();
+        }
+        float[] scaled = new float[mono.length];
+        for (int i = 0; i < scaled.length; i++) {
+            scaled[i] = mono[i] * gain;
+        }
+        return scaled;
+    }
+
+    /**
+     * Result of routing one click: the optional main-mix buffer, a
+     * per-cue-bus contribution map, and the optional side-output mono
+     * buffer with its target hardware channel index. Immutable.
      *
-     * @param mainMixBuffer click samples destined for the main mix bus, or
-     *                      {@code null} when the click is muted from the main
-     *                      mix (either the metronome is disabled or
-     *                      {@link ClickOutput#mainMixEnabled()} is false)
-     * @param cueBusBuffers per-cue-bus mono click buffers scaled by each
-     *                      bus's click level; empty when no cue bus has a
-     *                      click contribution configured
+     * @param mainMixBuffer    click samples destined for the main mix bus, or
+     *                         {@code null} when the click is muted from the main
+     *                         mix (either the metronome is disabled or
+     *                         {@link ClickOutput#mainMixEnabled()} is false)
+     * @param cueBusBuffers    per-cue-bus mono click buffers scaled by each
+     *                         bus's click level; empty when no cue bus has a
+     *                         click contribution configured
+     * @param sideOutputBuffer the gain-scaled mono side-output samples, or
+     *                         {@code null} when the side output is disabled
+     * @param sideChannelIndex the hardware channel the side output targets;
+     *                         meaningful only when {@code sideOutputBuffer}
+     *                         is non-null
      */
     public record RoutedClick(float[][] mainMixBuffer,
-                              Map<UUID, float[]> cueBusBuffers) {
+                              Map<UUID, float[]> cueBusBuffers,
+                              float[] sideOutputBuffer,
+                              int sideChannelIndex) {
 
         /** Silent result — nothing on any destination. */
-        public static final RoutedClick SILENT = new RoutedClick(null, Map.of());
+        public static final RoutedClick SILENT = new RoutedClick(null, Map.of(), null, -1);
 
         public RoutedClick {
             Objects.requireNonNull(cueBusBuffers, "cueBusBuffers must not be null");
@@ -209,6 +267,15 @@ public final class MetronomeSideOutputRouter {
          */
         public boolean hasMainMix() {
             return mainMixBuffer != null;
+        }
+
+        /**
+         * Convenience accessor indicating that a side-output write is needed.
+         *
+         * @return {@code true} when {@link #sideOutputBuffer()} is non-null
+         */
+        public boolean hasSideOutput() {
+            return sideOutputBuffer != null;
         }
     }
 }

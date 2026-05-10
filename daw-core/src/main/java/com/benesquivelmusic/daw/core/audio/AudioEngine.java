@@ -3,8 +3,11 @@ package com.benesquivelmusic.daw.core.audio;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitor;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer;
+import com.benesquivelmusic.daw.core.mixer.CueBusManager;
 import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.core.performance.PerformanceMonitor;
+import com.benesquivelmusic.daw.core.recording.Metronome;
+import com.benesquivelmusic.daw.core.recording.MetronomeSideOutputRouter;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
@@ -98,6 +101,16 @@ public final class AudioEngine {
     // processing and feeds it through the track's monitor so the mixer's
     // input-meter column and the arrangement-view clip indicator stay live.
     private volatile InputLevelMonitorRegistry inputLevelMonitorRegistry;
+
+    // Metronome click-generation pipeline (story 136). All three are
+    // published volatilely so the audio thread sees a consistent view
+    // without locking. The router writes its side output via
+    // {@link AudioBackend#writeToChannel(int, float[])} so it requires
+    // the SDK backend slot above; cue-bus contributions are written to
+    // the cue bus's hardware output stereo pair on the same backend.
+    private volatile Metronome metronome;
+    private volatile MetronomeSideOutputRouter metronomeSideOutputRouter;
+    private volatile CueBusManager cueBusManager;
 
     // Multi-core graph scheduling state (story 125). The pool size is
     // locked at start(); changing it requires a stop/start cycle. The
@@ -788,6 +801,75 @@ public final class AudioEngine {
     }
 
     /**
+     * Story 136 — sets the {@link Metronome} the audio callback uses to
+     * generate a click on each scheduled beat (and subdivision) that
+     * lands inside the current buffer.
+     *
+     * <p>Pass {@code null} to disable click generation entirely. The
+     * field is {@code volatile} so the audio thread observes the
+     * latest reference without locking.</p>
+     *
+     * @param metronome the metronome, or {@code null}
+     */
+    public void setMetronome(Metronome metronome) {
+        this.metronome = metronome;
+    }
+
+    /**
+     * Returns the currently bound metronome, or {@code null}.
+     */
+    public Metronome getMetronome() {
+        return metronome;
+    }
+
+    /**
+     * Story 136 — sets the {@link MetronomeSideOutputRouter} that gates
+     * each generated click into (a) the main mix, (b) a direct hardware
+     * channel via {@link AudioBackend#writeToChannel(int, float[])}, and
+     * (c) any cue-bus contributions configured by the user.
+     *
+     * <p>The router is thread-safe: its internal cue-bus level map is
+     * published via {@link java.util.concurrent.atomic.AtomicReference}
+     * using copy-on-write semantics, so the UI thread can mutate levels
+     * while the audio callback reads a consistent immutable snapshot
+     * without locking and without risking
+     * {@link java.util.ConcurrentModificationException}.</p>
+     *
+     * <p>Pass {@code null} to bypass routing — no click is summed into
+     * the main mix and no side-output is written.</p>
+     *
+     * @param router the side-output router, or {@code null}
+     */
+    public void setMetronomeSideOutputRouter(MetronomeSideOutputRouter router) {
+        this.metronomeSideOutputRouter = router;
+    }
+
+    /**
+     * Returns the currently bound side-output router, or {@code null}.
+     */
+    public MetronomeSideOutputRouter getMetronomeSideOutputRouter() {
+        return metronomeSideOutputRouter;
+    }
+
+    /**
+     * Story 136 — sets the {@link CueBusManager} the audio callback consults
+     * when summing cue-bus click contributions to each bus's hardware
+     * output stereo pair. Pass {@code null} to skip cue-bus routing.
+     *
+     * @param cueBusManager the cue bus manager, or {@code null}
+     */
+    public void setCueBusManager(CueBusManager cueBusManager) {
+        this.cueBusManager = cueBusManager;
+    }
+
+    /**
+     * Returns the currently bound cue bus manager, or {@code null}.
+     */
+    public CueBusManager getCueBusManager() {
+        return cueBusManager;
+    }
+
+    /**
      * Processes a single block of audio by delegating to the unified
      * {@link RenderPipeline}.
      *
@@ -800,14 +882,24 @@ public final class AudioEngine {
      * behavior).</p>
      *
      * <p>This method is designed to be called from the audio callback
-     * thread. When no {@link TrackCpuBudgetEnforcer} is configured, it
-     * performs zero allocations and zero lock acquisitions — all buffers
-     * are pre-allocated during {@link #start()}, and the
+     * thread. The core track-mixdown/master-chain path performs zero
+     * allocations and zero lock acquisitions — all buffers are
+     * pre-allocated during {@link #start()}, and the
      * {@link RenderPipeline} reads only from volatile snapshots of the
      * transport, mixer, track list, and MIDI renderer. When an enforcer
      * is present, per-track CPU timing occurs and the enforcer acquires
      * an internal lock for each measurement; the enforcer pre-allocates
      * its own buffers to minimize GC pressure on the audio thread.</p>
+     *
+     * <p><b>Allocation note (story 136):</b> when a metronome and
+     * side-output router are attached and clicks are scheduled in this
+     * block, bounded short-lived allocations occur for click generation
+     * and routing buffers (see
+     * {@link RenderPipeline#renderBlock(float[][], float[][], int,
+     * Transport, Mixer, java.util.List, MidiTrackRenderer, EffectsChain,
+     * RecordingCallback, PerformanceMonitor, TrackCpuBudgetEnforcer,
+     * Metronome, MetronomeSideOutputRouter, CueBusManager,
+     * AudioBackend)}).</p>
      *
      * @param inputBuffer  the input audio data {@code [channel][frame]}
      * @param outputBuffer the output audio data {@code [channel][frame]}
@@ -830,6 +922,10 @@ public final class AudioEngine {
         PerformanceMonitor monitor = this.performanceMonitor;
         TrackCpuBudgetEnforcer enforcer = this.cpuBudgetEnforcer;
         InputLevelMonitorRegistry inputRegistry = this.inputLevelMonitorRegistry;
+        Metronome currentMetronome = this.metronome;
+        MetronomeSideOutputRouter currentRouter = this.metronomeSideOutputRouter;
+        CueBusManager currentCueBusManager = this.cueBusManager;
+        AudioBackend currentBackend = this.sdkBackend;
 
         // Story 137: tap the raw input signal per armed track BEFORE any
         // processing so the mixer's input-meter column and the clip LED
@@ -842,7 +938,9 @@ public final class AudioEngine {
         renderPipeline.renderBlock(inputBuffer, outputBuffer, numFrames,
                 currentTransport, currentMixer, currentTracks,
                 currentMidiRenderer, masterChain, cb, monitor,
-                enforcer);
+                enforcer,
+                currentMetronome, currentRouter,
+                currentCueBusManager, currentBackend);
     }
 
     /**
