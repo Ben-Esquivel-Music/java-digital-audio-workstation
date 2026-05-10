@@ -60,6 +60,9 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - name: Enable long paths on Windows
+        run: git config --system core.longpaths true
+
       - name: Checkout
         uses: actions/checkout@v4
 
