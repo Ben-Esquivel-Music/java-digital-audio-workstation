@@ -133,7 +133,6 @@ final class TransportController {
 
     private RecordingPipeline recordingPipeline;
     private final Map<Track, MidiRecorder> activeMidiRecorders = new LinkedHashMap<>();
-    private boolean loopEnabled;
 
     /**
      * Story 134 — Pre-roll / Post-Roll transport controls. The toggle
@@ -470,16 +469,29 @@ final class TransportController {
     }
 
     void onToggleLoop() {
-        loopEnabled = !loopEnabled;
-        project.getTransport().setLoopEnabled(loopEnabled);
+        Transport transport = project.getTransport();
+        boolean nowEnabled = !transport.isLoopEnabled();
+        transport.setLoopEnabled(nowEnabled);
         // Active-state styling is driven by the :active pseudo-class on the
         // single .transport-button rule (UI Design Book §2.1 — one accent at
         // a time). No inline -fx-background-color is set per button class.
-        loopButton.pseudoClassStateChanged(ACTIVE, loopEnabled);
-        String loopState = loopEnabled ? "Loop: ON" : "Loop: OFF";
+        loopButton.pseudoClassStateChanged(ACTIVE, nowEnabled);
+        String loopState = nowEnabled ? "Loop: ON" : "Loop: OFF";
         statusBarLabel.setText(loopState);
         statusBarLabel.setGraphic(IconNode.of(DawIcon.LOOP, 12));
         LOG.fine(loopState);
+    }
+
+    /**
+     * Synchronises the Loop button's {@code :active} pseudo-class with
+     * the transport's current loop state. Called during controller init
+     * and after project rebuild so the button reflects loop state set
+     * externally (e.g. by TimelineRuler defining a loop region, or by
+     * project load).
+     */
+    void syncLoopButtonState() {
+        boolean enabled = project.getTransport().isLoopEnabled();
+        loopButton.pseudoClassStateChanged(ACTIVE, enabled);
     }
 
     // ── Pre-Roll / Post-Roll (Story 134) ─────────────────────────────────────
@@ -816,10 +828,11 @@ final class TransportController {
         fadeIn.play();
 
         // Play is a toggle (UI Design Book §5.1) — it stays enabled while
-        // playing so the user can pause. Only Record is disabled during
-        // recording (Stop is the way out).
+        // playing so the user can pause. Record stays enabled during
+        // recording so the :active pseudo-class (danger fill) is not
+        // undermined by the :disabled 0.35 opacity; onRecord() is a
+        // no-op while already recording because of the state guard.
         playButton.setDisable(state == TransportState.RECORDING);
-        recordButton.setDisable(state == TransportState.RECORDING);
         stopButton.setDisable(state == TransportState.STOPPED);
 
         // Wire the one-accent-at-a-time active state (UI Design Book §2.1).

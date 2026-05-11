@@ -15,7 +15,7 @@ import javafx.scene.input.KeyCombination;
 public enum DawAction {
 
     // ── Transport ────────────────────────────────────────────────────────────
-    PLAY_STOP("Play / Stop", Category.TRANSPORT,
+    PLAY_STOP("Play / Pause", Category.TRANSPORT,
             new KeyCodeCombination(KeyCode.SPACE)),
     STOP("Stop", Category.TRANSPORT,
             new KeyCodeCombination(KeyCode.ESCAPE)),

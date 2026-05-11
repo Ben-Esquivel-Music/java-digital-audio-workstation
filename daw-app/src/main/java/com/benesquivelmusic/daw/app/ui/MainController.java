@@ -366,6 +366,7 @@ public final class MainController {
         createKeyboardShortcutController();
         animationController.applyButtonPressAnimations();
         transportController.updateStatus();
+        transportController.syncLoopButtonState();
         updateTempoDisplay();
         updateProjectInfo();
         mountLockStatusIndicator();
@@ -677,6 +678,7 @@ public final class MainController {
         mountPreRollPostRollControls();
         createMetronomeController(Preferences.userNodeForPackage(MainController.class));
         transportController.updateStatus();
+        transportController.syncLoopButtonState();
         createTrackStripController();
         if (trackStripController != null) {
             trackStripController.setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
