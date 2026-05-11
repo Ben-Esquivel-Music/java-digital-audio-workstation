@@ -98,6 +98,77 @@ final class TokenValidationTest {
         }
     }
 
+    /**
+     * Phase 1 of UI Design Book §6 — the 4&nbsp;px grid contract.
+     *
+     * <p>Every {@code -fx-padding}, {@code -fx-spacing}, {@code -fx-background-radius}
+     * and {@code -fx-border-radius} numeric value in {@code styles.css} must
+     * be a multiple of 4. The only inline exceptions are:
+     * <ul>
+     *   <li>{@code 2} — the {@code -spacing-xxs} half-step, used for icon /
+     *       text gaps and the check-box mark inset;</li>
+     *   <li>{@code 6} — the {@code -radius-2} curated mixed-radius value
+     *       used for cards and popovers (UI Design Book §3.3).</li>
+     * </ul>
+     * The forbidden corner radii {@code 5, 7, 9, 10, 11} are subsumed by
+     * the same rule: they are neither multiples of 4 nor in the exception
+     * set.
+     */
+    @Test
+    void stylesCssNumericValuesSnapToFourPxGrid() throws IOException {
+        String css = loadStylesheet();
+        List<String> lines = css.lines().toList();
+
+        // Match a declaration on a single line so we can report line numbers.
+        Pattern decl = Pattern.compile(
+                "-fx-(padding|spacing|background-radius|border-radius)\\s*:\\s*([^;]+);");
+        Pattern numberToken = Pattern.compile("\\b(\\d+(?:\\.\\d+)?)\\b");
+
+        // Allowed exceptions (UI Design Book §3.3), scoped per-property:
+        //   2  → -spacing-xxs (icon/text gaps, check-box mark inset) — padding/spacing only
+        //   6  → -radius-2     (cards / popovers — curated mixed radius) — radii only
+        final int spacingXxs = 2;
+        final int radius2 = 6;
+
+        List<String> offences = new ArrayList<>();
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i);
+            Matcher m = decl.matcher(line);
+            while (m.find()) {
+                String property = m.group(1);
+                String value = m.group(2).trim();
+                boolean isRadiusProperty = property.contains("radius");
+                Matcher num = numberToken.matcher(value);
+                while (num.find()) {
+                    double parsed = Double.parseDouble(num.group(1));
+                    int n = (int) parsed;
+                    if (parsed != n) {
+                        offences.add(String.format(
+                                "styles.css:%d  non-integer numeric value '%s' in '%s' — only integer multiples of 4 are allowed (UI_DESIGN_BOOK.md §2.3)",
+                                i + 1, num.group(1), line.strip()));
+                        continue;
+                    }
+                    boolean ok = (n % 4 == 0)
+                            || (!isRadiusProperty && n == spacingXxs)
+                            || (isRadiusProperty && n == radius2);
+                    if (!ok) {
+                        offences.add(String.format(
+                                "styles.css:%d  value '%d' is not a multiple of 4 (allowed inline exceptions: 2 in padding/spacing, 6 in radii) — see UI_DESIGN_BOOK.md §3.3%n        %s",
+                                i + 1, n, line.strip()));
+                    }
+                }
+            }
+        }
+
+        assertThat(offences)
+                .as("Every -fx-padding / -fx-spacing / -fx-background-radius / -fx-border-radius "
+                        + "value in styles.css must snap to the 4 px grid.%n"
+                        + "Each offence below identifies the line and the literal that needs to "
+                        + "become a token-aligned multiple of 4:%n%s",
+                        String.join(System.lineSeparator(), offences))
+                .isEmpty();
+    }
+
     private static String loadStylesheet() throws IOException {
         try (InputStream in = TokenValidationTest.class.getResourceAsStream(STYLES_CSS_RESOURCE)) {
             assertThat(in)
