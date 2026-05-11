@@ -483,7 +483,7 @@ final class TransportController {
     }
 
     /**
-     * Synchronises the Loop button's {@code :active} pseudo-class with
+     * Synchronizes the Loop button's {@code :active} pseudo-class with
      * the transport's current loop state. Called during controller init
      * and after project rebuild so the button reflects loop state set
      * externally (e.g. by TimelineRuler defining a loop region, or by
