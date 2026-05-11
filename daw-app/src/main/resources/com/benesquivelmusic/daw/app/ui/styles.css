@@ -51,6 +51,20 @@
  * Palette A block, NEVER a literal hex elsewhere in this file. The
  * TokenValidationTest enforces this: any hex literal outside the fenced
  * Palette A block fails the build.
+ *
+ * ── Elevation contract (UI Design Book §3.4) ──
+ *   Panels are flat. Cards are elevation 1. Hovered/dragged → elevation 2.
+ *   Popover → 3. Modal → 4. No nested shadows. Shadow communicates
+ *   "this surface is closer to you" — it is information, not decoration.
+ *   Every `-fx-effect: dropshadow(...)` declaration in this file is either
+ *   a literal definition of an `-elevation-*` token in the Palette A block
+ *   or sits inside a `.card:hover` / drag / popover / modal rule.
+ *   TokenValidationTest enforces this.
+ *
+ * ── Hover rule (UI Design Book §7.1 / §7.3) ──
+ *   Hover state changes background to `-surface-3`, never effect, never
+ *   border. The 1 px focus ring uses `-focus-ring` (blue, Palette A) and
+ *   is only visible on `:focused`, never on resting state.
  */
 
 /* ── Palette A: Onyx Refined ─ TOKEN VALUES ─ */
@@ -87,6 +101,14 @@
     -font-sans:       "Inter", "Segoe UI", "system-ui", sans-serif;
     -font-mono:       "JetBrains Mono", "IBM Plex Mono", "Cascadia Code", "Consolas", monospace;
 
+    /* Elevation tokens — UI Design Book §3.4. Reference only via
+       `-fx-effect: -elevation-N;`. Never declare a literal `dropshadow(...)`
+       outside this block (TokenValidationTest enforces this). */
+    -elevation-1: dropshadow(gaussian, rgba(0, 0, 0, 0.35), 2, 0, 0, 1);
+    -elevation-2: dropshadow(gaussian, rgba(0, 0, 0, 0.45), 6, 0, 0, 2);
+    -elevation-3: dropshadow(gaussian, rgba(0, 0, 0, 0.50), 16, 0, 0, 6);
+    -elevation-4: dropshadow(gaussian, rgba(0, 0, 0, 0.55), 32, 0, 0, 16);
+
     -fx-background-color: -surface-bg;
 }
 /* ── End Palette A ── */
@@ -98,7 +120,6 @@
     -fx-border-color: -line-soft;
     -fx-border-width: 1;
     -fx-border-radius: 6;
-    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.5), 8, 0, 0, 2);
 }
 
 .tile-header {
@@ -317,9 +338,8 @@
 }
 
 .track-item:hover {
-    -fx-background-color: -surface-2;
-    -fx-border-color: -accent;
-    -fx-effect: dropshadow(gaussian, -accent-glow, 8, 0, 0, 0);
+    /* §7.1: hover swaps background to -surface-3, never effect, never border. */
+    -fx-background-color: -surface-3;
 }
 
 .track-name {
@@ -602,12 +622,11 @@
     -fx-border-width: 1;
     -fx-border-radius: 6;
     -fx-padding: 8;
-    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.5), 8, 0, 0, 2);
 }
 
 .viz-tile:hover {
-    -fx-border-color: -line-strong;
-    -fx-effect: dropshadow(gaussian, rgba(124, 140, 255, 0.15), 12, 0, 0, 0);
+    /* §7.1: hover swaps background to -surface-3, never effect, never border. */
+    -fx-background-color: -surface-3;
 }
 
 /* Transport button base — subtle visual feedback */
@@ -660,9 +679,8 @@
 }
 
 .toolbar-button:hover {
-    -fx-background-color: -line-strong;
-    -fx-border-color: -accent;
-    -fx-effect: dropshadow(gaussian, -accent-glow, 10, 0, 0, 0);
+    /* §7.1: hover swaps background to -surface-3, never effect, never border. */
+    -fx-background-color: -surface-3;
 }
 
 .toolbar-button:pressed {
@@ -744,8 +762,7 @@
 }
 
 .browser-search-field:focused {
-    -fx-border-color: -accent;
-    -fx-effect: dropshadow(gaussian, -accent-glow, 6, 0, 0, 0);
+    -fx-border-color: -focus-ring;
 }
 
 .browser-tab-pane > .tab-header-area > .tab-header-background {
@@ -994,9 +1011,8 @@
 }
 
 .button:hover {
+    /* §7.1: hover swaps background to -surface-3, never effect, never border. */
     -fx-background-color: -surface-3;
-    -fx-border-color: -accent;
-    -fx-effect: dropshadow(gaussian, rgba(124, 140, 255, 0.2), 6, 0, 0, 0);
 }
 
 .button:pressed {
@@ -1005,8 +1021,7 @@
 }
 
 .button:focused {
-    -fx-border-color: -accent;
-    -fx-effect: dropshadow(gaussian, -accent-glow, 6, 0, 0, 0);
+    -fx-border-color: -focus-ring;
 }
 
 .button:disabled {
@@ -1023,7 +1038,6 @@
 .button:default:hover {
     -fx-background-color: -surface-3;
     -fx-border-color: -ok;
-    -fx-effect: dropshadow(gaussian, rgba(91, 210, 160, 0.3), 6, 0, 0, 0);
 }
 
 /* Cancel button accent */
@@ -1045,8 +1059,7 @@
 }
 
 .text-field:focused {
-    -fx-border-color: -accent;
-    -fx-effect: dropshadow(gaussian, -accent-glow, 6, 0, 0, 0);
+    -fx-border-color: -focus-ring;
 }
 
 .text-field:hover {
@@ -1067,8 +1080,7 @@
 }
 
 .combo-box:focused {
-    -fx-border-color: -accent;
-    -fx-effect: dropshadow(gaussian, -accent-glow, 6, 0, 0, 0);
+    -fx-border-color: -focus-ring;
 }
 
 .combo-box .list-cell {
@@ -1091,7 +1103,8 @@
     -fx-background-color: -surface-1;
     -fx-border-color: -line-soft;
     -fx-border-width: 1;
-    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.6), 10, 0, 0, 4);
+    /* §3.4: popovers use elevation 3. */
+    -fx-effect: -elevation-3;
 }
 
 .combo-box-popup > .list-view > .virtual-flow > .clipped-container > .sheet > .list-cell {
@@ -1198,7 +1211,6 @@
 
 .slider .thumb:hover {
     -fx-background-color: -accent;
-    -fx-effect: dropshadow(gaussian, -accent-glow, 6, 0, 0, 0);
 }
 
 .slider .thumb:pressed {
@@ -1235,7 +1247,8 @@
     -fx-border-width: 1;
     -fx-border-radius: 4;
     -fx-background-radius: 4;
-    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.6), 10, 0, 0, 4);
+    /* §3.4: popovers use elevation 3. */
+    -fx-effect: -elevation-3;
     -fx-padding: 4;
 }
 
@@ -1378,7 +1391,8 @@
     -fx-border-width: 1;
     -fx-border-radius: 4;
     -fx-background-radius: 4;
-    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.6), 12, 0, 0, 4);
+    /* §3.4: popovers use elevation 3. */
+    -fx-effect: -elevation-3;
     -fx-padding: 4 0;
 }
 

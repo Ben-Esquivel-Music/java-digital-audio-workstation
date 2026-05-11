@@ -169,6 +169,151 @@ final class TokenValidationTest {
                 .isEmpty();
     }
 
+    /**
+     * Phase 1 of UI Design Book §6 — the elevation contract (§3.4).
+     *
+     * <p>The Palette A block must declare every elevation token. Structural
+     * rules below it reference these tokens via {@code -fx-effect: -elevation-N}
+     * rather than re-stating the {@code dropshadow(...)} expression — so a
+     * future palette can re-tune shadows without touching every selector.
+     */
+    @Test
+    void paletteABlockDeclaresEveryElevationToken() throws IOException {
+        String css = loadStylesheet();
+        String paletteBlock = extractPaletteBlock(css);
+
+        for (String token : List.of("-elevation-1", "-elevation-2", "-elevation-3", "-elevation-4")) {
+            assertThat(paletteBlock)
+                    .as("Palette A block must declare elevation token '%s' (UI_DESIGN_BOOK.md §3.4)", token)
+                    .contains(token + ":");
+        }
+    }
+
+    /**
+     * Phase 1 of UI Design Book §6 — drop-shadow scoping rule.
+     *
+     * <p>Every {@code -fx-effect: dropshadow(...)} declaration in {@code styles.css}
+     * must be either:
+     * <ol>
+     *   <li>A literal definition of an {@code -elevation-*} token inside the
+     *       Palette A block, or
+     *   <li>Inside a rule whose selector denotes a hovered/pressed/dragged
+     *       card, a popover/menu/tooltip, or a dialog/modal — the only four
+     *       elevation roles allowed to carry a shadow (§3.4).
+     * </ol>
+     *
+     * <p>Static panel rules ({@code .tile}, {@code .viz-tile},
+     * {@code .arrangement-panel}, {@code .track-list-panel}, {@code .mixer-panel},
+     * {@code .mixer-channel}, {@code .track-item}) must have <strong>zero</strong>
+     * {@code dropshadow(...)} declarations.
+     */
+    @Test
+    void stylesCssDropshadowsLimitedToElevationRoles() throws IOException {
+        String css = loadStylesheet();
+        List<String> lines = css.lines().toList();
+
+        int paletteStart = indexOfLineContaining(lines, PALETTE_START);
+        int paletteEnd = indexOfLineContaining(lines, PALETTE_END);
+
+        // A selector denotes an allowed elevation role if it mentions any of
+        // these tokens. We test the *current* rule's selector — the most
+        // recent line ending in '{' before the dropshadow declaration.
+        Pattern allowedSelector = Pattern.compile(
+                "(:hover\\b|:pressed\\b|\\.card\\b|\\bdrag\\b|\\bdrop\\b"
+                        + "|\\.tooltip\\b|\\.context-menu\\b|\\.menu-item\\b"
+                        + "|\\.popover\\b|popup|\\.dialog\\b|\\.modal\\b"
+                        + "|\\.alert\\b)");
+
+        List<String> offences = new ArrayList<>();
+        String currentSelector = "";
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i);
+            String trimmed = line.strip();
+            if (trimmed.endsWith("{")) {
+                currentSelector = trimmed.substring(0, trimmed.length() - 1).strip();
+            }
+            if (!line.contains("dropshadow")) {
+                continue;
+            }
+            // Skip comments and documentation lines.
+            if (trimmed.startsWith("*") || trimmed.startsWith("/*") || trimmed.startsWith("//")) {
+                continue;
+            }
+            // Token definitions live inside the Palette A block — those are
+            // the canonical literal dropshadow declarations.
+            if (i >= paletteStart && i <= paletteEnd) {
+                continue;
+            }
+            if (!allowedSelector.matcher(currentSelector).find()) {
+                offences.add(String.format(
+                        "styles.css:%d  dropshadow(...) declared inside selector '%s' — only "
+                                + "hover/pressed cards, drag/drop indicators, popovers/menus, "
+                                + "dialogs/modals may carry an effect (UI_DESIGN_BOOK.md §3.4).%n        %s",
+                        i + 1, currentSelector, trimmed));
+            }
+        }
+
+        assertThat(offences)
+                .as("Drop-shadow effects in styles.css must be restricted to elevation roles.%n"
+                        + "Each offence below identifies a selector that must reference an "
+                        + "-elevation-N token (or be flattened):%n%s",
+                        String.join(System.lineSeparator(), offences))
+                .isEmpty();
+    }
+
+    /**
+     * Phase 1 of UI Design Book §6 — static panels must be flat.
+     *
+     * <p>Every region the user perceives as "the panel itself" must render
+     * without a drop-shadow. The shadow communicates "this surface is closer
+     * to you" — applying it to background panels collapses the entire
+     * elevation hierarchy.
+     */
+    @Test
+    void staticPanelRulesCarryNoDropshadow() throws IOException {
+        String css = loadStylesheet();
+
+        // For each static-panel selector, locate its rule block (selector
+        // line ending in '{' through the matching '}') and assert that
+        // block contains no `dropshadow`.
+        List<String> selectors = List.of(
+                ".tile",
+                ".viz-tile",
+                ".arrangement-panel",
+                ".track-list-panel",
+                ".mixer-panel",
+                ".mixer-channel",
+                ".track-item");
+
+        List<String> offences = new ArrayList<>();
+        for (String selector : selectors) {
+            // Match the rule header exactly: selector followed by whitespace
+            // and an opening brace, without a pseudo-class suffix.
+            Pattern header = Pattern.compile(
+                    "(?m)^\\s*" + Pattern.quote(selector) + "\\s*\\{");
+            Matcher m = header.matcher(css);
+            while (m.find()) {
+                int start = m.end();
+                int end = css.indexOf('}', start);
+                if (end < 0) {
+                    continue;
+                }
+                String body = css.substring(start, end);
+                if (body.contains("dropshadow")) {
+                    offences.add(String.format(
+                            "Selector '%s' (static panel) must not carry a dropshadow effect "
+                                    + "(UI_DESIGN_BOOK.md §3.4 — panels are flat).",
+                            selector));
+                }
+            }
+        }
+
+        assertThat(offences)
+                .as("Static panels must render flat — no drop-shadow.%n%s",
+                        String.join(System.lineSeparator(), offences))
+                .isEmpty();
+    }
+
     private static String loadStylesheet() throws IOException {
         try (InputStream in = TokenValidationTest.class.getResourceAsStream(STYLES_CSS_RESOURCE)) {
             assertThat(in)
