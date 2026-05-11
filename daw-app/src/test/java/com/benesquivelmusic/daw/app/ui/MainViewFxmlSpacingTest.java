@@ -3,7 +3,6 @@ package com.benesquivelmusic.daw.app.ui;
 import org.junit.jupiter.api.Test;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
-import org.w3c.dom.NamedNodeMap;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
@@ -129,9 +128,6 @@ final class MainViewFxmlSpacingTest {
             DocumentBuilder db = dbf.newDocumentBuilder();
             Document doc = db.parse(in);
             doc.getDocumentElement().normalize();
-            // Suppress unused warning on NamedNodeMap import in some toolchains.
-            NamedNodeMap ignored = doc.getDocumentElement().getAttributes();
-            assert ignored != null;
             return doc;
         }
     }

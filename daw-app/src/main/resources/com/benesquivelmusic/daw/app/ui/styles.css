@@ -2,13 +2,17 @@
  * Digital Audio Workstation — Main Stylesheet
  *
  * ── 4 px GRID CONTRACT (UI Design Book §1.7, §2.3, §3.3) ──
- *   All numeric values in this file are multiples of 4. Use a
- *   -spacing-/-row-/-radius- token (declared below), never a literal.
- *   The only inline exceptions are the values 2 (the -spacing-xxs
- *   half-step, used for icon/text gaps) and 6 (the -radius-2 corner
- *   for cards / popovers, which is the curated mixed-radius value
- *   from §3.3). The forbidden corner radii are 5, 7, 9, 10, 11.
+ *   Every -fx-padding, -fx-spacing, -fx-background-radius and
+ *   -fx-border-radius value in this file must be a multiple of 4.
+ *   Allowed inline exceptions:
+ *     • 2 (-spacing-xxs) in padding/spacing only — icon/text gaps.
+ *     • 6 (-radius-2) in background-radius/border-radius only —
+ *       cards, popovers, sidebar buttons (curated mixed radius §3.3).
+ *   Buttons, inputs and badges use -radius-1 (4 px).
+ *   The forbidden corner radii are 5, 7, 9, 10, 11.
  *   TokenValidationTest enforces this rule on every commit.
+ *   (Other properties — font sizes, border widths, opacity, pref
+ *   dimensions — are NOT subject to the 4 px grid.)
  *
  *   Spacing scale (px):
  *     -spacing-xxs   2     -spacing-xs    4     -spacing-sm    8
@@ -21,9 +25,10 @@
  *     -radius-0      0     -radius-1      4
  *     -radius-2      6     -radius-3      8
  *
- *   JavaFX CSS does not type-check looked-up numeric values; the
- *   companion constants live in com.benesquivelmusic.daw.app.ui.design
- *   .SpacingTokens so FXML-driven Insets share the exact same numbers.
+ *   JavaFX CSS does not support looked-up numeric values the way it
+ *   supports looked-up colours; the scales above are documented here
+ *   and mirrored in com.benesquivelmusic.daw.app.ui.design.SpacingTokens
+ *   so FXML-driven Insets share the exact same numbers.
  *
  * Driven by semantic tokens declared on .root-pane. Every selector below
  * references a token (e.g. -surface-1, -accent), never a literal hex. Token
@@ -152,7 +157,7 @@
     -fx-text-fill: -text-mute;
     -fx-font-size: 10px;
     -fx-padding: 8 4;
-    -fx-background-radius: 6;
+    -fx-background-radius: 4;
     -fx-cursor: hand;
     -fx-content-display: top;
     -fx-alignment: center;
@@ -704,8 +709,8 @@
     -fx-font-weight: bold;
     /* row-default (28 px) — vertical padding drives row height. */
     -fx-padding: 8 12;
-    -fx-background-radius: 6;
-    -fx-border-radius: 6;
+    -fx-background-radius: 4;
+    -fx-border-radius: 4;
     -fx-border-color: -line-strong;
     -fx-border-width: 1;
     -fx-cursor: hand;

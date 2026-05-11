@@ -124,9 +124,9 @@ final class TokenValidationTest {
                 "-fx-(padding|spacing|background-radius|border-radius)\\s*:\\s*([^;]+);");
         Pattern numberToken = Pattern.compile("\\b(\\d+(?:\\.\\d+)?)\\b");
 
-        // Allowed exceptions (UI Design Book §3.3):
-        //   2  → -spacing-xxs (icon/text gaps, check-box mark inset)
-        //   6  → -radius-2     (cards / popovers — curated mixed radius)
+        // Allowed exceptions (UI Design Book §3.3), scoped per-property:
+        //   2  → -spacing-xxs (icon/text gaps, check-box mark inset) — padding/spacing only
+        //   6  → -radius-2     (cards / popovers — curated mixed radius) — radii only
         final int spacingXxs = 2;
         final int radius2 = 6;
 
@@ -135,7 +135,9 @@ final class TokenValidationTest {
             String line = lines.get(i);
             Matcher m = decl.matcher(line);
             while (m.find()) {
+                String property = m.group(1);
                 String value = m.group(2).trim();
+                boolean isRadiusProperty = property.contains("radius");
                 Matcher num = numberToken.matcher(value);
                 while (num.find()) {
                     double parsed = Double.parseDouble(num.group(1));
@@ -146,10 +148,12 @@ final class TokenValidationTest {
                                 i + 1, num.group(1), line.strip()));
                         continue;
                     }
-                    boolean ok = (n % 4 == 0) || n == spacingXxs || n == radius2;
+                    boolean ok = (n % 4 == 0)
+                            || (!isRadiusProperty && n == spacingXxs)
+                            || (isRadiusProperty && n == radius2);
                     if (!ok) {
                         offences.add(String.format(
-                                "styles.css:%d  value '%d' is not a multiple of 4 (allowed inline exceptions: 2 = -spacing-xxs, 6 = -radius-2) — see UI_DESIGN_BOOK.md §3.3%n        %s",
+                                "styles.css:%d  value '%d' is not a multiple of 4 (allowed inline exceptions: 2 in padding/spacing, 6 in radii) — see UI_DESIGN_BOOK.md §3.3%n        %s",
                                 i + 1, n, line.strip()));
                     }
                 }

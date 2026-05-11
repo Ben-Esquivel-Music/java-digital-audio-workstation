@@ -6,17 +6,20 @@ package com.benesquivelmusic.daw.app.ui.design;
  *
  * <p>JavaFX CSS supports looked-up <em>colour</em> tokens but not looked-up
  * <em>numeric</em> tokens — there is no {@code calc(-spacing-sm * 2)}. To
- * keep CSS and FXML in lock-step, this class declares the same numeric
- * values that the corresponding {@code -spacing-* / -row-* / -radius-*}
- * tokens use in {@code styles.css}. FXML-driven code that needs to build
+ * keep CSS and FXML in lock-step, this class declares the canonical numeric
+ * values documented in the spacing/row/radius scales at the top of
+ * {@code styles.css}. FXML-driven code that needs to build
  * {@link javafx.geometry.Insets} (or any other numeric layout value)
  * should reference these constants rather than literal numbers.
  *
- * <p>The contract is enforced by
- * {@code com.benesquivelmusic.daw.app.ui.TokenValidationTest} (CSS side)
- * and {@code com.benesquivelmusic.daw.app.ui.MainViewFxmlSpacingTest}
- * (FXML side): every numeric layout value in the app must be one of the
- * tokens declared here.
+ * <p>The 4&nbsp;px grid contract is enforced by
+ * {@code com.benesquivelmusic.daw.app.ui.TokenValidationTest} (CSS side —
+ * validates that every {@code -fx-padding}, {@code -fx-spacing},
+ * {@code -fx-background-radius} and {@code -fx-border-radius} value is
+ * a multiple of 4, with per-property inline exceptions) and
+ * {@code com.benesquivelmusic.daw.app.ui.MainViewFxmlSpacingTest}
+ * (FXML side — validates that every {@code <Insets>} attribute and every
+ * container {@code spacing} is a multiple of 4).
  *
  * <p>See UI Design Book §1.7 (problem), §2.3 and §3.3 (solution),
  * §7.4 (mixed-radius veto).
