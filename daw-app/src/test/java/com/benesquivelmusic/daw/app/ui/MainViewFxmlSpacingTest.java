@@ -68,6 +68,40 @@ final class MainViewFxmlSpacingTest {
                 .isEmpty();
     }
 
+    /**
+     * Story 262 — UI Design Book §5.1 dropped the discrete Pause button
+     * (Play now toggles pause). The FXML must no longer declare a
+     * {@code pauseButton} fx:id or a {@code pause-button} style class.
+     */
+    @Test
+    void mainViewFxmlMustNotContainPauseButton() throws Exception {
+        Document doc = loadFxml();
+        List<String> offences = new ArrayList<>();
+
+        walk(doc.getDocumentElement(), el -> {
+            String fxId = el.getAttributeNS("http://javafx.com/fxml", "id");
+            if (fxId.isEmpty()) {
+                fxId = el.getAttribute("fx:id");
+            }
+            if ("pauseButton".equals(fxId)) {
+                offences.add(el.getTagName() + " fx:id=\"pauseButton\" is forbidden — "
+                        + "the Pause button was removed in story 262 (UI Design Book §5.1).");
+            }
+            String styleClass = el.getAttribute("styleClass");
+            if (!styleClass.isEmpty() && styleClass.contains("pause-button")) {
+                offences.add(el.getTagName() + " styleClass contains 'pause-button' — "
+                        + "the per-button rainbow hue was removed in story 262 "
+                        + "(UI Design Book §2.1, §7.2).");
+            }
+        });
+
+        assertThat(offences)
+                .as("main-view.fxml must not reference the removed Pause button "
+                        + "(UI Design Book §5.1, story 262):%n%s",
+                        String.join(System.lineSeparator(), offences))
+                .isEmpty();
+    }
+
     private static void checkAttribute(Element el, String attr, List<String> offences) {
         String raw = el.getAttribute(attr);
         if (raw.isEmpty()) {

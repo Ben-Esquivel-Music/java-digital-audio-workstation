@@ -180,6 +180,14 @@
     -fx-padding: 4 0 4 0;
 }
 
+/* ── Transport buttons ──
+ * UI Design Book §2.1 / §7.2 — "one accent at a time".
+ * All transport buttons share one structural style. Hover swaps the
+ * background to -surface-3 only (no border swap, no glow). State —
+ * Play during playback, Loop while looping, Record while armed — is
+ * communicated via the :active pseudo-class wired by TransportController,
+ * never by a per-button hue.
+ */
 .transport-button {
     -fx-background-color: -surface-2;
     -fx-text-fill: -text;
@@ -195,96 +203,30 @@
 
 .transport-button:hover {
     -fx-background-color: -surface-3;
-    -fx-border-color: -line-strong;
 }
 
 .transport-button:pressed {
     -fx-background-color: -surface-1;
-    -fx-border-color: -accent;
 }
 
 .transport-button:disabled {
     -fx-opacity: 0.35;
 }
 
-/* Play button — green accent */
-.play-button {
-    -fx-text-fill: -ok;
-    -fx-border-color: -ok;
+/* Active-state fill: Play during playback, Loop while looping.
+ * Uses the single -accent token; -text-on-accent ensures legibility. */
+.transport-button:active {
+    -fx-background-color: -accent;
+    -fx-text-fill: -text-on-accent;
+    -fx-border-color: -accent;
 }
 
-.play-button:hover {
-    -fx-border-color: -ok;
-    -fx-background-color: -surface-3;
-}
-
-.play-button:pressed {
-    -fx-background-color: -surface-3;
-    -fx-border-color: -ok;
-}
-
-/* Record button — red accent */
-.record-button {
-    -fx-text-fill: -danger;
+/* Record exception (§2.1): record-red is allowed to coexist with the
+ * single accent because 'armed' is a separate semantic. */
+.transport-button.record-button:active {
+    -fx-background-color: -danger;
+    -fx-text-fill: -text-on-accent;
     -fx-border-color: -danger;
-}
-
-.record-button:hover {
-    -fx-border-color: -danger;
-    -fx-background-color: -surface-3;
-}
-
-.record-button:pressed {
-    -fx-background-color: -surface-3;
-    -fx-border-color: -danger;
-}
-
-/* Stop button — orange accent */
-.stop-button {
-    -fx-text-fill: -warn;
-    -fx-border-color: -warn;
-}
-
-.stop-button:hover {
-    -fx-border-color: -warn;
-    -fx-background-color: -surface-3;
-}
-
-.stop-button:pressed {
-    -fx-background-color: -surface-3;
-    -fx-border-color: -warn;
-}
-
-/* Pause button — cyan accent */
-.pause-button {
-    -fx-text-fill: -accent;
-    -fx-border-color: -accent;
-}
-
-.pause-button:hover {
-    -fx-border-color: -accent;
-    -fx-background-color: -surface-3;
-}
-
-.pause-button:pressed {
-    -fx-background-color: -surface-3;
-    -fx-border-color: -accent;
-}
-
-/* Loop button — purple accent */
-.loop-button {
-    -fx-text-fill: -accent;
-    -fx-border-color: -accent;
-}
-
-.loop-button:hover {
-    -fx-border-color: -accent;
-    -fx-background-color: -accent-soft;
-}
-
-.loop-button:pressed {
-    -fx-background-color: -accent-soft;
-    -fx-border-color: -accent;
 }
 
 /* Plugin button — purple accent */

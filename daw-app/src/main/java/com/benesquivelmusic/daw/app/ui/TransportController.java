@@ -22,6 +22,7 @@ import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 import javafx.animation.FadeTransition;
 import javafx.animation.PauseTransition;
+import javafx.css.PseudoClass;
 import javafx.geometry.Pos;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
@@ -111,15 +112,27 @@ final class TransportController {
     private final Label statusBarLabel;
     private final Label recIndicator;
     private final Button playButton;
-    private final Button pauseButton;
     private final Button stopButton;
     private final Button recordButton;
     private final Button loopButton;
     private final Host host;
 
+    /**
+     * UI Design Book §2.1 / §7.2 — the {@code :active} pseudo-class is
+     * the single source of truth for "this transport button is in the
+     * one-accent-at-a-time armed state". Wired here on Play (during
+     * playback), Record (while recording) and Loop (while looping); the
+     * stylesheet paints {@code accent} on Play/Loop and {@code danger}
+     * on Record (the §2.1 record exception).
+     *
+     * <p>A custom pseudo-class name is used so we do not collide with
+     * the {@code :armed} pseudo-class that {@code ButtonBase} toggles
+     * automatically while the mouse is pressed.</p>
+     */
+    private static final PseudoClass ACTIVE = PseudoClass.getPseudoClass("active");
+
     private RecordingPipeline recordingPipeline;
     private final Map<Track, MidiRecorder> activeMidiRecorders = new LinkedHashMap<>();
-    private boolean loopEnabled;
 
     /**
      * Story 134 — Pre-roll / Post-Roll transport controls. The toggle
@@ -158,7 +171,6 @@ final class TransportController {
                         Label statusBarLabel,
                         Label recIndicator,
                         Button playButton,
-                        Button pauseButton,
                         Button stopButton,
                         Button recordButton,
                         Button loopButton,
@@ -172,7 +184,6 @@ final class TransportController {
         this.statusBarLabel = Objects.requireNonNull(statusBarLabel, "statusBarLabel must not be null");
         this.recIndicator = Objects.requireNonNull(recIndicator, "recIndicator must not be null");
         this.playButton = Objects.requireNonNull(playButton, "playButton must not be null");
-        this.pauseButton = Objects.requireNonNull(pauseButton, "pauseButton must not be null");
         this.stopButton = Objects.requireNonNull(stopButton, "stopButton must not be null");
         this.recordButton = Objects.requireNonNull(recordButton, "recordButton must not be null");
         this.loopButton = Objects.requireNonNull(loopButton, "loopButton must not be null");
@@ -181,7 +192,27 @@ final class TransportController {
 
     // ── Transport action handlers ────────────────────────────────────────────
 
+    /**
+     * Toggle entry point bound to the Play button. UI Design Book §5.1 —
+     * Play-toggles-pause matches every standard DAW (the discrete Pause
+     * button was removed by story 262).
+     *
+     * <ul>
+     *   <li>STOPPED or PAUSED → start / resume playback</li>
+     *   <li>PLAYING            → pause</li>
+     *   <li>RECORDING          → no-op (Stop is the only way out of record)</li>
+     * </ul>
+     */
     void onPlay() {
+        TransportState state = project.getTransport().getState();
+        if (state == TransportState.PLAYING) {
+            doPause();
+        } else if (state != TransportState.RECORDING) {
+            doPlay();
+        }
+    }
+
+    private void doPlay() {
         try {
             audioEngine.startAudioOutput();
         } catch (RuntimeException e) {
@@ -304,7 +335,7 @@ final class TransportController {
         recIndicator.setManaged(false);
     }
 
-    void onPause() {
+    private void doPause() {
         project.getTransport().pause();
         audioEngine.pauseAudioOutput();
         host.pauseTimeTicker();
@@ -438,14 +469,29 @@ final class TransportController {
     }
 
     void onToggleLoop() {
-        loopEnabled = !loopEnabled;
-        project.getTransport().setLoopEnabled(loopEnabled);
-        loopButton.setStyle(loopEnabled
-                ? "-fx-background-color: #b388ff; -fx-text-fill: #0d0d0d;" : "");
-        String loopState = loopEnabled ? "Loop: ON" : "Loop: OFF";
+        Transport transport = project.getTransport();
+        boolean nowEnabled = !transport.isLoopEnabled();
+        transport.setLoopEnabled(nowEnabled);
+        // Active-state styling is driven by the :active pseudo-class on the
+        // single .transport-button rule (UI Design Book §2.1 — one accent at
+        // a time). No inline -fx-background-color is set per button class.
+        loopButton.pseudoClassStateChanged(ACTIVE, nowEnabled);
+        String loopState = nowEnabled ? "Loop: ON" : "Loop: OFF";
         statusBarLabel.setText(loopState);
         statusBarLabel.setGraphic(IconNode.of(DawIcon.LOOP, 12));
         LOG.fine(loopState);
+    }
+
+    /**
+     * Synchronizes the Loop button's {@code :active} pseudo-class with
+     * the transport's current loop state. Called during controller init
+     * and after project rebuild so the button reflects loop state set
+     * externally (e.g. by TimelineRuler defining a loop region, or by
+     * project load).
+     */
+    void syncLoopButtonState() {
+        boolean enabled = project.getTransport().isLoopEnabled();
+        loopButton.pseudoClassStateChanged(ACTIVE, enabled);
     }
 
     // ── Pre-Roll / Post-Roll (Story 134) ─────────────────────────────────────
@@ -781,9 +827,16 @@ final class TransportController {
         fadeIn.setToValue(1.0);
         fadeIn.play();
 
-        playButton.setDisable(state == TransportState.PLAYING);
-        pauseButton.setDisable(state == TransportState.STOPPED || state == TransportState.PAUSED);
-        recordButton.setDisable(state == TransportState.RECORDING);
+        // Play is a toggle (UI Design Book §5.1) — it stays enabled while
+        // playing so the user can pause. Record stays enabled during
+        // recording so the :active pseudo-class (danger fill) is not
+        // undermined by the :disabled 0.35 opacity; onRecord() is a
+        // no-op while already recording because of the state guard.
+        playButton.setDisable(state == TransportState.RECORDING);
         stopButton.setDisable(state == TransportState.STOPPED);
+
+        // Wire the one-accent-at-a-time active state (UI Design Book §2.1).
+        playButton.pseudoClassStateChanged(ACTIVE, state == TransportState.PLAYING);
+        recordButton.pseudoClassStateChanged(ACTIVE, state == TransportState.RECORDING);
     }
 }

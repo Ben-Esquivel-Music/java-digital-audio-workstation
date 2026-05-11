@@ -184,13 +184,10 @@ final class KeyboardShortcutController {
      */
     Map<DawAction, Runnable> buildActionHandlers() {
         Map<DawAction, Runnable> actionHandlers = new EnumMap<>(DawAction.class);
-        actionHandlers.put(DawAction.PLAY_STOP, () -> {
-            if (host.transportState() == TransportState.PLAYING) {
-                host.onStop();
-            } else {
-                host.onPlay();
-            }
-        });
+        // Story 262 — Space now toggles pause when playing (matching the
+        // Play button's toggle behavior from UI Design Book §5.1). The
+        // dedicated Stop action (Escape) is the way to fully stop.
+        actionHandlers.put(DawAction.PLAY_STOP, host::onPlay);
         actionHandlers.put(DawAction.STOP, host::onStop);
         actionHandlers.put(DawAction.RECORD, host::onRecord);
         actionHandlers.put(DawAction.PLAY_WITH_PRE_ROLL, host::onPlayWithPreRoll);

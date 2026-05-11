@@ -46,3 +46,8 @@ This story consumes the tokens from story 260 and the grid from story 261 to del
 - The Loop button stays *named* in CSS only because the active loop region overlay also paints `accent` and needs the same source-of-truth class to flip on. Consider in review whether `.loop-button:armed` is cleaner as `.transport-button:armed` plus a controller-level marker.
 - After this story lands, `styles.css` lines 138–216 (the rainbow block) should be roughly 30–40 lines shorter; the diff is the headline visual of Phase 1.
 - Reference: UI Design Book §1.2, §2.1, §5.1, §7.2 (per-element hue veto — implicit AC).
+
+## Changelog
+
+- **Pause button removed** — Play now toggles pause, matching every other DAW. Keyboard shortcut unchanged.
+- The transport bar is now a single row of structurally identical buttons. Active state (Play during playback, Loop while looping, Record while armed) is communicated by a single accent/danger fill via the `:active` pseudo-class — no per-button hues.

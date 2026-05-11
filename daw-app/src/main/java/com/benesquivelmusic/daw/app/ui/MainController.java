@@ -73,7 +73,6 @@ public final class MainController {
     @FXML private Button skipForwardButton;
     @FXML private Button loopButton;
     @FXML private Button playButton;
-    @FXML private Button pauseButton;
     @FXML private Button stopButton;
     @FXML private Button recordButton;
     @FXML private Button addAudioTrackButton;
@@ -367,6 +366,7 @@ public final class MainController {
         createKeyboardShortcutController();
         animationController.applyButtonPressAnimations();
         transportController.updateStatus();
+        transportController.syncLoopButtonState();
         updateTempoDisplay();
         updateProjectInfo();
         mountLockStatusIndicator();
@@ -482,7 +482,7 @@ public final class MainController {
     private void createToolbarAppearanceController() {
         toolbarAppearanceController = new ToolbarAppearanceController(
                 new ToolbarAppearanceController.TransportButtons(
-                        skipBackButton, playButton, pauseButton, stopButton,
+                        skipBackButton, playButton, stopButton,
                         recordButton, skipForwardButton, loopButton, metronomeButton),
                 new ToolbarAppearanceController.ToolbarButtons(
                         addAudioTrackButton, addMidiTrackButton, undoButton,
@@ -528,7 +528,7 @@ public final class MainController {
         transportController = new TransportController(
                 project, audioEngine, undoManager, notificationBar,
                 statusLabel, timeDisplay, statusBarLabel, recIndicator,
-                playButton, pauseButton, stopButton, recordButton, loopButton,
+                playButton, stopButton, recordButton, loopButton,
                 new TransportController.Host() {
                     @Override public boolean isSnapEnabled() {
                         return viewNavigationController != null
@@ -617,7 +617,7 @@ public final class MainController {
                 spectrumDisplay, levelMeterDisplay, timeDisplay,
                 playButton, recordButton,
                 new Button[]{
-                        skipBackButton, playButton, pauseButton, stopButton, recordButton,
+                        skipBackButton, playButton, stopButton, recordButton,
                         skipForwardButton, loopButton, metronomeButton,
                         addAudioTrackButton, addMidiTrackButton,
                         undoButton, redoButton, snapButton, saveButton, pluginsButton},
@@ -678,6 +678,7 @@ public final class MainController {
         mountPreRollPostRollControls();
         createMetronomeController(Preferences.userNodeForPackage(MainController.class));
         transportController.updateStatus();
+        transportController.syncLoopButtonState();
         createTrackStripController();
         if (trackStripController != null) {
             trackStripController.setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
@@ -1668,7 +1669,6 @@ public final class MainController {
 
     @FXML private void onPlay() { transportController.onPlay(); }
     @FXML private void onStop() { transportController.onStop(); }
-    @FXML private void onPause() { transportController.onPause(); }
     @FXML private void onRecord() { transportController.onRecord(); }
     @FXML private void onSkipBack() { transportController.onSkipBack(); }
     @FXML private void onSkipForward() { transportController.onSkipForward(); }
