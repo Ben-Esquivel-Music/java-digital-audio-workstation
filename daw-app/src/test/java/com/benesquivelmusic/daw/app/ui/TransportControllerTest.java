@@ -52,7 +52,7 @@ class TransportControllerTest {
             Label timeDisplay = new Label();
             Label statusBarLabel = new Label();
             Label recIndicator = new Label();
-            Button play = new Button(), pause = new Button(), stop = new Button(),
+            Button play = new Button(), stop = new Button(),
                     record = new Button(), loop = new Button();
             TransportController.Host host = new TransportController.Host() {
                 @Override public boolean isSnapEnabled() { return false; }
@@ -66,7 +66,7 @@ class TransportControllerTest {
             };
             ref.set(new TransportController(project, engine, undo, nb,
                     statusLabel, timeDisplay, statusBarLabel, recIndicator,
-                    play, pause, stop, record, loop, host));
+                    play, stop, record, loop, host));
             latch.countDown();
         });
         assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
@@ -235,6 +235,74 @@ class TransportControllerTest {
 
         // Transport should be in post-roll (still playing), not stopped.
         assertThat(transport.isInPostRoll()).isTrue();
+        assertThat(transport.getState()).isEqualTo(
+                com.benesquivelmusic.daw.core.transport.TransportState.PLAYING);
+    }
+
+    // ── Play toggles pause (Story 262 / UI Design Book §5.1) ────────────────
+
+    @Test
+    void onPlayWhileStoppedShouldStartPlayback() throws Exception {
+        DawProject project = new DawProject("test",
+                new AudioFormat(48000, 2, 16, 256));
+        Transport transport = project.getTransport();
+        assertThat(transport.getState()).isEqualTo(
+                com.benesquivelmusic.daw.core.transport.TransportState.STOPPED);
+
+        TransportController controller = newController(project);
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try { controller.onPlay(); } catch (RuntimeException ignored) {
+                // Audio engine may fail to open in headless env — the
+                // transport state assertion is what matters.
+            }
+            latch.countDown();
+        });
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(transport.getState()).isEqualTo(
+                com.benesquivelmusic.daw.core.transport.TransportState.PLAYING);
+    }
+
+    @Test
+    void onPlayWhilePlayingShouldPause() throws Exception {
+        DawProject project = new DawProject("test",
+                new AudioFormat(48000, 2, 16, 256));
+        Transport transport = project.getTransport();
+        transport.play();
+        assertThat(transport.getState()).isEqualTo(
+                com.benesquivelmusic.daw.core.transport.TransportState.PLAYING);
+
+        TransportController controller = newController(project);
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try { controller.onPlay(); } catch (RuntimeException ignored) { }
+            latch.countDown();
+        });
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(transport.getState()).isEqualTo(
+                com.benesquivelmusic.daw.core.transport.TransportState.PAUSED);
+    }
+
+    @Test
+    void onPlayWhilePausedShouldResumePlayback() throws Exception {
+        DawProject project = new DawProject("test",
+                new AudioFormat(48000, 2, 16, 256));
+        Transport transport = project.getTransport();
+        transport.play();
+        transport.pause();
+        assertThat(transport.getState()).isEqualTo(
+                com.benesquivelmusic.daw.core.transport.TransportState.PAUSED);
+
+        TransportController controller = newController(project);
+        CountDownLatch latch = new CountDownLatch(1);
+        Platform.runLater(() -> {
+            try { controller.onPlay(); } catch (RuntimeException ignored) { }
+            latch.countDown();
+        });
+        assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+
         assertThat(transport.getState()).isEqualTo(
                 com.benesquivelmusic.daw.core.transport.TransportState.PLAYING);
     }

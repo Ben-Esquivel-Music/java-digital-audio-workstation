@@ -43,7 +43,7 @@ final class ToolbarAppearanceController {
     // ── Grouped UI references ────────────────────────────────────────────────
 
     /** Transport-bar buttons. */
-    record TransportButtons(Button skipBack, Button play, Button pause,
+    record TransportButtons(Button skipBack, Button play,
                             Button stop, Button record, Button skipForward,
                             Button loop, Button metronome) {}
 
@@ -112,7 +112,6 @@ final class ToolbarAppearanceController {
         // ── Transport controls (Playback category) ──────────────────────────
         transportButtons.skipBack.setGraphic(IconNode.of(DawIcon.SKIP_BACK, TRANSPORT_ICON_SIZE));
         transportButtons.play.setGraphic(IconNode.of(DawIcon.PLAY, TRANSPORT_ICON_SIZE));
-        transportButtons.pause.setGraphic(IconNode.of(DawIcon.PAUSE, TRANSPORT_ICON_SIZE));
         transportButtons.stop.setGraphic(IconNode.of(DawIcon.STOP, TRANSPORT_ICON_SIZE));
         transportButtons.record.setGraphic(IconNode.of(DawIcon.RECORD, TRANSPORT_ICON_SIZE));
         transportButtons.skipForward.setGraphic(IconNode.of(DawIcon.SKIP_FORWARD, TRANSPORT_ICON_SIZE));
@@ -162,8 +161,7 @@ final class ToolbarAppearanceController {
     private void applyTooltips() {
         // ── Transport controls ──────────────────────────────────────────────
         transportButtons.skipBack.setTooltip(styledTooltip(tooltipFor("Skip to Beginning", DawAction.SKIP_TO_START)));
-        transportButtons.play.setTooltip(styledTooltip(tooltipFor("Play", DawAction.PLAY_STOP)));
-        transportButtons.pause.setTooltip(styledTooltip("Pause"));
+        transportButtons.play.setTooltip(styledTooltip(tooltipFor("Play / Pause", DawAction.PLAY_STOP)));
         transportButtons.stop.setTooltip(styledTooltip(tooltipFor("Stop", DawAction.STOP)));
         transportButtons.record.setTooltip(styledTooltip(tooltipFor("Record", DawAction.RECORD)));
         transportButtons.skipForward.setTooltip(styledTooltip(tooltipFor("Skip Forward", DawAction.SKIP_TO_END)));
@@ -215,7 +213,7 @@ final class ToolbarAppearanceController {
      */
     private void preventButtonTruncation() {
         for (Button btn : new Button[]{
-                transportButtons.skipBack, transportButtons.play, transportButtons.pause,
+                transportButtons.skipBack, transportButtons.play,
                 transportButtons.stop, transportButtons.record,
                 transportButtons.skipForward, transportButtons.loop,
                 toolbarButtons.addAudioTrack, toolbarButtons.addMidiTrack,
