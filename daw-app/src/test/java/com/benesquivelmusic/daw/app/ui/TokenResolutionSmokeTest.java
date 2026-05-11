@@ -51,7 +51,7 @@ final class TokenResolutionSmokeTest {
 
     @Test
     void everyPaletteATokenResolvesToExpectedColour() throws Exception {
-        // Palette A — "Onyx Refined" — UI_DESIGN_BOOK.md §3.1.
+        // Palette A — "Onyx Refined" — docs/design/UI_DESIGN_BOOK.md §3.1.
         // Order matches the token declaration block in styles.css so that
         // any future re-ordering is easy to cross-check against this list.
         Map<String, Color> expected = new LinkedHashMap<>();
@@ -146,7 +146,11 @@ final class TokenResolutionSmokeTest {
             BorderPane rootPane = new BorderPane();
             rootPane.getStyleClass().add("root-pane");
             Scene scene = new Scene(rootPane, 100, 100);
-            scene.getStylesheets().add(getClass().getResource(STYLES_CSS_RESOURCE).toExternalForm());
+            URL css = getClass().getResource(STYLES_CSS_RESOURCE);
+            assertThat(css)
+                    .as("styles.css must be on the test classpath at %s", STYLES_CSS_RESOURCE)
+                    .isNotNull();
+            scene.getStylesheets().add(css.toExternalForm());
             rootPane.applyCss();
             rootPane.layout();
             Paint fill = rootPane.getBackground().getFills().get(0).getFill();

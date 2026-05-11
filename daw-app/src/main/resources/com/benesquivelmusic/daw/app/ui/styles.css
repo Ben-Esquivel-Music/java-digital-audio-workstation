@@ -9,7 +9,7 @@
  * file are palette-agnostic and never need to change when the palette is
  * swapped.
  *
- * ── Token roles (see UI_DESIGN_BOOK.md §3.1) ──
+ * ── Token roles (see docs/design/UI_DESIGN_BOOK.md §3.1) ──
  *   SURFACE   surface-bg, surface-1, surface-2, surface-3, surface-overlay
  *   LINE      line-soft, line-strong, focus-ring
  *   TEXT      text-hi, text, text-mute, text-on-accent
@@ -43,6 +43,8 @@
 
     -accent:          #7C8CFF;
     -accent-soft:     rgba(124, 140, 255, 0.14);
+    -accent-glow:     rgba(124, 140, 255, 0.3);
+    -drop-target-bg:  rgba(92, 140, 255, 0.25);
 
     -ok:              #5BD2A0;
     -warn:            #E6B450;
@@ -345,7 +347,7 @@
 .track-item:hover {
     -fx-background-color: -surface-2;
     -fx-border-color: -accent;
-    -fx-effect: dropshadow(gaussian, rgba(124, 140, 255, 0.3), 8, 0, 0, 0);
+    -fx-effect: dropshadow(gaussian, -accent-glow, 8, 0, 0, 0);
 }
 
 .track-name {
@@ -663,7 +665,7 @@
 
 /* ── Toolbar Sidebar ── */
 .toolbar-sidebar {
-    -fx-background-color: linear-gradient(to bottom, -surface-bg, -surface-bg);
+    -fx-background-color: -surface-bg;
     -fx-border-color: transparent -line-soft transparent transparent;
     -fx-border-width: 0 1 0 0;
     -fx-padding: 8 4;
@@ -687,7 +689,7 @@
 .toolbar-button:hover {
     -fx-background-color: -line-strong;
     -fx-border-color: -accent;
-    -fx-effect: dropshadow(gaussian, rgba(124, 140, 255, 0.3), 10, 0, 0, 0);
+    -fx-effect: dropshadow(gaussian, -accent-glow, 10, 0, 0, 0);
 }
 
 .toolbar-button:pressed {
@@ -770,7 +772,7 @@
 
 .browser-search-field:focused {
     -fx-border-color: -accent;
-    -fx-effect: dropshadow(gaussian, rgba(124, 140, 255, 0.3), 6, 0, 0, 0);
+    -fx-effect: dropshadow(gaussian, -accent-glow, 6, 0, 0, 0);
 }
 
 .browser-tab-pane > .tab-header-area > .tab-header-background {
@@ -1030,7 +1032,7 @@
 
 .button:focused {
     -fx-border-color: -accent;
-    -fx-effect: dropshadow(gaussian, rgba(124, 140, 255, 0.3), 6, 0, 0, 0);
+    -fx-effect: dropshadow(gaussian, -accent-glow, 6, 0, 0, 0);
 }
 
 .button:disabled {
@@ -1070,7 +1072,7 @@
 
 .text-field:focused {
     -fx-border-color: -accent;
-    -fx-effect: dropshadow(gaussian, rgba(124, 140, 255, 0.3), 6, 0, 0, 0);
+    -fx-effect: dropshadow(gaussian, -accent-glow, 6, 0, 0, 0);
 }
 
 .text-field:hover {
@@ -1092,7 +1094,7 @@
 
 .combo-box:focused {
     -fx-border-color: -accent;
-    -fx-effect: dropshadow(gaussian, rgba(124, 140, 255, 0.3), 6, 0, 0, 0);
+    -fx-effect: dropshadow(gaussian, -accent-glow, 6, 0, 0, 0);
 }
 
 .combo-box .list-cell {
@@ -1222,7 +1224,7 @@
 
 .slider .thumb:hover {
     -fx-background-color: -accent;
-    -fx-effect: dropshadow(gaussian, rgba(124, 140, 255, 0.3), 6, 0, 0, 0);
+    -fx-effect: dropshadow(gaussian, -accent-glow, 6, 0, 0, 0);
 }
 
 .slider .thumb:pressed {
@@ -1455,7 +1457,7 @@
  * the rest of the UI without bespoke per-call-site styling.
  */
 .drop-target-active {
-    -fx-background-color: rgba(92, 140, 255, 0.25);
+    -fx-background-color: -drop-target-bg;
     -fx-border-color: -focus-ring;
     -fx-border-width: 1;
     -fx-border-style: dashed;
