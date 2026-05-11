@@ -247,6 +247,53 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 196 | [Contextual Help Overlay](196-contextual-help-overlay.md) | 🟡 Medium | Usability |
 | 197 | [Drag-and-Drop Target Visual Feedback](197-drag-and-drop-target-visual-feedback.md) | 🟡 Medium | Usability |
 
+## UI Overhaul (Design Book)
+
+Operationalises the canonical UI vision in [`docs/design/UI_DESIGN_BOOK.md`](../design/UI_DESIGN_BOOK.md). Stories are organised into the four phases from §6 (migration roadmap). Phase 1 is the foundation (tokens + grid); Phase 2 builds the Control/Skin component library; Phase 3 ships themability and accessibility settings; Phase 4 is long-horizon view flexibility.
+
+### Phase 1 — Tokens and Grid
+
+| # | Story | Priority | Area |
+|---|-------|----------|------|
+| 260 | [Introduce Semantic Color Tokens (Onyx Refined) in styles.css](260-introduce-semantic-color-tokens-onyx-refined.md) | 🟠 High | Design System |
+| 261 | [Standardize Spacing, Row Heights, and Corner Radii to the 4 px Grid](261-standardize-spacing-grid-and-radii-to-4-px.md) | 🟠 High | Design System |
+| 262 | [De-Rainbow the Transport Bar and Drop the Pause Button](262-de-rainbow-transport-bar-and-drop-pause.md) | 🟠 High | Transport |
+| 263 | [Replace Universal Drop-Shadow and Purple Borders with the Elevation System](263-replace-universal-dropshadow-with-elevation-system.md) | 🟠 High | Design System |
+| 264 | [Unify the Three Button Systems Into One With Size Variants](264-unify-three-button-systems-into-one.md) | 🟠 High | Design System |
+
+### Phase 2 — Component Library
+
+| # | Story | Priority | Area |
+|---|-------|----------|------|
+| 265 | [Adopt Lucide as the Single Iconography Family](265-adopt-lucide-icon-set-as-single-iconography.md) | 🟠 High | Iconography |
+| 266 | [Monospaced Numerics for Time, BPM, Fader, and Meter Readouts](266-monospaced-numerics-for-time-bpm-and-meter-readouts.md) | 🟠 High | Typography |
+| 267 | [LevelMeter Control + Skin with Discrete LED-Style Segments](267-level-meter-control-skin-with-discrete-segments.md) | 🟠 High | Metering |
+| 268 | [Knob Control + Skin with Bipolar Centre Detent and Keyboard Parity](268-knob-control-skin-with-bipolar-centre-detent.md) | 🟠 High | Controls |
+| 269 | [Fader Control + Skin with Integrated Meter Column and Wide Rectangular Cap](269-fader-control-skin-with-integrated-meter-column.md) | 🟠 High | Mixer |
+| 270 | [TrackStrip Control + Skin with Outlined-Default / Filled-Active M/S/R](270-track-strip-control-skin-with-outlined-default-filled-active-msr.md) | 🟠 High | Arrangement |
+| 271 | [MixerChannelStrip Control + Skin with Inserts, Sends, Pan, and Fader](271-mixer-channel-strip-control-skin.md) | 🟠 High | Mixer |
+| 272 | [Unified Inspector Drawer with Track, Inserts, Sends, Routing, Notes](272-unified-inspector-drawer.md) | 🟠 High | Inspector |
+| 273 | [Notification Toast Pill With Left-Bar Accent and History Tab in Inspector](273-notification-toast-pill-and-history-into-inspector.md) | 🟠 High | Notifications |
+| 274 | [Status Bar as a Single Row of Dot-Separated Cells, No Separator Nodes](274-status-bar-single-row-dot-separated-cells.md) | 🟠 High | Status Bar |
+| 275 | [Browser Panel: Accent-Bar Tabs, Persistent Search, and Audition Button Per Row](275-browser-panel-accent-bar-search-and-row-audition.md) | 🟠 High | Browser |
+| 276 | [Dialog and Modal Chrome: Flat Header, Accent Primary Button, Tokenized Section Headers](276-dialog-and-modal-chrome-flat-header-accent-primary.md) | 🟠 High | Dialogs |
+
+### Phase 3 — Theming, Density, and Motion
+
+| # | Story | Priority | Area |
+|---|-------|----------|------|
+| 277 | [Theme Setting: Onyx Refined, Studio Slate, and Atelier](277-theme-setting-onyx-studio-slate-atelier.md) | 🟡 Medium | Theme |
+| 278 | [Density Setting: Compact, Comfortable, Touch](278-density-setting-compact-comfortable-touch.md) | 🟡 Medium | Design System |
+| 279 | [Reduce Motion Setting: Cut Transitions to Zero, Preserve Real-Time Meters](279-reduce-motion-setting.md) | 🟡 Medium | Accessibility |
+
+### Phase 4 — Layout Flexibility (Long Horizon)
+
+| # | Story | Priority | Area |
+|---|-------|----------|------|
+| 280 | [Performance Stage View: Oversized Skinned Controls for Live Use](280-performance-stage-view.md) | 🟢 Low | Performance Stage |
+| 281 | [Workshop View: 60/40 Arrangement + Focused Plugin GUI Side-by-Side](281-workshop-view-arrangement-plus-plugin-focus.md) | 🟢 Low | Workshop View |
+| 282 | [Mission Control: Dock-and-Float Layout with Per-Project Persistence](282-mission-control-dock-and-float-layout.md) | 🟢 Low | Docking |
+
 ## Code Quality & Refactoring
 
 | # | Story | Priority | Area |
