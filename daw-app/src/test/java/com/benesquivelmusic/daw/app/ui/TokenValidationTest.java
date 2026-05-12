@@ -292,7 +292,9 @@ final class TokenValidationTest {
             Pattern header = Pattern.compile(
                     "(?m)^\\s*" + Pattern.quote(selector) + "\\s*\\{");
             Matcher m = header.matcher(css);
+            boolean found = false;
             while (m.find()) {
+                found = true;
                 int start = m.end();
                 int end = css.indexOf('}', start);
                 if (end < 0) {
@@ -305,6 +307,12 @@ final class TokenValidationTest {
                                     + "(UI_DESIGN_BOOK.md §3.4 — panels are flat).",
                             selector));
                 }
+            }
+            if (!found) {
+                offences.add(String.format(
+                        "Selector '%s' was not found in styles.css — the test cannot verify "
+                                + "the no-dropshadow contract if the rule is missing or renamed.",
+                        selector));
             }
         }
 

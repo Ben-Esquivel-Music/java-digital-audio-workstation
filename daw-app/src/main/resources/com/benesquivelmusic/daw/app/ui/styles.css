@@ -53,17 +53,22 @@
  * Palette A block fails the build.
  *
  * ── Elevation contract (UI Design Book §3.4) ──
- *   Panels are flat. Cards are elevation 1. Hovered/dragged → elevation 2.
- *   Popover → 3. Modal → 4. No nested shadows. Shadow communicates
+ *   Panels are flat (elevation 0). Popover / context-menu → elevation 3.
+ *   Modal / dialog → elevation 4. No nested shadows. Shadow communicates
  *   "this surface is closer to you" — it is information, not decoration.
- *   Every `-fx-effect: dropshadow(...)` declaration in this file is either
- *   a literal definition of an `-elevation-*` token in the Palette A block
- *   or sits inside a `.card:hover` / drag / popover / modal rule.
+ *   Elevation tokens 1, 2 and 4 are defined but not yet wired — they
+ *   will be consumed when card, drag-source, and modal selectors land
+ *   in later stories. Every `-fx-effect: dropshadow(...)` declaration
+ *   in this file is either a literal definition of an `-elevation-*`
+ *   token in the Palette A block or sits inside a drag / drop /
+ *   popover / menu / dialog / modal rule.
  *   TokenValidationTest enforces this.
  *
  * ── Hover rule (UI Design Book §7.1 / §7.3) ──
  *   Hover state changes background to `-surface-3`, never effect, never
- *   border. The 1 px focus ring uses `-focus-ring` (blue, Palette A) and
+ *   border — except for accent-coloured controls (e.g. slider thumbs)
+ *   whose identity colour must be preserved on hover.
+ *   The 1 px focus ring uses `-focus-ring` (blue, Palette A) and
  *   is only visible on `:focused`, never on resting state.
  */
 
@@ -1037,7 +1042,6 @@
 
 .button:default:hover {
     -fx-background-color: -surface-3;
-    -fx-border-color: -ok;
 }
 
 /* Cancel button accent */
