@@ -586,14 +586,14 @@ final class TransportController {
             return preRollControlsBox;
         }
         preRollToggle = new ToggleButton("Pre-Roll");
-        preRollToggle.getStyleClass().addAll("transport-button", "pre-roll-button");
+        preRollToggle.getStyleClass().addAll("dawg-button", "size-transport", "pre-roll-button");
         preRollToggle.setGraphic(IconNode.of(DawIcon.REWIND, 12));
         preRollToggle.setTooltip(new Tooltip(
                 "Pre-Roll: seek back by N bars before playback (Story 134)"));
         preRollToggle.setOnAction(_ -> onTogglePreRoll());
 
         postRollToggle = new ToggleButton("Post-Roll");
-        postRollToggle.getStyleClass().addAll("transport-button", "post-roll-button");
+        postRollToggle.getStyleClass().addAll("dawg-button", "size-transport", "post-roll-button");
         postRollToggle.setGraphic(IconNode.of(DawIcon.FAST_FORWARD, 12));
         postRollToggle.setTooltip(new Tooltip(
                 "Post-Roll: keep playing for N bars after stop (Story 134)"));

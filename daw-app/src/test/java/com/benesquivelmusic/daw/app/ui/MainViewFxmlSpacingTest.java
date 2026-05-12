@@ -102,7 +102,61 @@ final class MainViewFxmlSpacingTest {
                 .isEmpty();
     }
 
-    private static void checkAttribute(Element el, String attr, List<String> offences) {
+    /**
+     * Story 263 — every {@code <Button>} in {@code main-view.fxml} must
+     * carry the unified {@code dawg-button} style class along with
+     * exactly one size variant ({@code size-compact}, {@code size-default},
+     * {@code size-touch}, or {@code size-transport}).
+     *
+     * <p>UI Design Book §1.3, §3.3, §5.1.
+     */
+    @Test
+    void everyButtonHasDawgButtonClassWithExactlyOneSizeVariant() throws Exception {
+        Document doc = loadFxml();
+        List<String> offences = new ArrayList<>();
+        List<String> sizeVariants = List.of(
+                "size-compact", "size-default", "size-touch", "size-transport");
+
+        NodeList buttons = doc.getElementsByTagName("Button");
+        assertThat(buttons.getLength())
+                .as("main-view.fxml must contain at least one <Button>")
+                .isGreaterThan(0);
+
+        for (int i = 0; i < buttons.getLength(); i++) {
+            Element btn = (Element) buttons.item(i);
+            String fxId = btn.getAttribute("fx:id");
+            String label = fxId.isEmpty() ? "Button[" + i + "]" : "Button#" + fxId;
+
+            String styleClassAttr = btn.getAttribute("styleClass");
+            // FXML styleClass attributes are comma-separated; tokens may
+            // also be whitespace-separated. Split on either.
+            List<String> classes = new ArrayList<>();
+            for (String token : styleClassAttr.split("[,\\s]+")) {
+                if (!token.isEmpty()) classes.add(token);
+            }
+
+            if (!classes.contains("dawg-button")) {
+                offences.add(label + " is missing the 'dawg-button' style class "
+                        + "(story 263 — UI Design Book §1.3).");
+                continue;
+            }
+
+            long sizeMatches = classes.stream().filter(sizeVariants::contains).count();
+            if (sizeMatches != 1) {
+                offences.add(label + " has " + sizeMatches + " size variants "
+                        + "(expected exactly one of " + sizeVariants + ") — actual styleClass='"
+                        + styleClassAttr + "'.");
+            }
+        }
+
+        assertThat(offences)
+                .as("Every <Button> in main-view.fxml must carry 'dawg-button' "
+                        + "and exactly one size variant (story 263):%n%s",
+                        String.join(System.lineSeparator(), offences))
+                .isEmpty();
+    }
+
+
         String raw = el.getAttribute(attr);
         if (raw.isEmpty()) {
             return;

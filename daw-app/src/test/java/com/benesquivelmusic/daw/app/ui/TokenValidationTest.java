@@ -322,7 +322,87 @@ final class TokenValidationTest {
                 .isEmpty();
     }
 
-    private static String loadStylesheet() throws IOException {
+    /**
+     * Phase 1 of UI Design Book §6 — Story 263 unified the three button
+     * systems (.transport-button, .toolbar-button, .button) into a single
+     * .dawg-button selector with size variants.
+     *
+     * <p>This test asserts that exactly one rule in styles.css declares
+     * the base button {@code -fx-background-color}: the {@code .dawg-button}
+     * selector. The legacy alias selectors must be empty placeholders
+     * (UI Design Book §1.3, §3.3, §7.1).
+     */
+    @Test
+    void exactlyOneBaseButtonBackgroundColorDeclaration() throws IOException {
+        String css = loadStylesheet();
+
+        // Strip comments so they don't confuse the brace matcher.
+        String stripped = Pattern.compile("/\\*.*?\\*/", Pattern.DOTALL)
+                .matcher(css).replaceAll("");
+
+        Pattern ruleBlock = Pattern.compile("([^{}]+)\\{([^{}]*)\\}", Pattern.DOTALL);
+        Matcher m = ruleBlock.matcher(stripped);
+
+        List<String> baseBgSelectors = new ArrayList<>();
+        List<String> legacyOffenders = new ArrayList<>();
+        while (m.find()) {
+            String body = m.group(2);
+            if (!body.contains("-fx-background-color")) continue;
+            String selectorList = m.group(1).trim();
+            for (String sel : selectorList.split(",")) {
+                String s = sel.trim();
+                // Base button selectors are the unprefixed class form
+                // (no pseudo-class, no compound modifier).
+                if (s.equals(".dawg-button")) {
+                    baseBgSelectors.add(s);
+                }
+                if (s.equals(".transport-button")
+                        || s.equals(".toolbar-button")
+                        || s.equals(".button")) {
+                    legacyOffenders.add(s);
+                }
+            }
+        }
+
+        assertThat(baseBgSelectors)
+                .as("Exactly one rule must declare the base button "
+                        + "-fx-background-color, and it must be .dawg-button "
+                        + "(story 263 — UI Design Book §1.3).")
+                .containsExactly(".dawg-button");
+
+        assertThat(legacyOffenders)
+                .as("Legacy button aliases (.transport-button, .toolbar-button, "
+                        + ".button) must not re-declare -fx-background-color — "
+                        + "the unified rule lives on .dawg-button (story 263).")
+                .isEmpty();
+    }
+
+    /**
+     * Story 263 — every named size variant must be declared on
+     * {@code .dawg-button} and each one must set {@code -fx-padding}.
+     * Padding values themselves are 4-px-grid-checked by
+     * {@link #stylesCssNumericValuesSnapToFourPxGrid()}.
+     */
+    @Test
+    void dawgButtonDeclaresAllFourSizeVariants() throws IOException {
+        String css = loadStylesheet();
+        for (String variant : List.of("size-compact", "size-default", "size-touch", "size-transport")) {
+            Pattern header = Pattern.compile(
+                    "(?m)^\\s*\\.dawg-button\\.\\Q" + variant + "\\E\\s*\\{([^}]*)\\}",
+                    Pattern.DOTALL);
+            Matcher h = header.matcher(css);
+            assertThat(h.find())
+                    .as("styles.css must declare a .dawg-button.%s rule (story 263, §3.3, §5.1).",
+                            variant)
+                    .isTrue();
+            String body = h.group(1);
+            assertThat(body)
+                    .as(".dawg-button.%s must set -fx-padding (story 263).", variant)
+                    .contains("-fx-padding");
+        }
+    }
+
+
         try (InputStream in = TokenValidationTest.class.getResourceAsStream(STYLES_CSS_RESOURCE)) {
             assertThat(in)
                     .as("styles.css must be on the test classpath at %s", STYLES_CSS_RESOURCE)

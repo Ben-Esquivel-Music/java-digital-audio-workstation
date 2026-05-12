@@ -50,20 +50,30 @@ final class TransportStyleTest {
             }
         }
 
-        // Exactly one rule sets the base background; the only other
-        // allowed background-color declarations are the :active armed
-        // overrides (one for .transport-button:active, one for
-        // .transport-button.record-button:active) and the :hover/:pressed
-        // structural swaps (surface-3 / surface-1) — those are not
-        // per-button hues so they're permitted.
+        // Story 263 unified the three button systems behind .dawg-button.
+        // Exactly one rule sets the base background — the .dawg-button
+        // selector itself. Legacy aliases (.transport-button, .toolbar-button,
+        // .button) must not re-declare -fx-background-color.
         long baseBgRules = transportRules.stream()
-                .filter(rb -> rb.selector.equals(".transport-button"))
+                .filter(rb -> rb.selector.equals(".dawg-button"))
                 .filter(rb -> rb.body.contains("-fx-background-color"))
                 .count();
         assertThat(baseBgRules)
-                .as("Exactly one .transport-button rule must declare the base "
-                        + "-fx-background-color (UI Design Book §2.1).")
+                .as("Exactly one .dawg-button rule must declare the base "
+                        + "-fx-background-color (UI Design Book §2.1, story 263).")
                 .isEqualTo(1);
+
+        long legacyAliasBgRules = transportRules.stream()
+                .filter(rb -> rb.selector.equals(".transport-button")
+                        || rb.selector.equals(".toolbar-button")
+                        || rb.selector.equals(".button"))
+                .filter(rb -> rb.body.contains("-fx-background-color"))
+                .count();
+        assertThat(legacyAliasBgRules)
+                .as("Legacy button aliases (.transport-button, .toolbar-button, "
+                        + ".button) must not re-declare -fx-background-color — "
+                        + "the unified rule lives on .dawg-button (story 263).")
+                .isZero();
 
         // No per-button class (.play-button, .pause-button, .stop-button)
         // may declare its own background-color or border-color.
@@ -132,6 +142,11 @@ final class TransportStyleTest {
     /** Returns true if the selector targets the transport button row. */
     private static boolean isTransportRule(String selector) {
         return selector.contains(".transport-button")
+                || selector.contains(".toolbar-button")
+                || selector.equals(".button")
+                || selector.startsWith(".button:")
+                || selector.startsWith(".button.")
+                || selector.contains(".dawg-button")
                 || selector.equals(".play-button")
                 || selector.startsWith(".play-button:")
                 || selector.equals(".pause-button")
@@ -151,10 +166,17 @@ final class TransportStyleTest {
      * overrides are allowed.
      */
     private static boolean isForbiddenPerButtonRule(String selector) {
-        // The base structural rule and its :hover/:pressed/:disabled
-        // structural states are allowed.
-        if (selector.equals(".transport-button")
-                || selector.startsWith(".transport-button:")) {
+        // The base structural rules and their state pseudo-classes are allowed.
+        if (selector.equals(".dawg-button")
+                || selector.startsWith(".dawg-button:")
+                || selector.startsWith(".dawg-button.size-")
+                || selector.startsWith(".dawg-button.danger")
+                || selector.equals(".transport-button")
+                || selector.startsWith(".transport-button:")
+                || selector.equals(".toolbar-button")
+                || selector.startsWith(".toolbar-button:")
+                || selector.equals(".button")
+                || selector.startsWith(".button:")) {
             return false;
         }
         // The :active armed-state overrides are allowed (this is exactly
