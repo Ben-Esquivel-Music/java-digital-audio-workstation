@@ -1027,28 +1027,65 @@
     -fx-font-size: 12px;
 }
 
-/* ── Generic Buttons — see unified .dawg-button (story 263) ──
- * The legacy .button class is JavaFX's user-agent class auto-applied
- * to every Button instance. We retain an empty alias here as a marker;
- * the actual structural rules live on .dawg-button. The :default and
- * :cancel pseudo-class accents below remain so dialog OK / Cancel
- * buttons still read correctly when authored with .dawg-button. */
-.button { /* alias — see .dawg-button.size-default */ }
+/* ── Generic Buttons — .button fallback (story 263) ──
+ * JavaFX auto-applies `.button` to every Button instance. Buttons that
+ * explicitly carry `dawg-button` are fully styled by the unified block
+ * above. Buttons that do NOT carry `dawg-button` — e.g. dialog-pane
+ * buttons created from ButtonType, or third-party plugin dialogs —
+ * still need the dark-theme look. This fallback mirrors the unified
+ * .dawg-button base + size-default padding so every Button in the app
+ * renders consistently.
+ *
+ * Legacy aliases retained for one cycle; remove in story 264 follow-up. */
+.button {
+    -fx-background-color: -surface-2;
+    -fx-text-fill: -text-hi;
+    -fx-font-size: 11px;
+    -fx-background-radius: 4;
+    -fx-border-color: -line-soft;
+    -fx-border-width: 1;
+    -fx-border-radius: 4;
+    -fx-cursor: hand;
+    /* size-default padding (row-default ~28 px). */
+    -fx-padding: 4 12;
+}
 
-/* Default / OK button accent (applies to any Button with default
- * behaviour, including .dawg-button). */
-.dawg-button:default {
+.button:hover {
+    -fx-background-color: -surface-3;
+}
+
+.button:pressed {
+    -fx-background-color: -accent;
+    -fx-text-fill: -text-on-accent;
+}
+
+.button:focused {
+    -fx-border-color: -focus-ring;
+    -fx-border-width: 1;
+}
+
+.button:disabled {
+    -fx-opacity: 0.45;
+}
+
+/* Default / OK button accent — targets both .dawg-button and .button
+ * so dialog-pane OK buttons render correctly regardless of whether
+ * dawg-button was added. */
+.dawg-button:default,
+.button:default {
     -fx-background-color: -surface-3;
     -fx-border-color: -ok;
     -fx-text-fill: -ok;
 }
 
-.dawg-button:default:hover {
+.dawg-button:default:hover,
+.button:default:hover {
     -fx-background-color: -surface-3;
 }
 
 /* Cancel button accent. */
-.dawg-button:cancel {
+.dawg-button:cancel,
+.button:cancel {
     -fx-text-fill: -text;
 }
 

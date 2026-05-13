@@ -356,9 +356,12 @@ final class TokenValidationTest {
                 if (s.equals(".dawg-button")) {
                     baseBgSelectors.add(s);
                 }
+                // .button is an intentional fallback for dialog-pane
+                // buttons that don't carry dawg-button (story 263).
+                // .transport-button and .toolbar-button must remain
+                // empty aliases.
                 if (s.equals(".transport-button")
-                        || s.equals(".toolbar-button")
-                        || s.equals(".button")) {
+                        || s.equals(".toolbar-button")) {
                     legacyOffenders.add(s);
                 }
             }
@@ -371,9 +374,11 @@ final class TokenValidationTest {
                 .containsExactly(".dawg-button");
 
         assertThat(legacyOffenders)
-                .as("Legacy button aliases (.transport-button, .toolbar-button, "
-                        + ".button) must not re-declare -fx-background-color — "
-                        + "the unified rule lives on .dawg-button (story 263).")
+                .as("Legacy button aliases (.transport-button, .toolbar-button) "
+                        + "must not re-declare -fx-background-color — "
+                        + "the unified rule lives on .dawg-button. "
+                        + "(.button is an intentional fallback for dialog buttons "
+                        + "that don't carry dawg-button — story 263.)")
                 .isEmpty();
     }
 

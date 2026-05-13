@@ -65,14 +65,14 @@ final class TransportStyleTest {
 
         long legacyAliasBgRules = transportRules.stream()
                 .filter(rb -> rb.selector.equals(".transport-button")
-                        || rb.selector.equals(".toolbar-button")
-                        || rb.selector.equals(".button"))
+                        || rb.selector.equals(".toolbar-button"))
                 .filter(rb -> rb.body.contains("-fx-background-color"))
                 .count();
         assertThat(legacyAliasBgRules)
-                .as("Legacy button aliases (.transport-button, .toolbar-button, "
-                        + ".button) must not re-declare -fx-background-color — "
-                        + "the unified rule lives on .dawg-button (story 263).")
+                .as("Legacy button aliases (.transport-button, .toolbar-button) "
+                        + "must not re-declare -fx-background-color — "
+                        + "the unified rule lives on .dawg-button. "
+                        + "(.button is an intentional fallback for dialog buttons.)")
                 .isZero();
 
         // No per-button class (.play-button, .pause-button, .stop-button)
