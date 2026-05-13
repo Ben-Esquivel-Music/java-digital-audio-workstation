@@ -21,17 +21,17 @@
                 <HBox fx:id="transportGroup" spacing="4" alignment="CENTER"
                       styleClass="toolbar-button-group">
                     <Button fx:id="skipBackButton" text="Skip Back" onAction="#onSkipBack"
-                            styleClass="transport-button"/>
+                            styleClass="dawg-button, size-transport"/>
                     <Button fx:id="playButton" text="Play" onAction="#onPlay"
-                            styleClass="transport-button"/>
+                            styleClass="dawg-button, size-transport"/>
                     <Button fx:id="stopButton" text="Stop" onAction="#onStop"
-                            styleClass="transport-button"/>
+                            styleClass="dawg-button, size-transport"/>
                     <Button fx:id="recordButton" text="Record" onAction="#onRecord"
-                            styleClass="transport-button, record-button"/>
+                            styleClass="dawg-button, size-transport, danger, record-button"/>
                     <Button fx:id="skipForwardButton" text="Skip Forward" onAction="#onSkipForward"
-                            styleClass="transport-button"/>
+                            styleClass="dawg-button, size-transport"/>
                     <Button fx:id="loopButton" text="Loop" onAction="#onToggleLoop"
-                            styleClass="transport-button, loop-button"/>
+                            styleClass="dawg-button, size-transport, loop-button"/>
                 </HBox>
 
                 <Separator orientation="VERTICAL"/>
@@ -46,7 +46,7 @@
 
                 <!-- Metronome toggle (icon applied programmatically) -->
                 <Button fx:id="metronomeButton" text="Metronome" onAction="#onToggleMetronome"
-                        styleClass="transport-button, metronome-button"/>
+                        styleClass="dawg-button, size-transport, metronome-button"/>
 
                 <Separator orientation="VERTICAL" visible="false" managed="false"/>
 
@@ -55,9 +55,9 @@
                       styleClass="toolbar-button-group"
                       visible="false" managed="false">
                     <Button fx:id="addAudioTrackButton" text="Audio Track" onAction="#onAddAudioTrack"
-                            styleClass="transport-button"/>
+                            styleClass="dawg-button, size-transport"/>
                     <Button fx:id="addMidiTrackButton" text="MIDI Track" onAction="#onAddMidiTrack"
-                            styleClass="transport-button"/>
+                            styleClass="dawg-button, size-transport"/>
                 </HBox>
 
                 <!-- Group 3: Undo / Redo (available via Edit menu) -->
@@ -65,9 +65,9 @@
                       styleClass="toolbar-button-group"
                       visible="false" managed="false">
                     <Button fx:id="undoButton" text="Undo" onAction="#onUndo"
-                            styleClass="transport-button"/>
+                            styleClass="dawg-button, size-transport"/>
                     <Button fx:id="redoButton" text="Redo" onAction="#onRedo"
-                            styleClass="transport-button"/>
+                            styleClass="dawg-button, size-transport"/>
                 </HBox>
 
                 <!-- Group 4: Snap, Save, Plugins (available via menus) -->
@@ -75,16 +75,16 @@
                       styleClass="toolbar-button-group"
                       visible="false" managed="false">
                     <Button fx:id="snapButton" text="Snap"
-                            styleClass="transport-button"/>
+                            styleClass="dawg-button, size-transport"/>
                     <Button fx:id="saveButton" text="Save" onAction="#onSaveProject"
-                            styleClass="transport-button, project-button"/>
+                            styleClass="dawg-button, size-transport, project-button"/>
                     <Button fx:id="pluginsButton" text="Plugins" onAction="#onManagePlugins"
-                            styleClass="transport-button, plugin-button"/>
+                            styleClass="dawg-button, size-transport, plugin-button"/>
                 </HBox>
 
                 <!-- Ripple Edit Mode cycling button (Story 138) -->
                 <Button fx:id="rippleModeButton" text="Ripple: Off"
-                        styleClass="transport-button, ripple-mode-button, ripple-off"/>
+                        styleClass="dawg-button, size-transport, ripple-mode-button, ripple-off"/>
 
                 <!-- REC indicator (visible only during recording) -->
                 <Label fx:id="recIndicator" text="● REC" styleClass="rec-indicator"
