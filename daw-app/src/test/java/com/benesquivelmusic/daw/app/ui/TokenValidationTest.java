@@ -407,7 +407,7 @@ final class TokenValidationTest {
         }
     }
 
-
+    private static String loadStylesheet() throws IOException {
         try (InputStream in = TokenValidationTest.class.getResourceAsStream(STYLES_CSS_RESOURCE)) {
             assertThat(in)
                     .as("styles.css must be on the test classpath at %s", STYLES_CSS_RESOURCE)

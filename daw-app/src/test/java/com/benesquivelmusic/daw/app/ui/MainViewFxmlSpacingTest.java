@@ -156,7 +156,7 @@ final class MainViewFxmlSpacingTest {
                 .isEmpty();
     }
 
-
+    private static void checkAttribute(Element el, String attr, List<String> offences) {
         String raw = el.getAttribute(attr);
         if (raw.isEmpty()) {
             return;
