@@ -73,8 +73,9 @@ class DawgIconTest {
         // Default is the design-book -text-hi token (#ECEEF2).
         assertThat(icon.getIconColor()).isNotNull();
         // Scene attachment is sufficient for CSS to dispatch later;
-        // direct setIconColor must always work.
-        new Scene(new StackPane(icon));
+        // direct setIconColor must always work. Assign to a local to
+        // prevent GC from collecting the scene during the test.
+        Scene scene = new Scene(new StackPane(icon));
         icon.setIconColor(javafx.scene.paint.Color.RED);
         assertThat(icon.getIconColor()).isEqualTo(javafx.scene.paint.Color.RED);
     }
@@ -88,5 +89,21 @@ class DawgIconTest {
         // A Lucide icon with mixed <path> + <circle> shapes (info).
         DawgIcon info = DawgIcon.of("info", DawgIcon.Size.SIZE_16);
         assertThat(info.getChildrenUnmodifiable()).isNotEmpty();
+    }
+
+    @Test
+    void shouldToggleActivePseudoClass() {
+        DawgIcon icon = DawgIcon.of("play", DawgIcon.Size.SIZE_16);
+        assertThat(icon.isActive()).isFalse();
+
+        icon.setActive(true);
+        assertThat(icon.isActive()).isTrue();
+        assertThat(icon.getPseudoClassStates().stream()
+                .anyMatch(pc -> "active".equals(pc.getPseudoClassName()))).isTrue();
+
+        icon.setActive(false);
+        assertThat(icon.isActive()).isFalse();
+        assertThat(icon.getPseudoClassStates().stream()
+                .anyMatch(pc -> "active".equals(pc.getPseudoClassName()))).isFalse();
     }
 }

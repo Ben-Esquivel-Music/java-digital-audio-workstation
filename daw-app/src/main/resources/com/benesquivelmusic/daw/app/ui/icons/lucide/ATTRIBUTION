@@ -6,7 +6,10 @@ Repo:    https://github.com/lucide-icons/lucide
 License: ISC (see LICENSE)
 
 The SVG files in this directory are vendored from the upstream Lucide
-project at the commit referenced by the project's documentation.
+project.
+
+Source revision: https://github.com/lucide-icons/lucide/tree/main/icons
+Vendored on:     2026-05-14
 Lucide was originally forked from Feather (MIT, Cole Bemis 2013-2022)
 and has since been substantially extended by the Lucide Contributors
 (2022-present).

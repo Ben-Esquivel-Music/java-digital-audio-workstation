@@ -162,11 +162,11 @@ final class ToolbarAppearanceController {
     }
 
     /**
-     * Clears any previously-applied graphic from a labelled control. The
-     * downcast covers both {@link Button} and {@link Label} which are the
-     * two control types the toolbar manages. {@link IconNode} continues
-     * to exist for surfaces not yet migrated to Lucide / {@link DawgIcon};
-     * this controller no longer references it directly.
+     * Clears any previously-applied graphic from a labelled control.
+     * {@link javafx.scene.control.Labeled Labeled} is the common
+     * supertype shared by {@link javafx.scene.control.Button Button}
+     * and {@link javafx.scene.control.Label Label}, which are the two
+     * control types the toolbar manages.
      */
     private static void clearGraphic(javafx.scene.control.Labeled control) {
         if (control == null) return;

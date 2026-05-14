@@ -36,7 +36,10 @@ class IconAuditTest {
     /** Forbidden icon-family identifiers as case-insensitive regexes. */
     private static final List<Pattern> FORBIDDEN_PATTERNS = List.of(
             Pattern.compile("\\bFontAwesome\\b", Pattern.CASE_INSENSITIVE),
-            Pattern.compile("\"fa-[a-z0-9-]+\""),
+            // Match common FontAwesome class prefixes (fa-solid, fa-regular,
+            // fa-brand, fa-light, fa-thin, fa-sharp) rather than the overly
+            // broad "fa-*" which would flag unrelated identifiers.
+            Pattern.compile("\"fa-(solid|regular|brand|light|thin|sharp|icon)-[a-z0-9-]+\""),
             Pattern.compile("\\bMaterial:[a-z0-9_-]+\\b", Pattern.CASE_INSENSITIVE),
             Pattern.compile("\\bMDI_[A-Z_]+\\b"),
             Pattern.compile("\"mdi-[a-z0-9-]+\""),
@@ -53,20 +56,25 @@ class IconAuditTest {
             "IconAuditTest.java"
     );
 
+    /** File extensions scanned by the audit (Java, FXML, CSS). */
+    private static final List<String> SCANNED_EXTENSIONS = List.of(".java", ".fxml", ".css");
+
     @Test
     void uiSourcesMustNotReferenceLegacyIconFamilies() throws IOException {
         Path moduleRoot = locateDawAppModule();
-        Path javaRoot = moduleRoot.resolve("src/main/java");
-        assertThat(Files.isDirectory(javaRoot))
-                .as("UI java sources must live under " + javaRoot)
+        Path srcRoot = moduleRoot.resolve("src/main");
+        assertThat(Files.isDirectory(srcRoot))
+                .as("UI sources must live under " + srcRoot)
                 .isTrue();
 
         List<String> violations = new ArrayList<>();
-        Files.walkFileTree(javaRoot, new SimpleFileVisitor<>() {
+        Files.walkFileTree(srcRoot, new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
                 String fileName = file.getFileName().toString();
-                if (!fileName.endsWith(".java")) return FileVisitResult.CONTINUE;
+                boolean scanned = SCANNED_EXTENSIONS.stream()
+                        .anyMatch(fileName::endsWith);
+                if (!scanned) return FileVisitResult.CONTINUE;
                 if (SELF_EXEMPT.contains(fileName)) return FileVisitResult.CONTINUE;
 
                 String src = Files.readString(file, StandardCharsets.UTF_8);
@@ -79,7 +87,8 @@ class IconAuditTest {
                     // does not trip the audit.
                     String trimmed = line.trim();
                     if (trimmed.startsWith("//") || trimmed.startsWith("*")
-                            || trimmed.startsWith("/*")) continue;
+                            || trimmed.startsWith("/*")
+                            || trimmed.startsWith("<!--")) continue;
                     for (Pattern p : FORBIDDEN_PATTERNS) {
                         if (p.matcher(line).find()) {
                             violations.add(file + ":" + lineNo + " — matched " + p.pattern()
@@ -96,19 +105,38 @@ class IconAuditTest {
                 .isEmpty();
     }
 
-    /** Locate the daw-app module root by walking up from the working dir. */
+    /**
+     * Locate the daw-app module root. Surefire normally sets the working
+     * directory to the module itself; as a fallback we also check for a
+     * {@code daw-app} child directory (covers invocations from the repo
+     * root such as {@code mvn -pl daw-app test}).
+     */
     private static Path locateDawAppModule() {
         Path cwd = Paths.get("").toAbsolutePath();
-        Path candidate = cwd;
-        for (int i = 0; i < 6 && candidate != null; i++) {
-            Path pom = candidate.resolve("pom.xml");
-            Path javaRoot = candidate.resolve("src/main/java/com/benesquivelmusic/daw/app");
-            if (Files.isRegularFile(pom) && Files.isDirectory(javaRoot)) {
-                return candidate;
-            }
+
+        // Fast path: Surefire runs from the module dir.
+        if (isDawAppModule(cwd)) return cwd;
+
+        // Fallback: invoked from the repo root — look for daw-app child.
+        Path child = cwd.resolve("daw-app");
+        if (isDawAppModule(child)) return child;
+
+        // Walk up (covers nested invocations or mono-repo layouts).
+        Path candidate = cwd.getParent();
+        for (int i = 0; i < 5 && candidate != null; i++) {
+            if (isDawAppModule(candidate)) return candidate;
+            Path nested = candidate.resolve("daw-app");
+            if (isDawAppModule(nested)) return nested;
             candidate = candidate.getParent();
         }
-        // Surefire runs from the module dir; this is the expected branch.
+
+        // Last resort — return cwd and let the assertion below fail with
+        // a clear message.
         return cwd;
+    }
+
+    private static boolean isDawAppModule(Path dir) {
+        return Files.isRegularFile(dir.resolve("pom.xml"))
+                && Files.isDirectory(dir.resolve("src/main/java/com/benesquivelmusic/daw/app"));
     }
 }

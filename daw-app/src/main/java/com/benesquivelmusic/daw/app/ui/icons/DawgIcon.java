@@ -31,7 +31,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * The DAW's single iconography entry point.
@@ -85,16 +87,27 @@ public final class DawgIcon extends Region {
     private static final String RESOURCE_ROOT =
             "/com/benesquivelmusic/daw/app/ui/icons/lucide/";
 
+    /**
+     * The initial default for {@code -fx-icon-color}. This <strong>must</strong>
+     * be kept in sync with the {@code -text-hi} design token defined in
+     * {@code styles.css}. Once the icon is placed inside a styled {@link
+     * javafx.scene.Scene Scene}, CSS takes over via the {@code .dawg-icon}
+     * rule and the hard-coded fallback is no longer visible.
+     */
+    static final Color DEFAULT_ICON_COLOR = Color.web("#ECEEF2");
+
     private static final PseudoClass ACTIVE = PseudoClass.getPseudoClass("active");
 
     private final String iconName;
     private final Size size;
     private final List<Shape> shapes;
+    /** Shapes whose fill should track the icon colour (rare — e.g. circle-dot's inner dot). */
+    private final Set<Shape> filledShapes;
 
     // ── CSS-styleable icon colour ────────────────────────────────────────────
 
     private static final CssMetaData<DawgIcon, Paint> ICON_COLOR_META =
-            new CssMetaData<>("-fx-icon-color", PaintConverter.getInstance(), Color.web("#ECEEF2")) {
+            new CssMetaData<>("-fx-icon-color", PaintConverter.getInstance(), DEFAULT_ICON_COLOR) {
                 @Override public boolean isSettable(DawgIcon node) {
                     return node.iconColor == null || !node.iconColor.isBound();
                 }
@@ -113,7 +126,7 @@ public final class DawgIcon extends Region {
     }
 
     private final StyleableObjectProperty<Paint> iconColor =
-            new StyleableObjectProperty<>(Color.web("#ECEEF2")) {
+            new StyleableObjectProperty<>(DEFAULT_ICON_COLOR) {
                 @Override public Object getBean() { return DawgIcon.this; }
                 @Override public String getName() { return "iconColor"; }
                 @Override public CssMetaData<DawgIcon, Paint> getCssMetaData() {
@@ -147,7 +160,10 @@ public final class DawgIcon extends Region {
         }
         this.iconName = name;
         this.size = size;
-        this.shapes = loadShapes(name);
+
+        ParseResult parsed = loadShapes(name);
+        this.shapes = parsed.shapes();
+        this.filledShapes = parsed.filledShapes();
 
         // The wrapping Group lets us scale the 24x24 source path data down
         // to the requested nominal size while keeping a clean layout box.
@@ -175,12 +191,20 @@ public final class DawgIcon extends Region {
     /** The discrete size this region was created at. */
     public Size size() { return size; }
 
+    private boolean active;
+
     /**
      * Toggles the {@code :active} pseudo-class — used by toggle buttons so
      * the icon can re-tint via {@code .my-toggle .dawg-icon:active}.
      */
     public void setActive(boolean active) {
+        this.active = active;
         pseudoClassStateChanged(ACTIVE, active);
+    }
+
+    /** Returns {@code true} if the {@code :active} pseudo-class is set. */
+    public boolean isActive() {
+        return active;
     }
 
     // ── Styleable icon colour ────────────────────────────────────────────────
@@ -202,11 +226,9 @@ public final class DawgIcon extends Region {
     private void applyIconColor(Paint paint) {
         for (Shape s : shapes) {
             // Lucide strokes the path — fill stays transparent unless the
-            // source SVG explicitly set fill (we honour that on parse).
+            // source SVG explicitly set fill (tracked via filledShapes).
             s.setStroke(paint);
-            if (s.getUserData() == Boolean.TRUE) {
-                // Marker set during parse: this shape *was* originally filled
-                // (e.g. circle-dot's inner dot uses fill="currentColor").
+            if (filledShapes.contains(s)) {
                 s.setFill(paint);
             }
         }
@@ -214,7 +236,10 @@ public final class DawgIcon extends Region {
 
     // ── SVG loading + parsing ────────────────────────────────────────────────
 
-    private static List<Shape> loadShapes(String name) {
+    /** Internal parse result carrying both shape list and filled-shape set. */
+    record ParseResult(List<Shape> shapes, Set<Shape> filledShapes) {}
+
+    private static ParseResult loadShapes(String name) {
         String path = RESOURCE_ROOT + name + ".svg";
         InputStream in = DawgIcon.class.getResourceAsStream(path);
         if (in == null) {
@@ -228,7 +253,7 @@ public final class DawgIcon extends Region {
         }
     }
 
-    static List<Shape> parseLucideSvg(InputStream in) {
+    static ParseResult parseLucideSvg(InputStream in) {
         try {
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
@@ -248,43 +273,67 @@ public final class DawgIcon extends Region {
             String linejoin = root.getAttribute("stroke-linejoin");
 
             List<Shape> shapes = new ArrayList<>();
-            collect(root, shapes, strokeWidth, linecap, linejoin);
-            return shapes;
+            Set<Shape> filledShapes = new HashSet<>();
+            collect(root, shapes, filledShapes, strokeWidth, linecap, linejoin);
+            return new ParseResult(shapes, filledShapes);
         } catch (ParserConfigurationException | SAXException | IOException e) {
             throw new IconLoadException("Failed to parse Lucide SVG", e);
         }
     }
 
-    private static void collect(Element parent, List<Shape> out,
-                                double strokeWidth, String linecap, String linejoin) {
+    private static void collect(Element parent, List<Shape> out, Set<Shape> filled,
+                                double inheritedStrokeWidth, String inheritedLinecap,
+                                String inheritedLinejoin) {
         NodeList children = parent.getChildNodes();
         for (int i = 0; i < children.getLength(); i++) {
             if (!(children.item(i) instanceof Element el)) continue;
+
+            if ("g".equals(el.getTagName())) {
+                // Honour per-<g> overrides, falling back to inherited values.
+                double gStroke = parseDouble(el.getAttribute("stroke-width"), inheritedStrokeWidth);
+                String gCap = attrOrDefault(el, "stroke-linecap", inheritedLinecap);
+                String gJoin = attrOrDefault(el, "stroke-linejoin", inheritedLinejoin);
+                collect(el, out, filled, gStroke, gCap, gJoin);
+                continue;
+            }
+
             Shape shape = switch (el.getTagName()) {
                 case "path"    -> toPath(el);
                 case "circle"  -> toCircle(el);
                 case "rect"    -> toRect(el);
                 case "line"    -> toLine(el);
                 case "polygon", "polyline" -> null; // not used by current subset
-                case "g"       -> { collect(el, out, strokeWidth, linecap, linejoin); yield null; }
                 default        -> null;
             };
             if (shape == null) continue;
-            shape.setStrokeWidth(strokeWidth);
-            shape.setStrokeLineCap(toLineCap(linecap));
-            shape.setStrokeLineJoin(toLineJoin(linejoin));
+
+            // Per-element overrides, falling back to inherited values.
+            double sw = parseDouble(el.getAttribute("stroke-width"), inheritedStrokeWidth);
+            String cap = attrOrDefault(el, "stroke-linecap", inheritedLinecap);
+            String join = attrOrDefault(el, "stroke-linejoin", inheritedLinejoin);
+
+            shape.setStrokeWidth(sw);
+            shape.setStrokeLineCap(toLineCap(cap));
+            shape.setStrokeLineJoin(toLineJoin(join));
+
             // Default Lucide elements: stroke="currentColor", fill="none".
             // An element with an explicit fill that is *not* "none" is rare
             // in the subset (e.g. circle-dot uses fill="currentColor" on the
             // inner dot via attribute inheritance); honour it.
             String explicitFill = el.getAttribute("fill");
             if (!explicitFill.isEmpty() && !"none".equalsIgnoreCase(explicitFill)) {
-                shape.setUserData(Boolean.TRUE);
+                filled.add(shape);
             } else {
                 shape.setFill(Color.TRANSPARENT);
             }
             out.add(shape);
         }
+    }
+
+    /** Returns the element's attribute value, or {@code fallback} if absent/empty. */
+    private static String attrOrDefault(Element el, String name, String fallback) {
+        String v = el.getAttribute(name);
+        return (v == null || v.isEmpty()) ? fallback : v;
     }
 
     private static Shape toPath(Element el) {
