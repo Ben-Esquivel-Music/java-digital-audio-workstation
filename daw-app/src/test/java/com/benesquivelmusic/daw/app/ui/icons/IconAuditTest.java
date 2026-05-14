@@ -39,7 +39,7 @@ class IconAuditTest {
             // Match common FontAwesome class prefixes (fa-solid, fa-regular,
             // fa-brand, fa-light, fa-thin, fa-sharp) rather than the overly
             // broad "fa-*" which would flag unrelated identifiers.
-            Pattern.compile("\"fa-(solid|regular|brand|light|thin|sharp|icon)-[a-z0-9-]+\""),
+            Pattern.compile("\"fa-(solid|regular|brands|light|thin|sharp|icon)-[a-z0-9-]+\""),
             Pattern.compile("\\bMaterial:[a-z0-9_-]+\\b", Pattern.CASE_INSENSITIVE),
             Pattern.compile("\\bMDI_[A-Z_]+\\b"),
             Pattern.compile("\"mdi-[a-z0-9-]+\""),
