@@ -1,7 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
-import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
-import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.icons.DawgIcon;
 
 import javafx.scene.Node;
 import javafx.scene.control.Button;
@@ -100,52 +99,80 @@ final class ToolbarAppearanceController {
     // ── Icon application ─────────────────────────────────────────────────────
 
     /**
-     * Applies SVG icons from the DAW icon pack to all UI controls.
+     * Applies the toolbar's iconography in line with UI Design Book §2.4
+     * and §3.6.
      *
-     * <p>Icons are drawn from every category in the pack to provide rich visual
-     * feedback: playback controls use the <em>Playback</em> category; track-type
-     * indicators pull from <em>Media</em> and <em>Instruments</em>; status labels
-     * reference <em>Notifications</em>; I/O routing uses <em>Connectivity</em>;
-     * and so on across all 14 categories.</p>
+     * <p><strong>The "no icon next to label" rule.</strong> Per §2.4, an
+     * icon is a <em>replacement</em> for a label, not a decoration on it.
+     * Transport buttons (Skip / Play / Stop / Record / Skip / Loop) and
+     * toolbar action buttons (Audio Track / MIDI Track / Undo / Redo /
+     * Snap / Save / Plugins) keep their text label only — no graphic.
+     * Panel-header labels, the time display, the tempo label, and the
+     * status-bar labels keep their text only for the same reason.</p>
+     *
+     * <p><strong>Where icons remain.</strong> Inline status glyphs that
+     * <em>are</em> the indicator — the record dot and the arrangement
+     * placeholder's music note — render as pure {@link DawgIcon} regions
+     * sourced from Lucide ({@link DawgIcon}, §3.6).</p>
      */
     private void applyIcons() {
-        // ── Transport controls (Playback category) ──────────────────────────
-        transportButtons.skipBack.setGraphic(IconNode.of(DawIcon.SKIP_BACK, TRANSPORT_ICON_SIZE));
-        transportButtons.play.setGraphic(IconNode.of(DawIcon.PLAY, TRANSPORT_ICON_SIZE));
-        transportButtons.stop.setGraphic(IconNode.of(DawIcon.STOP, TRANSPORT_ICON_SIZE));
-        transportButtons.record.setGraphic(IconNode.of(DawIcon.RECORD, TRANSPORT_ICON_SIZE));
-        transportButtons.skipForward.setGraphic(IconNode.of(DawIcon.SKIP_FORWARD, TRANSPORT_ICON_SIZE));
-        transportButtons.loop.setGraphic(IconNode.of(DawIcon.LOOP, TRANSPORT_ICON_SIZE));
-        transportButtons.metronome.setGraphic(IconNode.of(DawIcon.METRONOME, TRANSPORT_ICON_SIZE));
+        // ── Transport, toolbar, panel-header & status-bar labels ──
+        //
+        // Per UI Design Book §2.4 these controls all carry text labels;
+        // icon-next-to-label is the rejected pattern from §1.4 ("Icon-in-
+        // button overload") and the user veto in §7.9. Strip any graphic
+        // that a previous build / story may have left in place so the
+        // controls become pure-text consistently.
+        clearGraphic(transportButtons.skipBack);
+        clearGraphic(transportButtons.play);
+        clearGraphic(transportButtons.stop);
+        clearGraphic(transportButtons.record);
+        clearGraphic(transportButtons.skipForward);
+        clearGraphic(transportButtons.loop);
+        clearGraphic(transportButtons.metronome);
 
-        // ── Toolbar buttons (mixed categories) ─────────────────────────────
-        toolbarButtons.addAudioTrack.setGraphic(IconNode.of(DawIcon.MICROPHONE, TOOLBAR_ICON_SIZE));
-        toolbarButtons.addMidiTrack.setGraphic(IconNode.of(DawIcon.KEYBOARD, TOOLBAR_ICON_SIZE));
-        toolbarButtons.undo.setGraphic(IconNode.of(DawIcon.UNDO, TOOLBAR_ICON_SIZE));
-        toolbarButtons.redo.setGraphic(IconNode.of(DawIcon.REDO, TOOLBAR_ICON_SIZE));
-        toolbarButtons.snap.setGraphic(IconNode.of(DawIcon.SNAP, TOOLBAR_ICON_SIZE));
-        toolbarButtons.save.setGraphic(IconNode.of(DawIcon.DOWNLOAD, TOOLBAR_ICON_SIZE));
-        toolbarButtons.plugins.setGraphic(IconNode.of(DawIcon.EQ, TOOLBAR_ICON_SIZE));
+        clearGraphic(toolbarButtons.addAudioTrack);
+        clearGraphic(toolbarButtons.addMidiTrack);
+        clearGraphic(toolbarButtons.undo);
+        clearGraphic(toolbarButtons.redo);
+        clearGraphic(toolbarButtons.snap);
+        clearGraphic(toolbarButtons.save);
+        clearGraphic(toolbarButtons.plugins);
 
-        // ── Time display — timer icon prefix (General category) ────────────
-        labels.timeDisplay.setGraphic(IconNode.of(DawIcon.TIMER, PANEL_ICON_SIZE));
+        clearGraphic(labels.timeDisplay);
+        clearGraphic(labels.tracksPanelHeader);
+        clearGraphic(labels.arrangementPanelHeader);
+        clearGraphic(labels.monitoringLabel);
+        clearGraphic(labels.checkpointLabel);
+        clearGraphic(labels.statusBarLabel);
+        clearGraphic(labels.ioRoutingLabel);
 
-        // ── Panel headers ───────────────────────────────────────────────────
-        labels.tracksPanelHeader.setGraphic(IconNode.of(DawIcon.MIXER, PANEL_ICON_SIZE));
-        labels.arrangementPanelHeader.setGraphic(IconNode.of(DawIcon.TIMELINE, PANEL_ICON_SIZE));
+        // ── Inline status glyphs — icon-only, no text ──
+        // The arrangement placeholder is a hint, not a button; pairing
+        // the icon with text reads as a tile heading rather than a call
+        // to action (UI Design Book §2.4).
+        labels.arrangementPlaceholder.setGraphic(
+                DawgIcon.of("music", DawgIcon.Size.SIZE_24));
+        // The REC indicator is the glyph itself; the "● REC" literal in
+        // FXML is a legacy fallback for tests that read text content.
+        labels.recIndicator.setGraphic(
+                DawgIcon.of("circle-dot", DawgIcon.Size.SIZE_16));
 
-        // ── Arrangement placeholder (Media category) ────────────────────────
-        labels.arrangementPlaceholder.setGraphic(IconNode.of(DawIcon.MUSIC_NOTE, 24));
-
-        // ── Status bar icons ────────────────────────────────────────────────
-        labels.monitoringLabel.setGraphic(IconNode.of(DawIcon.HEADPHONES, 12));
-        labels.checkpointLabel.setGraphic(IconNode.of(DawIcon.SYNC, 12));
-        labels.statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
-        labels.ioRoutingLabel.setGraphic(IconNode.of(DawIcon.USB, 12));
-        labels.recIndicator.setGraphic(IconNode.of(DawIcon.RECORD, 14));
-
-        LOG.fine("Applied SVG icons from DAW icon pack");
+        LOG.fine("Applied iconography per UI Design Book §2.4 / §3.6");
     }
+
+    /**
+     * Clears any previously-applied graphic from a labelled control. The
+     * downcast covers both {@link Button} and {@link Label} which are the
+     * two control types the toolbar manages. {@link IconNode} continues
+     * to exist for surfaces not yet migrated to Lucide / {@link DawgIcon};
+     * this controller no longer references it directly.
+     */
+    private static void clearGraphic(javafx.scene.control.Labeled control) {
+        if (control == null) return;
+        control.setGraphic(null);
+    }
+
 
     // ── Tooltip application ──────────────────────────────────────────────────
 

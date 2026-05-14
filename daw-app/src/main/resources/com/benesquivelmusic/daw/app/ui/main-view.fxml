@@ -17,7 +17,9 @@
                     <Insets top="8" right="16" bottom="8" left="16"/>
                 </padding>
 
-                <!-- Group 1: Transport (icons applied programmatically via IconNode) -->
+                <!-- Group 1: Transport — text-only per UI Design Book §2.4
+                     ("an icon is a replacement for a label, not a decoration
+                     on it"). Icons would compete with the labels (§1.4). -->
                 <HBox fx:id="transportGroup" spacing="4" alignment="CENTER"
                       styleClass="toolbar-button-group">
                     <Button fx:id="skipBackButton" text="Skip Back" onAction="#onSkipBack"
@@ -36,15 +38,15 @@
 
                 <Separator orientation="VERTICAL"/>
 
-                <!-- Time display (icon applied programmatically) -->
+                <!-- Time display — text-only per §2.4 (no decorative icon) -->
                 <Label fx:id="timeDisplay" text="00:00:00.0" styleClass="time-display"/>
 
                 <Separator orientation="VERTICAL"/>
 
-                <!-- Tempo (icon applied programmatically) -->
+                <!-- Tempo — text-only per §2.4 -->
                 <Label fx:id="tempoLabel" text="120.0 BPM" styleClass="tempo-label"/>
 
-                <!-- Metronome toggle (icon applied programmatically) -->
+                <!-- Metronome — labelled button (text-only per §2.4) -->
                 <Button fx:id="metronomeButton" text="Metronome" onAction="#onToggleMetronome"
                         styleClass="dawg-button, size-transport, metronome-button"/>
 
@@ -93,7 +95,7 @@
                 <!-- Spacer -->
                 <Region HBox.hgrow="ALWAYS"/>
 
-                <!-- Status (icon applied programmatically) -->
+                <!-- Status — text-only per §2.4 -->
                 <Label fx:id="statusLabel" text="STOPPED" styleClass="status-label"/>
             </HBox>
             <Separator/>

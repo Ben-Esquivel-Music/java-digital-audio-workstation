@@ -334,6 +334,51 @@
     -fx-background-color: -surface-3;
 }
 
+/* ── Icon-only button modifier (story: Lucide adoption) ──
+ * Per UI Design Book §2.4: icons replace labels, they don't decorate
+ * them. Apply .icon-only on toolbar mode toggles (snap, ripple,
+ * metronome) to collapse horizontal padding to a square and centre the
+ * Lucide glyph. Pair with a Tooltip — never a visible label.
+ *
+ * Composes with the unified size variants from story 264 — i.e.
+ *   .dawg-button.icon-only.size-default  ~28 px square
+ *   .dawg-button.icon-only.size-compact  ~24 px square
+ *   .dawg-button.icon-only.size-touch    ~32 px square
+ */
+.dawg-button.icon-only {
+    -fx-content-display: graphic-only;
+    -fx-alignment: center;
+}
+.dawg-button.icon-only.size-compact {
+    -fx-padding: 4 4;
+    -fx-min-width: 24;
+    -fx-min-height: 24;
+}
+.dawg-button.icon-only.size-default {
+    -fx-padding: 6 6;
+    -fx-min-width: 28;
+    -fx-min-height: 28;
+}
+.dawg-button.icon-only.size-touch {
+    -fx-padding: 8 8;
+    -fx-min-width: 32;
+    -fx-min-height: 32;
+}
+
+/* ── Lucide icons (story: Lucide adoption) ──
+ * The default icon colour resolves to -text-hi so the same icon flips
+ * with the theme. Re-tint per surface with:
+ *   .my-toggle:active .dawg-icon { -fx-icon-color: -accent; }
+ */
+.dawg-icon {
+    -fx-icon-color: -text-hi;
+}
+.dawg-button:pressed .dawg-icon,
+.dawg-button:armed   .dawg-icon,
+.dawg-button:active  .dawg-icon {
+    -fx-icon-color: -text-on-accent;
+}
+
 /* ── Labels ── */
 .tempo-label {
     -fx-text-fill: -warn;
