@@ -40,17 +40,29 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class IconAuditTest {
 
-    /** Forbidden icon-family identifiers as case-insensitive regexes. */
+    /** Forbidden icon-family identifiers as regexes. */
     private static final List<Pattern> FORBIDDEN_PATTERNS = List.of(
             Pattern.compile("\\bFontAwesome\\b", Pattern.CASE_INSENSITIVE),
-            // Match common FontAwesome class prefixes (fa-solid, fa-regular,
-            // fa-brands, fa-light, fa-thin, fa-sharp) on a word boundary
-            // rather than requiring surrounding double quotes — the latter
-            // would miss unquoted CSS selectors and FXML attributes.
+            // Long-form FontAwesome class prefixes (fa-solid, fa-regular,
+            // fa-brands, fa-light, fa-thin, fa-sharp). Word-bounded so it
+            // catches both quoted Java strings, FXML attributes, and bare
+            // CSS selectors.
             Pattern.compile("\\bfa-(solid|regular|brands|light|thin|sharp|icon)-[a-z0-9-]+\\b"),
+            // Short-form FontAwesome class prefixes (fas / far / fab /
+            // fal) immediately followed by an `fa-...` glyph class — the
+            // pre-v5 spelling that still appears in older codebases and
+            // tutorials. Requires the `fa-` continuation so we don't
+            // collide with unrelated three-letter identifiers like `fas`.
+            Pattern.compile("\\b(fas|far|fab|fal)\\s+fa-[a-z0-9-]+\\b"),
+            // The bare `fa fa-...` legacy form (FontAwesome 4.x).
+            Pattern.compile("\\bfa\\s+fa-[a-z0-9-]+\\b"),
             Pattern.compile("\\bMaterial:[a-z0-9_-]+\\b", Pattern.CASE_INSENSITIVE),
+            // The Google Material Icons web-font class.
+            Pattern.compile("\\bmaterial-icons\\b"),
             Pattern.compile("\\bMDI_[A-Z_]+\\b"),
             Pattern.compile("\\bmdi-[a-z0-9-]+\\b"),
+            // MaterialFX / JFoenix-style `mfx-` icon selectors.
+            Pattern.compile("\\bmfx-[a-z0-9-]+\\b"),
             // Glyph is the typical class name from icon-font helpers
             // (org.controlsfx.glyphfont.Glyph, kordamp's GlyphFontRegistry,
             // de.jensd.fx.glyphs.GlyphIcon).
@@ -101,13 +113,18 @@ class IconAuditTest {
      * read avoids loading the full source into memory; short-circuiting
      * on the first match per line keeps the inner loop cheap even for
      * lines that hit several patterns.
+     *
+     * <p>Tracks {@code /* ... *}{@code /} block-comment state across
+     * lines so that legacy-family references inside multi-line CSS or
+     * Java block comments do not trip the audit.</p>
      */
     private static void scanFile(Path file, List<String> violations) throws IOException {
         AtomicInteger lineNo = new AtomicInteger(0);
+        boolean[] inBlockComment = {false};
         try (Stream<String> lines = Files.lines(file, StandardCharsets.UTF_8)) {
             lines.forEach(line -> {
                 int n = lineNo.incrementAndGet();
-                String stripped = stripComments(line);
+                String stripped = stripComments(line, inBlockComment);
                 if (stripped.isEmpty()) return;
                 for (Pattern p : FORBIDDEN_PATTERNS) {
                     if (p.matcher(stripped).find()) {
@@ -121,38 +138,55 @@ class IconAuditTest {
     }
 
     /**
-     * Returns the code-only portion of {@code line}: trailing line
-     * comments and inline block-comment segments are stripped, and
-     * lines that are entirely comments are reduced to the empty
-     * string. This lets javadoc / inline notes legitimately reference
-     * obsolete icon family names without tripping the audit.
+     * Returns the code-only portion of {@code line}: line comments,
+     * inline block-comment segments, and any segment inside an open
+     * multi-line block comment are stripped. The single-element
+     * {@code inBlockComment} array carries open-block state from one
+     * line to the next.
      */
-    private static String stripComments(String line) {
-        String trimmed = line.trim();
-        // Whole-line comments.
-        if (trimmed.startsWith("//") || trimmed.startsWith("*")
-                || trimmed.startsWith("/*") || trimmed.startsWith("<!--")) {
-            return "";
-        }
-        // Trailing line comment.
-        int slashSlash = line.indexOf("//");
-        if (slashSlash >= 0) {
-            line = line.substring(0, slashSlash);
-        }
-        // Inline /* ... */ block (single-line). We don't track multi-line
-        // block comment state across the stream; the per-line javadoc
-        // prefix check above handles the common case (continuation lines
-        // starting with `*`).
-        int blockStart;
-        while ((blockStart = line.indexOf("/*")) >= 0) {
-            int blockEnd = line.indexOf("*/", blockStart + 2);
-            if (blockEnd < 0) {
-                line = line.substring(0, blockStart);
-                break;
+    static String stripComments(String line, boolean[] inBlockComment) {
+        StringBuilder out = new StringBuilder(line.length());
+        int i = 0;
+        while (i < line.length()) {
+            if (inBlockComment[0]) {
+                int close = line.indexOf("*/", i);
+                if (close < 0) return out.toString();
+                inBlockComment[0] = false;
+                i = close + 2;
+                continue;
             }
-            line = line.substring(0, blockStart) + line.substring(blockEnd + 2);
+            // Detect start of single-line comment.
+            if (i + 1 < line.length()
+                    && line.charAt(i) == '/' && line.charAt(i + 1) == '/') {
+                break; // rest of line is a comment
+            }
+            // Detect start of block comment.
+            if (i + 1 < line.length()
+                    && line.charAt(i) == '/' && line.charAt(i + 1) == '*') {
+                inBlockComment[0] = true;
+                i += 2;
+                continue;
+            }
+            // Detect XML / FXML comment.
+            if (i + 3 < line.length()
+                    && line.charAt(i) == '<' && line.charAt(i + 1) == '!'
+                    && line.charAt(i + 2) == '-' && line.charAt(i + 3) == '-') {
+                int close = line.indexOf("-->", i + 4);
+                if (close < 0) return out.toString(); // unterminated — treat rest as comment
+                i = close + 3;
+                continue;
+            }
+            out.append(line.charAt(i));
+            i++;
         }
-        return line;
+        // Trim a Javadoc-continuation leading `*` so that lines like
+        // `* See FontAwesome migration` don't trip the audit when they
+        // appear outside an explicit /* ... */ that the scanner saw
+        // (e.g. block-comment continuation lines that begin in the
+        // previous file).
+        String trimmed = out.toString().trim();
+        if (trimmed.startsWith("*")) return "";
+        return out.toString();
     }
 
     /**

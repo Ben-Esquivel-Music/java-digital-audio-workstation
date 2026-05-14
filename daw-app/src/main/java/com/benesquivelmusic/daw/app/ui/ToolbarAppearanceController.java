@@ -28,12 +28,6 @@ final class ToolbarAppearanceController {
 
     private static final Logger LOG = Logger.getLogger(ToolbarAppearanceController.class.getName());
 
-    /** Icon size for transport-bar buttons (play, stop, record). */
-    static final double TRANSPORT_ICON_SIZE = 14;
-    /** Icon size for toolbar buttons (add track, save, plugins). */
-    static final double TOOLBAR_ICON_SIZE = 14;
-    /** Icon size for panel-header labels. */
-    static final double PANEL_ICON_SIZE = 16;
     /** Show delay for all tooltips (300ms for quick discoverability). */
     static final Duration TOOLTIP_SHOW_DELAY = Duration.millis(300);
     /** Width threshold below which lower-priority toolbar groups are hidden. */

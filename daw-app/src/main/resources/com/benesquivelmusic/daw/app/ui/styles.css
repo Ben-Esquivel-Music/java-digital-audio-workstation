@@ -350,17 +350,17 @@
     -fx-alignment: center;
 }
 .dawg-button.icon-only.size-compact {
-    -fx-padding: 4 4;
+    -fx-padding: 4;
     -fx-min-width: 24;
     -fx-min-height: 24;
 }
 .dawg-button.icon-only.size-default {
-    -fx-padding: 6 6;
+    -fx-padding: 6;
     -fx-min-width: 28;
     -fx-min-height: 28;
 }
 .dawg-button.icon-only.size-touch {
-    -fx-padding: 8 8;
+    -fx-padding: 8;
     -fx-min-width: 32;
     -fx-min-height: 32;
 }

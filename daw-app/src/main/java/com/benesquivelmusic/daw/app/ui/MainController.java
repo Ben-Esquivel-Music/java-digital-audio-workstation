@@ -66,7 +66,6 @@ import java.util.prefs.Preferences;
 public final class MainController {
 
     private static final Logger LOG = Logger.getLogger(MainController.class.getName());
-    private static final double PANEL_ICON_SIZE = ToolbarAppearanceController.PANEL_ICON_SIZE;
 
     @FXML private BorderPane rootPane;
     @FXML private Button skipBackButton;

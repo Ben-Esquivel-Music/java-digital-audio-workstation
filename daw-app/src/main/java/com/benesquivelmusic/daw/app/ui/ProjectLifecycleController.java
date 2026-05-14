@@ -58,9 +58,6 @@ final class ProjectLifecycleController {
 
     private static final Logger LOG = Logger.getLogger(ProjectLifecycleController.class.getName());
 
-    /** Icon size for panel-header labels. */
-    private static final double PANEL_ICON_SIZE = 16;
-
     /**
      * Callback interface implemented by the host controller to provide
      * mutable project state access and coordination methods that remain

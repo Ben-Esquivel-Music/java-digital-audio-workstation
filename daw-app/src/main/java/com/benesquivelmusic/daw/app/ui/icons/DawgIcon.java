@@ -34,6 +34,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * The DAW's single iconography entry point.
@@ -91,8 +92,14 @@ public final class DawgIcon extends Region {
         public double pixels() { return px; }
     }
 
-    /** Lucide ships icons at a 24&times;24 view box. */
-    private static final double LUCIDE_VIEW_BOX = 24.0;
+    /**
+     * Fallback view-box edge used when an SVG resource omits the
+     * {@code viewBox} attribute. The vendored Lucide icons all ship with
+     * {@code viewBox="0 0 24 24"}, but the parser reads the actual
+     * attribute from each file so a future drop-in with a different
+     * box still renders correctly.
+     */
+    private static final double DEFAULT_VIEW_BOX = 24.0;
     private static final String RESOURCE_ROOT =
             "/com/benesquivelmusic/daw/app/ui/icons/lucide/";
 
@@ -170,15 +177,22 @@ public final class DawgIcon extends Region {
         this.iconName = name;
         this.size = size;
 
-        ParseResult parsed = loadShapes(name);
-        this.shapes = parsed.shapes();
-        this.filledShapes = parsed.filledShapes();
+        IconBlueprint bp = loadBlueprint(name);
+        List<Shape> built = new ArrayList<>(bp.specs().size());
+        Set<Shape> built_filled = new HashSet<>();
+        for (ShapeSpec spec : bp.specs()) {
+            Shape s = spec.materialize();
+            if (spec.filled()) built_filled.add(s);
+            built.add(s);
+        }
+        this.shapes = built;
+        this.filledShapes = built_filled;
 
-        // The wrapping Group lets us scale the 24x24 source path data down
+        // The wrapping Group lets us scale the source path data down
         // to the requested nominal size while keeping a clean layout box.
         Group group = new Group();
         group.getChildren().addAll(shapes);
-        double scale = size.pixels() / LUCIDE_VIEW_BOX;
+        double scale = size.pixels() / bp.viewBox();
         group.getTransforms().add(new Scale(scale, scale));
         group.setManaged(false);
         getChildren().add(group);
@@ -254,10 +268,88 @@ public final class DawgIcon extends Region {
 
     // ── SVG loading + parsing ────────────────────────────────────────────────
 
-    /** Internal parse result carrying both shape list and filled-shape set. */
-    record ParseResult(List<Shape> shapes, Set<Shape> filledShapes) {}
+    /**
+     * Immutable, geometry-only description of one shape parsed from a
+     * Lucide SVG. {@link #materialize()} creates a fresh JavaFX
+     * {@link Shape} from the recipe; this lets us cache one blueprint
+     * per icon name and rebuild shape instances per {@code DawgIcon},
+     * skipping XML parsing on every call.
+     */
+    sealed interface ShapeSpec permits PathSpec, CircleSpec, RectSpec, LineSpec {
+        boolean filled();
+        double strokeWidth();
+        StrokeLineCap lineCap();
+        StrokeLineJoin lineJoin();
+        Shape materialize();
+    }
 
-    private static ParseResult loadShapes(String name) {
+    record PathSpec(String d, boolean filled, double strokeWidth,
+                    StrokeLineCap lineCap, StrokeLineJoin lineJoin) implements ShapeSpec {
+        @Override public Shape materialize() {
+            SVGPath p = new SVGPath();
+            p.setContent(d);
+            applyCommon(p, this);
+            return p;
+        }
+    }
+
+    record CircleSpec(double cx, double cy, double r, boolean filled,
+                      double strokeWidth, StrokeLineCap lineCap,
+                      StrokeLineJoin lineJoin) implements ShapeSpec {
+        @Override public Shape materialize() {
+            Circle c = new Circle(cx, cy, r);
+            applyCommon(c, this);
+            return c;
+        }
+    }
+
+    record RectSpec(double x, double y, double width, double height,
+                    double rx, double ry, boolean filled,
+                    double strokeWidth, StrokeLineCap lineCap,
+                    StrokeLineJoin lineJoin) implements ShapeSpec {
+        @Override public Shape materialize() {
+            Rectangle r = new Rectangle(x, y, width, height);
+            if (rx > 0) r.setArcWidth(rx * 2);
+            if (ry > 0) r.setArcHeight(ry * 2);
+            applyCommon(r, this);
+            return r;
+        }
+    }
+
+    record LineSpec(double x1, double y1, double x2, double y2,
+                    boolean filled, double strokeWidth,
+                    StrokeLineCap lineCap, StrokeLineJoin lineJoin) implements ShapeSpec {
+        @Override public Shape materialize() {
+            Line l = new Line(x1, y1, x2, y2);
+            applyCommon(l, this);
+            return l;
+        }
+    }
+
+    private static void applyCommon(Shape s, ShapeSpec spec) {
+        s.setStrokeWidth(spec.strokeWidth());
+        s.setStrokeLineCap(spec.lineCap());
+        s.setStrokeLineJoin(spec.lineJoin());
+        if (!spec.filled()) s.setFill(Color.TRANSPARENT);
+    }
+
+    /** Immutable blueprint for one bundled icon: viewBox edge + shape specs. */
+    record IconBlueprint(double viewBox, List<ShapeSpec> specs) {}
+
+    /**
+     * Process-wide cache of parsed icon blueprints. Lucide SVGs are
+     * immutable bundled resources, so this map can grow only to the
+     * size of the {@code icons.allowed.txt} whitelist (currently 37
+     * entries). Concurrent reads are safe.
+     */
+    private static final ConcurrentHashMap<String, IconBlueprint> BLUEPRINTS =
+            new ConcurrentHashMap<>();
+
+    private static IconBlueprint loadBlueprint(String name) {
+        return BLUEPRINTS.computeIfAbsent(name, DawgIcon::parseBlueprint);
+    }
+
+    private static IconBlueprint parseBlueprint(String name) {
         String path = RESOURCE_ROOT + name + ".svg";
         InputStream in = DawgIcon.class.getResourceAsStream(path);
         if (in == null) {
@@ -271,7 +363,7 @@ public final class DawgIcon extends Region {
         }
     }
 
-    static ParseResult parseLucideSvg(InputStream in) {
+    static IconBlueprint parseLucideSvg(InputStream in) {
         try {
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
@@ -290,17 +382,31 @@ public final class DawgIcon extends Region {
             String linecap = root.getAttribute("stroke-linecap");
             String linejoin = root.getAttribute("stroke-linejoin");
             String rootFill = root.getAttribute("fill");
+            double viewBox = parseViewBoxEdge(root.getAttribute("viewBox"));
 
-            List<Shape> shapes = new ArrayList<>();
-            Set<Shape> filledShapes = new HashSet<>();
-            collect(root, shapes, filledShapes, strokeWidth, linecap, linejoin, rootFill);
-            return new ParseResult(shapes, filledShapes);
+            List<ShapeSpec> specs = new ArrayList<>();
+            collect(root, specs, strokeWidth, linecap, linejoin, rootFill);
+            return new IconBlueprint(viewBox, Collections.unmodifiableList(specs));
         } catch (ParserConfigurationException | SAXException | IOException e) {
             throw new IconLoadException("Failed to parse Lucide SVG", e);
         }
     }
 
-    private static void collect(Element parent, List<Shape> out, Set<Shape> filled,
+    /**
+     * Returns the viewBox width (assumed equal to height — Lucide always
+     * uses square viewBoxes) parsed from an SVG {@code viewBox="minX minY
+     * width height"} attribute, falling back to {@link #DEFAULT_VIEW_BOX}
+     * when the attribute is missing or malformed.
+     */
+    private static double parseViewBoxEdge(String viewBox) {
+        if (viewBox == null || viewBox.isBlank()) return DEFAULT_VIEW_BOX;
+        String[] parts = viewBox.trim().split("\\s+");
+        if (parts.length < 4) return DEFAULT_VIEW_BOX;
+        double width = parseDouble(parts[2], DEFAULT_VIEW_BOX);
+        return width > 0 ? width : DEFAULT_VIEW_BOX;
+    }
+
+    private static void collect(Element parent, List<ShapeSpec> out,
                                 double inheritedStrokeWidth, String inheritedLinecap,
                                 String inheritedLinejoin, String inheritedFill) {
         NodeList children = parent.getChildNodes();
@@ -313,28 +419,14 @@ public final class DawgIcon extends Region {
                 String gCap = attrOrDefault(el, "stroke-linecap", inheritedLinecap);
                 String gJoin = attrOrDefault(el, "stroke-linejoin", inheritedLinejoin);
                 String gFill = attrOrDefault(el, "fill", inheritedFill);
-                collect(el, out, filled, gStroke, gCap, gJoin, gFill);
+                collect(el, out, gStroke, gCap, gJoin, gFill);
                 continue;
             }
 
-            Shape shape = switch (el.getTagName()) {
-                case "path"    -> toPath(el);
-                case "circle"  -> toCircle(el);
-                case "rect"    -> toRect(el);
-                case "line"    -> toLine(el);
-                case "polygon", "polyline" -> null; // not used by current subset
-                default        -> null;
-            };
-            if (shape == null) continue;
-
             // Per-element overrides, falling back to inherited values.
             double sw = parseDouble(el.getAttribute("stroke-width"), inheritedStrokeWidth);
-            String cap = attrOrDefault(el, "stroke-linecap", inheritedLinecap);
-            String join = attrOrDefault(el, "stroke-linejoin", inheritedLinejoin);
-
-            shape.setStrokeWidth(sw);
-            shape.setStrokeLineCap(toLineCap(cap));
-            shape.setStrokeLineJoin(toLineJoin(join));
+            StrokeLineCap cap = toLineCap(attrOrDefault(el, "stroke-linecap", inheritedLinecap));
+            StrokeLineJoin join = toLineJoin(attrOrDefault(el, "stroke-linejoin", inheritedLinejoin));
 
             // Resolve fill with full inheritance from ancestor <g>/<svg>.
             // Default Lucide elements: stroke="currentColor", fill="none".
@@ -343,12 +435,35 @@ public final class DawgIcon extends Region {
             // fill="currentColor" on child shapes (or via a <g> ancestor);
             // honour it when present.
             String fillAttr = attrOrDefault(el, "fill", inheritedFill);
-            if (!fillAttr.isEmpty() && !"none".equalsIgnoreCase(fillAttr)) {
-                filled.add(shape);
-            } else {
-                shape.setFill(Color.TRANSPARENT);
-            }
-            out.add(shape);
+            boolean filled = !fillAttr.isEmpty() && !"none".equalsIgnoreCase(fillAttr);
+
+            ShapeSpec spec = switch (el.getTagName()) {
+                case "path"    -> new PathSpec(el.getAttribute("d"), filled, sw, cap, join);
+                case "circle"  -> new CircleSpec(
+                        parseDouble(el.getAttribute("cx"), 0),
+                        parseDouble(el.getAttribute("cy"), 0),
+                        parseDouble(el.getAttribute("r"),  0),
+                        filled, sw, cap, join);
+                case "rect"    -> {
+                    double rx = parseDouble(el.getAttribute("rx"), 0);
+                    double ry = parseDouble(el.getAttribute("ry"), rx);
+                    yield new RectSpec(
+                            parseDouble(el.getAttribute("x"), 0),
+                            parseDouble(el.getAttribute("y"), 0),
+                            parseDouble(el.getAttribute("width"),  0),
+                            parseDouble(el.getAttribute("height"), 0),
+                            rx, ry, filled, sw, cap, join);
+                }
+                case "line"    -> new LineSpec(
+                        parseDouble(el.getAttribute("x1"), 0),
+                        parseDouble(el.getAttribute("y1"), 0),
+                        parseDouble(el.getAttribute("x2"), 0),
+                        parseDouble(el.getAttribute("y2"), 0),
+                        filled, sw, cap, join);
+                case "polygon", "polyline" -> null; // not used by current subset
+                default        -> null;
+            };
+            if (spec != null) out.add(spec);
         }
     }
 
@@ -358,40 +473,6 @@ public final class DawgIcon extends Region {
     private static String attrOrDefault(Element el, String name, String fallback) {
         String v = el.getAttribute(name);
         return v.isEmpty() ? fallback : v;
-    }
-
-    private static Shape toPath(Element el) {
-        SVGPath p = new SVGPath();
-        p.setContent(el.getAttribute("d"));
-        return p;
-    }
-
-    private static Shape toCircle(Element el) {
-        return new Circle(
-                parseDouble(el.getAttribute("cx"), 0),
-                parseDouble(el.getAttribute("cy"), 0),
-                parseDouble(el.getAttribute("r"),  0));
-    }
-
-    private static Shape toRect(Element el) {
-        Rectangle r = new Rectangle(
-                parseDouble(el.getAttribute("x"), 0),
-                parseDouble(el.getAttribute("y"), 0),
-                parseDouble(el.getAttribute("width"),  0),
-                parseDouble(el.getAttribute("height"), 0));
-        double rx = parseDouble(el.getAttribute("rx"), 0);
-        double ry = parseDouble(el.getAttribute("ry"), rx);
-        if (rx > 0) r.setArcWidth(rx * 2);
-        if (ry > 0) r.setArcHeight(ry * 2);
-        return r;
-    }
-
-    private static Shape toLine(Element el) {
-        return new Line(
-                parseDouble(el.getAttribute("x1"), 0),
-                parseDouble(el.getAttribute("y1"), 0),
-                parseDouble(el.getAttribute("x2"), 0),
-                parseDouble(el.getAttribute("y2"), 0));
     }
 
     private static double parseDouble(String value, double fallback) {
