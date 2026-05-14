@@ -75,6 +75,7 @@ class DawgIconTest {
         // Scene attachment is sufficient for CSS to dispatch later;
         // direct setIconColor must always work. Assign to a local to
         // prevent GC from collecting the scene during the test.
+        @SuppressWarnings("unused")
         Scene scene = new Scene(new StackPane(icon));
         icon.setIconColor(javafx.scene.paint.Color.RED);
         assertThat(icon.getIconColor()).isEqualTo(javafx.scene.paint.Color.RED);

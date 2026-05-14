@@ -179,6 +179,13 @@ public final class DawgIcon extends Region {
         setMinSize(px, px);
         setMaxSize(px, px);
 
+        // Clip to the layout box so stroke overshoot (up to half the
+        // scaled stroke width) does not bleed into neighbouring controls.
+        Rectangle clip = new Rectangle(px, px);
+        clip.setLayoutX(0);
+        clip.setLayoutY(0);
+        setClip(clip);
+
         getStyleClass().add("dawg-icon");
         getStyleClass().add("dawg-icon-" + name);
 
@@ -194,8 +201,10 @@ public final class DawgIcon extends Region {
     private boolean active;
 
     /**
-     * Toggles the {@code :active} pseudo-class — used by toggle buttons so
-     * the icon can re-tint via {@code .my-toggle .dawg-icon:active}.
+     * Toggles the {@code :active} pseudo-class on this {@code DawgIcon}
+     * node — a custom pseudo-class (distinct from the parent button's
+     * standard {@code :selected} / {@code :pressed}). Callers can style
+     * it via {@code .dawg-icon:active { -fx-icon-color: ...; }}.
      */
     public void setActive(boolean active) {
         this.active = active;
@@ -318,8 +327,8 @@ public final class DawgIcon extends Region {
 
             // Default Lucide elements: stroke="currentColor", fill="none".
             // An element with an explicit fill that is *not* "none" is rare
-            // in the subset (e.g. circle-dot uses fill="currentColor" on the
-            // inner dot via attribute inheritance); honour it.
+            // in the current vendored subset, but some Lucide icons do use
+            // fill="currentColor" on child shapes; honour it when present.
             String explicitFill = el.getAttribute("fill");
             if (!explicitFill.isEmpty() && !"none".equalsIgnoreCase(explicitFill)) {
                 filled.add(shape);

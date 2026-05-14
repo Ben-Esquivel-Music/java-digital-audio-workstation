@@ -71,6 +71,15 @@ class LucideIconInventoryTest {
 
     // ── Helpers ──
 
+    /**
+     * Lists bundled SVG icon names by scanning the resource directory.
+     *
+     * <p>Note: uses {@code Paths.get(dir.toURI())} which requires a
+     * filesystem-backed resource (e.g. {@code target/test-classes}).
+     * This works under Surefire but would throw
+     * {@code FileSystemNotFoundException} if run from a shaded jar.
+     * Acceptable for now — tests always run from an exploded classpath.</p>
+     */
     private static Set<String> listBundledIcons() throws IOException, URISyntaxException {
         URL dir = LucideIconInventoryTest.class.getClassLoader().getResource(LUCIDE_DIR);
         assertThat(dir).as("Lucide icon directory must be on the classpath").isNotNull();

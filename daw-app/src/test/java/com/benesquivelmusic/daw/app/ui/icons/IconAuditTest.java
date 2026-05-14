@@ -17,14 +17,19 @@ import java.util.regex.Pattern;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Forbids references to legacy icon families in the UI module.
+ * Forbids references to legacy icon families in the UI module's
+ * <strong>production</strong> sources ({@code src/main}).
  *
  * <p>Per UI Design Book §3.6 (Iconography) the DAW has a <em>single</em>
  * approved icon family: Lucide, surfaced via {@link DawgIcon}. This
- * audit scans the {@code daw-app} module's Java sources for tell-tale
- * string literals of icon-font libraries that previously appeared in
- * the codebase (FontAwesome, Material Design Icons / MDI, etc.) and
- * fails if any survive.</p>
+ * audit scans Java, FXML, and CSS files under {@code src/main} for
+ * tell-tale string literals of icon-font libraries that previously
+ * appeared in the codebase (FontAwesome, Material Design Icons / MDI,
+ * etc.) and fails if any survive.</p>
+ *
+ * <p>Test sources ({@code src/test}) are intentionally exempt: test
+ * fixtures and harnesses may legitimately reference legacy icon names
+ * when verifying migration guards or wiring stubs.</p>
  *
  * <p>The audit also forbids {@code javafx.scene.text.Font} as an icon
  * mechanism (i.e. via {@code Glyph} text characters) — these are the

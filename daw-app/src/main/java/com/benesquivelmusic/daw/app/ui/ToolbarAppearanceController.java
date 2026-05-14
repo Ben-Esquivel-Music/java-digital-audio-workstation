@@ -153,10 +153,12 @@ final class ToolbarAppearanceController {
         // to action (UI Design Book §2.4).
         labels.arrangementPlaceholder.setGraphic(
                 DawgIcon.of("music", DawgIcon.Size.SIZE_24));
-        // The REC indicator is the glyph itself; the "● REC" literal in
-        // FXML is a legacy fallback for tests that read text content.
+        // The REC indicator is icon-only per §2.4 — the "● REC" text in
+        // FXML is cleared and replaced with a tooltip.
         labels.recIndicator.setGraphic(
                 DawgIcon.of("circle-dot", DawgIcon.Size.SIZE_16));
+        labels.recIndicator.setText("");
+        labels.recIndicator.setTooltip(styledTooltip("Recording"));
 
         LOG.fine("Applied iconography per UI Design Book §2.4 / §3.6");
     }

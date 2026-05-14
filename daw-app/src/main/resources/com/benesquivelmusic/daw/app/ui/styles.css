@@ -368,14 +368,18 @@
 /* ── Lucide icons (story: Lucide adoption) ──
  * The default icon colour resolves to -text-hi so the same icon flips
  * with the theme. Re-tint per surface with:
- *   .my-toggle:active .dawg-icon { -fx-icon-color: -accent; }
+ *   .my-toggle:selected .dawg-icon { -fx-icon-color: -accent; }
+ *
+ * JavaFX buttons expose :pressed / :armed / :selected / :disabled —
+ * :active is NOT a standard JavaFX pseudo-class; use :selected for
+ * ToggleButton checked state.
  */
 .dawg-icon {
     -fx-icon-color: -text-hi;
 }
-.dawg-button:pressed .dawg-icon,
-.dawg-button:armed   .dawg-icon,
-.dawg-button:active  .dawg-icon {
+.dawg-button:pressed  .dawg-icon,
+.dawg-button:armed    .dawg-icon,
+.dawg-button:selected .dawg-icon {
     -fx-icon-color: -text-on-accent;
 }
 .dawg-button:disabled .dawg-icon {
