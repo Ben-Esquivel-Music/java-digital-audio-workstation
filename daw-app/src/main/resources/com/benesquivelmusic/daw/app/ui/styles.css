@@ -334,6 +334,64 @@
     -fx-background-color: -surface-3;
 }
 
+/* ── Icon-only button modifier (story: Lucide adoption) ──
+ * Per UI Design Book §2.4: icons replace labels, they don't decorate
+ * them. Apply .icon-only on toolbar mode toggles (snap, ripple,
+ * metronome) to collapse horizontal padding to a square and centre the
+ * Lucide glyph. Pair with a Tooltip — never a visible label.
+ *
+ * Composes with the unified .dawg-button size variants — i.e.
+ *   .dawg-button.icon-only.size-default  ~28 px square
+ *   .dawg-button.icon-only.size-compact  ~24 px square
+ *   .dawg-button.icon-only.size-touch    ~32 px square
+ */
+.dawg-button.icon-only {
+    -fx-content-display: graphic-only;
+    -fx-alignment: center;
+}
+.dawg-button.icon-only.size-compact {
+    -fx-padding: 4;
+    -fx-min-width: 24;
+    -fx-min-height: 24;
+}
+.dawg-button.icon-only.size-default {
+    -fx-padding: 8;
+    -fx-min-width: 32;
+    -fx-min-height: 32;
+}
+.dawg-button.icon-only.size-touch {
+    -fx-padding: 8;
+    -fx-min-width: 32;
+    -fx-min-height: 32;
+}
+
+/* ── Lucide icons (story: Lucide adoption) ──
+ * The default icon colour resolves to -text-hi so the same icon flips
+ * with the theme. Re-tint per surface with:
+ *   .my-toggle:selected .dawg-icon { -fx-icon-color: -accent; }
+ *
+ * Parent-button pseudo-classes used below are the standard JavaFX set
+ * (:pressed / :armed / :selected / :disabled). There is no parent
+ * button :active pseudo-class — for an "active" toggled state use
+ * :selected on the ToggleButton.
+ *
+ * Note: DawgIcon itself exposes a custom :active pseudo-class via
+ * DawgIcon.setActive(boolean) for programmatic re-tinting of the icon
+ * node directly (e.g. ".dawg-icon:active { -fx-icon-color: -accent; }").
+ * That is a separate mechanism on the icon, not on the parent button.
+ */
+.dawg-icon {
+    -fx-icon-color: -text-hi;
+}
+.dawg-button:pressed  .dawg-icon,
+.dawg-button:armed    .dawg-icon,
+.dawg-button:selected .dawg-icon {
+    -fx-icon-color: -text-on-accent;
+}
+.dawg-button:disabled .dawg-icon {
+    -fx-icon-color: -text-mute;
+}
+
 /* ── Labels ── */
 .tempo-label {
     -fx-text-fill: -warn;

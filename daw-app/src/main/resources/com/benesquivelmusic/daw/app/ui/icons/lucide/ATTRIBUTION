@@ -1,0 +1,40 @@
+Lucide Icons
+============
+
+Source:  https://lucide.dev
+Repo:    https://github.com/lucide-icons/lucide
+License: ISC (see LICENSE)
+
+The SVG files in this directory are vendored from the upstream Lucide
+project.
+
+Source revision: lucide-icons/lucide v0.469.0 (tag `0.469.0`, late 2024 — the last release before the `alert-triangle` -> `triangle-alert` rename; pinning here keeps the vendored icon names stable)
+                 https://github.com/lucide-icons/lucide/tree/0.469.0/icons
+Vendored on:     2026-05-14
+Lucide was originally forked from Feather (MIT, Cole Bemis 2013-2022)
+and has since been substantially extended by the Lucide Contributors
+(2022-present).
+
+Per UI Design Book §3.6 (Iconography), Lucide is the single icon family
+used throughout the DAW UI:
+
+  - monochrome line icons
+  - 16 px nominal (also 20 / 24 for sidebar density)
+  - 1.5 px optical stroke (rendered from Lucide's native 2 px @ 24 viewBox)
+  - inherits CSS `-fx-icon-color` so the same icon flips with the theme
+
+Adding a new Lucide icon
+------------------------
+
+1. Download the SVG from https://lucide.dev/icons/ into this directory.
+2. Add the icon's base name (without `.svg`) to `icons.allowed.txt`.
+3. The `LucideIconInventoryTest` will fail until those two sets match —
+   this is intentional: it prevents drift toward "every developer adds
+   one more icon" (UI Design Book §3.6).
+
+Removing an icon
+----------------
+
+1. Delete the `.svg` file.
+2. Remove the name from `icons.allowed.txt`.
+3. Verify no UI code still references the icon name via `DawgIcon.of(...)`.

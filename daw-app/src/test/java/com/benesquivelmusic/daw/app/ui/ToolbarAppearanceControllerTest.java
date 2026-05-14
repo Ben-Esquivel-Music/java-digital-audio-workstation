@@ -51,9 +51,6 @@ class ToolbarAppearanceControllerTest {
 
     @Test
     void constantsShouldHaveExpectedValues() {
-        assertThat(ToolbarAppearanceController.TRANSPORT_ICON_SIZE).isEqualTo(14);
-        assertThat(ToolbarAppearanceController.TOOLBAR_ICON_SIZE).isEqualTo(14);
-        assertThat(ToolbarAppearanceController.PANEL_ICON_SIZE).isEqualTo(16);
         assertThat(ToolbarAppearanceController.TOOLBAR_OVERFLOW_THRESHOLD).isEqualTo(1280.0);
         assertThat(ToolbarAppearanceController.TOOLTIP_SHOW_DELAY.toMillis()).isEqualTo(300.0);
     }

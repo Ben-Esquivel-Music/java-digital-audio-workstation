@@ -58,9 +58,6 @@ final class ProjectLifecycleController {
 
     private static final Logger LOG = Logger.getLogger(ProjectLifecycleController.class.getName());
 
-    /** Icon size for panel-header labels. */
-    private static final double PANEL_ICON_SIZE = 16;
-
     /**
      * Callback interface implemented by the host controller to provide
      * mutable project state access and coordination methods that remain
@@ -743,7 +740,7 @@ final class ProjectLifecycleController {
         trackListPanel.getChildren().clear();
         Label header = new Label("TRACKS");
         header.getStyleClass().add("panel-header");
-        header.setGraphic(IconNode.of(DawIcon.MIXER, PANEL_ICON_SIZE));
+        // No icon-next-to-label per UI Design Book §2.4.
         trackListPanel.getChildren().add(header);
         MixerView newMixerView = new MixerView(host.project(), host.undoManager());
         host.onProjectUIRebuild(newMixerView);
