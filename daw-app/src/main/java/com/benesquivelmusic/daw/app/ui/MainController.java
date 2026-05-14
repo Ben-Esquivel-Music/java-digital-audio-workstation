@@ -717,7 +717,7 @@ public final class MainController {
         trackListPanel.getChildren().clear();
         Label header = new Label("TRACKS");
         header.getStyleClass().add("panel-header");
-        header.setGraphic(IconNode.of(DawIcon.MIXER, PANEL_ICON_SIZE));
+        // No icon-next-to-label per UI Design Book §2.4.
         trackListPanel.getChildren().add(header);
         MixerView newMixerView = new MixerView(project, undoManager);
         handleProjectRebuild(newMixerView);
@@ -2326,20 +2326,15 @@ public final class MainController {
 
     private void updateTempoDisplay() {
         tempoLabel.setText(String.format("%.1f BPM", project.getTransport().getTempo()));
-        tempoLabel.setGraphic(IconNode.of(DawIcon.KNOB, PANEL_ICON_SIZE));
+        // Icon dropped per UI Design Book §2.4 — labelled status displays
+        // keep text only; icon-next-to-label is forbidden.
     }
 
     private void updateProjectInfo() {
         AudioFormat fmt = project.getFormat();
         projectInfoLabel.setText(String.format("%s  \u00b7  %.0f kHz / %d-bit / %dch",
                 project.getName(), fmt.sampleRate() / 1000.0, fmt.bitDepth(), fmt.channels()));
-        DawIcon fmtIcon = switch (fmt.bitDepth()) { case 32 -> DawIcon.AIFF; case 24 -> DawIcon.FLAC; case 16 -> DawIcon.WAV; default -> DawIcon.OGG; };
-        projectInfoLabel.setGraphic(IconNode.of(fmtIcon, 12));
-        DawIcon channelIcon = switch (fmt.channels()) { case 1 -> DawIcon.MONO; case 2 -> DawIcon.STEREO; default -> DawIcon.SURROUND; };
-        monitoringLabel.setGraphic(IconNode.of(channelIcon, 12));
         monitoringLabel.setText(switch (fmt.channels()) { case 1 -> "Mono"; case 2 -> "Stereo"; default -> fmt.channels() + "ch Surround"; });
-        DawIcon routingIcon = (fmt.sampleRate() >= 96_000.0) ? DawIcon.THUNDERBOLT : DawIcon.USB;
-        ioRoutingLabel.setGraphic(IconNode.of(routingIcon, 12));
         ioRoutingLabel.setText(String.format("%.0f kHz I/O", fmt.sampleRate() / 1000.0));
         refreshLockStatusIndicator();
     }
@@ -2382,8 +2377,6 @@ public final class MainController {
 
     private void updateCheckpointStatus() {
         checkpointLabel.setText("Auto-save: ON");
-        checkpointLabel.setGraphic(IconNode.of(DawIcon.HISTORY, 12));
-        ioRoutingLabel.setGraphic(IconNode.of(DawIcon.CLOCK, 12));
         ioRoutingLabel.setText("Initializing I/O...");
     }
 

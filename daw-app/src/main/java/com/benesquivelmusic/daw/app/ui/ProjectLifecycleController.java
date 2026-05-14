@@ -743,7 +743,7 @@ final class ProjectLifecycleController {
         trackListPanel.getChildren().clear();
         Label header = new Label("TRACKS");
         header.getStyleClass().add("panel-header");
-        header.setGraphic(IconNode.of(DawIcon.MIXER, PANEL_ICON_SIZE));
+        // No icon-next-to-label per UI Design Book §2.4.
         trackListPanel.getChildren().add(header);
         MixerView newMixerView = new MixerView(host.project(), host.undoManager());
         host.onProjectUIRebuild(newMixerView);

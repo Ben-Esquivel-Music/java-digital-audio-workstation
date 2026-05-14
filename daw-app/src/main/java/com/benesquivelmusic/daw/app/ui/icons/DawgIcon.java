@@ -44,6 +44,15 @@ import java.util.Set;
  * so the same icon flips with the theme). The icon participates in
  * layout cleanly at a fixed nominal size (16 / 20 / 24 px).</p>
  *
+ * <p><strong>Immutable size.</strong> The nominal size is set at
+ * construction time via the {@link Size} argument and the resulting
+ * {@code Region} has its min / pref / max width and height locked to
+ * that value. The size cannot be changed afterwards — neither via Java
+ * API nor via CSS ({@code -fx-pref-width} / {@code -fx-min-width} on
+ * the {@code .dawg-icon} selector are effectively ignored because the
+ * locked min/max collapse the range). To render at a different size,
+ * create a new {@code DawgIcon}.</p>
+ *
  * <p>Adopted in Phase 2 of the UI Design Book §6 migration
  * roadmap; see §3.6 (Iconography) for the design rationale and
  * §2.4 ("an icon is a replacement for a label, not a decoration
@@ -280,10 +289,11 @@ public final class DawgIcon extends Region {
             double strokeWidth = parseDouble(root.getAttribute("stroke-width"), 2.0);
             String linecap = root.getAttribute("stroke-linecap");
             String linejoin = root.getAttribute("stroke-linejoin");
+            String rootFill = root.getAttribute("fill");
 
             List<Shape> shapes = new ArrayList<>();
             Set<Shape> filledShapes = new HashSet<>();
-            collect(root, shapes, filledShapes, strokeWidth, linecap, linejoin);
+            collect(root, shapes, filledShapes, strokeWidth, linecap, linejoin, rootFill);
             return new ParseResult(shapes, filledShapes);
         } catch (ParserConfigurationException | SAXException | IOException e) {
             throw new IconLoadException("Failed to parse Lucide SVG", e);
@@ -292,7 +302,7 @@ public final class DawgIcon extends Region {
 
     private static void collect(Element parent, List<Shape> out, Set<Shape> filled,
                                 double inheritedStrokeWidth, String inheritedLinecap,
-                                String inheritedLinejoin) {
+                                String inheritedLinejoin, String inheritedFill) {
         NodeList children = parent.getChildNodes();
         for (int i = 0; i < children.getLength(); i++) {
             if (!(children.item(i) instanceof Element el)) continue;
@@ -302,7 +312,8 @@ public final class DawgIcon extends Region {
                 double gStroke = parseDouble(el.getAttribute("stroke-width"), inheritedStrokeWidth);
                 String gCap = attrOrDefault(el, "stroke-linecap", inheritedLinecap);
                 String gJoin = attrOrDefault(el, "stroke-linejoin", inheritedLinejoin);
-                collect(el, out, filled, gStroke, gCap, gJoin);
+                String gFill = attrOrDefault(el, "fill", inheritedFill);
+                collect(el, out, filled, gStroke, gCap, gJoin, gFill);
                 continue;
             }
 
@@ -325,12 +336,14 @@ public final class DawgIcon extends Region {
             shape.setStrokeLineCap(toLineCap(cap));
             shape.setStrokeLineJoin(toLineJoin(join));
 
+            // Resolve fill with full inheritance from ancestor <g>/<svg>.
             // Default Lucide elements: stroke="currentColor", fill="none".
             // An element with an explicit fill that is *not* "none" is rare
             // in the current vendored subset, but some Lucide icons do use
-            // fill="currentColor" on child shapes; honour it when present.
-            String explicitFill = el.getAttribute("fill");
-            if (!explicitFill.isEmpty() && !"none".equalsIgnoreCase(explicitFill)) {
+            // fill="currentColor" on child shapes (or via a <g> ancestor);
+            // honour it when present.
+            String fillAttr = attrOrDefault(el, "fill", inheritedFill);
+            if (!fillAttr.isEmpty() && !"none".equalsIgnoreCase(fillAttr)) {
                 filled.add(shape);
             } else {
                 shape.setFill(Color.TRANSPARENT);
@@ -339,10 +352,12 @@ public final class DawgIcon extends Region {
         }
     }
 
-    /** Returns the element's attribute value, or {@code fallback} if absent/empty. */
+    /** Returns the element's attribute value, or {@code fallback} if empty.
+     * Per the W3C DOM, {@link Element#getAttribute(String)} never returns
+     * {@code null} — it returns the empty string for missing attributes. */
     private static String attrOrDefault(Element el, String name, String fallback) {
         String v = el.getAttribute(name);
-        return (v == null || v.isEmpty()) ? fallback : v;
+        return v.isEmpty() ? fallback : v;
     }
 
     private static Shape toPath(Element el) {

@@ -41,7 +41,10 @@ class DawgIconCssTintTest {
 
         assertThat(icon.getIconColor()).isEqualTo(Color.RED);
 
-        // Every painted shape should carry the new stroke.
+        // Every painted shape should carry the new stroke. Note: the
+        // clip Rectangle is installed via setClip() rather than added
+        // to the children list, so collectShapes() correctly excludes
+        // it and the assertion below only checks visible Lucide shapes.
         List<Shape> shapes = collectShapes(icon);
         assertThat(shapes).isNotEmpty();
         for (Shape s : shapes) {

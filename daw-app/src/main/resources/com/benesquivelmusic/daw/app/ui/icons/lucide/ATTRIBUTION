@@ -8,7 +8,8 @@ License: ISC (see LICENSE)
 The SVG files in this directory are vendored from the upstream Lucide
 project.
 
-Source revision: https://github.com/lucide-icons/lucide/tree/main/icons
+Source revision: lucide-icons/lucide v0.469.0 (tag `0.469.0`, late 2024 — the last release before the `alert-triangle` -> `triangle-alert` rename; pinning here keeps the vendored icon names stable)
+                 https://github.com/lucide-icons/lucide/tree/0.469.0/icons
 Vendored on:     2026-05-14
 Lucide was originally forked from Feather (MIT, Cole Bemis 2013-2022)
 and has since been substantially extended by the Lucide Contributors

@@ -370,9 +370,15 @@
  * with the theme. Re-tint per surface with:
  *   .my-toggle:selected .dawg-icon { -fx-icon-color: -accent; }
  *
- * JavaFX buttons expose :pressed / :armed / :selected / :disabled —
- * :active is NOT a standard JavaFX pseudo-class; use :selected for
- * ToggleButton checked state.
+ * Parent-button pseudo-classes used below are the standard JavaFX set
+ * (:pressed / :armed / :selected / :disabled). There is no parent
+ * button :active pseudo-class — for an "active" toggled state use
+ * :selected on the ToggleButton.
+ *
+ * Note: DawgIcon itself exposes a custom :active pseudo-class via
+ * DawgIcon.setActive(boolean) for programmatic re-tinting of the icon
+ * node directly (e.g. ".dawg-icon:active { -fx-icon-color: -accent; }").
+ * That is a separate mechanism on the icon, not on the parent button.
  */
 .dawg-icon {
     -fx-icon-color: -text-hi;

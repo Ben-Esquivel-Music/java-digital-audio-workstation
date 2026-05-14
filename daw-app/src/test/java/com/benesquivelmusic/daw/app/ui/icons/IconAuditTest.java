@@ -13,6 +13,7 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -42,12 +43,13 @@ class IconAuditTest {
     private static final List<Pattern> FORBIDDEN_PATTERNS = List.of(
             Pattern.compile("\\bFontAwesome\\b", Pattern.CASE_INSENSITIVE),
             // Match common FontAwesome class prefixes (fa-solid, fa-regular,
-            // fa-brand, fa-light, fa-thin, fa-sharp) rather than the overly
-            // broad "fa-*" which would flag unrelated identifiers.
-            Pattern.compile("\"fa-(solid|regular|brands|light|thin|sharp|icon)-[a-z0-9-]+\""),
+            // fa-brands, fa-light, fa-thin, fa-sharp) on a word boundary
+            // rather than requiring surrounding double quotes — the latter
+            // would miss unquoted CSS selectors and FXML attributes.
+            Pattern.compile("\\bfa-(solid|regular|brands|light|thin|sharp|icon)-[a-z0-9-]+\\b"),
             Pattern.compile("\\bMaterial:[a-z0-9_-]+\\b", Pattern.CASE_INSENSITIVE),
             Pattern.compile("\\bMDI_[A-Z_]+\\b"),
-            Pattern.compile("\"mdi-[a-z0-9-]+\""),
+            Pattern.compile("\\bmdi-[a-z0-9-]+\\b"),
             // Glyph is the typical class name from icon-font helpers
             // (org.controlsfx.glyphfont.Glyph, kordamp's GlyphFontRegistry,
             // de.jensd.fx.glyphs.GlyphIcon).
@@ -82,25 +84,7 @@ class IconAuditTest {
                 if (!scanned) return FileVisitResult.CONTINUE;
                 if (SELF_EXEMPT.contains(fileName)) return FileVisitResult.CONTINUE;
 
-                String src = Files.readString(file, StandardCharsets.UTF_8);
-                int lineNo = 0;
-                for (String line : src.split("\n", -1)) {
-                    lineNo++;
-                    // Skip comment-only lines so that documentation
-                    // discussing the obsolete families (this PR adds a
-                    // few — e.g. references to FontAwesome in javadoc)
-                    // does not trip the audit.
-                    String trimmed = line.trim();
-                    if (trimmed.startsWith("//") || trimmed.startsWith("*")
-                            || trimmed.startsWith("/*")
-                            || trimmed.startsWith("<!--")) continue;
-                    for (Pattern p : FORBIDDEN_PATTERNS) {
-                        if (p.matcher(line).find()) {
-                            violations.add(file + ":" + lineNo + " — matched " + p.pattern()
-                                    + " -> " + line.trim());
-                        }
-                    }
-                }
+                scanFile(file, violations);
                 return FileVisitResult.CONTINUE;
             }
         });
@@ -108,6 +92,66 @@ class IconAuditTest {
         assertThat(violations)
                 .as("UI Design Book §3.6 forbids icon-font references — migrate to DawgIcon (Lucide).")
                 .isEmpty();
+    }
+
+    /**
+     * Streams a single file line by line and records all violations found
+     * up to the first matching pattern <em>per line</em>. The streaming
+     * read avoids loading the full source into memory; short-circuiting
+     * on the first match per line keeps the inner loop cheap even for
+     * lines that hit several patterns.
+     */
+    private static void scanFile(Path file, List<String> violations) throws IOException {
+        int[] lineNo = {0};
+        try (Stream<String> lines = Files.lines(file, StandardCharsets.UTF_8)) {
+            lines.forEach(line -> {
+                lineNo[0]++;
+                String stripped = stripComments(line);
+                if (stripped.isEmpty()) return;
+                for (Pattern p : FORBIDDEN_PATTERNS) {
+                    if (p.matcher(stripped).find()) {
+                        violations.add(file + ":" + lineNo[0] + " — matched " + p.pattern()
+                                + " -> " + line.trim());
+                        return; // one violation per line is enough
+                    }
+                }
+            });
+        }
+    }
+
+    /**
+     * Returns the code-only portion of {@code line}: trailing
+     * {@code //} comments and inline {@code /* ... *}{@code /} segments
+     * are stripped, and lines that are entirely comments are reduced to
+     * the empty string. This lets javadoc / inline notes legitimately
+     * reference obsolete icon family names without tripping the audit.
+     */
+    private static String stripComments(String line) {
+        String trimmed = line.trim();
+        // Whole-line comments.
+        if (trimmed.startsWith("//") || trimmed.startsWith("*")
+                || trimmed.startsWith("/*") || trimmed.startsWith("<!--")) {
+            return "";
+        }
+        // Trailing line comment.
+        int slashSlash = line.indexOf("//");
+        if (slashSlash >= 0) {
+            line = line.substring(0, slashSlash);
+        }
+        // Inline /* ... */ block (single-line). We don't track multi-line
+        // block comment state across the stream; the per-line javadoc
+        // prefix check above handles the common case (continuation lines
+        // starting with `*`).
+        int blockStart;
+        while ((blockStart = line.indexOf("/*")) >= 0) {
+            int blockEnd = line.indexOf("*/", blockStart + 2);
+            if (blockEnd < 0) {
+                line = line.substring(0, blockStart);
+                break;
+            }
+            line = line.substring(0, blockStart) + line.substring(blockEnd + 2);
+        }
+        return line;
     }
 
     /**
