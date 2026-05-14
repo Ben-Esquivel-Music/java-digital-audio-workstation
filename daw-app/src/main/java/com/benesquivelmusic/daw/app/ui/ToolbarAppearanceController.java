@@ -148,11 +148,17 @@ final class ToolbarAppearanceController {
         labels.arrangementPlaceholder.setGraphic(
                 DawgIcon.of("music", DawgIcon.Size.SIZE_24));
         // The REC indicator is icon-only per §2.4 — the "● REC" text in
-        // FXML is cleared and replaced with a tooltip.
-        labels.recIndicator.setGraphic(
-                DawgIcon.of("circle-dot", DawgIcon.Size.SIZE_16));
+        // FXML is cleared and replaced with a tooltip. The text is set to
+        // empty here unconditionally because this label is strictly visual
+        // (never carries runtime text); accessibility is served via
+        // accessibleText below.
+        DawgIcon recIcon = DawgIcon.of("circle-dot", DawgIcon.Size.SIZE_16);
+        labels.recIndicator.setGraphic(recIcon);
         labels.recIndicator.setText("");
         labels.recIndicator.setTooltip(styledTooltip("Recording"));
+        labels.recIndicator.setAccessibleText("Recording");
+
+        labels.arrangementPlaceholder.setAccessibleText("Music arrangement area");
 
         LOG.fine("Applied iconography per UI Design Book §2.4 / §3.6");
     }

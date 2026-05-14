@@ -226,8 +226,16 @@ public final class DawgIcon extends Region {
     /**
      * Toggles the {@code :active} pseudo-class on this {@code DawgIcon}
      * node — a custom pseudo-class (distinct from the parent button's
-     * standard {@code :selected} / {@code :pressed}). Callers can style
-     * it via {@code .dawg-icon:active { -fx-icon-color: ...; }}.
+     * standard {@code :selected} / {@code :pressed}).
+     *
+     * <p><strong>No built-in CSS rule.</strong> The base stylesheet does
+     * <em>not</em> ship a {@code .dawg-icon:active} rule; the pseudo-
+     * class exists solely as a styling hook for downstream (feature or
+     * plugin) stylesheets that need programmatic re-tinting of the icon
+     * independent of the parent control's state. To use it, add a rule
+     * such as:
+     * <pre>{@code .dawg-icon:active { -fx-icon-color: -accent; }}</pre>
+     * to the relevant stylesheet.
      */
     public void setActive(boolean active) {
         this.active = active;
@@ -369,6 +377,8 @@ public final class DawgIcon extends Region {
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
             factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
             factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            factory.setExpandEntityReferences(false);
+            factory.setXIncludeAware(false);
             DocumentBuilder builder = factory.newDocumentBuilder();
             Document doc = builder.parse(in);
             Element root = doc.getDocumentElement();

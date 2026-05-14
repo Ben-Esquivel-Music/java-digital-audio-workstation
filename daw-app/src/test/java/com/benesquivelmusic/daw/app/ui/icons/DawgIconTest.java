@@ -7,6 +7,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 
 import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
 
+import javafx.scene.shape.Shape;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -86,10 +88,20 @@ class DawgIconTest {
         // A Lucide icon with only one <path> (e.g. play).
         DawgIcon icon = DawgIcon.of("play", DawgIcon.Size.SIZE_16);
         assertThat(icon.getChildrenUnmodifiable()).isNotEmpty();
+        // Descend into the wrapping Group to verify actual Shape children
+        // were materialized from the SVG — the Group itself is always
+        // present, so checking top-level children alone is not sufficient.
+        javafx.scene.Group group = (javafx.scene.Group) icon.getChildrenUnmodifiable().getFirst();
+        assertThat(group.getChildren())
+                .isNotEmpty()
+                .allMatch(n -> n instanceof Shape);
 
         // A Lucide icon with mixed <path> + <circle> shapes (info).
         DawgIcon info = DawgIcon.of("info", DawgIcon.Size.SIZE_16);
-        assertThat(info.getChildrenUnmodifiable()).isNotEmpty();
+        javafx.scene.Group infoGroup = (javafx.scene.Group) info.getChildrenUnmodifiable().getFirst();
+        assertThat(infoGroup.getChildren())
+                .hasSizeGreaterThan(1)
+                .allMatch(n -> n instanceof Shape);
     }
 
     @Test

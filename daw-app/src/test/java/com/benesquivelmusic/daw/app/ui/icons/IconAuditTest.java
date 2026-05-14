@@ -71,11 +71,6 @@ class IconAuditTest {
             Pattern.compile("\\bde\\.jensd\\.fx\\.glyphs\\b")
     );
 
-    /** Files that the audit must not flag itself on. */
-    private static final List<String> SELF_EXEMPT = List.of(
-            "IconAuditTest.java"
-    );
-
     /** File extensions scanned by the audit (Java, FXML, CSS). */
     private static final List<String> SCANNED_EXTENSIONS = List.of(".java", ".fxml", ".css");
 
@@ -95,7 +90,6 @@ class IconAuditTest {
                 boolean scanned = SCANNED_EXTENSIONS.stream()
                         .anyMatch(fileName::endsWith);
                 if (!scanned) return FileVisitResult.CONTINUE;
-                if (SELF_EXEMPT.contains(fileName)) return FileVisitResult.CONTINUE;
 
                 scanFile(file, violations);
                 return FileVisitResult.CONTINUE;
