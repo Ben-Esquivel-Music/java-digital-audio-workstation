@@ -179,14 +179,14 @@ public final class DawgIcon extends Region {
 
         IconBlueprint bp = loadBlueprint(name);
         List<Shape> built = new ArrayList<>(bp.specs().size());
-        Set<Shape> built_filled = new HashSet<>();
+        Set<Shape> builtFilled = new HashSet<>();
         for (ShapeSpec spec : bp.specs()) {
             Shape s = spec.materialize();
-            if (spec.filled()) built_filled.add(s);
+            if (spec.filled()) builtFilled.add(s);
             built.add(s);
         }
         this.shapes = built;
-        this.filledShapes = built_filled;
+        this.filledShapes = builtFilled;
 
         // The wrapping Group lets us scale the source path data down
         // to the requested nominal size while keeping a clean layout box.
