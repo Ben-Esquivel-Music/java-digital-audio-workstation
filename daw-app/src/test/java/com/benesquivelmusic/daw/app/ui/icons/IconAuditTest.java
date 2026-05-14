@@ -12,6 +12,7 @@ import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -102,15 +103,15 @@ class IconAuditTest {
      * lines that hit several patterns.
      */
     private static void scanFile(Path file, List<String> violations) throws IOException {
-        int[] lineNo = {0};
+        AtomicInteger lineNo = new AtomicInteger(0);
         try (Stream<String> lines = Files.lines(file, StandardCharsets.UTF_8)) {
             lines.forEach(line -> {
-                lineNo[0]++;
+                int n = lineNo.incrementAndGet();
                 String stripped = stripComments(line);
                 if (stripped.isEmpty()) return;
                 for (Pattern p : FORBIDDEN_PATTERNS) {
                     if (p.matcher(stripped).find()) {
-                        violations.add(file + ":" + lineNo[0] + " — matched " + p.pattern()
+                        violations.add(file + ":" + n + " — matched " + p.pattern()
                                 + " -> " + line.trim());
                         return; // one violation per line is enough
                     }
@@ -120,11 +121,11 @@ class IconAuditTest {
     }
 
     /**
-     * Returns the code-only portion of {@code line}: trailing
-     * {@code //} comments and inline {@code /* ... *}{@code /} segments
-     * are stripped, and lines that are entirely comments are reduced to
-     * the empty string. This lets javadoc / inline notes legitimately
-     * reference obsolete icon family names without tripping the audit.
+     * Returns the code-only portion of {@code line}: trailing line
+     * comments and inline block-comment segments are stripped, and
+     * lines that are entirely comments are reduced to the empty
+     * string. This lets javadoc / inline notes legitimately reference
+     * obsolete icon family names without tripping the audit.
      */
     private static String stripComments(String line) {
         String trimmed = line.trim();
