@@ -222,6 +222,7 @@ public final class ThemePickerDialog extends Dialog<Theme> {
         meter.setStyle("-fx-background-color: linear-gradient(to top, "
                 + accent + ", " + fg + ");");
         Label db = new Label("-6 dBFS");
+        db.getStyleClass().add("numeric-caption");
         db.setStyle("-fx-text-fill: " + muted + ";");
         mixer.getChildren().addAll(mixerHeader, meter, db);
 
