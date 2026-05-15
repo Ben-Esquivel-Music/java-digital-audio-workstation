@@ -97,7 +97,7 @@ final class NumericClassAuditTest {
                 // belongs to the Java pass below.
                 continue;
             }
-            if (!Character.isDigit(text.charAt(0))) {
+            if (!startsWithNumeric(text)) {
                 continue;
             }
             String classes = label.getAttribute("styleClass");
@@ -134,6 +134,22 @@ final class NumericClassAuditTest {
         if (styleClassAttr == null || styleClassAttr.isBlank()) return false;
         for (String token : styleClassAttr.split("[,\\s]+")) {
             if (token.equals(className)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Returns {@code true} when the text starts with an optional sign
+     * ({@code +} or {@code -}) followed by a digit — matching labels such
+     * as {@code -12.4 dB} or {@code +3.0 dB} in addition to plain
+     * digit-leading strings like {@code 120.0 BPM}.
+     */
+    private static boolean startsWithNumeric(String text) {
+        if (text == null || text.isEmpty()) return false;
+        char first = text.charAt(0);
+        if (Character.isDigit(first)) return true;
+        if ((first == '-' || first == '+') && text.length() > 1) {
+            return Character.isDigit(text.charAt(1));
         }
         return false;
     }
@@ -238,7 +254,7 @@ final class NumericClassAuditTest {
         while (lit.find()) {
             String varName = lit.group(1);
             String literal = lit.group(2);
-            if (!literal.isEmpty() && Character.isDigit(literal.charAt(0))) {
+            if (!literal.isEmpty() && startsWithNumeric(literal)) {
                 numericVars.add(varName);
             }
         }

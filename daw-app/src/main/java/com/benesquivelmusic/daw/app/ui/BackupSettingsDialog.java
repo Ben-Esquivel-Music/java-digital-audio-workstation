@@ -154,6 +154,8 @@ public final class BackupSettingsDialog extends Dialog<BackupRetentionPolicy> {
         getDialogPane().getButtonTypes().addAll(ButtonType.APPLY, ButtonType.CANCEL);
         getDialogPane().setPrefWidth(620);
 
+        DarkThemeHelper.applyTo(this);
+
         setResultConverter(button -> button == ButtonType.APPLY ? buildPolicy() : null);
     }
 
