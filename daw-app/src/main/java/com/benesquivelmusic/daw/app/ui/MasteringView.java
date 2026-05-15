@@ -337,6 +337,10 @@ public final class MasteringView extends VBox {
 
         // Gain reduction label (updated in real time by meter timer)
         Label grLabel = new Label("GR: 0.0 dB");
+        // Story 266 / §3.2 — gain-reduction readouts update in real time;
+        // tabular figures via family-only .numeric-mono so the 10 px inline
+        // size below doesn't fight .numeric-caption's 11 px.
+        grLabel.getStyleClass().add("numeric-mono");
         grLabel.setStyle("-fx-text-fill: #00e676; -fx-font-size: 10px;");
         grLabels.add(grLabel);
         levelMeters.add(levelMeter);

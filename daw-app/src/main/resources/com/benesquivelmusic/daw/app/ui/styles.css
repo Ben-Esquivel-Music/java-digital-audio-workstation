@@ -394,10 +394,11 @@
 
 /* ── Labels ── */
 .tempo-label {
+    /* Typography (mono, 12 px, weight 500) now comes from the
+       .numeric-value class composed onto the tempoLabel in
+       main-view.fxml — story 266 / UI Design Book §3.2. This selector
+       keeps only colour, which is orthogonal to typography. */
     -fx-text-fill: -warn;
-    -fx-font-size: 12px;
-    -fx-font-weight: bold;
-    -fx-font-family: "Monospaced";
 }
 
 .status-label {
@@ -426,11 +427,69 @@
 
 /* ── Time Display ── */
 .time-display {
+    /* Typography (mono, 14 px, weight 500) now comes from the
+       .numeric-display class composed onto the timeDisplay in
+       main-view.fxml — story 266 / UI Design Book §3.2. The size moved
+       from 15 px (the previous ad-hoc choice) to 14 px to align with the
+       prescribed hero-readout size in §3.2. This selector keeps only the
+       colour and min-width sizing concerns. */
     -fx-text-fill: -ok;
-    -fx-font-size: 15px;
-    -fx-font-weight: bold;
-    -fx-font-family: "Monospaced";
     -fx-min-width: 110;
+}
+
+/* ── Numeric Typography (story 266) ──
+ * UI Design Book §3.2 — every number that should not jump as digits
+ * change uses a mono family. Three sizes for three contexts, plus one
+ * family-only escape hatch:
+ *
+ *   .numeric-display  14 px — transport time (hero)
+ *   .numeric-value    12 px — fader dB, send level, BPM, sample-rate,
+ *                             dialog readouts (the default for most
+ *                             numeric labels)
+ *   .numeric-caption  11 px — units on dialog fields, timeline beat
+ *                             labels (the standard tight inline contexts)
+ *   .numeric-mono      —    — family + weight only; for tight contexts
+ *                             whose container (e.g. mixer channel strip)
+ *                             prescribes a smaller size than 11 px. Use
+ *                             this when 11 px would jump the layout but
+ *                             you still want tabular figures.
+ *
+ * These classes are *pure* typography. Colour comes from the surface
+ * the readout lives on (`-text-hi` for hero readouts, `-text` for
+ * values, `-text-mute` for units) — apply colour via a sibling class
+ * (e.g. styleClass="time-display, numeric-display") to keep typography
+ * orthogonal to colour theming.
+ *
+ * Canvas-rendered numbers (LevelMeterDisplay, LoudnessDisplay) do not
+ * pick up these classes — JavaFX CSS only styles scene-graph Nodes, not
+ * GraphicsContext draw calls. Those renderers must call
+ * `gc.setFont(Font.font("JetBrains Mono", ...))` directly. Migrating
+ * the Canvas-side numbers is tracked separately.
+ *
+ * JavaFX CSS lookups are paint-only — `-fx-font-family: -font-mono;`
+ * does NOT resolve. The four font-family stacks below MUST stay
+ * verbatim copies of the `-font-mono` token declared in the Palette A
+ * block at the top of this file. Story 260 declared the token as a
+ * convention; story 266 is where the actual wiring lands. If you
+ * update the mono stack, update it here too. */
+.numeric-display {
+    -fx-font-family: "JetBrains Mono", "IBM Plex Mono", "Cascadia Code", "Consolas", monospace;
+    -fx-font-size: 14px;
+    -fx-font-weight: 500;
+}
+.numeric-value {
+    -fx-font-family: "JetBrains Mono", "IBM Plex Mono", "Cascadia Code", "Consolas", monospace;
+    -fx-font-size: 12px;
+    -fx-font-weight: 500;
+}
+.numeric-caption {
+    -fx-font-family: "JetBrains Mono", "IBM Plex Mono", "Cascadia Code", "Consolas", monospace;
+    -fx-font-size: 11px;
+    -fx-font-weight: 500;
+}
+.numeric-mono {
+    -fx-font-family: "JetBrains Mono", "IBM Plex Mono", "Cascadia Code", "Consolas", monospace;
+    -fx-font-weight: 500;
 }
 
 /* ── Track List Panel ── */
@@ -555,11 +614,13 @@
 
 /* Tempo editor field */
 .tempo-editor {
+    /* Typography (mono, 12 px, weight 500) now comes from the
+       .numeric-value class composed onto the editor in TempoEditController
+       (story 266 / UI Design Book §3.2). This selector keeps the
+       surface/border/sizing concerns that the inline edit field needs to
+       visually pop out from the surrounding transport bar. */
     -fx-background-color: -surface-1;
     -fx-text-fill: -warn;
-    -fx-font-size: 12px;
-    -fx-font-weight: bold;
-    -fx-font-family: "Monospaced";
     -fx-border-color: -accent;
     -fx-border-width: 1;
     -fx-border-radius: 4;
@@ -593,9 +654,10 @@
 }
 
 .timeline-label {
+    /* Typography (mono, 11 px) now comes from the .numeric-caption class
+       composed onto each timeline label in main-view.fxml — story 266 /
+       UI Design Book §3.2. This selector keeps only the muted text fill. */
     -fx-text-fill: -text-mute;
-    -fx-font-size: 11px;
-    -fx-font-family: "Monospaced";
 }
 
 /* ── Mixer Panel ── */

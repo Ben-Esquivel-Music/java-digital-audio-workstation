@@ -77,6 +77,8 @@ public final class ChannelCpuBudgetDialog extends Dialog<Void> {
         fractionSlider.setBlockIncrement(0.05);
 
         Label fractionValueLabel = new Label(formatPercent(initialFraction));
+        // Story 266 / §3.2 — percentage readout uses the mono numeric class.
+        fractionValueLabel.getStyleClass().add("numeric-value");
         fractionSlider.valueProperty().addListener(
                 (_, _, v) -> fractionValueLabel.setText(formatPercent(v.doubleValue())));
 

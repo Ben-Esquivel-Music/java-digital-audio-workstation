@@ -80,7 +80,7 @@ public final class LatencyTelemetryPanel extends BorderPane {
         this.sampleRateHz = sampleRateHz;
 
         this.totalPdcLabel = new Label("Session PDC: 0 samples (0.00 ms)");
-        this.totalPdcLabel.getStyleClass().add("latency-total-pdc");
+        this.totalPdcLabel.getStyleClass().addAll("latency-total-pdc", "numeric-caption");
 
         // Surface the active Prism backend (Direct3D 11 / Metal / OpenGL ES2 /
         // Software) so users can confirm the GPU pipeline GpuCanvas is running

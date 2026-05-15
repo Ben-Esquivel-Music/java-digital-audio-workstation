@@ -105,7 +105,10 @@ public final class AtmosSessionConfigDialog extends Dialog<AtmosSessionConfig> {
         validationLabel.setStyle("-fx-text-fill: #808080; -fx-font-size: 11px;");
 
         trackCountLabel = new Label("Tracks: 0 / " + AtmosSessionValidator.MAX_TOTAL_TRACKS);
-        trackCountLabel.setStyle("-fx-font-size: 11px;");
+        // Story 266 / §3.2 — "Tracks: N / M" is a numeric readout; the
+        // mono 11 px caption class supplies the same -fx-font-size as the
+        // previous inline style and adds the tabular-figures contract.
+        trackCountLabel.getStyleClass().add("numeric-caption");
 
         // ── Bed channels tab ─────────────────────────────────────────────────
         bedChannelContainer = new VBox(4);

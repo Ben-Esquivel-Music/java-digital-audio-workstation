@@ -110,6 +110,8 @@ public final class BackupSettingsDialog extends Dialog<BackupRetentionPolicy> {
         maxAgeSlider.setMajorTickUnit(60);
         maxAgeSlider.setPrefWidth(260);
         maxAgeLabel = new Label(formatDays((long) maxAgeSlider.getValue()));
+        // Story 266 / §3.2 — "N days" readout uses the mono numeric class.
+        maxAgeLabel.getStyleClass().add("numeric-value");
         maxAgeSlider.valueProperty().addListener(
                 (_, _, v) -> maxAgeLabel.setText(formatDays(v.longValue())));
 
@@ -120,12 +122,18 @@ public final class BackupSettingsDialog extends Dialog<BackupRetentionPolicy> {
         maxBytesSlider.setMajorTickUnit(8);
         maxBytesSlider.setPrefWidth(260);
         maxBytesLabel = new Label(formatGiB((long) maxBytesSlider.getValue()));
+        // Story 266 / §3.2 — "X GiB" readout uses the mono numeric class.
+        maxBytesLabel.getStyleClass().add("numeric-value");
         maxBytesSlider.valueProperty().addListener(
                 (_, _, v) -> maxBytesLabel.setText(formatGiB(v.longValue())));
 
         previewSummary = new Label();
         previewSummary.setWrapText(true);
-        previewSummary.setStyle("-fx-font-family: 'monospace'; -fx-font-size: 11px;");
+        // Story 266 / §3.2 — previewSummary renders multi-line numeric
+        // statistics (sizes, counts, ages) so the mono 11 px caption class
+        // replaces the inline -fx-font-family/-fx-font-size that previously
+        // hard-coded the same intent.
+        previewSummary.getStyleClass().add("numeric-caption");
 
         diskPie = new PieChart();
         diskPie.setLegendVisible(true);

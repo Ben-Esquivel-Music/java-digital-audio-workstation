@@ -4,14 +4,20 @@ import javafx.application.Application;
 import javafx.fxml.FXMLLoader;
 import javafx.scene.Parent;
 import javafx.scene.Scene;
+import javafx.scene.text.Font;
 import javafx.stage.Stage;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Main JavaFX application class for the Digital Audio Workstation.
  */
 public final class DawApplication extends Application {
+
+    private static final Logger LOG = Logger.getLogger(DawApplication.class.getName());
 
     private static final String APP_TITLE = "Digital Audio Workstation";
     private static final double DEFAULT_WIDTH = 1600;
@@ -39,6 +45,8 @@ public final class DawApplication extends Application {
 
     @Override
     public void start(Stage primaryStage) throws IOException {
+        loadBundledFonts();
+
         FXMLLoader loader = new FXMLLoader(
                 getClass().getResource("ui/main-view.fxml"));
         Parent root = loader.load();
@@ -53,5 +61,41 @@ public final class DawApplication extends Application {
         primaryStage.setMinHeight(720);
         primaryStage.setMaximized(true);
         primaryStage.show();
+    }
+
+    /**
+     * Registers the bundled JetBrains Mono weights with the JavaFX font
+     * system (story 266 / UI Design Book §3.2). The actual size passed to
+     * {@link Font#loadFont(InputStream, double)} is irrelevant — it controls
+     * the size of the returned {@code Font} instance, not the registered
+     * family — but JavaFX requires a positive number.
+     *
+     * <p>Failures are deliberately swallowed: a missing or unreadable TTF
+     * must <em>never</em> break startup. The {@code -font-mono} CSS stack
+     * lists IBM Plex Mono, Cascadia Code, Consolas, and the generic
+     * {@code monospace} family as fall-backs, all of which are mono and
+     * therefore preserve the tabular-figure contract.
+     */
+    private void loadBundledFonts() {
+        for (String weight : FontResources.JETBRAINS_MONO_WEIGHTS) {
+            String resource = FontResources.JETBRAINS_MONO_DIR + weight;
+            try (InputStream in = DawApplication.class.getResourceAsStream(resource)) {
+                if (in == null) {
+                    LOG.fine(() -> "Font resource not bundled: " + resource);
+                    continue;
+                }
+                Font font = Font.loadFont(in, 12);
+                if (font == null) {
+                    LOG.warning(() -> "Font.loadFont returned null for " + resource
+                            + " — JetBrains Mono will be unavailable; -font-mono will fall "
+                            + "back to the next family in the CSS stack.");
+                }
+            } catch (IOException e) {
+                LOG.log(Level.WARNING,
+                        e,
+                        () -> "Failed to load bundled font " + resource
+                                + " — -font-mono will fall back to the next family in the CSS stack.");
+            }
+        }
     }
 }

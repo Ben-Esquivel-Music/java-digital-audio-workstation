@@ -51,7 +51,9 @@ final class TempoEditController {
         int index = hbox.getChildren().indexOf(tempoLabel);
         if (index < 0) return;
         TextField editor = new TextField(String.format("%.1f", host.project().getTransport().getTempo()));
-        editor.getStyleClass().add("tempo-editor");
+        // .tempo-editor supplies the surface/border/sizing; .numeric-value
+        // supplies the mono 12 px / 500 typography (story 266 / §3.2).
+        editor.getStyleClass().addAll("tempo-editor", "numeric-value");
         editor.setPrefWidth(80);
         editor.setOnAction(_ -> commit(editor, hbox, index));
         editor.focusedProperty().addListener((_, _, focused) -> {
