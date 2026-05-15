@@ -1439,6 +1439,11 @@ public final class MixerView extends VBox {
         // Per-channel latency label for plugin delay compensation (PDC)
         Label latencyLabel = new Label();
         latencyLabel.getStyleClass().add("mixer-channel-name");
+        // Story 266 / §3.2 — tabular figures for the "%.1f ms" readout via
+        // family-only .numeric-mono; the 9 px channel-strip size set inline
+        // below would fight .numeric-caption's 11 px (inline wins on size
+        // but the size mismatch is misleading).
+        latencyLabel.getStyleClass().add("numeric-mono");
         latencyLabel.setMaxWidth(CHANNEL_WIDTH - 12);
         latencyLabel.setStyle("-fx-font-size: 9px; -fx-text-fill: #888888;");
         updateLatencyLabel(latencyLabel, mixerChannel, sr);
@@ -1671,6 +1676,9 @@ public final class MixerView extends VBox {
         // Per-bus latency label for plugin delay compensation (PDC)
         Label latencyLabel = new Label();
         latencyLabel.getStyleClass().add("mixer-channel-name");
+        // Story 266 / §3.2 — tabular figures via family-only .numeric-mono;
+        // the 9 px inline size below would fight .numeric-caption's 11 px.
+        latencyLabel.getStyleClass().add("numeric-mono");
         latencyLabel.setMaxWidth(CHANNEL_WIDTH - 12);
         latencyLabel.setStyle("-fx-font-size: 9px; -fx-text-fill: #888888;");
         updateLatencyLabel(latencyLabel, returnBus, sr);
@@ -1829,6 +1837,10 @@ public final class MixerView extends VBox {
         Label sendsCount = new Label(bus.sends().size() + " send"
                 + (bus.sends().size() == 1 ? "" : "s"));
         sendsCount.getStyleClass().add("mixer-channel-name");
+        // Story 266 / §3.2 — "N send(s)" starts with a digit; tabular figures
+        // via family-only .numeric-mono so the 9 px channel-strip size below
+        // doesn't fight .numeric-caption's 11 px.
+        sendsCount.getStyleClass().add("numeric-mono");
         sendsCount.setStyle("-fx-font-size: 9px; -fx-text-fill: #888888;");
 
         strip.getChildren().addAll(

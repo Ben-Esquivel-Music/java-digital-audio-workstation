@@ -38,13 +38,19 @@
 
                 <Separator orientation="VERTICAL"/>
 
-                <!-- Time display — text-only per §2.4 (no decorative icon) -->
-                <Label fx:id="timeDisplay" text="00:00:00.0" styleClass="time-display"/>
+                <!-- Time display — text-only per §2.4 (no decorative icon).
+                     Composes .time-display (colour + min-width) with
+                     .numeric-display (mono 14 px / 500) — story 266 / §3.2. -->
+                <Label fx:id="timeDisplay" text="00:00:00.0"
+                       styleClass="time-display, numeric-display"/>
 
                 <Separator orientation="VERTICAL"/>
 
-                <!-- Tempo — text-only per §2.4 -->
-                <Label fx:id="tempoLabel" text="120.0 BPM" styleClass="tempo-label"/>
+                <!-- Tempo — text-only per §2.4. Composes .tempo-label
+                     (warn-colour) with .numeric-value (mono 12 px / 500) —
+                     story 266 / §3.2. -->
+                <Label fx:id="tempoLabel" text="120.0 BPM"
+                       styleClass="tempo-label, numeric-value"/>
 
                 <!-- Metronome — labelled button (text-only per §2.4) -->
                 <Button fx:id="metronomeButton" text="Metronome" onAction="#onToggleMetronome"
@@ -120,14 +126,17 @@
                     <HBox styleClass="timeline-header" alignment="CENTER_LEFT" spacing="20">
                         <Label fx:id="arrangementPanelHeader" text="ARRANGEMENT"
                                styleClass="panel-header"/>
-                        <Label text="1" styleClass="timeline-label"/>
-                        <Label text="2" styleClass="timeline-label"/>
-                        <Label text="3" styleClass="timeline-label"/>
-                        <Label text="4" styleClass="timeline-label"/>
-                        <Label text="5" styleClass="timeline-label"/>
-                        <Label text="6" styleClass="timeline-label"/>
-                        <Label text="7" styleClass="timeline-label"/>
-                        <Label text="8" styleClass="timeline-label"/>
+                        <!-- Beat markers — .timeline-label keeps the muted
+                             text-fill, .numeric-caption supplies the mono
+                             11 px typography (story 266 / §3.2). -->
+                        <Label text="1" styleClass="timeline-label, numeric-caption"/>
+                        <Label text="2" styleClass="timeline-label, numeric-caption"/>
+                        <Label text="3" styleClass="timeline-label, numeric-caption"/>
+                        <Label text="4" styleClass="timeline-label, numeric-caption"/>
+                        <Label text="5" styleClass="timeline-label, numeric-caption"/>
+                        <Label text="6" styleClass="timeline-label, numeric-caption"/>
+                        <Label text="7" styleClass="timeline-label, numeric-caption"/>
+                        <Label text="8" styleClass="timeline-label, numeric-caption"/>
                     </HBox>
                     <StackPane fx:id="arrangementContentPane" VBox.vgrow="ALWAYS">
                         <Label fx:id="arrangementPlaceholder"
@@ -153,14 +162,19 @@
                 <padding>
                     <Insets top="4" right="16" bottom="4" left="16"/>
                 </padding>
+                <!-- projectInfoLabel and ioRoutingLabel get rewritten at runtime
+                     to "… 96 kHz / 24-bit / 8ch" and "96 kHz I/O" by
+                     MainController#applyProjectInfoLabels(...) — story 266 /
+                     §3.2 numeric class so the sample-rate / bit-depth / channel
+                     digits use tabular figures. -->
                 <Label fx:id="projectInfoLabel" text="Untitled Project  ·  96 kHz / 24-bit"
-                       styleClass="project-info-label"/>
+                       styleClass="project-info-label, numeric-caption"/>
                 <Separator orientation="VERTICAL"/>
                 <Label fx:id="monitoringLabel" text="Monitoring"
                        styleClass="status-bar-label"/>
                 <Separator orientation="VERTICAL"/>
                 <Label fx:id="ioRoutingLabel" text="I/O"
-                       styleClass="status-bar-label"/>
+                       styleClass="status-bar-label, numeric-caption"/>
                 <Region HBox.hgrow="ALWAYS"/>
                 <Label fx:id="checkpointLabel" text="Auto-save: ON"
                        styleClass="checkpoint-label"/>

@@ -220,6 +220,8 @@ public final class AudioSettingsDialog extends Dialog<Void> {
                         + "highest-CPU tracks are shed first (cascading degradation). "
                         + "1.0 disables the master cap (story 129 UI)."));
         masterCpuBudgetValueLabel = new Label("100%");
+        // Story 266 / §3.2 — numeric readouts use the mono 12 px / 500 class.
+        masterCpuBudgetValueLabel.getStyleClass().add("numeric-value");
         masterCpuBudgetSlider.valueProperty().addListener((_, _, v) ->
                 masterCpuBudgetValueLabel.setText(String.format("%d%%",
                         Math.round(v.doubleValue() * 100.0))));
@@ -257,6 +259,13 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         sampleRateLatencyLabel = new Label();
         cpuLoadLabel = new Label("CPU: —");
         threadsInUseLabel = new Label("Threads: —");
+        // Story 266 / §3.2 — numeric readouts use the mono 12 px / 500 class.
+        // These labels render values like "32 frames (0.7 ms @ 44.1 kHz)",
+        // "CPU: 42%", "Threads: 6 / 8" — every digit needs tabular figures.
+        bufferLatencyLabel.getStyleClass().add("numeric-value");
+        sampleRateLatencyLabel.getStyleClass().add("numeric-value");
+        cpuLoadLabel.getStyleClass().add("numeric-value");
+        threadsInUseLabel.getStyleClass().add("numeric-value");
         threadsInUseLabel.setTooltip(new Tooltip(
                 "Live count of parallel worker threads dispatched on the most "
                         + "recent audio block by the multi-core graph scheduler "

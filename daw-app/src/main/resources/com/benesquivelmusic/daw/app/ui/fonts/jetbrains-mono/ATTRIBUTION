@@ -1,0 +1,58 @@
+JetBrains Mono
+==============
+
+Source:  https://www.jetbrains.com/lp/mono/
+Repo:    https://github.com/JetBrains/JetBrainsMono
+License: SIL Open Font License 1.1 (see LICENSE)
+
+The .ttf files in this directory are vendored from the upstream
+JetBrains Mono project (Copyright 2020 The JetBrains Mono Project Authors).
+
+Vendored on:     2026-05-14
+Vendored files:
+  - JetBrainsMono-Regular.ttf   (weight 400)
+  - JetBrainsMono-Medium.ttf    (weight 500 — the weight used by the
+                                 .numeric-display / .numeric-value /
+                                 .numeric-caption classes per UI Design
+                                 Book §3.2 and story 266)
+  - JetBrainsMono-Bold.ttf      (weight 700)
+
+Per UI Design Book §3.2 (Typography), JetBrains Mono is the preferred
+member of the `-font-mono` token's family stack:
+
+    -font-mono: "JetBrains Mono", "IBM Plex Mono", "Cascadia Code",
+                "Consolas", monospace;
+
+It is the lead family in the stack because:
+
+  - true tabular figures (every digit is the same width — column 1 of
+    `09:59:59.9` lines up with column 1 of `10:00:00.0`, eliminating the
+    "time-display flicker" that proportional fonts cause);
+  - weight 500 ("Medium") matches the prescribed weight for numeric
+    readouts in §3.2;
+  - SIL OFL 1.1 license — same liberal terms as the Lucide ISC license
+    we already vendor (free to ship, free to fork, source-revision
+    tracked here).
+
+Loading
+-------
+
+The fonts are registered with the JavaFX font system at application
+startup by `DawApplication.loadBundledFonts()`. If `Font.loadFont(...)`
+fails (platform-specific font subsystem unavailable, file missing,
+corrupt), the call is logged at WARNING and the app continues — the
+CSS stack falls back to IBM Plex Mono / Cascadia Code / Consolas /
+monospace in order.
+
+Adding or updating a weight
+---------------------------
+
+1. Download the .ttf from
+   https://github.com/JetBrains/JetBrainsMono/raw/master/fonts/ttf/JetBrainsMono-$WEIGHT.ttf
+   (or the matching tagged release) into this directory.
+2. Add the resource path to the `resources` array in
+   `DawApplication.loadBundledFonts()`.
+3. Update the vendored-files list above with the new weight.
+4. `FontResourcesTest` will pick up the family if `Font.loadFont` accepts
+   it; the test logs a warning rather than failing if loading is skipped
+   (headless CI on a host without a font subsystem).

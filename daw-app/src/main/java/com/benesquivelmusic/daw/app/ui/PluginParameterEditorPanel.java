@@ -181,6 +181,10 @@ public final class PluginParameterEditorPanel extends VBox {
 
         Label valueLabel = new Label(formatValue(param.defaultValue(), param));
         valueLabel.getStyleClass().add("parameter-value");
+        // Story 266 / §3.2 — parameter values are inline numeric readouts
+        // ("0.50", "+3.0 dB", "440 Hz") and benefit from tabular figures so
+        // they don't jiggle as the user drags a slider.
+        valueLabel.getStyleClass().add("numeric-caption");
         valueLabelMap.put(param.id(), valueLabel);
 
         VBox controlBox = new VBox(4);

@@ -65,9 +65,18 @@ public final class AtmosAbView extends BorderPane {
     private final ReferenceTrackManager manager;
     private final GridPane channelGrid = new GridPane();
     private final Canvas waveformCanvas = new Canvas(420, 96);
-    private final Label scoreLabel = new Label("Match: —");
-    private final Label alignmentLabel = new Label("Alignment: —");
-    private final Label bedDeltaLabel = new Label("Bed RMS Δ: —");
+    // Story 266 / §3.2 — these labels display numeric measurements (dB,
+    // ms, sample counts, %). The mono 12 px / 500 class keeps every digit
+    // tabular so the values don't jiggle as the comparison runs.
+    private final Label scoreLabel = numericLabel("Match: —", "numeric-value");
+    private final Label alignmentLabel = numericLabel("Alignment: —", "numeric-value");
+    private final Label bedDeltaLabel = numericLabel("Bed RMS Δ: —", "numeric-value");
+
+    private static Label numericLabel(String initialText, String numericClass) {
+        Label l = new Label(initialText);
+        l.getStyleClass().add(numericClass);
+        return l;
+    }
     private final Button compareButton = new Button("Compare");
     private final Button autoTrimButton = new Button("Auto-Trim");
     private final CheckBox abToggle = new CheckBox("B (reference)");
@@ -233,12 +242,15 @@ public final class AtmosAbView extends BorderPane {
         for (int c = 0; c < r.channelCount(); c++) {
             int row = c + 1;
             channelGrid.add(new Label(channelLabel(c)), 0, row);
-            channelGrid.add(new Label(String.format("%+.1f", r.mixRmsDb()[c])), 1, row);
-            channelGrid.add(new Label(String.format("%+.1f", r.refRmsDb()[c])), 2, row);
-            Label delta = new Label(String.format("%+.2f", r.deltasDb()[c]));
+            // Story 266 / §3.2 — every cell in the channel grid renders a
+            // numeric measurement; mono caption keeps the column widths
+            // stable across rows.
+            channelGrid.add(numericLabel(String.format("%+.1f", r.mixRmsDb()[c]), "numeric-caption"), 1, row);
+            channelGrid.add(numericLabel(String.format("%+.1f", r.refRmsDb()[c]), "numeric-caption"), 2, row);
+            Label delta = numericLabel(String.format("%+.2f", r.deltasDb()[c]), "numeric-caption");
             delta.setStyle("-fx-text-fill: " + colourForDelta(r.deltasDb()[c]) + ";");
             channelGrid.add(delta, 3, row);
-            channelGrid.add(new Label(String.format("%+.2f", r.correlations()[c])), 4, row);
+            channelGrid.add(numericLabel(String.format("%+.2f", r.correlations()[c]), "numeric-caption"), 4, row);
             channelGrid.add(buildLevelBars(r.mixRmsDb()[c], r.refRmsDb()[c]), 5, row);
         }
     }

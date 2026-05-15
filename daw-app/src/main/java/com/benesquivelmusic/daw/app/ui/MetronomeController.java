@@ -276,6 +276,7 @@ final class MetronomeController {
         volumeSlider.setMajorTickUnit(25);
         volumeSlider.setPrefWidth(150);
         Label volumeLabel = new Label(String.format("Volume: %.0f%%", metronome.getVolume() * 100));
+        volumeLabel.getStyleClass().add("numeric-value");
         volumeSlider.valueProperty().addListener((_, _, newVal) -> {
             float vol = newVal.floatValue() / 100.0f;
             metronome.setVolume(vol);

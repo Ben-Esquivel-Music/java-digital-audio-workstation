@@ -127,6 +127,7 @@ public final class SettingsDialog extends Dialog<Void> {
         uiScaleSlider.setShowTickMarks(true);
 
         uiScaleValueLabel = new Label(String.format("%.1fx", model.getUiScale()));
+        uiScaleValueLabel.getStyleClass().add("numeric-value");
         uiScaleSlider.valueProperty().addListener((_, _, newVal) ->
                 uiScaleValueLabel.setText(String.format("%.1fx", newVal.doubleValue())));
 
