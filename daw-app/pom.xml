@@ -93,18 +93,87 @@
             </resource>
         </resources>
         <plugins>
-            <!-- ── Surefire: configure software rendering for snapshot
-                 stability across machines. The parent POM already sets
-                 argLine for native access; we add daw-app-specific
-                 system properties here so JavaFX uses the software
-                 pipeline (no GPU dependency under xvfb) and disables
-                 LCD subpixel text antialiasing — both are required to
-                 keep golden PNGs reproducible. ──────────────────────── -->
+            <!-- ── Surefire: run JavaFX tests on the built-in headless
+                 Glass platform with software rendering for snapshot
+                 stability across machines.
+
+                 Headless platform (JDK-8364687, shipped in JavaFX 26):
+                 `glass.platform=Headless` selects
+                 com.sun.glass.ui.headless.HeadlessPlatformFactory, a
+                 native-toolkit-free Glass backend that lives in
+                 javafx.graphics itself (verified: the package
+                 com/sun/glass/ui/headless/ is present in
+                 javafx-graphics-26-<os>.jar; the legacy
+                 com.sun.glass.ui.monocle package no longer exists in
+                 JavaFX 26, and org.testfx:openjfx-monocle tops out at
+                 21.0.2 so it cannot align — no external dependency is
+                 used). This makes Stage.show() a no-op rendering target
+                 instead of touching the real Windows desktop, so the
+                 FX/Glass toolkit can never wedge the reused Surefire
+                 fork and later FX classes (e.g.
+                 ClipInteractionControllerTest) no longer hang.
+
+                 No add-exports/add-opens JVM flags are required:
+                 glass.platform is consumed by JavaFX's own internal
+                 PlatformFactory, not by test code reflecting in. Native
+                 access for the headless backend's native code paths is
+                 already granted by the parent POM's argLine
+                 (enable-native-access=ALL-UNNAMED), which Surefire
+                 inherits.
+
+                 prism.order=sw + prism.lcdtext=false are KEPT: golden PNG
+                 reproducibility is sensitive to the rasterizer and text
+                 antialiasing path, so the software pipeline with grayscale
+                 text is retained exactly as before. ──────────────────── -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
+                    <!-- Hard ceiling on the reused forked JVM. JUnit's
+                         per-test timeout (junit-platform.properties) handles
+                         the common case; this guards the pathological case
+                         where the FX/Glass toolkit is wedged so badly even
+                         the JUnit timeout thread cannot make progress. Without
+                         it, a hung FX test produces an unbounded build hang on
+                         Windows (no fork timeout in the default profile).
+                         Retained as a defence-in-depth backstop even though
+                         the headless platform should prevent the wedge. -->
+                    <forkedProcessTimeoutInSeconds>900</forkedProcessTimeoutInSeconds>
+                    <!-- The Glass/Prism selection properties are passed as
+                         real -D JVM flags (set at process launch, before any
+                         class loads) rather than ONLY via
+                         systemPropertyVariables. Surefire applies
+                         systemPropertyVariables programmatically from the
+                         booter, which is late enough that JavaFX's static
+                         platform resolution can already have cached the
+                         desktop ("win") Glass platform — that is exactly why
+                         the headless platform was not taking effect and the
+                         toolkit still wedged. As -D flags they are guaranteed
+                         to be visible the instant javafx.graphics initialises.
+
+                         This <configuration> replaces (does not merge with)
+                         the parent pluginManagement argLine, so the parent's
+                         enable-native-access=ALL-UNNAMED flag is repeated here
+                         to preserve native access for the daw-core FFM
+                         bindings and the headless backend's native code
+                         paths. -->
+                    <argLine>--enable-native-access=ALL-UNNAMED
+                        -Dglass.platform=Headless
+                        -Dmonocle.platform=Headless
+                        -Dprism.order=sw
+                        -Dprism.lcdtext=false
+                        -Dprism.text=t2k
+                        -Djava.awt.headless=true</argLine>
                     <systemPropertyVariables>
+                        <!-- Built-in headless Glass platform (JavaFX 26,
+                             JDK-8364687). Retained in addition to the -D
+                             flags above as defence in depth. monocle.platform
+                             is set too so the same config also works on
+                             JavaFX <26 builds that still ship the legacy
+                             Monocle/Headless subplatform (harmless and
+                             ignored by the JavaFX 26 Headless factory). -->
+                        <glass.platform>Headless</glass.platform>
+                        <monocle.platform>Headless</monocle.platform>
                         <prism.order>sw</prism.order>
                         <prism.lcdtext>false</prism.lcdtext>
                         <prism.text>t2k</prism.text>

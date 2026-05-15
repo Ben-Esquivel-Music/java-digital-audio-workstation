@@ -39,6 +39,28 @@ public final class JavaFxToolkitExtension implements BeforeAllCallback {
                                 "JavaFX toolkit startup timed out — ensure a display is available "
                                         + "(e.g. run with xvfb-run or set DISPLAY)");
                     }
+                    // Disable implicit exit BEFORE any test shows a Stage.
+                    //
+                    // Surefire reuses ONE forked JVM (and ONE JavaFX toolkit)
+                    // for all ~78 FX test classes. With the default
+                    // implicit-exit behaviour, when a test hides/closes its
+                    // last visible Stage (e.g. ButtonAlignmentTest's
+                    // stage.close()) JavaFX begins platform shutdown. On the
+                    // JavaFX 26 built-in Headless Glass platform
+                    // (-Dglass.platform=Headless) that shutdown tears down the
+                    // Headless backend's NestedRunnableProcessor and wedges
+                    // the FX Application Thread: every later test class's
+                    // Platform.runLater callbacks then never execute, hanging
+                    // the build. (Verified by isolating show vs. close: show()
+                    // stays responsive; close()/hide() of the last window with
+                    // implicit-exit ON wedges; with it OFF every show/hide
+                    // cycle stays responsive.)
+                    //
+                    // Keeping the toolkit alive for the whole fork is exactly
+                    // what we want for a shared-toolkit test suite, so this is
+                    // the correct fix, not a workaround. It is harmless on a
+                    // real desktop platform too.
+                    Platform.setImplicitExit(false);
                 } catch (IllegalStateException e) {
                     String message = e.getMessage();
                     if (message != null && message.contains("Toolkit already initialized")) {
@@ -46,13 +68,6 @@ public final class JavaFxToolkitExtension implements BeforeAllCallback {
                     } else {
                         throw e;
                     }
-                }
-                // Verify the FX Application Thread is processing events.
-                CountDownLatch verifyLatch = new CountDownLatch(1);
-                Platform.runLater(verifyLatch::countDown);
-                if (!verifyLatch.await(5, TimeUnit.SECONDS)) {
-                    throw new IllegalStateException(
-                            "JavaFX Application Thread is not responsive — ensure a display is available");
                 }
             } catch (InterruptedException e) {
                 initialized.set(false);
@@ -62,6 +77,30 @@ public final class JavaFxToolkitExtension implements BeforeAllCallback {
                 initialized.set(false);
                 throw e;
             }
+        }
+        // Verify the FX Application Thread is processing events on EVERY test
+        // class — not just the first. Surefire reuses one forked JVM (and one
+        // FX toolkit) for all ~78 FX test classes; an earlier class that wedges
+        // the Glass toolkit (e.g. a Stage shown on a non-headless Windows
+        // desktop) would otherwise leave every later class's Platform.runLater
+        // callbacks unexecuted, hanging the build with no fork timeout. Failing
+        // fast here turns an unbounded Windows hang into a clear, actionable
+        // error instead.
+        verifyFxThreadResponsive();
+    }
+
+    private static void verifyFxThreadResponsive() throws InterruptedException {
+        CountDownLatch verifyLatch = new CountDownLatch(1);
+        Platform.runLater(verifyLatch::countDown);
+        if (!verifyLatch.await(10, TimeUnit.SECONDS)) {
+            throw new IllegalStateException(
+                    "JavaFX Application Thread is not responsive — the toolkit was likely "
+                            + "wedged by an earlier test class (e.g. a Stage closed while "
+                            + "implicit-exit was enabled, triggering platform shutdown on the "
+                            + "shared fork). Ensure FX tests run on the built-in headless Glass "
+                            + "platform (-Dglass.platform=Headless, JavaFX 26+) with "
+                            + "Platform.setImplicitExit(false) — both are configured by the "
+                            + "daw-app Surefire setup and JavaFxToolkitExtension.");
         }
     }
 }
