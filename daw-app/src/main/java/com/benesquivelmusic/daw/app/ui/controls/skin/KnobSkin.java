@@ -123,6 +123,15 @@ public final class KnobSkin extends SkinBase<Knob> {
         canvas.setFocusTraversable(false);
         getChildren().add(canvas);
 
+        // Single listener for the animated-value property (detent snap).
+        // Registered once here, removed in dispose() — never re-added in
+        // resetToDefault() so repeated resets do not accumulate listeners.
+        animatedValue.addListener((obs, o, n) -> {
+            if (!disposed) {
+                paint();
+            }
+        });
+
         repaintListener = (obs, o, n) -> {
             if (!disposed) {
                 paint();
@@ -145,6 +154,8 @@ public final class KnobSkin extends SkinBase<Knob> {
         addRepaint(control.knobTrackColorProperty());
         addRepaint(control.knobIndicatorColorProperty());
         addRepaint(control.knobFocusRingColorProperty());
+        addRepaint(control.valueFormatterProperty());
+        addRepaint(control.animatedProperty());
 
         control.focusedProperty().addListener(focusListener);
         registeredListenerCount++;
@@ -317,7 +328,6 @@ public final class KnobSkin extends SkinBase<Knob> {
                 new KeyValue(animatedValue, target)));
         detentTimeline.setOnFinished(ev -> paint());
         detentTimeline.play();
-        animatedValue.addListener((o, w, n) -> paint());
     }
 
     /**
@@ -347,6 +357,31 @@ public final class KnobSkin extends SkinBase<Knob> {
             return 0.0;
         }
         return Math.max(0.0, Math.min(1.0, (c.getValue() - c.getMin()) / range));
+    }
+
+    /**
+     * Returns the accent-arc start angle and extent as a two-element array
+     * {@code [startAngle, extent]} in degrees, using the JavaFX arc
+     * convention (0° at 3 o'clock, counter-clockwise positive). This is
+     * the deterministic seam that tests use to verify bipolar / unipolar
+     * arc geometry without fragile pixel sampling.
+     *
+     * @return {@code [startAngle, extent]} — extent may be negative
+     *         (clockwise) or positive (counter-clockwise)
+     */
+    public double[] accentArcGeometry() {
+        Knob c = getSkinnable();
+        double n = normalizedValue();
+        boolean bipolar = c.isBipolar();
+        double centre = 0.5;
+        if (bipolar) {
+            double startAngle = START_DEG - SWEEP_DEG * centre;
+            double extent = -SWEEP_DEG * (n - centre);
+            return new double[]{startAngle, extent};
+        } else {
+            double extent = -SWEEP_DEG * n;
+            return new double[]{START_DEG, extent};
+        }
     }
 
     @Override
@@ -551,6 +586,8 @@ public final class KnobSkin extends SkinBase<Knob> {
             removeRepaint(c.knobTrackColorProperty());
             removeRepaint(c.knobIndicatorColorProperty());
             removeRepaint(c.knobFocusRingColorProperty());
+            removeRepaint(c.valueFormatterProperty());
+            removeRepaint(c.animatedProperty());
         }
         registeredListenerCount = 0;
         super.dispose();

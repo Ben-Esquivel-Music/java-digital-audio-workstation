@@ -170,7 +170,7 @@ public final class Knob extends Control {
         getStyleClass().add(DEFAULT_STYLE_CLASS);
         setAccessibleRole(AccessibleRole.SLIDER);
         setAccessibleRoleDescription("Knob");
-        setAccessibleText("Knob: 0.0");
+        setAccessibleText("Knob: " + formatValue());
         setFocusTraversable(true);
     }
 
@@ -181,7 +181,9 @@ public final class Knob extends Control {
 
     @Override
     public String getUserAgentStylesheet() {
-        return Knob.class.getResource("knob.css").toExternalForm();
+        return Objects.requireNonNull(
+                Knob.class.getResource("knob.css"),
+                "knob.css not on classpath").toExternalForm();
     }
 
     private double clampToRange(double v) {
