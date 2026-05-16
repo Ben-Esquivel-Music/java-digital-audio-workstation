@@ -27,7 +27,6 @@ import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.scene.shape.Circle;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
@@ -164,6 +163,9 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
     private final ChangeListener<Boolean> mutedSyncListener;
     private final ChangeListener<Boolean> soloedSyncListener;
     private final ChangeListener<Boolean> armedSyncListener;
+    private final ChangeListener<Boolean> muteBtnListener;
+    private final ChangeListener<Boolean> soloBtnListener;
+    private final ChangeListener<Boolean> armBtnListener;
     private final ChangeListener<Object> readoutRefreshListener;
     private final ChangeListener<ChannelType> channelTypeListener;
 
@@ -313,6 +315,7 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
             }
         };
         panKnob.valueProperty().addListener(panFromWidget);
+        registeredListenerCount++;
 
         // Fader: two-way sync control.faderDbProperty() ↔ fader.valueProperty().
         faderToWidget = (obs, was, now) -> {
@@ -328,6 +331,7 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
             }
         };
         fader.valueProperty().addListener(faderFromWidget);
+        registeredListenerCount++;
 
         // M/S/R two-way sync (mirrors TrackStripSkin exactly).
         mutedSyncListener = (obs, was, now) -> muteBtn.setSelected(now);
@@ -340,9 +344,13 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
         muteBtn.setSelected(control.isMuted());
         soloBtn.setSelected(control.isSoloed());
         armBtn.setSelected(control.isArmed());
-        muteBtn.selectedProperty().addListener((obs, was, now) -> control.setMuted(now));
-        soloBtn.selectedProperty().addListener((obs, was, now) -> control.setSoloed(now));
-        armBtn.selectedProperty().addListener((obs, was, now) -> control.setArmed(now));
+        muteBtnListener = (obs, was, now) -> control.setMuted(now);
+        soloBtnListener = (obs, was, now) -> control.setSoloed(now);
+        armBtnListener = (obs, was, now) -> control.setArmed(now);
+        muteBtn.selectedProperty().addListener(muteBtnListener);
+        soloBtn.selectedProperty().addListener(soloBtnListener);
+        armBtn.selectedProperty().addListener(armBtnListener);
+        registeredListenerCount += 3;
 
         // Value readout follows the fader value (and the embedded meter is
         // the fader's own — no separate relay).
@@ -805,6 +813,20 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
             c.channelTypeProperty().removeListener(channelTypeListener);
             registeredListenerCount--;
         }
+        // Detach button → control listeners too, so swapping the skin fully
+        // severs the link in both directions (otherwise external mutations
+        // of the cached button references would still mutate the control
+        // through the disposed skin's lambdas).
+        muteBtn.selectedProperty().removeListener(muteBtnListener);
+        registeredListenerCount--;
+        soloBtn.selectedProperty().removeListener(soloBtnListener);
+        registeredListenerCount--;
+        armBtn.selectedProperty().removeListener(armBtnListener);
+        registeredListenerCount--;
+        panKnob.valueProperty().removeListener(panFromWidget);
+        registeredListenerCount--;
+        fader.valueProperty().removeListener(faderFromWidget);
+        registeredListenerCount--;
         // Detach the embedded fader's meter so its AnimationTimer stops
         // (sceneProperty → null) when the skin is swapped. Done outside the
         // null guard so the timer is guaranteed to stop even if the
