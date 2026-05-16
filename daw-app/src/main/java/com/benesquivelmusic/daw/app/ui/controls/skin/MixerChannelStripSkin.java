@@ -168,6 +168,7 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
     private final ChangeListener<Boolean> armBtnListener;
     private final ChangeListener<Object> readoutRefreshListener;
     private final ChangeListener<ChannelType> channelTypeListener;
+    private final ChangeListener<Boolean> nameEditorFocusListener;
 
     private boolean disposed;
     private int registeredListenerCount;
@@ -244,11 +245,13 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
         // story, but a double-click must not throw).
         nameLabel.setOnMouseClicked(this::onNameClicked);
         nameEditor.setOnAction(e -> commitNameEdit());
-        nameEditor.focusedProperty().addListener((obs, was, now) -> {
+        nameEditorFocusListener = (obs, was, now) -> {
             if (!now) {
                 commitNameEdit();
             }
-        });
+        };
+        nameEditor.focusedProperty().addListener(nameEditorFocusListener);
+        registeredListenerCount++;
 
         Region insertSep = separator();
         Region sendSep = separator();
@@ -520,6 +523,10 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
                 "mixer-channel-strip-send-tap");
         prePost.setSelected(slot.preFader());
         prePost.setFocusTraversable(false);
+        // Self-referential listener (button updates its own text) — not
+        // tracked in registeredListenerCount because it holds no reference
+        // back to the control or skin; it dies with the button when the
+        // send-list region is rebuilt or getChildren().clear() runs.
         prePost.selectedProperty().addListener(
                 (obs, was, now) -> prePost.setText(now ? "F" : "P"));
 
@@ -826,6 +833,8 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
         panKnob.valueProperty().removeListener(panFromWidget);
         registeredListenerCount--;
         fader.valueProperty().removeListener(faderFromWidget);
+        registeredListenerCount--;
+        nameEditor.focusedProperty().removeListener(nameEditorFocusListener);
         registeredListenerCount--;
         // Detach the embedded fader's meter so its AnimationTimer stops
         // (sceneProperty → null) when the skin is swapped. Done outside the

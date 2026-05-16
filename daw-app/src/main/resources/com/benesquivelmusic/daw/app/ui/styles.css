@@ -705,13 +705,15 @@
 }
 
 /* ── Legacy .mixer-channel alias (story 271) ──
- * Empty by design — the actual channel-strip rendering now lives on the
+ * Deprecated — the channel-strip rendering now lives on the
  * MixerChannelStrip control + its user-agent stylesheet above. This
- * selector is retained for one release cycle so secondary, un-migrated
- * .mixer-channel consumers (bus/master/VCA strips, MasteringView,
- * AlbumAssemblyView, InsertEffectRack) keep rendering against our tokens
- * during the phased migration. Remove in the story 271 follow-up. */
-.mixer-channel { /* deprecated alias → .mixer-channel-strip; remove next cycle */ }
+ * selector is retained for one release cycle so un-migrated .mixer-channel
+ * consumers keep the correct surface/padding tokens during the phased
+ * migration. Remove in the story 271 follow-up. */
+.mixer-channel {
+    -fx-background-color: -surface-2;
+    -fx-padding: 4;
+}
 
 .mixer-channel-name {
     -fx-text-fill: -text;
