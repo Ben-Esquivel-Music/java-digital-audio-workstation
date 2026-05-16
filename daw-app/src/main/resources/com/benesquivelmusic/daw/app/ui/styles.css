@@ -670,14 +670,49 @@
     -fx-padding: 8;
 }
 
+/* ── MixerChannelStrip (story 271) ──
+ * Story 271: the MixerChannelStrip control
+ * (com...ui.controls.MixerChannelStrip) ships its own self-contained
+ * user-agent stylesheet (mixer-channel-strip.css), which declares the
+ * control's internal styleable properties (-mcs-surface-1/-mcs-surface-3/
+ * -mcs-surface-bg/-mcs-accent/-mcs-accent-soft/-mcs-danger/-mcs-warn/
+ * -mcs-text/-mcs-text-hi/-mcs-text-mute/-mcs-line-soft) with hard hex
+ * Palette A defaults so the control renders correctly out-of-the-box even
+ * with no app stylesheet loaded (plugin-GUI window case).
+ *
+ * THIS RULE forwards the documented public role tokens into those internal
+ * styleable properties. The forwards use distinct source/target names so
+ * they are NOT circular looked-up colours; the .root-pane Palette A tokens
+ * cascade into the strip's colours via the standard JavaFX cascade,
+ * restoring the styles.css convention that structural selectors consume
+ * role tokens. A theme can re-tint the strip just by overriding the role
+ * tokens on .root-pane — no per-control duplication needed.
+ *
+ * §5.4: no card border, no shadow, no rounded corners — the inter-strip
+ * gutter is -surface-bg, forwarded here as -mcs-surface-bg. */
+.mixer-channel-strip {
+    -mcs-surface-1:   -surface-1;
+    -mcs-surface-3:   -surface-3;
+    -mcs-surface-bg:  -surface-bg;
+    -mcs-accent:      -accent;
+    -mcs-accent-soft: -accent-soft;
+    -mcs-danger:      -danger;
+    -mcs-warn:        -warn;
+    -mcs-text:        -text;
+    -mcs-text-hi:     -text-hi;
+    -mcs-text-mute:   -text-mute;
+    -mcs-line-soft:   -line-soft;
+}
+
+/* ── Legacy .mixer-channel alias (story 271) ──
+ * Deprecated — the channel-strip rendering now lives on the
+ * MixerChannelStrip control + its user-agent stylesheet above. This
+ * selector is retained for one release cycle so un-migrated .mixer-channel
+ * consumers keep the correct surface/padding tokens during the phased
+ * migration. Remove in the story 271 follow-up. */
 .mixer-channel {
-    -fx-background-color: -surface-1;
-    -fx-border-color: -line-soft;
-    -fx-border-width: 1;
-    -fx-border-radius: 6;
-    -fx-background-radius: 6;
-    -fx-padding: 8;
-    -fx-min-width: 72;
+    -fx-background-color: -surface-2;
+    -fx-padding: 4;
 }
 
 .mixer-channel-name {
@@ -686,6 +721,15 @@
     -fx-alignment: center;
 }
 
+/* ── Legacy .mixer-fader bridge (story 271) ──
+ * Retained for one release cycle, same phased-migration rationale as the
+ * .mixer-channel alias above. Story 271 only mandated removing the legacy
+ * *purple circular* fader thumb (superseded by story 269's Fader control) —
+ * styles.css never had such a rule (.mixer-fader theming was always the
+ * tokenised -surface-3 / -accent below). 13 live, un-migrated consumers
+ * (MixerView volume/pan/send Sliders, VcaStrip gain) still apply
+ * .mixer-fader; keeping these token-based rules holds them on-theme until
+ * the deferred MixerView migration lands. Remove in the story 271 follow-up. */
 .mixer-fader {
     -fx-background-color: -surface-3;
 }
