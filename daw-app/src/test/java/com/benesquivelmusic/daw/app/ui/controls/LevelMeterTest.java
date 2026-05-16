@@ -321,6 +321,13 @@ class LevelMeterTest {
         // Initial static text before any tick.
         assertThat(m.getAccessibleText()).contains("no signal");
 
+        // A tick at the -120 dBFS sentinel should still say "no signal".
+        runOnFxThread(() -> {
+            skin.tick(System.nanoTime());
+            return null;
+        });
+        assertThat(m.getAccessibleText()).contains("no signal");
+
         // After a tick with a level set, the accessible text should reflect
         // the current peak/RMS values.
         runOnFxThread(() -> {

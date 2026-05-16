@@ -412,6 +412,14 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
     private void updateAccessibleValue(LevelMeter c) {
         double peak = c.getPeakDb();
         double rms = c.getRmsDb();
+        // Treat levels at or below -120 dBFS (the initial sentinel) as
+        // "no signal" so screen readers hear the same message as the
+        // constructor's initial accessible text, not a confusing
+        // "Peak -120.0 dB, RMS -120.0 dB".
+        if (peak <= -120.0 && rms <= -120.0) {
+            c.setAccessibleText("Level meter: no signal");
+            return;
+        }
         boolean clipping = peak > MAX_DB;
         String desc = String.format(Locale.ROOT,
                 "Peak %.1f dB, RMS %.1f dB%s", peak, rms,
