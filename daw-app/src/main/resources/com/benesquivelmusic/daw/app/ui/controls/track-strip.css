@@ -1,0 +1,220 @@
+/*
+ * TrackStrip user-agent stylesheet (TrackStrip Control + Skin story).
+ *
+ * Returned by TrackStrip#getUserAgentStylesheet(). Intentionally
+ * self-contained: gives the control's styleable properties their hard-coded
+ * Palette A hex defaults so the control renders correctly with NO application
+ * stylesheet loaded (plugin-GUI window case). When styles.css IS loaded, it
+ * forwards the .root-pane role tokens onto the -ts-* names so palette swaps
+ * reach the strip automatically (same pattern as level-meter.css).
+ *
+ * Naming
+ * ──────
+ * The CssMetaData uses internal -ts-* names (NOT the documented public
+ * role token names) because the strip consumes the .root-pane Palette A
+ * role tokens via the standard JavaFX cascade — and a same-name forward
+ * (.track-strip { -surface-1: -surface-1 }) is a circular looked-up colour
+ * that the engine drops. The internal name lets styles.css declare
+ * `-ts-surface-1: -surface-1;` as a non-circular forward.
+ *
+ * Plugin-GUI consumers (no styles.css loaded)
+ * ───────────────────────────────────────────
+ * Without the app stylesheet, the cascade from .root-pane is not available.
+ * Defaults below are hard hex values on .track-strip so the control renders
+ * correctly out-of-the-box. Such consumers re-tint by setting -ts-* directly
+ * on .track-strip; they can also load the app's styles.css to get the
+ * documented public role-token forward.
+ *
+ * UI Design Book references: §1.5, §2.5, §5.3, §7.1, §7.3, §7.5.
+ */
+
+/* ── Hard-coded Palette A defaults (plugin-GUI case: no styles.css) ─
+ *
+ * Same pattern as level-meter.css: ship hard hex values so the control
+ * renders correctly with NO application stylesheet loaded. When
+ * styles.css IS loaded, it forwards the .root-pane role tokens onto
+ * these internal -ts-* names so palette swaps reach the strip
+ * automatically (see the .track-strip rule in styles.css).
+ *
+ * Colour values match UI Design Book Palette A (Onyx Refined):
+ *   -ts-surface-1    #15161B  (== Palette A -surface-1)
+ *   -ts-surface-3    #272A33  (== Palette A -surface-3)
+ *   -ts-accent-soft  rgba(124, 140, 255, 0.14)
+ *   -ts-danger       #E5484D  (== Palette A -danger)
+ *   -ts-warn         #E6B450  (== Palette A -warn)
+ *   -ts-text         #B7BCC7  (== Palette A -text)
+ *   -ts-text-hi      #ECEEF2  (== Palette A -text-hi)
+ *   -ts-text-mute    #7A808C  (== Palette A -text-mute)
+ *   -ts-line-soft    #22242C  (== Palette A -line-soft)
+ */
+.track-strip {
+    -ts-surface-1:    #15161B;
+    -ts-surface-3:    #272A33;
+    -ts-accent-soft:  rgba(124, 140, 255, 0.14);
+    -ts-danger:       #E5484D;
+    -ts-warn:         #E6B450;
+    -ts-text:         #B7BCC7;
+    -ts-text-hi:      #ECEEF2;
+    -ts-text-mute:    #7A808C;
+    -ts-line-soft:    #22242C;
+
+    /* §5.3: 28 px tall row, default density. The Skin's computePref/
+     * computeMinHeight enforces 28 px from Java — keeping the value out
+     * of CSS avoids a token-validation linter mismatch with the
+     * 24/28/32 family.
+     */
+    -fx-background-color: -ts-surface-1;
+    -fx-border-color: transparent transparent -ts-line-soft transparent;
+    -fx-border-width: 0 0 1 0;
+    -fx-padding: 0 8 0 8;
+}
+
+/* §7.1 / §7.3: hover swaps background only — no shadow, no border move. */
+.track-strip:hover {
+    -fx-background-color: -ts-surface-3;
+}
+
+/* §5.3: selected highlight is the accent-soft tint, not a colourful border. */
+.track-strip:selected {
+    -fx-background-color: -ts-accent-soft;
+}
+
+/* Muted row fades its name to -text-mute. Implemented as a descendant
+ * selector so the muted state cascades to the name without forcing the
+ * skin to flip text-fill imperatively. */
+.track-strip:muted .track-strip-name {
+    -fx-text-fill: -ts-text-mute;
+}
+
+/* §5.3: armed left-edge danger bar — Rectangle child of the skin (not
+ * a border) so layout doesn't reflow when arming/disarming. */
+.track-strip-arm-bar {
+    -fx-fill: -ts-danger;
+}
+
+/* ── Row children ─ */
+.track-strip-row {
+    -fx-alignment: center-left;
+    -fx-spacing: 4;
+}
+
+.track-strip-drag-handle {
+    -fx-icon-color: -ts-text-mute;
+    -fx-cursor: hand;
+}
+
+.track-strip-index {
+    -fx-text-fill: -ts-text-mute;
+    -fx-padding: 0 4 0 0;
+    -fx-min-width: 20;
+}
+
+.track-strip-swatch {
+    /* The skin sets the fill to trackColorProperty(); this rule sets the
+     * shape's stroke + arc so a theme can re-tint the outline.
+     */
+    -fx-stroke: -ts-line-soft;
+    -fx-arc-width: 0;
+    -fx-arc-height: 0;
+}
+
+.track-strip-name {
+    -fx-text-fill: -ts-text-hi;
+    -fx-font-size: 12px;
+    -fx-font-weight: 500;
+}
+
+.track-strip-readout {
+    -fx-text-fill: -ts-text;
+    -fx-padding: 0 4 0 4;
+}
+
+.track-strip-overflow {
+    -fx-text-fill: -ts-text-mute;
+    -fx-cursor: hand;
+    -fx-padding: 0 4 0 4;
+    -fx-font-size: 14px;
+}
+
+/* ── M/S/R toggle buttons (§5.3, §7.5) ──
+ *
+ *  • Outlined by default — the column is one of three states of a single
+ *    UI concern (track gating), not three semantics.
+ *  • Filled when toggled — position + glyph (M/S/R) carries the meaning.
+ *  • Filled colour encodes the state semantically:
+ *      M (mute) → -ts-text
+ *      S (solo) → -ts-warn
+ *      R (arm)  → -ts-danger
+ *  • No hover inversion (§7.5 explicit veto on multi-coloured semantic
+ *    palettes pretending to be three things).
+ */
+.track-toggle {
+    /* Outlined default — no fill, thin neutral border. */
+    -fx-background-color: transparent;
+    -fx-border-color: -ts-line-soft;
+    -fx-border-width: 1;
+    -fx-border-radius: 4;
+    -fx-background-radius: 4;
+    -fx-text-fill: -ts-text;
+    -fx-font-family: "JetBrains Mono", "IBM Plex Mono", "Cascadia Code", "Consolas", monospace;
+    -fx-font-size: 11px;
+    -fx-font-weight: 600;
+    -fx-padding: 0;
+    -fx-content-display: text-only;
+}
+
+.track-toggle:hover {
+    /* §7.1: hover is a background swap only — no border move. */
+    -fx-background-color: -ts-surface-3;
+}
+
+/* Selected = the toggle is "active". One single fill style per
+ * UI Design Book §7.5; the colour token differs by toggle role. */
+.track-toggle.mute:selected {
+    -fx-background-color: -ts-text;
+    -fx-border-color: -ts-text;
+    -fx-text-fill: #0B0B0E;
+}
+
+.track-toggle.solo:selected {
+    -fx-background-color: -ts-warn;
+    -fx-border-color: -ts-warn;
+    -fx-text-fill: #0B0B0E;
+}
+
+.track-toggle.arm:selected {
+    -fx-background-color: -ts-danger;
+    -fx-border-color: -ts-danger;
+    -fx-text-fill: #0B0B0E;
+}
+
+/* ── Density variants (story 261) ──
+ * The Skin's computePref/Min/MaxHeight reads the 24 / 28 / 32 px values
+ * from style classes; the rules below scale fonts/spacing to match.
+ */
+.track-strip.size-compact {
+    -fx-padding: 0 4 0 4;
+}
+
+.track-strip.size-compact .track-strip-name {
+    -fx-font-size: 11px;
+}
+
+.track-strip.size-comfortable {
+    -fx-padding: 0 12 0 12;
+}
+
+.track-strip.size-comfortable .track-strip-name {
+    -fx-font-size: 13px;
+}
+
+/* size-performance: established here so story 280 (Performance Stage)
+ * can ship a stylesheet rule rather than a code change. Currently
+ * aliases the comfortable density. */
+.track-strip.size-performance {
+    -fx-padding: 0 12 0 12;
+}
+
+.track-strip.size-performance .track-strip-name {
+    -fx-font-size: 13px;
+}
