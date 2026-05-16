@@ -62,8 +62,8 @@ class ConvolutionReverbPluginTest {
         assertThat(meta.label()).isEqualTo("Convolution Reverb");
         assertThat(meta.category()).isEqualTo(BuiltInPluginCategory.EFFECT);
 
-        // Permitted by the sealed interface
-        assertThat(BuiltInDawPlugin.class.getPermittedSubclasses())
+        // Registered as a BuiltInDawPlugin ServiceLoader provider
+        assertThat(BuiltInPluginProviders.providerClasses())
                 .contains(ConvolutionReverbPlugin.class);
     }
 }

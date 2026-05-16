@@ -15,17 +15,9 @@ import java.lang.classfile.attribute.CodeAttribute;
 import java.lang.classfile.instruction.MonitorInstruction;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.net.URL;
-import java.nio.file.FileSystem;
-import java.nio.file.FileSystems;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.Enumeration;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -324,69 +316,23 @@ class RealTimeSafeContractTest {
     // ------------------------------------------------------------------
 
     private static List<Class<?>> discoverAllClasses() {
-        List<Class<?>> classes = new ArrayList<>();
+        // Module-aware enumeration: under JPMS daw.core is a named module and
+        // ClassLoader.getResources() can no longer walk its package
+        // directories, so classes are listed via the module's ModuleReader
+        // (with a class-path fallback for the unnamed case). See
+        // ModuleClassScanner.
         ClassLoader cl = Thread.currentThread().getContextClassLoader();
-        String resourcePath = ROOT_PACKAGE.replace('.', '/');
-        try {
-            Enumeration<URL> roots = cl.getResources(resourcePath);
-            while (roots.hasMoreElements()) {
-                URL url = roots.nextElement();
-                collectFromUrl(url, resourcePath, classes, cl);
+        List<Class<?>> classes = new ArrayList<>();
+        for (String className
+                : com.benesquivelmusic.daw.core.testsupport.ModuleClassScanner
+                        .classNamesUnder(ROOT_PACKAGE)) {
+            try {
+                classes.add(Class.forName(className, false, cl));
+            } catch (Throwable ignored) {
+                // Missing optional dependency or initializer failure — skip,
+                // exactly as the previous classpath scanner did.
             }
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to scan classpath for " + ROOT_PACKAGE, e);
         }
         return Collections.unmodifiableList(classes);
-    }
-
-    private static void collectFromUrl(URL url, String resourcePath,
-                                       List<Class<?>> out, ClassLoader cl) {
-        try {
-            URI uri = url.toURI();
-            Path root;
-            FileSystem closeable = null;
-            if ("jar".equals(uri.getScheme())) {
-                closeable = FileSystems.newFileSystem(uri, Map.of());
-                root = closeable.getPath(resourcePath);
-            } else {
-                root = Path.of(uri);
-            }
-            try (Stream<Path> stream = Files.walk(root)) {
-                stream.filter(p -> p.toString().endsWith(".class"))
-                        .forEach(p -> {
-                            String rel = rootRelativeString(p, root);
-                            String className = ROOT_PACKAGE + "."
-                                    + rel.replace('/', '.').replace('\\', '.');
-                            className = className.substring(0,
-                                    className.length() - ".class".length());
-                            // Skip local/anonymous classes — they cannot carry the annotations of interest.
-                            if (className.contains("$")) {
-                                return;
-                            }
-                            try {
-                                out.add(Class.forName(className, false, cl));
-                            } catch (Throwable ignored) {
-                                // Missing optional dependency or initializer failure — skip.
-                            }
-                        });
-            } finally {
-                if (closeable != null) {
-                    closeable.close();
-                }
-            }
-        } catch (URISyntaxException | IOException e) {
-            throw new RuntimeException("Failed to scan " + url, e);
-        }
-    }
-
-    private static String rootRelativeString(Path p, Path root) {
-        // Preserve forward slashes independent of OS.
-        Path rel = root.relativize(p);
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < rel.getNameCount(); i++) {
-            if (i > 0) sb.append('/');
-            sb.append(rel.getName(i));
-        }
-        return sb.toString();
     }
 }

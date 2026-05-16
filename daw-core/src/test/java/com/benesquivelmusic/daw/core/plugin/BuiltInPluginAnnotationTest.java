@@ -58,16 +58,8 @@ class BuiltInPluginAnnotationTest {
     // ── Every permitted subclass is annotated correctly ──────────────────────
 
     @Test
-    void everyPermittedSubclassMustHaveBuiltInPluginAnnotation() {
-        Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
-        assertThat(permitted).isNotNull();
-        for (Class<?> clazz : permitted) {
-            // Permitted sub-interfaces (such as MidiEffectPlugin) are category
-            // markers, not concrete plugins — they are intentionally not
-            // expected to carry @BuiltInPlugin.
-            if (clazz.isInterface()) {
-                continue;
-            }
+    void everyServiceProviderMustHaveBuiltInPluginAnnotation() {
+        for (Class<? extends BuiltInDawPlugin> clazz : BuiltInPluginProviders.providerClasses()) {
             BuiltInPlugin meta = clazz.getAnnotation(BuiltInPlugin.class);
             assertThat(meta)
                     .as("%s must be annotated with @BuiltInPlugin", clazz.getSimpleName())
@@ -109,21 +101,16 @@ class BuiltInPluginAnnotationTest {
         // every permitted subclass regardless of constructor cost.
         List<BuiltInDawPlugin.MenuEntry> entries = BuiltInDawPlugin.menuEntries();
 
-        Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
-        long expectedCount = java.util.Arrays.stream(permitted)
-                .filter(c -> !c.isInterface())
-                .count();
-        assertThat(entries).hasSize((int) expectedCount);
+        List<Class<? extends BuiltInDawPlugin>> providers =
+                BuiltInPluginProviders.providerClasses();
+        assertThat(entries).hasSize(providers.size());
 
         Map<Class<?>, BuiltInDawPlugin.MenuEntry> byClass = new HashMap<>();
         for (BuiltInDawPlugin.MenuEntry entry : entries) {
             byClass.put(entry.pluginClass(), entry);
         }
 
-        for (Class<?> clazz : permitted) {
-            if (clazz.isInterface()) {
-                continue;
-            }
+        for (Class<?> clazz : providers) {
             BuiltInPlugin meta = clazz.getAnnotation(BuiltInPlugin.class);
             BuiltInDawPlugin.MenuEntry entry = byClass.get(clazz);
             assertThat(entry).as("menu entry for %s", clazz.getSimpleName()).isNotNull();

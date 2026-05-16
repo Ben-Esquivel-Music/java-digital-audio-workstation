@@ -11,6 +11,18 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Built-in plugin discovery migrated from a {@code sealed} interface +
+ * {@code Class.getPermittedSubclasses()} enumeration to the JPMS
+ * {@link java.util.ServiceLoader} SPI. The registered provider set is
+ * therefore asserted via {@link BuiltInPluginProviders#providerClasses()}
+ * (which reads the {@code provides … BuiltInDawPlugin with …} clause in
+ * {@code daw.core}'s {@code module-info.java}) instead of the removed
+ * sealed-permitted enumeration. The previous sealed {@code permits} list
+ * additionally named the {@code MidiEffectPlugin} marker interface, which
+ * {@code discoverAll()} skipped at runtime — so the discoverable set is and
+ * remains the 24 concrete built-in plugins.
+ */
 class BuiltInDawPluginTest {
 
     @Test
@@ -19,20 +31,13 @@ class BuiltInDawPluginTest {
     }
 
     @Test
-    void shouldBeSealed() {
-        assertThat(BuiltInDawPlugin.class.isSealed()).isTrue();
+    void shouldRegisterExactlyTwentyFourServiceProviders() {
+        assertThat(BuiltInPluginProviders.providerClasses()).hasSize(24);
     }
 
     @Test
-    void shouldPermitExactlyTwentyFiveSubclasses() {
-        Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
-        assertThat(permitted).hasSize(25);
-    }
-
-    @Test
-    void shouldPermitExpectedSubclasses() {
-        Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
-        assertThat(permitted).containsExactlyInAnyOrder(
+    void shouldRegisterExpectedServiceProviders() {
+        assertThat(BuiltInPluginProviders.providerClasses()).containsExactlyInAnyOrder(
                 VirtualKeyboardPlugin.class,
                 ParametricEqPlugin.class,
                 GraphicEqPlugin.class,
@@ -56,35 +61,21 @@ class BuiltInDawPluginTest {
                 MidSideWrapperPlugin.class,
                 ConvolutionReverbPlugin.class,
                 ExciterPlugin.class,
-                DitherPlugin.class,
-                MidiEffectPlugin.class
+                DitherPlugin.class
         );
     }
 
     @Test
-    void allPermittedSubclassesShouldHavePublicNoArgConstructor() throws Exception {
-        Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
-        for (Class<?> clazz : permitted) {
-            // Permitted sub-interfaces (such as MidiEffectPlugin) are category
-            // markers and have no constructor — only concrete plugin classes
-            // are required to expose a public no-arg ctor.
-            if (clazz.isInterface()) {
-                continue;
-            }
+    void allServiceProvidersShouldHavePublicNoArgConstructor() throws Exception {
+        for (Class<? extends BuiltInDawPlugin> clazz : BuiltInPluginProviders.providerClasses()) {
             Constructor<?> ctor = clazz.getConstructor();
             assertThat(ctor).as("Public no-arg constructor for %s", clazz.getName()).isNotNull();
         }
     }
 
     @Test
-    void allPermittedSubclassesShouldBeFinal() {
-        Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
-        for (Class<?> clazz : permitted) {
-            // Skip permitted sub-interfaces — they are category markers and
-            // are intentionally non-sealed (open for further extension).
-            if (clazz.isInterface()) {
-                continue;
-            }
+    void allServiceProvidersShouldBeFinal() {
+        for (Class<? extends BuiltInDawPlugin> clazz : BuiltInPluginProviders.providerClasses()) {
             assertThat(java.lang.reflect.Modifier.isFinal(clazz.getModifiers()))
                     .as("%s should be final", clazz.getName())
                     .isTrue();
@@ -157,11 +148,8 @@ class BuiltInDawPluginTest {
     // ── menuEntries() ────────────────────────────────────────────────────────
 
     @Test
-    void menuEntriesShouldReturnOneEntryPerPermittedConcreteSubclass() {
-        Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
-        long expected = java.util.Arrays.stream(permitted)
-                .filter(c -> !c.isInterface())
-                .count();
+    void menuEntriesShouldReturnOneEntryPerServiceProvider() {
+        long expected = BuiltInPluginProviders.providerClasses().size();
         List<BuiltInDawPlugin.MenuEntry> entries = BuiltInDawPlugin.menuEntries();
 
         assertThat(entries).hasSize((int) expected);

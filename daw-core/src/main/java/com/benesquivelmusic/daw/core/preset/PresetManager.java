@@ -143,16 +143,44 @@ public final class PresetManager {
 
     /**
      * Loads every bundled factory preset listed in
-     * {@code /presets/effects/index.txt} on the classpath.
+     * {@code /presets/effects/index.txt}.
+     *
+     * <p>Resources are resolved via {@link Class#getResourceAsStream(String)}
+     * rather than {@link ClassLoader#getResourceAsStream(String)}: under JPMS
+     * the {@code presets/} directory is encapsulated in the {@code daw.core}
+     * module, and {@code ClassLoader.getResourceAsStream} cannot see resources
+     * inside a named module. The caller-sensitive {@code Class} overload
+     * resolves the resource within {@code daw.core}'s own module, so this
+     * works identically on the class path and the module path.</p>
      */
     public static List<ProcessorPreset> loadFactoryPresets() {
-        return loadFactoryPresets(PresetManager.class.getClassLoader());
+        return loadFactoryPresets(PresetManager::resolveModuleResource);
     }
 
-    /** Overload used by tests to inject a specific classloader. */
+    /**
+     * Overload used by tests to inject a specific classloader.
+     *
+     * <p>If the supplied classloader cannot see the encapsulated factory
+     * preset resources (the JPMS named-module case), resolution transparently
+     * falls back to the module-aware {@link Class#getResourceAsStream(String)}
+     * lookup so behaviour is preserved on the module path.</p>
+     */
     public static List<ProcessorPreset> loadFactoryPresets(ClassLoader loader) {
         Objects.requireNonNull(loader, "loader must not be null");
-        InputStream indexStream = loader.getResourceAsStream(FACTORY_INDEX.substring(1));
+        return loadFactoryPresets(absolutePath -> {
+            InputStream in = loader.getResourceAsStream(absolutePath.substring(1));
+            return in != null ? in : resolveModuleResource(absolutePath);
+        });
+    }
+
+    /** Module-aware resource resolver (resolves within the daw.core module). */
+    private static InputStream resolveModuleResource(String absolutePath) {
+        return PresetManager.class.getResourceAsStream(absolutePath);
+    }
+
+    private static List<ProcessorPreset> loadFactoryPresets(
+            java.util.function.Function<String, InputStream> resolver) {
+        InputStream indexStream = resolver.apply(FACTORY_INDEX);
         if (indexStream == null) {
             return List.of();
         }
@@ -165,8 +193,8 @@ public final class PresetManager {
                 if (name.isEmpty() || name.startsWith("#")) {
                     continue;
                 }
-                String resource = FACTORY_RESOURCE_DIR.substring(1) + name;
-                try (InputStream in = loader.getResourceAsStream(resource)) {
+                String resource = FACTORY_RESOURCE_DIR + name;
+                try (InputStream in = resolver.apply(resource)) {
                     if (in == null) {
                         continue;
                     }

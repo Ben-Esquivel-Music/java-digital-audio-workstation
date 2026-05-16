@@ -2,61 +2,52 @@ package com.benesquivelmusic.daw.core.plugin;
 
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 
-import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.ServiceConfigurationError;
+import java.util.ServiceLoader;
+import java.util.ServiceLoader.Provider;
 import java.util.function.Function;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Sealed interface for first-party built-in plugins that ship with the DAW.
+ * Service-provider interface for first-party built-in plugins that ship with
+ * the DAW.
  *
- * <p>Because this interface is <b>sealed</b>, only the explicitly permitted classes
- * can implement it.  This gives the DAW full control over the set of built-in
- * plugins and enables exhaustive pattern matching over them.</p>
+ * <p>Built-in plugins are discovered through the JPMS
+ * {@link java.util.ServiceLoader} SPI: {@code daw.core}'s
+ * {@code module-info.java} declares
+ * {@code uses com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin} and a
+ * {@code provides … with …} clause listing every concrete built-in plugin.
+ * This replaces the previous {@code sealed} interface +
+ * {@link Class#getPermittedSubclasses()} reflection enumeration: the set of
+ * built-in plugins is now governed by the {@code provides} directive, which is
+ * verified by the module system at link time and keeps discovery working under
+ * strong encapsulation across the {@code daw.core} → {@code daw.app} module
+ * boundary.</p>
  *
- * <p>Every permitted implementation must:</p>
+ * <p>Every provider implementation must:</p>
  * <ul>
- *   <li>Declare a <b>public no-arg constructor</b> so that {@link #discoverAll()}
- *       can reflectively instantiate each one via
- *       {@link Class#getConstructor() getConstructor()}{@code .newInstance()}.</li>
+ *   <li>Declare a <b>public no-arg constructor</b> (the {@code ServiceLoader}
+ *       provider contract) so that {@link #discoverAll()} can instantiate it.</li>
  *   <li>Carry the {@link BuiltInPlugin @BuiltInPlugin} class-level annotation so
  *       that the menu layer can read metadata (label, icon, category) without
- *       instantiating the plugin — avoiding any expensive initialization that
- *       only the host should trigger.</li>
+ *       instantiating the plugin — {@link #menuEntries()} uses
+ *       {@link Provider#type()} to read the annotation off the provider
+ *       <em>class</em> without ever constructing it, preserving the original
+ *       no-instantiation guarantee.</li>
+ *   <li>Be listed in the {@code provides …
+ *       com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin with …} clause of
+ *       {@code daw-core/src/main/java/module-info.java}.</li>
  * </ul>
  *
  * @see DawPlugin
  * @see BuiltInPlugin
  * @see BuiltInPluginCategory
+ * @see java.util.ServiceLoader
  */
-public sealed interface BuiltInDawPlugin extends DawPlugin
-        permits VirtualKeyboardPlugin,
-                ParametricEqPlugin,
-                GraphicEqPlugin,
-                CompressorPlugin,
-                BusCompressorPlugin,
-                MultibandCompressorPlugin,
-                ReverbPlugin,
-                SpectrumAnalyzerPlugin,
-                TunerPlugin,
-                SoundWaveTelemetryPlugin,
-                SignalGeneratorPlugin,
-                MetronomePlugin,
-                AcousticReverbPlugin,
-                BinauralMonitorPlugin,
-                WaveshaperPlugin,
-                MatchEqPlugin,
-                DeEsserPlugin,
-                TruePeakLimiterPlugin,
-                TransientShaperPlugin,
-                NoiseGatePlugin,
-                MidSideWrapperPlugin,
-                ConvolutionReverbPlugin,
-                ExciterPlugin,
-                DitherPlugin,
-                MidiEffectPlugin {
+public interface BuiltInDawPlugin extends DawPlugin {
 
     /**
      * Lightweight metadata record used by the menu layer to populate plugin
@@ -135,18 +126,13 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
      */
     static List<MenuEntry> menuEntries() {
         Logger log = Logger.getLogger(BuiltInDawPlugin.class.getName());
-        Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
-        if (permitted == null) {
-            return List.of();
-        }
-        var results = new ArrayList<MenuEntry>(permitted.length);
-        for (Class<?> clazz : permitted) {
-            // Permitted entries can be sub-interfaces (such as MidiEffectPlugin),
-            // which are category markers, not concrete plugins — skip them so
-            // they do not appear as a menu entry of their own.
-            if (clazz.isInterface()) {
-                continue;
-            }
+        var results = new ArrayList<MenuEntry>();
+        // ServiceLoader.stream() exposes each provider's class via
+        // Provider#type() WITHOUT instantiating it — this preserves the
+        // original guarantee that menu construction never constructs a plugin
+        // just to read its label/icon/category.
+        for (Provider<BuiltInDawPlugin> provider : serviceLoader().stream().toList()) {
+            Class<? extends BuiltInDawPlugin> clazz = provider.type();
             BuiltInPlugin meta = clazz.getAnnotation(BuiltInPlugin.class);
             if (meta == null) {
                 log.log(Level.WARNING,
@@ -154,10 +140,7 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
                                 .formatted(clazz.getName()));
                 continue;
             }
-            @SuppressWarnings("unchecked")
-            Class<? extends BuiltInDawPlugin> pluginClass =
-                    (Class<? extends BuiltInDawPlugin>) clazz;
-            results.add(new MenuEntry(pluginClass, meta.label(), meta.icon(), meta.category()));
+            results.add(new MenuEntry(clazz, meta.label(), meta.icon(), meta.category()));
         }
         return List.copyOf(results);
     }
@@ -167,13 +150,15 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
      * instantiates each via its public no-arg constructor, and returns
      * the list of built-in plugin instances.
      *
-     * <p>This method uses {@link Class#getPermittedSubclasses()} to enumerate
-     * the permitted implementations, so no manual registration, service-loader
-     * files, or classpath scanning is required.</p>
+     * <p>This method resolves providers through the JPMS
+     * {@link java.util.ServiceLoader} SPI (the {@code provides …
+     * BuiltInDawPlugin with …} clause in {@code daw.core}'s
+     * {@code module-info.java}), so no manual registration or classpath
+     * scanning is required.</p>
      *
-     * <p>If a permitted subclass cannot be instantiated (e.g., missing no-arg
-     * constructor or access error), a warning is logged and that plugin is
-     * skipped rather than crashing the application.</p>
+     * <p>If a provider cannot be instantiated (e.g. its constructor throws),
+     * a warning is logged and that plugin is skipped rather than crashing the
+     * application.</p>
      *
      * @return an unmodifiable list of all successfully instantiated built-in plugin instances
      */
@@ -182,42 +167,41 @@ public sealed interface BuiltInDawPlugin extends DawPlugin
     }
 
     /**
-     * Shared helper that iterates all permitted subclasses, instantiates
-     * each via its public no-arg constructor, applies {@code mapper} to
-     * the instance, and collects the results.
+     * Shared helper that iterates all {@link java.util.ServiceLoader}
+     * providers, instantiates each via its public no-arg constructor, applies
+     * {@code mapper} to the instance, and collects the results.
+     *
+     * <p>Each provider is resolved individually so a single faulty provider
+     * (constructor throwing) is logged and skipped without aborting discovery
+     * of the rest — matching the previous fail-soft behaviour.</p>
      */
     private static <T> List<T> discoverWith(Function<BuiltInDawPlugin, T> mapper) {
         Logger log = Logger.getLogger(BuiltInDawPlugin.class.getName());
-        Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
-        if (permitted == null) {
-            return List.of();
-        }
-        var results = new ArrayList<T>(permitted.length);
-        for (Class<?> clazz : permitted) {
-            // Skip permitted sub-interfaces — they have no constructor and
-            // exist only to group concrete plugins (e.g. MidiEffectPlugin).
-            if (clazz.isInterface()) {
-                continue;
-            }
+        var results = new ArrayList<T>();
+        for (Provider<BuiltInDawPlugin> provider : serviceLoader().stream().toList()) {
             try {
-                BuiltInDawPlugin instance =
-                        (BuiltInDawPlugin) clazz.getConstructor().newInstance();
-                results.add(mapper.apply(instance));
-            } catch (NoSuchMethodException e) {
+                results.add(mapper.apply(provider.get()));
+            } catch (ServiceConfigurationError e) {
                 log.log(Level.WARNING,
-                        "Skipping built-in plugin %s: missing public no-arg constructor"
-                                .formatted(clazz.getName()), e);
-            } catch (InvocationTargetException e) {
-                log.log(Level.WARNING,
-                        "Skipping built-in plugin %s: constructor threw an exception"
-                                .formatted(clazz.getName()), e);
-            } catch (InstantiationException | IllegalAccessException e) {
-                log.log(Level.WARNING,
-                        "Skipping built-in plugin %s: cannot instantiate"
-                                .formatted(clazz.getName()), e);
+                        "Skipping built-in plugin %s: provider could not be instantiated"
+                                .formatted(provider.type().getName()), e);
             }
         }
         return List.copyOf(results);
+    }
+
+    /**
+     * Creates a fresh {@link ServiceLoader} for {@code BuiltInDawPlugin}.
+     *
+     * <p>A new loader is created per call so discovery never caches stale
+     * instances and remains a pure, side-effect-free query — matching the
+     * previous {@code getPermittedSubclasses()} semantics where every call
+     * produced fresh plugin instances. The loader is bound to this
+     * interface's own module layer, which carries the {@code provides}
+     * directive.</p>
+     */
+    private static ServiceLoader<BuiltInDawPlugin> serviceLoader() {
+        return ServiceLoader.load(BuiltInDawPlugin.class);
     }
 
     /**

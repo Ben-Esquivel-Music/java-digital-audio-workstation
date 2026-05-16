@@ -91,10 +91,9 @@ class DitherPluginTest {
     }
 
     @Test
-    void shouldAppearInBuiltInDawPluginPermittedSet() {
-        var classes = java.util.Arrays.stream(BuiltInDawPlugin.class.getPermittedSubclasses())
-                .toList();
-        assertThat(classes).contains(DitherPlugin.class);
+    void shouldBeRegisteredAsBuiltInDawPluginServiceProvider() {
+        assertThat(BuiltInPluginProviders.providerClasses())
+                .contains(DitherPlugin.class);
     }
 
     @Test

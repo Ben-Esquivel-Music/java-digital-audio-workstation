@@ -13,14 +13,15 @@ import com.benesquivelmusic.daw.core.plugin.builtin.midi.MidiProcessContext;
  * next MIDI effect in the chain or to the instrument that consumes the
  * track's MIDI.</p>
  *
- * <p>This interface is {@code non-sealed} to allow an open set of MIDI
- * effects (each declared in {@link BuiltInDawPlugin}'s {@code permits}
- * clause) without requiring every concrete effect to be re-listed here.</p>
+ * <p>This is an open marker sub-interface: concrete MIDI effects implement
+ * it and are registered as {@link BuiltInDawPlugin} {@code ServiceLoader}
+ * providers in {@code daw.core}'s {@code module-info.java}, so no central
+ * re-listing is required here.</p>
  *
  * @see BuiltInDawPlugin
  * @see com.benesquivelmusic.daw.core.plugin.builtin.midi.ArpeggiatorPlugin
  */
-public non-sealed interface MidiEffectPlugin extends BuiltInDawPlugin {
+public interface MidiEffectPlugin extends BuiltInDawPlugin {
 
     /**
      * Processes a block of MIDI input and returns the events to forward
