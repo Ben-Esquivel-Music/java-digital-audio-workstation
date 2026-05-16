@@ -105,7 +105,12 @@ public final class LevelMeter extends Control {
     private final DoubleProperty peakHoldDb =
             new SimpleDoubleProperty(this, "peakHoldDb", -120.0);
     private final ObjectProperty<Orientation> orientation =
-            new SimpleObjectProperty<>(this, "orientation", Orientation.VERTICAL);
+            new SimpleObjectProperty<>(this, "orientation", Orientation.VERTICAL) {
+                @Override
+                public void set(Orientation newValue) {
+                    super.set(Objects.requireNonNull(newValue, "orientation"));
+                }
+            };
     private final IntegerProperty channelCount =
             new SimpleIntegerProperty(this, "channelCount", 2);
     private final BooleanProperty animated =
@@ -461,56 +466,56 @@ public final class LevelMeter extends Control {
                 }
             };
 
-    /** @return the {@code -meter-low} styleable colour property. */
+    /** @return the {@code -lm-low} styleable colour property. */
     public final StyleableObjectProperty<Color> meterLowProperty() { return meterLow; }
     /** @return the resolved low-region colour. */
     public final Color getMeterLow() { return meterLow.get(); }
     /** @param c the low-region colour. */
     public final void setMeterLow(Color c) { meterLow.set(c); }
 
-    /** @return the {@code -meter-mid} styleable colour property. */
+    /** @return the {@code -lm-mid} styleable colour property. */
     public final StyleableObjectProperty<Color> meterMidProperty() { return meterMid; }
     /** @return the resolved mid-region colour. */
     public final Color getMeterMid() { return meterMid.get(); }
     /** @param c the mid-region colour. */
     public final void setMeterMid(Color c) { meterMid.set(c); }
 
-    /** @return the {@code -meter-hi} styleable colour property. */
+    /** @return the {@code -lm-hi} styleable colour property. */
     public final StyleableObjectProperty<Color> meterHiProperty() { return meterHi; }
     /** @return the resolved high-region colour. */
     public final Color getMeterHi() { return meterHi.get(); }
     /** @param c the high-region colour. */
     public final void setMeterHi(Color c) { meterHi.set(c); }
 
-    /** @return the {@code -meter-clip} styleable colour property. */
+    /** @return the {@code -lm-clip} styleable colour property. */
     public final StyleableObjectProperty<Color> meterClipProperty() { return meterClip; }
     /** @return the resolved clip-region colour. */
     public final Color getMeterClip() { return meterClip.get(); }
     /** @param c the clip-region colour. */
     public final void setMeterClip(Color c) { meterClip.set(c); }
 
-    /** @return the {@code -meter-background} styleable colour property. */
+    /** @return the {@code -lm-background} styleable colour property. */
     public final StyleableObjectProperty<Color> meterBackgroundProperty() { return meterBackground; }
     /** @return the resolved unlit/background segment colour. */
     public final Color getMeterBackground() { return meterBackground.get(); }
     /** @param c the unlit/background segment colour. */
     public final void setMeterBackground(Color c) { meterBackground.set(c); }
 
-    /** @return the {@code -meter-segment-gap} styleable property (px). */
+    /** @return the {@code -lm-segment-gap} styleable property (px). */
     public final StyleableDoubleProperty meterSegmentGapProperty() { return meterSegmentGap; }
     /** @return the inter-segment gap in pixels. */
     public final double getMeterSegmentGap() { return meterSegmentGap.get(); }
     /** @param px the inter-segment gap in pixels. */
     public final void setMeterSegmentGap(double px) { meterSegmentGap.set(px); }
 
-    /** @return the {@code -meter-segment-height} styleable property (px). */
+    /** @return the {@code -lm-segment-height} styleable property (px). */
     public final StyleableDoubleProperty meterSegmentHeightProperty() { return meterSegmentHeight; }
     /** @return the per-segment thickness in pixels. */
     public final double getMeterSegmentHeight() { return meterSegmentHeight.get(); }
     /** @param px the per-segment thickness in pixels. */
     public final void setMeterSegmentHeight(double px) { meterSegmentHeight.set(px); }
 
-    /** @return the {@code -meter-tick-marks} styleable property. */
+    /** @return the {@code -lm-tick-marks} styleable property. */
     public final StyleableBooleanProperty meterTickMarksProperty() { return meterTickMarks; }
     /** @return whether dB tick marks/labels are drawn (performance size). */
     public final boolean isMeterTickMarks() { return meterTickMarks.get(); }
@@ -522,7 +527,7 @@ public final class LevelMeter extends Control {
     private static final class StyleableProperties {
 
         static final CssMetaData<LevelMeter, Color> METER_LOW =
-                new CssMetaData<>("-meter-low",
+                new CssMetaData<>("-lm-low",
                         StyleConverter.getColorConverter(), FALLBACK_LOW) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterLow.isBound();
@@ -533,7 +538,7 @@ public final class LevelMeter extends Control {
                 };
 
         static final CssMetaData<LevelMeter, Color> METER_MID =
-                new CssMetaData<>("-meter-mid",
+                new CssMetaData<>("-lm-mid",
                         StyleConverter.getColorConverter(), FALLBACK_MID) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterMid.isBound();
@@ -544,7 +549,7 @@ public final class LevelMeter extends Control {
                 };
 
         static final CssMetaData<LevelMeter, Color> METER_HI =
-                new CssMetaData<>("-meter-hi",
+                new CssMetaData<>("-lm-hi",
                         StyleConverter.getColorConverter(), FALLBACK_HI) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterHi.isBound();
@@ -555,7 +560,7 @@ public final class LevelMeter extends Control {
                 };
 
         static final CssMetaData<LevelMeter, Color> METER_CLIP =
-                new CssMetaData<>("-meter-clip",
+                new CssMetaData<>("-lm-clip",
                         StyleConverter.getColorConverter(), FALLBACK_CLIP) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterClip.isBound();
@@ -566,7 +571,7 @@ public final class LevelMeter extends Control {
                 };
 
         static final CssMetaData<LevelMeter, Color> METER_BACKGROUND =
-                new CssMetaData<>("-meter-background",
+                new CssMetaData<>("-lm-background",
                         StyleConverter.getColorConverter(), FALLBACK_BACKGROUND) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterBackground.isBound();
@@ -577,7 +582,7 @@ public final class LevelMeter extends Control {
                 };
 
         static final CssMetaData<LevelMeter, Number> METER_SEGMENT_GAP =
-                new CssMetaData<>("-meter-segment-gap",
+                new CssMetaData<>("-lm-segment-gap",
                         StyleConverter.getSizeConverter(), 1.0) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterSegmentGap.isBound();
@@ -588,7 +593,7 @@ public final class LevelMeter extends Control {
                 };
 
         static final CssMetaData<LevelMeter, Number> METER_SEGMENT_HEIGHT =
-                new CssMetaData<>("-meter-segment-height",
+                new CssMetaData<>("-lm-segment-height",
                         StyleConverter.getSizeConverter(), 2.0) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterSegmentHeight.isBound();
@@ -599,7 +604,7 @@ public final class LevelMeter extends Control {
                 };
 
         static final CssMetaData<LevelMeter, Boolean> METER_TICK_MARKS =
-                new CssMetaData<>("-meter-tick-marks",
+                new CssMetaData<>("-lm-tick-marks",
                         StyleConverter.getBooleanConverter(), Boolean.FALSE) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterTickMarks.isBound();

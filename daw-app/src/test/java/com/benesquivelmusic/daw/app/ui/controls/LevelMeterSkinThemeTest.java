@@ -45,7 +45,7 @@ class LevelMeterSkinThemeTest {
             Scene scene = new Scene(root, 80, 240);
             scene.getStylesheets().add("data:text/css;base64,"
                     + java.util.Base64.getEncoder().encodeToString(
-                            ".level-meter { -meter-low: red; }"
+                            ".level-meter { -lm-low: red; }"
                                     .getBytes(java.nio.charset.StandardCharsets.UTF_8)));
             root.applyCss();
             root.layout();
@@ -62,7 +62,7 @@ class LevelMeterSkinThemeTest {
             Scene scene = new Scene(root, 80, 240);
             scene.getStylesheets().add("data:text/css;base64,"
                     + java.util.Base64.getEncoder().encodeToString(
-                            ".level-meter { -meter-clip: lime; }"
+                            ".level-meter { -lm-clip: lime; }"
                                     .getBytes(java.nio.charset.StandardCharsets.UTF_8)));
             root.applyCss();
             root.layout();

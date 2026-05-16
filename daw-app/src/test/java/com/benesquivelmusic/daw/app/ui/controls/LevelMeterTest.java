@@ -52,9 +52,9 @@ class LevelMeterTest {
                 .map(javafx.css.CssMetaData::getProperty)
                 .toList();
         assertThat(names).contains(
-                "-meter-low", "-meter-mid", "-meter-hi", "-meter-clip",
-                "-meter-background", "-meter-segment-gap",
-                "-meter-segment-height", "-meter-tick-marks");
+                "-lm-low", "-lm-mid", "-lm-hi", "-lm-clip",
+                "-lm-background", "-lm-segment-gap",
+                "-lm-segment-height", "-lm-tick-marks");
     }
 
     @Test

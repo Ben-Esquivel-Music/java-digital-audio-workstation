@@ -27,24 +27,20 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Two distinct, JavaFX-correct mechanisms are asserted:
  *
  * <ol>
- *   <li><b>{@code -meter-background} follows the {@code -surface-2}
+ *   <li><b>{@code -lm-background} follows the {@code -surface-2}
  *       token.</b> {@code styles.css} forwards {@code -surface-2} into the
- *       control's {@code -meter-background} styleable property. Because the
+ *       control's {@code -lm-background} styleable property. Because the
  *       source and target names differ, JavaFX resolves it through the
  *       {@code .root-pane} ancestor — so a theme that re-tints
  *       {@code -surface-2} re-tints the unlit segments.</li>
- *   <li><b>Lit segments are themed via the {@code .level-meter}
- *       selector.</b> A same-name forward
- *       ({@code .level-meter { -meter-low: -meter-low; }}) is a circular
- *       looked-up colour that JavaFX drops, so the supported entry point
- *       for re-tinting {@code -meter-low/-mid/-hi/-clip} is a rule
- *       targeting {@code .level-meter} directly. This is the pattern the
- *       stories 268–271 controls must follow.</li>
+ *   <li><b>Lit segments follow the {@code .root-pane} role tokens.</b>
+ *       {@code styles.css} forwards {@code -meter-low} into
+ *       {@code -lm-low}, {@code -meter-mid} into {@code -lm-mid}, etc.
+ *       Because the source ({@code -meter-low}) and target
+ *       ({@code -lm-low}) names differ, the forward is not a circular
+ *       looked-up colour — a theme that re-tints the role token
+ *       automatically re-tints the meter.</li>
  * </ol>
- *
- * <p>This test exists to stop a future change from "fixing" the app rule
- * back into the circular same-name form (which fails silently because the
- * UA fallback masks it in the default theme).
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class LevelMeterAppThemeCascadeTest {
@@ -86,28 +82,28 @@ class LevelMeterAppThemeCascadeTest {
             return m.getMeterBackground();
         });
         assertThat(bg)
-                .as("a theme re-tinting -surface-2 must reach -meter-background "
+                .as("a theme re-tinting -surface-2 must reach -lm-background "
                         + "via the distinctly-named styles.css forward")
                 .isEqualTo(Color.web("#654321"));
     }
 
     @Test
-    void litSegmentsAreReTintedViaTheLevelMeterSelector() {
+    void litSegmentsFollowRootPaneRoleTokens() {
         LevelMeter m = runOnFxThread(LevelMeter::new);
         Color[] c = runOnFxThread(() -> {
             StackPane root = new StackPane(m);
             root.getStyleClass().add("root-pane");
             Scene scene = new Scene(root, 80, 240);
             DarkThemeHelper.applyTo(scene);
-            scene.getStylesheets().add(inlineCss(
-                    ".level-meter { -meter-low: #0011FF; -meter-clip: #FFAA00; }"));
+            // Simulate a theme re-tinting the role tokens on .root-pane.
+            root.setStyle("-meter-low: #0011FF; -meter-clip: #FFAA00;");
             root.applyCss();
             root.layout();
             return new Color[] {m.getMeterLow(), m.getMeterClip()};
         });
         assertThat(c[0])
-                .as("re-tinting -meter-low via the .level-meter selector must "
-                        + "reach the control (the supported theming entry point)")
+                .as("re-tinting -meter-low on .root-pane must cascade through "
+                        + "the -lm-low forward into the control")
                 .isEqualTo(Color.web("#0011FF"));
         assertThat(c[1]).isEqualTo(Color.web("#FFAA00"));
     }

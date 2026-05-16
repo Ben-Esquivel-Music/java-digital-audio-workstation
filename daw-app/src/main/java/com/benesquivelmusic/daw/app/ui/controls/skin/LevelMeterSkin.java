@@ -104,11 +104,9 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
         super(control);
 
         canvas = new Canvas();
-        // Bind canvas size to the control's size. Region#resize alone does
-        // NOT drive layoutChildren outside a live Scene, so binding is the
-        // robust pattern (vs. resizing only in layoutChildren).
-        canvas.widthProperty().bind(control.widthProperty());
-        canvas.heightProperty().bind(control.heightProperty());
+        // Canvas is sized and positioned in layoutChildren using the
+        // content-area bounds (x, y, w, h) so that CSS borders/insets are
+        // respected and never overpainted.
         getChildren().add(canvas);
 
         // Double-click clears peak-hold (the only in-scope interaction).
@@ -398,7 +396,7 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
     /**
      * @param segment a zero-based segment index
      * @param n       the total segment count
-     * @return the region colour ({@code -meter-low/-mid/-hi/-clip}) a lit
+     * @return the region colour ({@code -lm-low/-mid/-hi/-clip}) a lit
      *         segment at this position renders with, derived by mapping the
      *         segment back to its dBFS band.
      */
@@ -466,9 +464,12 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
 
     @Override
     protected void layoutChildren(double x, double y, double w, double h) {
-        // Canvas size is bound to the control; just (re)paint with the
-        // current geometry. All offsets are derived from w/h — never
-        // hard-coded for the default size.
+        // Size and position the canvas within the content area so that CSS
+        // borders/insets are respected and the LED content never draws
+        // under the border.
+        canvas.relocate(x, y);
+        canvas.setWidth(w);
+        canvas.setHeight(h);
         paint();
     }
 
@@ -695,9 +696,6 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
             removeRelay(c.peakDbProperty());
             removeRelay(c.rmsDbProperty());
             removeRepaint(c.peakHoldDbProperty());
-
-            canvas.widthProperty().unbind();
-            canvas.heightProperty().unbind();
         }
         registeredListenerCount = 0;
 
