@@ -7,8 +7,12 @@ import javafx.scene.Scene;
 import javafx.scene.layout.StackPane;
 import javafx.scene.paint.Color;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static com.benesquivelmusic.daw.app.ui.snapshot.FxSnapshotTest.runOnFxThread;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -21,9 +25,30 @@ import static org.assertj.core.api.Assertions.assertThat;
 @ExtendWith(JavaFxToolkitExtension.class)
 class LevelMeterSkinThemeTest {
 
+    private final List<LevelMeter> created = new ArrayList<>();
+
+    @AfterEach
+    void cleanup() {
+        runOnFxThread(() -> {
+            for (LevelMeter m : created) {
+                if (m.getSkin() != null) {
+                    m.setSkin(null);
+                }
+            }
+            created.clear();
+            return null;
+        });
+    }
+
+    private LevelMeter newMeter() {
+        LevelMeter m = runOnFxThread(LevelMeter::new);
+        created.add(m);
+        return m;
+    }
+
     @Test
     void userAgentStylesheetSuppliesPaletteAFallbackColours() {
-        LevelMeter m = runOnFxThread(LevelMeter::new);
+        LevelMeter m = newMeter();
         runOnFxThread(() -> {
             StackPane root = new StackPane(m);
             new Scene(root, 80, 240);
@@ -39,13 +64,13 @@ class LevelMeterSkinThemeTest {
 
     @Test
     void sceneStylesheetOverridesMeterLowColour() {
-        LevelMeter m = runOnFxThread(LevelMeter::new);
+        LevelMeter m = newMeter();
         Color resolved = runOnFxThread(() -> {
             StackPane root = new StackPane(m);
             Scene scene = new Scene(root, 80, 240);
             scene.getStylesheets().add("data:text/css;base64,"
                     + java.util.Base64.getEncoder().encodeToString(
-                            ".level-meter { -lm-low: red; }"
+                            ".level-meter { -meter-low: red; }"
                                     .getBytes(java.nio.charset.StandardCharsets.UTF_8)));
             root.applyCss();
             root.layout();
@@ -56,18 +81,20 @@ class LevelMeterSkinThemeTest {
 
     @Test
     void overriddenColourReachesTheSkinDrawModel() {
-        LevelMeter m = runOnFxThread(LevelMeter::new);
+        // Drive a peak STRICTLY above 0 dBFS so the topmost segment uses
+        // the -meter-clip colour (per UI Design Book §5.7).
+        LevelMeter m = newMeter();
         LevelMeterSkin skin = runOnFxThread(() -> {
             StackPane root = new StackPane(m);
             Scene scene = new Scene(root, 80, 240);
             scene.getStylesheets().add("data:text/css;base64,"
                     + java.util.Base64.getEncoder().encodeToString(
-                            ".level-meter { -lm-clip: lime; }"
+                            ".level-meter { -meter-clip: lime; }"
                                     .getBytes(java.nio.charset.StandardCharsets.UTF_8)));
             root.applyCss();
             root.layout();
             LevelMeterSkin s = (LevelMeterSkin) m.getSkin();
-            m.setPeakDb(0.0);
+            m.setPeakDb(3.0);
             return s;
         });
         Color topColour = runOnFxThread(() -> {

@@ -54,23 +54,36 @@ class LevelMeterLifecycleTest {
     }
 
     @Test
-    void notAnimatedSkipsTheTimerButStillRelaysOnValueChange() {
+    void notAnimatedKeepsTheTimerRunningSoAudioSubmissionsAreVisible() {
+        // The skin's per-frame timer relays audio-thread submitLevels()
+        // writes onto the FX properties — stopping it when !animated would
+        // leave reduce-motion meters stuck on stale levels. The flag is a
+        // no-op for this skin; the timer always runs while attached.
         LevelMeter m = runOnFxThread(() -> {
             LevelMeter lm = new LevelMeter();
             lm.setAnimated(false);
             return lm;
         });
         LevelMeterSkin skin = LevelMeterTest.attach(m);
-        assertThat(skin.isTimerRunning()).isFalse();
+        assertThat(skin.isTimerRunning()).isTrue();
 
-        // The value path still drives peak-hold + repaint without a timer.
+        // The value path still drives peak-hold + repaint via the timer
+        // pump (the relay listener is suppressed while the timer runs to
+        // avoid duplicate repaints). Pulse the pump explicitly so the test
+        // does not depend on JavaFX pulse scheduling.
         runOnFxThread(() -> {
             skin.setClock(() -> 7_000_000_000L);
             m.setPeakDb(-2.0);
+            skin.pumpOnce(7_000_000_000L);
             return null;
         });
-        // peak-hold tracked via the relayAndRepaint listener path.
         assertThat(skin.currentPeakHoldDb(7_000_000_000L)).isEqualTo(-2.0);
+
+        // Clean up so the AnimationTimer does not leak into later FX tests.
+        runOnFxThread(() -> {
+            m.setSkin(null);
+            return null;
+        });
     }
 
     @Test

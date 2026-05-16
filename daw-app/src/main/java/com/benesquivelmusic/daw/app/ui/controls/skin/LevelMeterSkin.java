@@ -130,9 +130,14 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
             }
         };
         // Relay-and-repaint: used on the value path when NOT animated, so a
-        // submitLevels() call still becomes visible without the timer.
+        // submitLevels() call (after the property is set on the FX thread)
+        // or a direct setPeakDb()/setRmsDb() still becomes visible without
+        // the timer. While the timer is running, pumpOnce() already does
+        // relay + tick + paint each frame, so we suppress this listener to
+        // avoid 3× repaints per frame (one from the peak listener, one
+        // from the RMS listener, one from pumpOnce itself).
         relayAndRepaintListener = (obs, o, n) -> {
-            if (disposed) {
+            if (disposed || timerRunning) {
                 return;
             }
             tick(clock.getAsLong());
@@ -201,7 +206,14 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
             return;
         }
         LevelMeter c = getSkinnable();
-        boolean shouldRun = c.getScene() != null && c.isAnimated();
+        // The timer runs whenever the control is attached to a scene,
+        // regardless of `animated`. The per-frame pump is what relays
+        // audio-thread `submitLevels()` writes onto the FX properties, so
+        // stopping it would leave reduce-motion meters stuck on stale
+        // levels (the atomics are not JavaFX-observable). When `animated`
+        // is false the timer still runs but only the discrete LED state
+        // is rendered — there are no smooth transitions to suppress.
+        boolean shouldRun = c.getScene() != null;
         if (shouldRun && !timerRunning) {
             timer.start();
             timerRunning = true;
@@ -210,7 +222,7 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
             timerRunning = false;
         }
         // Repaint once on any state transition so a value submitted while
-        // not animated (or after attach) is reflected immediately.
+        // detached (or after attach) is reflected immediately.
         paint();
     }
 
@@ -396,7 +408,7 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
     /**
      * @param segment a zero-based segment index
      * @param n       the total segment count
-     * @return the region colour ({@code -lm-low/-mid/-hi/-clip}) a lit
+     * @return the region colour ({@code -meter-low/-mid/-hi/-clip}) a lit
      *         segment at this position renders with, derived by mapping the
      *         segment back to its dBFS band.
      */
@@ -432,18 +444,35 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
      * @param h       available height
      * @return the colour the given segment should render with for the
      *         current peak value (a test seam exercising the draw model).
+     *         The topmost segment is rendered as {@code -meter-clip} only
+     *         when the actual peak exceeds {@value #MAX_DB} dBFS — exactly
+     *         at full scale the meter contract reserves {@code -meter-hi}.
      */
     public Color colorAt(int channel, int segment, double w, double h) {
         int n = segmentCount(w, h);
         if (n <= 0 || segment > topLitSegmentIndex(channel, w, h)) {
             return getSkinnable().getMeterBackground();
         }
+        return segmentLitColor(segment, n, peakForChannel(channel));
+    }
+
+    /**
+     * Resolves the lit colour for a segment, honouring the
+     * "{@code -meter-clip} only above 0 dBFS" contract: the topmost
+     * segment uses {@code -meter-clip} only when the actual peak is
+     * strictly above {@value #MAX_DB} dBFS, otherwise it uses
+     * {@code -meter-hi} like any in-range segment.
+     */
+    private Color segmentLitColor(int segment, int n, double peakDb) {
+        if (segment == n - 1 && peakDb > MAX_DB) {
+            return getSkinnable().getMeterClip();
+        }
         return regionColorForSegment(segment, n);
     }
 
     private Color regionColor(double db) {
         LevelMeter c = getSkinnable();
-        if (db >= MAX_DB) {
+        if (db > MAX_DB) {
             return c.getMeterClip();
         }
         if (db >= MID_MAX_DB) {
@@ -523,13 +552,13 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
             for (int s = 0; s < n; s++) {
                 Color color;
                 if (s <= peakTop) {
-                    color = regionColorForSegment(s, n);
+                    color = segmentLitColor(s, n, peakForChannel(ch));
                     if (s <= rmsTop) {
                         // RMS overlays the lower region as a darker tint.
                         color = darker(color);
                     }
                 } else if (s == holdTop) {
-                    color = regionColorForSegment(s, n);
+                    color = segmentLitColor(s, n, c.getPeakHoldDb());
                 } else {
                     // Unlit — already painted as background; skip the draw
                     // to keep the canvas cheap.

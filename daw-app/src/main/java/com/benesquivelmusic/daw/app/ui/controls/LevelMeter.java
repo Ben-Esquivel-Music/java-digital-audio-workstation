@@ -112,7 +112,12 @@ public final class LevelMeter extends Control {
                 }
             };
     private final IntegerProperty channelCount =
-            new SimpleIntegerProperty(this, "channelCount", 2);
+            new SimpleIntegerProperty(this, "channelCount", 2) {
+                @Override
+                public void set(int newValue) {
+                    super.set(Math.max(MIN_CHANNELS, Math.min(MAX_CHANNELS, newValue)));
+                }
+            };
     private final BooleanProperty animated =
             new SimpleBooleanProperty(this, "animated", true);
 
@@ -263,19 +268,24 @@ public final class LevelMeter extends Control {
 
     /**
      * @param value the new channel count; clamped to {@code [1, 8]}.
+     *              The clamp is enforced at the property level, so direct
+     *              binds/sets via {@link #channelCountProperty()} are also
+     *              constrained.
      */
     public final void setChannelCount(int value) {
-        channelCount.set(Math.max(MIN_CHANNELS, Math.min(MAX_CHANNELS, value)));
+        channelCount.set(value);
     }
 
     // ── animated ──────────────────────────────────────────────────────────
 
     /**
-     * @return the animated property (default {@code true}). When
-     *         {@code false} the skin stops the per-frame timer and
-     *         repaints only on value changes. (Story 279 "Reduce Motion"
-     *         is not implemented — this is a purely local honour of the
-     *         flag, not a global integration.)
+     * @return the animated property (default {@code true}). Currently a
+     *         no-op for this skin — segments are discrete with no smooth
+     *         transitions, so the per-frame timer always runs while
+     *         attached to keep audio-thread {@link #submitLevels} writes
+     *         visible. The flag is kept for API parity with the rest of
+     *         the controls package (story 279 "Reduce Motion") and may be
+     *         honoured here as a throttle in a future story.
      */
     public final BooleanProperty animatedProperty() {
         return animated;
@@ -466,56 +476,56 @@ public final class LevelMeter extends Control {
                 }
             };
 
-    /** @return the {@code -lm-low} styleable colour property. */
+    /** @return the {@code -meter-low} styleable colour property. */
     public final StyleableObjectProperty<Color> meterLowProperty() { return meterLow; }
     /** @return the resolved low-region colour. */
     public final Color getMeterLow() { return meterLow.get(); }
     /** @param c the low-region colour. */
     public final void setMeterLow(Color c) { meterLow.set(c); }
 
-    /** @return the {@code -lm-mid} styleable colour property. */
+    /** @return the {@code -meter-mid} styleable colour property. */
     public final StyleableObjectProperty<Color> meterMidProperty() { return meterMid; }
     /** @return the resolved mid-region colour. */
     public final Color getMeterMid() { return meterMid.get(); }
     /** @param c the mid-region colour. */
     public final void setMeterMid(Color c) { meterMid.set(c); }
 
-    /** @return the {@code -lm-hi} styleable colour property. */
+    /** @return the {@code -meter-hi} styleable colour property. */
     public final StyleableObjectProperty<Color> meterHiProperty() { return meterHi; }
     /** @return the resolved high-region colour. */
     public final Color getMeterHi() { return meterHi.get(); }
     /** @param c the high-region colour. */
     public final void setMeterHi(Color c) { meterHi.set(c); }
 
-    /** @return the {@code -lm-clip} styleable colour property. */
+    /** @return the {@code -meter-clip} styleable colour property. */
     public final StyleableObjectProperty<Color> meterClipProperty() { return meterClip; }
     /** @return the resolved clip-region colour. */
     public final Color getMeterClip() { return meterClip.get(); }
     /** @param c the clip-region colour. */
     public final void setMeterClip(Color c) { meterClip.set(c); }
 
-    /** @return the {@code -lm-background} styleable colour property. */
+    /** @return the {@code -meter-background} styleable colour property. */
     public final StyleableObjectProperty<Color> meterBackgroundProperty() { return meterBackground; }
     /** @return the resolved unlit/background segment colour. */
     public final Color getMeterBackground() { return meterBackground.get(); }
     /** @param c the unlit/background segment colour. */
     public final void setMeterBackground(Color c) { meterBackground.set(c); }
 
-    /** @return the {@code -lm-segment-gap} styleable property (px). */
+    /** @return the {@code -meter-segment-gap} styleable property (px). */
     public final StyleableDoubleProperty meterSegmentGapProperty() { return meterSegmentGap; }
     /** @return the inter-segment gap in pixels. */
     public final double getMeterSegmentGap() { return meterSegmentGap.get(); }
     /** @param px the inter-segment gap in pixels. */
     public final void setMeterSegmentGap(double px) { meterSegmentGap.set(px); }
 
-    /** @return the {@code -lm-segment-height} styleable property (px). */
+    /** @return the {@code -meter-segment-height} styleable property (px). */
     public final StyleableDoubleProperty meterSegmentHeightProperty() { return meterSegmentHeight; }
     /** @return the per-segment thickness in pixels. */
     public final double getMeterSegmentHeight() { return meterSegmentHeight.get(); }
     /** @param px the per-segment thickness in pixels. */
     public final void setMeterSegmentHeight(double px) { meterSegmentHeight.set(px); }
 
-    /** @return the {@code -lm-tick-marks} styleable property. */
+    /** @return the {@code -meter-tick-marks} styleable property. */
     public final StyleableBooleanProperty meterTickMarksProperty() { return meterTickMarks; }
     /** @return whether dB tick marks/labels are drawn (performance size). */
     public final boolean isMeterTickMarks() { return meterTickMarks.get(); }
@@ -527,7 +537,7 @@ public final class LevelMeter extends Control {
     private static final class StyleableProperties {
 
         static final CssMetaData<LevelMeter, Color> METER_LOW =
-                new CssMetaData<>("-lm-low",
+                new CssMetaData<>("-meter-low",
                         StyleConverter.getColorConverter(), FALLBACK_LOW) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterLow.isBound();
@@ -538,7 +548,7 @@ public final class LevelMeter extends Control {
                 };
 
         static final CssMetaData<LevelMeter, Color> METER_MID =
-                new CssMetaData<>("-lm-mid",
+                new CssMetaData<>("-meter-mid",
                         StyleConverter.getColorConverter(), FALLBACK_MID) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterMid.isBound();
@@ -549,7 +559,7 @@ public final class LevelMeter extends Control {
                 };
 
         static final CssMetaData<LevelMeter, Color> METER_HI =
-                new CssMetaData<>("-lm-hi",
+                new CssMetaData<>("-meter-hi",
                         StyleConverter.getColorConverter(), FALLBACK_HI) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterHi.isBound();
@@ -560,7 +570,7 @@ public final class LevelMeter extends Control {
                 };
 
         static final CssMetaData<LevelMeter, Color> METER_CLIP =
-                new CssMetaData<>("-lm-clip",
+                new CssMetaData<>("-meter-clip",
                         StyleConverter.getColorConverter(), FALLBACK_CLIP) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterClip.isBound();
@@ -571,7 +581,7 @@ public final class LevelMeter extends Control {
                 };
 
         static final CssMetaData<LevelMeter, Color> METER_BACKGROUND =
-                new CssMetaData<>("-lm-background",
+                new CssMetaData<>("-meter-background",
                         StyleConverter.getColorConverter(), FALLBACK_BACKGROUND) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterBackground.isBound();
@@ -582,7 +592,7 @@ public final class LevelMeter extends Control {
                 };
 
         static final CssMetaData<LevelMeter, Number> METER_SEGMENT_GAP =
-                new CssMetaData<>("-lm-segment-gap",
+                new CssMetaData<>("-meter-segment-gap",
                         StyleConverter.getSizeConverter(), 1.0) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterSegmentGap.isBound();
@@ -593,7 +603,7 @@ public final class LevelMeter extends Control {
                 };
 
         static final CssMetaData<LevelMeter, Number> METER_SEGMENT_HEIGHT =
-                new CssMetaData<>("-lm-segment-height",
+                new CssMetaData<>("-meter-segment-height",
                         StyleConverter.getSizeConverter(), 2.0) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterSegmentHeight.isBound();
@@ -604,7 +614,7 @@ public final class LevelMeter extends Control {
                 };
 
         static final CssMetaData<LevelMeter, Boolean> METER_TICK_MARKS =
-                new CssMetaData<>("-lm-tick-marks",
+                new CssMetaData<>("-meter-tick-marks",
                         StyleConverter.getBooleanConverter(), Boolean.FALSE) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterTickMarks.isBound();

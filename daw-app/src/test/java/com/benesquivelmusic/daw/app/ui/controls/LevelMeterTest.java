@@ -8,8 +8,12 @@ import javafx.scene.Scene;
 import javafx.scene.layout.StackPane;
 import javafx.scene.paint.Color;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static com.benesquivelmusic.daw.app.ui.snapshot.FxSnapshotTest.runOnFxThread;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -22,9 +26,33 @@ import static org.assertj.core.api.Assertions.assertThat;
 @ExtendWith(JavaFxToolkitExtension.class)
 class LevelMeterTest {
 
+    /** Meters created by helpers; disposed in {@link #cleanup()} to stop
+     *  every attached {@link javafx.animation.AnimationTimer} so timers
+     *  do not leak between tests in the shared JavaFX toolkit. */
+    private static final List<LevelMeter> CREATED = new ArrayList<>();
+
+    @AfterEach
+    void cleanup() {
+        runOnFxThread(() -> {
+            for (LevelMeter m : CREATED) {
+                if (m.getSkin() != null) {
+                    m.setSkin(null);
+                }
+                if (m.getParent() instanceof javafx.scene.Parent && m.getScene() != null) {
+                    javafx.scene.Parent p = (javafx.scene.Parent) m.getParent();
+                    if (p instanceof javafx.scene.layout.Pane pane) {
+                        pane.getChildren().remove(m);
+                    }
+                }
+            }
+            CREATED.clear();
+            return null;
+        });
+    }
+
     @Test
     void defaultsAreSane() {
-        LevelMeter m = runOnFxThread(LevelMeter::new);
+        LevelMeter m = newMeter();
         assertThat(m.getOrientation()).isEqualTo(Orientation.VERTICAL);
         assertThat(m.getChannelCount()).isEqualTo(2);
         assertThat(m.isAnimated()).isTrue();
@@ -37,7 +65,7 @@ class LevelMeterTest {
 
     @Test
     void channelCountIsClampedToOneThroughEight() {
-        LevelMeter m = runOnFxThread(LevelMeter::new);
+        LevelMeter m = newMeter();
         m.setChannelCount(0);
         assertThat(m.getChannelCount()).isEqualTo(1);
         m.setChannelCount(99);
@@ -47,19 +75,31 @@ class LevelMeterTest {
     }
 
     @Test
+    void channelCountClampIsEnforcedAtThePropertyLevel() {
+        // Direct property set / bind paths must respect the same [1, 8]
+        // range as setChannelCount, otherwise the skin can lay out more
+        // columns than the per-channel atomics support.
+        LevelMeter m = newMeter();
+        m.channelCountProperty().set(0);
+        assertThat(m.getChannelCount()).isEqualTo(1);
+        m.channelCountProperty().set(99);
+        assertThat(m.getChannelCount()).isEqualTo(8);
+    }
+
+    @Test
     void cssMetaDataExposesAllEightStyleableProperties() {
         var names = LevelMeter.getClassCssMetaData().stream()
                 .map(javafx.css.CssMetaData::getProperty)
                 .toList();
         assertThat(names).contains(
-                "-lm-low", "-lm-mid", "-lm-hi", "-lm-clip",
-                "-lm-background", "-lm-segment-gap",
-                "-lm-segment-height", "-lm-tick-marks");
+                "-meter-low", "-meter-mid", "-meter-hi", "-meter-clip",
+                "-meter-background", "-meter-segment-gap",
+                "-meter-segment-height", "-meter-tick-marks");
     }
 
     @Test
     void submitLevelsIsRelayedToPropertiesByTheSkinTimer() {
-        LevelMeter m = runOnFxThread(LevelMeter::new);
+        LevelMeter m = newMeter();
         LevelMeterSkin skin = attach(m);
 
         m.submitLevels(-3.0, -9.0);
@@ -76,7 +116,7 @@ class LevelMeterTest {
 
     @Test
     void drawModelLightsSegmentsAccordingToPeak() {
-        LevelMeter m = runOnFxThread(LevelMeter::new);
+        LevelMeter m = newMeter();
         LevelMeterSkin skin = attach(m);
 
         runOnFxThread(() -> {
@@ -97,8 +137,11 @@ class LevelMeterTest {
     }
 
     @Test
-    void colorAtUsesClipColourNearFullScaleAndLowColourNearFloor() {
-        LevelMeter m = runOnFxThread(LevelMeter::new);
+    void colorAtUsesHiAtZeroDbfsAndLowColourNearFloor() {
+        // Exactly 0 dBFS sits in the -meter-hi band per UI Design Book
+        // §5.7 ("-6 to 0: -meter-hi"). The -meter-clip colour is reserved
+        // for values STRICTLY above 0 — see colorAtUsesClipAboveZeroDbfs.
+        LevelMeter m = newMeter();
         LevelMeterSkin skin = attach(m);
         runOnFxThread(() -> {
             m.setPeakDb(0.0);
@@ -112,11 +155,36 @@ class LevelMeterTest {
         });
         Color nearFloor = runOnFxThread(() -> skin.colorAt(0, 0, 4, 200));
 
-        assertThat(near0).isEqualTo(m.getMeterClip());
+        assertThat(near0).isEqualTo(m.getMeterHi());
         assertThat(nearFloor).isEqualTo(m.getMeterLow());
     }
 
+    @Test
+    void colorAtUsesClipAboveZeroDbfs() {
+        // The clip colour is shown only for peaks STRICTLY above 0 dBFS
+        // (UI Design Book §5.7 "Above 0: -meter-clip").
+        LevelMeter m = newMeter();
+        LevelMeterSkin skin = attach(m);
+        runOnFxThread(() -> {
+            m.setPeakDb(3.0);
+            return null;
+        });
+        layout(m);
+
+        Color top = runOnFxThread(() -> {
+            int n = skin.segmentCount(4, 200);
+            return skin.colorAt(0, n - 1, 4, 200);
+        });
+        assertThat(top).isEqualTo(m.getMeterClip());
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────
+
+    static LevelMeter newMeter() {
+        LevelMeter m = runOnFxThread(LevelMeter::new);
+        CREATED.add(m);
+        return m;
+    }
 
     static LevelMeterSkin attach(LevelMeter m) {
         return runOnFxThread(() -> {

@@ -5,30 +5,33 @@
  * LevelMeter#getUserAgentStylesheet(). It is intentionally self-contained:
  * it declares concrete fallback colours and dimensions so the control
  * renders correctly with NO application stylesheet loaded (the plugin-GUI
- * window case). The app's styles.css cascades on top and forwards the
- * .root-pane semantic role tokens (-meter-low, -meter-mid, …) into the
- * control's -lm-* styleable properties — distinctly-named so the forward
- * is never a circular looked-up colour.
+ * window case). The app's styles.css cascades on top: it forwards
+ * -surface-2 into -meter-background (distinct names, so non-circular)
+ * and themes that re-tint the lit segments target the .level-meter
+ * selector directly. A .root-pane `-meter-low` token override does NOT
+ * cascade into the lit-segment colours; that is a deliberate limitation
+ * of the documented -meter-* CSS API (a same-name self-forward would be
+ * dropped by JavaFX as a circular looked-up colour).
  *
  * Colour values match UI Design Book Palette A (Onyx Refined) and the
  * hard-coded CssMetaData initial values in LevelMeter.java:
- *   -lm-low        #3FBF7F
- *   -lm-mid        #B6D451
- *   -lm-hi         #E6B450
- *   -lm-clip       #E5484D
- *   -lm-background  #1D1F26  (surface-2's value)
+ *   -meter-low        #3FBF7F
+ *   -meter-mid        #B6D451
+ *   -meter-hi         #E6B450
+ *   -meter-clip       #E5484D
+ *   -meter-background  #1D1F26  (surface-2's value)
  */
 
 .level-meter {
-    -lm-low:        #3FBF7F;
-    -lm-mid:        #B6D451;
-    -lm-hi:         #E6B450;
-    -lm-clip:       #E5484D;
-    -lm-background: #1D1F26;
+    -meter-low:        #3FBF7F;
+    -meter-mid:        #B6D451;
+    -meter-hi:         #E6B450;
+    -meter-clip:       #E5484D;
+    -meter-background: #1D1F26;
 
-    -lm-segment-gap:    1;
-    -lm-segment-height: 2;
-    -lm-tick-marks:     false;
+    -meter-segment-gap:    1;
+    -meter-segment-height: 2;
+    -meter-tick-marks:     false;
 }
 
 /* ── Size variants — dimensions only (no palette decisions). ──────────── */
@@ -52,7 +55,7 @@
     -fx-pref-height: 36;
     -fx-min-width: 6;
     -fx-min-height: 18;
-    -lm-segment-height: 3;
+    -meter-segment-height: 3;
 }
 
 .level-meter.size-performance {
@@ -60,6 +63,6 @@
     -fx-pref-height: 320;
     -fx-min-width: 12;
     -fx-min-height: 64;
-    -lm-segment-height: 3;
-    -lm-tick-marks: true;
+    -meter-segment-height: 3;
+    -meter-tick-marks: true;
 }

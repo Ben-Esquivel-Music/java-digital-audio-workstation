@@ -7,11 +7,12 @@ import javafx.scene.Scene;
 import javafx.scene.layout.StackPane;
 import javafx.scene.paint.Color;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
+import java.util.ArrayList;
+import java.util.List;
 
 import static com.benesquivelmusic.daw.app.ui.snapshot.FxSnapshotTest.runOnFxThread;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -27,32 +28,49 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Two distinct, JavaFX-correct mechanisms are asserted:
  *
  * <ol>
- *   <li><b>{@code -lm-background} follows the {@code -surface-2}
- *       token.</b> {@code styles.css} forwards {@code -surface-2} into the
- *       control's {@code -lm-background} styleable property. Because the
- *       source and target names differ, JavaFX resolves it through the
- *       {@code .root-pane} ancestor — so a theme that re-tints
- *       {@code -surface-2} re-tints the unlit segments.</li>
- *   <li><b>Lit segments follow the {@code .root-pane} role tokens.</b>
- *       {@code styles.css} forwards {@code -meter-low} into
- *       {@code -lm-low}, {@code -meter-mid} into {@code -lm-mid}, etc.
- *       Because the source ({@code -meter-low}) and target
- *       ({@code -lm-low}) names differ, the forward is not a circular
- *       looked-up colour — a theme that re-tints the role token
- *       automatically re-tints the meter.</li>
+ *   <li><b>{@code -meter-background} follows the {@code -surface-2}
+ *       token.</b> {@code styles.css} forwards {@code -surface-2} into
+ *       the control's {@code -meter-background} styleable property.
+ *       Because the source and target names differ, JavaFX resolves it
+ *       through the {@code .root-pane} ancestor — so a theme that
+ *       re-tints {@code -surface-2} re-tints the unlit segments.</li>
+ *   <li><b>Lit segments are re-tinted via the {@code .level-meter}
+ *       selector directly.</b> The documented {@code -meter-*} CSS
+ *       styleable property names match {@code .root-pane}'s role-token
+ *       names, so a same-name forward in {@code styles.css}
+ *       ({@code .level-meter { -meter-low: -meter-low; }}) is a circular
+ *       looked-up colour that JavaFX drops. Themes must therefore declare
+ *       their lit-segment palette on {@code .level-meter} (the same
+ *       structural entry point used by stories 268–271).</li>
  * </ol>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class LevelMeterAppThemeCascadeTest {
 
-    private static String inlineCss(String css) {
-        return "data:text/css;base64,"
-                + Base64.getEncoder().encodeToString(css.getBytes(StandardCharsets.UTF_8));
+    private final List<LevelMeter> created = new ArrayList<>();
+
+    @AfterEach
+    void cleanup() {
+        runOnFxThread(() -> {
+            for (LevelMeter m : created) {
+                if (m.getSkin() != null) {
+                    m.setSkin(null);
+                }
+            }
+            created.clear();
+            return null;
+        });
+    }
+
+    private LevelMeter newMeter() {
+        LevelMeter m = runOnFxThread(LevelMeter::new);
+        created.add(m);
+        return m;
     }
 
     @Test
     void defaultAppThemeResolvesToPaletteAValues() {
-        LevelMeter m = runOnFxThread(LevelMeter::new);
+        LevelMeter m = newMeter();
         Color[] c = runOnFxThread(() -> {
             StackPane root = new StackPane(m);
             root.getStyleClass().add("root-pane");
@@ -69,7 +87,7 @@ class LevelMeterAppThemeCascadeTest {
 
     @Test
     void meterBackgroundFollowsTheSurfaceTwoToken() {
-        LevelMeter m = runOnFxThread(LevelMeter::new);
+        LevelMeter m = newMeter();
         Color bg = runOnFxThread(() -> {
             StackPane root = new StackPane(m);
             root.getStyleClass().add("root-pane");
@@ -82,29 +100,34 @@ class LevelMeterAppThemeCascadeTest {
             return m.getMeterBackground();
         });
         assertThat(bg)
-                .as("a theme re-tinting -surface-2 must reach -lm-background "
+                .as("a theme re-tinting -surface-2 must reach -meter-background "
                         + "via the distinctly-named styles.css forward")
                 .isEqualTo(Color.web("#654321"));
     }
 
     @Test
-    void litSegmentsFollowRootPaneRoleTokens() {
-        LevelMeter m = runOnFxThread(LevelMeter::new);
+    void litSegmentsAreReTintedViaTheLevelMeterSelector() {
+        // Themes re-tint the lit-segment palette on the .level-meter
+        // selector — this is the supported entry point for the controls
+        // package. A .root-pane `-meter-low` token override does NOT
+        // cascade (a same-name forward would be a circular looked-up
+        // colour); the doc-comment in styles.css explains why.
+        LevelMeter m = newMeter();
         Color[] c = runOnFxThread(() -> {
             StackPane root = new StackPane(m);
             root.getStyleClass().add("root-pane");
             Scene scene = new Scene(root, 80, 240);
             DarkThemeHelper.applyTo(scene);
-            // Simulate a theme re-tinting the role tokens on .root-pane.
-            root.setStyle("-meter-low: #0011FF; -meter-clip: #FFAA00;");
+            scene.getStylesheets().add("data:text/css;base64,"
+                    + java.util.Base64.getEncoder().encodeToString(
+                            (".level-meter { -meter-low: #0011FF; "
+                                    + "-meter-clip: #FFAA00; }")
+                                    .getBytes(java.nio.charset.StandardCharsets.UTF_8)));
             root.applyCss();
             root.layout();
             return new Color[] {m.getMeterLow(), m.getMeterClip()};
         });
-        assertThat(c[0])
-                .as("re-tinting -meter-low on .root-pane must cascade through "
-                        + "the -lm-low forward into the control")
-                .isEqualTo(Color.web("#0011FF"));
+        assertThat(c[0]).isEqualTo(Color.web("#0011FF"));
         assertThat(c[1]).isEqualTo(Color.web("#FFAA00"));
     }
 }
