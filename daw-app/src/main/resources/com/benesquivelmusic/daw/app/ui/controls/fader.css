@@ -1,0 +1,70 @@
+/*
+ * Fader user-agent stylesheet (story 269).
+ *
+ * Returned by Fader#getUserAgentStylesheet(). Self-contained so the
+ * control renders with NO application stylesheet loaded (plugin-GUI
+ * case). Token overrides from the parent stylesheet still cascade via
+ * lookup-colour resolution, so a host app's .root-pane palette swap
+ * reaches the fader automatically.
+ *
+ * Token names (UI Design Book §5.4):
+ *   -fader-track-color      (vertical track column)
+ *   -fader-cap-color        (wide rectangular cap fill)
+ *   -fader-cap-line-color   (1 px horizontal centreline)
+ *   -fader-zero-tick-color  (0 dB tick mark)
+ *   -fader-focus-ring-color (focus ring around the cap)
+ *
+ * Default values are Palette A (Onyx Refined) and match the hard-coded
+ * fallbacks in Fader.java so the control renders correctly with no
+ * stylesheet loaded.
+ *
+ * Size variants pull from UI Design Book §3.3:
+ *   .size-inspector  ≈ 16 × 96   (compact, inspector panel)
+ *   .size-mixer      ≈ 20 × 160  (channel strip — the default)
+ *   .size-performance ≈ 32 × 320 (giant performance-stage fader, story 280)
+ */
+
+.fader {
+    -fader-track-color:       #1D1F26;
+    -fader-cap-color:         #2E323D;
+    -fader-cap-line-color:    #7C8CFF;
+    -fader-zero-tick-color:   #5C6273;
+    -fader-focus-ring-color:  #5C8CFF;
+}
+
+/* While dragging, the cap centreline brightens. The skin draws the
+ * cap line with a hue-shift toward white during drag, and the CSS
+ * provides the corresponding token override for any consumer that
+ * paints from the property directly. */
+.fader:dragging {
+    -fader-cap-line-color: #B4C0FF;
+}
+
+/* ── Size variants ────────────────────────────────────────────────────── */
+
+.fader.size-inspector {
+    -fx-pref-width: 24;       /* column 16 + gap 4 + meter 8 ≈ 28; min-cell rounds */
+    -fx-pref-height: 96;
+    -fx-min-width:  16;
+    -fx-min-height: 48;
+    -fx-max-width:  64;
+    -fx-max-height: 192;
+}
+
+.fader.size-mixer {
+    -fx-pref-width:  32;      /* column 20 + gap 4 + meter 8 = 32 */
+    -fx-pref-height: 160;
+    -fx-min-width:   20;
+    -fx-min-height:  64;
+    -fx-max-width:   64;
+    -fx-max-height:  320;
+}
+
+.fader.size-performance {
+    -fx-pref-width:  64;      /* column 32 + gap 4 + meter 24 ≈ 60–64 */
+    -fx-pref-height: 320;
+    -fx-min-width:   32;
+    -fx-min-height:  128;
+    -fx-max-width:   96;
+    -fx-max-height:  640;
+}
