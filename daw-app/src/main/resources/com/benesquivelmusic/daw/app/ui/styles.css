@@ -771,23 +771,31 @@
 }
 
 /* ── Level Meters ── */
+/* Story 267: the LevelMeter control (com...ui.controls.LevelMeter) ships
+ * its own self-contained user-agent stylesheet (level-meter.css) carrying
+ * the default Palette A meter colours, so the control renders correctly
+ * with no app stylesheet (plugin-GUI case). This app rule only forwards
+ * the -surface-2 token into the control's -meter-background styleable
+ * property — a distinctly-named forward, which JavaFX resolves through the
+ * .root-pane ancestor, so the active theme drives the unlit-segment tone.
+ *
+ * The -meter-low/-mid/-hi/-clip styleable properties are intentionally NOT
+ * re-declared here: a `.level-meter { -meter-low: -meter-low; }` rule is a
+ * same-name self-reference that JavaFX flags as a circular looked-up
+ * colour and drops (the property silently falls back to the UA value). A
+ * theme that re-tints the lit segments must target the `.level-meter`
+ * selector directly (proven by LevelMeterSkinThemeTest /
+ * LevelMeterAppThemeCascadeTest) — that is the supported theming entry
+ * point for the stories 268–271 controls too. The three dead
+ * .level-meter-fill-{green,orange,red} rules were removed (zero
+ * Java/FXML consumers). */
 .level-meter {
     -fx-background-color: -surface-1;
     -fx-border-color: -line-soft;
     -fx-border-width: 1;
     -fx-border-radius: 4;
-}
 
-.level-meter-fill-green {
-    -fx-background-color: linear-gradient(to top, derive(-meter-low, -30%), -meter-low);
-}
-
-.level-meter-fill-orange {
-    -fx-background-color: linear-gradient(to top, derive(-meter-hi, -30%), -meter-hi);
-}
-
-.level-meter-fill-red {
-    -fx-background-color: linear-gradient(to top, derive(-meter-clip, -30%), -meter-clip);
+    -meter-background: -surface-2;
 }
 
 /* ── Visualization Tiles Row ── */

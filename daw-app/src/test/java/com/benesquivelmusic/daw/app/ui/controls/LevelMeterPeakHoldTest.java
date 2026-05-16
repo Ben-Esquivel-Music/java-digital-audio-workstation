@@ -1,0 +1,118 @@
+package com.benesquivelmusic.daw.app.ui.controls;
+
+import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
+import com.benesquivelmusic.daw.app.ui.controls.skin.LevelMeterSkin;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+
+import java.util.concurrent.atomic.AtomicLong;
+
+import static com.benesquivelmusic.daw.app.ui.controls.LevelMeterTest.attach;
+import static com.benesquivelmusic.daw.app.ui.snapshot.FxSnapshotTest.runOnFxThread;
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Deterministic peak-hold decay using the synthetic-timestamp seam and a
+ * synthetic clock — NO real {@code Thread.sleep} (forbidden by project
+ * test policy: flaky in Surefire). The synthetic clock makes the
+ * value-change relay path (which also advances peak-hold) use the same
+ * timeline as the explicit {@link LevelMeterSkin#tick(long)} calls.
+ */
+@ExtendWith(JavaFxToolkitExtension.class)
+class LevelMeterPeakHoldTest {
+
+    @Test
+    void heldPeakSticksForTwoSecondsThenFallsOff() {
+        LevelMeter m = runOnFxThread(LevelMeter::new);
+        LevelMeterSkin skin = attach(m);
+        AtomicLong now = new AtomicLong(1_000_000_000L);
+        runOnFxThread(() -> {
+            skin.setClock(now::get);
+            return null;
+        });
+
+        long t = 1_000_000_000L;
+
+        runOnFxThread(() -> {
+            now.set(t);
+            m.setPeakDb(2.0); // +2 dBFS at t (relay listener ticks at `now`)
+            skin.tick(t);
+            return null;
+        });
+        assertThat(skin.currentPeakHoldDb(t)).isEqualTo(2.0);
+
+        // Peak drops back, but the hold must stay at +2 within the window.
+        runOnFxThread(() -> {
+            now.set(t + 1_500_000_000L);
+            m.setPeakDb(-30.0);
+            skin.tick(t + 1_500_000_000L); // +1.5 s
+            return null;
+        });
+        assertThat(skin.currentPeakHoldDb(t + 1_500_000_000L)).isEqualTo(2.0);
+
+        // After 2 s the hold expires and tracks the live peak again.
+        runOnFxThread(() -> {
+            now.set(t + 2_500_000_000L);
+            skin.tick(t + 2_500_000_000L); // +2.5 s
+            return null;
+        });
+        assertThat(skin.currentPeakHoldDb(t + 2_500_000_000L)).isEqualTo(-30.0);
+    }
+
+    @Test
+    void aHigherPeakReArmsTheHoldAndResetsTheTimer() {
+        LevelMeter m = runOnFxThread(LevelMeter::new);
+        LevelMeterSkin skin = attach(m);
+        AtomicLong now = new AtomicLong(5_000_000_000L);
+        runOnFxThread(() -> {
+            skin.setClock(now::get);
+            return null;
+        });
+
+        long t = 5_000_000_000L;
+        runOnFxThread(() -> {
+            now.set(t);
+            m.setPeakDb(-12.0);
+            skin.tick(t);
+            return null;
+        });
+        assertThat(skin.currentPeakHoldDb(t)).isEqualTo(-12.0);
+
+        // A louder transient re-arms the hold at the new (higher) value.
+        runOnFxThread(() -> {
+            now.set(t + 1_000_000_000L);
+            m.setPeakDb(-3.0);
+            skin.tick(t + 1_000_000_000L);
+            return null;
+        });
+        assertThat(skin.currentPeakHoldDb(t + 1_000_000_000L)).isEqualTo(-3.0);
+        // Window restarts from the re-arm: still held 1.9 s later.
+        assertThat(skin.currentPeakHoldDb(t + 1_000_000_000L + 1_900_000_000L))
+                .isEqualTo(-3.0);
+    }
+
+    @Test
+    void holdExpiresExactlyAtTheTwoSecondBoundary() {
+        // 2_000_000_000L == LevelMeterSkin.PEAK_HOLD_NANOS (package-private
+        // across the controls/skin boundary, so spelled out literally).
+        LevelMeter m = runOnFxThread(LevelMeter::new);
+        LevelMeterSkin skin = attach(m);
+        long t = 9_000_000_000L;
+        long hold = 2_000_000_000L;
+
+        runOnFxThread(() -> {
+            skin.setClock(() -> t);
+            m.setPeakDb(-4.0);
+            skin.tick(t);          // captures the hold at t
+            m.setPeakDb(-40.0);    // live signal drops; the hold must stand
+            return null;
+        });
+
+        // One nanosecond before the boundary the hold still stands.
+        assertThat(skin.currentPeakHoldDb(t + hold - 1)).isEqualTo(-4.0);
+        // At exactly PEAK_HOLD_NANOS the hold expires (>= boundary) and the
+        // displayed value tracks the live peak again.
+        assertThat(skin.currentPeakHoldDb(t + hold)).isEqualTo(-40.0);
+    }
+}

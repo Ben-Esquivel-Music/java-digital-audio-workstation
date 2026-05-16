@@ -69,3 +69,25 @@ UI Design Book §2.6 also calls for Canvas drawing on metering surfaces ("Wavefo
 - This control is the template for stories 268 (Knob), 269 (Fader), 270 (TrackStrip), and 271 (MixerChannelStrip) — establish the file layout (`controls/Foo.java`, `controls/skin/FooSkin.java`, `controls/foo.css`) and StyleableProperty boilerplate so subsequent stories follow the same pattern.
 - **`module-info.java` updates.** This story introduces the `com.benesquivelmusic.daw.app.ui.controls` and `controls.skin` packages. Subsequent Phase 2 stories add `inspector`, `inspector.sections`, `views`, `theme`, `density`, `motion`, `dialogs`, `icons`, `design`, and `layout`. Every new package that is referenced from FXML (`fx:controller`, `@FXML` injection) must be added to `module-info.java` as `opens com.benesquivelmusic.daw.app.ui.<package> to javafx.fxml;`. Public API packages also need `exports`. Verify via the existing FXML loader smoke test; failures surface as `IllegalAccessException` at scene load.
 - Reference: UI Design Book §2.5, §2.6, §5.7, §7.10.
+
+## Implementation Note (2026-05-15)
+
+The `LevelMeter` control, its `LevelMeterSkin`, `level-meter.css`, and the
+full test suite are delivered. Two scoped deferrals, recorded here rather
+than dropped silently:
+
+- **Use-site meter migration deferred to stories 251 / 270.** The "Replace
+  existing meter usages incrementally" bullets were written against the
+  legacy `.level-meter-fill-*` `Region` model. That model no longer exists
+  at the named sites: the transport master meter is `LevelMeterDisplay`, a
+  `daw-fx` `GpuCanvas`-backed Region whose migration is **story 251's**
+  explicit scope (and this story's Non-Goals already exclude the GpuCanvas
+  backend swap); `TrackStripController` has **no meter today**, so adding
+  one is net-new TrackStrip work that belongs with **story 270**. The dead
+  `.level-meter-fill-{green,orange,red}` rules had zero Java/FXML consumers
+  and were removed cleanly in `styles.css` — nothing is left dangling.
+- **`module-info.java` note is not applicable.** `daw-app` is not a JPMS
+  module (no `module-info.java`; the shade build excludes
+  `module-info.class`); it runs on the classpath as the unnamed module, so
+  FXML reflective access needs no `opens`/`exports`. The note remains
+  relevant for any future module that *does* consume these packages.
