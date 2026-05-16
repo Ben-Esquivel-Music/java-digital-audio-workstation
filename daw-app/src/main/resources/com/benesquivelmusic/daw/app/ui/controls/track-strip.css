@@ -2,33 +2,61 @@
  * TrackStrip user-agent stylesheet (TrackStrip Control + Skin story).
  *
  * Returned by TrackStrip#getUserAgentStylesheet(). Intentionally
- * self-contained: gives the control's styleable properties their default
- * Palette A values so the control renders correctly with NO application
- * stylesheet loaded (plugin-GUI window case), and forwards the .root-pane
- * role tokens onto the internal -ts-* CssMetaData so styles.css palette
- * swaps reach the strip automatically (same pattern as level-meter.css).
+ * self-contained: gives the control's styleable properties their hard-coded
+ * Palette A hex defaults so the control renders correctly with NO application
+ * stylesheet loaded (plugin-GUI window case). When styles.css IS loaded, it
+ * forwards the .root-pane role tokens onto the -ts-* names so palette swaps
+ * reach the strip automatically (same pattern as level-meter.css).
  *
  * Naming
  * ──────
- * The CssMetaData uses internal -ts-* names; this stylesheet forwards the
- * documented role tokens (e.g. -ts-surface-1: -surface-1) onto them. A
- * same-name forward is a circular looked-up colour that the engine drops
- * — the distinct internal name avoids that pitfall.
+ * The CssMetaData uses internal -ts-* names (NOT the documented public
+ * role token names) because the strip consumes the .root-pane Palette A
+ * role tokens via the standard JavaFX cascade — and a same-name forward
+ * (.track-strip { -surface-1: -surface-1 }) is a circular looked-up colour
+ * that the engine drops. The internal name lets styles.css declare
+ * `-ts-surface-1: -surface-1;` as a non-circular forward.
+ *
+ * Plugin-GUI consumers (no styles.css loaded)
+ * ───────────────────────────────────────────
+ * Without the app stylesheet, the cascade from .root-pane is not available.
+ * Defaults below are hard hex values on .track-strip so the control renders
+ * correctly out-of-the-box. Such consumers re-tint by setting -ts-* directly
+ * on .track-strip; they can also load the app's styles.css to get the
+ * documented public role-token forward.
  *
  * UI Design Book references: §1.5, §2.5, §5.3, §7.1, §7.3, §7.5.
  */
 
-/* ── Token forwards + row background and base layout ─ */
+/* ── Hard-coded Palette A defaults (plugin-GUI case: no styles.css) ─
+ *
+ * Same pattern as level-meter.css: ship hard hex values so the control
+ * renders correctly with NO application stylesheet loaded. When
+ * styles.css IS loaded, it forwards the .root-pane role tokens onto
+ * these internal -ts-* names so palette swaps reach the strip
+ * automatically (see the .track-strip rule in styles.css).
+ *
+ * Colour values match UI Design Book Palette A (Onyx Refined):
+ *   -ts-surface-1    #15161B  (== Palette A -surface-1)
+ *   -ts-surface-3    #272A33  (== Palette A -surface-3)
+ *   -ts-accent-soft  rgba(124, 140, 255, 0.14)
+ *   -ts-danger       #E5484D  (== Palette A -danger)
+ *   -ts-warn         #E6B450  (== Palette A -warn)
+ *   -ts-text         #B7BCC7  (== Palette A -text)
+ *   -ts-text-hi      #ECEEF2  (== Palette A -text-hi)
+ *   -ts-text-mute    #7A808C  (== Palette A -text-mute)
+ *   -ts-line-soft    #22242C  (== Palette A -line-soft)
+ */
 .track-strip {
-    -ts-surface-1:    -surface-1;
-    -ts-surface-3:    -surface-3;
-    -ts-accent-soft:  -accent-soft;
-    -ts-danger:       -danger;
-    -ts-warn:         -warn;
-    -ts-text:         -text;
-    -ts-text-hi:      -text-hi;
-    -ts-text-mute:    -text-mute;
-    -ts-line-soft:    -line-soft;
+    -ts-surface-1:    #15161B;
+    -ts-surface-3:    #272A33;
+    -ts-accent-soft:  rgba(124, 140, 255, 0.14);
+    -ts-danger:       #E5484D;
+    -ts-warn:         #E6B450;
+    -ts-text:         #B7BCC7;
+    -ts-text-hi:      #ECEEF2;
+    -ts-text-mute:    #7A808C;
+    -ts-line-soft:    #22242C;
 
     /* §5.3: 28 px tall row, default density. The Skin's computePref/
      * computeMinHeight enforces 28 px from Java — keeping the value out
@@ -128,7 +156,7 @@
     -fx-border-radius: 4;
     -fx-background-radius: 4;
     -fx-text-fill: -ts-text;
-    -fx-font-family: -font-mono;
+    -fx-font-family: "JetBrains Mono", "IBM Plex Mono", "Cascadia Code", "Consolas", monospace;
     -fx-font-size: 11px;
     -fx-font-weight: 600;
     -fx-padding: 0;
@@ -145,19 +173,19 @@
 .track-toggle.mute:selected {
     -fx-background-color: -ts-text;
     -fx-border-color: -ts-text;
-    -fx-text-fill: -text-on-accent;
+    -fx-text-fill: #0B0B0E;
 }
 
 .track-toggle.solo:selected {
     -fx-background-color: -ts-warn;
     -fx-border-color: -ts-warn;
-    -fx-text-fill: -text-on-accent;
+    -fx-text-fill: #0B0B0E;
 }
 
 .track-toggle.arm:selected {
     -fx-background-color: -ts-danger;
     -fx-border-color: -ts-danger;
-    -fx-text-fill: -text-on-accent;
+    -fx-text-fill: #0B0B0E;
 }
 
 /* ── Density variants (story 261) ──

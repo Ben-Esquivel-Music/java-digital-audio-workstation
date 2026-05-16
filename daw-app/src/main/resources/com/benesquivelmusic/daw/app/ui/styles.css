@@ -803,6 +803,34 @@
     -lm-background: -surface-2;
 }
 
+/* ── Track Strip ── */
+/* Story 270: the TrackStrip control (com...ui.controls.TrackStrip) ships
+ * its own self-contained user-agent stylesheet (track-strip.css), which
+ * declares the control's internal styleable properties (-ts-surface-1/
+ * -ts-surface-3/-ts-accent-soft/-ts-danger/-ts-warn/-ts-text/-ts-text-hi/
+ * -ts-text-mute/-ts-line-soft) with hard hex Palette A defaults so the
+ * control renders correctly out-of-the-box even with no app stylesheet
+ * loaded (plugin-GUI window case).
+ *
+ * THIS RULE forwards the documented public role tokens into those internal
+ * styleable properties. The forwards use distinct source/target names so
+ * they are NOT circular looked-up colours; the .root-pane Palette A tokens
+ * cascade into the strip's colours via the standard JavaFX cascade,
+ * restoring the styles.css convention that structural selectors consume
+ * role tokens. A theme can re-tint the strip just by overriding the role
+ * tokens on .root-pane — no per-control duplication needed. */
+.track-strip {
+    -ts-surface-1:   -surface-1;
+    -ts-surface-3:   -surface-3;
+    -ts-accent-soft: -accent-soft;
+    -ts-danger:      -danger;
+    -ts-warn:        -warn;
+    -ts-text:        -text;
+    -ts-text-hi:     -text-hi;
+    -ts-text-mute:   -text-mute;
+    -ts-line-soft:   -line-soft;
+}
+
 /* ── Visualization Tiles Row ── */
 .viz-tile-row {
     -fx-background-color: -surface-bg;

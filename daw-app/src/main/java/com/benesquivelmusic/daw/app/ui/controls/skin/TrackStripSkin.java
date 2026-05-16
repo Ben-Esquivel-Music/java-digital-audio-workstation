@@ -73,6 +73,12 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
     /** Inline meter nominal width (story 267 {@code .size-inline}). */
     static final double METER_WIDTH = 4.0;
 
+    // ── User-facing menu strings (future i18n: move to Messages.properties) ─
+    static final String MENU_RENAME = "Rename track";
+    static final String MENU_CHANGE_COLOUR = "Change colour\u2026";
+    static final String MENU_DUPLICATE = "Duplicate";
+    static final String MENU_DELETE = "Delete";
+
     // ── Scene-graph nodes ─────────────────────────────────────────────────
 
     private final HBox row;
@@ -165,11 +171,14 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
         overflowBtn = new Label("\u22EF"); // ⋯ U+22EF MIDLINE HORIZONTAL ELLIPSIS
         overflowBtn.getStyleClass().add("track-strip-overflow");
         ContextMenu overflowMenu = new ContextMenu();
+        // TODO: Migrate to resource bundle (Messages.properties) when the
+        // i18n infrastructure is established — matches the existing codebase
+        // pattern of hard-coded MenuItem labels (see MixerView, etc.).
         overflowMenu.getItems().addAll(
-                new MenuItem("Rename track"),
-                new MenuItem("Change colour\u2026"),
-                new MenuItem("Duplicate"),
-                new MenuItem("Delete"));
+                new MenuItem(MENU_RENAME),
+                new MenuItem(MENU_CHANGE_COLOUR),
+                new MenuItem(MENU_DUPLICATE),
+                new MenuItem(MENU_DELETE));
         overflowBtn.setOnMouseClicked(e -> {
             if (e.getButton() == MouseButton.PRIMARY) {
                 overflowMenu.show(overflowBtn,
@@ -186,9 +195,14 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
 
         // Armed left-edge bar — positioned manually in layoutChildren so
         // its presence doesn't affect the row's intrinsic geometry.
+        // Do NOT call armBar.setFill() — that sets USER origin which
+        // prevents the CSS rule (.track-strip-arm-bar { -fx-fill: -ts-danger })
+        // from taking effect. Let CSS drive the fill; bind to
+        // dangerProperty as a fallback propagation path so palette
+        // changes reach the bar even without a full CSS re-apply.
         armBar = new Rectangle(ARM_BAR_WIDTH, 0);
         armBar.getStyleClass().add("track-strip-arm-bar");
-        armBar.setFill(control.getDanger());
+        armBar.fillProperty().bind(control.dangerProperty());
         armBar.visibleProperty().bind(control.armedProperty());
         armBar.managedProperty().bind(control.armedProperty());
 
@@ -444,6 +458,7 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
             meterHolder.managedProperty().unbind();
             c.getMeter().visibleProperty().unbind();
             c.getMeter().managedProperty().unbind();
+            armBar.fillProperty().unbind();
             armBar.visibleProperty().unbind();
             armBar.managedProperty().unbind();
             c.removeEventHandler(KeyEvent.KEY_PRESSED, keyHandler);

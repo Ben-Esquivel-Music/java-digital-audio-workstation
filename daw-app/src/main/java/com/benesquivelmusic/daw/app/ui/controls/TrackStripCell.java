@@ -60,6 +60,21 @@ public class TrackStripCell extends ListCell<Track> {
         return strip;
     }
 
+    /**
+     * Called by the ListView whenever the cell's index changes —
+     * including insert/remove operations on items above this cell that
+     * do NOT trigger {@link #updateItem(Track, boolean)}. Keeps the
+     * strip's display index consistent with the actual list position.
+     */
+    @Override
+    public void updateIndex(int index) {
+        super.updateIndex(index);
+        // index == -1 means the cell is no longer associated with an item.
+        if (index >= 0 && getItem() != null) {
+            strip.setTrackIndex(index + 1);
+        }
+    }
+
     @Override
     protected void updateItem(Track item, boolean empty) {
         super.updateItem(item, empty);
@@ -72,7 +87,7 @@ public class TrackStripCell extends ListCell<Track> {
         // `new TrackStrip()`. The cell-reuse contract (see class doc)
         // depends on this.
         strip.setTrackId(item.id());
-        strip.setTrackIndex(getIndex() + 1);
+        strip.setTrackIndex(getIndex() >= 0 ? getIndex() + 1 : 1);
         strip.setTrackName(item.name());
         // The Track record doesn't currently carry a colour; fall back
         // to the strip's current swatch so the cell can be themed
