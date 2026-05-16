@@ -7,12 +7,12 @@ import com.benesquivelmusic.daw.app.ui.icons.DawgIcon;
 
 import javafx.beans.value.ChangeListener;
 import javafx.geometry.Pos;
+import javafx.scene.Node;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.Label;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.SkinBase;
 import javafx.scene.control.ToggleButton;
-import javafx.scene.Node;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
 import javafx.scene.input.MouseButton;
