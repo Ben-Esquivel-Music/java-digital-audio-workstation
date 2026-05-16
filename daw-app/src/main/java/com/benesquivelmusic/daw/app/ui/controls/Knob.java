@@ -97,11 +97,17 @@ public final class Knob extends Control {
             new SimpleDoubleProperty(this, "min", 0.0) {
                 @Override
                 protected void invalidated() {
+                    double mn = get();
                     // Re-clamp current value when the range narrows.
                     double v = value.get();
-                    double mn = get();
                     if (v < mn) {
                         value.set(mn);
+                    }
+                    // Re-clamp defaultValue so the invariant
+                    // "defaultValue ∈ [min,max]" is never silently broken.
+                    double dv = defaultValue.get();
+                    if (dv < mn) {
+                        defaultValue.set(mn);
                     }
                 }
             };
@@ -109,10 +115,14 @@ public final class Knob extends Control {
             new SimpleDoubleProperty(this, "max", 1.0) {
                 @Override
                 protected void invalidated() {
-                    double v = value.get();
                     double mx = get();
+                    double v = value.get();
                     if (v > mx) {
                         value.set(mx);
+                    }
+                    double dv = defaultValue.get();
+                    if (dv > mx) {
+                        defaultValue.set(mx);
                     }
                 }
             };

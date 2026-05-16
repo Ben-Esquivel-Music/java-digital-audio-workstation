@@ -110,8 +110,11 @@ public final class KnobSkin extends SkinBase<Knob> {
     private double dragAnchorY;
     private double dragAnchorValue;
     private boolean dragging;
+    private boolean dragMoved;
     private boolean disposed;
     private int registeredListenerCount;
+    /** Logical dial size (px) as computed in {@link #layoutChildren}. */
+    private double dialSize;
 
     /**
      * @param control the {@link Knob} this skin renders
@@ -223,6 +226,7 @@ public final class KnobSkin extends SkinBase<Knob> {
         dragAnchorY = e.getScreenY();
         dragAnchorValue = c.getValue();
         dragging = true;
+        dragMoved = false;
         e.consume();
     }
 
@@ -230,6 +234,7 @@ public final class KnobSkin extends SkinBase<Knob> {
         if (!dragging) {
             return;
         }
+        dragMoved = true;
         Knob c = getSkinnable();
         double range = c.getMax() - c.getMin();
         if (range <= 0) {
@@ -251,7 +256,10 @@ public final class KnobSkin extends SkinBase<Knob> {
         if (e.getButton() != MouseButton.PRIMARY) {
             return;
         }
-        if (e.getClickCount() == 2) {
+        // Only reset on a genuine double-click that did NOT involve any
+        // drag movement. Two quick press-drag-release cycles would
+        // otherwise register as clickCount==2 and undo the second drag.
+        if (e.getClickCount() == 2 && !dragMoved) {
             resetToDefault();
             e.consume();
         }
@@ -389,31 +397,57 @@ public final class KnobSkin extends SkinBase<Knob> {
         // The knob is always circular: size = min(w, h), centred in the
         // available area. Every internal dimension scales from `size`.
         double size = Math.max(0.0, Math.min(w, h));
-        canvas.setWidth(size);
-        canvas.setHeight(size);
-        canvas.relocate(x + (w - size) / 2.0, y + (h - size) / 2.0);
+        dialSize = size;
+        // The canvas must be large enough to include the focus ring drawn
+        // outside the dial. We add the focus-ring band on each side so the
+        // ring is never clipped.
+        double focusBand = focusBand(size);
+        double canvasSize = size + 2 * focusBand;
+        canvas.setWidth(canvasSize);
+        canvas.setHeight(canvasSize);
+        canvas.relocate(
+                x + (w - canvasSize) / 2.0,
+                y + (h - canvasSize) / 2.0);
         paint();
+    }
+
+    /**
+     * Extra band (each side) the canvas needs beyond the dial {@code size}
+     * to render the focus ring without clipping. This is
+     * {@code focusRingOffset + border/2} — the offset plus half the stroke
+     * so the outer edge is fully inside the canvas.
+     */
+    private static double focusBand(double size) {
+        double border = Math.max(1.0, size * BORDER_FRAC);
+        double focusRingOffset = Math.max(2.0, size * FOCUS_RING_OFFSET_FRAC);
+        return focusRingOffset + border / 2.0;
     }
 
     private void paint() {
         if (disposed) {
             return;
         }
-        double size = canvas.getWidth();
+        double canvasW = canvas.getWidth();
+        if (canvasW <= 0) {
+            return;
+        }
+        double size = dialSize;
         if (size <= 0) {
             return;
         }
         Knob c = getSkinnable();
         GraphicsContext gc = canvas.getGraphicsContext2D();
-        gc.clearRect(0, 0, size, size);
+        gc.clearRect(0, 0, canvasW, canvasW);
 
         double border = Math.max(1.0, size * BORDER_FRAC);
         double arcStroke = Math.max(1.0, size * ARC_STROKE_FRAC);
         double indicatorStroke = Math.max(1.0, size * INDICATOR_STROKE_FRAC);
         double focusRingOffset = Math.max(2.0, size * FOCUS_RING_OFFSET_FRAC);
 
-        double cx = size / 2.0;
-        double cy = size / 2.0;
+        // Centre of the canvas (which is larger than the dial by focusBand
+        // on each side).
+        double cx = canvasW / 2.0;
+        double cy = canvasW / 2.0;
         // Leave room for the travel arc to sit JUST outside the dial.
         double arcRadius = (size / 2.0) - arcStroke;
         double dialRadius = arcRadius - arcStroke;
@@ -501,7 +535,7 @@ public final class KnobSkin extends SkinBase<Knob> {
             double fontPx = Math.max(8.0, size * 0.18);
             gc.setFont(Font.font(fontPx));
             gc.setTextAlign(TextAlignment.CENTER);
-            gc.fillText(unit, cx, size - 1);
+            gc.fillText(unit, cx, cy + size / 2.0 - 1);
         }
 
         // Accessible value narration — screen readers announce changes

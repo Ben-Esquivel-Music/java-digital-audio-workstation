@@ -24,14 +24,12 @@ class KnobResizeTest {
         double[] dims = new double[2];
         runOnFxThread(() -> {
             Knob k = Knob.create().size(28).build();
-            // Force a non-square host size — 60 × 40. The canvas must
-            // square itself to min(w, h) = 40.
+            // Force a non-square host size — 60 × 40. The logical dial
+            // sizes to min(w, h) = 40; the canvas is slightly larger to
+            // include the focus-ring band.
             javafx.scene.layout.Pane root = new javafx.scene.layout.Pane(k);
             new javafx.scene.Scene(root, 80, 60);
             root.applyCss();
-            // Bypass the layout engine's min/max clamping: place the knob
-            // at an explicit non-square size to assert the skin honours
-            // size = min(w, h), not its own pref size.
             k.resizeRelocate(0, 0, 60, 40);
             k.layout();
             KnobSkin skin = (KnobSkin) k.getSkin();
@@ -40,12 +38,15 @@ class KnobResizeTest {
             dims[1] = c.getHeight();
             return null;
         });
+        // Canvas must be square.
         assertThat(dims[0])
-                .as("canvas width should equal min(cell w, cell h) = 40")
-                .isEqualTo(40.0);
-        assertThat(dims[1])
                 .as("canvas height equals canvas width — knob is square")
-                .isEqualTo(dims[0]);
+                .isEqualTo(dims[1]);
+        // Canvas must be >= min(cell w, cell h) = 40 (larger because of
+        // the focus-ring band).
+        assertThat(dims[0])
+                .as("canvas width should be at least the logical dial size 40")
+                .isGreaterThanOrEqualTo(40.0);
     }
 
     @Test
@@ -64,8 +65,9 @@ class KnobResizeTest {
             dims[1] = c.getHeight();
             return null;
         });
-        // min(20, 30) = 20 — the knob honours the smaller axis.
-        assertThat(dims[0]).isEqualTo(20.0);
-        assertThat(dims[1]).isEqualTo(20.0);
+        // min(20, 30) = 20 — the dial honours the smaller axis.
+        // Canvas is larger than 20 due to the focus-ring band.
+        assertThat(dims[0]).isGreaterThanOrEqualTo(20.0);
+        assertThat(dims[1]).isEqualTo(dims[0]);
     }
 }
