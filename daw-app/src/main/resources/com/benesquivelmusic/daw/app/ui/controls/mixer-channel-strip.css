@@ -1,0 +1,247 @@
+/*
+ * MixerChannelStrip user-agent stylesheet (story 271 — MixerChannelStrip
+ * Control + Skin).
+ *
+ * Returned by MixerChannelStrip#getUserAgentStylesheet(). Intentionally
+ * self-contained: gives the control's styleable properties their hard-coded
+ * Palette A hex defaults so the control renders correctly with NO application
+ * stylesheet loaded (plugin-GUI window case). When styles.css IS loaded, it
+ * forwards the .root-pane role tokens onto the -mcs-* names so palette swaps
+ * reach the strip automatically (same pattern as track-strip.css /
+ * level-meter.css).
+ *
+ * Naming
+ * ──────
+ * The CssMetaData uses internal -mcs-* names (NOT the documented public
+ * role token names) because the strip consumes the .root-pane Palette A
+ * role tokens via the standard JavaFX cascade — and a same-name forward
+ * (.mixer-channel-strip { -surface-1: -surface-1 }) is a circular looked-up
+ * colour that the engine drops. The internal name lets styles.css declare
+ * `-mcs-surface-1: -surface-1;` as a non-circular forward.
+ *
+ * Plugin-GUI consumers (no styles.css loaded)
+ * ───────────────────────────────────────────
+ * Without the app stylesheet, the cascade from .root-pane is not available.
+ * Defaults below are hard hex values on .mixer-channel-strip so the control
+ * renders correctly out-of-the-box. Such consumers re-tint by setting -mcs-*
+ * directly on .mixer-channel-strip; they can also load the app's styles.css
+ * to get the documented public role-token forward.
+ *
+ * UI Design Book references: §1.5, §2.5, §5.4, §7.1, §7.5.
+ */
+
+/* ── Hard-coded Palette A defaults (plugin-GUI case: no styles.css) ─
+ *
+ * Same pattern as track-strip.css: ship hard hex values so the control
+ * renders correctly with NO application stylesheet loaded. When
+ * styles.css IS loaded, it forwards the .root-pane role tokens onto
+ * these internal -mcs-* names so palette swaps reach the strip
+ * automatically (see the .mixer-channel-strip rule in styles.css).
+ *
+ * Colour values match UI Design Book Palette A (Onyx Refined):
+ *   -mcs-surface-1    #15161B  (== Palette A -surface-1)
+ *   -mcs-surface-3    #272A33  (== Palette A -surface-3)
+ *   -mcs-surface-bg   #0B0B0E  (== Palette A -surface-bg — §5.4 gutter)
+ *   -mcs-accent       #7C8CFF  (== Palette A -accent)
+ *   -mcs-accent-soft  rgba(124, 140, 255, 0.14)
+ *   -mcs-danger       #E5484D  (== Palette A -danger)
+ *   -mcs-warn         #E6B450  (== Palette A -warn)
+ *   -mcs-text         #B7BCC7  (== Palette A -text)
+ *   -mcs-text-hi      #ECEEF2  (== Palette A -text-hi)
+ *   -mcs-text-mute    #7A808C  (== Palette A -text-mute)
+ *   -mcs-line-soft    #22242C  (== Palette A -line-soft)
+ */
+.mixer-channel-strip {
+    -mcs-surface-1:    #15161B;
+    -mcs-surface-3:    #272A33;
+    -mcs-surface-bg:   #0B0B0E;
+    -mcs-accent:       #7C8CFF;
+    -mcs-accent-soft:  rgba(124, 140, 255, 0.14);
+    -mcs-danger:       #E5484D;
+    -mcs-warn:         #E6B450;
+    -mcs-text:         #B7BCC7;
+    -mcs-text-hi:      #ECEEF2;
+    -mcs-text-mute:    #7A808C;
+    -mcs-line-soft:    #22242C;
+
+    /* §5.4: NO card border, NO shadow, NO rounded corners on the strip
+     * itself. Visual separation between adjacent strips is a 4 px gutter
+     * at -mcs-surface-bg (the panel background colour) — implemented as
+     * left/right padding so each strip carries half the gutter. The
+     * Skin's computePref/Min/MaxWidth enforces the 72/88 px width from
+     * Java, keeping the value out of CSS to avoid a token-validation
+     * linter mismatch with the 4 px grid family. */
+    -fx-background-color: -mcs-surface-1;
+    -fx-padding: 4 4 4 4;
+}
+
+/* §7.1 / §7.5: a selected channel uses the accent-soft tint, never a
+ * colourful border. (Selection state is driven by the mixer panel; the
+ * :selected pseudo-class is reserved for story 278's density work.) */
+.mixer-channel-strip:selected {
+    -fx-background-color: -mcs-accent-soft;
+}
+
+/* Muted channel fades its name to -text-mute (descendant selector so the
+ * muted state cascades without the skin flipping text-fill imperatively). */
+.mixer-channel-strip:muted .mixer-channel-strip-name {
+    -fx-text-fill: -mcs-text-mute;
+}
+
+/* ── Column / sections ─ */
+.mixer-channel-strip-column {
+    -fx-alignment: top-center;
+    -fx-spacing: 4;
+}
+
+.mixer-channel-strip-separator {
+    -fx-background-color: -mcs-line-soft;
+}
+
+.mixer-channel-strip-io {
+    -fx-text-fill: -mcs-text-mute;
+    -fx-padding: 0 4 0 4;
+}
+
+.mixer-channel-strip-inserts,
+.mixer-channel-strip-sends {
+    -fx-spacing: 2;
+}
+
+.mixer-channel-strip-slot-row {
+    -fx-alignment: center-left;
+    -fx-spacing: 4;
+    -fx-padding: 0 4 0 4;
+    -fx-cursor: hand;
+}
+
+.mixer-channel-strip-slot-row:hover {
+    /* §7.1: hover swaps background only — no shadow, no border move. */
+    -fx-background-color: -mcs-surface-3;
+}
+
+.mixer-channel-strip-slot-name {
+    -fx-text-fill: -mcs-text;
+    -fx-font-size: 10px;
+}
+
+.mixer-channel-strip-slot-empty {
+    -fx-text-fill: -mcs-text-mute;
+}
+
+/* §5.4: status dot is -text-mute (bypassed/inactive) by default; the
+ * Skin adds the .active class for an engaged, non-bypassed slot, which
+ * swaps the fill to -accent. The active/bypassed decision is made ONCE in
+ * the Skin (insertDotActive helper); CSS only paints the result. */
+.mixer-channel-strip-status-dot {
+    -fx-fill: -mcs-text-mute;
+}
+
+.mixer-channel-strip-status-dot.active {
+    -fx-fill: -mcs-accent;
+}
+
+.mixer-channel-strip-overflow {
+    -fx-text-fill: -mcs-text-mute;
+    -fx-padding: 0 4 0 4;
+    -fx-cursor: hand;
+}
+
+.mixer-channel-strip-send-row {
+    -fx-spacing: 2;
+    -fx-padding: 0 4 0 4;
+}
+
+.mixer-channel-strip-send-tap {
+    -fx-font-family: "JetBrains Mono", "IBM Plex Mono", "Cascadia Code", "Consolas", monospace;
+    -fx-font-size: 10px;
+}
+
+/* ── Fader value readout + channel name ─ */
+.mixer-channel-strip-readout {
+    -fx-text-fill: -mcs-text;
+    -fx-padding: 0 4 0 4;
+}
+
+.mixer-channel-strip-name {
+    -fx-text-fill: -mcs-text-hi;
+    -fx-font-size: 11px;
+    -fx-font-weight: 500;
+    -fx-padding: 0 4 0 4;
+}
+
+.mixer-channel-strip-name-editor {
+    -fx-font-size: 11px;
+    -fx-padding: 0 4 0 4;
+}
+
+/* ── M/S/R toggle buttons (§5.4, §7.5) ──
+ *
+ *  Reuses story 270's .track-toggle classes verbatim for visual
+ *  consistency (the story explicitly mandates "identical CSS classes").
+ *  Outlined by default; filled when toggled; the filled colour encodes
+ *  the state semantically (M → -text, S → -warn, R → -danger). No hover
+ *  inversion (§7.5).
+ */
+.mixer-channel-strip .track-toggle {
+    -fx-background-color: transparent;
+    -fx-border-color: -mcs-line-soft;
+    -fx-border-width: 1;
+    -fx-border-radius: 4;
+    -fx-background-radius: 4;
+    -fx-text-fill: -mcs-text;
+    -fx-font-family: "JetBrains Mono", "IBM Plex Mono", "Cascadia Code", "Consolas", monospace;
+    -fx-font-size: 11px;
+    -fx-font-weight: 600;
+    -fx-padding: 0;
+    -fx-content-display: text-only;
+}
+
+.mixer-channel-strip .track-toggle:hover {
+    -fx-background-color: -mcs-surface-3;
+}
+
+.mixer-channel-strip .track-toggle.mute:selected {
+    -fx-background-color: -mcs-text;
+    -fx-border-color: -mcs-text;
+    -fx-text-fill: #0B0B0E;
+}
+
+.mixer-channel-strip .track-toggle.solo:selected {
+    -fx-background-color: -mcs-warn;
+    -fx-border-color: -mcs-warn;
+    -fx-text-fill: #0B0B0E;
+}
+
+.mixer-channel-strip .track-toggle.arm:selected {
+    -fx-background-color: -mcs-danger;
+    -fx-border-color: -mcs-danger;
+    -fx-text-fill: #0B0B0E;
+}
+
+.mixer-channel-strip-msr {
+    -fx-spacing: 2;
+    -fx-alignment: center;
+}
+
+/* ── Density variants (story 278) ──
+ * The Skin's computePref/Min/MaxWidth reads the 72 / 88 px width from
+ * these style classes; the rules below only scale fonts/spacing/padding
+ * (the literal px width stays in Java to avoid a token-validation linter
+ * mismatch — same convention as track-strip.css).
+ */
+.mixer-channel-strip.density-compact {
+    -fx-padding: 4;
+}
+
+.mixer-channel-strip.density-compact .mixer-channel-strip-name {
+    -fx-font-size: 10px;
+}
+
+.mixer-channel-strip.density-comfortable {
+    -fx-padding: 4 8 4 8;
+}
+
+.mixer-channel-strip.density-comfortable .mixer-channel-strip-name {
+    -fx-font-size: 12px;
+}
