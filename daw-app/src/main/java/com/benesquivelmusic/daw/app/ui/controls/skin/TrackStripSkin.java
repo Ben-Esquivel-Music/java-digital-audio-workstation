@@ -91,7 +91,7 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
     private final ToggleButton muteBtn;
     private final ToggleButton soloBtn;
     private final ToggleButton armBtn;
-    private final Region meterHolder;
+    private final StackPane meterHolder;
     private final Label meterReadout;
     private final Label overflowBtn;
     private final javafx.event.EventHandler<KeyEvent> keyHandler;
@@ -157,14 +157,15 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
         soloBtn.selectedProperty().addListener((obs, was, now) -> control.setSoloed(now));
         armBtn.selectedProperty().addListener((obs, was, now) -> control.setArmed(now));
 
-        meterHolder = new StackPane(control.getMeter());
+        meterHolder = new StackPane();
         meterHolder.getStyleClass().add("track-strip-meter-holder");
-        // Bind visibility/managed in lock-step with showMeter so layout
-        // collapses when the meter is hidden.
-        meterHolder.visibleProperty().bind(control.showMeterProperty());
-        meterHolder.managedProperty().bind(control.showMeterProperty());
-        control.getMeter().visibleProperty().bind(control.showMeterProperty());
-        control.getMeter().managedProperty().bind(control.showMeterProperty());
+        // Attach/detach the LevelMeter from the scene graph based on
+        // showMeter — same pattern as FaderSkin#syncMeterAttachment().
+        // LevelMeterSkin's AnimationTimer keys off sceneProperty (not
+        // visible), so merely hiding the meter with visible=false still
+        // burns per-frame CPU. Removing it from the scene graph ensures
+        // the timer stops when the meter is disabled.
+        syncMeterAttachment(control);
 
         meterReadout = new Label("-\u221E dB");
         meterReadout.getStyleClass().addAll("track-strip-readout", "numeric-caption");
@@ -227,9 +228,10 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
         control.mutedProperty().addListener(readoutRefreshListener);
         registeredListenerCount += 2;
 
-        // showMeter changes its own bindings; track so the meter readout
-        // also vanishes / reappears.
+        // showMeter: detach/attach the meter node from the scene graph
+        // (stops the AnimationTimer) and show/hide the readout.
         showMeterListener = (obs, was, now) -> {
+            syncMeterAttachment(control);
             meterReadout.setVisible(now);
             meterReadout.setManaged(now);
         };
@@ -266,6 +268,30 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
     private static String formatIndex(int idx) {
         int safe = Math.max(0, idx);
         return String.format(Locale.ROOT, "%02d", safe);
+    }
+
+    /**
+     * Attaches or detaches the embedded {@link LevelMeter} from the scene
+     * graph based on {@code control.isShowMeter()}. Same pattern as
+     * {@code FaderSkin#syncMeterAttachment()} — the LevelMeterSkin's
+     * {@code AnimationTimer} keys off {@code sceneProperty}, not
+     * {@code visible}, so merely hiding the meter with
+     * {@code setVisible(false)} still burns per-frame CPU. Removing it
+     * from the scene graph ensures the timer stops.
+     */
+    private void syncMeterAttachment(TrackStrip control) {
+        LevelMeter meter = control.getMeter();
+        if (control.isShowMeter()) {
+            if (!meterHolder.getChildren().contains(meter)) {
+                meterHolder.getChildren().setAll(meter);
+            }
+            meterHolder.setVisible(true);
+            meterHolder.setManaged(true);
+        } else {
+            meterHolder.getChildren().remove(meter);
+            meterHolder.setVisible(false);
+            meterHolder.setManaged(false);
+        }
     }
 
     private void refreshReadout() {
@@ -354,14 +380,19 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
 
         // Embedded meter sized to METER_WIDTH (fixed) × the row's
         // available height minus 8 px of padding so it never overflows.
+        // Only configure meter geometry when it's attached to the scene
+        // graph (showMeter=true); when detached, meterHolder is
+        // invisible/unmanaged and occupies no layout space.
         double meterH = Math.max(8.0, h - 8.0);
         LevelMeter meter = getSkinnable().getMeter();
         meterHolder.setMinWidth(METER_WIDTH);
         meterHolder.setPrefWidth(METER_WIDTH);
         meterHolder.setMaxWidth(METER_WIDTH);
-        meter.setMinHeight(meterH);
-        meter.setPrefHeight(meterH);
-        meter.setMaxHeight(meterH);
+        if (meterHolder.getChildren().contains(meter)) {
+            meter.setMinHeight(meterH);
+            meter.setPrefHeight(meterH);
+            meter.setMaxHeight(meterH);
+        }
 
         // Toggle buttons are square per the row height (minus 4 px inset).
         double btnSize = Math.max(16.0, h - 4.0);
@@ -468,12 +499,9 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
             registeredListenerCount--;
             c.showMeterProperty().removeListener(showMeterListener);
             registeredListenerCount--;
-            // Unbind everything the constructor bound so the control's
-            // properties are once again independently settable.
-            meterHolder.visibleProperty().unbind();
-            meterHolder.managedProperty().unbind();
-            c.getMeter().visibleProperty().unbind();
-            c.getMeter().managedProperty().unbind();
+            // Detach meter from meterHolder so the AnimationTimer
+            // stops (sceneProperty → null).
+            meterHolder.getChildren().clear();
             armBar.visibleProperty().unbind();
             armBar.managedProperty().unbind();
             c.removeEventHandler(KeyEvent.KEY_PRESSED, keyHandler);

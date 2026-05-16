@@ -101,12 +101,11 @@ public class TrackStripCell extends ListCell<Track> {
         strip.setTrackId(item.id());
         strip.setTrackIndex(getIndex() >= 0 ? getIndex() + 1 : 1);
         strip.setTrackName(item.name());
-        // The Track record doesn't currently carry a colour; fall back
-        // to the strip's current swatch so the cell can be themed
-        // through a separate property if the model grows one.
-        if (strip.getTrackColor() == null) {
-            strip.setTrackColor(Color.web("#7C8CFF"));
-        }
+        // The Track record doesn't currently carry a colour; always set
+        // a deterministic fallback on every updateItem to prevent cell-
+        // reuse from leaking a previously-assigned colour into an
+        // unrelated track.
+        strip.setTrackColor(Color.web("#7C8CFF"));
         strip.setMuted(item.muted());
         strip.setSoloed(item.solo());
         strip.setArmed(item.armed());
