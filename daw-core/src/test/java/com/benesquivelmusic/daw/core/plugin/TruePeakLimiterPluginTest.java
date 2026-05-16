@@ -80,10 +80,9 @@ class TruePeakLimiterPluginTest {
     }
 
     @Test
-    void shouldAppearInBuiltInDawPluginPermittedSet() {
-        var classes = java.util.Arrays.stream(BuiltInDawPlugin.class.getPermittedSubclasses())
-                .toList();
-        assertThat(classes).contains(TruePeakLimiterPlugin.class);
+    void shouldBeRegisteredAsBuiltInDawPluginServiceProvider() {
+        assertThat(BuiltInPluginProviders.providerClasses())
+                .contains(TruePeakLimiterPlugin.class);
     }
 
     @Test

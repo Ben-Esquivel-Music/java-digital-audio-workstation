@@ -167,8 +167,16 @@
                     <artifactId>maven-surefire-plugin</artifactId>
                     <version>${maven-surefire-plugin.version}</version>
 					<configuration>
-						<!-- Allow native access for all unnamed modules -->
-						<argLine>--enable-native-access=ALL-UNNAMED</argLine>
+						<!-- Native (FFM / JEP 454) access. Every project module
+						     is now a named JPMS module, so ALL-UNNAMED no longer
+						     covers them: grant it to daw.core, which owns the
+						     PortAudio/FluidSynth/CLAP/codec bindings. ALL-UNNAMED
+						     is kept too for test-only helpers that may still run
+						     on the unnamed classpath (e.g. patched test code
+						     before module resolution). Per-module surefire
+						     <configuration> blocks (daw-core, daw-app) replace
+						     this argLine, so they repeat the flag. -->
+						<argLine>--enable-native-access=daw.core,ALL-UNNAMED</argLine>
 					</configuration>
                 </plugin>
                 <plugin>

@@ -77,10 +77,9 @@ class DeEsserPluginTest {
     }
 
     @Test
-    void shouldAppearInBuiltInDawPluginPermittedSet() {
-        var classes = java.util.Arrays.stream(BuiltInDawPlugin.class.getPermittedSubclasses())
-                .toList();
-        assertThat(classes).contains(DeEsserPlugin.class);
+    void shouldBeRegisteredAsBuiltInDawPluginServiceProvider() {
+        assertThat(BuiltInPluginProviders.providerClasses())
+                .contains(DeEsserPlugin.class);
     }
 
     @Test

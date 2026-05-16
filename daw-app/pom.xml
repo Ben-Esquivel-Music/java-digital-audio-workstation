@@ -75,6 +75,11 @@
     <properties>
         <!-- Native library build directory (output of CMake in daw-core) -->
         <native.libs.dir>${maven.multiModuleProjectDirectory}/target/build/native</native.libs.dir>
+        <!-- Default for the native-build / packaging skip flag so the
+             antrun staging and jpackage <skip> expressions always resolve.
+             Override with -DskipNativeBuild=true for the pure-Java workflow
+             (matches the daw-core property of the same name). -->
+        <skipNativeBuild>false</skipNativeBuild>
     </properties>
 
     <build>
@@ -153,11 +158,13 @@
 
                          This <configuration> replaces (does not merge with)
                          the parent pluginManagement argLine, so the parent's
-                         enable-native-access=ALL-UNNAMED flag is repeated here
-                         to preserve native access for the daw-core FFM
-                         bindings and the headless backend's native code
-                         paths. -->
-                    <argLine>--enable-native-access=ALL-UNNAMED
+                         enable-native-access flag is repeated here to preserve
+                         native access for the daw.core FFM bindings (granted by
+                         module name now that daw.core is a named module) and
+                         the headless backend's native code paths. ALL-UNNAMED
+                         is retained for test-only code on the unnamed
+                         classpath. -->
+                    <argLine>--enable-native-access=daw.core,ALL-UNNAMED
                         -Dglass.platform=Headless
                         -Dmonocle.platform=Headless
                         -Dprism.order=sw
@@ -200,6 +207,12 @@
                         <phase>prepare-package</phase>
                         <goals><goal>run</goal></goals>
                         <configuration>
+                            <!-- Skipped together with jpackage under
+                                 -DskipNativeBuild=true: a distribution
+                                 staging dir without the CMake-built native
+                                 libraries is incomplete, and the pure-Java
+                                 verify path does not package an app-image. -->
+                            <skip>${skipNativeBuild}</skip>
                             <target>
                                 <!-- Determine platform identifier -->
                                 <condition property="os.id" value="windows">
@@ -231,13 +244,44 @@
                     </execution>
                 </executions>
             </plugin>
+            <!-- ── Modular packaging (replaces maven-shade-plugin) ──────────
+                 Every module (daw.sdk, daw.acoustics, daw.fx, daw.core,
+                 daw.app) now has a module-info.java, so the application is
+                 packaged as a self-contained custom runtime image via jlink
+                 and a native app-image via jpackage instead of a flattened
+                 fat-jar (which is fundamentally incompatible with JPMS — it
+                 had to strip every module-info.class).
+
+                 javafx-maven-plugin:jlink resolves daw.app + its transitive
+                 module graph (including the JavaFX modules from the modular
+                 javafx-* jars) and emits a trimmed runtime image with a
+                 native `daw` launcher. -->
             <plugin>
                 <groupId>org.openjfx</groupId>
                 <artifactId>javafx-maven-plugin</artifactId>
                 <configuration>
-                    <mainClass>com.benesquivelmusic.daw.app.DawLauncher</mainClass>
+                    <mainClass>daw.app/com.benesquivelmusic.daw.app.DawLauncher</mainClass>
+                    <!-- jlink custom runtime image -->
+                    <jlinkImageName>daw-runtime</jlinkImageName>
+                    <launcher>daw</launcher>
+                    <stripDebug>true</stripDebug>
+                    <compress>2</compress>
+                    <noManPages>true</noManPages>
+                    <noHeaderFiles>true</noHeaderFiles>
                 </configuration>
+                <executions>
+                    <execution>
+                        <id>jlink-runtime-image</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>jlink</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
+
+            <!-- Modular main-class manifest entry on the daw-app jar (kept so
+                 the jar is also runnable directly on a module path). -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-jar-plugin</artifactId>
@@ -249,30 +293,56 @@
                     </archive>
                 </configuration>
             </plugin>
+
+            <!-- ── jpackage: native app-image around the jlink runtime ──────
+                 Runs after javafx-maven-plugin:jlink (also `package` phase,
+                 declared later so it executes afterwards). Produces an OS
+                 app-image under target/dist/app-image and copies the bundled
+                 native libraries + THIRD_PARTY_NOTICES.md into it so the
+                 distribution is complete and self-contained.
+
+                 jpackage is a JDK tool (JEP 392); it is invoked through
+                 exec-maven-plugin so the build stays within the existing
+                 plugin set and works offline. The whole execution is skipped
+                 with -DskipNativeBuild=true (the pure-Java workflow), because
+                 a packaged distribution without the CMake-built native libs
+                 would be incomplete. -->
             <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-shade-plugin</artifactId>
-                <version>3.6.2</version>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.6.3</version>
                 <executions>
                     <execution>
+                        <id>jpackage-app-image</id>
                         <phase>package</phase>
-                        <goals>
-                            <goal>shade</goal>
-                        </goals>
+                        <goals><goal>exec</goal></goals>
                         <configuration>
-                            <transformers>
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>com.benesquivelmusic.daw.app.DawLauncher</mainClass>
-                                </transformer>
-                            </transformers>
-                            <filters>
-                                <filter>
-                                    <artifact>*:*</artifact>
-                                    <excludes>
-                                        <exclude>module-info.class</exclude>
-                                    </excludes>
-                                </filter>
-                            </filters>
+                            <skip>${skipNativeBuild}</skip>
+                            <executable>jpackage</executable>
+                            <workingDirectory>${project.build.directory}</workingDirectory>
+                            <arguments>
+                                <argument>--type</argument>
+                                <argument>app-image</argument>
+                                <argument>--name</argument>
+                                <argument>DigitalAudioWorkstation</argument>
+                                <argument>--app-version</argument>
+                                <!-- jpackage requires a numeric version; the
+                                     project version is a -SNAPSHOT string. -->
+                                <argument>1.0.0</argument>
+                                <argument>--runtime-image</argument>
+                                <argument>${project.build.directory}/daw-runtime</argument>
+                                <argument>--module</argument>
+                                <argument>daw.app/com.benesquivelmusic.daw.app.DawLauncher</argument>
+                                <argument>--dest</argument>
+                                <argument>${project.build.directory}/dist/app-image</argument>
+                                <!-- Ship the CMake-built native libraries
+                                     (PortAudio/FluidSynth/CLAP/codecs) and the
+                                     third-party attribution alongside the
+                                     app: the input directory contents land in
+                                     the app directory next to the launcher. -->
+                                <argument>--input</argument>
+                                <argument>${project.build.directory}/dist</argument>
+                            </arguments>
                         </configuration>
                     </execution>
                 </executions>

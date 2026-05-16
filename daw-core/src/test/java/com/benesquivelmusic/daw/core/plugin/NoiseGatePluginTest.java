@@ -131,10 +131,9 @@ class NoiseGatePluginTest {
     }
 
     @Test
-    void shouldAppearInBuiltInDawPluginPermittedSet() {
-        var classes = java.util.Arrays.stream(BuiltInDawPlugin.class.getPermittedSubclasses())
-                .toList();
-        assertThat(classes).contains(NoiseGatePlugin.class);
+    void shouldBeRegisteredAsBuiltInDawPluginServiceProvider() {
+        assertThat(BuiltInPluginProviders.providerClasses())
+                .contains(NoiseGatePlugin.class);
     }
 
     private static PluginContext stubContext() {

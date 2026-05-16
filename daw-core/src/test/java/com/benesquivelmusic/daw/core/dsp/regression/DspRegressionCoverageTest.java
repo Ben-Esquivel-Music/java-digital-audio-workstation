@@ -9,21 +9,11 @@ import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.net.URL;
-import java.net.URISyntaxException;
-import java.nio.file.FileSystem;
-import java.nio.file.FileSystems;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -31,7 +21,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
-import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -133,18 +122,22 @@ class DspRegressionCoverageTest {
         return new CoverageReport(covered, uncovered, missingPresets);
     }
 
-    /** Iterate sealed-permitted built-in plugin classes that are EFFECT/MASTERING. */
+    /**
+     * Iterate the registered built-in plugin {@link java.util.ServiceLoader}
+     * provider classes that are EFFECT/MASTERING. Discovery migrated from the
+     * sealed {@code getPermittedSubclasses()} enumeration to the JPMS
+     * {@code ServiceLoader} SPI; provider classes are read via
+     * {@link java.util.ServiceLoader.Provider#type()} without instantiation.
+     */
     @SuppressWarnings("unchecked")
     private static List<Class<? extends BuiltInDawPlugin>> effectCategoryPlugins() {
         List<Class<? extends BuiltInDawPlugin>> out = new ArrayList<>();
-        Class<?>[] permitted = BuiltInDawPlugin.class.getPermittedSubclasses();
-        if (permitted == null) return out;
-        for (Class<?> c : permitted) {
-            if (c.isInterface()) continue; // skip MidiEffectPlugin etc. — category markers
+        for (var provider : java.util.ServiceLoader.load(BuiltInDawPlugin.class).stream().toList()) {
+            Class<? extends BuiltInDawPlugin> c = provider.type();
             BuiltInPlugin meta = c.getAnnotation(BuiltInPlugin.class);
             if (meta == null) continue;
             if (!REQUIRED_CATEGORIES.contains(meta.category())) continue;
-            out.add((Class<? extends BuiltInDawPlugin>) c);
+            out.add(c);
         }
         out.sort(Comparator.comparing(Class::getSimpleName));
         return out;
@@ -210,59 +203,18 @@ class DspRegressionCoverageTest {
     // ── Test-classpath scanner ──────────────────────────────────────────────
 
     private static Set<Class<?>> findTestClassesUnder(String basePackage) {
+        // Module-aware enumeration: under JPMS daw.core is a named module and
+        // ClassLoader.getResources() can no longer walk its package
+        // directories. Surefire patches the test classes into the daw.core
+        // module, so ModuleClassScanner's ModuleReader-based listing sees
+        // both production and test classes (with a class-path fallback).
         Set<Class<?>> result = new TreeSet<>(Comparator.comparing(Class::getName));
         ClassLoader cl = Thread.currentThread().getContextClassLoader();
-        String resourcePath = basePackage.replace('.', '/');
-        try {
-            Enumeration<URL> roots = cl.getResources(resourcePath);
-            while (roots.hasMoreElements()) {
-                URL url = roots.nextElement();
-                switch (url.getProtocol()) {
-                    case "file" -> scanFileTree(Paths.get(url.toURI()), basePackage, cl, result);
-                    case "jar"  -> scanJarTree(url, basePackage, cl, result);
-                    default     -> { /* ignore */ }
-                }
-            }
-        } catch (IOException | URISyntaxException e) {
-            throw new UncheckedIOException(
-                    "Failed to scan test classpath under " + basePackage,
-                    e instanceof IOException io ? io : new IOException(e));
+        for (String fqcn : com.benesquivelmusic.daw.core.testsupport.ModuleClassScanner
+                .classNamesUnder(basePackage)) {
+            tryAdd(fqcn, cl, result);
         }
         return result;
-    }
-
-    private static void scanFileTree(Path dir, String pkg, ClassLoader cl, Set<Class<?>> out)
-            throws IOException {
-        if (!Files.isDirectory(dir)) return;
-        try (Stream<Path> walk = Files.walk(dir)) {
-            walk.filter(p -> p.getFileName().toString().endsWith(".class")).forEach(p -> {
-                String rel = dir.relativize(p).toString().replace('\\', '/');
-                String fqcn = pkg + "." + rel.substring(0, rel.length() - ".class".length())
-                                              .replace('/', '.');
-                tryAdd(fqcn, cl, out);
-            });
-        }
-    }
-
-    private static void scanJarTree(URL url, String pkg, ClassLoader cl, Set<Class<?>> out)
-            throws IOException, URISyntaxException {
-        String spec = url.toString();
-        int bang = spec.indexOf("!/");
-        if (bang < 0) return;
-        java.net.URI jarUri = new java.net.URI(spec.substring(0, bang));
-        String inside = spec.substring(bang + 1);
-        try (FileSystem fs = FileSystems.newFileSystem(jarUri, Map.of())) {
-            Path dir = fs.getPath(inside);
-            if (!Files.isDirectory(dir)) return;
-            try (Stream<Path> walk = Files.walk(dir)) {
-                walk.filter(p -> p.getFileName().toString().endsWith(".class")).forEach(p -> {
-                    String rel = dir.relativize(p).toString().replace('\\', '/');
-                    String fqcn = pkg + "." + rel.substring(0, rel.length() - ".class".length())
-                                                  .replace('/', '.');
-                    tryAdd(fqcn, cl, out);
-                });
-            }
-        }
     }
 
     private static void tryAdd(String fqcn, ClassLoader cl, Set<Class<?>> out) {

@@ -2,26 +2,14 @@ package com.benesquivelmusic.daw.core.dsp.harness;
 
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Modifier;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.net.URL;
-import java.nio.file.FileSystem;
-import java.nio.file.FileSystems;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Stream;
 
 /**
  * Classpath scanner that discovers every concrete, public
@@ -42,23 +30,22 @@ public final class ProcessorDiscovery {
      * simple name for stable test ordering.
      */
     public static List<Class<? extends AudioProcessor>> findAudioProcessors(String packageName) {
-        String resourcePath = packageName.replace('.', '/');
+        // Module-aware enumeration: under JPMS daw.core is a named module and
+        // ClassLoader.getResources() can no longer walk its package
+        // directories. ModuleClassScanner lists class names via the module's
+        // ModuleReader (with a class-path fallback). It enumerates
+        // recursively, so the original NON-recursive contract is preserved
+        // here by keeping only classes whose package equals packageName.
         ClassLoader cl = Thread.currentThread().getContextClassLoader();
         Map<String, Class<? extends AudioProcessor>> out = new HashMap<>();
-        try {
-            Enumeration<URL> roots = cl.getResources(resourcePath);
-            while (roots.hasMoreElements()) {
-                URL url = roots.nextElement();
-                switch (url.getProtocol()) {
-                    case "file" -> scanDirectory(Paths.get(url.toURI()), packageName, cl, out);
-                    case "jar" -> scanJar(url, packageName, cl, out);
-                    default -> { /* ignore other protocols */ }
-                }
+        for (String fqcn : com.benesquivelmusic.daw.core.testsupport.ModuleClassScanner
+                .classNamesUnder(packageName)) {
+            int lastDot = fqcn.lastIndexOf('.');
+            String pkg = lastDot < 0 ? "" : fqcn.substring(0, lastDot);
+            if (!pkg.equals(packageName)) {
+                continue; // non-recursive: skip sub-packages
             }
-        } catch (IOException | URISyntaxException e) {
-            throw new UncheckedIOException(
-                    "Failed to scan package " + packageName,
-                    e instanceof IOException io ? io : new IOException(e));
+            addIfProcessor(fqcn, cl, out);
         }
         List<Class<? extends AudioProcessor>> sorted = new ArrayList<>(out.values());
         sorted.sort(Comparator.comparing(Class::getSimpleName));
@@ -101,45 +88,9 @@ public final class ProcessorDiscovery {
 
     // ─── internals ──────────────────────────────────────────────────────────
 
-    private static void scanDirectory(Path dir, String pkg, ClassLoader cl,
-                                      Map<String, Class<? extends AudioProcessor>> out)
-            throws IOException {
-        if (!Files.isDirectory(dir)) return;
-        try (Stream<Path> entries = Files.list(dir)) {
-            entries.filter(p -> p.getFileName().toString().endsWith(".class"))
-                    .forEach(p -> addIfProcessor(pkg, stripClass(p.getFileName().toString()), cl, out));
-        }
-    }
-
-    private static void scanJar(URL url, String pkg, ClassLoader cl,
-                                Map<String, Class<? extends AudioProcessor>> out)
-            throws IOException, URISyntaxException {
-        String spec = url.toString();
-        int bang = spec.indexOf("!/");
-        if (bang < 0) return;
-        URI jarUri = new URI(spec.substring(0, bang));
-        String inside = spec.substring(bang + 1);
-        try (FileSystem fs = FileSystems.newFileSystem(jarUri, Map.of())) {
-            Path dir = fs.getPath(inside);
-            if (!Files.isDirectory(dir)) return;
-            try (Stream<Path> entries = Files.list(dir)) {
-                entries.filter(p -> p.getFileName().toString().endsWith(".class"))
-                        .forEach(p -> addIfProcessor(pkg, stripClass(p.getFileName().toString()), cl, out));
-            }
-        }
-    }
-
-    private static String stripClass(String filename) {
-        return filename.substring(0, filename.length() - ".class".length());
-    }
-
     @SuppressWarnings("unchecked")
-    private static void addIfProcessor(String pkg, String simple, ClassLoader cl,
+    private static void addIfProcessor(String fqcn, ClassLoader cl,
                                        Map<String, Class<? extends AudioProcessor>> out) {
-        if (simple.indexOf('$') >= 0) {
-            return; // skip inner/anonymous classes
-        }
-        String fqcn = pkg + "." + simple;
         Class<?> cls;
         try {
             cls = Class.forName(fqcn, false, cl);

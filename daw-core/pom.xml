@@ -197,8 +197,13 @@
                     <!-- Enable native access for FFM (JEP 454) bindings and
                          set java.library.path so SymbolLookup finds compiled
                          native libraries (must be in argLine, not systemPropertyVariables,
-                         because java.library.path is read at JVM bootstrap). -->
-                    <argLine>--enable-native-access=ALL-UNNAMED -Djava.library.path=${native.libs.dir}</argLine>
+                         because java.library.path is read at JVM bootstrap).
+
+                         daw.core is now a named JPMS module, so native access
+                         is granted to it by module name; ALL-UNNAMED is kept
+                         for any test-only code that still runs on the unnamed
+                         classpath. -->
+                    <argLine>--enable-native-access=daw.core,ALL-UNNAMED -Djava.library.path=${native.libs.dir}</argLine>
                 </configuration>
             </plugin>
 
