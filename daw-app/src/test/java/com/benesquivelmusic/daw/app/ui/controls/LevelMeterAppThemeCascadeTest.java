@@ -25,23 +25,26 @@ import static org.assertj.core.api.Assertions.assertThat;
  * identical to the Palette&nbsp;A token value, so a regression there would
  * be invisible).
  *
- * <p>Two distinct, JavaFX-correct mechanisms are asserted:
+ * <p>Three distinct, JavaFX-correct cascade paths are asserted:
  *
  * <ol>
  *   <li><b>{@code -meter-background} follows the {@code -surface-2}
- *       token.</b> {@code styles.css} forwards {@code -surface-2} into
- *       the control's {@code -meter-background} styleable property.
- *       Because the source and target names differ, JavaFX resolves it
- *       through the {@code .root-pane} ancestor — so a theme that
- *       re-tints {@code -surface-2} re-tints the unlit segments.</li>
- *   <li><b>Lit segments are re-tinted via the {@code .level-meter}
- *       selector directly.</b> The documented {@code -meter-*} CSS
- *       styleable property names match {@code .root-pane}'s role-token
- *       names, so a same-name forward in {@code styles.css}
- *       ({@code .level-meter { -meter-low: -meter-low; }}) is a circular
- *       looked-up colour that JavaFX drops. Themes must therefore declare
- *       their lit-segment palette on {@code .level-meter} (the same
- *       structural entry point used by stories 268–271).</li>
+ *       token.</b> {@code styles.css} declares
+ *       {@code .level-meter { -meter-background: -surface-2 }} (distinct
+ *       names, non-circular). A theme that re-tints {@code -surface-2} on
+ *       {@code .root-pane} re-tints the unlit segments.</li>
+ *   <li><b>Lit-segment colours follow the {@code .root-pane} Palette A
+ *       role tokens.</b> The control's CssMetaData uses internal
+ *       {@code -lm-*} names; {@code level-meter.css} forwards
+ *       {@code -lm-low: -meter-low; ...} (distinct names, non-circular).
+ *       A theme that re-tints {@code -meter-low} on {@code .root-pane}
+ *       reaches the meter through that forward — no per-control rule
+ *       required, restoring the styles.css "structural selectors consume
+ *       role tokens" convention.</li>
+ *   <li><b>Lit segments can also be re-tinted on {@code .level-meter}.</b>
+ *       Plugin GUIs and themes can override the documented {@code -meter-*}
+ *       CSS API directly on {@code .level-meter}; the same forward picks
+ *       it up.</li>
  * </ol>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
@@ -80,7 +83,7 @@ class LevelMeterAppThemeCascadeTest {
             root.layout();
             return new Color[] {m.getMeterLow(), m.getMeterClip(), m.getMeterBackground()};
         });
-        assertThat(c[0]).isEqualTo(Color.web("#3FBF7F")); // UA css (== Palette A)
+        assertThat(c[0]).isEqualTo(Color.web("#3FBF7F")); // -meter-low role token
         assertThat(c[1]).isEqualTo(Color.web("#E5484D"));
         assertThat(c[2]).isEqualTo(Color.web("#1D1F26")); // forwarded from -surface-2
     }
@@ -106,12 +109,38 @@ class LevelMeterAppThemeCascadeTest {
     }
 
     @Test
-    void litSegmentsAreReTintedViaTheLevelMeterSelector() {
-        // Themes re-tint the lit-segment palette on the .level-meter
-        // selector — this is the supported entry point for the controls
-        // package. A .root-pane `-meter-low` token override does NOT
-        // cascade (a same-name forward would be a circular looked-up
-        // colour); the doc-comment in styles.css explains why.
+    void litSegmentsFollowRootPaneRoleTokens() {
+        // The lit-segment colours cascade from .root-pane's Palette A role
+        // tokens — no per-control .level-meter rule needed. This restores
+        // the styles.css convention that structural selectors consume role
+        // tokens. Mechanism: control's CssMetaData uses internal -lm-*
+        // names; level-meter.css forwards `-lm-low: -meter-low` (distinct
+        // names, non-circular), so the .root-pane override reaches the
+        // meter via the standard looked-up colour cascade.
+        LevelMeter m = newMeter();
+        Color[] c = runOnFxThread(() -> {
+            StackPane root = new StackPane(m);
+            root.getStyleClass().add("root-pane");
+            Scene scene = new Scene(root, 80, 240);
+            DarkThemeHelper.applyTo(scene);
+            // Simulate a theme re-tinting the role tokens on .root-pane.
+            root.setStyle("-meter-low: #0011FF; -meter-clip: #FFAA00;");
+            root.applyCss();
+            root.layout();
+            return new Color[] {m.getMeterLow(), m.getMeterClip()};
+        });
+        assertThat(c[0])
+                .as("re-tinting -meter-low on .root-pane must reach the "
+                        + "control via the level-meter.css forward")
+                .isEqualTo(Color.web("#0011FF"));
+        assertThat(c[1]).isEqualTo(Color.web("#FFAA00"));
+    }
+
+    @Test
+    void litSegmentsCanAlsoBeReTintedOnTheLevelMeterSelector() {
+        // Plugins/themes that prefer to scope the override to the control
+        // can still set the documented -meter-* names on .level-meter; the
+        // level-meter.css forward picks them up the same way.
         LevelMeter m = newMeter();
         Color[] c = runOnFxThread(() -> {
             StackPane root = new StackPane(m);

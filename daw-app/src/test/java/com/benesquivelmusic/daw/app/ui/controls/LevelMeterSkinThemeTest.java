@@ -64,13 +64,19 @@ class LevelMeterSkinThemeTest {
 
     @Test
     void sceneStylesheetOverridesMeterLowColour() {
+        // Plugin-GUI consumers that do NOT load the app's styles.css
+        // override via the internal styleable property name (-lm-low).
+        // The documented public -meter-low CSS API is forwarded into
+        // -lm-low by styles.css; the cascade is asserted end-to-end in
+        // LevelMeterAppThemeCascadeTest. Both override surfaces are
+        // honoured.
         LevelMeter m = newMeter();
         Color resolved = runOnFxThread(() -> {
             StackPane root = new StackPane(m);
             Scene scene = new Scene(root, 80, 240);
             scene.getStylesheets().add("data:text/css;base64,"
                     + java.util.Base64.getEncoder().encodeToString(
-                            ".level-meter { -meter-low: red; }"
+                            ".level-meter { -lm-low: red; }"
                                     .getBytes(java.nio.charset.StandardCharsets.UTF_8)));
             root.applyCss();
             root.layout();
@@ -82,14 +88,14 @@ class LevelMeterSkinThemeTest {
     @Test
     void overriddenColourReachesTheSkinDrawModel() {
         // Drive a peak STRICTLY above 0 dBFS so the topmost segment uses
-        // the -meter-clip colour (per UI Design Book §5.7).
+        // the -lm-clip colour (per UI Design Book §5.7).
         LevelMeter m = newMeter();
         LevelMeterSkin skin = runOnFxThread(() -> {
             StackPane root = new StackPane(m);
             Scene scene = new Scene(root, 80, 240);
             scene.getStylesheets().add("data:text/css;base64,"
                     + java.util.Base64.getEncoder().encodeToString(
-                            ".level-meter { -meter-clip: lime; }"
+                            ".level-meter { -lm-clip: lime; }"
                                     .getBytes(java.nio.charset.StandardCharsets.UTF_8)));
             root.applyCss();
             root.layout();

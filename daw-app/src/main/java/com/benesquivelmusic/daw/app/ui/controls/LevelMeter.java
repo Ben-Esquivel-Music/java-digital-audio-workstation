@@ -55,10 +55,15 @@ import java.util.concurrent.atomic.AtomicLong;
  * {@link Double#doubleToLongBits(double)} — no per-update allocation. The
  * skin's per-frame {@link javafx.animation.AnimationTimer} (FX thread)
  * reads those atomics each pulse and propagates them into
- * {@link #peakDbProperty()} / {@link #rmsDbProperty()}. When
- * {@link #animatedProperty()} is {@code false} the skin does not run the
- * per-frame timer and relays the submitted value once on the next pulse it
- * is asked to repaint. Once any level has been submitted the relay owns
+ * {@link #peakDbProperty()} / {@link #rmsDbProperty()}. The timer runs
+ * whenever the control is attached to a {@link javafx.scene.Scene},
+ * regardless of {@link #animatedProperty()}: stopping it would strand
+ * audio-thread submissions on the non-observable atomics. The
+ * {@link #animatedProperty()} flag is currently a no-op for this skin
+ * (segments are discrete with no smooth transitions to suppress); it is
+ * kept for API parity with the rest of the controls package and the
+ * global Reduce Motion setting (story 279). Once any level has been
+ * submitted the relay owns
  * {@link #peakDbProperty()} / {@link #rmsDbProperty()}; calling
  * {@link #setPeakDb} directly is only meaningful <em>before</em> the first
  * {@link #submitLevels} call (see {@link #hasSubmission()}).
@@ -113,9 +118,24 @@ public final class LevelMeter extends Control {
             };
     private final IntegerProperty channelCount =
             new SimpleIntegerProperty(this, "channelCount", 2) {
+                // Clamp on BOTH the write and read path so the [1, 8]
+                // invariant is enforced regardless of how the property is
+                // mutated. A direct .set(int) call clamps before storing.
+                // A bind(...) call routes the source observable's value
+                // through SimpleIntegerProperty's binding machinery, which
+                // (for invalidated properties) recomputes via get() — so
+                // get() must clamp too. The skin's getChannelCount() goes
+                // through here, so it never sees an out-of-range value.
                 @Override
                 public void set(int newValue) {
-                    super.set(Math.max(MIN_CHANNELS, Math.min(MAX_CHANNELS, newValue)));
+                    super.set(clamp(newValue));
+                }
+                @Override
+                public int get() {
+                    return clamp(super.get());
+                }
+                private int clamp(int v) {
+                    return Math.max(MIN_CHANNELS, Math.min(MAX_CHANNELS, v));
                 }
             };
     private final BooleanProperty animated =
@@ -304,11 +324,20 @@ public final class LevelMeter extends Control {
     // ── Audio → FX relay (thread-safe ingest) ─────────────────────────────
 
     /**
-     * Submits a level snapshot from any thread (typically the real-time
-     * audio thread). Lock-free and allocation-free: writes only to
-     * {@link AtomicLong} fields. Does NOT touch the scene graph. The skin's
-     * FX-thread timer reads these values and updates the observable
+     * Submits an aggregate level snapshot from any thread (typically the
+     * real-time audio thread). Lock-free and allocation-free: writes only
+     * to {@link AtomicLong} fields. Does NOT touch the scene graph. The
+     * skin's FX-thread timer reads these values and updates the observable
      * properties.
+     *
+     * <p>Calling this method also <strong>clears any previously submitted
+     * per-channel slots</strong> (resets them to {@link Double#NaN}). The
+     * skin prefers a non-NaN per-channel value over the aggregate, so
+     * leaving stale per-channel data alone would cause a meter that
+     * switches from {@link #submitLevels(int, double, double)} to this
+     * aggregate API to keep displaying the old per-channel levels
+     * indefinitely. Resetting them here makes the aggregate
+     * unambiguously authoritative.
      *
      * @param peakDb current peak dBFS
      * @param rmsDb  current RMS dBFS
@@ -316,6 +345,14 @@ public final class LevelMeter extends Control {
     public void submitLevels(double peakDb, double rmsDb) {
         submittedPeakBits[0].set(Double.doubleToLongBits(peakDb));
         submittedRmsBits[0].set(Double.doubleToLongBits(rmsDb));
+        // Wipe per-channel slots so the aggregate is the sole source of
+        // truth; otherwise the skin's "per-channel wins over aggregate"
+        // rule would surface stale data after a feed-mode switch.
+        long nanBits = Double.doubleToLongBits(Double.NaN);
+        for (int i = 1; i <= MAX_CHANNELS; i++) {
+            submittedPeakBits[i].set(nanBits);
+            submittedRmsBits[i].set(nanBits);
+        }
         hasSubmission = true;
     }
 
@@ -537,7 +574,7 @@ public final class LevelMeter extends Control {
     private static final class StyleableProperties {
 
         static final CssMetaData<LevelMeter, Color> METER_LOW =
-                new CssMetaData<>("-meter-low",
+                new CssMetaData<>("-lm-low",
                         StyleConverter.getColorConverter(), FALLBACK_LOW) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterLow.isBound();
@@ -548,7 +585,7 @@ public final class LevelMeter extends Control {
                 };
 
         static final CssMetaData<LevelMeter, Color> METER_MID =
-                new CssMetaData<>("-meter-mid",
+                new CssMetaData<>("-lm-mid",
                         StyleConverter.getColorConverter(), FALLBACK_MID) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterMid.isBound();
@@ -559,7 +596,7 @@ public final class LevelMeter extends Control {
                 };
 
         static final CssMetaData<LevelMeter, Color> METER_HI =
-                new CssMetaData<>("-meter-hi",
+                new CssMetaData<>("-lm-hi",
                         StyleConverter.getColorConverter(), FALLBACK_HI) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterHi.isBound();
@@ -570,7 +607,7 @@ public final class LevelMeter extends Control {
                 };
 
         static final CssMetaData<LevelMeter, Color> METER_CLIP =
-                new CssMetaData<>("-meter-clip",
+                new CssMetaData<>("-lm-clip",
                         StyleConverter.getColorConverter(), FALLBACK_CLIP) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterClip.isBound();
@@ -581,7 +618,7 @@ public final class LevelMeter extends Control {
                 };
 
         static final CssMetaData<LevelMeter, Color> METER_BACKGROUND =
-                new CssMetaData<>("-meter-background",
+                new CssMetaData<>("-lm-background",
                         StyleConverter.getColorConverter(), FALLBACK_BACKGROUND) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterBackground.isBound();
@@ -592,7 +629,7 @@ public final class LevelMeter extends Control {
                 };
 
         static final CssMetaData<LevelMeter, Number> METER_SEGMENT_GAP =
-                new CssMetaData<>("-meter-segment-gap",
+                new CssMetaData<>("-lm-segment-gap",
                         StyleConverter.getSizeConverter(), 1.0) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterSegmentGap.isBound();
@@ -603,7 +640,7 @@ public final class LevelMeter extends Control {
                 };
 
         static final CssMetaData<LevelMeter, Number> METER_SEGMENT_HEIGHT =
-                new CssMetaData<>("-meter-segment-height",
+                new CssMetaData<>("-lm-segment-height",
                         StyleConverter.getSizeConverter(), 2.0) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterSegmentHeight.isBound();
@@ -614,7 +651,7 @@ public final class LevelMeter extends Control {
                 };
 
         static final CssMetaData<LevelMeter, Boolean> METER_TICK_MARKS =
-                new CssMetaData<>("-meter-tick-marks",
+                new CssMetaData<>("-lm-tick-marks",
                         StyleConverter.getBooleanConverter(), Boolean.FALSE) {
                     @Override public boolean isSettable(LevelMeter m) {
                         return !m.meterTickMarks.isBound();

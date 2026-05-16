@@ -32,11 +32,17 @@ import java.util.function.LongSupplier;
  *
  * <h2>Lifecycle</h2>
  *
- * <p>The per-frame {@link AnimationTimer} runs only while the control is
- * attached to a {@link Scene} <em>and</em> {@link LevelMeter#isAnimated()}
- * is {@code true}. When not animated, repaints happen on a value-change
- * {@link ChangeListener} instead (the audio-relay is still pumped on that
- * path). {@link #dispose()} stops the timer and removes every listener.
+ * <p>The per-frame {@link AnimationTimer} runs whenever the control is
+ * attached to a {@link Scene} — independent of {@link LevelMeter#isAnimated()}.
+ * The timer is the bridge that relays audio-thread {@code submitLevels()}
+ * writes (which only touch lock-free atomics) onto the JavaFX peak/RMS
+ * properties, so stopping it when {@code !animated} would leave
+ * reduce-motion meters stuck on stale levels (the atomics are not
+ * JavaFX-observable). Discrete-LED rendering has no smooth transitions
+ * to suppress, so the animated flag is currently a no-op for this skin
+ * and is honoured purely as a future throttle hook (story 279). When the
+ * scene is detached the timer stops; {@link #dispose()} also stops the
+ * timer and removes every listener registered in the constructor.
  *
  * <h2>Peak-hold</h2>
  *

@@ -3,9 +3,12 @@ package com.benesquivelmusic.daw.app.ui.controls;
 import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
 import com.benesquivelmusic.daw.app.ui.controls.skin.LevelMeterSkin;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static com.benesquivelmusic.daw.app.ui.controls.LevelMeterTest.attach;
@@ -22,9 +25,36 @@ import static org.assertj.core.api.Assertions.assertThat;
 @ExtendWith(JavaFxToolkitExtension.class)
 class LevelMeterPeakHoldTest {
 
+    /** Meters created via {@code attach()}; disposed in {@link #cleanup()}
+     *  so the skin's {@code AnimationTimer} cannot leak between tests in
+     *  the shared JavaFX toolkit (and across other JavaFX test classes). */
+    private final List<LevelMeter> created = new ArrayList<>();
+
+    private LevelMeter newMeter() {
+        LevelMeter m = runOnFxThread(LevelMeter::new);
+        created.add(m);
+        return m;
+    }
+
+    @AfterEach
+    void cleanup() {
+        runOnFxThread(() -> {
+            for (LevelMeter m : created) {
+                if (m.getSkin() != null) {
+                    m.setSkin(null);
+                }
+                if (m.getParent() instanceof javafx.scene.layout.Pane pane) {
+                    pane.getChildren().remove(m);
+                }
+            }
+            created.clear();
+            return null;
+        });
+    }
+
     @Test
     void heldPeakSticksForTwoSecondsThenFallsOff() {
-        LevelMeter m = runOnFxThread(LevelMeter::new);
+        LevelMeter m = newMeter();
         LevelMeterSkin skin = attach(m);
         AtomicLong now = new AtomicLong(1_000_000_000L);
         runOnFxThread(() -> {
@@ -62,7 +92,7 @@ class LevelMeterPeakHoldTest {
 
     @Test
     void aHigherPeakReArmsTheHoldAndResetsTheTimer() {
-        LevelMeter m = runOnFxThread(LevelMeter::new);
+        LevelMeter m = newMeter();
         LevelMeterSkin skin = attach(m);
         AtomicLong now = new AtomicLong(5_000_000_000L);
         runOnFxThread(() -> {
@@ -96,7 +126,7 @@ class LevelMeterPeakHoldTest {
     void holdExpiresExactlyAtTheTwoSecondBoundary() {
         // 2_000_000_000L == LevelMeterSkin.PEAK_HOLD_NANOS (package-private
         // across the controls/skin boundary, so spelled out literally).
-        LevelMeter m = runOnFxThread(LevelMeter::new);
+        LevelMeter m = newMeter();
         LevelMeterSkin skin = attach(m);
         long t = 9_000_000_000L;
         long hold = 2_000_000_000L;

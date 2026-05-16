@@ -93,14 +93,32 @@ class LevelMeterTest {
     }
 
     @Test
+    void channelCountClampSurvivesBinding() {
+        // Binding takes a different code path than .set(int): the bound
+        // source's value is read on demand. The clamp must apply on the
+        // read path too — the skin only ever calls getChannelCount(), so
+        // out-of-range values from a binding source must never be visible.
+        LevelMeter m = newMeter();
+        javafx.beans.property.IntegerProperty src =
+                new javafx.beans.property.SimpleIntegerProperty(99);
+        m.channelCountProperty().bind(src);
+        assertThat(m.getChannelCount()).isEqualTo(8);
+        src.set(0);
+        assertThat(m.getChannelCount()).isEqualTo(1);
+        src.set(4);
+        assertThat(m.getChannelCount()).isEqualTo(4);
+        m.channelCountProperty().unbind();
+    }
+
+    @Test
     void cssMetaDataExposesAllEightStyleableProperties() {
         var names = LevelMeter.getClassCssMetaData().stream()
                 .map(javafx.css.CssMetaData::getProperty)
                 .toList();
         assertThat(names).contains(
-                "-meter-low", "-meter-mid", "-meter-hi", "-meter-clip",
-                "-meter-background", "-meter-segment-gap",
-                "-meter-segment-height", "-meter-tick-marks");
+                "-lm-low", "-lm-mid", "-lm-hi", "-lm-clip",
+                "-lm-background", "-lm-segment-gap",
+                "-lm-segment-height", "-lm-tick-marks");
     }
 
     @Test
@@ -182,6 +200,115 @@ class LevelMeterTest {
             return skin.colorAt(0, n - 1, 4, 200);
         });
         assertThat(top).isEqualTo(m.getMeterClip());
+    }
+
+    @Test
+    void aggregateSubmitLevelsClearsStalePerChannelData() {
+        // The skin prefers a non-NaN per-channel value over the aggregate.
+        // If submitLevels(channel, ...) is called and then later the meter
+        // switches to the aggregate-only API submitLevels(peak, rms), the
+        // aggregate must be authoritative — otherwise the stale per-
+        // channel reading would keep being displayed.
+        LevelMeter m = newMeter();
+        m.submitLevels(0, -3.0, -9.0);
+        m.submitLevels(1, -6.0, -12.0);
+        assertThat(m.consumeSubmittedPeakDb(0)).isEqualTo(-3.0);
+        assertThat(m.consumeSubmittedPeakDb(1)).isEqualTo(-6.0);
+
+        // Switch to aggregate-only feed: per-channel slots reset to NaN
+        // so the skin falls back to the aggregate via the documented
+        // "NaN means no per-channel feed" sentinel.
+        m.submitLevels(-20.0, -30.0);
+        assertThat(m.consumeSubmittedPeakDb()).isEqualTo(-20.0);
+        assertThat(m.consumeSubmittedRmsDb()).isEqualTo(-30.0);
+        for (int ch = 0; ch < LevelMeter.MAX_CHANNELS; ch++) {
+            assertThat(m.consumeSubmittedPeakDb(ch))
+                    .as("per-channel peak %d after aggregate submit", ch)
+                    .isNaN();
+            assertThat(m.consumeSubmittedRmsDb(ch))
+                    .as("per-channel rms %d after aggregate submit", ch)
+                    .isNaN();
+        }
+    }
+
+    @Test
+    void verticalOrientationPaintsLitColumnFromTheBottom() {
+        // Pixel-level smoke test for the Canvas renderer: a vertical meter
+        // at high level must paint a pixel near the bottom of the channel
+        // column with one of the lit-segment colours. Catches a coordinate
+        // / orientation / fillRect regression that the colorAt model seam
+        // would not.
+        LevelMeter m = newMeter();
+        runOnFxThread(() -> {
+            m.setOrientation(Orientation.VERTICAL);
+            m.setChannelCount(1);
+            m.setPrefSize(8, 200);
+            m.setMinSize(8, 200);
+            m.setMaxSize(8, 200);
+            return null;
+        });
+        attach(m);
+        runOnFxThread(() -> {
+            m.setPeakDb(-3.0); // high-band signal: lit ~all the way up
+            m.applyCss();
+            m.layout();
+            ((LevelMeterSkin) m.getSkin()).pumpOnce(System.nanoTime());
+            return null;
+        });
+
+        javafx.scene.image.WritableImage snapshot = runOnFxThread(() ->
+                m.snapshot(new javafx.scene.SnapshotParameters(), null));
+
+        Color background = m.getMeterBackground();
+        // Snapshot dimensions should reflect the forced 8x200 sizing.
+        assertThat((int) snapshot.getHeight()).isGreaterThanOrEqualTo(100);
+        // A pixel near the bottom of the column centre must be lit (not
+        // background). For a 1-channel vertical meter the lit column
+        // covers the full width minus the small column inset.
+        int litX = (int) snapshot.getWidth() / 2;
+        int litY = (int) snapshot.getHeight() - 2;
+        Color litPixel = snapshot.getPixelReader().getColor(litX, litY);
+        assertThat(litPixel)
+                .as("vertical meter at -3 dBFS must light the bottom of the column "
+                        + "(image %dx%d, sampling (%d,%d))",
+                        (int) snapshot.getWidth(), (int) snapshot.getHeight(),
+                        litX, litY)
+                .isNotEqualTo(background);
+    }
+
+    @Test
+    void horizontalOrientationPaintsLitRowFromTheLeft() {
+        LevelMeter m = newMeter();
+        runOnFxThread(() -> {
+            m.setOrientation(Orientation.HORIZONTAL);
+            m.setChannelCount(1);
+            m.setPrefSize(200, 8);
+            m.setMinSize(200, 8);
+            m.setMaxSize(200, 8);
+            return null;
+        });
+        attach(m);
+        runOnFxThread(() -> {
+            m.setPeakDb(-3.0);
+            m.applyCss();
+            m.layout();
+            ((LevelMeterSkin) m.getSkin()).pumpOnce(System.nanoTime());
+            return null;
+        });
+
+        javafx.scene.image.WritableImage snapshot = runOnFxThread(() ->
+                m.snapshot(new javafx.scene.SnapshotParameters(), null));
+
+        Color background = m.getMeterBackground();
+        assertThat((int) snapshot.getWidth()).isGreaterThanOrEqualTo(100);
+        // Sample at X=1 (within the first 2px-wide segment for the
+        // default seg=2 / gap=1 layout) on the centre row.
+        int litY = (int) snapshot.getHeight() / 2;
+        Color litPixel = snapshot.getPixelReader().getColor(1, litY);
+        assertThat(litPixel)
+                .as("horizontal meter at -3 dBFS must light the left edge of the row "
+                        + "(image %dx%d)", (int) snapshot.getWidth(), (int) snapshot.getHeight())
+                .isNotEqualTo(background);
     }
 
     // ── helpers ──────────────────────────────────────────────────────────

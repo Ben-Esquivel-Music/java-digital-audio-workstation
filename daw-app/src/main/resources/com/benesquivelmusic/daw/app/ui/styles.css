@@ -772,25 +772,23 @@
 
 /* ── Level Meters ── */
 /* Story 267: the LevelMeter control (com...ui.controls.LevelMeter) ships
- * its own self-contained user-agent stylesheet (level-meter.css) carrying
- * the default Palette A meter colours as -meter-* styleable properties,
- * so the control renders correctly with no app stylesheet (plugin-GUI
- * case). This app rule only forwards the -surface-2 token into the
- * control's -meter-background styleable property — a distinctly-named
- * forward, which JavaFX resolves through the .root-pane ancestor, so the
- * active theme drives the unlit-segment tone.
+ * its own self-contained user-agent stylesheet (level-meter.css), which
+ * declares the control's internal styleable properties (-lm-low/-mid/
+ * -hi/-clip/-background) with hard hex Palette A defaults so the control
+ * renders correctly out-of-the-box even with no app stylesheet loaded
+ * (plugin-GUI window case).
  *
- * The -meter-low/-mid/-hi/-clip styleable properties are intentionally
- * NOT re-declared here: a `.level-meter { -meter-low: -meter-low; }` rule
- * is a same-name self-reference that JavaFX flags as a circular looked-up
- * colour and drops (the property silently falls back to the UA value).
- * Even an intermediate-alias forward fails the engine's transitive cycle
- * detection because the chain ultimately reaches `-meter-low` again. A
- * theme that needs to re-tint the lit segments must target the
- * `.level-meter` selector directly (proven by
- * LevelMeterSkinThemeTest / LevelMeterAppThemeCascadeTest) — that is the
- * supported theming entry point for the stories 268–271 controls too.
- * The three dead .level-meter-fill-{green,orange,red} rules were removed
+ * THIS RULE forwards the documented public -meter-* CSS API names — and
+ * the app's -surface-2 token — into those internal styleable properties.
+ * The forwards use distinct source/target names so they are NOT circular
+ * looked-up colours; the .root-pane Palette A role tokens
+ * (-meter-low/-mid/-hi/-clip) cascade into the lit-segment colours via
+ * the standard JavaFX cascade, restoring the styles.css convention that
+ * structural selectors consume role tokens. A theme can re-tint the
+ * meter just by overriding the role tokens on .root-pane (or .level-
+ * meter directly) — no per-control duplication needed.
+ *
+ * The dead .level-meter-fill-{green,orange,red} rules were removed
  * (zero Java/FXML consumers). */
 .level-meter {
     -fx-background-color: -surface-1;
@@ -798,7 +796,11 @@
     -fx-border-width: 1;
     -fx-border-radius: 4;
 
-    -meter-background: -surface-2;
+    -lm-low:        -meter-low;
+    -lm-mid:        -meter-mid;
+    -lm-hi:         -meter-hi;
+    -lm-clip:       -meter-clip;
+    -lm-background: -surface-2;
 }
 
 /* ── Visualization Tiles Row ── */
