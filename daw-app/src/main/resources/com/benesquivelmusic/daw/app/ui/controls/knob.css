@@ -1,0 +1,66 @@
+/*
+ * Knob user-agent stylesheet (story 268).
+ *
+ * Returned by Knob#getUserAgentStylesheet(). Self-contained so the
+ * control renders with NO application stylesheet loaded (plugin-GUI
+ * case). Token overrides from the parent stylesheet still cascade via
+ * lookup-colour resolution, so a host app's .root-pane palette swap
+ * reaches the knob automatically.
+ *
+ * Token names match the issue's specification (UI Design Book §5.8):
+ *   -knob-dial-color       (background fill)
+ *   -knob-border-color     (1 px dial border)
+ *   -knob-arc-color        (accent travel arc — min→current)
+ *   -knob-track-color      (full-sweep underlay)
+ *   -knob-indicator-color  (indicator line)
+ *   -knob-focus-ring-color (focus ring)
+ *
+ * Default values are Palette A (Onyx Refined) and match the hard-coded
+ * fallbacks in Knob.java so the control renders correctly with no
+ * stylesheet loaded.
+ */
+
+.knob {
+    -knob-dial-color:        #1D1F26;
+    -knob-border-color:      #2E323D;
+    -knob-arc-color:         #7C8CFF;
+    -knob-track-color:       #7A808C;
+    -knob-indicator-color:   #B7BCC7;
+    -knob-focus-ring-color:  #5C8CFF;
+
+    -knob-drag-sensitivity:  200;
+}
+
+/* Hover: indicator brightens toward -text-hi (UI Design Book §5.8). */
+.knob:hover {
+    -knob-indicator-color: #ECEEF2;
+}
+
+/* ── Size variants ────────────────────────────────────────────────────── */
+
+.knob.size-28 {
+    -fx-pref-width:  28;
+    -fx-pref-height: 28;
+    -fx-min-width:   16;
+    -fx-min-height:  16;
+    -fx-max-width:   64;
+    -fx-max-height:  64;
+}
+
+.knob.size-36 {
+    -fx-pref-width:  36;
+    -fx-pref-height: 36;
+    -fx-min-width:   20;
+    -fx-min-height:  20;
+    -fx-max-width:   72;
+    -fx-max-height:  72;
+}
+
+.knob.size-48 {
+    -fx-pref-width:  48;
+    -fx-pref-height: 48;
+    -fx-min-width:   28;
+    -fx-min-height:  28;
+    -fx-max-width:   96;
+    -fx-max-height:  96;
+}
