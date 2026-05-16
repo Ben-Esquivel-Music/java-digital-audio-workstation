@@ -28,24 +28,30 @@ class LevelMeterTest {
 
     /** Meters created by helpers; disposed in {@link #cleanup()} to stop
      *  every attached {@link javafx.animation.AnimationTimer} so timers
-     *  do not leak between tests in the shared JavaFX toolkit. */
-    private static final List<LevelMeter> CREATED = new ArrayList<>();
+     *  do not leak between tests in the shared JavaFX toolkit.
+     *  Wrapped in {@code synchronizedList} as a belt-and-braces guard:
+     *  the JavaFX toolkit serialises FX-thread work, but the helpers
+     *  may be invoked from JUnit's own test-runner thread. */
+    private static final List<LevelMeter> CREATED =
+            java.util.Collections.synchronizedList(new ArrayList<>());
 
     @AfterEach
     void cleanup() {
         runOnFxThread(() -> {
-            for (LevelMeter m : CREATED) {
-                if (m.getSkin() != null) {
-                    m.setSkin(null);
-                }
-                if (m.getParent() instanceof javafx.scene.Parent && m.getScene() != null) {
-                    javafx.scene.Parent p = (javafx.scene.Parent) m.getParent();
-                    if (p instanceof javafx.scene.layout.Pane pane) {
-                        pane.getChildren().remove(m);
+            synchronized (CREATED) {
+                for (LevelMeter m : CREATED) {
+                    if (m.getSkin() != null) {
+                        m.setSkin(null);
+                    }
+                    if (m.getParent() instanceof javafx.scene.Parent && m.getScene() != null) {
+                        javafx.scene.Parent p = (javafx.scene.Parent) m.getParent();
+                        if (p instanceof javafx.scene.layout.Pane pane) {
+                            pane.getChildren().remove(m);
+                        }
                     }
                 }
+                CREATED.clear();
             }
-            CREATED.clear();
             return null;
         });
     }
