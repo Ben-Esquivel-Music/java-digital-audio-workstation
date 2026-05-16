@@ -10,9 +10,7 @@ import com.benesquivelmusic.daw.app.ui.inspector.sections.TrackSection;
 import com.benesquivelmusic.daw.app.ui.inspector.skin.InspectorDrawerSkin;
 
 import javafx.beans.property.BooleanProperty;
-import javafx.beans.property.ObjectProperty;
 import javafx.beans.property.SimpleBooleanProperty;
-import javafx.beans.property.SimpleObjectProperty;
 import javafx.beans.property.SimpleStringProperty;
 import javafx.beans.property.StringProperty;
 import javafx.css.CssMetaData;
@@ -29,7 +27,9 @@ import javafx.scene.input.KeyEvent;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
+import java.util.ResourceBundle;
 
 /**
  * Unified Inspector drawer (UI Design Book §5.6, story 272).
@@ -106,9 +106,19 @@ public final class InspectorDrawer extends Control {
     private final StringProperty headerText =
             new SimpleStringProperty(this, "headerText", "");
 
-    private final ObjectProperty<InspectorSelectionModel> selectionModel =
-            new SimpleObjectProperty<>(this, "selectionModel",
-                    new InspectorSelectionModel());
+    /**
+     * The selection model is immutable — callers interact with the single
+     * instance returned by {@link #getSelectionModel()} and must not
+     * swap it out. This avoids the listener-leak problem where a
+     * selection-changed listener bound to the initial model is silently
+     * orphaned when the model reference is replaced.
+     */
+    private final InspectorSelectionModel selectionModel =
+            new InspectorSelectionModel();
+
+    /** Resource bundle for user-facing inspector strings (Skill §14). */
+    private static final ResourceBundle MESSAGES = ResourceBundle.getBundle(
+            "com.benesquivelmusic.daw.app.i18n.Messages", Locale.ROOT);
 
     // ── Sections (created once, surfaced as accessors for tests) ──────────
 
@@ -127,15 +137,18 @@ public final class InspectorDrawer extends Control {
         setAccessibleRoleDescription("Inspector");
         setFocusTraversable(true);
 
-        this.trackSection = new TrackSection(null);
-        this.insertsSection = new InsertsSection(null, "+ Add");
-        this.sendsSection = new SendsSection(null);
-        this.routingSection = new RoutingSection(null);
-        this.notesSection = new NotesSection(null);
+        // Section titles from the i18n bundle (Skill §14 — no hard-coded
+        // user-facing strings in code or FXML).
+        this.trackSection = new TrackSection(msg("inspector.section.track"));
+        this.insertsSection = new InsertsSection(
+                msg("inspector.section.inserts"), msg("inspector.inserts.add"));
+        this.sendsSection = new SendsSection(msg("inspector.section.sends"));
+        this.routingSection = new RoutingSection(msg("inspector.section.routing"));
+        this.notesSection = new NotesSection(msg("inspector.section.notes"));
 
         // Wire selection-model changes → typed inspector event so the
         // dispatch chain delivers it to any ancestor / sibling listener.
-        selectionModel.get().selectionProperty().addListener((o, oldS, newS) -> {
+        selectionModel.selectionProperty().addListener((o, oldS, newS) -> {
             if (newS != null) {
                 applySelectionToSections(newS);
                 fireEvent(new InspectorSelectionEvent(newS));
@@ -213,12 +226,24 @@ public final class InspectorDrawer extends Control {
         source.addEventFilter(TrackStrip.TrackSelectionEvent.SELECTION_REQUESTED, ev ->
                 getSelectionModel().setSelection(
                         new InspectorSelection.TrackSelection(ev.getTrackId())));
-        source.addEventFilter(MixerChannelStrip.InsertSelectedEvent.INSERT_SELECTED, ev ->
-                getSelectionModel().setSelection(
-                        new InspectorSelection.InsertSelection(null, ev.getInsertIndex())));
-        source.addEventFilter(MixerChannelStrip.SendSelectedEvent.SEND_SELECTED, ev ->
-                getSelectionModel().setSelection(
-                        new InspectorSelection.SendSelection(null, ev.getSendIndex())));
+        source.addEventFilter(MixerChannelStrip.InsertSelectedEvent.INSERT_SELECTED, ev -> {
+            // Extract the channel's UUID from the originating MixerChannelStrip
+            // so the InsertSelection disambiguates inserts across channels.
+            java.util.UUID channelId = null;
+            if (ev.getSource() instanceof MixerChannelStrip strip) {
+                channelId = strip.getChannelId();
+            }
+            getSelectionModel().setSelection(
+                    new InspectorSelection.InsertSelection(channelId, ev.getInsertIndex()));
+        });
+        source.addEventFilter(MixerChannelStrip.SendSelectedEvent.SEND_SELECTED, ev -> {
+            java.util.UUID channelId = null;
+            if (ev.getSource() instanceof MixerChannelStrip strip) {
+                channelId = strip.getChannelId();
+            }
+            getSelectionModel().setSelection(
+                    new InspectorSelection.SendSelection(channelId, ev.getSendIndex()));
+        });
     }
 
     /** Manually publishes a selection — primarily for tests and external controllers. */
@@ -240,11 +265,13 @@ public final class InspectorDrawer extends Control {
     public final String getHeaderText()                  { return headerText.get(); }
     public final void setHeaderText(String t)            { headerText.set(t == null ? "" : t); }
 
-    public final ObjectProperty<InspectorSelectionModel> selectionModelProperty() {
-        return selectionModel;
-    }
+    /**
+     * @return the immutable selection model — always the same instance.
+     *         Callers interact with the model directly; swapping the
+     *         model itself is not supported (avoids listener leaks).
+     */
     public final InspectorSelectionModel getSelectionModel() {
-        return selectionModel.get();
+        return selectionModel;
     }
 
     // ── Section accessors ─────────────────────────────────────────────────
@@ -353,5 +380,18 @@ public final class InspectorDrawer extends Control {
      */
     public final void setOnSelectionChanged(javafx.event.EventHandler<InspectorSelectionEvent> handler) {
         setEventHandler(SELECTION_CHANGED, handler);
+    }
+
+    /**
+     * Resolves an i18n key from the inspector's
+     * {@link ResourceBundle}. Falls back to the raw key if the bundle
+     * does not contain a mapping (defensive against missing keys).
+     */
+    static String msg(String key) {
+        try {
+            return MESSAGES.getString(key);
+        } catch (java.util.MissingResourceException e) {
+            return key;
+        }
     }
 }

@@ -61,7 +61,6 @@ module daw.app {
     // and its sections referenced from main-view.fxml.
     opens com.benesquivelmusic.daw.app.ui.inspector to javafx.fxml;
     opens com.benesquivelmusic.daw.app.ui.inspector.sections to javafx.fxml;
-    opens com.benesquivelmusic.daw.app.ui.inspector.skin to javafx.fxml;
 
     // Application.launch(DawApplication.class, …) reflectively constructs
     // the Application subclass.

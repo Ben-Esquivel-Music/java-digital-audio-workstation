@@ -13,7 +13,6 @@ import javafx.geometry.Pos;
 import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.SkinBase;
-import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
@@ -45,7 +44,6 @@ public final class InspectorDrawerSkin extends SkinBase<InspectorDrawer> {
     private final StackPane root;
 
     private final ChangeListener<Boolean> expandedListener;
-    private final ChangeListener<String> headerTextListener;
     private final ChangeListener<Number> expandedWidthListener;
     private final ChangeListener<Number> collapsedWidthListener;
 
@@ -55,7 +53,7 @@ public final class InspectorDrawerSkin extends SkinBase<InspectorDrawer> {
         super(control);
 
         // ── Rail (collapsed) ──
-        railLabel = new Label("INSPECTOR");
+        railLabel = new Label(InspectorDrawer.msg("inspector.rail.label"));
         railLabel.getStyleClass().add("inspector-rail-label");
         // Rotate the rail label so it reads bottom-to-top per the §5.6
         // mockup. JavaFX rotates around the node's centre.
@@ -93,11 +91,6 @@ public final class InspectorDrawerSkin extends SkinBase<InspectorDrawer> {
         // ── Listeners ──
         expandedListener = (obs, was, now) -> applyExpanded(now, true);
         control.expandedProperty().addListener(expandedListener);
-
-        headerTextListener = (obs, was, now) -> {
-            /* bound; no-op explicit listener kept for symmetry */
-        };
-        control.headerTextProperty().addListener(headerTextListener);
 
         expandedWidthListener = (obs, was, now) -> {
             if (control.isExpanded()) {
@@ -208,7 +201,6 @@ public final class InspectorDrawerSkin extends SkinBase<InspectorDrawer> {
         InspectorDrawer d = getSkinnable();
         if (d != null) {
             d.expandedProperty().removeListener(expandedListener);
-            d.headerTextProperty().removeListener(headerTextListener);
             d.inspectorExpandedWidthProperty().removeListener(expandedWidthListener);
             d.inspectorCollapsedWidthProperty().removeListener(collapsedWidthListener);
         }

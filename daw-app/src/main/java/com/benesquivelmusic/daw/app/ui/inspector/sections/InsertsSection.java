@@ -84,7 +84,7 @@ public final class InsertsSection extends InspectorSection {
         dot.getStyleClass().add(r.active() ? "insert-dot-active" : "insert-dot-inactive");
 
         Label name = new Label(r.name() == null ? "" : r.name());
-        name.getStyleClass().add("inspert-row-name");
+        name.getStyleClass().add("inspector-row-name");
         HBox.setHgrow(name, Priority.ALWAYS);
         name.setMaxWidth(Double.MAX_VALUE);
 
