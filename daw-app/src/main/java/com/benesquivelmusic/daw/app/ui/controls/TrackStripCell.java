@@ -75,11 +75,23 @@ public class TrackStripCell extends ListCell<Track> {
         }
     }
 
+    /**
+     * Syncs the {@link TrackStrip#selectedProperty()} with the ListView's
+     * selection state so the strip's {@code :selected} pseudo-class (and
+     * its {@code -accent-soft} background) tracks cell selection correctly.
+     */
+    @Override
+    public void updateSelected(boolean selected) {
+        super.updateSelected(selected);
+        strip.setSelected(selected);
+    }
+
     @Override
     protected void updateItem(Track item, boolean empty) {
         super.updateItem(item, empty);
         if (empty || item == null) {
             setGraphic(null);
+            strip.setSelected(false);
             return;
         }
         // Rebind the recycled strip to the new track. The strip is

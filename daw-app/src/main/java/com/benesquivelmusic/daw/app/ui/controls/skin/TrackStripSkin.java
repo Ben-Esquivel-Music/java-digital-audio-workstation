@@ -12,6 +12,7 @@ import javafx.scene.control.Label;
 import javafx.scene.control.MenuItem;
 import javafx.scene.control.SkinBase;
 import javafx.scene.control.ToggleButton;
+import javafx.scene.Node;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
 import javafx.scene.input.MouseButton;
@@ -186,7 +187,7 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
             }
         });
 
-        row = new HBox(6,
+        row = new HBox(
                 dragHandle, indexLabel, swatch, nameLabel, nameSpacer,
                 muteBtn, soloBtn, armBtn,
                 meterHolder, meterReadout, overflowBtn);
@@ -195,14 +196,11 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
 
         // Armed left-edge bar — positioned manually in layoutChildren so
         // its presence doesn't affect the row's intrinsic geometry.
-        // Do NOT call armBar.setFill() — that sets USER origin which
-        // prevents the CSS rule (.track-strip-arm-bar { -fx-fill: -ts-danger })
-        // from taking effect. Let CSS drive the fill; bind to
-        // dangerProperty as a fallback propagation path so palette
-        // changes reach the bar even without a full CSS re-apply.
+        // Fill is driven exclusively by CSS (.track-strip-arm-bar { -fx-fill: -ts-danger }).
+        // Do NOT call setFill() or bind fillProperty() — either would set
+        // USER origin and prevent theme token updates from taking effect.
         armBar = new Rectangle(ARM_BAR_WIDTH, 0);
         armBar.getStyleClass().add("track-strip-arm-bar");
-        armBar.fillProperty().bind(control.dangerProperty());
         armBar.visibleProperty().bind(control.armedProperty());
         armBar.managedProperty().bind(control.armedProperty());
 
@@ -288,11 +286,29 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
         if (e.getButton() != MouseButton.PRIMARY) return;
         TrackStrip c = getSkinnable();
         if (c == null) return;
-        // Don't fire when the click landed on an interactive child
-        // (toggle button, overflow menu, etc.) — those have their own
-        // handlers; selection comes from clicking the row "background".
-        if (e.getTarget() instanceof ToggleButton) return;
+        // Don't fire when the click landed on (or inside) an interactive
+        // child — those have their own handlers. In JavaFX the event
+        // target is often a child node inside the button (e.g., the Text
+        // node), so we walk up the parent chain from the target to detect
+        // whether the press occurred inside a toggle or the overflow label.
+        if (isInsideInteractiveChild(e.getTarget())) return;
         c.fireEvent(new TrackSelectionEvent(c, c, c.getTrackId()));
+    }
+
+    /**
+     * Returns {@code true} if the given event target is, or is a
+     * descendant of, one of this skin's interactive controls (M/S/R
+     * toggle buttons or overflow menu trigger).
+     */
+    private boolean isInsideInteractiveChild(javafx.event.EventTarget target) {
+        if (!(target instanceof Node node)) return false;
+        while (node != null) {
+            if (node == muteBtn || node == soloBtn || node == armBtn || node == overflowBtn) {
+                return true;
+            }
+            node = node.getParent();
+        }
+        return false;
     }
 
     private void onKeyPressed(KeyEvent e) {
@@ -458,7 +474,6 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
             meterHolder.managedProperty().unbind();
             c.getMeter().visibleProperty().unbind();
             c.getMeter().managedProperty().unbind();
-            armBar.fillProperty().unbind();
             armBar.visibleProperty().unbind();
             armBar.managedProperty().unbind();
             c.removeEventHandler(KeyEvent.KEY_PRESSED, keyHandler);
