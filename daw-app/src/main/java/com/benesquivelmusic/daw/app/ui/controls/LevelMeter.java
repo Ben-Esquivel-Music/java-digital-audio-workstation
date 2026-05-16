@@ -188,7 +188,11 @@ public final class LevelMeter extends Control {
         getStyleClass().add(DEFAULT_STYLE_CLASS);
         setAccessibleRole(AccessibleRole.PROGRESS_INDICATOR);
         setAccessibleRoleDescription("Level meter");
-        setAccessibleText("Level meter");
+        // The accessible text starts static; the skin updates it
+        // dynamically in tick() with the current peak/RMS/clip state
+        // so screen readers announce level information, not just the
+        // role description.
+        setAccessibleText("Level meter: no signal");
         setFocusTraversable(false);
     }
 

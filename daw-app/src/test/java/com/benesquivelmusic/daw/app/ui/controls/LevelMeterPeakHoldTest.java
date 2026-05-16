@@ -145,4 +145,59 @@ class LevelMeterPeakHoldTest {
         // displayed value tracks the live peak again.
         assertThat(skin.currentPeakHoldDb(t + hold)).isEqualTo(-40.0);
     }
+
+    @Test
+    void perChannelPeakHoldIsIndependent() {
+        // A stereo/surround meter fed only through submitLevels(channel, ...)
+        // must hold each channel's peaks independently. The aggregate
+        // peakHoldDb is irrelevant when a per-channel feed is active.
+        LevelMeter m = newMeter();
+        runOnFxThread(() -> {
+            m.setChannelCount(2);
+            return null;
+        });
+        LevelMeterSkin skin = attach(m);
+        AtomicLong now = new AtomicLong(1_000_000_000L);
+        runOnFxThread(() -> {
+            skin.setClock(now::get);
+            return null;
+        });
+
+        long t = 1_000_000_000L;
+
+        // Submit per-channel peaks: ch0 at -3, ch1 at -12.
+        runOnFxThread(() -> {
+            now.set(t);
+            m.submitLevels(0, -3.0, -9.0);
+            m.submitLevels(1, -12.0, -18.0);
+            skin.pumpOnce(t);
+            return null;
+        });
+        assertThat(skin.currentChannelPeakHoldDb(0, t)).isEqualTo(-3.0);
+        assertThat(skin.currentChannelPeakHoldDb(1, t)).isEqualTo(-12.0);
+
+        // Drop both signals; holds must stay within the 2 s window.
+        runOnFxThread(() -> {
+            now.set(t + 1_500_000_000L);
+            m.submitLevels(0, -60.0, -60.0);
+            m.submitLevels(1, -60.0, -60.0);
+            skin.pumpOnce(t + 1_500_000_000L);
+            return null;
+        });
+        assertThat(skin.currentChannelPeakHoldDb(0, t + 1_500_000_000L))
+                .isEqualTo(-3.0);
+        assertThat(skin.currentChannelPeakHoldDb(1, t + 1_500_000_000L))
+                .isEqualTo(-12.0);
+
+        // After 2 s the hold expires and tracks the live channel peak.
+        runOnFxThread(() -> {
+            now.set(t + 2_500_000_000L);
+            skin.pumpOnce(t + 2_500_000_000L);
+            return null;
+        });
+        assertThat(skin.currentChannelPeakHoldDb(0, t + 2_500_000_000L))
+                .isEqualTo(-60.0);
+        assertThat(skin.currentChannelPeakHoldDb(1, t + 2_500_000_000L))
+                .isEqualTo(-60.0);
+    }
 }

@@ -100,6 +100,15 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
     private LongSupplier clock = System::nanoTime;
 
     // Peak-hold state (FX thread only).
+    // Per-channel peak-hold: one entry per channel so stereo/surround
+    // meters fed via submitLevels(channel, ...) hold each channel's peaks
+    // independently instead of sharing the aggregate peakHoldDb.
+    private final double[] channelPeakHoldDb = new double[LevelMeter.MAX_CHANNELS];
+    private final long[] channelPeakHoldStampNanos = new long[LevelMeter.MAX_CHANNELS];
+    {
+        java.util.Arrays.fill(channelPeakHoldDb, -120.0);
+        java.util.Arrays.fill(channelPeakHoldStampNanos, Long.MIN_VALUE);
+    }
     private double peakHoldDb = -120.0;
     private long peakHoldStampNanos = Long.MIN_VALUE;
 
@@ -313,6 +322,11 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
      * hold after {@link #PEAK_HOLD_NANOS}. Pure w.r.t. its timestamp
      * argument so tests can drive it with synthetic values.
      *
+     * <p>Both the aggregate (single-property) peak-hold and per-channel
+     * peak-hold are advanced. A stereo/surround meter fed only through
+     * {@code submitLevels(channel, ...)} uses the per-channel holds so
+     * each channel's peak-hold marker is independent.
+     *
      * @param nowNanos the reference timestamp (nanoseconds)
      */
     public void tick(long nowNanos) {
@@ -326,6 +340,25 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
             peakHoldStampNanos = nowNanos;
         }
         c.setPeakHoldDb(currentPeakHoldDb(nowNanos));
+
+        // Advance per-channel peak-hold. Each channel is independent.
+        int channels = Math.max(1, c.getChannelCount());
+        for (int ch = 0; ch < channels && ch < LevelMeter.MAX_CHANNELS; ch++) {
+            double chPeak = peakForChannel(ch);
+            if (chPeak > channelPeakHoldDb[ch]
+                    || channelPeakHoldStampNanos[ch] == Long.MIN_VALUE) {
+                channelPeakHoldDb[ch] = chPeak;
+                channelPeakHoldStampNanos[ch] = nowNanos;
+            } else if (nowNanos - channelPeakHoldStampNanos[ch] >= PEAK_HOLD_NANOS) {
+                channelPeakHoldDb[ch] = chPeak;
+                channelPeakHoldStampNanos[ch] = nowNanos;
+            }
+        }
+
+        // Update accessible value with the current peak/RMS/clip state
+        // so screen readers announce level information, not just
+        // "Level meter".
+        updateAccessibleValue(c);
     }
 
     /**
@@ -347,8 +380,43 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
     private void clearPeakHold() {
         peakHoldDb = getSkinnable().getPeakDb();
         peakHoldStampNanos = Long.MIN_VALUE;
+        for (int i = 0; i < LevelMeter.MAX_CHANNELS; i++) {
+            channelPeakHoldDb[i] = -120.0;
+            channelPeakHoldStampNanos[i] = Long.MIN_VALUE;
+        }
         getSkinnable().setPeakHoldDb(peakHoldDb);
         paint();
+    }
+
+    /**
+     * @param channel zero-based channel index
+     * @param nowNanos the reference timestamp (nanoseconds)
+     * @return the per-channel peak-hold dBFS that should be displayed at
+     *         {@code nowNanos}: the held peak if still within the 2 s
+     *         window, otherwise the live channel peak.
+     */
+    public double currentChannelPeakHoldDb(int channel, long nowNanos) {
+        if (channel < 0 || channel >= LevelMeter.MAX_CHANNELS) {
+            return getSkinnable().getPeakDb();
+        }
+        if (channelPeakHoldStampNanos[channel] == Long.MIN_VALUE) {
+            return peakForChannel(channel);
+        }
+        if (nowNanos - channelPeakHoldStampNanos[channel] >= PEAK_HOLD_NANOS) {
+            return peakForChannel(channel);
+        }
+        return channelPeakHoldDb[channel];
+    }
+
+    /** Builds an accessible description from the current levels. */
+    private void updateAccessibleValue(LevelMeter c) {
+        double peak = c.getPeakDb();
+        double rms = c.getRmsDb();
+        boolean clipping = peak > MAX_DB;
+        String desc = String.format(Locale.ROOT,
+                "Peak %.1f dB, RMS %.1f dB%s", peak, rms,
+                clipping ? ", CLIPPING" : "");
+        c.setAccessibleText(desc);
     }
 
     // ── Geometry ──────────────────────────────────────────────────────────
@@ -543,17 +611,19 @@ public final class LevelMeterSkin extends SkinBase<LevelMeter> {
         double colSpan = shortAxis / channels;
         double colInset = Math.min(COLUMN_INSET_MAX_PX, colSpan * COLUMN_INSET_FRACTION);
 
-        // Peak-hold is a single (non per-channel) value; resolve its tick
-        // index once, with the SAME cutoff math as the lit bar so it sits
-        // exactly atop the (decayed) peak rather than one LED low.
-        int holdTop = litTopIndex(normalize(c.getPeakHoldDb()), n);
-
         for (int ch = 0; ch < channels; ch++) {
             double colStart = tickArea + ch * colSpan + colInset;
             double colSize = colSpan - 2 * colInset;
             // Same seam the tests assert against — one source of truth.
             int peakTop = topLitSegmentIndex(ch, w, h);
             int rmsTop = litTopIndex(normalize(rmsForChannel(ch)), n);
+
+            // Per-channel peak-hold: use the channel-specific hold value
+            // so stereo/surround meters hold each channel's peaks
+            // independently rather than sharing the aggregate peakHoldDb.
+            double chHoldDb = (ch < LevelMeter.MAX_CHANNELS)
+                    ? channelPeakHoldDb[ch] : c.getPeakHoldDb();
+            int holdTop = litTopIndex(normalize(chHoldDb), n);
 
             for (int s = 0; s < n; s++) {
                 Color color;

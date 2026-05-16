@@ -311,6 +311,38 @@ class LevelMeterTest {
                 .isNotEqualTo(background);
     }
 
+    @Test
+    void accessibleTextUpdatesWithLevelChanges() {
+        // Screen readers should hear the current peak/RMS/clip state, not
+        // just the static "Level meter" description.
+        LevelMeter m = newMeter();
+        LevelMeterSkin skin = attach(m);
+
+        // Initial static text before any tick.
+        assertThat(m.getAccessibleText()).contains("no signal");
+
+        // After a tick with a level set, the accessible text should reflect
+        // the current peak/RMS values.
+        runOnFxThread(() -> {
+            m.setPeakDb(-12.0);
+            m.setRmsDb(-18.0);
+            skin.tick(System.nanoTime());
+            return null;
+        });
+        String text = m.getAccessibleText();
+        assertThat(text).contains("-12.0");
+        assertThat(text).contains("-18.0");
+        assertThat(text).doesNotContain("CLIPPING");
+
+        // When clipping (above 0 dBFS), the accessible text should indicate it.
+        runOnFxThread(() -> {
+            m.setPeakDb(2.0);
+            skin.tick(System.nanoTime());
+            return null;
+        });
+        assertThat(m.getAccessibleText()).contains("CLIPPING");
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────
 
     static LevelMeter newMeter() {
