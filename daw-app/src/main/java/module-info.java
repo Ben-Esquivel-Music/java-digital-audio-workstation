@@ -57,6 +57,11 @@ module daw.app {
     // FXMLLoader reflects into the controllers package to bind @FXML
     // fields and #onAction handlers.
     opens com.benesquivelmusic.daw.app.ui to javafx.fxml;
+    // Story 272 — FXMLLoader reflectively instantiates InspectorDrawer
+    // and its sections referenced from main-view.fxml.
+    opens com.benesquivelmusic.daw.app.ui.inspector to javafx.fxml;
+    opens com.benesquivelmusic.daw.app.ui.inspector.sections to javafx.fxml;
+    opens com.benesquivelmusic.daw.app.ui.inspector.skin to javafx.fxml;
 
     // Application.launch(DawApplication.class, …) reflectively constructs
     // the Application subclass.

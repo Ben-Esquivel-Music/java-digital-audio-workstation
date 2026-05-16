@@ -1708,3 +1708,27 @@
 .drag-no-drop {
     -fx-cursor: disappear;
 }
+
+/* ── Inspector Drawer ── */
+/* Story 272: the InspectorDrawer control ships its own self-contained
+ * user-agent stylesheet (inspector/inspector.css), which declares the
+ * control's internal styleable properties (-insp-surface-1/2/3,
+ * -insp-text, -insp-text-mute, -insp-line-soft) with hard hex Palette A
+ * defaults so the control renders correctly out-of-the-box even with no
+ * app stylesheet loaded (plugin-GUI window case).
+ *
+ * THIS RULE forwards the documented .root-pane role tokens into those
+ * internal styleable properties. The forwards use distinct source/target
+ * names so they are NOT circular looked-up colours; the .root-pane
+ * Palette A tokens cascade into the inspector via the standard JavaFX
+ * cascade, restoring the styles.css convention that structural selectors
+ * consume role tokens. A theme can re-tint the drawer just by overriding
+ * the role tokens on .root-pane — no per-control duplication needed. */
+.inspector-drawer {
+    -insp-surface-1: -surface-1;
+    -insp-surface-2: -surface-2;
+    -insp-surface-3: -surface-3;
+    -insp-text:      -text;
+    -insp-text-mute: -text-mute;
+    -insp-line-soft: -line-soft;
+}

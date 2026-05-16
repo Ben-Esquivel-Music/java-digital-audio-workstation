@@ -1,0 +1,120 @@
+/*
+ * Inspector drawer user-agent stylesheet (story 272).
+ *
+ * Returned by InspectorDrawer#getUserAgentStylesheet(). Self-contained
+ * so the control renders with NO application stylesheet loaded —
+ * mirroring the convention from Fader / Knob / LevelMeter
+ * (stories 267-269). Token overrides from the parent stylesheet still
+ * cascade via lookup-colour resolution, so the host app's
+ * .root-pane palette swap reaches the inspector automatically.
+ *
+ * Token names (UI Design Book §5.6):
+ *   -inspector-expanded-width   240   (default expanded width)
+ *   -inspector-collapsed-width   24   (default rail width)
+ *
+ * Palette A (Onyx Refined) hard-coded fallbacks for the local roles —
+ * forwarded by styles.css into the same names when the app stylesheet
+ * is present (see memory: css conventions).
+ */
+
+.inspector-drawer {
+    -inspector-expanded-width: 240;
+    -inspector-collapsed-width: 24;
+
+    -insp-surface-1:   #131419;
+    -insp-surface-2:   #1D1F26;
+    -insp-surface-3:   #272A33;
+    -insp-text:        #ECECEE;
+    -insp-text-mute:   #7A808C;
+    -insp-line-soft:   #2A2D36;
+
+    -fx-background-color: -insp-surface-2;
+    -fx-border-color: -insp-line-soft;
+    -fx-border-width: 0 0 0 1;
+}
+
+/* ── Rail (collapsed) ─────────────────────────────────────────────────── */
+
+.inspector-drawer .inspector-rail {
+    -fx-background-color: -insp-surface-1;
+    -fx-padding: 8 0 8 0;
+}
+
+.inspector-drawer .inspector-rail-label {
+    /* §3.2 Label small: 10 px / 600 / uppercase / +12% tracking / -text-mute.
+     * Explicitly NOT purple per §1.6 / §7.6 — saturated bands rejected. */
+    -fx-text-fill: -insp-text-mute;
+    -fx-font-size: 10;
+    -fx-font-weight: 600;
+}
+
+/* ── Header bar ──────────────────────────────────────────────────────── */
+
+.inspector-drawer .inspector-header-bar {
+    -fx-text-fill: -insp-text;
+    -fx-font-size: 12;
+    -fx-font-weight: 600;
+    -fx-padding: 4 8 4 8;
+}
+
+/* ── Sections ────────────────────────────────────────────────────────── */
+
+.inspector-drawer .inspector-section {
+    -fx-background-color: -insp-surface-2;
+    -fx-padding: 4 0 4 0;
+    -fx-spacing: 4;
+}
+
+.inspector-drawer .inspector-section-header {
+    -fx-padding: 4 8 4 8;
+    -fx-spacing: 4;
+}
+
+/* §3.2 Label small for section headers — muted, NOT purple per §7.6. */
+.inspector-drawer .inspector-section-title {
+    -fx-text-fill: -insp-text-mute;
+    -fx-font-size: 10;
+    -fx-font-weight: 600;
+}
+
+.inspector-drawer .inspector-section-chevron {
+    -fx-text-fill: -insp-text-mute;
+    -fx-font-size: 10;
+}
+
+.inspector-drawer .inspector-section-body {
+    -fx-padding: 4 8 8 8;
+    -fx-spacing: 4;
+}
+
+.inspector-drawer .inspector-field-label {
+    -fx-text-fill: -insp-text-mute;
+    -fx-font-size: 10;
+    -fx-font-weight: 600;
+}
+
+.inspector-drawer .inspector-add-button {
+    -fx-background-color: -insp-surface-3;
+    -fx-text-fill: -insp-text;
+    -fx-padding: 4 8 4 8;
+}
+
+.inspector-drawer .inspector-prepost-toggle {
+    -fx-background-color: -insp-surface-3;
+    -fx-text-fill: -insp-text;
+    -fx-padding: 4 8 4 8;
+    -fx-font-size: 10;
+    -fx-font-weight: 600;
+}
+
+.inspector-drawer .inspector-scroll {
+    -fx-background-color: transparent;
+}
+
+.inspector-drawer .inspector-scroll .viewport {
+    -fx-background-color: transparent;
+}
+
+.inspector-drawer .inspector-scroll > .scroll-bar:vertical {
+    -fx-background-color: transparent;
+}
