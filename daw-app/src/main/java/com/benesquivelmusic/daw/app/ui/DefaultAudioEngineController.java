@@ -848,12 +848,7 @@ final class DefaultAudioEngineController implements AudioEngineController {
             }
         }
 
-        // 7. Resume in STOPPED state. Transport does NOT auto-start —
-        //    user re-arms manually, identical to the onDeviceArrived
-        //    convention.
-        setEngineState(EngineState.STOPPED);
-
-        // 8. Surface the SRC fallback notification when the driver moved
+        // 7. Surface the SRC fallback notification when the driver moved
         //    to a rate that differs from the project's session rate.
         //    Story 126 — the engine-owned RenderPipeline consults the
         //    SampleRateConversionCache at each clip read AND at the
@@ -861,6 +856,11 @@ final class DefaultAudioEngineController implements AudioEngineController {
         //    when the driver moves to a different rate. Invalidate the
         //    cache here because a session-rate change makes every cached
         //    conversion stale (they all targeted the previous rate).
+        //
+        //    This must happen BEFORE the STOPPED transition (step 8):
+        //    observers waiting on STOPPED rely on a happens-before
+        //    guarantee that the user-facing notification AND the cache
+        //    invalidation are already in effect once STOPPED is seen.
         if (isSampleRateChange && rateActuallyDiffers) {
             int newRateKhz = (int) Math.round(proposed.get().sampleRate() / 1000.0);
             audioEngine.getSampleRateConversionCache().invalidateAll();
@@ -880,6 +880,13 @@ final class DefaultAudioEngineController implements AudioEngineController {
                 LOG.log(Level.WARNING, "NotificationManager rejected message", e);
             }
         }
+
+        // 8. Resume in STOPPED state. Transport does NOT auto-start —
+        //    user re-arms manually, identical to the onDeviceArrived
+        //    convention. This is the final step so that any observer
+        //    waiting on STOPPED has a reliable happens-before guarantee
+        //    that step 7 (notification + cache invalidation) completed.
+        setEngineState(EngineState.STOPPED);
     }
 
     /**
