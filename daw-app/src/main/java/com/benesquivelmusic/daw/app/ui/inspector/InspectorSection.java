@@ -41,7 +41,7 @@ import javafx.scene.layout.VBox;
  * {@code Region}/{@code Pane} subclass — do not force the Control/Skin
  * pattern where it adds no value".
  */
-public final class InspectorSection extends VBox {
+public class InspectorSection extends VBox {
 
     /** Stable style class — selectable as {@code .inspector-section}. */
     public static final String DEFAULT_STYLE_CLASS = "inspector-section";

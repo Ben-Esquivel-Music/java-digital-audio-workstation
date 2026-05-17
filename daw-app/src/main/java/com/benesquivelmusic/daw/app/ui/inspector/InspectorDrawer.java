@@ -387,7 +387,7 @@ public final class InspectorDrawer extends Control {
      * {@link ResourceBundle}. Falls back to the raw key if the bundle
      * does not contain a mapping (defensive against missing keys).
      */
-    static String msg(String key) {
+    public static String msg(String key) {
         try {
             return MESSAGES.getString(key);
         } catch (java.util.MissingResourceException e) {
