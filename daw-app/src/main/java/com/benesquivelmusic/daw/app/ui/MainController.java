@@ -104,6 +104,8 @@ public final class MainController {
     @FXML private HBox utilityGroup;
     @FXML private VBox trackListPanel;
     @FXML private HBox vizTileRow;
+    /** Story 272 — unified Inspector drawer on the right edge of the centre BorderPane. */
+    @FXML private com.benesquivelmusic.daw.app.ui.inspector.InspectorDrawer inspectorDrawer;
 
     private final Button browserButton = new Button("Library");
     private final Button historyButton = new Button("History");
@@ -475,6 +477,15 @@ public final class MainController {
             backupRetentionController.start();
         } catch (RuntimeException e) {
             LOG.log(Level.WARNING, "Failed to start backup retention controller", e);
+        }
+
+        // Story 272 — wire source-side typed selection events
+        // (TrackSelectionEvent / InsertSelectedEvent / SendSelectedEvent)
+        // into the unified Inspector drawer's selection model. The
+        // drawer fires InspectorSelectionEvent.SELECTION_CHANGED on the
+        // standard event dispatch chain in response.
+        if (inspectorDrawer != null && rootPane != null) {
+            inspectorDrawer.installSourceEventForwarding(rootPane);
         }
     }
 

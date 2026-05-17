@@ -3,6 +3,7 @@
 <?import javafx.geometry.Insets?>
 <?import javafx.scene.control.*?>
 <?import javafx.scene.layout.*?>
+<?import com.benesquivelmusic.daw.app.ui.inspector.InspectorDrawer?>
 <BorderPane fx:id="rootPane"
             xmlns="http://javafx.com/javafx"
             xmlns:fx="http://javafx.com/fxml"
@@ -152,6 +153,16 @@
             </HBox>
         </VBox>
     </center>
+
+    <!-- Right: Unified Inspector Drawer (UI Design Book §5.6, story 272).
+         Hosts the Track / Inserts / Sends / Routing / Notes sections.
+         Collapsible to a 24 px rail; expanded width 240 px. The drawer
+         consumes TrackSelectionEvent / InsertSelectedEvent /
+         SendSelectedEvent from the source-side controls via
+         installSourceEventForwarding(rootPane) wired in MainController. -->
+    <right>
+        <InspectorDrawer fx:id="inspectorDrawer"/>
+    </right>
 
     <!-- Bottom: Notification Bar + Status Bar -->
     <bottom>
