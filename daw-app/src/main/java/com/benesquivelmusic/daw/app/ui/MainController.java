@@ -2419,15 +2419,17 @@ public final class MainController {
         // the bundle (Skill \u00a714) already dot-prefixed; the kHz I/O figure is
         // a dynamic numeric value (\u00a75.11) so it stays a code-formatted
         // string with its own dot.
-        projectInfoLabel.setText(String.format("%s  \u00b7  %.0f kHz / %d-bit / %dch",
+        projectInfoLabel.setText(String.format(Locale.ROOT, "%s  \u00b7  %.0f kHz / %d-bit / %dch",
                 project.getName(), fmt.sampleRate() / 1000.0, fmt.bitDepth(), fmt.channels()));
         monitoringLabel.setText(switch (fmt.channels()) {
             case 1 -> MESSAGES.getString("statusbar.monitoring.mono");
             case 2 -> MESSAGES.getString("statusbar.monitoring.stereo");
-            default -> MessageFormat.format(
-                    MESSAGES.getString("statusbar.monitoring.surround"), fmt.channels());
+            default -> new MessageFormat(
+                    MESSAGES.getString("statusbar.monitoring.surround"), Locale.ROOT)
+                    .format(new Object[]{fmt.channels()});
         });
-        ioRoutingLabel.setText(String.format("\u00b7 %.0f kHz I/O", fmt.sampleRate() / 1000.0));
+        ioRoutingLabel.setText(String.format(Locale.ROOT,
+                StatusCellLabel.CELL_SEPARATOR + "%.0f kHz I/O", fmt.sampleRate() / 1000.0));
         refreshLockStatusIndicator();
     }
 

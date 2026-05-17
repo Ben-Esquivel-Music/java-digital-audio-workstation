@@ -45,6 +45,14 @@ final class StatusCellLabelTest {
     }
 
     @Test
+    void leadingDotWithoutSpaceIsNormalized() {
+        // "·Auto-save" carries the middle dot but not the required trailing
+        // space — the seam normalises it to "· Auto-save" (CELL_SEPARATOR).
+        assertThat(textAfterSet("·Auto-save"))
+                .isEqualTo(StatusCellLabel.CELL_SEPARATOR + "Auto-save");
+    }
+
+    @Test
     void blankAndNullAreLeftUntouched() {
         assertThat(textAfterSet("")).isEmpty();
         assertThat(textAfterSet("   ")).isEqualTo("   ");

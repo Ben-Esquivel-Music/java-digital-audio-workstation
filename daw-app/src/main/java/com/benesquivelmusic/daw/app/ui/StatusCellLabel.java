@@ -33,8 +33,16 @@ public final class StatusCellLabel extends Label {
 
     public StatusCellLabel() {
         textProperty().addListener((obs, old, value) -> {
-            if (value != null && !value.isBlank() && !value.startsWith("·")) {
-                setText(CELL_SEPARATOR + value);
+            if (value != null && !value.isBlank()) {
+                if (value.startsWith(CELL_SEPARATOR)) {
+                    // Already correctly prefixed — nothing to do.
+                } else if (value.startsWith("·")) {
+                    // Leading middle dot without the required trailing space —
+                    // normalize to the canonical "· " form.
+                    setText(CELL_SEPARATOR + value.substring(1).stripLeading());
+                } else {
+                    setText(CELL_SEPARATOR + value);
+                }
             }
         });
     }

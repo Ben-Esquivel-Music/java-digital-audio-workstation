@@ -790,13 +790,14 @@
 /* Prose / project-name body cell (story 274). The story says the
  * project filename uses ".body"; no .body rule existed in this file
  * and there is no .body token class — so this is the minimal
- * definition. -text colour + weight 500, NO purple accent (§5.11,
- * §7.6 project-info-purple veto). Sans family + size are inherited
- * (no override needed for the 24 px bar; mono numeric cells compose
- * .numeric-value on top, story 266 / §3.2). The old purple
+ * definition. -text colour + weight 500 + 12 px to match
+ * .numeric-value, NO purple accent (§5.11, §7.6 project-info-purple
+ * veto). Mono numeric cells compose .numeric-value on top,
+ * story 266 / §3.2). The old purple
  * .project-info-label rule was deleted (story 274). */
 .body {
     -fx-text-fill: -text;
+    -fx-font-size: 12px;
     -fx-font-weight: 500;
 }
 
