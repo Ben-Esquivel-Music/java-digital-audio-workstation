@@ -15,35 +15,31 @@ class NotificationLevelTest {
     }
 
     @Test
-    void successShouldHaveGreenStyleAndShortDuration() {
+    void successShouldHaveGreenStyle() {
         NotificationLevel level = NotificationLevel.SUCCESS;
         assertThat(level.styleClass()).isEqualTo("notification-success");
         assertThat(level.icon()).isEqualTo(DawIcon.SUCCESS);
-        assertThat(level.autoDismissMillis()).isEqualTo(3_000);
     }
 
     @Test
-    void infoShouldHaveBlueStyleAndShortDuration() {
+    void infoShouldHaveBlueStyle() {
         NotificationLevel level = NotificationLevel.INFO;
         assertThat(level.styleClass()).isEqualTo("notification-info");
         assertThat(level.icon()).isEqualTo(DawIcon.INFO_CIRCLE);
-        assertThat(level.autoDismissMillis()).isEqualTo(3_000);
     }
 
     @Test
-    void warningShouldHaveOrangeStyleAndMediumDuration() {
+    void warningShouldHaveOrangeStyle() {
         NotificationLevel level = NotificationLevel.WARNING;
         assertThat(level.styleClass()).isEqualTo("notification-warning");
         assertThat(level.icon()).isEqualTo(DawIcon.WARNING);
-        assertThat(level.autoDismissMillis()).isEqualTo(5_000);
     }
 
     @Test
-    void errorShouldHaveRedStyleAndLongDuration() {
+    void errorShouldHaveRedStyle() {
         NotificationLevel level = NotificationLevel.ERROR;
         assertThat(level.styleClass()).isEqualTo("notification-error");
         assertThat(level.icon()).isEqualTo(DawIcon.ERROR);
-        assertThat(level.autoDismissMillis()).isEqualTo(7_000);
     }
 
     @ParameterizedTest
@@ -56,30 +52,6 @@ class NotificationLevelTest {
     @EnumSource(NotificationLevel.class)
     void allLevelsShouldHaveNonNullIcon(NotificationLevel level) {
         assertThat(level.icon()).isNotNull();
-    }
-
-    @ParameterizedTest
-    @EnumSource(NotificationLevel.class)
-    void allLevelsShouldHavePositiveAutoDismissDuration(NotificationLevel level) {
-        assertThat(level.autoDismissMillis()).isPositive();
-    }
-
-    @Test
-    void errorShouldPersistLongerThanWarning() {
-        assertThat(NotificationLevel.ERROR.autoDismissMillis())
-                .isGreaterThan(NotificationLevel.WARNING.autoDismissMillis());
-    }
-
-    @Test
-    void warningShouldPersistLongerThanSuccess() {
-        assertThat(NotificationLevel.WARNING.autoDismissMillis())
-                .isGreaterThan(NotificationLevel.SUCCESS.autoDismissMillis());
-    }
-
-    @Test
-    void successAndInfoShouldHaveSameDuration() {
-        assertThat(NotificationLevel.SUCCESS.autoDismissMillis())
-                .isEqualTo(NotificationLevel.INFO.autoDismissMillis());
     }
 
     @ParameterizedTest

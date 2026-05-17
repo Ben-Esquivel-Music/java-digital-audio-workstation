@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.List;
+import java.util.Optional;
 
 import static com.benesquivelmusic.daw.app.ui.snapshot.FxSnapshotTest.runOnFxThread;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -24,6 +25,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class NotificationsSectionTest {
+
+    /**
+     * Test-local convenience for the action-less record path. Production
+     * always calls the canonical four-argument {@code record} (story 273);
+     * only tests want the short form, so the convenience lives here.
+     */
+    private static void record(NotificationHistoryService svc,
+                               NotificationLevel level,
+                               String message) {
+        svc.record(level, message, Optional.empty(), Optional.empty());
+    }
 
     @Test
     void postedNotificationsRenderNewestFirstAsPills() {
@@ -39,11 +51,11 @@ class NotificationsSectionTest {
             root.applyCss();
             root.layout();
 
-            svc.record(NotificationLevel.INFO, "first");
-            svc.record(NotificationLevel.SUCCESS, "second");
-            svc.record(NotificationLevel.WARNING, "third");
-            svc.record(NotificationLevel.ERROR, "fourth");
-            svc.record(NotificationLevel.INFO, "fifth");
+            record(svc, NotificationLevel.INFO, "first");
+            record(svc, NotificationLevel.SUCCESS, "second");
+            record(svc, NotificationLevel.WARNING, "third");
+            record(svc, NotificationLevel.ERROR, "fourth");
+            record(svc, NotificationLevel.INFO, "fifth");
 
             drawer.setExpanded(true);
             drawer.getNotificationsSection().setExpanded(true);
@@ -92,8 +104,8 @@ class NotificationsSectionTest {
             root.applyCss();
             root.layout();
 
-            svc.record(NotificationLevel.ERROR, "boom");
-            svc.record(NotificationLevel.WARNING, "warn");
+            record(svc, NotificationLevel.ERROR, "boom");
+            record(svc, NotificationLevel.WARNING, "warn");
             sizes[0] = drawer.getNotificationsSection().getPills().size();
 
             svc.clear();

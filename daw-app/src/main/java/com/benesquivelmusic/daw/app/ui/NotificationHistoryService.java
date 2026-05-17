@@ -45,17 +45,6 @@ public final class NotificationHistoryService {
     }
 
     /**
-     * Records a notification with no re-triggerable action. All levels
-     * are retained (story 273 — the history is the single log).
-     *
-     * @param level   the notification severity level
-     * @param message the notification message text
-     */
-    public void record(NotificationLevel level, String message) {
-        record(level, message, Optional.empty(), Optional.empty());
-    }
-
-    /**
      * Records a notification, optionally carrying an action so the
      * history pill can re-trigger it.
      *

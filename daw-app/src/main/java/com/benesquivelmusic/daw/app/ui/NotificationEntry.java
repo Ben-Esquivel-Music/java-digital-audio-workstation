@@ -29,18 +29,7 @@ public record NotificationEntry(Instant timestamp,
         Objects.requireNonNull(timestamp, "timestamp must not be null");
         Objects.requireNonNull(level, "level must not be null");
         Objects.requireNonNull(message, "message must not be null");
-        // Defensive: an explicitly-passed null Optional becomes empty so
-        // callers/tests built around the legacy 3-arg shape stay safe.
-        action = action == null ? Optional.empty() : action;
-        actionLabel = actionLabel == null ? Optional.empty() : actionLabel;
-    }
-
-    /**
-     * Convenience constructor for a notification with no action affordance.
-     * Preserves the legacy three-argument call shape used across existing
-     * call sites and tests.
-     */
-    public NotificationEntry(Instant timestamp, NotificationLevel level, String message) {
-        this(timestamp, level, message, Optional.empty(), Optional.empty());
+        Objects.requireNonNull(action, "action must not be null");
+        Objects.requireNonNull(actionLabel, "actionLabel must not be null");
     }
 }
