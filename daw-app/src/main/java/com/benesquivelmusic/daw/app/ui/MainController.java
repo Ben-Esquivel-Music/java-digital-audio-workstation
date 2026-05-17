@@ -999,7 +999,7 @@ public final class MainController {
 
     private void createHistoryPanelController() {
         historyPanelController = new HistoryPanelController(
-                rootPane, historyButton, notificationHistoryService,
+                rootPane, historyButton,
                 new HistoryPanelController.Host() {
                     @Override public UndoManager undoManager() { return undoManager; }
                     @Override public void updateUndoRedoState() { MainController.this.updateUndoRedoState(); }
@@ -1049,7 +1049,7 @@ public final class MainController {
                         browserPanelController.toggleBrowserPanel();
                     }
                     @Override public void onToggleHistory() { historyPanelController.toggleHistoryPanel(); }
-                    @Override public void onToggleNotificationHistory() { historyPanelController.toggleNotificationHistoryPanel(); }
+                    @Override public void onToggleNotificationHistory() { toggleNotificationHistory(); }
                     @Override public void onToggleVisualizations() { vizPanelController.toggleRowVisibility(); }
                     @Override public void onOpenSettings() { MainController.this.onOpenSettings(); }
                     @Override public void onCopy() { clipEditController.onCopy(); }
@@ -1179,6 +1179,56 @@ public final class MainController {
         notificationBar.setHistoryService(notificationHistoryService);
         notificationBarContainer.getChildren().add(notificationBar);
         HBox.setHgrow(notificationBar, Priority.ALWAYS);
+        // Story 273 — the transient toast and the inspector Notifications
+        // section share the one notification log so there is exactly one
+        // notification stream feeding both surfaces (§7.8).
+        if (inspectorDrawer != null) {
+            inspectorDrawer.setNotificationHistoryService(notificationHistoryService);
+        }
+    }
+
+    /**
+     * Reveals (or, when already shown, collapses) the inspector
+     * Notifications section — story 273 replaces the former standalone
+     * notification-history panel toggle.
+     */
+    private void toggleNotificationHistory() {
+        if (inspectorDrawer == null) {
+            return;
+        }
+        boolean alreadyShown = inspectorDrawer.isExpanded()
+                && inspectorDrawer.getNotificationsSection().isExpanded();
+        if (alreadyShown) {
+            inspectorDrawer.getNotificationsSection().setExpanded(false);
+            status("Notifications collapsed", DawIcon.BELL_RING);
+        } else {
+            inspectorDrawer.setExpanded(true);
+            inspectorDrawer.getNotificationsSection().setExpanded(true);
+            status("Notifications opened", DawIcon.BELL_RING);
+        }
+    }
+
+    /**
+     * @return whether the inspector Notifications section is currently
+     *         revealed (drawer expanded and the section expanded).
+     */
+    private boolean isNotificationHistoryVisible() {
+        return inspectorDrawer != null
+                && inspectorDrawer.isExpanded()
+                && inspectorDrawer.getNotificationsSection().isExpanded();
+    }
+
+    /** Expands or collapses the inspector Notifications section. */
+    private void setNotificationHistoryVisible(boolean visible) {
+        if (inspectorDrawer == null) {
+            return;
+        }
+        if (visible) {
+            inspectorDrawer.setExpanded(true);
+            inspectorDrawer.getNotificationsSection().setExpanded(true);
+        } else {
+            inspectorDrawer.getNotificationsSection().setExpanded(false);
+        }
     }
 
     /**
@@ -1354,9 +1404,6 @@ public final class MainController {
                 if (historyPanelController.isHistoryPanelVisible()) {
                     historyPanelController.setHistoryPanelVisible(false);
                 }
-                if (historyPanelController.isNotificationHistoryPanelVisible()) {
-                    historyPanelController.setNotificationHistoryPanelVisible(false);
-                }
             }
         });
         browserPanelController.initialize();
@@ -1466,7 +1513,7 @@ public final class MainController {
                         browserPanelController.toggleBrowserPanel();
                     }
                     @Override public void onToggleHistory() { historyPanelController.toggleHistoryPanel(); }
-                    @Override public void onToggleNotificationHistory() { historyPanelController.toggleNotificationHistoryPanel(); }
+                    @Override public void onToggleNotificationHistory() { toggleNotificationHistory(); }
                     @Override public void onToggleVisualizations() { vizPanelController.toggleRowVisibility(); }
                     @Override public void onToggleFoldFocusedTrack() { MainController.this.onToggleFoldFocusedTrack(); }
                     @Override public void onToggleFoldSelectedTracks() { MainController.this.onToggleFoldSelectedTracks(); }
@@ -1532,8 +1579,7 @@ public final class MainController {
                     case DefaultWorkspaces.PANEL_HISTORY ->
                             historyPanelController != null && historyPanelController.isHistoryPanelVisible();
                     case DefaultWorkspaces.PANEL_NOTIFICATIONS ->
-                            historyPanelController != null
-                                    && historyPanelController.isNotificationHistoryPanelVisible();
+                            isNotificationHistoryVisible();
                     case DefaultWorkspaces.PANEL_VISUALIZATIONS ->
                             vizPanelController != null
                                     && vizPanelController.isRowVisible();
@@ -1567,9 +1613,8 @@ public final class MainController {
                         }
                     }
                     case DefaultWorkspaces.PANEL_NOTIFICATIONS -> {
-                        if (historyPanelController != null
-                                && historyPanelController.isNotificationHistoryPanelVisible() != visible) {
-                            historyPanelController.toggleNotificationHistoryPanel();
+                        if (isNotificationHistoryVisible() != visible) {
+                            setNotificationHistoryVisible(visible);
                         }
                     }
                     case DefaultWorkspaces.PANEL_VISUALIZATIONS -> {

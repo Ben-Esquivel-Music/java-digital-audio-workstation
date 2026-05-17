@@ -5,22 +5,24 @@ import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 /**
  * Notification severity levels for the toast notification system.
  *
- * <p>Each level carries a distinct CSS style class, an icon from the DAW icon pack,
- * and an auto-dismiss duration. Higher-severity levels persist longer to ensure
- * the user has time to read the message.</p>
+ * <p>Each level carries a distinct CSS style class and an icon from the DAW
+ * icon pack. A per-level {@link #autoDismissMillis()} hint is retained for
+ * callers that want severity-scaled timing, but the transient toast
+ * ({@code NotificationBar}) uses a flat duration for all levels per UI
+ * Design Book §5.10 (story 273) and does not consult this value.</p>
  */
 public enum NotificationLevel {
 
-    /** Successful operation (green). Auto-dismisses after 3 seconds. */
+    /** Successful operation (green); 3 s severity hint. */
     SUCCESS("notification-success", DawIcon.SUCCESS, 3_000),
 
-    /** Informational message (blue). Auto-dismisses after 3 seconds. */
+    /** Informational message (blue); 3 s severity hint. */
     INFO("notification-info", DawIcon.INFO_CIRCLE, 3_000),
 
-    /** Warning that deserves attention (orange). Auto-dismisses after 5 seconds. */
+    /** Warning that deserves attention (orange); 5 s severity hint. */
     WARNING("notification-warning", DawIcon.WARNING, 5_000),
 
-    /** Error that requires acknowledgment (red). Auto-dismisses after 7 seconds. */
+    /** Error that requires acknowledgment (red); 7 s severity hint. */
     ERROR("notification-error", DawIcon.ERROR, 7_000);
 
     private final String styleClass;
@@ -43,7 +45,11 @@ public enum NotificationLevel {
         return icon;
     }
 
-    /** Returns the auto-dismiss duration in milliseconds. */
+    /**
+     * Returns the per-level severity-timing hint in milliseconds. Not
+     * consulted by the transient toast, which is flat per §5.10 (story
+     * 273); retained for callers that want severity-scaled timing.
+     */
     public long autoDismissMillis() {
         return autoDismissMillis;
     }

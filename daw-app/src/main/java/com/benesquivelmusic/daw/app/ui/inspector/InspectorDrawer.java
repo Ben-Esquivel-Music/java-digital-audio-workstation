@@ -1,9 +1,11 @@
 package com.benesquivelmusic.daw.app.ui.inspector;
 
+import com.benesquivelmusic.daw.app.ui.NotificationHistoryService;
 import com.benesquivelmusic.daw.app.ui.controls.MixerChannelStrip;
 import com.benesquivelmusic.daw.app.ui.controls.TrackStrip;
 import com.benesquivelmusic.daw.app.ui.inspector.sections.InsertsSection;
 import com.benesquivelmusic.daw.app.ui.inspector.sections.NotesSection;
+import com.benesquivelmusic.daw.app.ui.inspector.sections.NotificationsSection;
 import com.benesquivelmusic.daw.app.ui.inspector.sections.RoutingSection;
 import com.benesquivelmusic.daw.app.ui.inspector.sections.SendsSection;
 import com.benesquivelmusic.daw.app.ui.inspector.sections.TrackSection;
@@ -43,7 +45,7 @@ import java.util.ResourceBundle;
  *   <li><strong>Expanded</strong>: a 240 px panel with a header bar
  *       ({@code "{Track 01 — Drums}"}-style), a vertical stack of
  *       {@link InspectorSection} cards (Track / Inserts / Sends / Routing /
- *       Notes), and a 16 px right-edge gutter.</li>
+ *       Notes / Notifications), and a 16 px right-edge gutter.</li>
  *   <li>Open / close transition: 220 ms {@code EASE_OUT} per §3.5. Halves
  *       to 0 ms when {@link #animatedProperty()} is {@code false}
  *       (reduce-motion accessibility opt-out — story 279).</li>
@@ -127,6 +129,16 @@ public final class InspectorDrawer extends Control {
     private final SendsSection sendsSection;
     private final RoutingSection routingSection;
     private final NotesSection notesSection;
+    private final NotificationsSection notificationsSection;
+
+    /**
+     * Default notification log so a no-arg / FXML-loaded drawer renders
+     * standalone. {@link #setNotificationHistoryService} re-points the
+     * section at the application's shared log (story 273 — exactly one
+     * notification stream feeding both surfaces).
+     */
+    private final NotificationHistoryService defaultHistoryService =
+            new NotificationHistoryService();
 
     // ── Constructors ──────────────────────────────────────────────────────
 
@@ -145,6 +157,9 @@ public final class InspectorDrawer extends Control {
         this.sendsSection = new SendsSection(msg("inspector.section.sends"));
         this.routingSection = new RoutingSection(msg("inspector.section.routing"));
         this.notesSection = new NotesSection(msg("inspector.section.notes"));
+        this.notificationsSection =
+                new NotificationsSection(msg("inspector.section.notifications"));
+        this.notificationsSection.setHistoryService(defaultHistoryService);
 
         // Wire selection-model changes → typed inspector event so the
         // dispatch chain delivers it to any ancestor / sibling listener.
@@ -276,16 +291,29 @@ public final class InspectorDrawer extends Control {
 
     // ── Section accessors ─────────────────────────────────────────────────
 
-    public TrackSection   getTrackSection()   { return trackSection; }
-    public InsertsSection getInsertsSection() { return insertsSection; }
-    public SendsSection   getSendsSection()   { return sendsSection; }
-    public RoutingSection getRoutingSection() { return routingSection; }
-    public NotesSection   getNotesSection()   { return notesSection; }
+    public TrackSection         getTrackSection()         { return trackSection; }
+    public InsertsSection       getInsertsSection()       { return insertsSection; }
+    public SendsSection         getSendsSection()         { return sendsSection; }
+    public RoutingSection       getRoutingSection()       { return routingSection; }
+    public NotesSection         getNotesSection()         { return notesSection; }
+    public NotificationsSection getNotificationsSection() { return notificationsSection; }
 
-    /** @return the five default sections in §5.6 order. */
+    /**
+     * Re-points the Notifications section at the application's shared
+     * notification log (story 273). Called by {@code MainController} so
+     * the transient toast and the inspector history share one stream,
+     * without breaking FXML's no-arg construction.
+     *
+     * @param svc the shared notification log
+     */
+    public void setNotificationHistoryService(NotificationHistoryService svc) {
+        notificationsSection.setHistoryService(svc);
+    }
+
+    /** @return the six default sections in §5.6 order. */
     public List<InspectorSection> getSections() {
         return List.of(trackSection, insertsSection, sendsSection,
-                routingSection, notesSection);
+                routingSection, notesSection, notificationsSection);
     }
 
     // ── Styleable numeric width tokens ────────────────────────────────────

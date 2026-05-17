@@ -5,24 +5,29 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
 /**
- * In-memory store for notification history entries.
+ * In-memory store for notification history entries — the single
+ * notification log (story 273).
  *
- * <p>All notifications shown via {@link NotificationBar} are recorded here.
- * Only {@link NotificationLevel#WARNING} and {@link NotificationLevel#ERROR}
- * entries are retained for the history panel; info/success entries are
- * transient and not stored.</p>
+ * <p>Every notification shown via {@link NotificationBar} is recorded
+ * here, regardless of {@link NotificationLevel}. The transient toast and
+ * the inspector Notifications section are both derived from this one
+ * model: the toast is the <em>transient</em> surface, the section is the
+ * <em>log</em>. Only the most recent {@link #DEFAULT_MAX_ENTRIES} entries
+ * are retained; the section shows them grouped by day.</p>
  *
- * <p>Listeners are notified whenever a new entry is added so that the
- * {@link NotificationHistoryPanel} can refresh its display.</p>
+ * <p>Listeners are notified whenever a new entry is added (or when the
+ * history is cleared, signalled by a {@code null} entry) so that the
+ * inspector Notifications section can refresh its display.</p>
  */
 public final class NotificationHistoryService {
 
-    /** Default maximum number of retained history entries. */
-    static final int DEFAULT_MAX_ENTRIES = 200;
+    /** Default maximum number of retained history entries (story 273: most recent ~100). */
+    static final int DEFAULT_MAX_ENTRIES = 100;
 
     private final int maxEntries;
     private final List<NotificationEntry> entries = new ArrayList<>();
@@ -40,21 +45,34 @@ public final class NotificationHistoryService {
     }
 
     /**
-     * Records a notification. Only warnings and errors are retained in
-     * history; info/success notifications are silently ignored.
+     * Records a notification with no re-triggerable action. All levels
+     * are retained (story 273 — the history is the single log).
      *
      * @param level   the notification severity level
      * @param message the notification message text
      */
     public void record(NotificationLevel level, String message) {
+        record(level, message, Optional.empty(), Optional.empty());
+    }
+
+    /**
+     * Records a notification, optionally carrying an action so the
+     * history pill can re-trigger it.
+     *
+     * @param level       the notification severity level
+     * @param message     the notification message text
+     * @param action      optional action to re-trigger from the history pill
+     * @param actionLabel optional label for {@code action}
+     */
+    public void record(NotificationLevel level,
+                        String message,
+                        Optional<Runnable> action,
+                        Optional<String> actionLabel) {
         Objects.requireNonNull(level, "level must not be null");
         Objects.requireNonNull(message, "message must not be null");
 
-        if (level != NotificationLevel.WARNING && level != NotificationLevel.ERROR) {
-            return;
-        }
-
-        NotificationEntry entry = new NotificationEntry(Instant.now(), level, message);
+        NotificationEntry entry =
+                new NotificationEntry(Instant.now(), level, message, action, actionLabel);
         synchronized (entries) {
             entries.add(entry);
             if (entries.size() > maxEntries) {

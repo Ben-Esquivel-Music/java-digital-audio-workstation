@@ -47,17 +47,23 @@ class NotificationHistoryServiceTest {
     }
 
     @Test
-    void shouldIgnoreInfoEntries() {
+    void shouldRetainInfoEntries() {
+        // Story 273 — the history is the single notification log; all
+        // levels are retained, not just warnings/errors.
         service.record(NotificationLevel.INFO, "Informational");
 
-        assertThat(service.size()).isZero();
+        assertThat(service.size()).isEqualTo(1);
+        assertThat(service.getEntries().getFirst().level())
+                .isEqualTo(NotificationLevel.INFO);
     }
 
     @Test
-    void shouldIgnoreSuccessEntries() {
+    void shouldRetainSuccessEntries() {
         service.record(NotificationLevel.SUCCESS, "Saved ok");
 
-        assertThat(service.size()).isZero();
+        assertThat(service.size()).isEqualTo(1);
+        assertThat(service.getEntries().getFirst().level())
+                .isEqualTo(NotificationLevel.SUCCESS);
     }
 
     @Test
@@ -123,14 +129,16 @@ class NotificationHistoryServiceTest {
     }
 
     @Test
-    void shouldNotNotifyListenerForIgnoredLevels() {
+    void shouldNotifyListenerForAllLevels() {
+        // Story 273 — listeners fire for every recorded entry regardless
+        // of level (the section must show info/success too).
         AtomicInteger callCount = new AtomicInteger();
         service.addListener(_ -> callCount.incrementAndGet());
 
-        service.record(NotificationLevel.INFO, "ignored");
-        service.record(NotificationLevel.SUCCESS, "also ignored");
+        service.record(NotificationLevel.INFO, "info");
+        service.record(NotificationLevel.SUCCESS, "success");
 
-        assertThat(callCount.get()).isZero();
+        assertThat(callCount.get()).isEqualTo(2);
     }
 
     @Test
@@ -188,7 +196,8 @@ class NotificationHistoryServiceTest {
     }
 
     @Test
-    void defaultMaxEntriesShouldBe200() {
-        assertThat(NotificationHistoryService.DEFAULT_MAX_ENTRIES).isEqualTo(200);
+    void defaultMaxEntriesShouldBe100() {
+        // Story 273 — the section shows the most recent ~100.
+        assertThat(NotificationHistoryService.DEFAULT_MAX_ENTRIES).isEqualTo(100);
     }
 }
