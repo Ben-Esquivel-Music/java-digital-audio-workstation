@@ -60,6 +60,9 @@ module daw.core {
     exports com.benesquivelmusic.daw.core.audio.portaudio;
     exports com.benesquivelmusic.daw.core.audioimport;
     exports com.benesquivelmusic.daw.core.automation;
+    // Sample preview engine — surfaced to daw.app's BrowserPanel per-row
+    // audition button (story 275). Single-channel auditioner.
+    exports com.benesquivelmusic.daw.core.browser;
     exports com.benesquivelmusic.daw.core.comping;
     exports com.benesquivelmusic.daw.core.dsp;
     exports com.benesquivelmusic.daw.core.dsp.acoustics;
@@ -151,7 +154,6 @@ module daw.core {
     //   com.benesquivelmusic.daw.core.analysis.quality
     //   com.benesquivelmusic.daw.core.audio.processing
     //   com.benesquivelmusic.daw.core.audio.ringbuffer
-    //   com.benesquivelmusic.daw.core.browser
     //   com.benesquivelmusic.daw.core.clip
     //   com.benesquivelmusic.daw.core.concurrent
     //   com.benesquivelmusic.daw.core.event
