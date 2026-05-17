@@ -1,68 +1,67 @@
 package com.benesquivelmusic.daw.app.ui;
 
-import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import javafx.animation.FadeTransition;
-import javafx.animation.PauseTransition;
-import javafx.geometry.Insets;
-import javafx.geometry.Pos;
-import javafx.scene.control.Hyperlink;
-import javafx.scene.control.Label;
-import javafx.scene.layout.HBox;
-import javafx.scene.layout.Priority;
-import javafx.scene.layout.Region;
+import javafx.animation.KeyFrame;
+import javafx.animation.Timeline;
+import javafx.beans.property.BooleanProperty;
+import javafx.beans.property.SimpleBooleanProperty;
+import javafx.scene.AccessibleRole;
+import javafx.scene.layout.StackPane;
 import javafx.util.Duration;
 
+import java.util.Optional;
+
 /**
- * A toast-style notification bar that displays brief, auto-dismissing messages
- * above the status bar.
+ * The transient toast-style notification bar (UI Design Book §5.10,
+ * §7.3, story 273).
  *
- * <p>Notifications are visually distinguished by {@link NotificationLevel}:
- * green for success, blue for info, orange for warnings, and red for errors.
- * Destructive operations can include an "Undo" action link.</p>
+ * <p>A pill (not a fully-coloured banner): {@code -surface-1}
+ * background, {@code -radius-2} corners, 32 px tall, with a 4 px left
+ * bar in the level's semantic colour drawn as a {@link
+ * javafx.scene.shape.Rectangle} child (per §7.3 — not a CSS border).
+ * The visual is the shared {@link NotificationPill}; this class adds the
+ * transient behaviour: fade in / out, flat 5 s auto-dismiss per §5.10,
+ * and the trailing dismiss affordance.</p>
+ *
+ * <p>Every shown notification — all levels, with any action+label — is
+ * recorded into the {@link NotificationHistoryService}, the single log
+ * that also feeds the inspector Notifications section (§7.8 — exactly
+ * one notification stream feeding both surfaces).</p>
  *
  * <p>Usage from {@code MainController}:</p>
  * <pre>{@code
  *   notificationBar.show(NotificationLevel.SUCCESS, "Track added: Audio 1");
  *   notificationBar.show(NotificationLevel.ERROR, "Save failed: disk full");
- *   notificationBar.showWithUndo(NotificationLevel.SUCCESS, "Removed track: Audio 1", this::onUndo);
+ *   notificationBar.showWithUndo(NotificationLevel.SUCCESS, "Removed track", this::onUndo);
  * }</pre>
  */
-public final class NotificationBar extends HBox {
+public final class NotificationBar extends StackPane {
 
-    private static final double ICON_SIZE = 14;
+    /** Flat auto-dismiss for all levels per §5.10. */
+    static final long DEFAULT_AUTO_DISMISS_MS = 5_000;
+
     private static final double FADE_DURATION_MS = 200;
 
-    private final Label iconLabel = new Label();
-    private final Label messageLabel = new Label();
-    private final Hyperlink undoLink = new Hyperlink("Undo");
-    private final Label dismissButton = new Label("✕");
+    private final NotificationPill pill = new NotificationPill(true);
 
-    private PauseTransition autoDismissTimer;
+    /** Reduce-motion opt-out (story 279 binds this later — mirrors InspectorDrawer). */
+    private final BooleanProperty animated =
+            new SimpleBooleanProperty(this, "animated", true);
+
+    private Timeline dismissTimeline;
+    private FadeTransition dismissFade;
     private NotificationLevel currentLevel;
     private NotificationHistoryService historyService;
     private long autoDismissOverrideMillis = -1;
 
     public NotificationBar() {
         getStyleClass().add("notification-bar");
-        setAlignment(Pos.CENTER_LEFT);
-        setSpacing(8);
-        setPadding(new Insets(6, 16, 6, 16));
+        setAccessibleRole(AccessibleRole.NODE);
         setManaged(false);
         setVisible(false);
 
-        iconLabel.getStyleClass().add("notification-icon");
-        messageLabel.getStyleClass().add("notification-message");
-        undoLink.getStyleClass().add("notification-undo-link");
-        undoLink.setVisible(false);
-        undoLink.setManaged(false);
-
-        dismissButton.getStyleClass().add("notification-dismiss");
-        dismissButton.setOnMouseClicked(_ -> dismiss());
-
-        Region spacer = new Region();
-        HBox.setHgrow(spacer, Priority.ALWAYS);
-
-        getChildren().addAll(iconLabel, messageLabel, undoLink, spacer, dismissButton);
+        pill.installDismiss(this::dismiss);
+        getChildren().add(pill);
     }
 
     /**
@@ -72,37 +71,77 @@ public final class NotificationBar extends HBox {
      * @param message the message to display
      */
     public void show(NotificationLevel level, String message) {
-        showInternal(level, message, null);
+        showInternal(level, message, null, null);
     }
 
     /**
-     * Shows a notification with an "Undo" action link for destructive operations.
+     * Shows a notification with a borderless action affordance.
+     *
+     * @param level       the notification severity level
+     * @param message     the message to display
+     * @param actionLabel the action button label (e.g. "Configure input")
+     * @param action      the action to invoke when the button is clicked
+     */
+    public void show(NotificationLevel level, String message,
+                     String actionLabel, Runnable action) {
+        showInternal(level, message, actionLabel, action);
+    }
+
+    /**
+     * Shows a notification with an "Undo" action for destructive operations.
      *
      * @param level      the notification severity level
      * @param message    the message to display
      * @param undoAction the action to invoke when "Undo" is clicked
      */
     public void showWithUndo(NotificationLevel level, String message, Runnable undoAction) {
-        showInternal(level, message, undoAction);
+        showInternal(level, message, NotificationPill.msg("notification.action.undo"), undoAction);
     }
 
     /**
-     * Immediately dismisses the current notification with a fade-out animation.
+     * Dismisses the current notification. Animated by default (200 ms
+     * fade-out, §3.5); immediate (0 ms) when {@link #animatedProperty()}
+     * is {@code false} (story 279 reduce-motion).
      */
     public void dismiss() {
-        if (autoDismissTimer != null) {
-            autoDismissTimer.stop();
-            autoDismissTimer = null;
+        stopDismissTimeline();
+        if (!isAnimated()) {
+            stopDismissFade();
+            hideNow();
+            return;
+        }
+        // A fade-out is already in flight — don't stack a second one
+        // racing on the same node's opacity.
+        if (dismissFade != null) {
+            return;
         }
         FadeTransition fadeOut = new FadeTransition(Duration.millis(FADE_DURATION_MS), this);
         fadeOut.setFromValue(getOpacity());
         fadeOut.setToValue(0.0);
         fadeOut.setOnFinished(_ -> {
-            setVisible(false);
-            setManaged(false);
-            clearLevelStyle();
+            dismissFade = null;
+            hideNow();
         });
+        dismissFade = fadeOut;
         fadeOut.play();
+    }
+
+    private void hideNow() {
+        setVisible(false);
+        setManaged(false);
+        // Clear the level class on BOTH nodes: the bar root carries it for
+        // the `.notification-bar` CSS scope and the inner pill carries its
+        // own copy for the shared `.notification-pill` rules — independent
+        // style-class lists, so resetting the accent-bar fill needs both.
+        pill.clearLevelStyle();
+        clearLevelStyle();
+    }
+
+    private void stopDismissFade() {
+        if (dismissFade != null) {
+            dismissFade.stop();
+            dismissFade = null;
+        }
     }
 
     /**
@@ -116,12 +155,12 @@ public final class NotificationBar extends HBox {
      * Returns the currently displayed message text.
      */
     public String getMessage() {
-        return messageLabel.getText();
+        return pill.getMessage();
     }
 
     /**
-     * Sets the notification history service used to record warning and error
-     * notifications for the history panel.
+     * Sets the notification history service used to record every shown
+     * notification (story 273 — the single notification log).
      *
      * @param historyService the history service, or {@code null} to disable recording
      */
@@ -138,10 +177,10 @@ public final class NotificationBar extends HBox {
 
     /**
      * Sets a global auto-dismiss timeout override in milliseconds.
-     * When set to a positive value, this overrides the per-level default
-     * durations. Set to {@code -1} to revert to per-level defaults.
+     * When set to a positive value, this overrides the default 5 s
+     * duration. Set to {@code -1} to revert to the default.
      *
-     * @param millis the auto-dismiss timeout in milliseconds, or -1 for per-level defaults
+     * @param millis the auto-dismiss timeout in milliseconds, or -1 for the default
      */
     public void setAutoDismissMillis(long millis) {
         if (millis <= 0 && millis != -1) {
@@ -151,62 +190,80 @@ public final class NotificationBar extends HBox {
     }
 
     /**
-     * Returns the auto-dismiss timeout override, or {@code -1} if per-level defaults are used.
+     * Returns the auto-dismiss timeout override, or {@code -1} if the
+     * default 5 s duration is used.
      */
     public long getAutoDismissMillis() {
         return autoDismissOverrideMillis;
     }
 
-    private void showInternal(NotificationLevel level, String message, Runnable undoAction) {
-        // Record to history service (warnings and errors only)
+    /** @return the underlying shared pill — exposed for styling tests. */
+    public NotificationPill getPill() {
+        return pill;
+    }
+
+    // ── Reduce-motion (story 279 binds this later) ────────────────────────
+
+    public BooleanProperty animatedProperty() { return animated; }
+    public boolean isAnimated()                { return animated.get(); }
+    public void setAnimated(boolean a)         { animated.set(a); }
+
+    private void showInternal(NotificationLevel level, String message,
+                              String actionLabel, Runnable action) {
+        // Cancel any pending auto-dismiss / in-flight fade-out before
+        // scheduling a new one (a stale fade must not hide a fresh toast).
+        stopDismissTimeline();
+        stopDismissFade();
+
+        // Record into the single notification log (all levels, with the
+        // *raw* action so the history pill re-triggers only the action —
+        // a history click must not try to dismiss this transient toast).
         if (historyService != null) {
-            historyService.record(level, message);
+            historyService.record(level, message,
+                    Optional.ofNullable(action), Optional.ofNullable(actionLabel));
         }
 
-        // Cancel any pending auto-dismiss
-        if (autoDismissTimer != null) {
-            autoDismissTimer.stop();
-        }
+        // On the transient toast, clicking the action also dismisses it
+        // (story 273 §5.10 — stops & nulls the auto-dismiss Timeline via
+        // dismiss()). Dismiss *first*: if the action itself posts a new
+        // toast (e.g. Undo → "Undone"), dismissing afterwards would hide
+        // that fresh toast. The history surface keeps the unwrapped action.
+        Runnable toastAction = action == null ? null : () -> {
+            dismiss();
+            action.run();
+        };
 
-        // Update style
-        clearLevelStyle();
         currentLevel = level;
+        clearLevelStyle();
         getStyleClass().add(level.styleClass());
+        pill.apply(level, message, actionLabel, toastAction);
 
-        // Update content
-        iconLabel.setGraphic(IconNode.of(level.icon(), ICON_SIZE));
-        messageLabel.setText(message);
-
-        // Undo link
-        if (undoAction != null) {
-            undoLink.setVisible(true);
-            undoLink.setManaged(true);
-            undoLink.setOnAction(_ -> {
-                undoAction.run();
-                dismiss();
-            });
-        } else {
-            undoLink.setVisible(false);
-            undoLink.setManaged(false);
-            undoLink.setOnAction(null);
-        }
-
-        // Show with fade-in
+        // Show with fade-in.
         setVisible(true);
         setManaged(true);
-        setOpacity(0.0);
-        FadeTransition fadeIn = new FadeTransition(Duration.millis(FADE_DURATION_MS), this);
-        fadeIn.setFromValue(0.0);
-        fadeIn.setToValue(1.0);
-        fadeIn.play();
+        if (isAnimated()) {
+            setOpacity(0.0);
+            FadeTransition fadeIn = new FadeTransition(Duration.millis(FADE_DURATION_MS), this);
+            fadeIn.setFromValue(0.0);
+            fadeIn.setToValue(1.0);
+            fadeIn.play();
+        } else {
+            setOpacity(1.0);
+        }
 
-        // Schedule auto-dismiss
         long dismissMillis = autoDismissOverrideMillis > 0
                 ? autoDismissOverrideMillis
-                : level.autoDismissMillis();
-        autoDismissTimer = new PauseTransition(Duration.millis(dismissMillis));
-        autoDismissTimer.setOnFinished(_ -> dismiss());
-        autoDismissTimer.play();
+                : DEFAULT_AUTO_DISMISS_MS;
+        dismissTimeline = new Timeline(
+                new KeyFrame(Duration.millis(dismissMillis), _ -> dismiss()));
+        dismissTimeline.play();
+    }
+
+    private void stopDismissTimeline() {
+        if (dismissTimeline != null) {
+            dismissTimeline.stop();
+            dismissTimeline = null;
+        }
     }
 
     private void clearLevelStyle() {

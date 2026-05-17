@@ -1062,92 +1062,115 @@
     -fx-text-fill: -accent;
 }
 
-/* ── Notification Bar (toast notifications above status bar) ── */
-.notification-bar {
-    -fx-background-radius: 4;
-    -fx-border-radius: 4;
-    -fx-border-width: 1;
-    -fx-font-size: 12px;
-    -fx-padding: 8 16;
+/* ── Notification pill (UI Design Book §5.10, §7.3, story 273) ──
+ * Pill, not a fully-coloured banner: -surface-1 bg, -radius-2 (6 px)
+ * corners, 32 px tall, NO border, NO per-level background. The 4 px
+ * left accent bar is a drawn Rectangle child (.notification-accent-bar),
+ * coloured per level via the level style class on the root. Shared by
+ * the transient toast (.notification-bar) and the inspector history
+ * (.notification-pill) so the two surfaces never drift.
+ *
+ * Role tokens are FORWARDED onto the pill selector (-ntf-*) — the same
+ * convention as -mcs-* / -ts-* / -insp-*. Deep selectors must reference
+ * a same-selector-forwarded token, never a .root-pane token directly,
+ * so resolution survives isolated scenes and plugin-GUI windows. */
+.notification-bar,
+.notification-pill {
+    -ntf-surface-1:  -surface-1;
+    -ntf-surface-3:  -surface-3;
+    -ntf-text-hi:    -text-hi;
+    -ntf-text-mute:  -text-mute;
+    -ntf-accent:     -accent;
+    -ntf-ok:         -ok;
+    -ntf-warn:       -warn;
+    -ntf-danger:     -danger;
+
+    -fx-background-color: -ntf-surface-1;
+    -fx-background-radius: 6;
+    -fx-border-radius: 6;
+    -fx-border-width: 0;
+    -fx-min-height: 32;
+    -fx-pref-height: 32;
+    -fx-padding: 0 12 0 0;
 }
 
-.notification-success {
-    -fx-background-color: -surface-3;
-    -fx-border-color: -ok;
+/* Default (no level) accent bar fill — muted. */
+.notification-bar .notification-accent-bar,
+.notification-pill .notification-accent-bar {
+    -fx-fill: -ntf-text-mute;
 }
 
-.notification-success .notification-message {
-    -fx-text-fill: -ok;
+.notification-success .notification-accent-bar {
+    -fx-fill: -ntf-ok;
 }
 
-.notification-success .notification-icon {
-    -fx-text-fill: -ok;
+.notification-info .notification-accent-bar {
+    -fx-fill: -ntf-accent;
 }
 
-.notification-info {
-    -fx-background-color: -surface-3;
-    -fx-border-color: -accent;
+.notification-warning .notification-accent-bar {
+    -fx-fill: -ntf-warn;
 }
 
-.notification-info .notification-message {
-    -fx-text-fill: -accent;
-}
-
-.notification-info .notification-icon {
-    -fx-text-fill: -accent;
-}
-
-.notification-warning {
-    -fx-background-color: -surface-3;
-    -fx-border-color: -warn;
-}
-
-.notification-warning .notification-message {
-    -fx-text-fill: -warn;
-}
-
-.notification-warning .notification-icon {
-    -fx-text-fill: -warn;
-}
-
-.notification-error {
-    -fx-background-color: -surface-3;
-    -fx-border-color: -danger;
-}
-
-.notification-error .notification-message {
-    -fx-text-fill: -danger;
-}
-
-.notification-error .notification-icon {
-    -fx-text-fill: -danger;
+.notification-error .notification-accent-bar {
+    -fx-fill: -ntf-danger;
 }
 
 .notification-message {
-    -fx-text-fill: -text-hi;
+    -fx-text-fill: -ntf-text-hi;
     -fx-font-size: 12px;
-    -fx-font-weight: bold;
+}
+
+.notification-action {
+    -fx-background-color: transparent;
+    -fx-text-fill: -ntf-accent;
+    -fx-border-color: transparent;
+    -fx-padding: 4 8;
+}
+
+.notification-action:hover {
+    -fx-background-color: -ntf-surface-3;
 }
 
 .notification-dismiss {
-    -fx-text-fill: -text-mute;
-    -fx-font-size: 12px;
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-padding: 4;
     -fx-cursor: hand;
+    /* The close glyph is tinted in Java to this resolved -fx-text-fill
+       (NotificationPill#installDismiss) — neutral chrome, not the SVG's
+       hard-coded colour; brightens with the :hover rule below. */
+    -fx-text-fill: -ntf-text-mute;
 }
 
 .notification-dismiss:hover {
-    -fx-text-fill: -text-hi;
+    -fx-background-color: -ntf-surface-3;
+    -fx-text-fill: -ntf-text-hi;
 }
 
-.notification-undo-link {
+/* ── Notification history (inspector Notifications section) ── */
+.notification-history-day {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 10px;
+    -fx-font-weight: 600;
+    -fx-padding: 4 0 0 0;
+}
+
+.notification-history-clear {
+    -fx-background-color: transparent;
     -fx-text-fill: -accent;
-    -fx-font-size: 11px;
     -fx-border-color: transparent;
-    -fx-underline: true;
+    -fx-padding: 4 8;
+    -fx-cursor: hand;
 }
 
-.notification-undo-link:hover {
-    -fx-text-fill: -accent;
+.notification-history-clear:hover {
+    -fx-background-color: -surface-3;
+}
+
+.notification-history-scroll,
+.notification-history-scroll .viewport {
+    -fx-background-color: transparent;
 }
 
 /* ── Recording Indicator ── */
@@ -1731,4 +1754,5 @@
     -insp-text:      -text;
     -insp-text-mute: -text-mute;
     -insp-line-soft: -line-soft;
+    -insp-accent:    -accent;
 }

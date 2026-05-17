@@ -27,6 +27,7 @@
     -insp-text:        #ECECEE;
     -insp-text-mute:   #7A808C;
     -insp-line-soft:   #2A2D36;
+    -insp-accent:      #7C8CFF;
 
     -fx-background-color: -insp-surface-2;
     -fx-border-color: -insp-line-soft;
@@ -116,5 +117,98 @@
 }
 
 .inspector-drawer .inspector-scroll > .scroll-bar:vertical {
+    -fx-background-color: transparent;
+}
+
+/* ── Notification pill in the inspector Notifications section ──
+ * (UI Design Book §5.10, §7.3, story 273). Mirrors the styles.css
+ * pill rules so the inspector history and the transient toast share
+ * one visual; the inspector renders under THIS stylesheet, not
+ * styles.css, so the rules are duplicated here scoped to the drawer.
+ *
+ * Same -ntf-* forwarding convention as styles.css, but with hard-coded
+ * Palette A fallbacks (self-contained, the inspector.css convention)
+ * so the section renders correctly with NO app stylesheet loaded. */
+.inspector-drawer .notification-pill {
+    -ntf-surface-1:  #15161B;
+    -ntf-surface-3:  #272A33;
+    -ntf-text-hi:    #ECEEF2;
+    -ntf-text-mute:  #7A808C;
+    -ntf-accent:     #7C8CFF;
+    -ntf-ok:         #5BD2A0;
+    -ntf-warn:       #E6B450;
+    -ntf-danger:     #E5484D;
+
+    -fx-background-color: -ntf-surface-1;
+    -fx-background-radius: 6;
+    -fx-border-radius: 6;
+    -fx-border-width: 0;
+    -fx-min-height: 32;
+    -fx-pref-height: 32;
+    -fx-padding: 0 12 0 0;
+}
+
+.inspector-drawer .notification-pill .notification-accent-bar {
+    -fx-fill: -ntf-text-mute;
+}
+
+.inspector-drawer .notification-success .notification-accent-bar {
+    -fx-fill: -ntf-ok;
+}
+
+.inspector-drawer .notification-info .notification-accent-bar {
+    -fx-fill: -ntf-accent;
+}
+
+.inspector-drawer .notification-warning .notification-accent-bar {
+    -fx-fill: -ntf-warn;
+}
+
+.inspector-drawer .notification-error .notification-accent-bar {
+    -fx-fill: -ntf-danger;
+}
+
+.inspector-drawer .notification-message {
+    -fx-text-fill: -ntf-text-hi;
+    -fx-font-size: 12px;
+}
+
+.inspector-drawer .notification-action {
+    -fx-background-color: transparent;
+    -fx-text-fill: -ntf-accent;
+    -fx-border-color: transparent;
+    -fx-padding: 4 8;
+}
+
+.inspector-drawer .notification-action:hover {
+    /* The action button lives inside a .notification-pill which forwards
+       -ntf-surface-3; use it (not the drawer token) to match the global
+       .notification-action:hover rule so the two surfaces never drift. */
+    -fx-background-color: -ntf-surface-3;
+}
+
+.inspector-drawer .notification-history-day {
+    -fx-text-fill: -insp-text-mute;
+    -fx-font-size: 10px;
+    -fx-font-weight: 600;
+    -fx-padding: 4 0 0 0;
+}
+
+.inspector-drawer .notification-history-clear {
+    -fx-background-color: transparent;
+    /* Drawer-scoped role token (styles.css forwards -accent into it);
+       raw -accent does not resolve in the standalone user-agent scene. */
+    -fx-text-fill: -insp-accent;
+    -fx-border-color: transparent;
+    -fx-padding: 4 8;
+    -fx-cursor: hand;
+}
+
+.inspector-drawer .notification-history-clear:hover {
+    -fx-background-color: -insp-surface-3;
+}
+
+.inspector-drawer .notification-history-scroll,
+.inspector-drawer .notification-history-scroll .viewport {
     -fx-background-color: transparent;
 }

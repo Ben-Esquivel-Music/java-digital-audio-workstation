@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -19,6 +20,17 @@ class NotificationHistoryServiceTest {
         service = new NotificationHistoryService();
     }
 
+    /**
+     * Test-local convenience for the action-less record path. Production
+     * always calls the canonical four-argument {@code record} (story 273);
+     * only tests want the short form, so the convenience lives here.
+     */
+    private static void record(NotificationHistoryService svc,
+                               NotificationLevel level,
+                               String message) {
+        svc.record(level, message, Optional.empty(), Optional.empty());
+    }
+
     @Test
     void shouldStartEmpty() {
         assertThat(service.size()).isZero();
@@ -27,7 +39,7 @@ class NotificationHistoryServiceTest {
 
     @Test
     void shouldRecordWarningEntries() {
-        service.record(NotificationLevel.WARNING, "Low disk space");
+        record(service, NotificationLevel.WARNING, "Low disk space");
 
         assertThat(service.size()).isEqualTo(1);
         NotificationEntry entry = service.getEntries().getFirst();
@@ -38,7 +50,7 @@ class NotificationHistoryServiceTest {
 
     @Test
     void shouldRecordErrorEntries() {
-        service.record(NotificationLevel.ERROR, "Save failed");
+        record(service, NotificationLevel.ERROR, "Save failed");
 
         assertThat(service.size()).isEqualTo(1);
         NotificationEntry entry = service.getEntries().getFirst();
@@ -47,24 +59,30 @@ class NotificationHistoryServiceTest {
     }
 
     @Test
-    void shouldIgnoreInfoEntries() {
-        service.record(NotificationLevel.INFO, "Informational");
+    void shouldRetainInfoEntries() {
+        // Story 273 — the history is the single notification log; all
+        // levels are retained, not just warnings/errors.
+        record(service, NotificationLevel.INFO, "Informational");
 
-        assertThat(service.size()).isZero();
+        assertThat(service.size()).isEqualTo(1);
+        assertThat(service.getEntries().getFirst().level())
+                .isEqualTo(NotificationLevel.INFO);
     }
 
     @Test
-    void shouldIgnoreSuccessEntries() {
-        service.record(NotificationLevel.SUCCESS, "Saved ok");
+    void shouldRetainSuccessEntries() {
+        record(service, NotificationLevel.SUCCESS, "Saved ok");
 
-        assertThat(service.size()).isZero();
+        assertThat(service.size()).isEqualTo(1);
+        assertThat(service.getEntries().getFirst().level())
+                .isEqualTo(NotificationLevel.SUCCESS);
     }
 
     @Test
     void shouldRetainOrderOldestFirst() {
-        service.record(NotificationLevel.ERROR, "first");
-        service.record(NotificationLevel.WARNING, "second");
-        service.record(NotificationLevel.ERROR, "third");
+        record(service, NotificationLevel.ERROR, "first");
+        record(service, NotificationLevel.WARNING, "second");
+        record(service, NotificationLevel.ERROR, "third");
 
         List<NotificationEntry> entries = service.getEntries();
         assertThat(entries).hasSize(3);
@@ -76,10 +94,10 @@ class NotificationHistoryServiceTest {
     @Test
     void shouldEvictOldestWhenMaxExceeded() {
         NotificationHistoryService small = new NotificationHistoryService(3);
-        small.record(NotificationLevel.ERROR, "a");
-        small.record(NotificationLevel.ERROR, "b");
-        small.record(NotificationLevel.ERROR, "c");
-        small.record(NotificationLevel.ERROR, "d");
+        record(small, NotificationLevel.ERROR, "a");
+        record(small, NotificationLevel.ERROR, "b");
+        record(small, NotificationLevel.ERROR, "c");
+        record(small, NotificationLevel.ERROR, "d");
 
         assertThat(small.size()).isEqualTo(3);
         List<NotificationEntry> entries = small.getEntries();
@@ -90,8 +108,8 @@ class NotificationHistoryServiceTest {
 
     @Test
     void clearShouldRemoveAllEntries() {
-        service.record(NotificationLevel.ERROR, "error1");
-        service.record(NotificationLevel.WARNING, "warn1");
+        record(service, NotificationLevel.ERROR, "error1");
+        record(service, NotificationLevel.WARNING, "warn1");
         service.clear();
 
         assertThat(service.size()).isZero();
@@ -103,7 +121,7 @@ class NotificationHistoryServiceTest {
         List<NotificationEntry> received = new ArrayList<>();
         service.addListener(received::add);
 
-        service.record(NotificationLevel.ERROR, "new error");
+        record(service, NotificationLevel.ERROR, "new error");
 
         assertThat(received).hasSize(1);
         assertThat(received.getFirst().message()).isEqualTo("new error");
@@ -114,7 +132,7 @@ class NotificationHistoryServiceTest {
         List<NotificationEntry> received = new ArrayList<>();
         service.addListener(received::add);
 
-        service.record(NotificationLevel.ERROR, "error");
+        record(service, NotificationLevel.ERROR, "error");
         service.clear();
 
         assertThat(received).hasSize(2);
@@ -123,14 +141,16 @@ class NotificationHistoryServiceTest {
     }
 
     @Test
-    void shouldNotNotifyListenerForIgnoredLevels() {
+    void shouldNotifyListenerForAllLevels() {
+        // Story 273 — listeners fire for every recorded entry regardless
+        // of level (the section must show info/success too).
         AtomicInteger callCount = new AtomicInteger();
         service.addListener(_ -> callCount.incrementAndGet());
 
-        service.record(NotificationLevel.INFO, "ignored");
-        service.record(NotificationLevel.SUCCESS, "also ignored");
+        record(service, NotificationLevel.INFO, "info");
+        record(service, NotificationLevel.SUCCESS, "success");
 
-        assertThat(callCount.get()).isZero();
+        assertThat(callCount.get()).isEqualTo(2);
     }
 
     @Test
@@ -143,11 +163,11 @@ class NotificationHistoryServiceTest {
             }
         };
         service.addListener(listener);
-        service.record(NotificationLevel.ERROR, "first");
+        record(service, NotificationLevel.ERROR, "first");
         assertThat(callCount.get()).isEqualTo(1);
 
         service.removeListener(listener);
-        service.record(NotificationLevel.ERROR, "second");
+        record(service, NotificationLevel.ERROR, "second");
         assertThat(callCount.get()).isEqualTo(1);
     }
 
@@ -161,13 +181,13 @@ class NotificationHistoryServiceTest {
 
     @Test
     void shouldRejectNullLevel() {
-        assertThatThrownBy(() -> service.record(null, "msg"))
+        assertThatThrownBy(() -> record(service, null, "msg"))
                 .isInstanceOf(NullPointerException.class);
     }
 
     @Test
     void shouldRejectNullMessage() {
-        assertThatThrownBy(() -> service.record(NotificationLevel.ERROR, null))
+        assertThatThrownBy(() -> record(service, NotificationLevel.ERROR, null))
                 .isInstanceOf(NullPointerException.class);
     }
 
@@ -179,16 +199,18 @@ class NotificationHistoryServiceTest {
 
     @Test
     void getEntriesShouldReturnUnmodifiableList() {
-        service.record(NotificationLevel.ERROR, "test");
+        record(service, NotificationLevel.ERROR, "test");
         List<NotificationEntry> entries = service.getEntries();
 
-        assertThatThrownBy(() -> entries.add(
-                new NotificationEntry(java.time.Instant.now(), NotificationLevel.ERROR, "hack")))
+        assertThatThrownBy(() -> entries.add(new NotificationEntry(
+                java.time.Instant.now(), NotificationLevel.ERROR, "hack",
+                Optional.empty(), Optional.empty())))
                 .isInstanceOf(UnsupportedOperationException.class);
     }
 
     @Test
-    void defaultMaxEntriesShouldBe200() {
-        assertThat(NotificationHistoryService.DEFAULT_MAX_ENTRIES).isEqualTo(200);
+    void defaultMaxEntriesShouldBe100() {
+        // Story 273 — the section shows the most recent ~100.
+        assertThat(NotificationHistoryService.DEFAULT_MAX_ENTRIES).isEqualTo(100);
     }
 }
