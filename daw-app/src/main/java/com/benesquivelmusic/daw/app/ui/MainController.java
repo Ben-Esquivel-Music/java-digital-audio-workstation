@@ -51,6 +51,7 @@ import javafx.stage.Window;
 import javafx.util.Duration;
 
 import java.nio.file.Path;
+import java.text.MessageFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.ResourceBundle;
@@ -2413,13 +2414,19 @@ public final class MainController {
     private void updateProjectInfo() {
         AudioFormat fmt = project.getFormat();
         // Story 274 \u2014 projectInfoLabel is the FIRST status-bar cell, so it
-        // carries NO leading "\u00b7 " dot. Every later dynamic cell gets the
-        // "\u00b7 " prefix (the dot is part of the text \u2014 JavaFX CSS has no
-        // :first-child, story \u00a76 / Skill \u00a715).
+        // carries NO leading "\u00b7 " dot (JavaFX CSS has no :first-child, \u00a76).
+        // Later non-first cells carry it: monitoring chrome words come from
+        // the bundle (Skill \u00a714) already dot-prefixed; the kHz I/O figure is
+        // a dynamic numeric value (\u00a75.11) so it stays a code-formatted
+        // string with its own dot.
         projectInfoLabel.setText(String.format("%s  \u00b7  %.0f kHz / %d-bit / %dch",
                 project.getName(), fmt.sampleRate() / 1000.0, fmt.bitDepth(), fmt.channels()));
-        monitoringLabel.setText("\u00b7 " + switch (fmt.channels()) {
-            case 1 -> "Mono"; case 2 -> "Stereo"; default -> fmt.channels() + "ch Surround"; });
+        monitoringLabel.setText(switch (fmt.channels()) {
+            case 1 -> MESSAGES.getString("statusbar.monitoring.mono");
+            case 2 -> MESSAGES.getString("statusbar.monitoring.stereo");
+            default -> MessageFormat.format(
+                    MESSAGES.getString("statusbar.monitoring.surround"), fmt.channels());
+        });
         ioRoutingLabel.setText(String.format("\u00b7 %.0f kHz I/O", fmt.sampleRate() / 1000.0));
         refreshLockStatusIndicator();
     }
@@ -2481,11 +2488,13 @@ public final class MainController {
     }
 
     private void updateCheckpointStatus() {
-        // Story 274 — both are dot-prefixed status-bar cells (not the
-        // first cell). Keeps the existing semantics (checkpointLabel =
-        // autosave on/off; ioRoutingLabel = transient I/O init message).
-        checkpointLabel.setText("· Auto-save: ON");
-        ioRoutingLabel.setText("· Initializing I/O...");
+        // Story 274 — static chrome strings from the bundle (Skill §14).
+        // checkpointLabel = autosave state; ioRoutingLabel = transient I/O
+        // init message. Both are non-first cells, dot-prefixed in the
+        // bundle value (checkpointLabel is also a StatusCellLabel, which
+        // re-asserts the dot for its ~30 dynamic writers).
+        checkpointLabel.setText(MESSAGES.getString("statusbar.autosave.on"));
+        ioRoutingLabel.setText(MESSAGES.getString("statusbar.io.initializing"));
     }
 
     private void updateArrangementPlaceholder() {

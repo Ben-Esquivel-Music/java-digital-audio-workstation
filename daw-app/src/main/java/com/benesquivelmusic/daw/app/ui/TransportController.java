@@ -303,7 +303,9 @@ final class TransportController {
         host.stopTimeTicker();
         updateStatus();
         timeDisplay.setText("00:00:00.0");
-        if (statusBarLabel.getText() == null || !statusBarLabel.getText().startsWith("Recording stopped")) {
+        // contains (not startsWith): statusBarLabel is a StatusCellLabel,
+        // so getText() carries the leading "· " separator (story 274).
+        if (statusBarLabel.getText() == null || !statusBarLabel.getText().contains("Recording stopped")) {
             statusBarLabel.setText("Stopped");
         }
         statusBarLabel.setGraphic(IconNode.of(DawIcon.POWER, 12));
@@ -759,8 +761,10 @@ final class TransportController {
         if (totalNotes > 0) {
             String msg = "Recording stopped — " + totalNotes + " MIDI note"
                     + (totalNotes > 1 ? "s" : "") + " captured";
+            // contains (not startsWith): StatusCellLabel prepends "· "
+            // (story 274), so the literal would never match at offset 0.
             if (statusBarLabel.getText() == null
-                    || !statusBarLabel.getText().startsWith("Recording stopped")) {
+                    || !statusBarLabel.getText().contains("Recording stopped")) {
                 statusBarLabel.setText(msg);
             }
             notificationBar.show(NotificationLevel.SUCCESS, msg);

@@ -4,6 +4,7 @@
 <?import javafx.scene.control.*?>
 <?import javafx.scene.layout.*?>
 <?import com.benesquivelmusic.daw.app.ui.inspector.InspectorDrawer?>
+<?import com.benesquivelmusic.daw.app.ui.StatusCellLabel?>
 <BorderPane fx:id="rootPane"
             xmlns="http://javafx.com/javafx"
             xmlns:fx="http://javafx.com/fxml"
@@ -169,56 +170,21 @@
         <VBox>
             <Separator/>
             <HBox fx:id="notificationBarContainer"/>
-            <!-- Story 274 — Status bar: a single row of dot-separated cells,
-                 ZERO <Separator> nodes (UI Design Book §5.11, §7.7). The eye
-                 reads grouping from the 16 px gap (spacing="16" = -spacing-lg,
-                 story 261/264), not from drawn lines.
-
-                 Dot separators: the story's CSS :first-child / :not(:first-child)
-                 approach is impossible — JavaFX CSS has no :first-child (Skill
-                 §15, story 273 memory). The story endorses the cleaner
-                 alternative: make the "· " dot part of the cell text. Every
-                 cell after the first carries a leading "· ". For dynamic cells
-                 (projectInfoLabel/monitoringLabel/ioRoutingLabel/checkpointLabel
-                 + the placeholder cells) the controller writes the authoritative
-                 text — including the "· " prefix where needed and, for the
-                 placeholder cells, sourced from Messages.properties (Skill §14).
-                 The text="…" values below are design-time only; the controller
-                 overwrites them at runtime.
-
-                 Padding stays as numeric <Insets top=4/right=16/bottom=4/left=16>
-                 (= -spacing-xs / -spacing-lg = §5.11's 24 px height). It is NOT
-                 expressed as `-fx-padding: -spacing-xs -spacing-lg` in styles.css
-                 because JavaFX CSS has no looked-up numeric values (styles.css
-                 header lines 28-31; TokenValidationTest + MainViewFxmlSpacingTest
-                 enforce numeric FXML Insets that are multiples of 4).
-
-                 Cell arrangement (preserves every existing fx:id + semantic
-                 order — story Non-Goal "preserve existing order"):
-                   1. projectInfoLabel — project name + "· kHz / bit / ch"
-                      (.body weight-500, NO purple; carries numerics so also
-                      .numeric-value). First cell → no leading dot.
-                      LockStatusIndicator is inserted right after this at
-                      runtime by mountLockStatusIndicator() (HBox index + 1).
-                   2. monitoringLabel  — mono/stereo/surround prose (.body)
-                   3. ioRoutingLabel   — "kHz I/O" (.numeric-value); keeps its
-                      HAND cursor + click handler (installIoLatencyClickHandler)
-                   4. cpuLabel/memLabel/dskLabel — STATIC PLACEHOLDER numeric
-                      cells (.numeric-value). No live system telemetry source
-                      exists in this codebase (PerformanceMonitor tracks only
-                      audio-DSP load); live wiring is a documented follow-on.
-                   5. <Region hgrow=ALWAYS> spacer → right-aligned trailing group
-                   6. checkpointLabel — the live last-save / autosave-state
-                      cell (§5.11 right group). Existing fx:id; consumed by
-                      updateCheckpointStatus() and ProjectLifecycleController
-                      ("Saved (checkpoint #N)"). .body, dot-prefixed. NO
-                      separate last-save / autosave placeholder cells are
-                      added — checkpointLabel already IS that data, so a
-                      dead sibling would only duplicate it (story Non-Goal
-                      "only existing cells migrated").
-                   7. rippleBannerLabel — unchanged (visible/managed false).
-                   8. statusBarLabel — transport "Ready/…" status (.body),
-                      dot-prefixed at design time. -->
+            <!-- Story 274 — Status bar: one row of dot-separated cells, ZERO
+                 <Separator> nodes (UI Design Book §5.11/§7.7). Grouping reads
+                 from the 16 px gap, not drawn lines. The "· " separator is
+                 part of each non-first cell's text because JavaFX CSS has no
+                 :first-child (Skill §15). projectInfoLabel is the first cell →
+                 no leading dot. checkpointLabel/statusBarLabel are written
+                 from ~30 dynamic sites (Transport/ProjectLifecycle), so they
+                 are StatusCellLabel — the single seam that guarantees their
+                 leading "· " for every writer (idempotent). Padding stays a
+                 numeric <Insets 4/16/4/16> (= -spacing-xs/-lg, §5.11's 24 px
+                 height) because JavaFX CSS has no looked-up numeric values;
+                 TokenValidationTest + MainViewFxmlSpacingTest guard it. The
+                 text="…" values are design-time only (controller overwrites
+                 at runtime). Cell roles + order are pinned by
+                 StatusBarFxmlTest. -->
             <HBox alignment="CENTER_LEFT" spacing="16" styleClass="status-bar">
                 <padding>
                     <Insets top="4" right="16" bottom="4" left="16"/>
@@ -236,12 +202,12 @@
                 <Label fx:id="dskLabel" text="· DSK --"
                        styleClass="body, numeric-value"/>
                 <Region HBox.hgrow="ALWAYS"/>
-                <Label fx:id="checkpointLabel" text="· Auto-save: ON"
+                <StatusCellLabel fx:id="checkpointLabel" text="· Auto-save: ON"
                        styleClass="body"/>
                 <!-- Ripple-mode red banner (visible only when ripple is active) -->
                 <Label fx:id="rippleBannerLabel" text="" styleClass="ripple-banner"
                        visible="false" managed="false"/>
-                <Label fx:id="statusBarLabel" text="· Ready" styleClass="body"/>
+                <StatusCellLabel fx:id="statusBarLabel" text="· Ready" styleClass="body"/>
             </HBox>
         </VBox>
     </bottom>
