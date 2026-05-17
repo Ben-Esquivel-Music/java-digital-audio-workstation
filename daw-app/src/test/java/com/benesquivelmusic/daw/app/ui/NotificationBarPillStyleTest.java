@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import javafx.scene.Group;
+import javafx.scene.Node;
 import javafx.scene.Parent;
 import javafx.scene.Scene;
 import javafx.scene.control.Label;
@@ -9,9 +11,13 @@ import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
 import javafx.scene.paint.Paint;
 import javafx.scene.shape.Rectangle;
+import javafx.scene.shape.Shape;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static com.benesquivelmusic.daw.app.ui.snapshot.FxSnapshotTest.runOnFxThread;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,6 +40,7 @@ class NotificationBarPillStyleTest {
         Color[] result = new Color[3]; // [0]=bar bg, [1]=accent fill, [2]=msg text
         Color[] expected = new Color[3]; // [0]=-surface-1, [1]=-warn, [2]=-text-hi
         Rectangle[] accent = new Rectangle[1];
+        List<Color> glyphColors = new ArrayList<>(); // severity glyph paints
 
         runOnFxThread(() -> {
             // Reproduce the production .root-pane anchor exactly (the
@@ -81,6 +88,7 @@ class NotificationBarPillStyleTest {
             result[1] = (Color) accent[0].getFill();
             Labeled msg = (Labeled) bar.lookup(".notification-message");
             result[2] = (Color) msg.getTextFill();
+            glyphColors.addAll(iconColors(bar.getPill().getSeverityGlyph()));
             return null;
         });
 
@@ -108,6 +116,32 @@ class NotificationBarPillStyleTest {
         assertThat(colorDistance(result[2], expected[1]))
                 .as("message text must NOT be the level colour (-warn)")
                 .isGreaterThan(0.05);
+
+        // §5.10 — the severity glyph is tinted to MATCH the accent bar
+        // (-warn), not left on the icon SVG's hard-coded colour. Guards
+        // review S2: the same-level re-show / listener-never-fires path.
+        assertThat(glyphColors).as("severity glyph must have visible paints").isNotEmpty();
+        for (Color c : glyphColors) {
+            assertColorEquals(c, expected[1], "severity glyph paint must be -warn");
+        }
+    }
+
+    /** Every non-transparent stroke/fill {@link Color} in an icon group. */
+    private static List<Color> iconColors(Node icon) {
+        List<Color> colors = new ArrayList<>();
+        if (icon instanceof Group group) {
+            for (Node child : group.getChildren()) {
+                colors.addAll(iconColors(child));
+            }
+        } else if (icon instanceof Shape shape) {
+            if (shape.getStroke() instanceof Color s) {
+                colors.add(s);
+            }
+            if (shape.getFill() instanceof Color f && !Color.TRANSPARENT.equals(f)) {
+                colors.add(f);
+            }
+        }
+        return colors;
     }
 
     private static void assertColorEquals(Color got, Color want, String desc) {

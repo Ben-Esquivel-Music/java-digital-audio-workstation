@@ -1196,14 +1196,11 @@ public final class MainController {
         if (inspectorDrawer == null) {
             return;
         }
-        boolean alreadyShown = inspectorDrawer.isExpanded()
-                && inspectorDrawer.getNotificationsSection().isExpanded();
-        if (alreadyShown) {
-            inspectorDrawer.getNotificationsSection().setExpanded(false);
+        if (isNotificationHistoryVisible()) {
+            revealNotifications(false);
             status("Notifications collapsed", DawIcon.BELL_RING);
         } else {
-            inspectorDrawer.setExpanded(true);
-            inspectorDrawer.getNotificationsSection().setExpanded(true);
+            revealNotifications(true);
             status("Notifications opened", DawIcon.BELL_RING);
         }
     }
@@ -1220,6 +1217,16 @@ public final class MainController {
 
     /** Expands or collapses the inspector Notifications section. */
     private void setNotificationHistoryVisible(boolean visible) {
+        revealNotifications(visible);
+    }
+
+    /**
+     * Single source of truth for revealing/hiding the inspector
+     * Notifications section, shared by the toggle command and
+     * workspace-restore so the two cannot drift. Expanding also expands
+     * the drawer; collapsing leaves the drawer itself untouched.
+     */
+    private void revealNotifications(boolean visible) {
         if (inspectorDrawer == null) {
             return;
         }

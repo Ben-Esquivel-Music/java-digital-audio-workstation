@@ -129,6 +129,10 @@ public final class NotificationBar extends StackPane {
     private void hideNow() {
         setVisible(false);
         setManaged(false);
+        // Clear the level class on BOTH nodes: the bar root carries it for
+        // the `.notification-bar` CSS scope and the inner pill carries its
+        // own copy for the shared `.notification-pill` rules — independent
+        // style-class lists, so resetting the accent-bar fill needs both.
         pill.clearLevelStyle();
         clearLevelStyle();
     }

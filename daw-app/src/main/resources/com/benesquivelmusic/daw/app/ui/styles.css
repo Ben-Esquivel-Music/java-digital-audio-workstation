@@ -1137,10 +1137,15 @@
     -fx-border-color: transparent;
     -fx-padding: 4;
     -fx-cursor: hand;
+    /* The close glyph is tinted in Java to this resolved -fx-text-fill
+       (NotificationPill#installDismiss) — neutral chrome, not the SVG's
+       hard-coded colour; brightens with the :hover rule below. */
+    -fx-text-fill: -ntf-text-mute;
 }
 
 .notification-dismiss:hover {
     -fx-background-color: -ntf-surface-3;
+    -fx-text-fill: -ntf-text-hi;
 }
 
 /* ── Notification history (inspector Notifications section) ── */

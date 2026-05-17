@@ -123,6 +123,13 @@ public final class NotificationPill extends StackPane {
      * Populates this pill from a history {@link NotificationEntry}. The
      * entry's action (if present) is wired to the action button so the
      * history surface can re-trigger it.
+     *
+     * <p><strong>Limitation (story 273 AC — "where the action is still
+     * valid"):</strong> the stored {@link Runnable} is re-run verbatim;
+     * there is no validity model, so a history action whose target no
+     * longer exists (e.g. a "Configure input" for a since-deleted track)
+     * executes against nothing. Tracked as a follow-up — deliberately not
+     * expanded here to keep story 273 scoped.</p>
      */
     public void setEntry(NotificationEntry entry) {
         Objects.requireNonNull(entry, "entry must not be null");
@@ -147,6 +154,14 @@ public final class NotificationPill extends StackPane {
         getStyleClass().add(level.styleClass());
 
         iconHolder.setGraphic(IconNode.of(level.icon(), GLYPH_SIZE));
+        // Resolve the accent bar's CSS fill *now* and tint deterministically.
+        // applyCss() is a no-op off-scene (the fillProperty listener still
+        // covers the off-scene→scene and theme-swap transitions), but when
+        // on-scene it forces the new level token to resolve so a re-show of
+        // the *same* level — where the fill never changes and the listener
+        // never fires — does not leave the freshly-built glyph on the SVG's
+        // hard-coded colour. (Review S2.)
+        applyCss();
         retintGlyph(accentBar.getFill());
         messageLabel.setText(message);
 
@@ -173,6 +188,15 @@ public final class NotificationPill extends StackPane {
         dismissButton.setGraphic(closeIcon);
         dismissButton.setTooltip(new Tooltip(msg("notification.dismiss")));
         dismissButton.setAccessibleText(msg("notification.dismiss"));
+        // The shared close SVG ships a hard-coded stroke; lock the glyph to
+        // the button's CSS-resolved -fx-text-fill (-ntf-text-mute, brightening
+        // to -ntf-text-hi on :hover) so the dismiss affordance is neutral
+        // chrome — never the SVG's colour — and follows a theme swap
+        // (story 277). Same resolved-CSS discipline as the severity glyph;
+        // never a hard-coded token mirror. (Review S1.)
+        dismissButton.textFillProperty().addListener(
+                (_, _, fill) -> tintIcon(closeIcon, fill));
+        tintIcon(closeIcon, dismissButton.getTextFill());
         dismissButton.setOnAction(_ -> {
             if (onDismiss != null) {
                 onDismiss.run();
@@ -201,6 +225,11 @@ public final class NotificationPill extends StackPane {
         return accentBar;
     }
 
+    /** @return the severity glyph node, or {@code null} — for styling tests. */
+    public Node getSeverityGlyph() {
+        return iconHolder.getGraphic();
+    }
+
     /** @return the action button — exposed for tests / wiring. */
     public Button getActionButton() {
         return actionButton;
@@ -220,9 +249,19 @@ public final class NotificationPill extends StackPane {
      * No-op until both a glyph and a resolved {@link Color} fill exist.
      */
     private void retintGlyph(Paint barFill) {
-        Node glyph = iconHolder.getGraphic();
-        if (glyph != null && barFill instanceof Color color) {
-            tint(glyph, color);
+        tintIcon(iconHolder.getGraphic(), barFill);
+    }
+
+    /**
+     * Tints {@code icon} to {@code paint} when both an icon and a
+     * resolved {@link Color} exist; a no-op otherwise. Locks both the
+     * severity glyph (to the accent bar's resolved fill) and the dismiss
+     * glyph (to the button's resolved {@code -fx-text-fill}) to a
+     * CSS-resolved colour — never a hard-coded token mirror.
+     */
+    private static void tintIcon(Node icon, Paint paint) {
+        if (icon != null && paint instanceof Color color) {
+            tint(icon, color);
         }
     }
 
