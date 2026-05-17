@@ -48,7 +48,7 @@ class BrowserTabIndicatorTest {
 
     @Test
     void activeTabHasAccentUnderBarPreviousDoesNot() throws Exception {
-        Rectangle[] bars = onFx(() -> {
+        Object[] bars = onFx(() -> {
             BrowserPanel panel = new BrowserPanel();
             StackPane root = new StackPane(panel);
             root.getStyleClass().add("root-pane");
@@ -69,14 +69,26 @@ class BrowserTabIndicatorTest {
             root.layout();
             root.snapshot(null, null);
 
-            return new Rectangle[] {
+            // Sibling probe for the resolved -accent token value
+            // (palette-swap safe — no hex literal pinned; survives the
+            // story-277 theme work, unlike a hard-coded #7C8CFF).
+            javafx.scene.layout.Region probe = new javafx.scene.layout.Region();
+            probe.setStyle("-fx-background-color: -accent;");
+            root.getChildren().add(probe);
+            root.applyCss();
+            root.layout();
+            Color accent = (Color) probe.getBackground().getFills().getFirst().getFill();
+
+            return new Object[] {
                     panel.getTabIndicator(BrowserSection.SAMPLES),
-                    panel.getTabIndicator(BrowserSection.FILES)
+                    panel.getTabIndicator(BrowserSection.FILES),
+                    accent
             };
         });
 
-        Rectangle active = bars[0];
-        Rectangle inactive = bars[1];
+        Rectangle active = (Rectangle) bars[0];
+        Rectangle inactive = (Rectangle) bars[1];
+        Color accent = (Color) bars[2];
 
         // §7.3 — a drawn 2 px Rectangle, unmanaged so it never reflows.
         assertThat(active).as("active tab indicator exists").isNotNull();
@@ -91,12 +103,12 @@ class BrowserTabIndicatorTest {
                 .as("indicator width hugs the tab label text (> 0)")
                 .isGreaterThan(0.0);
 
-        // The resolved fill must be the -accent token (#7C8CFF) and
-        // explicitly NOT the JavaFX default Rectangle fill (BLACK) —
-        // proving the CSS cascade drives the fill, not a coincidence.
+        // The resolved fill must be the -accent token (resolved via the
+        // sibling probe, not a pinned hex) and explicitly NOT the JavaFX
+        // default Rectangle fill (BLACK) — proving the CSS cascade
+        // drives the fill, not a coincidence.
         assertThat(active.getFill()).isInstanceOf(Color.class);
         Color fill = (Color) active.getFill();
-        Color accent = Color.web("#7C8CFF");
         assertThat(fill.getRed()).as("indicator fill red == -accent")
                 .isCloseTo(accent.getRed(), offset(0.01));
         assertThat(fill.getGreen()).as("indicator fill green == -accent")

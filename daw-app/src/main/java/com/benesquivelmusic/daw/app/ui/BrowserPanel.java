@@ -18,6 +18,7 @@ import javafx.scene.input.ClipboardContent;
 import javafx.scene.input.Dragboard;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyCombination;
+import javafx.scene.input.KeyEvent;
 import javafx.scene.input.TransferMode;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -29,6 +30,7 @@ import javafx.scene.text.Text;
 
 import java.io.File;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
@@ -106,6 +108,22 @@ public final class BrowserPanel extends VBox {
         PROJECT
     }
 
+    /**
+     * Immutable snapshot of one file-system node. The FILES model is
+     * captured once at construction (the panel's only disk I/O);
+     * {@link #rebuildFileTree(String)} prunes a filtered view from it so
+     * the persistent search query scopes the FILES tab too, without
+     * re-touching the disk (story 275, review S1). Package-private +
+     * {@code static} (records are implicitly static) so the pure
+     * {@link #buildFilteredItem} filter is unit-testable with a
+     * synthetic model — no FX scene, no real I/O.
+     */
+    record FileNode(String name, boolean directory, List<FileNode> children) {
+        FileNode {
+            children = List.copyOf(children);
+        }
+    }
+
     private final TextField searchField;
 
     private final HBox tabStrip;
@@ -115,6 +133,8 @@ public final class BrowserPanel extends VBox {
     private final Map<BrowserSection, Node> sectionContent = new EnumMap<>(BrowserSection.class);
 
     private final TreeView<String> fileSystemTree;
+    /** Captured-once FILES model the search query prunes (story 275, S1). */
+    private final FileNode fileModelRoot;
     private final ListView<String> samplesListView;
     private final ListView<String> presetsListView;
     private final ListView<String> projectFilesListView;
@@ -138,6 +158,11 @@ public final class BrowserPanel extends VBox {
      * The path currently being auditioned, or {@code null}. Used so only
      * the playing row shows the pause-circle glyph; the engine itself is
      * single-channel so at most one path is ever active.
+     *
+     * <p>TODO(027): key by the resolved {@link Path}, not the display
+     * string — once rows carry real paths (story 027) two identically
+     * named files in different folders would otherwise both show the
+     * pause glyph.</p>
      */
     private volatile String auditioningItem;
 
@@ -178,13 +203,19 @@ public final class BrowserPanel extends VBox {
         searchBar.getChildren().addAll(searchIcon, searchField);
 
         // ── Files section — file-system tree ────────────────────────────────
-        TreeItem<String> rootItem = new TreeItem<>("File System");
+        // The model is captured once (the panel's only disk I/O); the
+        // visible tree is (re)built from it by rebuildFileTree so the
+        // persistent search query can prune it without re-touching the
+        // disk (story 275, S1 — search scoped to the active tab, FILES
+        // included).
+        fileModelRoot = buildFileModel();
+        TreeItem<String> rootItem = new TreeItem<>(fileModelRoot.name());
         rootItem.setExpanded(true);
-        addUserHomeDirectories(rootItem);
         fileSystemTree = new TreeView<>(rootItem);
         fileSystemTree.setShowRoot(true);
         fileSystemTree.getStyleClass().add("browser-tree");
         VBox.setVgrow(fileSystemTree, Priority.ALWAYS);
+        rebuildFileTree("");
 
         // Enable drag-and-drop from the file tree onto the arrangement view
         // (story 197 — preserved through the story-275 refactor).
@@ -268,7 +299,7 @@ public final class BrowserPanel extends VBox {
         searchField.textProperty().addListener((obs, oldValue, newValue) -> applyFilter(newValue));
 
         // ── Ctrl+F focuses the search field while the panel is focused ──────
-        addEventHandler(javafx.scene.input.KeyEvent.KEY_PRESSED, event -> {
+        addEventHandler(KeyEvent.KEY_PRESSED, event -> {
             if (KeyCombination.keyCombination("Shortcut+F").match(event)
                     || (event.isControlDown() && event.getCode() == KeyCode.F)) {
                 searchField.requestFocus();
@@ -488,11 +519,16 @@ public final class BrowserPanel extends VBox {
         return item != null && item.equals(auditioningItem);
     }
 
-    /** Forces the list cells to re-render so audition glyphs update. */
+    /**
+     * Re-renders the visible section's list so audition glyphs update.
+     * Only the active section is on screen, so refreshing the other two
+     * is wasted work (story 275 review, N1); a hidden list re-renders
+     * from {@link #isAuditioning} the next time its section is shown.
+     */
     private void refreshListCells() {
-        samplesListView.refresh();
-        presetsListView.refresh();
-        projectFilesListView.refresh();
+        if (sectionContent.get(activeSection) instanceof ListView<?> list) {
+            list.refresh();
+        }
     }
 
     /**
@@ -659,13 +695,14 @@ public final class BrowserPanel extends VBox {
     }
 
     /**
-     * Filters the active section's list against {@code filterText}. The
-     * three {@link FilteredList}s each filter their own backing data, so
-     * the search text is naturally scoped to whichever list is showing —
-     * the presets list filters the presets index, never the samples
-     * index (story 275 — search scoped to the active tab). Filtering all
-     * three keeps the retained query consistent so a tab switch shows
-     * already-filtered results without re-typing.
+     * Applies {@code filterText} to <em>every</em> section so the
+     * persistent query is genuinely scoped to whichever tab is active
+     * (story 275, review S1). The three {@link FilteredList}s each
+     * filter their own backing data — the presets list filters the
+     * presets index, never the samples index — and the FILES tree is
+     * pruned from its captured model by {@link #rebuildFileTree}.
+     * Filtering all four keeps the retained query consistent so a tab
+     * switch shows already-filtered results without re-typing.
      */
     private void applyFilter(String filterText) {
         if (filterText == null || filterText.isBlank()) {
@@ -678,14 +715,22 @@ public final class BrowserPanel extends VBox {
             filteredPresetItems.setPredicate(item -> item.toLowerCase(Locale.ROOT).contains(lower));
             filteredProjectFileItems.setPredicate(item -> item.toLowerCase(Locale.ROOT).contains(lower));
         }
+        rebuildFileTree(filterText);
     }
 
-    private void addUserHomeDirectories(TreeItem<String> root) {
+    /**
+     * Captures the user-home audio tree once (the panel's only disk
+     * I/O). Mirrors the previous {@code addUserHomeDirectories}
+     * traversal — one directory level deep, audio files only — but
+     * yields an immutable {@link FileNode} model the search filter can
+     * prune cheaply (story 275, S1).
+     */
+    private static FileNode buildFileModel() {
+        List<FileNode> rootChildren = new ArrayList<>();
         Path userHome = Path.of(System.getProperty("user.home"));
         File homeDir = userHome.toFile();
         if (homeDir.exists() && homeDir.isDirectory()) {
-            TreeItem<String> homeItem = new TreeItem<>(homeDir.getName());
-            homeItem.setExpanded(false);
+            List<FileNode> homeChildren = new ArrayList<>();
             File[] children = homeDir.listFiles();
             if (children != null) {
                 for (File child : children) {
@@ -693,24 +738,82 @@ public final class BrowserPanel extends VBox {
                         continue;
                     }
                     if (child.isDirectory()) {
-                        TreeItem<String> dirItem = new TreeItem<>(child.getName());
-                        // Add audio files inside the directory (one level)
+                        List<FileNode> dirChildren = new ArrayList<>();
+                        // Audio files inside the directory (one level).
                         File[] grandChildren = child.listFiles();
                         if (grandChildren != null) {
                             for (File gc : grandChildren) {
                                 if (gc.isFile() && isAudioFile(gc.getName())) {
-                                    dirItem.getChildren().add(new TreeItem<>(gc.getName()));
+                                    dirChildren.add(new FileNode(gc.getName(), false, List.of()));
                                 }
                             }
                         }
-                        homeItem.getChildren().add(dirItem);
+                        homeChildren.add(new FileNode(child.getName(), true, dirChildren));
                     } else if (child.isFile() && isAudioFile(child.getName())) {
-                        homeItem.getChildren().add(new TreeItem<>(child.getName()));
+                        homeChildren.add(new FileNode(child.getName(), false, List.of()));
                     }
                 }
             }
-            root.getChildren().add(homeItem);
+            rootChildren.add(new FileNode(homeDir.getName(), true, homeChildren));
         }
+        return new FileNode("File System", true, rootChildren);
+    }
+
+    /**
+     * Rebuilds the visible FILES tree from {@link #fileModelRoot},
+     * pruned to {@code query} (story 275, S1 — the persistent search is
+     * scoped to the active tab, FILES included). A blank query restores
+     * the full collapsed tree; a non-blank query keeps only matching
+     * leaves (and their ancestor directories) and expands them so hits
+     * are visible. The "File System" root itself is never pruned, so the
+     * tree never collapses to nothing and {@code resolveTreeItemPath}'s
+     * root → home → … → leaf parent chain is preserved for drag-drop.
+     */
+    private void rebuildFileTree(String query) {
+        TreeItem<String> root = fileSystemTree.getRoot();
+        if (root == null) {
+            return;
+        }
+        String lower = (query == null) ? "" : query.toLowerCase(Locale.ROOT);
+        root.getChildren().clear();
+        for (FileNode child : fileModelRoot.children()) {
+            TreeItem<String> item = buildFilteredItem(child, lower);
+            if (item != null) {
+                root.getChildren().add(item);
+            }
+        }
+    }
+
+    /**
+     * Pure recursive filter: returns a {@link TreeItem} for {@code node}
+     * when it (or, for a directory, any descendant) matches
+     * {@code lowerQuery}, or {@code null} when it is pruned. A blank
+     * {@code lowerQuery} keeps everything with directories collapsed (as
+     * before the search wiring); a non-blank query keeps matching
+     * leaves, keeps a directory whose own name matches or that retains
+     * any child, and expands surviving directories so the hits are
+     * visible. {@code lowerQuery} must already be lower-cased
+     * ({@link Locale#ROOT}). Package-private + {@code static} so it is
+     * unit-testable with a synthetic model (no FX scene, no disk).
+     */
+    static TreeItem<String> buildFilteredItem(FileNode node, String lowerQuery) {
+        boolean searching = !lowerQuery.isEmpty();
+        boolean nameMatches = node.name().toLowerCase(Locale.ROOT).contains(lowerQuery);
+        if (!node.directory()) {
+            return (!searching || nameMatches) ? new TreeItem<>(node.name()) : null;
+        }
+        TreeItem<String> item = new TreeItem<>(node.name());
+        for (FileNode child : node.children()) {
+            TreeItem<String> childItem = buildFilteredItem(child, lowerQuery);
+            if (childItem != null) {
+                item.getChildren().add(childItem);
+            }
+        }
+        if (searching && item.getChildren().isEmpty() && !nameMatches) {
+            return null;
+        }
+        item.setExpanded(searching);
+        return item;
     }
 
     /**
@@ -787,6 +890,13 @@ public final class BrowserPanel extends VBox {
         private final Label metadataLabel = new Label();
         private final Button auditionButton = new Button();
         private final HBox layout;
+        // Cached per-cell glyphs/tooltips, swapped by reference in
+        // updateItem — never reallocated per render (refresh()/scroll
+        // fires updateItem on every cell reuse; story 275 review S3/S4).
+        private final Node playGlyph = IconNode.of(DawIcon.PLAY, AUDITION_ICON_SIZE);
+        private final Node pauseGlyph = IconNode.of(DawIcon.PAUSE_CIRCLE, AUDITION_ICON_SIZE);
+        private final Tooltip playTooltip = new Tooltip(msg("browser.audition.play"));
+        private final Tooltip pauseTooltip = new Tooltip(msg("browser.audition.stop"));
 
         BrowserRowCell() {
             getStyleClass().add("browser-list-cell");
@@ -828,12 +938,8 @@ public final class BrowserPanel extends VBox {
             auditionButton.setDisable(sampleAuditioner == null);
             if (audio) {
                 boolean playing = isAuditioning(item);
-                auditionButton.setGraphic(IconNode.of(
-                        playing ? DawIcon.PAUSE_CIRCLE : DawIcon.PLAY,
-                        AUDITION_ICON_SIZE));
-                auditionButton.setTooltip(new Tooltip(
-                        playing ? msg("browser.audition.stop")
-                                : msg("browser.audition.play")));
+                auditionButton.setGraphic(playing ? pauseGlyph : playGlyph);
+                auditionButton.setTooltip(playing ? pauseTooltip : playTooltip);
             }
             setGraphic(layout);
         }

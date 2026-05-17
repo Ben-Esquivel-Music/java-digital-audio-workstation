@@ -24,28 +24,48 @@ class BrowserSearchScopeTest {
 
     private BrowserPanel createOnFxThread() throws Exception {
         AtomicReference<BrowserPanel> ref = new AtomicReference<>();
+        AtomicReference<Throwable> err = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
             try {
                 ref.set(new BrowserPanel());
+            } catch (Throwable t) {
+                err.set(t);
             } finally {
                 latch.countDown();
             }
         });
-        latch.await(5, TimeUnit.SECONDS);
+        assertThat(latch.await(5, TimeUnit.SECONDS))
+                .as("FX construction completed within timeout")
+                .isTrue();
+        if (err.get() != null) {
+            throw new AssertionError("FX thread failed during construction", err.get());
+        }
         return ref.get();
     }
 
     private void runOnFxThread(Runnable action) throws Exception {
+        AtomicReference<Throwable> err = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
         Platform.runLater(() -> {
             try {
                 action.run();
+            } catch (Throwable t) {
+                // Assertions run on the FX thread; without this capture
+                // an AssertionError is swallowed by the FX uncaught
+                // handler while the latch still counts down, so a real
+                // failure would pass green (story 275 review TQ2).
+                err.set(t);
             } finally {
                 latch.countDown();
             }
         });
-        latch.await(5, TimeUnit.SECONDS);
+        assertThat(latch.await(5, TimeUnit.SECONDS))
+                .as("FX action completed within timeout")
+                .isTrue();
+        if (err.get() != null) {
+            throw new AssertionError("FX thread assertion failed", err.get());
+        }
     }
 
     @Test

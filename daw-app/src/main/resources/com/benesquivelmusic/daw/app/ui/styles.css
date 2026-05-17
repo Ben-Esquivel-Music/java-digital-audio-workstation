@@ -1066,6 +1066,19 @@
     -fx-background-color: transparent;
 }
 
+/* The base .dawg-button:armed/:pressed/:active accent-box fill (the
+ * "Pressed / armed / active" rule above) outweighs
+ * .browser-tab.dawg-button.active by cascade order; without this
+ * override a held/clicked tab flashes the §7.3-vetoed full -accent
+ * box. Tabs signal active state ONLY via the drawn
+ * .browser-tab-indicator bar — never a box (story 275 review S2). */
+.browser-tab.dawg-button:armed,
+.browser-tab.dawg-button:pressed,
+.browser-tab.dawg-button:active {
+    -fx-background-color: -surface-3;
+    -fx-text-fill: -text-hi;
+}
+
 /* Drawn accent bar — CSS is the single source of truth for the fill so
  * a future palette swap (story 277) recolours it with no Java change. */
 .browser-tab-indicator {
