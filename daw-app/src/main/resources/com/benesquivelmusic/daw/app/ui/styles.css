@@ -748,29 +748,57 @@
     -fx-padding: 0 4 0 4;
 }
 
-/* ── Status Bar ── */
+/* ── Status Bar (story 274 — UI Design Book §5.11) ──
+ *
+ * A single row of dot-separated cells, surface-1, top border only.
+ *
+ * Reconciliations with the story text (codebase contracts win):
+ *  • §5.11 says "-surface-1 background"; the rule previously used
+ *    -surface-bg. Story wins → -surface-1.
+ *  • The story's `-fx-padding: -spacing-xs -spacing-lg` is NOT used:
+ *    JavaFX CSS has no looked-up numeric values (file header lines
+ *    28-31). The 4 px / 16 px padding stays as a numeric <Insets>
+ *    in main-view.fxml, guarded by TokenValidationTest +
+ *    MainViewFxmlSpacingTest. So this rule sets background/border only.
+ *  • §5.11 says "all cells: -text colour". The status-bar cells get
+ *    that from .body (-text + weight 500); numeric cells compose
+ *    .numeric-value on top for mono figures. .status-bar-label is
+ *    deliberately NOT repurposed for this — it is shared with
+ *    non-status-bar UI (TrackStripController io/output/param labels),
+ *    so it is left at its original -text-mute / 11 px and the status
+ *    bar simply no longer references it (changing it here would have
+ *    silently restyled the track strip). */
 .status-bar {
-    -fx-background-color: -surface-bg;
+    -fx-background-color: -surface-1;
     -fx-border-color: -line-soft transparent transparent transparent;
     -fx-border-width: 1 0 0 0;
 }
 
+/* Shared with TrackStripController (io/output/param labels) — NOT a
+ * status-bar cell class anymore (story 274). Left at its original
+ * values; do not fold the §5.11 -text rule into it. */
 .status-bar-label {
     -fx-text-fill: -text-mute;
     -fx-font-size: 11px;
 }
 
-.checkpoint-label {
-    -fx-text-fill: -ok;
-    -fx-font-size: 11px;
-    -fx-font-weight: bold;
-}
+/* .checkpoint-label (the old green/bold autosave style) was deleted in
+ * story 274: checkpointLabel is now a plain .body status-bar cell per
+ * §5.11 ("all cells -text colour, no per-cell colour"), so the rule
+ * had no remaining consumer (FXML or Java). */
 
-.project-info-label {
-    -fx-text-fill: -accent;
-    -fx-font-size: 11px;
-    -fx-text-overrun: ellipsis;
-    -fx-max-width: 300;
+/* Prose / project-name body cell (story 274). The story says the
+ * project filename uses ".body"; no .body rule existed in this file
+ * and there is no .body token class — so this is the minimal
+ * definition. -text colour + weight 500 + 12 px to match
+ * .numeric-value, NO purple accent (§5.11, §7.6 project-info-purple
+ * veto). Mono numeric cells compose .numeric-value on top,
+ * story 266 / §3.2). The old purple
+ * .project-info-label rule was deleted (story 274). */
+.body {
+    -fx-text-fill: -text;
+    -fx-font-size: 12px;
+    -fx-font-weight: 500;
 }
 
 /* ── Separator ── */

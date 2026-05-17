@@ -4,6 +4,7 @@
 <?import javafx.scene.control.*?>
 <?import javafx.scene.layout.*?>
 <?import com.benesquivelmusic.daw.app.ui.inspector.InspectorDrawer?>
+<?import com.benesquivelmusic.daw.app.ui.StatusCellLabel?>
 <BorderPane fx:id="rootPane"
             xmlns="http://javafx.com/javafx"
             xmlns:fx="http://javafx.com/fxml"
@@ -169,31 +170,44 @@
         <VBox>
             <Separator/>
             <HBox fx:id="notificationBarContainer"/>
+            <!-- Story 274 — Status bar: one row of dot-separated cells, ZERO
+                 <Separator> nodes (UI Design Book §5.11/§7.7). Grouping reads
+                 from the 16 px gap, not drawn lines. The "· " separator is
+                 part of each non-first cell's text because JavaFX CSS has no
+                 :first-child (Skill §15). projectInfoLabel is the first cell →
+                 no leading dot. checkpointLabel/statusBarLabel are written
+                 from ~30 dynamic sites (Transport/ProjectLifecycle), so they
+                 are StatusCellLabel — the single seam that guarantees their
+                 leading "· " for every writer (idempotent). Padding stays a
+                 numeric <Insets 4/16/4/16> (= -spacing-xs/-lg, §5.11's 24 px
+                 height) because JavaFX CSS has no looked-up numeric values;
+                 TokenValidationTest + MainViewFxmlSpacingTest guard it. The
+                 text="…" values are design-time only (controller overwrites
+                 at runtime). Cell roles + order are pinned by
+                 StatusBarFxmlTest. -->
             <HBox alignment="CENTER_LEFT" spacing="16" styleClass="status-bar">
                 <padding>
                     <Insets top="4" right="16" bottom="4" left="16"/>
                 </padding>
-                <!-- projectInfoLabel and ioRoutingLabel get rewritten at runtime
-                     to "… 96 kHz / 24-bit / 8ch" and "96 kHz I/O" by
-                     MainController#applyProjectInfoLabels(...) — story 266 /
-                     §3.2 numeric class so the sample-rate / bit-depth / channel
-                     digits use tabular figures. -->
                 <Label fx:id="projectInfoLabel" text="Untitled Project  ·  96 kHz / 24-bit"
-                       styleClass="project-info-label, numeric-caption"/>
-                <Separator orientation="VERTICAL"/>
-                <Label fx:id="monitoringLabel" text="Monitoring"
-                       styleClass="status-bar-label"/>
-                <Separator orientation="VERTICAL"/>
-                <Label fx:id="ioRoutingLabel" text="I/O"
-                       styleClass="status-bar-label, numeric-caption"/>
+                       styleClass="body, numeric-value"/>
+                <Label fx:id="monitoringLabel" text="· Stereo"
+                       styleClass="body"/>
+                <Label fx:id="ioRoutingLabel" text="· 96 kHz I/O"
+                       styleClass="body, numeric-value"/>
+                <Label fx:id="cpuLabel" text="· CPU --"
+                       styleClass="body, numeric-value"/>
+                <Label fx:id="memLabel" text="· MEM --"
+                       styleClass="body, numeric-value"/>
+                <Label fx:id="dskLabel" text="· DSK --"
+                       styleClass="body, numeric-value"/>
                 <Region HBox.hgrow="ALWAYS"/>
-                <Label fx:id="checkpointLabel" text="Auto-save: ON"
-                       styleClass="checkpoint-label"/>
-                <Separator orientation="VERTICAL"/>
+                <StatusCellLabel fx:id="checkpointLabel" text="· Auto-save: ON"
+                       styleClass="body"/>
                 <!-- Ripple-mode red banner (visible only when ripple is active) -->
                 <Label fx:id="rippleBannerLabel" text="" styleClass="ripple-banner"
                        visible="false" managed="false"/>
-                <Label fx:id="statusBarLabel" text="Ready" styleClass="status-bar-label"/>
+                <StatusCellLabel fx:id="statusBarLabel" text="· Ready" styleClass="body"/>
             </HBox>
         </VBox>
     </bottom>

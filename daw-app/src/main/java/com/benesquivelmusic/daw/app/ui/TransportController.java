@@ -303,7 +303,8 @@ final class TransportController {
         host.stopTimeTicker();
         updateStatus();
         timeDisplay.setText("00:00:00.0");
-        if (statusBarLabel.getText() == null || !statusBarLabel.getText().startsWith("Recording stopped")) {
+        if (statusBarLabel.getText() == null
+                || !stripCellSeparator(statusBarLabel.getText()).startsWith("Recording stopped")) {
             statusBarLabel.setText("Stopped");
         }
         statusBarLabel.setGraphic(IconNode.of(DawIcon.POWER, 12));
@@ -760,7 +761,7 @@ final class TransportController {
             String msg = "Recording stopped — " + totalNotes + " MIDI note"
                     + (totalNotes > 1 ? "s" : "") + " captured";
             if (statusBarLabel.getText() == null
-                    || !statusBarLabel.getText().startsWith("Recording stopped")) {
+                    || !stripCellSeparator(statusBarLabel.getText()).startsWith("Recording stopped")) {
                 statusBarLabel.setText(msg);
             }
             notificationBar.show(NotificationLevel.SUCCESS, msg);
@@ -838,5 +839,15 @@ final class TransportController {
         // Wire the one-accent-at-a-time active state (UI Design Book §2.1).
         playButton.pseudoClassStateChanged(ACTIVE, state == TransportState.PLAYING);
         recordButton.pseudoClassStateChanged(ACTIVE, state == TransportState.RECORDING);
+    }
+
+    /**
+     * Strips the leading {@link StatusCellLabel#CELL_SEPARATOR} so callers
+     * can use {@code startsWith} on the raw cell text (story 274).
+     */
+    private static String stripCellSeparator(String text) {
+        return text.startsWith(StatusCellLabel.CELL_SEPARATOR)
+                ? text.substring(StatusCellLabel.CELL_SEPARATOR.length())
+                : text;
     }
 }
