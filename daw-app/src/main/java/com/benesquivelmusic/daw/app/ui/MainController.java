@@ -1423,6 +1423,9 @@ public final class MainController {
 
     private void buildBrowserPanel(boolean initiallyVisible) {
         BrowserPanel browserPanel = new BrowserPanel();
+        // Per-row audition wiring (story 275) — single-channel preview
+        // engine from daw.core (com.benesquivelmusic.daw.core.browser).
+        browserPanel.setSampleAuditioner(new SamplePreviewAuditioner());
         browserPanelController = new BrowserPanelController(browserPanel, browserButton, rootPane);
         browserPanelController.setOnVisibilityChanged(() -> {
             toolbarStateStore.saveBrowserVisible(browserPanelController.isPanelVisible());

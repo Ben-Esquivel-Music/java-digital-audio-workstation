@@ -1,13 +1,15 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.BrowserPanel.BrowserSection;
+
 import javafx.application.Platform;
-import javafx.scene.control.Tab;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -54,30 +56,40 @@ class BrowserPanelTest {
     void shouldHaveSearchField() throws Exception {
         BrowserPanel panel = createOnFxThread();
         assertThat(panel.getSearchField()).isNotNull();
-        assertThat(panel.getSearchField().getPromptText()).isEqualTo("Filter files...");
+        // story 275 — persistent search; placeholder comes from the
+        // resource bundle (browser.search.placeholder), no longer the
+        // hard-coded "Filter files...".
+        assertThat(panel.getSearchField().getPromptText())
+                .isEqualTo("Search samples and presets…");
+        assertThat(panel.getSearchField().getStyleClass()).contains("search-field");
     }
 
     @Test
-    void shouldHaveFourTabs() throws Exception {
-        BrowserPanel panel = createOnFxThread();
-        assertThat(panel.getTabPane().getTabs()).hasSize(4);
+    void shouldHaveFourSections() throws Exception {
+        // story 275 — the TabPane was replaced by a hand-built tab strip;
+        // the four BrowserSections remain (Files/Samples/Presets/Project).
+        assertThat(BrowserSection.values()).hasSize(4);
     }
 
     @Test
-    void shouldHaveExpectedTabNames() throws Exception {
-        BrowserPanel panel = createOnFxThread();
-        List<String> tabNames = panel.getTabPane().getTabs().stream()
-                .map(Tab::getText)
-                .toList();
-        assertThat(tabNames).containsExactly("Files", "Samples", "Presets", "Project");
+    void shouldHaveExpectedSectionNames() throws Exception {
+        assertThat(Arrays.stream(BrowserSection.values()).map(Enum::name).toList())
+                .containsExactly("FILES", "SAMPLES", "PRESETS", "PROJECT");
     }
 
     @Test
-    void shouldHaveNonClosableTabs() throws Exception {
+    void shouldDefaultToFilesSection() throws Exception {
         BrowserPanel panel = createOnFxThread();
-        for (Tab tab : panel.getTabPane().getTabs()) {
-            assertThat(tab.isClosable()).isFalse();
-        }
+        assertThat(panel.getActiveSection()).isEqualTo(BrowserSection.FILES);
+    }
+
+    @Test
+    void shouldSwitchActiveSection() throws Exception {
+        BrowserPanel panel = createOnFxThread();
+        runOnFxThread(() -> {
+            panel.selectSection(BrowserSection.PRESETS);
+            assertThat(panel.getActiveSection()).isEqualTo(BrowserSection.PRESETS);
+        });
     }
 
     @Test
@@ -201,39 +213,32 @@ class BrowserPanelTest {
                 .containsExactlyInAnyOrder(".wav", ".flac", ".mp3", ".aiff", ".ogg");
     }
 
+    // ── story 275 ──
+    // The shared preview control bar (previewPlayButton / StopButton /
+    // VolumeSlider / MetadataLabel / ControlBar) was removed: it was an
+    // unwired dead stub. Per-row audition replaces it; the surviving
+    // intent ("the panel exposes audition") is covered here and in
+    // BrowserRowAuditionTest.
+
     @Test
-    void shouldHavePreviewPlayButton() throws Exception {
+    void shouldExposeAuditionerSeam() throws Exception {
         BrowserPanel panel = createOnFxThread();
-        assertThat(panel.getPreviewPlayButton()).isNotNull();
-        assertThat(panel.getPreviewPlayButton().getTooltip()).isNotNull();
+        // No auditioner by default — the per-row buttons render :disabled.
+        assertThat(panel.getSampleAuditioner()).isEmpty();
     }
 
     @Test
-    void shouldHavePreviewStopButton() throws Exception {
+    void shouldAcceptInjectedAuditioner() throws Exception {
         BrowserPanel panel = createOnFxThread();
-        assertThat(panel.getPreviewStopButton()).isNotNull();
-        assertThat(panel.getPreviewStopButton().getTooltip()).isNotNull();
-    }
-
-    @Test
-    void shouldHavePreviewVolumeSlider() throws Exception {
-        BrowserPanel panel = createOnFxThread();
-        assertThat(panel.getPreviewVolumeSlider()).isNotNull();
-        assertThat(panel.getPreviewVolumeSlider().getMin()).isEqualTo(0.0);
-        assertThat(panel.getPreviewVolumeSlider().getMax()).isEqualTo(1.0);
-        assertThat(panel.getPreviewVolumeSlider().getValue()).isEqualTo(1.0);
-    }
-
-    @Test
-    void shouldHavePreviewMetadataLabel() throws Exception {
-        BrowserPanel panel = createOnFxThread();
-        assertThat(panel.getPreviewMetadataLabel()).isNotNull();
-    }
-
-    @Test
-    void shouldHavePreviewControlBar() throws Exception {
-        BrowserPanel panel = createOnFxThread();
-        assertThat(panel.getPreviewControlBar()).isNotNull();
-        assertThat(panel.getPreviewControlBar().getChildren()).isNotEmpty();
+        runOnFxThread(() -> {
+            SampleAuditioner fake = new SampleAuditioner() {
+                @Override public void play(java.nio.file.Path file) { }
+                @Override public void stop() { }
+                @Override public boolean isPlaying() { return false; }
+                @Override public void setOnPlaybackFinished(Runnable callback) { }
+            };
+            panel.setSampleAuditioner(fake);
+            assertThat(panel.getSampleAuditioner()).containsSame(fake);
+        });
     }
 }
