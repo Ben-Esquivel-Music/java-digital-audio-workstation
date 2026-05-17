@@ -52,6 +52,8 @@ import javafx.util.Duration;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Locale;
+import java.util.ResourceBundle;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.prefs.Preferences;
@@ -66,6 +68,11 @@ import java.util.prefs.Preferences;
 public final class MainController {
 
     private static final Logger LOG = Logger.getLogger(MainController.class.getName());
+
+    /** Resource bundle for status-bar chrome strings (story 274 / Skill
+     *  §14) — Locale.ROOT, mirroring NotificationPill / InspectorDrawer. */
+    private static final ResourceBundle MESSAGES = ResourceBundle.getBundle(
+            "com.benesquivelmusic.daw.app.i18n.Messages", Locale.ROOT);
 
     @FXML private BorderPane rootPane;
     @FXML private Button skipBackButton;
@@ -96,6 +103,16 @@ public final class MainController {
     @FXML private StackPane arrangementContentPane;
     @FXML private Label tracksPanelHeader;
     @FXML private Label ioRoutingLabel;
+    // Story 274 — status-bar cells. cpuLabel/memLabel/dskLabel are STATIC
+    // PLACEHOLDER cells: no system CPU/memory/disk telemetry source exists
+    // in this codebase (PerformanceMonitor tracks only audio-DSP-thread
+    // load). Their text comes from Messages.properties (Skill §14).
+    // TODO story-274 follow-on: wire cpu/mem/dsk to a real telemetry
+    // source (out of scope per story Non-Goals — no polling Service /
+    // OperatingSystemMXBean / Runtime probe is introduced here).
+    @FXML private Label cpuLabel;
+    @FXML private Label memLabel;
+    @FXML private Label dskLabel;
     @FXML private Label recIndicator;
     @FXML private HBox notificationBarContainer;
     @FXML private HBox transportGroup;
@@ -372,6 +389,7 @@ public final class MainController {
         updateProjectInfo();
         mountLockStatusIndicator();
         updateCheckpointStatus();
+        initializeStatusBarPlaceholders();
         updateUndoRedoState();
         installIoLatencyClickHandler();
         animationController.start();
@@ -2394,11 +2412,36 @@ public final class MainController {
 
     private void updateProjectInfo() {
         AudioFormat fmt = project.getFormat();
+        // Story 274 \u2014 projectInfoLabel is the FIRST status-bar cell, so it
+        // carries NO leading "\u00b7 " dot. Every later dynamic cell gets the
+        // "\u00b7 " prefix (the dot is part of the text \u2014 JavaFX CSS has no
+        // :first-child, story \u00a76 / Skill \u00a715).
         projectInfoLabel.setText(String.format("%s  \u00b7  %.0f kHz / %d-bit / %dch",
                 project.getName(), fmt.sampleRate() / 1000.0, fmt.bitDepth(), fmt.channels()));
-        monitoringLabel.setText(switch (fmt.channels()) { case 1 -> "Mono"; case 2 -> "Stereo"; default -> fmt.channels() + "ch Surround"; });
-        ioRoutingLabel.setText(String.format("%.0f kHz I/O", fmt.sampleRate() / 1000.0));
+        monitoringLabel.setText("\u00b7 " + switch (fmt.channels()) {
+            case 1 -> "Mono"; case 2 -> "Stereo"; default -> fmt.channels() + "ch Surround"; });
+        ioRoutingLabel.setText(String.format("\u00b7 %.0f kHz I/O", fmt.sampleRate() / 1000.0));
         refreshLockStatusIndicator();
+    }
+
+    /**
+     * Story 274 \u2014 fills the static placeholder status-bar cells
+     * (CPU / MEM / DSK) from {@link #MESSAGES}. These are
+     * design-time placeholders only; the bundle value is the runtime
+     * authoritative text (Skill \u00a714). Each carries its own leading "\u00b7 "
+     * dot in the bundle string because every cell after projectInfoLabel
+     * is dot-prefixed (the dot is part of the text \u2014 \u00a76).
+     *
+     * <p><b>TODO story-274 follow-on:</b> CPU / MEM / DSK have no live
+     * telemetry source today (PerformanceMonitor tracks only audio-DSP
+     * load; there is no system mem/disk probe and one is explicitly out
+     * of scope per the story Non-Goals). Wiring them to a real source is
+     * a tracked follow-on.
+     */
+    private void initializeStatusBarPlaceholders() {
+        cpuLabel.setText(MESSAGES.getString("statusbar.cpu"));
+        memLabel.setText(MESSAGES.getString("statusbar.mem"));
+        dskLabel.setText(MESSAGES.getString("statusbar.dsk"));
     }
 
     /**
@@ -2438,8 +2481,11 @@ public final class MainController {
     }
 
     private void updateCheckpointStatus() {
-        checkpointLabel.setText("Auto-save: ON");
-        ioRoutingLabel.setText("Initializing I/O...");
+        // Story 274 — both are dot-prefixed status-bar cells (not the
+        // first cell). Keeps the existing semantics (checkpointLabel =
+        // autosave on/off; ioRoutingLabel = transient I/O init message).
+        checkpointLabel.setText("· Auto-save: ON");
+        ioRoutingLabel.setText("· Initializing I/O...");
     }
 
     private void updateArrangementPlaceholder() {
