@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.sdk.visualization.WaveformData;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * GPU-accelerated waveform visualization component with smooth animations.
@@ -31,6 +32,7 @@ import javafx.scene.paint.Color;
  * integrated against {@link GpuRenderContext#deltaSeconds()} so the cursor
  * speed is correct regardless of frame rate.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class WaveformDisplay extends Region {
 
     private static final Color DEFAULT_PEAK_COLOR = Color.web("#00e5ff");

@@ -12,6 +12,7 @@ import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
 
 import java.util.Objects;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Input-signal meter column used for the second mixer-strip meter on armed
@@ -37,6 +38,7 @@ import java.util.Objects;
  * per-frame poll of {@link InputLevelMonitor#snapshot()} happens inside the
  * GpuRenderer, so there is exactly one timer per strip.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class InputMeterStrip extends Region {
 
     private static final double CLIP_LED_HEIGHT = 10.0;

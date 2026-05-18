@@ -28,6 +28,7 @@ import javafx.scene.shape.Rectangle;
 
 import java.util.List;
 import java.util.Objects;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * UI panel that displays an A/B comparison between the DAW's current Atmos
@@ -56,6 +57,7 @@ import java.util.Objects;
  * has no direct dependency on the audio engine — the embedding controller
  * pumps fresh buffers in whenever the user requests a comparison.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class AtmosAbView extends BorderPane {
 
     /** The single key used to toggle A/B monitoring. */

@@ -407,6 +407,94 @@ final class TokenValidationTest {
         }
     }
 
+    // ── Story 277 — Phase-3 token-theme overlays ─────────────────────────────
+
+    private static final String STUDIO_SLATE_RESOURCE =
+            "/com/benesquivelmusic/daw/app/ui/themes/studio-slate.css";
+    private static final String ATELIER_RESOURCE =
+            "/com/benesquivelmusic/daw/app/ui/themes/atelier.css";
+
+    /**
+     * The colour tokens every theme overlay must re-declare so it is
+     * self-contained (the {@code -font-*} tokens and the meter ramp are
+     * deliberately inherited from Palette A — see the overlay sheets;
+     * story 277 / UI Design Book §3.1).
+     */
+    private static final List<String> THEME_COLOUR_TOKENS = List.of(
+            "-surface-bg", "-surface-1", "-surface-2", "-surface-3", "-surface-overlay",
+            "-line-soft", "-line-strong", "-focus-ring",
+            "-text-hi", "-text", "-text-mute", "-text-on-accent",
+            "-accent", "-accent-soft",
+            "-ok", "-warn", "-danger");
+
+    /**
+     * Story 277 — each theme overlay re-declares <em>every</em> colour
+     * token (so a control can never resolve a Palette-A colour through a
+     * theme it was not designed for) and carries no structural CSS (only
+     * the single {@code .root-pane} token block).
+     */
+    @Test
+    void themeOverlaysReDeclareEveryColourToken() throws IOException {
+        for (String resource : List.of(STUDIO_SLATE_RESOURCE, ATELIER_RESOURCE)) {
+            String css = loadResource(resource);
+            for (String token : THEME_COLOUR_TOKENS) {
+                assertThat(css)
+                        .as("%s must re-declare colour token '%s' to be self-contained "
+                                + "(story 277 / UI_DESIGN_BOOK.md §3.1)", resource, token)
+                        .contains(token + ":");
+            }
+            // The overlay is a token sheet only: exactly one rule, and
+            // it is `.root-pane` (no structural rules — Phase 3's whole
+            // premise is that no structural CSS changes). Strip comments
+            // (DOTALL) and the single .root-pane block; nothing with a
+            // brace may remain.
+            String stripped = css
+                    .replaceAll("(?s)/\\*.*?\\*/", " ")
+                    .replaceAll("(?s)\\.root-pane\\s*\\{[^}]*\\}", "");
+            assertThat(stripped)
+                    .as("%s must contain ONLY the .root-pane token block — "
+                            + "no structural rules (story 277 / §6 Phase 3)", resource)
+                    .doesNotContain("{");
+        }
+    }
+
+    /**
+     * Story 277 — the Atelier overlay must produce a light theme: it
+     * declares the {@code #F4F4F0} warm-white surface and contains none
+     * of the Palette-A near-black surface literals
+     * ({@code #000000} / {@code #0B0B0E} / {@code #000}). The runtime
+     * counterpart (resolving the actual rendered root background through
+     * the JavaFX lookup cascade) lives in
+     * {@code com.benesquivelmusic.daw.app.ui.theme.ThemeLightnessTest};
+     * this is the toolkit-free static guard.
+     */
+    @Test
+    void atelierOverlayIsLightAndCarriesNoPaletteADarks() throws IOException {
+        String css = loadResource(ATELIER_RESOURCE).toLowerCase(java.util.Locale.ROOT);
+
+        assertThat(css.replaceAll("\\s+", " "))
+                .as("atelier.css must set the #F4F4F0 warm-white surface-bg "
+                        + "(story 277 / UI_DESIGN_BOOK.md §3.1 Palette C)")
+                .contains("-surface-bg: #f4f4f0");
+
+        for (String darkLiteral : List.of("#000000", "#0b0b0e", "#000 ", "#000;")) {
+            assertThat(css)
+                    .as("atelier.css must not reintroduce the Palette-A near-black "
+                            + "surface literal '%s' — the light theme must not render "
+                            + "any panel on the dark default (story 277 AC)", darkLiteral)
+                    .doesNotContain(darkLiteral);
+        }
+    }
+
+    private static String loadResource(String resource) throws IOException {
+        try (InputStream in = TokenValidationTest.class.getResourceAsStream(resource)) {
+            assertThat(in)
+                    .as("%s must be on the test classpath", resource)
+                    .isNotNull();
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
     private static String loadStylesheet() throws IOException {
         try (InputStream in = TokenValidationTest.class.getResourceAsStream(STYLES_CSS_RESOURCE)) {
             assertThat(in)

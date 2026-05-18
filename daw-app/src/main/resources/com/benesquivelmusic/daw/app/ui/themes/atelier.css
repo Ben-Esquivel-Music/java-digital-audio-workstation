@@ -1,0 +1,77 @@
+/*
+ * Atelier — Palette C (UI Design Book §3.1, story 277).
+ *
+ * Phase-3 token theme. This stylesheet re-declares ONLY the lookup
+ * colour tokens that styles.css's Palette A block defines. It carries
+ * NO structural rules — every Phase-1/2 control re-themes for free
+ * because the structural CSS in styles.css references these tokens by
+ * role, never by literal hex.
+ *
+ * It is layered on top of styles.css (loaded last) so its `.root-pane`
+ * lookup-colour re-declarations win the JavaFX lookup-colour cascade.
+ *
+ * A light theme done seriously — warm off-white surfaces, calm navy
+ * accent, for studios that work daylight hours (post, podcast,
+ * mastering rooms with daylight reference monitors).
+ *
+ * This file lives OUTSIDE styles.css so TokenValidationTest (which only
+ * scans styles.css) does not flag these hex values — that is correct and
+ * intended: palette literals belong in palette sheets, never in
+ * structural CSS.
+ */
+
+.root-pane {
+    -surface-bg:      #F4F4F0;
+    -surface-1:       #FFFFFF;
+    -surface-2:       #EDEDE7;
+    -surface-3:       #E3E2DA;
+    /* No per-palette value in §3.1 for surface-overlay; a light theme
+       wants a light-but-distinct modal surface (slightly off the bg so
+       a modal still reads as a separate plane). */
+    -surface-overlay: #FBFBF8;
+
+    -line-soft:       #DEDDD4;
+    -line-strong:     #C4C2B7;
+    -focus-ring:      #244B8C;
+
+    -text-hi:         #15161B;
+    -text:            #3D404A;
+    -text-mute:       #73767F;
+    /* Explicitly declared (story §Goals) — white text on the navy
+       accent. Each theme sheet is self-contained for text-on-accent
+       rather than inheriting Palette A's near-black. */
+    -text-on-accent:  #FFFFFF;
+
+    -accent:          #244B8C;
+    -accent-soft:     rgba(36, 75, 140, 0.14);
+    /* Derived from this palette's accent (Palette A pattern: glow =
+       accent at 0.3 alpha, drop-target = focus-ring at 0.25). */
+    -accent-glow:     rgba(36, 75, 140, 0.30);
+    -drop-target-bg:  rgba(36, 75, 140, 0.25);
+
+    -ok:              #3FA76A;
+    -warn:            #B57A1B;
+    -danger:          #B5273B;
+
+    /* Meter ramp deliberately NOT re-declared. Meters encode signal
+       magnitude (dBFS), not palette identity (UI Design Book §3.1 —
+       "DATA: encode magnitude, not state"). §3.1 gives no per-palette
+       B/C meter values; the Palette-A green→amber→red ramp is a
+       universal signal-level convention that reads correctly on this
+       light surface too. Inheriting it is intentional. */
+
+    /* Elevation tokens softened for a light theme. Palette A's shadows
+       are pure black at 35–55 % opacity — designed for near-black
+       surfaces. On Atelier's #F4F4F0 / #FFFFFF surfaces a 55 %-black
+       modal slab is a visible defect (reads as dirt, not depth), which
+       would fail the story's "every control re-themes correctly" AC.
+       We keep the §3.4 blur/offset geometry identical so the elevation
+       hierarchy (card < hover < popover < modal) is preserved, and
+       lower the alpha substantially so the shadow reads as soft depth
+       on a light ground. This is a scoped correctness measure, not
+       gold-plating. */
+    -elevation-1: dropshadow(gaussian, rgba(0, 0, 0, 0.12), 2, 0, 0, 1);
+    -elevation-2: dropshadow(gaussian, rgba(0, 0, 0, 0.16), 6, 0, 0, 2);
+    -elevation-3: dropshadow(gaussian, rgba(0, 0, 0, 0.20), 16, 0, 0, 6);
+    -elevation-4: dropshadow(gaussian, rgba(0, 0, 0, 0.24), 32, 0, 0, 16);
+}

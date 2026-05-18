@@ -19,6 +19,7 @@ import javafx.stage.StageStyle;
 import javafx.util.StringConverter;
 
 import java.util.function.Consumer;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Standalone floating window wrapping a {@link SpectrumDisplay}.
@@ -38,6 +39,7 @@ import java.util.function.Consumer;
  * window.updateSpectrum(spectrumData);
  * }</pre>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class SpectrumDisplayWindow {
 
     private static final double DEFAULT_WIDTH = 640;

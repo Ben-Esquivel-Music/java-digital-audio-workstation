@@ -19,6 +19,7 @@ import java.util.Objects;
  * themes ship under {@code daw-app/src/main/resources/themes/}, user
  * themes live under {@code ~/.daw/themes/}.</p>
  */
+@HardcodedColorAllowed("story 194 user-supplied JSON theme colour parser/preview - exempt by design; the hex it constructs comes from arbitrary user JSON, not the design-book palette")
 public record Theme(
         String id,
         String name,

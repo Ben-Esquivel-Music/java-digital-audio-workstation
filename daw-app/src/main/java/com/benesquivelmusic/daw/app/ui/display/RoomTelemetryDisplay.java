@@ -15,6 +15,7 @@ import javafx.scene.text.TextAlignment;
 
 import java.util.*;
 import java.util.function.BiConsumer;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Creative, animated 3D room sound wave telemetry visualizer.
@@ -46,6 +47,7 @@ import java.util.function.BiConsumer;
  * {@link GpuCanvas#setAnimated(boolean)}; call {@link #dispose()} when the
  * panel is permanently detached.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class RoomTelemetryDisplay extends Region {
 
     // ── Color palette ──────────────────────────────────────────────

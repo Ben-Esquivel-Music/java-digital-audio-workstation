@@ -32,6 +32,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Mixer channel-strip {@link Control} — the complete §5.4 signal-chain
@@ -113,6 +114,7 @@ import java.util.UUID;
  *         .build();
  * }</pre>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class MixerChannelStrip extends Control {
 
     /**

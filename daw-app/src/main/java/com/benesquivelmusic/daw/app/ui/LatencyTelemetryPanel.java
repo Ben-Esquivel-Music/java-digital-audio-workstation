@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * UI panel that surfaces plugin and track latency compensation data.
@@ -48,6 +49,7 @@ import java.util.Objects;
  * delivers on its own executor — call {@link #refresh(Mixer)} from the
  * FX thread (or hop to it) to apply a snapshot.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class LatencyTelemetryPanel extends BorderPane {
 
     /** Width of the inline sample-count bar graph, in pixels. */

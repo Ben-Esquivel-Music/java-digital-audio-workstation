@@ -20,6 +20,7 @@ import javafx.scene.paint.Color;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * JavaFX view for the built-in {@link MultibandCompressorPlugin}.
@@ -40,6 +41,7 @@ import java.util.Objects;
  * gain-reduction snapshot exposed by {@link MultibandCompressorProcessor},
  * so no locking is required.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class MultibandCompressorPluginView extends VBox {
 
     /** Maximum gain-reduction shown on the per-band meters, in dB. */

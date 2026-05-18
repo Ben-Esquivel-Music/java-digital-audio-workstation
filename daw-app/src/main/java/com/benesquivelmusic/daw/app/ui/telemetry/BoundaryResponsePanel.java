@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Compact display of the predicted Speaker Boundary Interference
@@ -34,6 +35,7 @@ import java.util.Objects;
  * <p>Computation is performed live by {@link SbirCalculator}; nothing
  * new is persisted alongside the room configuration.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class BoundaryResponsePanel extends VBox {
 
     private static final String LABEL_STYLE =

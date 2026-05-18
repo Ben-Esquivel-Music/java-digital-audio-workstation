@@ -11,6 +11,7 @@ import javafx.scene.text.Font;
 import javafx.scene.text.TextAlignment;
 
 import java.util.List;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Renders an automation lane's envelope line and breakpoint nodes onto a
@@ -26,6 +27,7 @@ import java.util.List;
  *   <li>A parameter name label at the left edge of the lane</li>
  * </ul>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 final class AutomationLaneRenderer {
 
     /** Default height in pixels for an automation lane. */

@@ -13,6 +13,7 @@ import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.TextAlignment;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Stereo correlation vectorscope / goniometer display.
@@ -39,6 +40,7 @@ import javafx.scene.text.TextAlignment;
  * mastering-techniques research (§7 — Stereo Imaging), including
  * correlation metering for mono compatibility verification.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class CorrelationDisplay extends Region {
 
     private static final Color BACKGROUND = Color.web("#0d0d1a");

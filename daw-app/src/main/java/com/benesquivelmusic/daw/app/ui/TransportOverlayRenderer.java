@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.paint.Color;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Renders transport-related full-height overlays on the arrangement
@@ -13,6 +14,7 @@ import javafx.scene.paint.Color;
  * call so the renderer can be exercised with a mock
  * {@link GraphicsContext} in unit tests.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 final class TransportOverlayRenderer {
 
     static final Color PLAYHEAD_COLOR = Color.web("#ff5555");

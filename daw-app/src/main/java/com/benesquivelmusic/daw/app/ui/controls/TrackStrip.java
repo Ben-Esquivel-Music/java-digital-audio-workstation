@@ -30,6 +30,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Track strip {@link Control} for the arrangement view's track list (and
@@ -93,6 +94,7 @@ import java.util.UUID;
  *         .build();
  * }</pre>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class TrackStrip extends Control {
 
     /** Stable style class — selectable as {@code .track-strip} in CSS. */

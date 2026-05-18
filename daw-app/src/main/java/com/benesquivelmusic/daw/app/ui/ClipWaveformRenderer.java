@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.paint.Color;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Renders a min/max-summary waveform overview inside the bounds of an
@@ -11,6 +12,7 @@ import javafx.scene.paint.Color;
  * arguments — so it can be reused across clips without retained state
  * and unit-tested with a mock {@link GraphicsContext}.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 final class ClipWaveformRenderer {
 
     static final Color WAVEFORM_COLOR = Color.web("#ffffff", 0.5);

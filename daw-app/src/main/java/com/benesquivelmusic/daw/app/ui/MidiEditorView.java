@@ -26,6 +26,7 @@ import javafx.scene.paint.Color;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * MIDI piano-roll editor view for detailed note editing.
@@ -35,6 +36,7 @@ import java.util.List;
  * (pointer, pencil, eraser). Supports note add/delete/move/resize with
  * mouse interaction and undo/redo.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 final class MidiEditorView extends VBox {
 
     private static final int PIANO_ROLL_OCTAVES = 8;

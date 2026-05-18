@@ -23,6 +23,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Objects;
 import java.util.Optional;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Modal dialog driving the "Import SOFA…" workflow for personalized HRTF
@@ -49,6 +50,7 @@ import java.util.Optional;
  */
 @com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
         "migrate to DawgDialog — story 276 follow-up")
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class HrtfProfileImportDialog extends Dialog<String> {
 
     private final HrtfImportController controller;

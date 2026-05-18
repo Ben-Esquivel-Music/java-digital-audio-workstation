@@ -1,0 +1,385 @@
+package com.benesquivelmusic.daw.app.ui.theme;
+
+import javafx.application.Platform;
+import javafx.beans.property.ObjectProperty;
+import javafx.beans.property.SimpleObjectProperty;
+import javafx.collections.ObservableList;
+import javafx.scene.Scene;
+import javafx.scene.control.DialogPane;
+
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.MissingResourceException;
+import java.util.Objects;
+import java.util.ResourceBundle;
+import java.util.prefs.Preferences;
+
+/**
+ * Phase-3 token-driven theming (UI Design Book §3.1 / §6, story 277).
+ *
+ * <p>The DAW's structural CSS ({@code styles.css}) references every
+ * colour by a semantic {@code -token} lookup, never a literal hex.
+ * Switching theme therefore means nothing more than layering a tiny
+ * stylesheet that re-declares those tokens on top of {@code styles.css};
+ * JavaFX's lookup-colour cascade does the rest and <em>every</em>
+ * Phase-1/2 control re-themes for free with no structural change.</p>
+ *
+ * <p>{@code ThemeManager} is the single source of "the ordered
+ * stylesheet URL list to apply" = base {@code styles.css} +
+ * (optionally) the active theme overlay, overlay last so it wins by
+ * author order. Both the main {@link Scene} and every dialog's own
+ * {@link DialogPane} (dialogs have a separate Scene that the main
+ * scene's sheets do not cascade into) ask {@code ThemeManager} to apply
+ * the same ordered list, so they all re-theme together.</p>
+ *
+ * <h2>Relationship to the WCAG JSON theme system (story 194)</h2>
+ *
+ * <p>This is intentionally <strong>separate</strong> from
+ * {@link ThemeRegistry} / {@link Theme} (story 194). Story 194 is a JSON
+ * theme registry whose job is WCAG contrast validation of user-supplied
+ * palettes; it persists under the {@code appearance.themeId} key. Story
+ * 277 is the token-CSS palette switch — three curated design-book
+ * palettes applied via the lookup-colour cascade — and persists under a
+ * distinct key ({@link #PREF_KEY}) in the <em>same</em>
+ * {@link Preferences} store. The two systems do not share state by
+ * design: one validates arbitrary user colour for accessibility, the
+ * other swaps the three canonical design-book palettes.</p>
+ *
+ * <h2>Threading</h2>
+ *
+ * <p>The active-theme {@link ObjectProperty} and scene/dialog-pane
+ * registration are JavaFX-thread state and must be touched on the FX
+ * application thread (re-application schedules itself via
+ * {@link Platform#runLater} when called off-thread). Persistence and
+ * construction are toolkit-free so {@code ThemeManager} can be
+ * unit-tested without a running toolkit.</p>
+ */
+public final class ThemeManager {
+
+    /**
+     * The token-CSS theme. Each constant carries the classpath resource
+     * of the overlay stylesheet that re-declares the Palette-A tokens
+     * ({@code null} for {@link #ONYX_REFINED}, which <em>is</em> the
+     * Palette-A baseline already in {@code styles.css}) and the
+     * {@code Messages.properties} key for its display name (Skill §14).
+     */
+    public enum Theme {
+
+        /**
+         * Palette A — "Onyx Refined" (default). The baseline palette is
+         * declared directly in {@code styles.css}; no overlay is needed.
+         */
+        ONYX_REFINED(null, "appearance.theme.onyxRefined"),
+
+        /** Palette B — "Studio Slate" (dark, monochrome + warm accent). */
+        STUDIO_SLATE("themes/studio-slate.css", "appearance.theme.studioSlate"),
+
+        /** Palette C — "Atelier" (light, navy accent). */
+        ATELIER("themes/atelier.css", "appearance.theme.atelier");
+
+        private final String overlayResource;
+        private final String displayNameKey;
+
+        Theme(String overlayResource, String displayNameKey) {
+            this.overlayResource = overlayResource;
+            this.displayNameKey = displayNameKey;
+        }
+
+        /**
+         * @return the overlay stylesheet classpath resource (relative to
+         *         the {@code ui} package), or {@code null} for the
+         *         baseline {@link #ONYX_REFINED}
+         */
+        String overlayResource() {
+            return overlayResource;
+        }
+
+        /** @return the {@code Messages.properties} display-name key */
+        public String displayNameKey() {
+            return displayNameKey;
+        }
+    }
+
+    /**
+     * The default active theme for an unknown / missing / unreadable
+     * persisted value — Palette A, the design-book default.
+     */
+    public static final Theme DEFAULT_THEME = Theme.ONYX_REFINED;
+
+    /**
+     * Preferences key under which the active token theme is persisted.
+     *
+     * <p>Deliberately distinct from {@code SettingsModel.KEY_THEME_ID}
+     * ({@code "appearance.themeId"}), which belongs to story 194's JSON
+     * {@link ThemeRegistry}. The two theme systems are separate by
+     * design (see the class Javadoc) and must not share a key.</p>
+     */
+    public static final String PREF_KEY = "appearance.tokenTheme";
+
+    /** Base structural stylesheet — always first in the applied list. */
+    private static final String BASE_STYLESHEET = "styles.css";
+
+    private static final ResourceBundle MESSAGES = ResourceBundle.getBundle(
+            "com.benesquivelmusic.daw.app.i18n.Messages", Locale.ROOT);
+
+    /**
+     * Process-wide default instance, backed by the same per-package
+     * {@link Preferences} node the rest of the UI uses
+     * ({@code Preferences.userNodeForPackage}). There is no DI container;
+     * {@code DarkThemeHelper} (the deprecated shim) and {@code
+     * SettingsDialog} consult this so dialogs and the Appearance tab
+     * re-theme without threading a {@code ThemeManager} through every
+     * call site.
+     */
+    private static final ThemeManager DEFAULT =
+            new ThemeManager(Preferences.userNodeForPackage(ThemeManager.class));
+
+    private final Preferences prefs;
+    private final ObjectProperty<Theme> activeTheme;
+
+    /** Scenes/dialog-panes to re-style when the active theme changes. */
+    private final List<Scene> scenes = new ArrayList<>();
+    private final List<DialogPane> dialogPanes = new ArrayList<>();
+
+    private volatile String resolvedBaseUrl;
+
+    /**
+     * Creates a {@code ThemeManager} backed by the given preferences
+     * node, restoring the persisted active theme (defaulting to
+     * {@link #DEFAULT_THEME} for a missing/unknown value) and persisting
+     * any subsequent change to the active-theme property.
+     *
+     * @param prefs the backing preferences node (must not be {@code null})
+     */
+    public ThemeManager(Preferences prefs) {
+        this.prefs = Objects.requireNonNull(prefs, "prefs must not be null");
+        this.activeTheme = new SimpleObjectProperty<>(this, "activeTheme", restore());
+        this.activeTheme.addListener((_, _, newTheme) -> {
+            persist(newTheme);
+            reapplyAll();
+        });
+    }
+
+    /**
+     * @return the process-wide default {@code ThemeManager} (persists to
+     *         {@code Preferences.userNodeForPackage(ThemeManager.class)})
+     */
+    public static ThemeManager getDefault() {
+        return DEFAULT;
+    }
+
+    // ── Active theme ─────────────────────────────────────────────────────────
+
+    /**
+     * The active token theme. Setting it persists the choice and
+     * re-applies the new overlay to every registered scene/dialog-pane
+     * (so the UI updates with no restart).
+     *
+     * @return the observable active-theme property
+     */
+    public ObjectProperty<Theme> activeThemeProperty() {
+        return activeTheme;
+    }
+
+    /** @return the current active theme (never {@code null}). */
+    public Theme getActiveTheme() {
+        return activeTheme.get();
+    }
+
+    /**
+     * Sets the active theme. Equivalent to
+     * {@code activeThemeProperty().set(theme)}.
+     *
+     * @param theme the new active theme (must not be {@code null})
+     */
+    public void setActiveTheme(Theme theme) {
+        activeTheme.set(Objects.requireNonNull(theme, "theme must not be null"));
+    }
+
+    // ── Application ──────────────────────────────────────────────────────────
+
+    /**
+     * Applies the ordered stylesheet list (base {@code styles.css} +
+     * active theme overlay, overlay last) to {@code scene} and registers
+     * it for live re-application on subsequent theme changes. Idempotent.
+     *
+     * @param scene the scene to style (must not be {@code null})
+     */
+    public void applyTo(Scene scene) {
+        Objects.requireNonNull(scene, "scene must not be null");
+        runOnFx(() -> {
+            if (!scenes.contains(scene)) {
+                scenes.add(scene);
+            }
+            applyOrderedSheets(scene.getStylesheets());
+        });
+    }
+
+    /**
+     * Applies the ordered stylesheet list to {@code pane} (a dialog's
+     * own pane — its Scene does not inherit the main scene's sheets),
+     * ensures the {@code root-pane} style class is present so the
+     * {@code .root-pane} token block resolves, and registers the pane
+     * for live re-application. Idempotent.
+     *
+     * @param pane the dialog pane to style (must not be {@code null})
+     */
+    public void applyTo(DialogPane pane) {
+        Objects.requireNonNull(pane, "pane must not be null");
+        runOnFx(() -> {
+            if (!dialogPanes.contains(pane)) {
+                dialogPanes.add(pane);
+            }
+            if (!pane.getStyleClass().contains("root-pane")) {
+                pane.getStyleClass().add("root-pane");
+            }
+            applyOrderedSheets(pane.getStylesheets());
+        });
+    }
+
+    /**
+     * Replaces {@code target}'s contents with the canonical ordered
+     * stylesheet list: base {@code styles.css} first, then the active
+     * theme's overlay (if any). Any previously-applied base/overlay
+     * entries are removed first so re-application is idempotent and a
+     * stale overlay never lingers.
+     */
+    private void applyOrderedSheets(ObservableList<String> target) {
+        List<String> ordered = orderedStylesheetUrls();
+        // Remove any of our managed URLs that are present, preserving any
+        // unrelated sheets a caller may have added, then append the
+        // ordered list so the overlay is always last (wins author order).
+        target.removeAll(allManagedUrls());
+        for (String url : ordered) {
+            if (!target.contains(url)) {
+                target.add(url);
+            }
+        }
+    }
+
+    /**
+     * @return the ordered stylesheet URL list for the active theme:
+     *         {@code [styles.css]} for {@link Theme#ONYX_REFINED},
+     *         {@code [styles.css, <overlay>]} otherwise
+     */
+    public List<String> orderedStylesheetUrls() {
+        List<String> urls = new ArrayList<>(2);
+        urls.add(baseStylesheetUrl());
+        String overlay = activeTheme.get().overlayResource();
+        if (overlay != null) {
+            urls.add(resolve(overlay));
+        }
+        return List.copyOf(urls);
+    }
+
+    /** Every URL this manager may have installed (base + all overlays). */
+    private List<String> allManagedUrls() {
+        List<String> all = new ArrayList<>();
+        all.add(baseStylesheetUrl());
+        for (Theme t : Theme.values()) {
+            if (t.overlayResource() != null) {
+                all.add(resolve(t.overlayResource()));
+            }
+        }
+        return all;
+    }
+
+    private void reapplyAll() {
+        // Nothing registered → nothing to re-apply. This keeps the
+        // active-theme property (and therefore persistence) usable in a
+        // toolkit-free unit test that never registers a scene/pane.
+        if (scenes.isEmpty() && dialogPanes.isEmpty()) {
+            return;
+        }
+        runOnFx(() -> {
+            for (Scene scene : scenes) {
+                applyOrderedSheets(scene.getStylesheets());
+            }
+            for (DialogPane pane : dialogPanes) {
+                applyOrderedSheets(pane.getStylesheets());
+            }
+        });
+    }
+
+    // ── Resource resolution (mirrors DarkThemeHelper.getStylesheetUrl) ───────
+
+    /**
+     * @return the external-form URL of the base {@code styles.css},
+     *         resolved lazily and cached (mirrors the
+     *         {@code DarkThemeHelper} resolution it now backs)
+     */
+    public String baseStylesheetUrl() {
+        String url = resolvedBaseUrl;
+        if (url == null) {
+            url = resolve(BASE_STYLESHEET);
+            resolvedBaseUrl = url;
+        }
+        return url;
+    }
+
+    /** Absolute classpath root of the {@code ui} package's resources. */
+    private static final String UI_RESOURCE_ROOT =
+            "/com/benesquivelmusic/daw/app/ui/";
+
+    private static String resolve(String resource) {
+        // The stylesheets live in the `ui` package (the parent of this
+        // `theme` package): `styles.css`, `themes/*.css`. Class.getResource
+        // does NOT normalise a relative `../` segment, so resolve via the
+        // absolute classpath path instead.
+        URL u = ThemeManager.class.getResource(UI_RESOURCE_ROOT + resource);
+        Objects.requireNonNull(u, "Stylesheet resource not found: " + resource);
+        return u.toExternalForm();
+    }
+
+    // ── Persistence (toolkit-free) ───────────────────────────────────────────
+
+    private Theme restore() {
+        String stored = prefs.get(PREF_KEY, DEFAULT_THEME.name());
+        try {
+            return Theme.valueOf(stored);
+        } catch (IllegalArgumentException unknownOrNull) {
+            // Unknown / corrupt value persisted by a newer or broken
+            // build — fall back to the design-book default.
+            return DEFAULT_THEME;
+        }
+    }
+
+    private void persist(Theme theme) {
+        prefs.put(PREF_KEY, theme.name());
+    }
+
+    // ── i18n ─────────────────────────────────────────────────────────────────
+
+    /**
+     * Resolves a theme's localized display name from the shared bundle,
+     * falling back to the raw key if absent (mirrors {@code
+     * DawgDialog#msg} / {@code BrowserPanel#msg}).
+     *
+     * @param theme the theme (must not be {@code null})
+     * @return the localized display name, or the key if not found
+     */
+    public static String displayName(Theme theme) {
+        Objects.requireNonNull(theme, "theme must not be null");
+        try {
+            return MESSAGES.getString(theme.displayNameKey());
+        } catch (MissingResourceException e) {
+            return theme.displayNameKey();
+        }
+    }
+
+    private static void runOnFx(Runnable r) {
+        if (Platform.isFxApplicationThread()) {
+            r.run();
+            return;
+        }
+        try {
+            Platform.runLater(r);
+        } catch (IllegalStateException toolkitNotRunning) {
+            // No JavaFX toolkit (e.g. a pure-unit context). There can be
+            // no live scene/dialog-pane to update, so dropping the
+            // re-apply is correct rather than fatal.
+        }
+    }
+}

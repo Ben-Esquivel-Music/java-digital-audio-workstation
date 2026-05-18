@@ -3,6 +3,8 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.dialogs.DawgDialog;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import javafx.util.StringConverter;
 import javafx.geometry.Insets;
 import javafx.scene.Node;
 import javafx.scene.control.*;
@@ -53,6 +55,11 @@ public final class SettingsDialog extends DawgDialog<Void> {
     private static final double HEADER_ICON_SIZE = 18;
     private static final double TAB_ICON_SIZE = 14;
 
+    /** Resource bundle for localized strings (Skill §14) — {@link java.util.Locale#ROOT}. */
+    private static final java.util.ResourceBundle MESSAGES =
+            java.util.ResourceBundle.getBundle(
+                    "com.benesquivelmusic.daw.app.i18n.Messages", java.util.Locale.ROOT);
+
     private final SettingsModel model;
 
     // ── Callback ─────────────────────────────────────────────────────────────
@@ -72,6 +79,8 @@ public final class SettingsDialog extends DawgDialog<Void> {
     // ── Appearance tab controls ──────────────────────────────────────────────
     private final Slider uiScaleSlider;
     private final Label uiScaleValueLabel;
+    private final ThemeManager themeManager;
+    private final ComboBox<ThemeManager.Theme> themeCombo;
 
     // ── Plugins tab controls ─────────────────────────────────────────────────
     private final TextField pluginScanPathsField;
@@ -131,6 +140,26 @@ public final class SettingsDialog extends DawgDialog<Void> {
         uiScaleValueLabel.getStyleClass().add("numeric-value");
         uiScaleSlider.valueProperty().addListener((_, _, newVal) ->
                 uiScaleValueLabel.setText(String.format("%.1fx", newVal.doubleValue())));
+
+        // Story 277 — token-theme chooser (UI Design Book §3.1 / §6
+        // Phase 3). Distinct from story 194's WCAG JSON theme registry;
+        // ThemeManager persists under its own preferences key. The combo
+        // shows the three design-book palettes by localized display name.
+        themeManager = ThemeManager.getDefault();
+        themeCombo = new ComboBox<>();
+        themeCombo.getItems().addAll(ThemeManager.Theme.values());
+        themeCombo.setValue(themeManager.getActiveTheme());
+        themeCombo.setConverter(new StringConverter<>() {
+            @Override
+            public String toString(ThemeManager.Theme theme) {
+                return theme == null ? "" : ThemeManager.displayName(theme);
+            }
+
+            @Override
+            public ThemeManager.Theme fromString(String string) {
+                return themeCombo.getValue();
+            }
+        });
 
         Tab appearanceTab = new Tab("Appearance", buildAppearancePane());
         appearanceTab.setGraphic(IconNode.of(DawIcon.MONITOR, TAB_ICON_SIZE));
@@ -264,14 +293,11 @@ public final class SettingsDialog extends DawgDialog<Void> {
 
         grid.add(header, 0, 0, 2, 1);
         grid.add(new Separator(), 0, 1, 2, 1);
-        grid.add(new Label("UI Scale:"), 0, 2);
-        grid.add(uiScaleSlider, 1, 2);
-        grid.add(uiScaleValueLabel, 2, 2);
-
-        Label themeNote = new Label("Theme customization coming in a future release.");
-        themeNote.setGraphic(IconNode.of(DawIcon.INFO, 14));
-        themeNote.setStyle("-fx-text-fill: #808080; -fx-font-size: 10px;");
-        grid.add(themeNote, 0, 4, 3, 1);
+        grid.add(new Label(msg("appearance.theme.label")), 0, 2);
+        grid.add(themeCombo, 1, 2);
+        grid.add(new Label("UI Scale:"), 0, 3);
+        grid.add(uiScaleSlider, 1, 3);
+        grid.add(uiScaleValueLabel, 2, 3);
 
         return grid;
     }
@@ -494,6 +520,14 @@ public final class SettingsDialog extends DawgDialog<Void> {
 
         // Appearance
         model.setUiScale(uiScaleSlider.getValue());
+        // Story 277 — apply + persist the token theme. Setting the
+        // active-theme property re-applies the overlay to every
+        // registered scene/dialog-pane (no restart) and persists the
+        // choice under ThemeManager's own preferences key.
+        ThemeManager.Theme selectedTheme = themeCombo.getValue();
+        if (selectedTheme != null) {
+            themeManager.setActiveTheme(selectedTheme);
+        }
 
         // Plugins
         String paths = pluginScanPathsField.getText();
@@ -538,6 +572,20 @@ public final class SettingsDialog extends DawgDialog<Void> {
         grid.setVgap(8);
         grid.setPadding(new Insets(16));
         return grid;
+    }
+
+    /**
+     * Resolves a localized string from the shared {@code Messages}
+     * bundle, falling back to the raw key if absent (mirrors the
+     * {@code DawgDialog#msg} / {@code BrowserPanel#msg} pattern —
+     * Skill §14).
+     */
+    private static String msg(String key) {
+        try {
+            return MESSAGES.getString(key);
+        } catch (java.util.MissingResourceException e) {
+            return key;
+        }
     }
 
     /**

@@ -10,6 +10,7 @@ import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.TextAlignment;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Renders clip rectangles and all clip-level overlays on the arrangement
@@ -23,6 +24,7 @@ import javafx.scene.text.TextAlignment;
  * <p>Stateless utility: positioning, transform, and selection state are
  * passed in explicitly so each call is independently testable.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 final class ClipOverlayRenderer {
 
     static final Color CLIP_BORDER_COLOR = Color.web("#ffffff", 0.3);

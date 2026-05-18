@@ -17,6 +17,7 @@ import javafx.scene.text.Font;
 
 import java.util.List;
 import java.util.Objects;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Room-modes plot for the
@@ -33,6 +34,7 @@ import java.util.Objects;
  * <p>Computation is performed live by {@link RoomModeCalculator};
  * nothing new is persisted alongside the room configuration.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class RoomModesPanel extends VBox {
 
     private static final String EMPTY_STYLE =

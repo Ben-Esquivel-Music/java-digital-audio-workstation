@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Renders horizontal track lanes with audio and MIDI clip rectangles
@@ -35,6 +36,7 @@ import java.util.Map;
  * are controlled via the canvas's scroll and zoom parameters and can be
  * coordinated with higher-level navigation components by the caller.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class ArrangementCanvas extends Pane {
 
     // ── Color constants (retained for existing test references) ───────────

@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.function.Function;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Rotary knob {@link Control} for bipolar / unipolar parameters
@@ -76,6 +77,7 @@ import java.util.function.Function;
  * {@link CssMetaData} cannot express {@link Function} types, so this is
  * configured from Java only.
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class Knob extends Control {
 
     /** Stable style class — selectable as {@code .knob} in CSS. */

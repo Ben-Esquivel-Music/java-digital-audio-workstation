@@ -17,6 +17,7 @@ import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 
 import java.util.Objects;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Compact JavaFX view for the built-in {@link ArpeggiatorPlugin}.
@@ -32,6 +33,7 @@ import java.util.Objects;
  * JavaFX thread; the plugin reads them on its next audio-block call
  * (scalar primitive writes are safe for the simple fields used here).</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class ArpeggiatorPluginView extends VBox {
 
     /** Number of step lights drawn in the indicator row. */

@@ -8,6 +8,7 @@ import javafx.scene.Scene;
 import javafx.scene.paint.Color;
 import javafx.stage.Stage;
 import javafx.stage.StageStyle;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Standalone floating window wrapping a {@link CorrelationDisplay}.
@@ -26,6 +27,7 @@ import javafx.stage.StageStyle;
  * window.updateGoniometer(goniometerData);
  * }</pre>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class CorrelationDisplayWindow {
 
     private static final double DEFAULT_WIDTH = 480;
