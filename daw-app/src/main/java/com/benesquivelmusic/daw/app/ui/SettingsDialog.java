@@ -4,7 +4,6 @@ import com.benesquivelmusic.daw.app.ui.dialogs.DawgDialog;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
-import javafx.util.StringConverter;
 import javafx.geometry.Insets;
 import javafx.scene.Node;
 import javafx.scene.control.*;
@@ -14,10 +13,14 @@ import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
+import javafx.util.StringConverter;
 
 import java.util.EnumMap;
+import java.util.Locale;
 import java.util.Map;
+import java.util.MissingResourceException;
 import java.util.Optional;
+import java.util.ResourceBundle;
 
 /**
  * Modal dialog for configuring application settings.
@@ -55,10 +58,9 @@ public final class SettingsDialog extends DawgDialog<Void> {
     private static final double HEADER_ICON_SIZE = 18;
     private static final double TAB_ICON_SIZE = 14;
 
-    /** Resource bundle for localized strings (Skill §14) — {@link java.util.Locale#ROOT}. */
-    private static final java.util.ResourceBundle MESSAGES =
-            java.util.ResourceBundle.getBundle(
-                    "com.benesquivelmusic.daw.app.i18n.Messages", java.util.Locale.ROOT);
+    /** Resource bundle for localized strings (Skill §14) — {@link Locale#ROOT}. */
+    private static final ResourceBundle MESSAGES = ResourceBundle.getBundle(
+            "com.benesquivelmusic.daw.app.i18n.Messages", Locale.ROOT);
 
     private final SettingsModel model;
 
@@ -157,6 +159,10 @@ public final class SettingsDialog extends DawgDialog<Void> {
 
             @Override
             public ThemeManager.Theme fromString(String string) {
+                // Non-editable combo: JavaFX never invokes fromString
+                // (the converter is display-only). Returning the current
+                // value is the standard identity idiom — intentional,
+                // not an unimplemented parse.
                 return themeCombo.getValue();
             }
         });
@@ -583,7 +589,7 @@ public final class SettingsDialog extends DawgDialog<Void> {
     private static String msg(String key) {
         try {
             return MESSAGES.getString(key);
-        } catch (java.util.MissingResourceException e) {
+        } catch (MissingResourceException e) {
             return key;
         }
     }

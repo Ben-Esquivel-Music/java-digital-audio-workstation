@@ -12,6 +12,7 @@ import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -39,8 +40,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * dialogs with {@code @LegacyDialog}.</p>
  *
  * <p>The scan is a SOURCE-level filesystem text scan (the annotation is
- * {@link java.lang.annotation.RetentionPolicy#SOURCE}); no toolkit,
- * module, or reflection is involved. Path resolution mirrors
+ * {@link java.lang.annotation.RetentionPolicy#SOURCE}, so {@code
+ * EveryDialogConformsTest}'s reflective {@code !ann.value().isBlank()}
+ * check is unavailable here). To stay faithful to that contract the
+ * scan strips {@code //} / {@code /* *\/} comments before looking for a
+ * hard-coded paint (so a {@code Color.web(...)} mention in Javadoc does
+ * not false-match), blanks string literals before the paint scan, and
+ * captures the annotation's {@code value()} literal to assert it is
+ * <em>non-blank</em>. The annotation type's own source is excluded by
+ * name, exactly as {@code EveryDialogConformsTest} skips the
+ * {@code @LegacyDialog} annotation type. Path resolution mirrors
  * {@code NumericClassAuditTest}.</p>
  */
 final class LegacyHardcodedColorAuditTest {
@@ -49,9 +58,33 @@ final class LegacyHardcodedColorAuditTest {
     private static final Pattern HARDCODED_COLOR =
             Pattern.compile("\\bColor\\.(web|rgb)\\s*\\(");
 
-    /** Class-level sentinel that records the deferral TODO (story 277). */
-    private static final Pattern ANNOTATION =
-            Pattern.compile("@HardcodedColorAllowed\\s*\\(");
+    /**
+     * The class-level sentinel <em>with</em> its mandatory {@code
+     * value()} string literal captured (group 1). The audit asserts the
+     * captured TODO/exemption text is non-blank — the SOURCE-scan
+     * equivalent of {@code EveryDialogConformsTest}'s reflective
+     * {@code ann.value() != null && !ann.value().isBlank()}.
+     */
+    private static final Pattern ANNOTATION_WITH_VALUE = Pattern.compile(
+            "@HardcodedColorAllowed\\s*\\(\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
+
+    /**
+     * One Java comment or one string / text-block literal. Alternation
+     * order matters: a literal is matched before {@code //} and {@code
+     * /*} so a delimiter inside a string is not mistaken for a comment,
+     * and a quote inside a comment is consumed as part of the comment.
+     */
+    private static final Pattern COMMENT_OR_STRING = Pattern.compile(
+            "\"\"\"[\\s\\S]*?\"\"\""        // text block
+            + "|\"(?:\\\\.|[^\"\\\\])*\""   // string literal
+            + "|//[^\\n]*"                  // line comment
+            + "|/\\*[\\s\\S]*?\\*/");       // block comment
+
+    /** {@code daw-app}'s {@code @HardcodedColorAllowed} source — the
+     *  annotation type whose own Javadoc necessarily names the calls it
+     *  guards; excluded exactly as {@code EveryDialogConformsTest} skips
+     *  the {@code @LegacyDialog} annotation type ({@code c.isAnnotation()}). */
+    private static final String ANNOTATION_TYPE_FILE = "HardcodedColorAllowed.java";
 
     @Test
     void everyHardcodedColorSourceCarriesTheSentinelAnnotation() throws IOException {
@@ -67,15 +100,33 @@ final class LegacyHardcodedColorAuditTest {
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs)
                     throws IOException {
-                if (!file.getFileName().toString().endsWith(".java")) {
+                String name = file.getFileName().toString();
+                if (!name.endsWith(".java")
+                        || name.equals(ANNOTATION_TYPE_FILE)) {
                     return FileVisitResult.CONTINUE;
                 }
                 scanned.add(file);
-                String source = Files.readString(file, StandardCharsets.UTF_8);
-                if (HARDCODED_COLOR.matcher(source).find()
-                        && !ANNOTATION.matcher(source).find()) {
-                    offenders.add(uiSrcRoot.relativize(file).toString()
-                            .replace('\\', '/'));
+
+                // Strip comments (so a Color.web(...) mention in Javadoc
+                // does not false-match) but keep string literals so the
+                // real @HardcodedColorAllowed("...") survives for the
+                // non-blank check; then blank strings for the paint scan
+                // so a Color.web( inside a string is not a false match.
+                String code = stripComments(
+                        Files.readString(file, StandardCharsets.UTF_8));
+                if (!HARDCODED_COLOR.matcher(stripStringLiterals(code)).find()) {
+                    return FileVisitResult.CONTINUE;
+                }
+
+                String relPath = uiSrcRoot.relativize(file).toString()
+                        .replace('\\', '/');
+                Matcher ann = ANNOTATION_WITH_VALUE.matcher(code);
+                if (!ann.find()) {
+                    offenders.add(relPath + "  — missing @HardcodedColorAllowed");
+                } else if (ann.group(1).isBlank()) {
+                    offenders.add(relPath + "  — @HardcodedColorAllowed value "
+                            + "is blank (the migration TODO / exemption "
+                            + "rationale is mandatory)");
                 }
                 return FileVisitResult.CONTINUE;
             }
@@ -137,5 +188,37 @@ final class LegacyHardcodedColorAuditTest {
         return Files.isRegularFile(dir.resolve("pom.xml"))
                 && Files.isDirectory(
                         dir.resolve("src/main/java/com/benesquivelmusic/daw/app"));
+    }
+
+    // ── source pre-processing ────────────────────────────────────────────────
+
+    /**
+     * Removes {@code //} and {@code /* *\/} comments while preserving
+     * string / text-block literals (so a real {@code
+     * @HardcodedColorAllowed("...")} survives the strip but a {@code
+     * Color.web(...)} written inside Javadoc does not). Mirrors the
+     * DOTALL comment-stripping {@code TokenValidationTest} already does,
+     * generalised to skip over string literals.
+     */
+    private static String stripComments(String source) {
+        Matcher m = COMMENT_OR_STRING.matcher(source);
+        StringBuilder out = new StringBuilder(source.length());
+        while (m.find()) {
+            String token = m.group();
+            // A string / text block (starts with a quote) is code — keep
+            // it verbatim; anything else the alternation matched is a
+            // comment and is replaced with a single space.
+            m.appendReplacement(out, token.charAt(0) == '"'
+                    ? Matcher.quoteReplacement(token) : " ");
+        }
+        m.appendTail(out);
+        return out.toString();
+    }
+
+    /** Blanks string / text-block literals out of already comment-free code. */
+    private static String stripStringLiterals(String code) {
+        return code
+                .replaceAll("\"\"\"[\\s\\S]*?\"\"\"", "\"\"")
+                .replaceAll("\"(?:\\\\.|[^\"\\\\])*\"", "\"\"");
     }
 }

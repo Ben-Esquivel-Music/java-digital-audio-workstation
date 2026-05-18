@@ -31,9 +31,11 @@ import static org.assertj.core.api.Assertions.offset;
  * {@code -accent} lookup is Palette B's warm orange {@code #FF7A45} and
  * <em>not</em> Palette A's indigo {@code #7C8CFF}.
  *
- * <p>This exercises the production path exactly: {@code ThemeManager}
- * builds the ordered {@code [styles.css, studio-slate.css]} list and the
- * overlay (loaded last) wins the JavaFX lookup-colour cascade. If any
+ * <p>This exercises the overlay-cascade path exactly (the singleton
+ * wiring through {@code ThemeManager.getDefault()} is deliberately not
+ * shared across the test fork): {@code ThemeManager} builds the ordered
+ * {@code [styles.css, studio-slate.css]} list and the overlay (loaded
+ * last) wins the JavaFX lookup-colour cascade. If any
  * Phase-1/2 control hard-coded a colour instead of consuming a token it
  * would not re-theme — that regression is caught structurally by
  * {@code LegacyHardcodedColorAuditTest}; this test proves the cascade
@@ -109,6 +111,71 @@ final class ThemeSwitchSmokeTest {
         });
 
         assertCloseTo(accent, PALETTE_A_ACCENT, "baseline -accent must be #7C8CFF");
+    }
+
+    /** Resolved {@code -accent} and stylesheet count before / after a live switch. */
+    private record Switch(Color before, Color after,
+                           int sheetsBefore, int sheetsAfter) { }
+
+    /**
+     * Story 277's headline acceptance criterion: changing the theme
+     * re-themes an <em>already-registered</em> scene with no restart and
+     * no second {@code applyTo} call. Registers a scene under Onyx
+     * Refined, asserts the baseline indigo, then flips the active theme
+     * via {@link ThemeManager#setActiveTheme} only — the registered
+     * scene must pick up Studio Slate's orange purely through
+     * {@code reapplyAll()}. Guards the remove-then-append idempotency of
+     * {@code applyOrderedSheets} (no overlay accumulation).
+     */
+    @Test
+    void changingThemeRethemesAnAlreadyRegisteredSceneWithNoRestart()
+            throws Exception {
+        ThemeManager manager = newManager(ThemeManager.Theme.ONYX_REFINED);
+
+        Switch result = onFxThread(() -> {
+            BorderPane rootPane = new BorderPane();
+            rootPane.getStyleClass().add("root-pane");
+            Region accentProbe = new Region();
+            accentProbe.setStyle("-fx-background-color: -accent;");
+            rootPane.getChildren().add(accentProbe);
+
+            Scene scene = new Scene(rootPane, 100, 100);
+            manager.applyTo(scene); // registered once, under Onyx Refined
+            rootPane.applyCss();
+            rootPane.layout();
+            Color before =
+                    (Color) accentProbe.getBackground().getFills().get(0).getFill();
+            int sheetsBefore = scene.getStylesheets().size();
+
+            // The whole no-restart contract: NO second applyTo — just
+            // flip the property. The listener -> reapplyAll() runs
+            // synchronously here (already on the FX thread).
+            manager.setActiveTheme(ThemeManager.Theme.STUDIO_SLATE);
+            rootPane.applyCss();
+            rootPane.layout();
+            Color after =
+                    (Color) accentProbe.getBackground().getFills().get(0).getFill();
+            int sheetsAfter = scene.getStylesheets().size();
+
+            return new Switch(before, after, sheetsBefore, sheetsAfter);
+        });
+
+        assertCloseTo(result.before(), PALETTE_A_ACCENT,
+                "before the switch -accent must be Onyx Refined #7C8CFF");
+        assertThat(result.sheetsBefore())
+                .as("baseline registers only styles.css (no overlay)")
+                .isEqualTo(1);
+
+        assertCloseTo(result.after(), PALETTE_B_ACCENT,
+                "after setActiveTheme the registered scene must re-theme "
+                        + "to Studio Slate #FF7A45 with no restart / no re-applyTo");
+        assertThat(result.sheetsAfter())
+                .as("the overlay is appended (not accumulated): "
+                        + "exactly [styles.css, studio-slate.css]")
+                .isEqualTo(2);
+        assertThat(distance(result.after(), result.before()))
+                .as("the live switch must actually change the resolved accent")
+                .isGreaterThan(0.1);
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────

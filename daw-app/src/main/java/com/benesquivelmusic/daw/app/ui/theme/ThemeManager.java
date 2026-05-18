@@ -9,11 +9,16 @@ import javafx.scene.control.DialogPane;
 
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.MissingResourceException;
 import java.util.Objects;
 import java.util.ResourceBundle;
+import java.util.Set;
+import java.util.WeakHashMap;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import java.util.prefs.Preferences;
 
 /**
@@ -124,6 +129,9 @@ public final class ThemeManager {
     private static final ResourceBundle MESSAGES = ResourceBundle.getBundle(
             "com.benesquivelmusic.daw.app.i18n.Messages", Locale.ROOT);
 
+    private static final Logger LOG =
+            Logger.getLogger(ThemeManager.class.getName());
+
     /**
      * Process-wide default instance, backed by the same per-package
      * {@link Preferences} node the rest of the UI uses
@@ -139,9 +147,20 @@ public final class ThemeManager {
     private final Preferences prefs;
     private final ObjectProperty<Theme> activeTheme;
 
-    /** Scenes/dialog-panes to re-style when the active theme changes. */
-    private final List<Scene> scenes = new ArrayList<>();
-    private final List<DialogPane> dialogPanes = new ArrayList<>();
+    /**
+     * Scenes / dialog-panes to re-style when the active theme changes.
+     * Held <strong>weakly</strong>: a dismissed dialog's pane (or a
+     * closed window's scene) must not be pinned for the JVM lifetime —
+     * over a long editing session many transient dialogs come and go,
+     * and {@link #DEFAULT} is a process-lifetime static. GC'd entries
+     * simply drop out of the re-theme set. All access is serialized
+     * onto the FX thread via {@link #runOnFx}; {@link #reapplyAll()}
+     * iterates a snapshot so a concurrent GC sweep cannot disturb it.
+     */
+    private final Set<Scene> scenes =
+            Collections.newSetFromMap(new WeakHashMap<>());
+    private final Set<DialogPane> dialogPanes =
+            Collections.newSetFromMap(new WeakHashMap<>());
 
     private volatile String resolvedBaseUrl;
 
@@ -210,9 +229,7 @@ public final class ThemeManager {
     public void applyTo(Scene scene) {
         Objects.requireNonNull(scene, "scene must not be null");
         runOnFx(() -> {
-            if (!scenes.contains(scene)) {
-                scenes.add(scene);
-            }
+            scenes.add(scene); // Set.add is idempotent
             applyOrderedSheets(scene.getStylesheets());
         });
     }
@@ -229,9 +246,7 @@ public final class ThemeManager {
     public void applyTo(DialogPane pane) {
         Objects.requireNonNull(pane, "pane must not be null");
         runOnFx(() -> {
-            if (!dialogPanes.contains(pane)) {
-                dialogPanes.add(pane);
-            }
+            dialogPanes.add(pane); // Set.add is idempotent
             if (!pane.getStyleClass().contains("root-pane")) {
                 pane.getStyleClass().add("root-pane");
             }
@@ -294,10 +309,13 @@ public final class ThemeManager {
             return;
         }
         runOnFx(() -> {
-            for (Scene scene : scenes) {
+            // Snapshot the weak sets: copying decouples iteration from a
+            // concurrent GC sweep, and List.copyOf rejects nulls (the
+            // sets never hold null — registration is null-checked).
+            for (Scene scene : List.copyOf(scenes)) {
                 applyOrderedSheets(scene.getStylesheets());
             }
-            for (DialogPane pane : dialogPanes) {
+            for (DialogPane pane : List.copyOf(dialogPanes)) {
                 applyOrderedSheets(pane.getStylesheets());
             }
         });
@@ -339,9 +357,11 @@ public final class ThemeManager {
         String stored = prefs.get(PREF_KEY, DEFAULT_THEME.name());
         try {
             return Theme.valueOf(stored);
-        } catch (IllegalArgumentException unknownOrNull) {
-            // Unknown / corrupt value persisted by a newer or broken
-            // build — fall back to the design-book default.
+        } catch (IllegalArgumentException unknownValue) {
+            // Unknown / corrupt enum name persisted by a newer or broken
+            // build. (prefs.get with a non-null default never returns
+            // null, so Theme.valueOf only ever throws here for an
+            // unrecognised name.) Fall back to the design-book default.
             return DEFAULT_THEME;
         }
     }
@@ -377,9 +397,15 @@ public final class ThemeManager {
         try {
             Platform.runLater(r);
         } catch (IllegalStateException toolkitNotRunning) {
-            // No JavaFX toolkit (e.g. a pure-unit context). There can be
-            // no live scene/dialog-pane to update, so dropping the
-            // re-apply is correct rather than fatal.
+            // No JavaFX toolkit yet / toolkit already shut down (a
+            // pure-unit context, or a theme change racing application
+            // exit). There can be no live scene/dialog-pane to update,
+            // so dropping the re-apply is correct rather than fatal —
+            // but log at FINE so a genuine post-shutdown failure is not
+            // entirely invisible given the FX-fork-shutdown history.
+            LOG.log(Level.FINE,
+                    "Theme re-apply skipped: no running JavaFX toolkit",
+                    toolkitNotRunning);
         }
     }
 }
