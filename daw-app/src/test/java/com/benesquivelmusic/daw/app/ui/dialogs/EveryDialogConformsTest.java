@@ -71,8 +71,11 @@ class EveryDialogConformsTest {
                         || Modifier.isAbstract(c.getModifiers())) {
                     continue;
                 }
-                boolean conforms = DawgDialog.class.isAssignableFrom(c)
-                        || c.isAnnotationPresent(LegacyDialog.class);
+                boolean conforms = DawgDialog.class.isAssignableFrom(c);
+                if (!conforms && c.isAnnotationPresent(LegacyDialog.class)) {
+                    LegacyDialog ann = c.getAnnotation(LegacyDialog.class);
+                    conforms = ann.value() != null && !ann.value().isBlank();
+                }
                 if (!conforms) {
                     offenders.add(c.getName());
                 }

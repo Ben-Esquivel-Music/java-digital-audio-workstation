@@ -1680,7 +1680,7 @@
 .dialog-pane .dialog-section-header,
 .dialog-section-header {
     -fx-text-fill: -text-mute;
-    -fx-font-size: 10;
+    -fx-font-size: 10px;
     -fx-font-weight: 600;
 }
 
@@ -1748,7 +1748,7 @@
 .dawg-dialog .dawg-dialog-section-header,
 .dawg-dialog-section-header {
     -fx-text-fill: -text-mute;
-    -fx-font-size: 10;
+    -fx-font-size: 10px;
     -fx-font-weight: 600;
 }
 
@@ -1818,7 +1818,7 @@
 .dialog-pane .shortcut-category-header,
 .shortcut-category-header {
     -fx-text-fill: -text-mute;
-    -fx-font-size: 10;
+    -fx-font-size: 10px;
     -fx-font-weight: 600;
 }
 
