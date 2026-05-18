@@ -160,14 +160,15 @@ public final class SettingsDialog extends DawgDialog<Void> {
             @Override
             public ThemeManager.Theme fromString(String string) {
                 // Display-only converter: the combo is non-editable, so
-                // JavaFX should never invoke fromString. Returning the
-                // current value is the safe convention — JavaFX internals
-                // (accessibility queries, type-ahead, selection
-                // restoration on focus loss) may still call fromString
-                // and must not see an exception propagate into the FX
-                // event loop. If the combo is ever made editable, a real
-                // reverse lookup over the items must be added here.
-                return themeCombo.getValue();
+                // JavaFX should never invoke fromString. Returning
+                // DEFAULT_THEME is the safest fallback — it can never be
+                // null, whereas themeCombo.getValue() could return null if
+                // JavaFX invokes fromString before setValue during early
+                // accessibility queries or a styling pass triggered by
+                // the converter being set. If the combo is ever made
+                // editable, a real reverse lookup over the items must be
+                // added here.
+                return ThemeManager.DEFAULT_THEME;
             }
         });
 

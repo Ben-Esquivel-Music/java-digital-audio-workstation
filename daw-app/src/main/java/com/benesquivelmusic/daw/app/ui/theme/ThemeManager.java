@@ -186,21 +186,23 @@ public final class ThemeManager {
         this.prefs = Objects.requireNonNull(prefs, "prefs must not be null");
         this.activeTheme = new SimpleObjectProperty<>(this, "activeTheme", restore());
         this.activeTheme.addListener((_, _, newTheme) -> {
-            // Persist FIRST so a backing-store failure can't leave the
-            // property in a state we then propagate to every registered
-            // scene/pane. If persist throws, the in-memory property is
-            // already updated (JavaFX fires change listeners after the
-            // new value is set) but we deliberately propagate the
-            // exception out — callers (Preferences sync, the Settings
-            // dialog Apply handler) can surface it. We still call
-            // reapplyAll() in a finally so an FX failure to log a
-            // persistence error doesn't leave the UI showing the old
-            // theme; this is the lesser of two evils.
+            // Persist the new theme, then re-apply to all registered
+            // scenes/panes. If persistence fails (backing-store I/O
+            // error) we log a WARNING and still re-apply so the UI
+            // remains consistent with what the user just chose — they
+            // simply won't get the preference restored on next launch.
+            // Propagating the exception would leave callers (e.g.
+            // SettingsDialog's OK handler) with an unchecked failure
+            // while the UI has already visually switched.
             try {
                 persist(newTheme);
-            } finally {
-                reapplyAll();
+            } catch (RuntimeException ex) {
+                LOG.log(Level.WARNING,
+                        "Failed to persist theme preference; the UI will "
+                                + "switch but the choice may not survive restart",
+                        ex);
             }
+            reapplyAll();
         });
     }
 
@@ -247,6 +249,13 @@ public final class ThemeManager {
      * active theme overlay, overlay last) to {@code scene} and registers
      * it for live re-application on subsequent theme changes. Idempotent.
      *
+     * <p><strong>Threading:</strong> if called from the JavaFX
+     * application thread the sheets are applied synchronously; otherwise
+     * the work is scheduled via {@link Platform#runLater(Runnable)} and
+     * returns immediately. Callers reading
+     * {@code scene.getStylesheets()} from a non-FX thread right after
+     * this method returns may not yet see the updated list.</p>
+     *
      * @param scene the scene to style (must not be {@code null})
      */
     public void applyTo(Scene scene) {
@@ -263,6 +272,13 @@ public final class ThemeManager {
      * ensures the {@code root-pane} style class is present so the
      * {@code .root-pane} token block resolves, and registers the pane
      * for live re-application. Idempotent.
+     *
+     * <p><strong>Threading:</strong> if called from the JavaFX
+     * application thread the sheets are applied synchronously; otherwise
+     * the work is scheduled via {@link Platform#runLater(Runnable)} and
+     * returns immediately. Callers reading
+     * {@code pane.getStylesheets()} from a non-FX thread right after
+     * this method returns may not yet see the updated list.</p>
      *
      * @param pane the dialog pane to style (must not be {@code null})
      */
@@ -288,6 +304,18 @@ public final class ThemeManager {
      * (and one re-evaluation pass) rather than a remove-then-add pair —
      * avoiding a transient frame in which a registered scene is styled
      * by the base sheet alone before the overlay is re-installed.
+     *
+     * <p><strong>Ordering contract:</strong> ThemeManager owns the
+     * <em>tail</em> of the stylesheet list. Unrelated sheets that a
+     * caller appended (e.g. a plugin view or test harness) are preserved
+     * but positioned <em>before</em> the base/overlay pair. This means
+     * the theme overlay always wins the CSS author-order cascade over any
+     * user-appended sheet. If a caller explicitly needs to override a
+     * token after the overlay, it should append its sheet after calling
+     * {@code applyTo} and accept that subsequent theme switches will
+     * re-order it before the managed pair. In the current codebase no
+     * caller layers extra sheets on top of {@code styles.css}, so this
+     * ordering is latent.</p>
      */
     private void applyOrderedSheets(ObservableList<String> target) {
         List<String> ordered = orderedStylesheetUrls();
@@ -332,13 +360,17 @@ public final class ThemeManager {
     }
 
     private void reapplyAll() {
-        // Nothing registered → nothing to re-apply. This keeps the
-        // active-theme property (and therefore persistence) usable in a
-        // toolkit-free unit test that never registers a scene/pane.
-        if (scenes.isEmpty() && dialogPanes.isEmpty()) {
-            return;
-        }
+        // Gate all access to the WeakHashMap-backed sets on the FX
+        // thread — WeakHashMap is not thread-safe and a concurrent GC
+        // sweep (expungeStaleEntries) racing with isEmpty() could throw
+        // ConcurrentModificationException or return an incorrect answer.
+        // If the toolkit is not running (pure-unit context) runOnFx will
+        // silently drop the work — which is fine because there can be no
+        // live scenes/panes to update in that case.
         runOnFx(() -> {
+            if (scenes.isEmpty() && dialogPanes.isEmpty()) {
+                return;
+            }
             // Snapshot the weak sets: copying decouples iteration from a
             // concurrent GC sweep, and List.copyOf rejects nulls (the
             // sets never hold null — registration is null-checked).

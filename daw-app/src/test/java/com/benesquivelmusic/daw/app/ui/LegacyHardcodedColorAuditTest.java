@@ -39,6 +39,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  * tracked, not hidden, exactly as story 276 tracked the not-yet-migrated
  * dialogs with {@code @LegacyDialog}.</p>
  *
+ * <h3>Scope justification (why only {@code daw-app/ui}?)</h3>
+ *
+ * <p>This audit intentionally scans only the {@code
+ * com.benesquivelmusic.daw.app.ui} source tree inside the {@code
+ * daw-app} module. Other modules that contribute render code ({@code
+ * daw-fx}, {@code daw-sdk}) operate at a lower layer: they draw to
+ * GPU canvases or render offline buffers where JavaFX CSS tokens are
+ * unreachable by design. Those paints are runtime-computed signal
+ * representations (waveforms, spectra, meter pixels), not UI chrome,
+ * and are not subject to the token theme contract. The audit therefore
+ * does not scan them — broadening the root would generate false
+ * positives without catching any real theming violations.</p>
+ *
  * <p>The scan is a SOURCE-level filesystem text scan (the annotation is
  * {@link java.lang.annotation.RetentionPolicy#SOURCE}, so {@code
  * EveryDialogConformsTest}'s reflective {@code !ann.value().isBlank()}

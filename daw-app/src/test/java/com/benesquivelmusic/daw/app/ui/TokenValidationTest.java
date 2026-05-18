@@ -424,7 +424,7 @@ final class TokenValidationTest {
             "-surface-bg", "-surface-1", "-surface-2", "-surface-3", "-surface-overlay",
             "-line-soft", "-line-strong", "-focus-ring",
             "-text-hi", "-text", "-text-mute", "-text-on-accent",
-            "-accent", "-accent-soft",
+            "-accent", "-accent-soft", "-accent-glow", "-drop-target-bg",
             "-ok", "-warn", "-danger");
 
     /**
