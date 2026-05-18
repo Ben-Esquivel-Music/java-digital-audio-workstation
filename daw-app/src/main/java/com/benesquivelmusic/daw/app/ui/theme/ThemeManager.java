@@ -291,7 +291,7 @@ public final class ThemeManager {
      */
     private void applyOrderedSheets(ObservableList<String> target) {
         List<String> ordered = orderedStylesheetUrls();
-        List<String> managed = allManagedUrls();
+        Set<String> managed = Set.copyOf(allManagedUrls());
         // Build the final list = unrelated existing sheets (in caller's
         // original order) + our ordered managed list (overlay last).
         List<String> finalList = new ArrayList<>(target.size() + ordered.size());
