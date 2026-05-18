@@ -1306,15 +1306,21 @@
     -fx-padding: 8 16;
 }
 
+/* story 276 / UI Design Book §5.9 / §3.4 — flat dialog header.
+ * The gradient title bar was pure decoration; §3.4 elevation 0 = no
+ * shadow, no gradient. Flatten to -surface-1. Global to .dialog-pane,
+ * so this corrects the chrome of EVERY dialog (migrated or not). */
 .dialog-pane > .header-panel {
-    -fx-background-color: linear-gradient(to bottom, -surface-1, -surface-bg);
+    -fx-background-color: -surface-1;
     -fx-padding: 12 16;
 }
 
+/* story 276 / §5.9 / §3.2 — title is the H1 (18 px / 600, no
+ * decoration). Was 14 px bold. */
 .dialog-pane > .header-panel > .label {
     -fx-text-fill: -text-hi;
-    -fx-font-size: 14px;
-    -fx-font-weight: bold;
+    -fx-font-size: 18px;
+    -fx-font-weight: 600;
 }
 
 .dialog-pane .label {
@@ -1363,19 +1369,26 @@
     -fx-opacity: 0.45;
 }
 
-/* Default / OK button accent — targets both .dawg-button and .button
- * so dialog-pane OK buttons render correctly regardless of whether
- * dawg-button was added. */
+/* story 276 / UI Design Book §5.9 / §3.1 — primary (default) dialog
+ * button is the ACCENT-filled primary action, not green. §3.1: the one
+ * accent is the primary action / selection colour; -ok is success-only
+ * (autosave OK, signal-in-safe-range). Conflating "default button" with
+ * -ok was a category error. Targets both .dawg-button and .button so
+ * dialog-pane OK buttons render correctly regardless of whether
+ * dawg-button was added. Hover STAYS accent (must not fall back to
+ * -surface-3, which would read as non-primary). */
 .dawg-button:default,
 .button:default {
-    -fx-background-color: -surface-3;
-    -fx-border-color: -ok;
-    -fx-text-fill: -ok;
+    -fx-background-color: -accent;
+    -fx-border-color: -accent;
+    -fx-text-fill: -text-on-accent;
 }
 
 .dawg-button:default:hover,
 .button:default:hover {
-    -fx-background-color: -surface-3;
+    -fx-background-color: -accent;
+    -fx-border-color: -accent;
+    -fx-text-fill: -text-on-accent;
 }
 
 /* Cancel button accent. */
@@ -1654,11 +1667,21 @@
     -fx-font-size: 12px;
 }
 
-/* ── Dialog section headers ── */
+/* story 276 / UI Design Book §5.9 / §3.2 / §7.6 — section headers are
+ * labels, not saturated accent. Re-tokenized to label-small, EXACTLY
+ * mirroring the shipped inspector convention (inspector.css:75-79):
+ * -text-mute, 10 px, 600. JavaFX CSS has no -fx-text-transform and no
+ * letter-spacing; "uppercase / +12% tracking" is realised the same way
+ * the inspector does it (callers pass an already-uppercased string;
+ * tracking is dropped). Reuses the existing convention, not a fork.
+ * Two-class form so it beats the `.dialog-pane .label` 12 px rule on
+ * equal specificity + later cascade (same reasoning as
+ * .dawg-dialog-section-header below). */
+.dialog-pane .dialog-section-header,
 .dialog-section-header {
-    -fx-text-fill: -accent;
-    -fx-font-size: 13px;
-    -fx-font-weight: bold;
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 10;
+    -fx-font-weight: 600;
 }
 
 /* ── Dialog hint labels ── */
@@ -1673,11 +1696,130 @@
     -fx-font-size: 10px;
 }
 
-/* ── Shortcut category header in Help dialog ── */
-.shortcut-category-header {
-    -fx-text-fill: -accent;
-    -fx-font-weight: bold;
+/* ════════════════════════════════════════════════════════════════════
+ * DawgDialog — shared §5.9 dialog/modal chrome (story 276)
+ * UI Design Book §5.9 (anatomy), §3.2 (typography), §3.3 (spacing),
+ * §3.4 (elevation 0 = flat). The three legacy global .dialog-pane
+ * rules above already correct the chrome of every dialog; these
+ * .dawg-dialog-* rules style the shared DawgDialog skeleton that new
+ * and migrated dialogs build on so the contract cannot drift.
+ *
+ * styles.css is the AUTHOR stylesheet — it cascades AFTER JavaFX's
+ * user-agent modena.css and after component USER_AGENT sheets, so
+ * these rules win by cascade order (the documented project rule;
+ * .dawg-button vs .button is decided by author cascade, not
+ * specificity). New rules are placed in the dialog block so author
+ * cascade is correct.
+ * ════════════════════════════════════════════════════════════════════ */
+
+/* §3.4 elevation 0 — flat -surface-1, no shadow, no gradient. */
+.dawg-dialog {
+    -fx-background-color: -surface-1;
+}
+
+/* §5.9 header: flat -surface-1 (matches the global .header-panel fix). */
+.dawg-dialog > .header-panel {
+    -fx-background-color: -surface-1;
+    -fx-padding: 12 16;
+}
+
+/* §3.3 xl — 24 px body padding, one column. */
+.dawg-dialog-body {
+    -fx-background-color: -surface-1;
+    -fx-padding: 24;
+    -fx-spacing: 12;
+}
+
+.dawg-dialog-message {
+    -fx-text-fill: -text-hi;
     -fx-font-size: 12px;
+}
+
+/* §3.2 label-small for section headers — muted, NOT purple per §7.6.
+ * Identical token/size/weight to inspector.css:75-79 and the
+ * re-tokenized .dialog-section-header above (one convention, not a
+ * fork). Callers pass an already-uppercased string; tracking is not
+ * expressible in JavaFX CSS and is dropped.
+ *
+ * Two-class selector (.dawg-dialog descendant) so this matches the
+ * specificity of the global `.dialog-pane .label` (12 px) rule and,
+ * cascading later, wins — a bare `.dawg-dialog-section-header` would
+ * lose to that 2-class descendant rule and render at 12 px. */
+.dawg-dialog .dawg-dialog-section-header,
+.dawg-dialog-section-header {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 10;
+    -fx-font-weight: 600;
+}
+
+/* §5.9 footer — buttons right-aligned. */
+.dawg-dialog > .button-bar > .container {
+    -fx-background-color: -surface-bg;
+    -fx-padding: 8 16;
+    -fx-alignment: center-right;
+}
+
+/* §5.9 — the header close glyph is SECONDARY: muted by default,
+ * brightening to -text-hi on hover. DawgIcon resolves its colour from
+ * the CSS -fx-icon-color property (its CssMetaData), so the tint is
+ * derived from resolved CSS, never a hard-coded hex mirror. */
+.dawg-dialog-close {
+    -fx-icon-color: -text-mute;
+    -fx-cursor: hand;
+}
+
+.dawg-dialog-close:hover {
+    -fx-icon-color: -text-hi;
+}
+
+/* §5.9 / §3.1 primary (accent-filled) footer button. The base
+ * .dawg-button:armed/:pressed/:active block (lines ~280) already paints
+ * -accent; .primary makes the accent the RESTING state too and keeps it
+ * through hover/armed/pressed so the primary action never reverts to a
+ * neutral surface (which would read as non-primary). Composes cleanly
+ * with — is not clobbered by — those state rules because both resolve
+ * to the same -accent fill. */
+.dawg-button.primary {
+    -fx-background-color: -accent;
+    -fx-border-color: -accent;
+    -fx-text-fill: -text-on-accent;
+}
+
+.dawg-button.primary:hover,
+.dawg-button.primary:armed,
+.dawg-button.primary:pressed,
+.dawg-button.primary:default {
+    -fx-background-color: -accent;
+    -fx-border-color: -accent;
+    -fx-text-fill: -text-on-accent;
+}
+
+/* §5.9 secondary footer button — neutral TEXT button, no border.
+ * Reuses the existing .dawg-button:cancel neutral treatment intent
+ * (story 264 unified button system) rather than forking a parallel
+ * style: transparent fill + no border + secondary text colour. */
+.dawg-button.secondary {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-text-fill: -text;
+}
+
+.dawg-button.secondary:hover {
+    -fx-background-color: -surface-3;
+    -fx-border-color: transparent;
+    -fx-text-fill: -text-hi;
+}
+
+/* story 276 / §7.6 — saturated-section-header veto applies to "any
+ * sibling". HelpDialog's category header is a section-header sibling;
+ * re-tokenized to the same label-small style as .dialog-section-header
+ * (the inspector convention). Two-class form to beat
+ * `.dialog-pane .label` on equal specificity + later cascade. */
+.dialog-pane .shortcut-category-header,
+.shortcut-category-header {
+    -fx-text-fill: -text-mute;
+    -fx-font-size: 10;
+    -fx-font-weight: 600;
 }
 
 /* ── Track drag-and-drop indicators ── */

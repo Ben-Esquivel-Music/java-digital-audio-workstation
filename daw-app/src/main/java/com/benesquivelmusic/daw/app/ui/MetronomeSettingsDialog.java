@@ -54,6 +54,8 @@ import java.util.UUID;
  * globally via
  * {@link com.benesquivelmusic.daw.core.recording.MetronomeSettingsStore}).</p>
  */
+@com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
+        "migrate to DawgDialog — story 276 follow-up")
 public final class MetronomeSettingsDialog extends Dialog<MetronomeSettingsDialog.Result> {
 
     /**

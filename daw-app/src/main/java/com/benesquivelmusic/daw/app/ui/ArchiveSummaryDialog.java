@@ -1,7 +1,9 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.dialogs.DawgDialog;
+import com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog;
 import com.benesquivelmusic.daw.core.persistence.archive.ProjectArchiveSummary;
-import javafx.scene.control.Alert;
+import javafx.scene.control.ButtonBar;
 import javafx.scene.control.ButtonType;
 
 import java.nio.file.Path;
@@ -23,9 +25,13 @@ import java.util.Optional;
  *       size in human-readable form.</li>
  * </ul>
  *
- * <p>This class is a thin wrapper around standard JavaFX {@link Alert}s
- * styled with {@link DarkThemeHelper}; it has no state of its own.</p>
+ * <p>This class is a thin static-helper wrapper (private constructor,
+ * no state). It cannot {@code extends DawgDialog} so the §5.9 chrome is
+ * delegated to {@link DawgDialog#confirm}/{@link DawgDialog#info}; it is
+ * exempt from the structural migration via {@link LegacyDialog}.</p>
  */
+@LegacyDialog("Alert-wrapper static helper; chrome delegated to "
+        + "DawgDialog.confirm/info — not a Dialog subclass, exempt by annotation")
 final class ArchiveSummaryDialog {
 
     private ArchiveSummaryDialog() {
@@ -43,12 +49,11 @@ final class ArchiveSummaryDialog {
      *         assets, {@code false} if they want to abort
      */
     static boolean confirmMissingAssets(List<String> missingAssetPaths) {
-        Alert alert = new Alert(Alert.AlertType.WARNING);
-        alert.setTitle("Missing Assets");
-        alert.setHeaderText(missingAssetPaths.size()
+        String header = missingAssetPaths.size()
                 + " referenced asset" + (missingAssetPaths.size() == 1 ? "" : "s")
-                + " could not be found on disk.");
-        StringBuilder body = new StringBuilder("These files will be omitted from the archive:\n\n");
+                + " could not be found on disk.";
+        StringBuilder body = new StringBuilder(header)
+                .append("\n\nThese files will be omitted from the archive:\n\n");
         int shown = 0;
         for (String path : missingAssetPaths) {
             if (shown >= 10) {
@@ -60,13 +65,14 @@ final class ArchiveSummaryDialog {
             shown++;
         }
         body.append("\nContinue with missing assets?");
-        alert.setContentText(body.toString());
-        ButtonType continueBtn = new ButtonType("Continue with missing assets");
-        ButtonType cancelBtn = ButtonType.CANCEL;
-        alert.getButtonTypes().setAll(continueBtn, cancelBtn);
-        DarkThemeHelper.applyTo(alert);
-        Optional<ButtonType> result = alert.showAndWait();
-        return result.isPresent() && result.get() == continueBtn;
+        // story 276 \u2014 \u00a75.9 chrome via DawgDialog.confirm (NOT a JavaFX
+        // Alert, whose header gradient bypasses the author stylesheet).
+        DawgDialog<ButtonType> dialog =
+                DawgDialog.confirm("Missing Assets", body.toString(),
+                        "Continue with missing assets");
+        Optional<ButtonType> result = dialog.showAndWait();
+        return result.isPresent()
+                && result.get().getButtonData() == ButtonBar.ButtonData.OK_DONE;
     }
 
     /**
@@ -75,12 +81,11 @@ final class ArchiveSummaryDialog {
      * dialog.
      */
     static void showSummary(ProjectArchiveSummary summary) {
-        Alert alert = new Alert(Alert.AlertType.INFORMATION);
-        alert.setTitle("Archive Saved");
-        alert.setHeaderText(formatHeadline(summary));
-        alert.setContentText("Archive: " + summary.outputPath());
-        DarkThemeHelper.applyTo(alert);
-        alert.showAndWait();
+        // story 276 — §5.9 chrome via DawgDialog.info (NOT a JavaFX
+        // Alert, whose header gradient bypasses the author stylesheet).
+        DawgDialog.info("Archive Saved",
+                formatHeadline(summary) + "\n\nArchive: " + summary.outputPath())
+                .showAndWait();
     }
 
     /**

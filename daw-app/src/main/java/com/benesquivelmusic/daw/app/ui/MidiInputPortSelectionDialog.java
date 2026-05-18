@@ -23,6 +23,8 @@ import java.util.logging.Logger;
  * {@link javax.sound.midi.MidiSystem} and presents them in a list.
  * The user selects a device and confirms with OK, or cancels to abort.</p>
  */
+@com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
+        "migrate to DawgDialog — story 276 follow-up")
 public final class MidiInputPortSelectionDialog extends Dialog<MidiDevice.Info> {
 
     private static final Logger LOG = Logger.getLogger(MidiInputPortSelectionDialog.class.getName());

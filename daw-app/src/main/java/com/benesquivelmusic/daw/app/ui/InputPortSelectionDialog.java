@@ -19,6 +19,8 @@ import java.util.Optional;
  * and input latency. The user selects a device and confirms with OK,
  * or cancels to abort.</p>
  */
+@com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
+        "migrate to DawgDialog — story 276 follow-up")
 public final class InputPortSelectionDialog extends Dialog<AudioDeviceInfo> {
 
     private static final double HEADER_ICON_SIZE = 24;

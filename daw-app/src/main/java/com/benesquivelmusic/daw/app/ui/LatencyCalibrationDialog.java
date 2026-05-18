@@ -60,6 +60,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * a deterministic synthetic capture — the issue specifies a
  * 208-frame round-trip impulse for the harness test.</p>
  */
+@com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
+        "migrate to DawgDialog — story 276 follow-up")
 public final class LatencyCalibrationDialog extends Dialog<LatencyCalibrationDialog.Result> {
 
     /**

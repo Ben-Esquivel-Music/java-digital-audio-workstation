@@ -47,6 +47,8 @@ import java.util.Optional;
  * {@link HrtfImportController} — all I/O and validation happens in the
  * controller, which is testable without an FX runtime.</p>
  */
+@com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
+        "migrate to DawgDialog — story 276 follow-up")
 public final class HrtfProfileImportDialog extends Dialog<String> {
 
     private final HrtfImportController controller;

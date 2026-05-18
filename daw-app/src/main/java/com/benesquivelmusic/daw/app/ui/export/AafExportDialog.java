@@ -40,6 +40,8 @@ import java.util.Objects;
  * {@code AafExportService} in {@code daw-core}; this dialog only builds
  * the request.</p>
  */
+@com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
+        "migrate to DawgDialog — story 276 follow-up")
 public final class AafExportDialog extends Dialog<AafExportConfig> {
 
     /**

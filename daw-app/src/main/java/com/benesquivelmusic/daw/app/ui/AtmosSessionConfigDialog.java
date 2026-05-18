@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.dialogs.DawgDialog;
 import com.benesquivelmusic.daw.core.spatial.objectbased.AtmosSessionConfig;
 import com.benesquivelmusic.daw.core.spatial.objectbased.AtmosSessionValidator;
 import com.benesquivelmusic.daw.core.spatial.objectbased.AudioObject;
@@ -30,7 +31,7 @@ import java.util.Objects;
  * <p>An optional {@link ExportRequestListener} can be registered to handle
  * the actual export when the user clicks the Export button.</p>
  */
-public final class AtmosSessionConfigDialog extends Dialog<AtmosSessionConfig> {
+public final class AtmosSessionConfigDialog extends DawgDialog<AtmosSessionConfig> {
 
     /**
      * Callback interface invoked when the user requests an ADM BWF export.
@@ -145,8 +146,10 @@ public final class AtmosSessionConfigDialog extends Dialog<AtmosSessionConfig> {
 
         getDialogPane().setContent(tabPane);
         getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
-
-        DarkThemeHelper.applyTo(this);
+        // story 276 — §5.9 width band; flat header / accent primary /
+        // tokenized section-header chrome applied by the DawgDialog
+        // super-constructor. TabPane preserved (Non-Goal).
+        sized(DawgDialog.Size.MEDIUM);
 
         Button exportButton = (Button) getDialogPane().lookupButton(ButtonType.OK);
         exportButton.setText("Export ADM BWF");

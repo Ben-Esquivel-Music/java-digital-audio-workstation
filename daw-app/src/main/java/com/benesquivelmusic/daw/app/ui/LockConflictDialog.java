@@ -31,6 +31,9 @@ import java.util.function.Supplier;
  * For headless tests, supply a deterministic {@link LockConflictHandler}
  * directly instead of this dialog.</p>
  */
+@com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
+        "migrate to DawgDialog — story 276 follow-up; not a Dialog "
+        + "subclass (LockConflictHandler that builds Alerts internally)")
 public final class LockConflictDialog implements LockConflictHandler {
 
     /** Default cancel resolution when the dialog is dismissed without a choice. */

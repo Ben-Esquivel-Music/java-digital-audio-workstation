@@ -58,6 +58,8 @@ import java.util.logging.Logger;
  * {@link ThemeRegistry#userThemesDir()} via
  * {@link ThemeRegistry#saveUserTheme(Theme)}.</p>
  */
+@com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
+        "migrate to DawgDialog — story 276 follow-up")
 public final class ThemePickerDialog extends Dialog<Theme> {
 
     private static final Logger LOG = Logger.getLogger(ThemePickerDialog.class.getName());

@@ -39,6 +39,8 @@ import java.util.Optional;
  * time — typically the profile the user wants the binaural plugin to switch
  * to.</p>
  */
+@com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
+        "migrate to DawgDialog — story 276 follow-up")
 public final class HrtfProfileBrowserDialog extends Dialog<String> {
 
     private final HrtfImportController controller;
