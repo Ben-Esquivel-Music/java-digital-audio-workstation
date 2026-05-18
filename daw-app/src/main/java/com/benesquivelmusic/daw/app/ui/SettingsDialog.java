@@ -160,13 +160,14 @@ public final class SettingsDialog extends DawgDialog<Void> {
             @Override
             public ThemeManager.Theme fromString(String string) {
                 // Display-only converter: the combo is non-editable, so
-                // JavaFX never asks the converter to parse user input.
-                // Throwing makes the intent explicit — if the combo is
-                // ever made editable, this surfaces as a clear failure
-                // rather than silently no-op'ing back to the current
-                // value.
-                throw new UnsupportedOperationException(
-                        "Theme combo is display-only; fromString is not supported");
+                // JavaFX should never invoke fromString. Returning the
+                // current value is the safe convention — JavaFX internals
+                // (accessibility queries, type-ahead, selection
+                // restoration on focus loss) may still call fromString
+                // and must not see an exception propagate into the FX
+                // event loop. If the combo is ever made editable, a real
+                // reverse lookup over the items must be added here.
+                return themeCombo.getValue();
             }
         });
 
@@ -302,7 +303,7 @@ public final class SettingsDialog extends DawgDialog<Void> {
 
         grid.add(header, 0, 0, 2, 1);
         grid.add(new Separator(), 0, 1, 2, 1);
-        grid.add(new Label(msg("appearance.theme.label")), 0, 2);
+        grid.add(new Label(msg("appearance.theme.label") + ":"), 0, 2);
         grid.add(themeCombo, 1, 2);
         // Visual separator between the theme chooser (the prominent new
         // affordance) and the UI-scale row keeps the grouping clear —

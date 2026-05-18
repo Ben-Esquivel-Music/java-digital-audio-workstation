@@ -448,6 +448,18 @@ final class TokenValidationTest {
             // premise is that no structural CSS changes). Strip comments
             // (DOTALL) and the single .root-pane block; nothing with a
             // brace may remain.
+            //
+            // INVARIANT for the `[^}]*` body match below: the .root-pane
+            // rule body must not contain any `}` character. Today the
+            // theme overlays use only paint functions (rgba(), dropshadow())
+            // whose syntax is parenthesis-delimited, so this holds. If a
+            // contributor ever introduces a CSS construct that uses
+            // braces inside the rule body (e.g. a `@supports` block, a
+            // nested rule under future CSS-nesting support, or a
+            // hypothetical region-style {}), this strip will short-circuit
+            // and the assertion below would silently let structural rules
+            // slip through. In that case rewrite the strip with a
+            // proper brace-balanced parse.
             String stripped = css
                     .replaceAll("(?s)/\\*.*?\\*/", " ")
                     .replaceAll("(?s)\\.root-pane\\s*\\{[^}]*\\}", "");
@@ -467,6 +479,19 @@ final class TokenValidationTest {
      * the JavaFX lookup cascade) lives in
      * {@code com.benesquivelmusic.daw.app.ui.theme.ThemeLightnessTest};
      * this is the toolkit-free static guard.
+     *
+     * <p><b>Scope vs. the story's acceptance criterion:</b> the AC asks
+     * that <em>every panel</em> render Atelier's warm-white surface (no
+     * resolved colour resolves to the Palette-A dark). This static check
+     * proves the overlay <em>file</em> does not reintroduce Palette-A
+     * dark literals — a strictly weaker guarantee than a runtime walk of
+     * the scene graph. The runtime root-background probe in
+     * {@code ThemeLightnessTest#atelierRootBackgroundIsLight} is the
+     * canary that a contributor missing a {@code -surface-*} override
+     * would trip; full per-panel resolved-colour assertions are
+     * deferred (would require constructing each Phase-1/2 control in a
+     * real Scene, which is what {@code FxSnapshotTest} already covers
+     * end-to-end for the Palette-A baseline).</p>
      */
     @Test
     void atelierOverlayIsLightAndCarriesNoPaletteADarks() throws IOException {

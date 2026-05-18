@@ -23,11 +23,12 @@ import javafx.scene.control.Dialog;
  * {@link ThemeManager#getDefault()} directly. The public method
  * signatures are unchanged.</p>
  *
- * @deprecated use {@link ThemeManager} (via
+ * @deprecated since 0.1.0, scheduled for removal after the 0.2.0
+ *             release cycle — use {@link ThemeManager} (via
  *             {@link ThemeManager#getDefault()}) — this shim only
- *             forwards to it and will be removed after one release cycle.
+ *             forwards to it.
  */
-@Deprecated
+@Deprecated(since = "0.1.0", forRemoval = true)
 public final class DarkThemeHelper {
 
     private DarkThemeHelper() {
@@ -39,9 +40,10 @@ public final class DarkThemeHelper {
      * (Palette-A) stylesheet.
      *
      * @return the base stylesheet URL string
-     * @deprecated use {@link ThemeManager#baseStylesheetUrl()}
+     * @deprecated since 0.1.0, scheduled for removal — use
+     *             {@link ThemeManager#baseStylesheetUrl()}
      */
-    @Deprecated
+    @Deprecated(since = "0.1.0", forRemoval = true)
     public static String getStylesheetUrl() {
         return ThemeManager.getDefault().baseStylesheetUrl();
     }
@@ -51,9 +53,10 @@ public final class DarkThemeHelper {
      * {@link Dialog}'s pane and registers it for live re-theming.
      *
      * @param dialog the dialog to style
-     * @deprecated use {@code ThemeManager.getDefault().applyTo(dialog.getDialogPane())}
+     * @deprecated since 0.1.0, scheduled for removal — use
+     *             {@code ThemeManager.getDefault().applyTo(dialog.getDialogPane())}
      */
-    @Deprecated
+    @Deprecated(since = "0.1.0", forRemoval = true)
     public static void applyTo(Dialog<?> dialog) {
         ThemeManager.getDefault().applyTo(dialog.getDialogPane());
     }
@@ -63,9 +66,10 @@ public final class DarkThemeHelper {
      * {@link Scene} and registers it for live re-theming.
      *
      * @param scene the scene to style
-     * @deprecated use {@code ThemeManager.getDefault().applyTo(scene)}
+     * @deprecated since 0.1.0, scheduled for removal — use
+     *             {@code ThemeManager.getDefault().applyTo(scene)}
      */
-    @Deprecated
+    @Deprecated(since = "0.1.0", forRemoval = true)
     public static void applyTo(Scene scene) {
         ThemeManager.getDefault().applyTo(scene);
     }

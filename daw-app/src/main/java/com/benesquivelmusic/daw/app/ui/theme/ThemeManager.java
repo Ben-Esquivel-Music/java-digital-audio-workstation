@@ -186,8 +186,21 @@ public final class ThemeManager {
         this.prefs = Objects.requireNonNull(prefs, "prefs must not be null");
         this.activeTheme = new SimpleObjectProperty<>(this, "activeTheme", restore());
         this.activeTheme.addListener((_, _, newTheme) -> {
-            persist(newTheme);
-            reapplyAll();
+            // Persist FIRST so a backing-store failure can't leave the
+            // property in a state we then propagate to every registered
+            // scene/pane. If persist throws, the in-memory property is
+            // already updated (JavaFX fires change listeners after the
+            // new value is set) but we deliberately propagate the
+            // exception out — callers (Preferences sync, the Settings
+            // dialog Apply handler) can surface it. We still call
+            // reapplyAll() in a finally so an FX failure to log a
+            // persistence error doesn't leave the UI showing the old
+            // theme; this is the lesser of two evils.
+            try {
+                persist(newTheme);
+            } finally {
+                reapplyAll();
+            }
         });
     }
 
@@ -269,18 +282,26 @@ public final class ThemeManager {
      * stylesheet list: base {@code styles.css} first, then the active
      * theme's overlay (if any). Any previously-applied base/overlay
      * entries are removed first so re-application is idempotent and a
-     * stale overlay never lingers.
+     * stale overlay never lingers. The whole replacement is performed
+     * via a single {@link ObservableList#setAll(java.util.Collection)
+     * setAll} call so the JavaFX CSS subsystem sees one change event
+     * (and one re-evaluation pass) rather than a remove-then-add pair —
+     * avoiding a transient frame in which a registered scene is styled
+     * by the base sheet alone before the overlay is re-installed.
      */
     private void applyOrderedSheets(ObservableList<String> target) {
         List<String> ordered = orderedStylesheetUrls();
-        // Remove any of our managed URLs that are present, preserving any
-        // unrelated sheets a caller may have added, then append the
-        // ordered list so the overlay is always last (wins author order).
-        // removeAll() strips every base/overlay URL this manager could
-        // have installed, so the subsequent target.addAll is guaranteed
-        // not to introduce duplicates.
-        target.removeAll(allManagedUrls());
-        target.addAll(ordered);
+        List<String> managed = allManagedUrls();
+        // Build the final list = unrelated existing sheets (in caller's
+        // original order) + our ordered managed list (overlay last).
+        List<String> finalList = new ArrayList<>(target.size() + ordered.size());
+        for (String sheet : target) {
+            if (!managed.contains(sheet)) {
+                finalList.add(sheet);
+            }
+        }
+        finalList.addAll(ordered);
+        target.setAll(finalList);
     }
 
     /**
