@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.dialogs.DawgDialog;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.persistence.backup.BackupRetentionService;
@@ -13,7 +14,6 @@ import javafx.geometry.Insets;
 import javafx.scene.Node;
 import javafx.scene.chart.PieChart;
 import javafx.scene.control.ButtonType;
-import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
 import javafx.scene.control.Separator;
 import javafx.scene.control.Slider;
@@ -46,7 +46,7 @@ import java.util.stream.Stream;
  * <p>On Apply the dialog resolves to the new {@link BackupRetentionPolicy};
  * on Cancel (or close) it resolves to {@code null}.</p>
  */
-public final class BackupSettingsDialog extends Dialog<BackupRetentionPolicy> {
+public final class BackupSettingsDialog extends DawgDialog<BackupRetentionPolicy> {
 
     private static final int MAX_RECENT = 100;
     private static final int MAX_HOURLY = 168;   // one week of hours
@@ -152,9 +152,10 @@ public final class BackupSettingsDialog extends Dialog<BackupRetentionPolicy> {
 
         getDialogPane().setContent(buildContent());
         getDialogPane().getButtonTypes().addAll(ButtonType.APPLY, ButtonType.CANCEL);
-        getDialogPane().setPrefWidth(620);
-
-        DarkThemeHelper.applyTo(this);
+        // story 276 — sized() applies the §5.9 width band; the flat
+        // header / accent primary button / tokenized section header
+        // chrome is applied by the DawgDialog super-constructor.
+        sized(DawgDialog.Size.MEDIUM);
 
         setResultConverter(button -> button == ButtonType.APPLY ? buildPolicy() : null);
     }

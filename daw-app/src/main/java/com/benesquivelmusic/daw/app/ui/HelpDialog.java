@@ -29,6 +29,10 @@ import java.util.List;
  *
  * <p>Uses the {@link DawIcon} icon pack for all tab and header graphics.</p>
  */
+@com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
+        "migrate to DawgDialog — story 276 follow-up; CLOSE-only "
+        + "informational dialog (would keep the §5.9 close glyph), "
+        + "tokenized .shortcut-category-header already de-saturated by 276")
 public final class HelpDialog extends Dialog<Void> {
 
     private static final double HEADER_ICON_SIZE = 18;

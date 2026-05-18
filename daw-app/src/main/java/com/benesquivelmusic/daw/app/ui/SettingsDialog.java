@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.dialogs.DawgDialog;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import javafx.geometry.Insets;
@@ -30,7 +31,7 @@ import java.util.Optional;
  *
  * <p>Uses the {@link DawIcon} icon pack for all tab and header graphics.</p>
  */
-public final class SettingsDialog extends Dialog<Void> {
+public final class SettingsDialog extends DawgDialog<Void> {
 
     /**
      * Callback interface invoked after settings are applied.
@@ -155,8 +156,10 @@ public final class SettingsDialog extends Dialog<Void> {
 
         getDialogPane().setContent(tabPane);
         getDialogPane().getButtonTypes().addAll(ButtonType.APPLY, ButtonType.CANCEL);
-
-        DarkThemeHelper.applyTo(this);
+        // story 276 — §5.9 width band; flat header / accent primary /
+        // tokenized section-header chrome applied by the DawgDialog
+        // super-constructor. TabPane preserved (Non-Goal).
+        sized(DawgDialog.Size.MEDIUM);
 
         setResultConverter(button -> {
             if (button == ButtonType.APPLY) {

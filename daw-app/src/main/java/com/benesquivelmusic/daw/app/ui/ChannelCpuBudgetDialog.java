@@ -1,12 +1,12 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.dialogs.DawgDialog;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.sdk.audio.performance.DegradationPolicy;
 import com.benesquivelmusic.daw.sdk.audio.performance.TrackCpuBudget;
 import javafx.geometry.Insets;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.ComboBox;
-import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
 import javafx.scene.control.Slider;
 import javafx.scene.layout.GridPane;
@@ -36,7 +36,7 @@ import java.util.Objects;
  * {@link com.benesquivelmusic.daw.core.audio.performance.TrackCpuBudgetEnforcer
  * TrackCpuBudgetEnforcer}.</p>
  */
-public final class ChannelCpuBudgetDialog extends Dialog<Void> {
+public final class ChannelCpuBudgetDialog extends DawgDialog<Void> {
 
     /** Default {@code maxFractionOfBlock} suggested by the issue. */
     public static final double DEFAULT_MAX_FRACTION = 0.5;

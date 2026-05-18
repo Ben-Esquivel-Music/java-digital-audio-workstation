@@ -36,6 +36,8 @@ import java.util.logging.Logger;
  * <p>When a preset is selected, a short MIDI phrase is played through
  * the renderer so the user can audition the instrument before confirming.</p>
  */
+@com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
+        "migrate to DawgDialog — story 276 follow-up")
 public final class SoundFontBrowserDialog extends Dialog<SoundFontAssignment> {
 
     private static final Logger LOG = Logger.getLogger(SoundFontBrowserDialog.class.getName());

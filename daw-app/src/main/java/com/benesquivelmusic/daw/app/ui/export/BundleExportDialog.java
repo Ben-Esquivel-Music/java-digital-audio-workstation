@@ -50,6 +50,8 @@ import java.util.Objects;
  * {@code BundleExportService} (in {@code daw-core}); this dialog only
  * builds the request.</p>
  */
+@com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
+        "migrate to DawgDialog — story 276 follow-up")
 public final class BundleExportDialog extends Dialog<DeliverableBundle> {
 
     /**

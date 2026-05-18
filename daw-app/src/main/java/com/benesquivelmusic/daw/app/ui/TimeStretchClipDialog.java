@@ -39,6 +39,9 @@ import java.util.Optional;
  * exercise them without needing a JavaFX scene — the dialog window
  * itself is only constructed inside {@link #showAndWait(Window, Result, double)}.</p>
  */
+@com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
+        "migrate to DawgDialog — story 276 follow-up; not a Dialog "
+        + "subclass (static helper that builds a Dialog internally)")
 public final class TimeStretchClipDialog {
 
     /** Lower clamp on the stretch ratio surfaced to the user. */

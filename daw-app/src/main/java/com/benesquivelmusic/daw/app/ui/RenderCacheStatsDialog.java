@@ -43,6 +43,9 @@ import java.util.Objects;
  * to {@link RenderedTrackCache}, which is fully unit-tested in
  * {@code daw-core}.</p>
  */
+@com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
+        "migrate to DawgDialog — story 276 follow-up; not a Dialog "
+        + "subclass (static helper that builds a Dialog internally)")
 public final class RenderCacheStatsDialog {
 
     private final Stage stage;

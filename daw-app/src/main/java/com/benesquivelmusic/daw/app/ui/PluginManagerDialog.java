@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.dialogs.DawgDialog;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.plugin.ExternalPluginEntry;
@@ -29,7 +30,7 @@ import java.nio.file.Path;
  *
  * <p>Uses the {@link DawIcon} icon pack for all button graphics.</p>
  */
-public final class PluginManagerDialog extends Dialog<Void> {
+public final class PluginManagerDialog extends DawgDialog<Void> {
 
     private static final double BUTTON_ICON_SIZE = 16;
     private static final double HEADER_ICON_SIZE = 18;
@@ -142,8 +143,13 @@ public final class PluginManagerDialog extends Dialog<Void> {
 
         getDialogPane().setContent(content);
         getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
-
-        DarkThemeHelper.applyTo(this);
+        // story 276 — §5.9 width band. The footer CLOSE button is the
+        // dismiss path, so the redundant header close glyph is retracted
+        // by DawgDialog (§5.9 — "Cancel and Esc are the primary dismiss
+        // paths"); the header keeps this dialog's own SETTINGS graphic
+        // (set above). Flat header / accent primary / tokenized
+        // section-header chrome applied by the DawgDialog super-ctor.
+        sized(DawgDialog.Size.LARGE);
     }
 
     private void browseForJar() {
@@ -194,13 +200,10 @@ public final class PluginManagerDialog extends Dialog<Void> {
     }
 
     private void showError(String message) {
-        Alert alert = new Alert(Alert.AlertType.ERROR);
-        alert.setTitle("Plugin Error");
-        alert.setHeaderText(null);
-        alert.setContentText(message);
-        alert.setGraphic(IconNode.of(DawIcon.ERROR, 32));
-        DarkThemeHelper.applyTo(alert);
-        alert.showAndWait();
+        // story 276 — route through DawgDialog.error(...) so the error
+        // dialog gets the §5.9 flat chrome instead of JavaFX's Alert
+        // (whose header gradient bypasses the author stylesheet).
+        DawgDialog.error("Plugin Error", message).showAndWait();
     }
 
     /**

@@ -32,6 +32,8 @@ import java.util.Optional;
  * backup of the pre-migration file (handled by
  * {@code com.benesquivelmusic.daw.core.persistence.ProjectManager}).</p>
  */
+@com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
+        "migrate to DawgDialog — story 276 follow-up")
 public final class MigrationReportDialog extends Dialog<Void> {
 
     /** Roll-back button (Story 247). Only attached when a rollback action is supplied. */

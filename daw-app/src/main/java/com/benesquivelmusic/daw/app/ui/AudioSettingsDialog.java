@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.dialogs.DawgDialog;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
@@ -19,13 +20,10 @@ import javafx.application.Platform;
 import javafx.beans.value.ChangeListener;
 import javafx.geometry.Insets;
 import javafx.scene.Node;
-import javafx.scene.control.Alert;
-import javafx.scene.control.Alert.AlertType;
 import javafx.scene.control.Button;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.ComboBox;
-import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.Separator;
@@ -63,7 +61,7 @@ import java.util.logging.Logger;
  * engine. The user is warned first that playback will be briefly
  * interrupted.</p>
  */
-public final class AudioSettingsDialog extends Dialog<Void> {
+public final class AudioSettingsDialog extends DawgDialog<Void> {
 
     private static final Logger LOG = Logger.getLogger(AudioSettingsDialog.class.getName());
 
@@ -329,7 +327,10 @@ public final class AudioSettingsDialog extends Dialog<Void> {
 
         getDialogPane().setContent(buildContent());
         getDialogPane().getButtonTypes().addAll(ButtonType.APPLY, ButtonType.CANCEL);
-        getDialogPane().setPrefWidth(540);
+        // story 276 — §5.9 width band (was a bespoke 540 px). Flat
+        // header / accent primary / tokenized section-header chrome is
+        // applied by the DawgDialog super-constructor; tabs preserved.
+        sized(DawgDialog.Size.MEDIUM);
 
         initializeFromModelAndController();
         wireListeners();
@@ -339,8 +340,6 @@ public final class AudioSettingsDialog extends Dialog<Void> {
         cpuPollTimer.setCycleCount(Timeline.INDEFINITE);
         setOnShown(_ -> cpuPollTimer.play());
         setOnHidden(_ -> cpuPollTimer.stop());
-
-        DarkThemeHelper.applyTo(this);
 
         setResultConverter(button -> {
             if (button == ButtonType.APPLY) {
@@ -1273,14 +1272,11 @@ public final class AudioSettingsDialog extends Dialog<Void> {
     }
 
     private void showError(String header, String content) {
-        Platform.runLater(() -> {
-            Alert alert = new Alert(AlertType.ERROR);
-            alert.setTitle("Audio Settings");
-            alert.setHeaderText(header);
-            alert.setContentText(content);
-            DarkThemeHelper.applyTo(alert);
-            alert.showAndWait();
-        });
+        // story 276 — route through DawgDialog.error(...) so the error
+        // dialog gets the §5.9 flat chrome instead of JavaFX's Alert
+        // (whose header gradient bypasses the author stylesheet).
+        Platform.runLater(() ->
+                DawgDialog.error(header, content).showAndWait());
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

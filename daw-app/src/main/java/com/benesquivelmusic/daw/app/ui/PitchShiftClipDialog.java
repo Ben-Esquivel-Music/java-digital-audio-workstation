@@ -34,6 +34,9 @@ import java.util.Optional;
  * The combined offset surfaced through {@link Result#totalSemitones()} is
  * the value passed to {@link com.benesquivelmusic.daw.core.audio.PitchShiftClipAction}.
  */
+@com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
+        "migrate to DawgDialog — story 276 follow-up; not a Dialog "
+        + "subclass (static helper that builds a Dialog internally)")
 public final class PitchShiftClipDialog {
 
     /** Lower clamp on combined semitones (engine constraint). */

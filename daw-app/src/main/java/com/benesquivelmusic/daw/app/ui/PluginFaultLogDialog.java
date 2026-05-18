@@ -29,6 +29,9 @@ import java.util.concurrent.Flow;
  * <p>The dialog subscribes to {@link PluginInvocationSupervisor#publisher()}
  * and marshals incoming events onto the JavaFX application thread.</p>
  */
+@com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
+        "migrate to DawgDialog — story 276 follow-up; not a Dialog "
+        + "subclass (controller that builds a Dialog internally)")
 public final class PluginFaultLogDialog {
 
     private static final DateTimeFormatter TIME = DateTimeFormatter.ISO_INSTANT;
