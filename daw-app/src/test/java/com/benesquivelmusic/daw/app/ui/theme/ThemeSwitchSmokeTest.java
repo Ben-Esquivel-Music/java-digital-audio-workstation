@@ -16,6 +16,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
+import java.util.prefs.BackingStoreException;
 import java.util.prefs.Preferences;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -55,7 +56,9 @@ final class ThemeSwitchSmokeTest {
 
     @Test
     void studioSlateOverlayRethemesTheAccentToken() throws Exception {
-        ThemeManager manager = newManager(ThemeManager.Theme.STUDIO_SLATE);
+        Preferences node = newPrefsNode();
+        try {
+        ThemeManager manager = newManager(node, ThemeManager.Theme.STUDIO_SLATE);
 
         Color accent = onFxThread(() -> {
             BorderPane rootPane = new BorderPane();
@@ -87,11 +90,16 @@ final class ThemeSwitchSmokeTest {
         assertThat(distance(accent, PALETTE_A_ACCENT))
                 .as("Studio Slate -accent must NOT still be Palette A's #7C8CFF")
                 .isGreaterThan(0.1);
+        } finally {
+            removeQuietly(node);
+        }
     }
 
     @Test
     void baselineThemeKeepsPaletteAAccent() throws Exception {
-        ThemeManager manager = newManager(ThemeManager.Theme.ONYX_REFINED);
+        Preferences node = newPrefsNode();
+        try {
+        ThemeManager manager = newManager(node, ThemeManager.Theme.ONYX_REFINED);
 
         Color accent = onFxThread(() -> {
             BorderPane rootPane = new BorderPane();
@@ -111,6 +119,9 @@ final class ThemeSwitchSmokeTest {
         });
 
         assertCloseTo(accent, PALETTE_A_ACCENT, "baseline -accent must be #7C8CFF");
+        } finally {
+            removeQuietly(node);
+        }
     }
 
     /** Resolved {@code -accent} and stylesheet count before / after a live switch. */
@@ -130,7 +141,9 @@ final class ThemeSwitchSmokeTest {
     @Test
     void changingThemeRethemesAnAlreadyRegisteredSceneWithNoRestart()
             throws Exception {
-        ThemeManager manager = newManager(ThemeManager.Theme.ONYX_REFINED);
+        Preferences node = newPrefsNode();
+        try {
+        ThemeManager manager = newManager(node, ThemeManager.Theme.ONYX_REFINED);
 
         Switch result = onFxThread(() -> {
             BorderPane rootPane = new BorderPane();
@@ -176,16 +189,31 @@ final class ThemeSwitchSmokeTest {
         assertThat(distance(result.after(), result.before()))
                 .as("the live switch must actually change the resolved accent")
                 .isGreaterThan(0.1);
+        } finally {
+            removeQuietly(node);
+        }
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
-    private static ThemeManager newManager(ThemeManager.Theme theme) {
-        Preferences node = Preferences.userRoot()
+    private static Preferences newPrefsNode() {
+        return Preferences.userRoot()
                 .node("themeSwitchSmokeTest_" + System.nanoTime());
+    }
+
+    private static ThemeManager newManager(Preferences node, ThemeManager.Theme theme) {
         ThemeManager m = new ThemeManager(node);
         m.setActiveTheme(theme);
         return m;
+    }
+
+    private static void removeQuietly(Preferences node) {
+        try {
+            node.removeNode();
+        } catch (BackingStoreException ignored) {
+            // Best-effort cleanup; a failure here only leaves an empty
+            // user-prefs node behind and must not mask test results.
+        }
     }
 
     private static void assertCloseTo(Color got, Color want, String why) {

@@ -15,6 +15,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
+import java.util.prefs.BackingStoreException;
 import java.util.prefs.Preferences;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -46,7 +47,9 @@ final class ThemeLightnessTest {
 
     @Test
     void atelierRootBackgroundIsLight() throws Exception {
-        ThemeManager manager = newManager(ThemeManager.Theme.ATELIER);
+        Preferences node = newPrefsNode();
+        try {
+        ThemeManager manager = newManager(node, ThemeManager.Theme.ATELIER);
 
         Color rootFill = onFxThread(() -> {
             BorderPane rootPane = new BorderPane();
@@ -74,6 +77,9 @@ final class ThemeLightnessTest {
         assertThat(rootFill.getBlue())
                 .as("Atelier root background blue channel must be light (> 240/255)")
                 .isGreaterThan(LIGHT_THRESHOLD);
+        } finally {
+            removeQuietly(node);
+        }
     }
 
     @Test
@@ -81,7 +87,9 @@ final class ThemeLightnessTest {
         // Negative control: the baseline theme must remain the near-black
         // Palette-A surface — proves the lightness assertion above is the
         // overlay's doing, not an artefact of the probe.
-        ThemeManager manager = newManager(ThemeManager.Theme.ONYX_REFINED);
+        Preferences node = newPrefsNode();
+        try {
+        ThemeManager manager = newManager(node, ThemeManager.Theme.ONYX_REFINED);
 
         Color rootFill = onFxThread(() -> {
             BorderPane rootPane = new BorderPane();
@@ -96,14 +104,29 @@ final class ThemeLightnessTest {
         assertThat(rootFill.getRed())
                 .as("Onyx Refined root background must stay dark (Palette A #0B0B0E)")
                 .isLessThan(0.1);
+        } finally {
+            removeQuietly(node);
+        }
     }
 
-    private static ThemeManager newManager(ThemeManager.Theme theme) {
-        Preferences node = Preferences.userRoot()
+    private static Preferences newPrefsNode() {
+        return Preferences.userRoot()
                 .node("themeLightnessTest_" + System.nanoTime());
+    }
+
+    private static ThemeManager newManager(Preferences node, ThemeManager.Theme theme) {
         ThemeManager m = new ThemeManager(node);
         m.setActiveTheme(theme);
         return m;
+    }
+
+    private static void removeQuietly(Preferences node) {
+        try {
+            node.removeNode();
+        } catch (BackingStoreException ignored) {
+            // Best-effort cleanup; a failure here only leaves an empty
+            // user-prefs node behind and must not mask test results.
+        }
     }
 
     private static <T> T onFxThread(Supplier<T> supplier) throws Exception {

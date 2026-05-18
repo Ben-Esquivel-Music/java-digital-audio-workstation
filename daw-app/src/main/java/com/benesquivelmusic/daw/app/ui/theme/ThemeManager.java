@@ -140,9 +140,19 @@ public final class ThemeManager {
      * SettingsDialog} consult this so dialogs and the Appearance tab
      * re-theme without threading a {@code ThemeManager} through every
      * call site.
+     *
+     * <p>Lazy-initialized via the initialization-on-demand holder idiom
+     * so that merely loading {@code ThemeManager} (e.g. to read
+     * {@link #PREF_KEY} in a unit test that uses its own isolated
+     * preferences node) does not perform I/O against the developer's /
+     * CI agent's real user preferences store. The holder class loads —
+     * and the default instance constructs — only on the first call to
+     * {@link #getDefault()}.</p>
      */
-    private static final ThemeManager DEFAULT =
-            new ThemeManager(Preferences.userNodeForPackage(ThemeManager.class));
+    private static final class DefaultHolder {
+        static final ThemeManager INSTANCE =
+                new ThemeManager(Preferences.userNodeForPackage(ThemeManager.class));
+    }
 
     private final Preferences prefs;
     private final ObjectProperty<Theme> activeTheme;
@@ -152,7 +162,7 @@ public final class ThemeManager {
      * Held <strong>weakly</strong>: a dismissed dialog's pane (or a
      * closed window's scene) must not be pinned for the JVM lifetime —
      * over a long editing session many transient dialogs come and go,
-     * and {@link #DEFAULT} is a process-lifetime static. GC'd entries
+     * and {@link #getDefault()} is a process-lifetime singleton. GC'd entries
      * simply drop out of the re-theme set. All access is serialized
      * onto the FX thread via {@link #runOnFx}; {@link #reapplyAll()}
      * iterates a snapshot so a concurrent GC sweep cannot disturb it.
@@ -186,7 +196,7 @@ public final class ThemeManager {
      *         {@code Preferences.userNodeForPackage(ThemeManager.class)})
      */
     public static ThemeManager getDefault() {
-        return DEFAULT;
+        return DefaultHolder.INSTANCE;
     }
 
     // ── Active theme ─────────────────────────────────────────────────────────
@@ -266,12 +276,11 @@ public final class ThemeManager {
         // Remove any of our managed URLs that are present, preserving any
         // unrelated sheets a caller may have added, then append the
         // ordered list so the overlay is always last (wins author order).
+        // removeAll() strips every base/overlay URL this manager could
+        // have installed, so the subsequent target.addAll is guaranteed
+        // not to introduce duplicates.
         target.removeAll(allManagedUrls());
-        for (String url : ordered) {
-            if (!target.contains(url)) {
-                target.add(url);
-            }
-        }
+        target.addAll(ordered);
     }
 
     /**
