@@ -7,13 +7,13 @@ labels: ["enhancement", "midi", "editor", "groove"]
 
 ## Motivation
 
-"Quantize these notes to 1/16" is not a single operation — real users want `strength=75%` (snap 75% of the way toward grid, preserving feel), `swing=54%` (offset every other 1/16 to create groove), and `groove template: Logic MPC Funk 01` (snap toward a captured human performance). The current MIDI editor (if it has quantize at all) has none of this. Groove quantize is a defining feature of modern DAWs: Logic's "Groove Templates," Cubase's "Quantize Panel," Reaper's "Groove Pool," Ableton's "Groove Pool." Without it, programmed MIDI sounds mechanical.
+"Quantize these notes to 1/16" is not a single operation — real users want `strength=75%` (snap 75% of the way toward grid, preserving feel), `swing=54%` (offset every other 1/16 to create groove), and `groove template: Logic MPC Funk 01` (snap toward a captured human performance). The MIDI editor today has only `NoteQuantizer` (`com.benesquivelmusic.daw.core.midi`), which hard-snaps note start and duration to the nearest grid boundary — no strength, no swing, no groove templates. Groove quantize is a defining feature of modern DAWs: Logic's "Groove Templates," Cubase's "Quantize Panel," Reaper's "Groove Pool," Ableton's "Groove Pool." Without it, programmed MIDI sounds mechanical.
 
 ## Goals
 
 - Add `QuantizeConfig` record in `com.benesquivelmusic.daw.sdk.midi`: `record QuantizeConfig(GridResolution division, double strength, double swing, Optional<GrooveTemplate> groove, boolean quantizeEnd)`.
 - Add `GrooveTemplate` record: `record GrooveTemplate(String name, List<GrooveHit> hits)` where `GrooveHit` is a normalized `(position, velocityDelta)` tuple within one bar.
-- Add `MidiQuantizer` service in `com.benesquivelmusic.daw.core.midi` that takes a list of notes and a `QuantizeConfig` and produces a new list with adjusted start times, end times (if enabled), and velocities.
+- Add `MidiQuantizer` service in `com.benesquivelmusic.daw.core.midi` that takes a list of notes and a `QuantizeConfig` and produces a new list with adjusted start times, end times (if enabled), and velocities. This service supersedes the existing grid-snap-only `NoteQuantizer`: fold `NoteQuantizer`'s behaviour into the `strength=100, swing=0, no groove` path and migrate its callers, rather than keeping it as a parallel class.
 - `GrooveTemplateLibrary` loads user-extractable `.groove` files (simple JSON schema) from `daw-core/src/main/resources/groove-templates/` and the user's `~/.daw/groove-templates/`.
 - "Extract groove" action: given a selected region of MIDI, produce a `GrooveTemplate` capturing timing + velocity offsets and save it to the user library.
 - `QuantizeDialog` in the MIDI editor with controls for each field and a "Preview" button that applies non-destructively for audition.
@@ -27,4 +27,3 @@ labels: ["enhancement", "midi", "editor", "groove"]
 - Real-time input quantize during recording.
 - Machine-learning-assisted groove detection from audio.
 
-## WON't DO

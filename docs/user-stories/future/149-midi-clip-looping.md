@@ -26,4 +26,3 @@ Dragging a 2-bar drum loop to span 8 bars should produce 4 repeats of the 2-bar 
 - Variable-length loops within a single clip.
 - Time-stretch on loops (covered by story 042).
 
-## WON't DO

@@ -27,4 +27,3 @@ Composers frequently need a score from their MIDI: send a part to a session play
 - Guitar tab output.
 - Advanced engraving hints (slurs, phrasing) — basic notation only.
 
-## WON't DO

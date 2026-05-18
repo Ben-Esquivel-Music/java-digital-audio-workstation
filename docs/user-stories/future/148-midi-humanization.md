@@ -25,4 +25,3 @@ The opposite of quantize: programmed MIDI sounds robotically perfect, and adding
 - Audio-based humanization (feeling-aware timing pulled from an audio performance — future groove-extract story).
 - Neural-network "humanize" model.
 
-## WON't DO
