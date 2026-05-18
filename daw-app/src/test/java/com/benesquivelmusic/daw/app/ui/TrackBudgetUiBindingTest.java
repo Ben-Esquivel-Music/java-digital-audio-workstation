@@ -59,8 +59,10 @@ class TrackBudgetUiBindingTest {
             enforcer.recordTrackCpu("vox", 5_000_000L);
         }
 
-        // Allow the SubmissionPublisher worker to deliver the event.
-        waitForBindingToObserve(binding, "vox");
+        // Allow the SubmissionPublisher worker to deliver the event and
+        // the UI callback to fire (dispatchDegradedSet runs after the
+        // ConcurrentHashMap add, so we must wait for it too).
+        waitForCondition(() -> latestDegraded.get().contains("vox"));
 
         assertThat(binding.isDegraded("vox")).isTrue();
         assertThat(latestDegraded.get()).contains("vox");
@@ -171,9 +173,14 @@ class TrackBudgetUiBindingTest {
 
     /** Polls (with a small bounded budget) until the binding observes the given id. */
     private static void waitForBindingToObserve(TrackBudgetUiBinding binding, String trackId) {
+        waitForCondition(() -> binding.isDegraded(trackId));
+    }
+
+    /** Polls (with a bounded 2 s budget) until the given condition becomes true. */
+    private static void waitForCondition(java.util.function.BooleanSupplier condition) {
         long deadline = System.nanoTime() + 2_000_000_000L; // 2s
         while (System.nanoTime() < deadline) {
-            if (binding.isDegraded(trackId)) {
+            if (condition.getAsBoolean()) {
                 return;
             }
             try {
