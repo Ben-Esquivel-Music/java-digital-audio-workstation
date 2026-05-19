@@ -3,9 +3,13 @@ package com.benesquivelmusic.daw.app.ui.controls.skin;
 import com.benesquivelmusic.daw.app.ui.controls.LevelMeter;
 import com.benesquivelmusic.daw.app.ui.controls.TrackStrip;
 import com.benesquivelmusic.daw.app.ui.controls.TrackStrip.TrackSelectionEvent;
+import com.benesquivelmusic.daw.app.ui.density.DensityManager;
+import com.benesquivelmusic.daw.app.ui.density.DensityMode;
 import com.benesquivelmusic.daw.app.ui.icons.DawgIcon;
 
 import javafx.beans.value.ChangeListener;
+import javafx.beans.value.WeakChangeListener;
+import javafx.scene.Parent;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.ContextMenu;
@@ -47,16 +51,33 @@ import java.util.Locale;
  * {@link #dispose()} so swapping the skin via {@code setSkin(null)}
  * cleanly detaches the skin from the control's properties.
  *
- * <h2>Density variants</h2>
+ * <h2>Density variants (story 278)</h2>
  *
- * <p>{@code computeMin/Pref/MaxHeight} honour three densities selected by
- * style class: {@code .size-compact} → 24&nbsp;px, default → 28&nbsp;px,
- * {@code .size-comfortable} → 32&nbsp;px. The
+ * <p>{@code computeMin/Pref/MaxHeight} honour the three global
+ * {@link DensityMode} profiles: {@code COMPACT} → 24&nbsp;px,
+ * {@code COMFORTABLE} → 28&nbsp;px (default), {@code TOUCH} → 32&nbsp;px.
+ * The effective density is resolved through the single shared
+ * {@link DensityMode#resolveFor(javafx.scene.Node)} bridge — it reads the
+ * {@code .density-*} class {@code DensityManager} sets on the
+ * <em>scene root</em> (JavaFX style classes do not inherit to
+ * descendants, so the skin cannot read the root class directly) and falls
+ * back to the control's own legacy {@code size-*} class for back-compat.
+ * The legacy {@code COMFORTABLE_ROW_HEIGHT} constant is <strong>32</strong>
+ * — that is the story's {@code TOUCH}, not its Comfortable; the legacy
+ * name is preserved only for the back-compat fallback. The
  * {@link #layoutChildren(double, double, double, double)} routine derives
  * the meter width, swatch height, and toggle button size proportionally
  * from the row height so a density change reflows without geometry
- * surprises. A {@code .size-performance} variant is reserved for story
- * 280 (Performance Stage) but currently aliases the comfortable density.
+ * surprises.</p>
+ *
+ * <p>A live density switch must re-measure the already-built skin. A
+ * {@link WeakChangeListener} on
+ * {@code DensityManager.getDefault().activeDensityProperty()} requests a
+ * layout pass on the control <em>and</em> its parent (so a recycling
+ * {@code ListView}/{@code TrackStripCell} re-queries the cell's preferred
+ * height). The strong listener is held in a field and removed in
+ * {@link #dispose()}; the weak wrapper is defence-in-depth because cell
+ * skins are not guaranteed to receive {@code dispose()}.</p>
  */
 public final class TrackStripSkin extends SkinBase<TrackStrip> {
 
@@ -106,6 +127,17 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
     private final ChangeListener<javafx.scene.paint.Color> swatchListener;
     private final ChangeListener<Number> indexListener;
     private final ChangeListener<String> nameListener;
+
+    /**
+     * Strong listener on the global density property — held so
+     * {@link #dispose()} can remove exactly what was added. Wrapped in a
+     * {@link WeakChangeListener} when registered (defence-in-depth: a
+     * recycled {@code TrackStripCell} skin is not guaranteed to receive
+     * {@code dispose()}, so the weak wrapper lets the listener be GC'd
+     * with the skin even if {@code dispose()} never runs).
+     */
+    private final ChangeListener<DensityMode> densityListener;
+    private final WeakChangeListener<DensityMode> weakDensityListener;
 
     private boolean disposed;
     private int registeredListenerCount;
@@ -248,8 +280,37 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
         keyHandler = this::onKeyPressed;
         control.addEventHandler(KeyEvent.KEY_PRESSED, keyHandler);
 
+        // Story 278 — live density switch must re-measure the already
+        // built skin. The density class lives on the SCENE ROOT (not the
+        // control — JavaFX classes don't inherit), so a style-class
+        // listener on the control would never fire. Instead observe the
+        // global density property; on change request a layout pass on the
+        // control AND its parent so a recycling ListView / TrackStripCell
+        // re-queries the cell's preferred height (verified empirically by
+        // DensityRowHeightTest's live-switch assertion).
+        densityListener = (obs, was, now) -> requestRemeasure();
+        weakDensityListener = new WeakChangeListener<>(densityListener);
+        DensityManager.getDefault().activeDensityProperty()
+                .addListener(weakDensityListener);
+
         // Initial render.
         refreshReadout();
+    }
+
+    /**
+     * Forces this skin (and any recycling parent cell) to re-query the
+     * density-derived preferred height after a live density switch.
+     */
+    private void requestRemeasure() {
+        TrackStrip c = getSkinnable();
+        if (c == null) {
+            return;
+        }
+        c.requestLayout();
+        Parent parent = c.getParent();
+        if (parent != null) {
+            parent.requestLayout();
+        }
     }
 
     private static ToggleButton makeToggle(String role, String glyph) {
@@ -405,15 +466,23 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
         }
     }
 
+    /**
+     * The density-derived row height (story 278). Routes through the
+     * single shared {@link DensityMode#resolveFor(javafx.scene.Node)}
+     * bridge: it reads the {@code .density-*} class on the scene root
+     * (the authoritative source set by {@code DensityManager}) and falls
+     * back to the control's own legacy {@code size-*} class for
+     * back-compat. {@code COMPACT} → 24&nbsp;px, {@code COMFORTABLE} →
+     * 28&nbsp;px (default), {@code TOUCH} → 32&nbsp;px — exactly the
+     * three legacy constants, but mapped from {@link DensityMode} (the
+     * source of truth) rather than re-deriving from style classes here.
+     */
     private double rowHeightForVariant() {
-        TrackStrip c = getSkinnable();
-        if (c == null) return DEFAULT_ROW_HEIGHT;
-        var classes = c.getStyleClass();
-        if (classes.contains("size-compact")) return COMPACT_ROW_HEIGHT;
-        if (classes.contains("size-comfortable") || classes.contains("size-performance")) {
-            return COMFORTABLE_ROW_HEIGHT;
-        }
-        return DEFAULT_ROW_HEIGHT;
+        return switch (DensityMode.resolveFor(getSkinnable())) {
+            case COMPACT -> COMPACT_ROW_HEIGHT;        // 24
+            case COMFORTABLE -> DEFAULT_ROW_HEIGHT;    // 28
+            case TOUCH -> COMFORTABLE_ROW_HEIGHT;      // 32 (legacy name)
+        };
     }
 
     @Override
@@ -506,6 +575,11 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
             armBar.managedProperty().unbind();
             c.removeEventHandler(KeyEvent.KEY_PRESSED, keyHandler);
         }
+        // Story 278 — detach the global-density listener. Removing the
+        // weak wrapper that was registered is sufficient; the weak
+        // wrapper is belt-and-braces for cells that never get dispose().
+        DensityManager.getDefault().activeDensityProperty()
+                .removeListener(weakDensityListener);
         super.dispose();
     }
 }

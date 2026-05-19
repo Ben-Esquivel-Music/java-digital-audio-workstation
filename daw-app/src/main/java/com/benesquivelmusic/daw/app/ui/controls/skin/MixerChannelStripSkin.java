@@ -9,9 +9,13 @@ import com.benesquivelmusic.daw.app.ui.controls.MixerChannelStrip.ChannelType;
 import com.benesquivelmusic.daw.app.ui.controls.MixerChannelStrip.InsertSelectedEvent;
 import com.benesquivelmusic.daw.app.ui.controls.MixerChannelStrip.SendSelectedEvent;
 import com.benesquivelmusic.daw.app.ui.controls.SendSlotModel;
+import com.benesquivelmusic.daw.app.ui.density.DensityManager;
+import com.benesquivelmusic.daw.app.ui.density.DensityMode;
 
 import javafx.beans.value.ChangeListener;
+import javafx.beans.value.WeakChangeListener;
 import javafx.collections.ListChangeListener;
+import javafx.scene.Parent;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.Label;
@@ -89,14 +93,30 @@ import java.util.Locale;
  * test seam read that single helper — they never re-derive it
  * independently.
  *
- * <h2>Density variants</h2>
+ * <h2>Density variants (story 278)</h2>
  *
  * <p>{@code computeMin/Pref/MaxWidth} return 72&nbsp;px for
- * {@code .density-compact} (also the default) and 88&nbsp;px for
- * {@code .density-comfortable} (story §5.4 / story 278). Width is enforced
- * from Java, not CSS, to avoid a token-validation linter mismatch with the
- * 4&nbsp;px grid (mirrors {@code TrackStripSkin}). Height fills the
- * available vertical space — the mixer panel drives it.
+ * {@code COMPACT} and 88&nbsp;px for {@code COMFORTABLE} (story §5.4 /
+ * story 278). {@code TOUCH} is unspecified for the mixer width by the
+ * story, so it maps to 88&nbsp;px (same as Comfortable) — documented here
+ * so it is a deliberate choice, not an accident. The effective density is
+ * resolved through the single shared
+ * {@link DensityMode#resolveFor(javafx.scene.Node)} bridge — it reads the
+ * {@code .density-*} class {@code DensityManager} sets on the
+ * <em>scene root</em> (JavaFX style classes do not inherit to
+ * descendants, so the skin cannot read the root class directly) and falls
+ * back to the control's own legacy {@code density-*} class for
+ * back-compat. Width is enforced from Java, not CSS, to avoid a
+ * token-validation linter mismatch with the 4&nbsp;px grid (mirrors
+ * {@code TrackStripSkin}). Height fills the available vertical space —
+ * the mixer panel drives it.</p>
+ *
+ * <p>A live density switch must re-measure the already-built skin. A
+ * {@link WeakChangeListener} on
+ * {@code DensityManager.getDefault().activeDensityProperty()} requests a
+ * layout pass on the control and its parent; the strong listener is held
+ * in a field and removed in {@link #dispose()}, the weak wrapper is
+ * defence-in-depth (mirrors {@code TrackStripSkin}).</p>
  */
 public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
 
@@ -169,6 +189,15 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
     private final ChangeListener<Object> readoutRefreshListener;
     private final ChangeListener<ChannelType> channelTypeListener;
     private final ChangeListener<Boolean> nameEditorFocusListener;
+
+    /**
+     * Strong listener on the global density property (story 278) — held
+     * so {@link #dispose()} can remove exactly what was added. Registered
+     * via a {@link WeakChangeListener} wrapper as defence-in-depth
+     * (mirrors {@code TrackStripSkin}).
+     */
+    private final ChangeListener<DensityMode> densityListener;
+    private final WeakChangeListener<DensityMode> weakDensityListener;
 
     private boolean disposed;
     private int registeredListenerCount;
@@ -367,11 +396,36 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
         control.channelTypeProperty().addListener(channelTypeListener);
         registeredListenerCount++;
 
+        // Story 278 — live density switch must re-measure the already
+        // built strip width. The density class lives on the SCENE ROOT
+        // (not the control), so observe the global density property and
+        // request a layout pass on the control + its parent on change.
+        densityListener = (obs, was, now) -> requestRemeasure();
+        weakDensityListener = new WeakChangeListener<>(densityListener);
+        DensityManager.getDefault().activeDensityProperty()
+                .addListener(weakDensityListener);
+
         // Initial render.
         rebuildInserts();
         rebuildSends();
         applyChannelType();
         refreshReadout();
+    }
+
+    /**
+     * Forces this skin (and any parent container) to re-query the
+     * density-derived preferred width after a live density switch.
+     */
+    private void requestRemeasure() {
+        MixerChannelStrip c = getSkinnable();
+        if (c == null) {
+            return;
+        }
+        c.requestLayout();
+        Parent parent = c.getParent();
+        if (parent != null) {
+            parent.requestLayout();
+        }
     }
 
     private static ToggleButton makeToggle(String role, String glyph) {
@@ -669,15 +723,22 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
         }
     }
 
+    /**
+     * The density-derived strip width (story 278). Routes through the
+     * single shared {@link DensityMode#resolveFor(javafx.scene.Node)}
+     * bridge: it reads the {@code .density-*} class on the scene root
+     * (the authoritative source set by {@code DensityManager}) and falls
+     * back to the control's own legacy {@code density-*} class for
+     * back-compat. {@code COMPACT} → 72&nbsp;px; {@code COMFORTABLE} →
+     * 88&nbsp;px. {@code TOUCH} is unspecified for the mixer by story
+     * §5.4, so it deliberately maps to 88&nbsp;px (same as Comfortable).
+     */
     private double widthForDensity() {
-        MixerChannelStrip c = getSkinnable();
-        if (c == null) return COMPACT_WIDTH;
-        var classes = c.getStyleClass();
-        if (classes.contains("density-comfortable")) {
-            return COMFORTABLE_WIDTH;
-        }
-        // Default density == compact width (story §5.4 "keep the width").
-        return COMPACT_WIDTH;
+        return switch (DensityMode.resolveFor(getSkinnable())) {
+            case COMPACT -> COMPACT_WIDTH;            // 72
+            case COMFORTABLE -> COMFORTABLE_WIDTH;    // 88
+            case TOUCH -> COMFORTABLE_WIDTH;          // 88 (unspecified → == Comfortable)
+        };
     }
 
     @Override
@@ -836,6 +897,12 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
         registeredListenerCount--;
         nameEditor.focusedProperty().removeListener(nameEditorFocusListener);
         registeredListenerCount--;
+        // Story 278 — detach the global-density listener (the weak
+        // wrapper that was registered). Done outside the null guard like
+        // the meter detach so the listener is severed even if the
+        // skinnable is already null at dispose.
+        DensityManager.getDefault().activeDensityProperty()
+                .removeListener(weakDensityListener);
         // Detach the embedded fader's meter so its AnimationTimer stops
         // (sceneProperty → null) when the skin is swapped. Done outside the
         // null guard so the timer is guaranteed to stop even if the

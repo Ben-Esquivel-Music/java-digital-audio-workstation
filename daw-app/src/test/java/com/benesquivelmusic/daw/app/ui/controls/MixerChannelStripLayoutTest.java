@@ -14,9 +14,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
 /**
- * Story 271 — the strip width is density-driven and enforced from the
- * Skin (Java), not CSS: 72&nbsp;px Compact (also the default), 88&nbsp;px
- * Comfortable (UI Design Book §5.4, story 278).
+ * Story 271 / 278 — the strip width is density-driven and enforced from
+ * the Skin (Java), not CSS: 72&nbsp;px Compact, 88&nbsp;px Comfortable
+ * (UI Design Book §5.4).
+ *
+ * <p>Story 278 makes <strong>Comfortable</strong> the single global
+ * default density (UI Design Book §3.7) and routes the skin's width
+ * through the shared {@link com.benesquivelmusic.daw.app.ui.density.DensityMode#resolveFor}
+ * bridge. Its fallback chain for a strip with no density class on either
+ * the control or the scene root ends at the live default
+ * ({@code DensityManager.getDefault()} → Comfortable), so a class-less
+ * strip is now 88&nbsp;px — not the legacy 72&nbsp;px. The explicit
+ * control-own-class cases ({@code density-compact} / {@code density-comfortable})
+ * are still honoured via the resolver's back-compat fallback and remain
+ * 72 / 88&nbsp;px respectively.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class MixerChannelStripLayoutTest {
@@ -49,9 +60,15 @@ class MixerChannelStripLayoutTest {
     }
 
     @Test
-    void defaultDensityKeepsTheCompactWidth() {
-        // Story §5.4: "keep the width" — the default (no density class) is
-        // the compact 72 px width.
-        assertThat(widthOf(null)).isCloseTo(72.0, within(1.0));
+    void defaultDensityIsComfortableWidth() {
+        // Story 278 (UI Design Book §3.7): Comfortable is the single
+        // global default density. A strip with no density class on the
+        // control and none on the scene root resolves through
+        // DensityMode.resolveFor's fallback chain to the live default
+        // (DensityManager.getDefault() → Comfortable) → 88 px. This
+        // supersedes the pre-278 "no class == Compact 72" behaviour: §3.7
+        // makes density a single global setting, so there is no longer a
+        // mixer-local "default is Compact".
+        assertThat(widthOf(null)).isCloseTo(88.0, within(1.0));
     }
 }
