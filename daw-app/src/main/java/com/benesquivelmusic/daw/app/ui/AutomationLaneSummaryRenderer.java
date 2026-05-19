@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.paint.Color;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Renders the thin "summary strip" drawn in place of a folded automation
@@ -14,6 +15,7 @@ import javafx.scene.paint.Color;
  * width of the canvas, with the same accent colour as the automation
  * envelope so the eye recognises it as automation data.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 final class AutomationLaneSummaryRenderer {
 
     /** Fill colour used when the strip indicates folded automation data. */

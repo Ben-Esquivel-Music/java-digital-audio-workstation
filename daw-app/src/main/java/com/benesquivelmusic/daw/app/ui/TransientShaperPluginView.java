@@ -15,6 +15,7 @@ import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 
 import java.util.Objects;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * JavaFX view for the built-in {@link TransientShaperProcessor}.
@@ -28,6 +29,7 @@ import java.util.Objects;
  * application thread; the processor picks them up on its next audio-thread
  * buffer.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class TransientShaperPluginView extends VBox {
 
     /** Maximum displayed level on the input/output meters, in dBFS (top of bar). */

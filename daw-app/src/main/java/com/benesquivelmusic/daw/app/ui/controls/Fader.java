@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.function.Function;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Vertical fader {@link Control} for level / volume parameters.
@@ -69,6 +70,7 @@ import java.util.function.Function;
  *         .showMeter(true).size("mixer").build();
  * }</pre>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class Fader extends Control {
 
     /** Stable style class — selectable as {@code .fader} in CSS. */

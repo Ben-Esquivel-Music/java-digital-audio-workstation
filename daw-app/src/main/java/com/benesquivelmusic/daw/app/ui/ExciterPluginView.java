@@ -13,6 +13,7 @@ import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 
 import java.util.Objects;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * JavaFX view for the built-in {@link ExciterProcessor}.
@@ -30,6 +31,7 @@ import java.util.Objects;
  * application thread; the processor picks them up on its next audio-thread
  * buffer.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class ExciterPluginView extends VBox {
 
     /** Number of harmonic bins sketched in the mini FFT display. */

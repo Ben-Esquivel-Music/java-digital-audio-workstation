@@ -12,6 +12,7 @@ import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
 
 import java.util.Objects;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Miniature clip indicator shown in the arrangement-view track header
@@ -29,6 +30,7 @@ import java.util.Objects;
  * per-frame poll, scene-attachment timer gate, and surface lifecycle are
  * delegated to the shared substrate.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class MiniClipIndicator extends Region {
 
     private static final double SIZE = 10.0;

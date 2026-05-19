@@ -30,6 +30,7 @@ import javafx.scene.paint.Color;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Consumer;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * UI panel that presents a ranked list of {@link AcousticTreatment}
@@ -47,6 +48,7 @@ import java.util.function.Consumer;
  *         {@link RoomConfiguration} so subsequent analyses account for it.</li>
  * </ul></p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class TreatmentSuggestionPanel extends BorderPane {
 
     private final ObservableList<AcousticTreatment> suggestions =

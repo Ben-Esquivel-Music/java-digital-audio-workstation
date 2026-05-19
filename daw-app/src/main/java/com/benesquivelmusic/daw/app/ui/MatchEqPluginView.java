@@ -22,6 +22,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Objects;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * JavaFX view for the built-in {@link MatchEqPlugin} / {@link MatchEqProcessor}.
@@ -42,6 +43,7 @@ import java.util.Objects;
  * the JavaFX application thread; the processor picks them up on its next audio
  * buffer (scalar writes are safe for the primitives involved).</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class MatchEqPluginView extends VBox {
 
     /** Plot Y axis range in dB (centered at 0). The curve is clipped to ±DB_RANGE. */

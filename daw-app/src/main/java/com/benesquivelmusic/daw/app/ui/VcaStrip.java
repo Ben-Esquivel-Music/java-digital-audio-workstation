@@ -28,6 +28,7 @@ import javafx.scene.paint.Color;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.function.Function;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Mixer-strip UI for a single {@link VcaGroup}.
@@ -49,6 +50,7 @@ import java.util.function.Function;
  * <p>The visual layout matches a stripped-down output channel: badge → name
  * field → color swatch → level/fader → mute / solo / delete button row.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class VcaStrip extends VBox {
 
     /**

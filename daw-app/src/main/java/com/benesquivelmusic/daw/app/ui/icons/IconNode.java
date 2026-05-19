@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Loads SVG icon resources from the DAW icon pack and converts them into
@@ -37,6 +38,7 @@ import java.util.List;
  * button.setGraphic(playIcon);
  * }</pre>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class IconNode {
 
     private static final double DEFAULT_ICON_SIZE = 48.0;

@@ -15,6 +15,7 @@ import javafx.scene.text.Font;
 import javafx.scene.text.TextAlignment;
 
 import java.util.List;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * GpuCanvas-backed 3D spatial panner widget for immersive audio positioning.
@@ -37,6 +38,7 @@ import java.util.List;
  * these interactions to the underlying {@code VbapPanner} or
  * {@code AmbisonicEncoder}.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class SpatialPannerDisplay extends Region {
 
     // ── Color palette ─────────────────────────────────────────────

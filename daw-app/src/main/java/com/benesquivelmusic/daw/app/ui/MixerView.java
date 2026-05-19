@@ -48,6 +48,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * A mixer view that displays all project tracks as vertical channel strips.
@@ -72,6 +73,7 @@ import java.util.stream.Collectors;
  * <p>Uses existing CSS classes: {@code .mixer-panel}, {@code .mixer-channel},
  * {@code .mixer-channel-name}, {@code .mixer-fader}.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class MixerView extends VBox {
 
     private static final Logger LOG = Logger.getLogger(MixerView.class.getName());

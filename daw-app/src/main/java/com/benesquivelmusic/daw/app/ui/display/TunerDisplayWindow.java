@@ -17,6 +17,7 @@ import javafx.stage.Stage;
 import javafx.stage.StageStyle;
 
 import java.util.function.Consumer;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Standalone floating window wrapping a {@link TunerDisplay}.
@@ -34,6 +35,7 @@ import java.util.function.Consumer;
  * window.update(tuningResult);
  * }</pre>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class TunerDisplayWindow {
 
     private static final double DEFAULT_WIDTH = 480;

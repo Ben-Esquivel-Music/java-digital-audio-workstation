@@ -10,6 +10,7 @@ import javafx.scene.paint.Color;
 import javafx.scene.paint.CycleMethod;
 import javafx.scene.paint.LinearGradient;
 import javafx.scene.paint.Stop;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Animated peak/RMS level meter display with professional ballistics.
@@ -28,6 +29,7 @@ import javafx.scene.paint.Stop;
  * <p>Supports the metering requirements from the mastering-techniques
  * research (§4 — Dynamics Processing, §8 — Loudness Standards).</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class LevelMeterDisplay extends Region {
 
     private static final Color BACKGROUND = Color.web("#0d0d1a");

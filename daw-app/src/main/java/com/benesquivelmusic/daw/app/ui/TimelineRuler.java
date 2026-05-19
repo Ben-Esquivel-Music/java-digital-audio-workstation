@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Consumer;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * A timeline ruler component that displays bar numbers, beat subdivisions
@@ -40,6 +41,7 @@ import java.util.function.Consumer;
  * <p>Click-to-seek: clicking anywhere on the ruler fires the registered
  * seek callback with the corresponding beat position.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class TimelineRuler extends Pane {
 
     /** Default ruler height in pixels. */

@@ -7,6 +7,7 @@ import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.paint.Color;
 
 import java.util.List;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Renders a clip's per-clip gain envelope as a second polyline on top of
@@ -25,6 +26,7 @@ import java.util.List;
  * session's {@code samplesPerBeat} (= sample rate &times; 60 / tempo) and
  * the clip's timeline start / source offset.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 final class ClipGainEnvelopeRenderer {
 
     /** Radius of breakpoint handle circles in pixels. */

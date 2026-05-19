@@ -1,81 +1,76 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+
 import javafx.scene.Scene;
 import javafx.scene.control.Dialog;
-import javafx.scene.control.DialogPane;
-
-import java.net.URL;
-import java.util.Objects;
 
 /**
- * Utility class for applying the application's dark theme stylesheet
- * consistently to dialogs and standalone windows.
+ * Thin {@code @Deprecated} shim that delegates to {@link ThemeManager}
+ * (story 277, UI Design Book §6 Phase 3).
  *
- * <p>JavaFX dialogs and secondary stages do not automatically inherit the
- * main scene's stylesheets. This helper resolves the shared stylesheet
- * URL once and provides convenience methods to apply it to any
- * {@link Dialog} or {@link Scene}.</p>
+ * <p>Originally this utility only applied the single dark stylesheet.
+ * Phase-3 theming makes {@link ThemeManager} the single source of "the
+ * ordered stylesheet URL list to apply" (base {@code styles.css} + the
+ * active theme overlay). Routing every dialog and standalone-window
+ * call site through {@code ThemeManager.getDefault()} means all of them
+ * — including {@code DawgDialog} and the ~30 legacy dialogs that still
+ * call {@code DarkThemeHelper.applyTo(this)} — re-theme for free when
+ * the user switches theme, with zero churn at the call sites.</p>
+ *
+ * <p>This shim is retained for one release cycle so the existing
+ * callers keep compiling; new code should call
+ * {@link ThemeManager#getDefault()} directly. The public method
+ * signatures are unchanged.</p>
+ *
+ * @deprecated since 0.1.0, scheduled for removal after the 0.2.0
+ *             release cycle — use {@link ThemeManager} (via
+ *             {@link ThemeManager#getDefault()}) — this shim only
+ *             forwards to it.
  */
+@Deprecated(since = "0.1.0", forRemoval = true)
 public final class DarkThemeHelper {
-
-    private static final String STYLESHEET_PATH = "styles.css";
-
-    private static volatile String resolvedStylesheetUrl;
 
     private DarkThemeHelper() {
         // utility class
     }
 
     /**
-     * Returns the external-form URL of the application's dark theme
-     * stylesheet, resolving it lazily on first access.
+     * Returns the external-form URL of the application's base
+     * (Palette-A) stylesheet.
      *
-     * @return the stylesheet URL string
-     * @throws IllegalStateException if the stylesheet resource cannot be found
+     * @return the base stylesheet URL string
+     * @deprecated since 0.1.0, scheduled for removal — use
+     *             {@link ThemeManager#baseStylesheetUrl()}
      */
+    @Deprecated(since = "0.1.0", forRemoval = true)
     public static String getStylesheetUrl() {
-        String url = resolvedStylesheetUrl;
-        if (url == null) {
-            URL resource = DarkThemeHelper.class.getResource(STYLESHEET_PATH);
-            Objects.requireNonNull(resource,
-                    "Dark theme stylesheet not found: " + STYLESHEET_PATH);
-            url = resource.toExternalForm();
-            resolvedStylesheetUrl = url;
-        }
-        return url;
+        return ThemeManager.getDefault().baseStylesheetUrl();
     }
 
     /**
-     * Applies the dark theme stylesheet to a {@link Dialog}'s pane.
-     *
-     * <p>This should be called at the end of every dialog constructor
-     * to ensure the dialog inherits the application's dark neon theme.</p>
+     * Applies the active theme (base {@code styles.css} + overlay) to a
+     * {@link Dialog}'s pane and registers it for live re-theming.
      *
      * @param dialog the dialog to style
+     * @deprecated since 0.1.0, scheduled for removal — use
+     *             {@code ThemeManager.getDefault().applyTo(dialog.getDialogPane())}
      */
+    @Deprecated(since = "0.1.0", forRemoval = true)
     public static void applyTo(Dialog<?> dialog) {
-        DialogPane pane = dialog.getDialogPane();
-        String url = getStylesheetUrl();
-        if (!pane.getStylesheets().contains(url)) {
-            pane.getStylesheets().add(url);
-        }
-        if (!pane.getStyleClass().contains("root-pane")) {
-            pane.getStyleClass().add("root-pane");
-        }
+        ThemeManager.getDefault().applyTo(dialog.getDialogPane());
     }
 
     /**
-     * Applies the dark theme stylesheet to a {@link Scene}.
-     *
-     * <p>Use this for standalone floating windows (e.g., spectrum analyzer,
-     * loudness meter) that are not part of the main application scene.</p>
+     * Applies the active theme (base {@code styles.css} + overlay) to a
+     * {@link Scene} and registers it for live re-theming.
      *
      * @param scene the scene to style
+     * @deprecated since 0.1.0, scheduled for removal — use
+     *             {@code ThemeManager.getDefault().applyTo(scene)}
      */
+    @Deprecated(since = "0.1.0", forRemoval = true)
     public static void applyTo(Scene scene) {
-        String url = getStylesheetUrl();
-        if (!scene.getStylesheets().contains(url)) {
-            scene.getStylesheets().add(url);
-        }
+        ThemeManager.getDefault().applyTo(scene);
     }
 }

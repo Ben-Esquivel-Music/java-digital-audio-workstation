@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.dialogs.DawgDialog;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import javafx.geometry.Insets;
 import javafx.scene.Node;
 import javafx.scene.control.*;
@@ -12,10 +13,14 @@ import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
+import javafx.util.StringConverter;
 
 import java.util.EnumMap;
+import java.util.Locale;
 import java.util.Map;
+import java.util.MissingResourceException;
 import java.util.Optional;
+import java.util.ResourceBundle;
 
 /**
  * Modal dialog for configuring application settings.
@@ -53,6 +58,16 @@ public final class SettingsDialog extends DawgDialog<Void> {
     private static final double HEADER_ICON_SIZE = 18;
     private static final double TAB_ICON_SIZE = 14;
 
+    /**
+     * Resource bundle for localized strings (Skill §14) — uses
+     * {@link Locale#ROOT} to match the codebase-wide convention (see
+     * {@code BrowserPanel}, {@code MainController}, {@code DawgDialog}).
+     * If/when a locale-aware strategy is adopted it should be changed
+     * globally, not per-class.
+     */
+    private static final ResourceBundle MESSAGES = ResourceBundle.getBundle(
+            "com.benesquivelmusic.daw.app.i18n.Messages", Locale.ROOT);
+
     private final SettingsModel model;
 
     // ── Callback ─────────────────────────────────────────────────────────────
@@ -72,6 +87,8 @@ public final class SettingsDialog extends DawgDialog<Void> {
     // ── Appearance tab controls ──────────────────────────────────────────────
     private final Slider uiScaleSlider;
     private final Label uiScaleValueLabel;
+    private final ThemeManager themeManager;
+    private final ComboBox<ThemeManager.Theme> themeCombo;
 
     // ── Plugins tab controls ─────────────────────────────────────────────────
     private final TextField pluginScanPathsField;
@@ -131,6 +148,35 @@ public final class SettingsDialog extends DawgDialog<Void> {
         uiScaleValueLabel.getStyleClass().add("numeric-value");
         uiScaleSlider.valueProperty().addListener((_, _, newVal) ->
                 uiScaleValueLabel.setText(String.format("%.1fx", newVal.doubleValue())));
+
+        // Story 277 — token-theme chooser (UI Design Book §3.1 / §6
+        // Phase 3). Distinct from story 194's WCAG JSON theme registry;
+        // ThemeManager persists under its own preferences key. The combo
+        // shows the three design-book palettes by localized display name.
+        themeManager = ThemeManager.getDefault();
+        themeCombo = new ComboBox<>();
+        themeCombo.getItems().addAll(ThemeManager.Theme.values());
+        themeCombo.setValue(themeManager.getActiveTheme());
+        themeCombo.setConverter(new StringConverter<>() {
+            @Override
+            public String toString(ThemeManager.Theme theme) {
+                return theme == null ? "" : ThemeManager.displayName(theme);
+            }
+
+            @Override
+            public ThemeManager.Theme fromString(String string) {
+                // Display-only converter: the combo is non-editable, so
+                // JavaFX should never invoke fromString. Returning
+                // DEFAULT_THEME is the safest fallback — it can never be
+                // null, whereas themeCombo.getValue() could return null if
+                // JavaFX invokes fromString before setValue during early
+                // accessibility queries or a styling pass triggered by
+                // the converter being set. If the combo is ever made
+                // editable, a real reverse lookup over the items must be
+                // added here.
+                return ThemeManager.DEFAULT_THEME;
+            }
+        });
 
         Tab appearanceTab = new Tab("Appearance", buildAppearancePane());
         appearanceTab.setGraphic(IconNode.of(DawIcon.MONITOR, TAB_ICON_SIZE));
@@ -264,14 +310,16 @@ public final class SettingsDialog extends DawgDialog<Void> {
 
         grid.add(header, 0, 0, 2, 1);
         grid.add(new Separator(), 0, 1, 2, 1);
-        grid.add(new Label("UI Scale:"), 0, 2);
-        grid.add(uiScaleSlider, 1, 2);
-        grid.add(uiScaleValueLabel, 2, 2);
-
-        Label themeNote = new Label("Theme customization coming in a future release.");
-        themeNote.setGraphic(IconNode.of(DawIcon.INFO, 14));
-        themeNote.setStyle("-fx-text-fill: #808080; -fx-font-size: 10px;");
-        grid.add(themeNote, 0, 4, 3, 1);
+        grid.add(new Label(msg("appearance.theme.label") + ":"), 0, 2);
+        grid.add(themeCombo, 1, 2);
+        // Visual separator between the theme chooser (the prominent new
+        // affordance) and the UI-scale row keeps the grouping clear —
+        // mirrors the header/separator/fields pattern used elsewhere in
+        // this dialog.
+        grid.add(new Separator(), 0, 3, 2, 1);
+        grid.add(new Label("UI Scale:"), 0, 4);
+        grid.add(uiScaleSlider, 1, 4);
+        grid.add(uiScaleValueLabel, 2, 4);
 
         return grid;
     }
@@ -494,6 +542,14 @@ public final class SettingsDialog extends DawgDialog<Void> {
 
         // Appearance
         model.setUiScale(uiScaleSlider.getValue());
+        // Story 277 — apply + persist the token theme. Setting the
+        // active-theme property re-applies the overlay to every
+        // registered scene/dialog-pane (no restart) and persists the
+        // choice under ThemeManager's own preferences key.
+        ThemeManager.Theme selectedTheme = themeCombo.getValue();
+        if (selectedTheme != null) {
+            themeManager.setActiveTheme(selectedTheme);
+        }
 
         // Plugins
         String paths = pluginScanPathsField.getText();
@@ -538,6 +594,20 @@ public final class SettingsDialog extends DawgDialog<Void> {
         grid.setVgap(8);
         grid.setPadding(new Insets(16));
         return grid;
+    }
+
+    /**
+     * Resolves a localized string from the shared {@code Messages}
+     * bundle, falling back to the raw key if absent (mirrors the
+     * {@code DawgDialog#msg} / {@code BrowserPanel#msg} pattern —
+     * Skill §14).
+     */
+    private static String msg(String key) {
+        try {
+            return MESSAGES.getString(key);
+        } catch (MissingResourceException e) {
+            return key;
+        }
     }
 
     /**

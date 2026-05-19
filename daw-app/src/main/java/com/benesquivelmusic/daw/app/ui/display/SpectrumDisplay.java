@@ -13,6 +13,7 @@ import javafx.scene.paint.LinearGradient;
 import javafx.scene.paint.Stop;
 
 import java.util.Arrays;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Real-time animated spectrum analyzer display.
@@ -34,6 +35,7 @@ import java.util.Arrays;
  *   <li>Smooth animated transitions via {@link MeterAnimator}</li>
  * </ul>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class SpectrumDisplay extends Region {
 
     private static final Color BACKGROUND = Color.web("#0d0d1a");

@@ -22,6 +22,7 @@ import javafx.scene.text.Font;
 import javafx.scene.text.TextAlignment;
 
 import java.util.Objects;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * JavaFX virtual keyboard UI for the {@link KeyboardProcessor} plugin.
@@ -40,6 +41,7 @@ import java.util.Objects;
  * <p>The keyboard visually highlights active (pressed) keys and shows note
  * names on white keys.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class KeyboardProcessorView extends VBox {
 
     // ── Layout Constants ───────────────────────────────────────────────

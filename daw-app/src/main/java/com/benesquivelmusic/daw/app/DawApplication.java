@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.app;
 
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+
 import javafx.application.Application;
 import javafx.fxml.FXMLLoader;
 import javafx.scene.Parent;
@@ -52,8 +54,12 @@ public final class DawApplication extends Application {
         Parent root = loader.load();
 
         Scene scene = new Scene(root, DEFAULT_WIDTH, DEFAULT_HEIGHT);
-        scene.getStylesheets().add(
-                getClass().getResource("ui/styles.css").toExternalForm());
+        // Story 277 — ThemeManager owns the ordered stylesheet list
+        // (base styles.css + the persisted token-theme overlay) and
+        // re-applies it to the registered scene when the user switches
+        // theme in Preferences, so the whole UI re-themes with no
+        // restart.
+        ThemeManager.getDefault().applyTo(scene);
 
         primaryStage.setTitle(APP_TITLE);
         primaryStage.setScene(scene);

@@ -16,6 +16,7 @@ import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 
 import java.util.Objects;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * JavaFX view for the built-in {@link TruePeakLimiterProcessor}.
@@ -31,6 +32,7 @@ import java.util.Objects;
  * buffer (scalar writes are naturally thread-safe for the simple primitives
  * used by {@link TruePeakLimiterProcessor}).</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class TruePeakLimiterPluginView extends VBox {
 
     /** Maximum gain-reduction shown on the meter, in dB. */

@@ -19,6 +19,7 @@ import javafx.stage.FileChooser;
 import java.io.File;
 import java.nio.file.Path;
 import java.util.Objects;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * JavaFX view for the {@link ConvolutionReverbProcessor}.
@@ -35,6 +36,7 @@ import java.util.Objects;
  * <p>All parameter changes are written directly to the processor on the
  * JavaFX application thread.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class ConvolutionReverbPluginView extends VBox {
 
     private final ConvolutionReverbProcessor processor;

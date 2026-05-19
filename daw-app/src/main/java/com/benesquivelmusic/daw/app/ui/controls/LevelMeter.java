@@ -28,6 +28,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * A discrete LED-style segment level meter {@link Control}.
@@ -84,6 +85,7 @@ import java.util.concurrent.atomic.AtomicLong;
  *         .build();
  * }</pre>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class LevelMeter extends Control {
 
     /** Stable style class — selectable as {@code .level-meter} in CSS. */

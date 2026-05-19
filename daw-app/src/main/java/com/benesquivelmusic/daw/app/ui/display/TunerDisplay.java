@@ -10,6 +10,7 @@ import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
 import javafx.scene.text.TextAlignment;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Chromatic tuner display with note name, octave, frequency, and cents meter.
@@ -31,6 +32,7 @@ import javafx.scene.text.TextAlignment;
  *   <li>Red — beyond ±15 cents (out of tune)</li>
  * </ul>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class TunerDisplay extends Region {
 
     private static final Color BACKGROUND = Color.web("#0d0d1a");

@@ -35,6 +35,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * The DAW's single iconography entry point.
@@ -79,6 +80,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * single approved family going forward (UI Design Book §3.6); use
  * {@code DawgIcon} for every new icon.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class DawgIcon extends Region {
 
     /** Discrete icon sizes permitted by the design book. */

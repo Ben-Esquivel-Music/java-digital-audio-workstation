@@ -11,6 +11,7 @@ import javafx.collections.ObservableList;
 import javafx.geometry.Insets;
 import javafx.scene.control.*;
 import javafx.scene.layout.*;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Setup panel for configuring room dimensions and wall material
@@ -26,6 +27,7 @@ import javafx.scene.layout.*;
  * consistent with {@link SettingsDialog} and
  * {@link InputPortSelectionDialog}.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class TelemetrySetupPanel extends ScrollPane {
 
     private static final String BACKGROUND_STYLE =

@@ -15,6 +15,7 @@ import javafx.scene.paint.Color;
 import javafx.scene.shape.Circle;
 
 import java.util.Objects;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * JavaFX view for the built-in {@link NoiseGateProcessor}.
@@ -31,6 +32,7 @@ import java.util.Objects;
  * buffer (scalar writes are safe for the simple primitives used by
  * {@link NoiseGateProcessor}).</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class NoiseGatePluginView extends VBox {
 
     /** Maximum displayed level on the input meter, in dBFS (top of bar). */

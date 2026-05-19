@@ -6,6 +6,7 @@ import javafx.scene.control.ListCell;
 import javafx.scene.paint.Color;
 
 import java.util.Objects;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * {@link ListCell} that renders a {@link Track} into a single reusable
@@ -33,6 +34,7 @@ import java.util.Objects;
  * tracks.setCellFactory(lv -> new TrackStripCell());
  * }</pre>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public class TrackStripCell extends ListCell<Track> {
 
     private final TrackStrip strip;

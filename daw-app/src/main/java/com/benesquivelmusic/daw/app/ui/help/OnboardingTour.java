@@ -8,6 +8,7 @@ import javafx.scene.paint.Color;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Lightweight, deterministic onboarding tour that walks the user through a
@@ -19,6 +20,7 @@ import java.util.Objects;
  * Persistence of the "first launch" flag is delegated to
  * {@link OnboardingState}.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class OnboardingTour {
 
     /** A single step in the tour. */

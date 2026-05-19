@@ -10,6 +10,7 @@ import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.TextAlignment;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * LUFS loudness history display with platform target markers.
@@ -26,6 +27,7 @@ import javafx.scene.text.TextAlignment;
  * <p>Supports the loudness standards from the mastering-techniques
  * research (§8 — Loudness Standards and Metering).</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 public final class LoudnessDisplay extends Region {
 
     private static final Color BACKGROUND = Color.web("#0d0d1a");

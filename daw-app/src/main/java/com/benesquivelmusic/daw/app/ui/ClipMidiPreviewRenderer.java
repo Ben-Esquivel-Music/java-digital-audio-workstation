@@ -6,6 +6,7 @@ import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.paint.Color;
 
 import java.util.List;
+import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
  * Renders the miniature piano-roll preview inside an arrangement MIDI
@@ -16,6 +17,7 @@ import java.util.List;
  * explicitly so the renderer can be tested with a mock
  * {@link GraphicsContext} and shared between clips.</p>
  */
+@HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
 final class ClipMidiPreviewRenderer {
 
     static final Color MIDI_NOTE_COLOR = Color.web("#ffffff", 0.7);

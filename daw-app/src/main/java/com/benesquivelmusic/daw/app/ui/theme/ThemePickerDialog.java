@@ -60,6 +60,7 @@ import java.util.logging.Logger;
  */
 @com.benesquivelmusic.daw.app.ui.dialogs.LegacyDialog(
         "migrate to DawgDialog — story 276 follow-up")
+@HardcodedColorAllowed("story 194 user-supplied JSON theme colour parser/preview - exempt by design; the hex it constructs comes from arbitrary user JSON, not the design-book palette")
 public final class ThemePickerDialog extends Dialog<Theme> {
 
     private static final Logger LOG = Logger.getLogger(ThemePickerDialog.class.getName());
