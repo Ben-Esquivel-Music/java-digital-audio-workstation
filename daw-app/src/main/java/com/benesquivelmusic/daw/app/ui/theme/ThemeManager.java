@@ -154,6 +154,44 @@ public final class ThemeManager {
                 new ThemeManager(Preferences.userNodeForPackage(ThemeManager.class));
     }
 
+    /**
+     * Test-only override for the process-wide default returned by
+     * {@link #getDefault()}. When non-null, {@code getDefault()} returns
+     * this instance instead of the real singleton — isolating tests that
+     * exercise {@code DarkThemeHelper} or {@code SettingsDialog} from
+     * the developer's / CI agent's actual user preferences store.
+     *
+     * <p>Set via {@link #setDefaultForTest(ThemeManager)} and cleared by
+     * passing {@code null}. Not thread-safe — call from a single test
+     * thread before/after the code under test.</p>
+     */
+    private static volatile ThemeManager defaultOverride;
+
+    /**
+     * Overrides the process-wide default instance for testing purposes.
+     * Pass a {@code ThemeManager} backed by an isolated
+     * {@link Preferences} node to prevent test runs from polluting (or
+     * inheriting choices from) the developer's real user preferences.
+     *
+     * <p><strong>Usage:</strong></p>
+     * <pre>{@code
+     * Preferences testNode = Preferences.userRoot().node("myTest_" + nanoTime());
+     * try {
+     *     ThemeManager.setDefaultForTest(new ThemeManager(testNode));
+     *     // … exercise DarkThemeHelper / SettingsDialog …
+     * } finally {
+     *     ThemeManager.setDefaultForTest(null);
+     *     testNode.removeNode();
+     * }
+     * }</pre>
+     *
+     * @param override the test instance, or {@code null} to restore the
+     *                 real singleton
+     */
+    public static void setDefaultForTest(ThemeManager override) {
+        defaultOverride = override;
+    }
+
     private final Preferences prefs;
     private final ObjectProperty<Theme> activeTheme;
 
@@ -207,11 +245,14 @@ public final class ThemeManager {
     }
 
     /**
-     * @return the process-wide default {@code ThemeManager} (persists to
+     * @return the process-wide default {@code ThemeManager} — either the
+     *         test override (if set via {@link #setDefaultForTest}) or
+     *         the real singleton (persists to
      *         {@code Preferences.userNodeForPackage(ThemeManager.class)})
      */
     public static ThemeManager getDefault() {
-        return DefaultHolder.INSTANCE;
+        ThemeManager override = defaultOverride;
+        return override != null ? override : DefaultHolder.INSTANCE;
     }
 
     // ── Active theme ─────────────────────────────────────────────────────────

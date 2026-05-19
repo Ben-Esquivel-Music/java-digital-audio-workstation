@@ -58,7 +58,13 @@ public final class SettingsDialog extends DawgDialog<Void> {
     private static final double HEADER_ICON_SIZE = 18;
     private static final double TAB_ICON_SIZE = 14;
 
-    /** Resource bundle for localized strings (Skill §14) — {@link Locale#ROOT}. */
+    /**
+     * Resource bundle for localized strings (Skill §14) — uses
+     * {@link Locale#ROOT} to match the codebase-wide convention (see
+     * {@code BrowserPanel}, {@code MainController}, {@code DawgDialog}).
+     * If/when a locale-aware strategy is adopted it should be changed
+     * globally, not per-class.
+     */
     private static final ResourceBundle MESSAGES = ResourceBundle.getBundle(
             "com.benesquivelmusic.daw.app.i18n.Messages", Locale.ROOT);
 

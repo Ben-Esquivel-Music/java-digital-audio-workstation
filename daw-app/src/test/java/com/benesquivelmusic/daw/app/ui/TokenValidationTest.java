@@ -460,9 +460,19 @@ final class TokenValidationTest {
             // and the assertion below would silently let structural rules
             // slip through. In that case rewrite the strip with a
             // proper brace-balanced parse.
-            String stripped = css
-                    .replaceAll("(?s)/\\*.*?\\*/", " ")
+            String withoutComments = css
+                    .replaceAll("(?s)/\\*.*?\\*/", " ");
+            String stripped = withoutComments
                     .replaceAll("(?s)\\.root-pane\\s*\\{[^}]*\\}", "");
+            // Guard: the strip must have actually removed a non-trivial
+            // rule body. If the regex silently short-circuits (matches
+            // nothing, or an empty body), the before/after lengths will
+            // be suspiciously close. At minimum the .root-pane block
+            // contains all THEME_COLOUR_TOKENS declarations (~20 lines).
+            assertThat(withoutComments.length() - stripped.length())
+                    .as("%s: .root-pane strip removed a non-trivial amount "
+                            + "(sanity check that the regex matched)", resource)
+                    .isGreaterThan(200);
             assertThat(stripped)
                     .as("%s must contain ONLY the .root-pane token block — "
                             + "no structural rules (story 277 / §6 Phase 3)", resource)
