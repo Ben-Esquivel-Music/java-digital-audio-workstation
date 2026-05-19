@@ -316,6 +316,47 @@
     -fx-padding: 12 8;
 }
 
+/* Inspector section rows (story 272). The 278 Goal named a
+ * `.inspector-section-row` selector that never existed: story 272's
+ * InspectorSection exposes a `.inspector-section-header` (HBox) and a
+ * `.inspector-section-body` (VBox), styled by the InspectorDrawer's OWN
+ * component user-agent stylesheet (inspector/inspector.css, -insp-*
+ * tokens). These AUTHOR rules override that USER_AGENT sheet by CSS
+ * origin (the documented scene-over-component-UA convention), so the
+ * inspector follows the global density like every other Phase-2 row.
+ *
+ * Header and body have DIFFERENT inspector.css baselines (header
+ * `4 8 4 8`, body `4 8 8 8`), so they are separate rules and each
+ * Comfortable value restates that selector's own baseline verbatim —
+ * adding the Comfortable class stays a deliberate NO-OP (the inspector
+ * render is byte-identical at the default density; DensityInspectorTest
+ * + the snapshot suite). Compact tightens the vertical rhythm to
+ * row-compact (the `2` is the -spacing-xxs half-step); Touch loosens it
+ * to row-touch. */
+.density-compact .inspector-drawer .inspector-section-header {
+    -fx-padding: 2 8 2 8;
+}
+
+.density-comfortable .inspector-drawer .inspector-section-header {
+    -fx-padding: 4 8 4 8;   /* == inspector.css baseline; Comfortable is a no-op */
+}
+
+.density-touch .inspector-drawer .inspector-section-header {
+    -fx-padding: 8 8 8 8;
+}
+
+.density-compact .inspector-drawer .inspector-section-body {
+    -fx-padding: 2 8 4 8;
+}
+
+.density-comfortable .inspector-drawer .inspector-section-body {
+    -fx-padding: 4 8 8 8;   /* == inspector.css baseline; Comfortable is a no-op */
+}
+
+.density-touch .inspector-drawer .inspector-section-body {
+    -fx-padding: 8 8 12 8;
+}
+
 /* Hover — UI Design Book §7.1 / §7.3: background swap to -surface-3
  * only. No effect, no border change. */
 .dawg-button:hover {

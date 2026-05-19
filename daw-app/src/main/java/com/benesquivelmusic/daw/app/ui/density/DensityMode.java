@@ -6,6 +6,7 @@ import javafx.scene.Node;
 import javafx.scene.Scene;
 import javafx.scene.Parent;
 
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -102,9 +103,8 @@ public enum DensityMode {
     }
 
     /** Every root-scope density style class (for idempotent swap removal). */
-    static final String[] ALL_STYLE_CLASSES = {
-            COMPACT.styleClass, COMFORTABLE.styleClass, TOUCH.styleClass
-    };
+    static final List<String> ALL_STYLE_CLASSES = List.of(
+            COMPACT.styleClass, COMFORTABLE.styleClass, TOUCH.styleClass);
 
     /**
      * The single shared root → Java-skin resolver (story 278's
@@ -132,8 +132,9 @@ public enum DensityMode {
      * yet in a scene, or a scene with no root all degrade gracefully
      * through the fallback chain — they never throw.</p>
      *
-     * @param node the control whose effective density is being resolved
-     *             (may be {@code null})
+     * @param node the node whose effective density is being resolved —
+     *             in practice the skinnable control consulting this
+     *             resolver (may be {@code null})
      * @return the resolved density (never {@code null})
      */
     public static DensityMode resolveFor(Node node) {
