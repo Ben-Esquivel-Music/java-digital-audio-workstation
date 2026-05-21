@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui.density;
 
+import com.benesquivelmusic.daw.app.ui.DarkThemeHelper;
 import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
 
 import javafx.application.Platform;
@@ -75,6 +76,7 @@ final class DensityInvariantTest {
                 BorderPane root = new BorderPane(new VBox(body, elevated));
                 root.getStyleClass().add("root-pane");
                 Scene scene = new Scene(root, 300, 200);
+                DarkThemeHelper.applyTo(scene);
                 mgr.applyTo(scene);
                 // Self-contained drop-shadow rule (NOT the -elevation-3
                 // looked-up token — JavaFX cannot resolve a looked-up
