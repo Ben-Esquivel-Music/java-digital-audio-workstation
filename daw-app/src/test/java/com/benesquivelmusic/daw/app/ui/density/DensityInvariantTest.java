@@ -106,7 +106,7 @@ final class DensityInvariantTest {
                         .as(".body font size must resolve to the 12 px scale")
                         .isCloseTo(12.0, offset(0.5));
                 assertThat(comfortable.shadowRadius())
-                        .as("-elevation-3 must resolve to a real drop-shadow")
+                        .as(".elevation-probe drop-shadow must resolve to a non-zero radius")
                         .isGreaterThan(0.0);
                 return null;
             });

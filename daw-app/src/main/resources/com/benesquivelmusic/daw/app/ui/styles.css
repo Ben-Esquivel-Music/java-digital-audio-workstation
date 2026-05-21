@@ -275,7 +275,10 @@
  *
  * §3.7 invariant: ONLY padding and row height change across density —
  * motion, type scale and elevation are untouched (verified by
- * DensityInvariantTest). Every value is a multiple of 4 (TokenValidation).
+ * DensityInvariantTest). Every value is a multiple of 4
+ * (TokenValidation), with allowed exceptions: 2 is permitted for
+ * padding/spacing (-spacing-xxs) and 6 is permitted for radii
+ * (-radius-2).
  *
  * .density-comfortable is the 28 px baseline: its values are
  * byte-identical to the no-class defaults above, so adding the

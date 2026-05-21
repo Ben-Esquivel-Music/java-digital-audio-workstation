@@ -233,6 +233,11 @@ public final class SettingsDialog extends DawgDialog<Void> {
         // super-constructor. TabPane preserved (Non-Goal).
         sized(DawgDialog.Size.MEDIUM);
 
+        // story 278 — register the dialog pane with DensityManager so the
+        // Preferences dialog itself reflects the active density and
+        // live-updates when the user selects a different density mode.
+        densityManager.applyTo(getDialogPane());
+
         setResultConverter(button -> {
             if (button == ButtonType.APPLY) {
                 applySettings();
