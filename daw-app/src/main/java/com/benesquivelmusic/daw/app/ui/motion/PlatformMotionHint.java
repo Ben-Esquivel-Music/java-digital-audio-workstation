@@ -145,14 +145,15 @@ final class PlatformMotionHint implements OsMotionHint {
                     "org.gnome.desktop.interface", "enable-animations")
                     .redirectErrorStream(true)
                     .start();
+            if (!process.waitFor(LINUX_PROBE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                process.waitFor(500, TimeUnit.MILLISECONDS);
+                return Optional.empty();
+            }
             String output;
             try (var in = process.getInputStream()) {
                 output = new String(in.readAllBytes()).trim()
                         .toLowerCase(Locale.ROOT);
-            }
-            if (!process.waitFor(LINUX_PROBE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                process.destroyForcibly();
-                return Optional.empty();
             }
             if (output.contains("true")) {
                 // animations enabled → reduceMotion = false.
