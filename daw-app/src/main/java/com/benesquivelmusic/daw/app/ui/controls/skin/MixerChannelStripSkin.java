@@ -196,6 +196,7 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
      * via a {@link WeakChangeListener} wrapper as defence-in-depth
      * (mirrors {@code TrackStripSkin}).
      */
+    private final DensityManager densityManager;
     private final ChangeListener<DensityMode> densityListener;
     private final WeakChangeListener<DensityMode> weakDensityListener;
 
@@ -402,7 +403,8 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
         // request a layout pass on the control + its parent on change.
         densityListener = (obs, was, now) -> requestRemeasure();
         weakDensityListener = new WeakChangeListener<>(densityListener);
-        DensityManager.getDefault().activeDensityProperty()
+        densityManager = DensityManager.getDefault();
+        densityManager.activeDensityProperty()
                 .addListener(weakDensityListener);
 
         // Initial render.
@@ -901,7 +903,7 @@ public final class MixerChannelStripSkin extends SkinBase<MixerChannelStrip> {
         // wrapper that was registered). Done outside the null guard like
         // the meter detach so the listener is severed even if the
         // skinnable is already null at dispose.
-        DensityManager.getDefault().activeDensityProperty()
+        densityManager.activeDensityProperty()
                 .removeListener(weakDensityListener);
         // Detach the embedded fader's meter so its AnimationTimer stops
         // (sceneProperty → null) when the skin is swapped. Done outside the

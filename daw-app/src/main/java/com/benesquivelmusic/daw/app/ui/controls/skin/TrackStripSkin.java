@@ -136,6 +136,7 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
      * {@code dispose()}, so the weak wrapper lets the listener be GC'd
      * with the skin even if {@code dispose()} never runs).
      */
+    private final DensityManager densityManager;
     private final ChangeListener<DensityMode> densityListener;
     private final WeakChangeListener<DensityMode> weakDensityListener;
 
@@ -290,7 +291,8 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
         // DensityRowHeightTest's live-switch assertion).
         densityListener = (obs, was, now) -> requestRemeasure();
         weakDensityListener = new WeakChangeListener<>(densityListener);
-        DensityManager.getDefault().activeDensityProperty()
+        densityManager = DensityManager.getDefault();
+        densityManager.activeDensityProperty()
                 .addListener(weakDensityListener);
 
         // Initial render.
@@ -578,7 +580,7 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
         // Story 278 — detach the global-density listener. Removing the
         // weak wrapper that was registered is sufficient; the weak
         // wrapper is belt-and-braces for cells that never get dispose().
-        DensityManager.getDefault().activeDensityProperty()
+        densityManager.activeDensityProperty()
                 .removeListener(weakDensityListener);
         super.dispose();
     }

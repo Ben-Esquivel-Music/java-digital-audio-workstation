@@ -2,18 +2,14 @@ package com.benesquivelmusic.daw.app.ui.density;
 
 import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
 import com.benesquivelmusic.daw.app.ui.controls.TrackStrip;
+import com.benesquivelmusic.daw.app.ui.snapshot.FxSnapshotTest;
 
-import javafx.application.Platform;
 import javafx.scene.Scene;
 import javafx.scene.layout.BorderPane;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Supplier;
 import java.util.prefs.BackingStoreException;
 import java.util.prefs.Preferences;
 
@@ -50,7 +46,7 @@ final class DensityRowHeightTest {
         DensityManager mgr = new DensityManager(node);
         DensityManager.setDefaultForTest(mgr);
         try {
-            onFxThread(() -> {
+            FxSnapshotTest.runOnFxThread(() -> {
                 TrackStrip strip = TrackStrip.create()
                         .trackIndex(1).name("Drums").build();
 
@@ -92,28 +88,6 @@ final class DensityRowHeightTest {
     }
 
     // ── helpers ────────────────────────────────────────────────────────────
-
-    private static <T> T onFxThread(Supplier<T> supplier) throws Exception {
-        AtomicReference<T> ref = new AtomicReference<>();
-        AtomicReference<Throwable> err = new AtomicReference<>();
-        CountDownLatch latch = new CountDownLatch(1);
-        Platform.runLater(() -> {
-            try {
-                ref.set(supplier.get());
-            } catch (Throwable t) {
-                err.set(t);
-            } finally {
-                latch.countDown();
-            }
-        });
-        if (!latch.await(5, TimeUnit.SECONDS)) {
-            throw new IllegalStateException("FX thread did not complete within 5 seconds");
-        }
-        if (err.get() != null) {
-            throw new AssertionError("FX thread action failed", err.get());
-        }
-        return ref.get();
-    }
 
     private static void removeQuietly(Preferences node) {
         try {
