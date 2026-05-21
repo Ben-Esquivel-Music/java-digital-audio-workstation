@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 import com.benesquivelmusic.daw.sdk.audio.ClockKind;
 import com.benesquivelmusic.daw.sdk.audio.ClockLockEvent;
 import com.benesquivelmusic.daw.sdk.audio.ClockSource;
@@ -8,6 +9,8 @@ import javafx.animation.Animation;
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
 import javafx.application.Platform;
+import javafx.beans.value.ChangeListener;
+import javafx.beans.value.WeakChangeListener;
 import javafx.scene.control.Label;
 import javafx.scene.control.Tooltip;
 import javafx.util.Duration;
@@ -61,6 +64,23 @@ public final class ClockStatusIndicator extends Label {
     private final NotificationManager notifications;
     private final Runnable recordingPauseHandler;
     private final Timeline flashTimeline;
+    /**
+     * Re-evaluates the badge when global Reduce Motion is toggled (story
+     * 279) so flipping the setting <em>during</em> an active clock-unlock
+     * fault starts/stops the flash pulse immediately. Held as a strong
+     * field and registered on the process-lifetime {@link MotionManager}
+     * singleton via a {@link WeakChangeListener} so the singleton never
+     * pins this badge.
+     */
+    private final ChangeListener<Boolean> reduceMotionListener =
+            (obs, was, now) -> runOnFx(this::refresh);
+    /**
+     * Captured once at construction so the {@link WeakChangeListener}
+     * registration and {@link #startFlash()} always read the SAME
+     * {@code MotionManager} — a {@code getDefault()} swap mid-life
+     * ({@code setDefaultForTest}) cannot make them diverge.
+     */
+    private final MotionManager motionManager = MotionManager.getDefault();
     private final AtomicReference<ClockSource> activeSource = new AtomicReference<>();
     private final AtomicReference<Flow.Subscription> subscription = new AtomicReference<>();
     private volatile int sampleRate;
@@ -94,6 +114,10 @@ public final class ClockStatusIndicator extends Label {
         this.flashTimeline = new Timeline(
                 new KeyFrame(Duration.seconds(0.5), _ -> toggleFlashStyle()));
         flashTimeline.setCycleCount(Animation.INDEFINITE);
+        // Story 279 — global Reduce Motion suppresses the decorative flash
+        // pulse (see startFlash). React to a live toggle of the setting.
+        motionManager.reduceMotionProperty()
+                .addListener(new WeakChangeListener<>(reduceMotionListener));
     }
 
     /**
@@ -195,6 +219,18 @@ public final class ClockStatusIndicator extends Label {
     }
 
     private void startFlash() {
+        if (!motionManager.isAnimationAllowed()) {
+            // Reduce Motion (story 279) — suppress the 0.5 s pulse. The
+            // unlocked state stays unmistakable without it: refresh() has
+            // already applied the solid red STYLE_UNLOCKED and the
+            // "⚠ … UNLOCKED" text, and the lock-loss event fired the
+            // notification + recording-pause side effects. Only the
+            // decorative motion is dropped — no information is lost.
+            // stopFlash() handles the case where the user enables Reduce
+            // Motion while the pulse is already running.
+            stopFlash();
+            return;
+        }
         if (flashTimeline.getStatus() != Animation.Status.RUNNING) {
             flashTimeline.playFromStart();
         }

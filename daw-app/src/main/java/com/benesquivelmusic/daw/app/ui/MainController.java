@@ -37,6 +37,8 @@ import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioChannelInfo;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
+import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
+
 import javafx.animation.FadeTransition;
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
@@ -596,7 +598,10 @@ public final class MainController {
         for (Node child : trackListPanel.getChildren()) {
             if (child.getUserData() == track) {
                 Node armBtn = child.lookup(".track-arm-button");
-                if (armBtn != null) {
+                if (armBtn != null
+                        && MotionManager.getDefault().isAnimationAllowed()) {
+                    // Decorative arm-button flash — transitional motion,
+                    // gated by global Reduce Motion (story 279).
                     FadeTransition flash = new FadeTransition(Duration.millis(120), armBtn);
                     flash.setFromValue(0.4);
                     flash.setToValue(1.0);

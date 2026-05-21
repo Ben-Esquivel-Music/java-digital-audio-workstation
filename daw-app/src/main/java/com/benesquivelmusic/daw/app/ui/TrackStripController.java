@@ -18,6 +18,8 @@ import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
+import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
+
 import javafx.animation.FadeTransition;
 import javafx.animation.Interpolator;
 import javafx.animation.ParallelTransition;
@@ -611,15 +613,19 @@ final class TrackStripController {
             trackListPanel.getChildren().add(trackItem);
         }
 
-        // Slide-fade entry animation: item slides in from the left and fades in
-        trackItem.setTranslateX(-24);
-        trackItem.setOpacity(0.0);
-        TranslateTransition slide = new TranslateTransition(Duration.millis(200), trackItem);
-        slide.setToX(0.0);
-        slide.setInterpolator(Interpolator.EASE_OUT);
-        FadeTransition fade = new FadeTransition(Duration.millis(200), trackItem);
-        fade.setToValue(1.0);
-        new ParallelTransition(slide, fade).play();
+        // Slide-fade entry animation — transitional motion, gated by
+        // global Reduce Motion (story 279). With Reduce Motion on the
+        // strip simply appears at its final position/opacity.
+        if (MotionManager.getDefault().isAnimationAllowed()) {
+            trackItem.setTranslateX(-24);
+            trackItem.setOpacity(0.0);
+            TranslateTransition slide = new TranslateTransition(Duration.millis(200), trackItem);
+            slide.setToX(0.0);
+            slide.setInterpolator(Interpolator.EASE_OUT);
+            FadeTransition fade = new FadeTransition(Duration.millis(200), trackItem);
+            fade.setToValue(1.0);
+            new ParallelTransition(slide, fade).play();
+        }
 
         return trackItem;
     }
@@ -1596,6 +1602,14 @@ final class TrackStripController {
      * consistent with the existing track-strip entry animation style.
      */
     private void animateDrop(Node trackItem) {
+        // Drop animation — transitional motion, gated by global Reduce
+        // Motion (story 279). With Reduce Motion on the strip settles at
+        // its final position/opacity at once.
+        if (!MotionManager.getDefault().isAnimationAllowed()) {
+            trackItem.setTranslateY(0.0);
+            trackItem.setOpacity(1.0);
+            return;
+        }
         trackItem.setTranslateY(-8);
         trackItem.setOpacity(0.6);
         TranslateTransition slide = new TranslateTransition(Duration.millis(200), trackItem);
