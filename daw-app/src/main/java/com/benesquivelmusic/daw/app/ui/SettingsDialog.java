@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.density.DensityManager;
+import com.benesquivelmusic.daw.app.ui.density.DensityMode;
 import com.benesquivelmusic.daw.app.ui.dialogs.DawgDialog;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
@@ -89,6 +91,15 @@ public final class SettingsDialog extends DawgDialog<Void> {
     private final Label uiScaleValueLabel;
     private final ThemeManager themeManager;
     private final ComboBox<ThemeManager.Theme> themeCombo;
+    // Story 278 — global density chooser (UI Design Book §3.7). Three
+    // radio buttons in a ToggleGroup (the story explicitly specifies
+    // radio buttons, NOT the Theme ComboBox idiom). DensityManager
+    // persists under its own key and live-applies to every registered
+    // scene/dialog-pane, exactly like ThemeManager.
+    private final DensityManager densityManager;
+    private final ToggleGroup densityGroup;
+    private final Map<DensityMode, RadioButton> densityButtons =
+            new EnumMap<>(DensityMode.class);
 
     // ── Plugins tab controls ─────────────────────────────────────────────────
     private final TextField pluginScanPathsField;
@@ -178,6 +189,21 @@ public final class SettingsDialog extends DawgDialog<Void> {
             }
         });
 
+        // Story 278 — density chooser. Three radio buttons in one
+        // ToggleGroup, localized via DensityManager.displayName; the one
+        // matching the current active density is pre-selected. Each
+        // button's userData carries its DensityMode for applySettings().
+        densityManager = DensityManager.getDefault();
+        densityGroup = new ToggleGroup();
+        DensityMode activeDensity = densityManager.getActiveDensity();
+        for (DensityMode mode : DensityMode.values()) {
+            RadioButton rb = new RadioButton(DensityManager.displayName(mode));
+            rb.setToggleGroup(densityGroup);
+            rb.setUserData(mode);
+            rb.setSelected(mode == activeDensity);
+            densityButtons.put(mode, rb);
+        }
+
         Tab appearanceTab = new Tab("Appearance", buildAppearancePane());
         appearanceTab.setGraphic(IconNode.of(DawIcon.MONITOR, TAB_ICON_SIZE));
         appearanceTab.setClosable(false);
@@ -206,6 +232,11 @@ public final class SettingsDialog extends DawgDialog<Void> {
         // tokenized section-header chrome applied by the DawgDialog
         // super-constructor. TabPane preserved (Non-Goal).
         sized(DawgDialog.Size.MEDIUM);
+
+        // story 278 — register the dialog pane with DensityManager so the
+        // Preferences dialog itself reflects the active density and
+        // live-updates when the user selects a different density mode.
+        densityManager.applyTo(getDialogPane());
 
         setResultConverter(button -> {
             if (button == ButtonType.APPLY) {
@@ -320,6 +351,17 @@ public final class SettingsDialog extends DawgDialog<Void> {
         grid.add(new Label("UI Scale:"), 0, 4);
         grid.add(uiScaleSlider, 1, 4);
         grid.add(uiScaleValueLabel, 2, 4);
+
+        // Story 278 — density chooser (UI Design Book §3.7). Separator +
+        // label + the three radios laid out horizontally, following the
+        // header/separator/field grid idiom used above.
+        grid.add(new Separator(), 0, 5, 2, 1);
+        grid.add(new Label(msg("appearance.density.label") + ":"), 0, 6);
+        HBox densityBox = new HBox(12,
+                densityButtons.get(DensityMode.COMPACT),
+                densityButtons.get(DensityMode.COMFORTABLE),
+                densityButtons.get(DensityMode.TOUCH));
+        grid.add(densityBox, 1, 6, 2, 1);
 
         return grid;
     }
@@ -549,6 +591,16 @@ public final class SettingsDialog extends DawgDialog<Void> {
         ThemeManager.Theme selectedTheme = themeCombo.getValue();
         if (selectedTheme != null) {
             themeManager.setActiveTheme(selectedTheme);
+        }
+        // Story 278 — apply + persist the global density. Setting the
+        // active-density property re-applies the .density-* root class to
+        // every registered scene/dialog-pane (no restart) and persists
+        // the choice under DensityManager's own preferences key — exactly
+        // like the theme block above.
+        Toggle selectedDensityToggle = densityGroup.getSelectedToggle();
+        if (selectedDensityToggle != null
+                && selectedDensityToggle.getUserData() instanceof DensityMode mode) {
+            densityManager.setActiveDensity(mode);
         }
 
         // Plugins

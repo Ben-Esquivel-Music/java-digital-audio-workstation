@@ -267,6 +267,99 @@
     -fx-padding: 8 16;
 }
 
+/* ── Density profiles (story 278 — UI Design Book §3.7) ──────────────────
+ * Three global density profiles selected by a single root-scope class
+ * (.density-compact / .density-comfortable / .density-touch) that
+ * DensityManager adds to the scene root. JavaFX descendant selectors
+ * thread density through every pure-CSS row without a per-skin switcher.
+ *
+ * §3.7 invariant: ONLY padding and row height change across density —
+ * motion, type scale and elevation are untouched (verified by
+ * DensityInvariantTest). Every value is a multiple of 4
+ * (TokenValidation), with allowed exceptions: 2 is permitted for
+ * padding/spacing (-spacing-xxs) and 6 is permitted for radii
+ * (-radius-2).
+ *
+ * .density-comfortable is the 28 px baseline: its values are
+ * byte-identical to the no-class defaults above, so adding the
+ * Comfortable class is a deliberate NO-OP — the snapshot suite must not
+ * change at the default density (DensityRowHeightTest / EditorViewSnapshotTest).
+ *
+ * .track-strip / .mixer-channel-strip compute their size in their Java
+ * Skin (TrackStripSkin / MixerChannelStripSkin) via DensityMode.resolveFor
+ * — they intentionally have NO -fx-padding density rule here (the Java
+ * resolver is their mechanism). */
+.density-compact .dawg-button.size-default {
+    -fx-padding: 4 8;
+}
+
+.density-comfortable .dawg-button.size-default {
+    -fx-padding: 4 12;   /* == baseline; Comfortable is a no-op */
+}
+
+.density-touch .dawg-button.size-default {
+    -fx-padding: 8 12;
+}
+
+/* Browser list rows (real selector is `.browser-list .list-cell`,
+ * story 275 — NOT `.browser-list-row`). The effective baseline for a
+ * browser-list cell is the generic `.list-cell { -fx-padding: 8 8 }`
+ * rule (the `.browser-list .list-cell` rule sets no padding), so
+ * Comfortable MUST be `8 8` to stay a no-op at the default density.
+ * Compact tightens the vertical padding; Touch loosens it. */
+.density-compact .browser-list .list-cell {
+    -fx-padding: 4 8;
+}
+
+.density-comfortable .browser-list .list-cell {
+    -fx-padding: 8 8;    /* == baseline (.list-cell 8 8); Comfortable is a no-op */
+}
+
+.density-touch .browser-list .list-cell {
+    -fx-padding: 12 8;
+}
+
+/* Inspector section rows (story 272). The 278 Goal named a
+ * `.inspector-section-row` selector that never existed: story 272's
+ * InspectorSection exposes a `.inspector-section-header` (HBox) and a
+ * `.inspector-section-body` (VBox), styled by the InspectorDrawer's OWN
+ * component user-agent stylesheet (inspector/inspector.css, -insp-*
+ * tokens). These AUTHOR rules override that USER_AGENT sheet by CSS
+ * origin (the documented scene-over-component-UA convention), so the
+ * inspector follows the global density like every other Phase-2 row.
+ *
+ * Header and body have DIFFERENT inspector.css baselines (header
+ * `4 8 4 8`, body `4 8 8 8`), so they are separate rules and each
+ * Comfortable value restates that selector's own baseline verbatim —
+ * adding the Comfortable class stays a deliberate NO-OP (the inspector
+ * render is byte-identical at the default density; DensityInspectorTest
+ * + the snapshot suite). Compact tightens the vertical rhythm to
+ * row-compact (the `2` is the -spacing-xxs half-step); Touch loosens it
+ * to row-touch. */
+.density-compact .inspector-drawer .inspector-section-header {
+    -fx-padding: 2 8 2 8;
+}
+
+.density-comfortable .inspector-drawer .inspector-section-header {
+    -fx-padding: 4 8 4 8;   /* == inspector.css baseline; Comfortable is a no-op */
+}
+
+.density-touch .inspector-drawer .inspector-section-header {
+    -fx-padding: 8 8 8 8;
+}
+
+.density-compact .inspector-drawer .inspector-section-body {
+    -fx-padding: 2 8 4 8;
+}
+
+.density-comfortable .inspector-drawer .inspector-section-body {
+    -fx-padding: 4 8 8 8;   /* == inspector.css baseline; Comfortable is a no-op */
+}
+
+.density-touch .inspector-drawer .inspector-section-body {
+    -fx-padding: 8 8 12 8;
+}
+
 /* Hover — UI Design Book §7.1 / §7.3: background swap to -surface-3
  * only. No effect, no border change. */
 .dawg-button:hover {

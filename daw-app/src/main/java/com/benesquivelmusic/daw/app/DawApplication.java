@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app;
 
+import com.benesquivelmusic.daw.app.ui.density.DensityManager;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 
 import javafx.application.Application;
@@ -60,6 +61,11 @@ public final class DawApplication extends Application {
         // theme in Preferences, so the whole UI re-themes with no
         // restart.
         ThemeManager.getDefault().applyTo(scene);
+        // Story 278 — DensityManager adds the persisted .density-* class
+        // to the scene root (restoring the user's density at startup) and
+        // re-applies it to the registered scene when the user switches
+        // density in Preferences, so the UI re-densifies with no restart.
+        DensityManager.getDefault().applyTo(scene);
 
         primaryStage.setTitle(APP_TITLE);
         primaryStage.setScene(scene);
