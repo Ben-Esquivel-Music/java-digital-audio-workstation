@@ -6,10 +6,15 @@ import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.DoubleProperty;
 import javafx.beans.property.IntegerProperty;
 import javafx.beans.property.ObjectProperty;
+import javafx.beans.property.ReadOnlyBooleanProperty;
+import javafx.beans.property.ReadOnlyBooleanWrapper;
 import javafx.beans.property.SimpleBooleanProperty;
 import javafx.beans.property.SimpleDoubleProperty;
 import javafx.beans.property.SimpleIntegerProperty;
 import javafx.beans.property.SimpleObjectProperty;
+import javafx.beans.value.ChangeListener;
+import javafx.beans.value.WeakChangeListener;
+import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 import javafx.css.CssMetaData;
 import javafx.css.StyleConverter;
 import javafx.css.Styleable;
@@ -140,8 +145,20 @@ public final class LevelMeter extends Control {
                     return Math.max(MIN_CHANNELS, Math.min(MAX_CHANNELS, v));
                 }
             };
-    private final BooleanProperty animated =
-            new SimpleBooleanProperty(this, "animated", true);
+    // ── Animated flag — two-mechanism design (story 279) ──────────────────
+    // The per-control opt-out flag (set via setAnimated / builder.animated);
+    // unchanged behaviour. The publicly-observable `animated` property is a
+    // read-only COMBINED value: localAnimated AND NOT global Reduce Motion.
+    private final BooleanProperty localAnimated =
+            new SimpleBooleanProperty(this, "localAnimated", true);
+    private final ReadOnlyBooleanWrapper animated =
+            new ReadOnlyBooleanWrapper(this, "animated", true);
+    // Strong field reference so the listener lives exactly as long as this
+    // control; registered on the process-lifetime MotionManager singleton
+    // wrapped in a WeakChangeListener so the singleton never pins the
+    // control (story 277/278 sanctioned weak-listener pattern, story 279).
+    private final ChangeListener<Boolean> reduceMotionListener =
+            (obs, was, now) -> recomputeAnimated();
 
     // ── Lock-free audio → FX relay ────────────────────────────────────────
     // One AtomicLong per double value (NOT AtomicReference<Double> — avoids
@@ -196,6 +213,24 @@ public final class LevelMeter extends Control {
         // role description.
         setAccessibleText("Level meter: no signal");
         setFocusTraversable(false);
+
+        // Combined animated = localAnimated AND NOT global Reduce Motion
+        // (story 279). Recompute when either input changes; the global
+        // listener is weak so the MotionManager singleton cannot pin this
+        // control (the strong reduceMotionListener field dies with it).
+        localAnimated.addListener((obs, was, now) -> recomputeAnimated());
+        MotionManager.getDefault().reduceMotionProperty()
+                .addListener(new WeakChangeListener<>(reduceMotionListener));
+        recomputeAnimated();
+    }
+
+    /**
+     * Recomputes the combined {@link #animatedProperty()} value:
+     * {@code localAnimated AND NOT reduceMotion} (story 279).
+     */
+    private void recomputeAnimated() {
+        animated.set(localAnimated.get()
+                && !MotionManager.getDefault().isReduceMotion());
     }
 
     @Override
@@ -305,26 +340,39 @@ public final class LevelMeter extends Control {
     // ── animated ──────────────────────────────────────────────────────────
 
     /**
-     * @return the animated property (default {@code true}). Currently a
-     *         no-op for this skin — segments are discrete with no smooth
-     *         transitions, so the per-frame timer always runs while
-     *         attached to keep audio-thread {@link #submitLevels} writes
-     *         visible. The flag is kept for API parity with the rest of
-     *         the controls package (story 279 "Reduce Motion") and may be
-     *         honoured here as a throttle in a future story.
+     * @return the combined animated property (default {@code true}):
+     *         {@code true} only when this control's per-control flag is
+     *         set <em>and</em> global Reduce Motion is off (story 279).
+     *         Read-only — write the per-control flag via
+     *         {@link #setAnimated(boolean)}. Currently a no-op for this
+     *         skin: segments are discrete with no smooth transitions, so
+     *         the per-frame timer always runs while attached to keep
+     *         audio-thread {@link #submitLevels} writes visible. The flag
+     *         is kept for API parity with the rest of the controls
+     *         package and the global Reduce Motion setting.
      */
-    public final BooleanProperty animatedProperty() {
-        return animated;
+    public final ReadOnlyBooleanProperty animatedProperty() {
+        return animated.getReadOnlyProperty();
     }
 
-    /** @return whether the meter is animated. */
+    /**
+     * @return whether the meter is animated — the combined value
+     *         ({@code localAnimated AND NOT reduceMotion}, story 279)
+     */
     public final boolean isAnimated() {
         return animated.get();
     }
 
-    /** @param value whether the meter should animate. */
+    /**
+     * Sets this control's per-control animation opt-out flag. The
+     * effective {@link #isAnimated()} value also depends on the global
+     * Reduce Motion setting (story 279) — this writes only the
+     * per-control half of the two-mechanism gate.
+     *
+     * @param value whether the meter should animate (per-control flag)
+     */
     public final void setAnimated(boolean value) {
-        animated.set(value);
+        localAnimated.set(value);
     }
 
     // ── Audio → FX relay (thread-safe ingest) ─────────────────────────────

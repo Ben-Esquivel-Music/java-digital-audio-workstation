@@ -5,11 +5,16 @@ import com.benesquivelmusic.daw.app.ui.controls.skin.KnobSkin;
 import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.DoubleProperty;
 import javafx.beans.property.ObjectProperty;
+import javafx.beans.property.ReadOnlyBooleanProperty;
+import javafx.beans.property.ReadOnlyBooleanWrapper;
 import javafx.beans.property.SimpleBooleanProperty;
 import javafx.beans.property.SimpleDoubleProperty;
 import javafx.beans.property.SimpleObjectProperty;
 import javafx.beans.property.SimpleStringProperty;
 import javafx.beans.property.StringProperty;
+import javafx.beans.value.ChangeListener;
+import javafx.beans.value.WeakChangeListener;
+import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 import javafx.css.CssMetaData;
 import javafx.css.StyleConverter;
 import javafx.css.Styleable;
@@ -158,8 +163,20 @@ public final class Knob extends Control {
             new SimpleBooleanProperty(this, "bipolar", false);
     private final StringProperty unit =
             new SimpleStringProperty(this, "unit", "");
-    private final BooleanProperty animated =
-            new SimpleBooleanProperty(this, "animated", true);
+
+    // ── Animated flag — two-mechanism design (story 279) ──────────────────
+    // localAnimated is the per-control opt-out (set via setAnimated /
+    // builder.animated); `animated` is the read-only COMBINED value
+    // (localAnimated AND NOT global Reduce Motion).
+    private final BooleanProperty localAnimated =
+            new SimpleBooleanProperty(this, "localAnimated", true);
+    private final ReadOnlyBooleanWrapper animated =
+            new ReadOnlyBooleanWrapper(this, "animated", true);
+    // Strong field — lives exactly as long as this control; registered on
+    // the MotionManager singleton via a WeakChangeListener so the
+    // singleton never pins the control (story 277/278 pattern).
+    private final ChangeListener<Boolean> reduceMotionListener =
+            (obs, was, now) -> recomputeAnimated();
 
     /** Default formatter: 1-decimal numeric (UI Design Book §5.8). */
     public static final Function<Double, String> DEFAULT_FORMATTER =
@@ -184,6 +201,23 @@ public final class Knob extends Control {
         setAccessibleRoleDescription("Knob");
         setAccessibleText("Knob: " + formatValue());
         setFocusTraversable(true);
+
+        // Combined animated = localAnimated AND NOT global Reduce Motion
+        // (story 279). The global listener is weak so the MotionManager
+        // singleton cannot pin this control.
+        localAnimated.addListener((obs, was, now) -> recomputeAnimated());
+        MotionManager.getDefault().reduceMotionProperty()
+                .addListener(new WeakChangeListener<>(reduceMotionListener));
+        recomputeAnimated();
+    }
+
+    /**
+     * Recomputes the combined {@link #animatedProperty()} value:
+     * {@code localAnimated AND NOT reduceMotion} (story 279).
+     */
+    private void recomputeAnimated() {
+        animated.set(localAnimated.get()
+                && !MotionManager.getDefault().isReduceMotion());
     }
 
     @Override
@@ -250,13 +284,27 @@ public final class Knob extends Control {
     // ── animated (Reduce Motion) ──────────────────────────────────────────
 
     /**
-     * @return the {@code animated} property (default {@code true}). When
-     *         {@code false} the skin's centre-detent spring is suppressed
-     *         (UI Design Book §2.5, story 279 Reduce Motion).
+     * @return the combined {@code animated} property (default
+     *         {@code true}): {@code true} only when this knob's
+     *         per-control flag is set <em>and</em> global Reduce Motion is
+     *         off. When {@code false} the skin's centre-detent spring is
+     *         suppressed (UI Design Book §2.5, story 279 Reduce Motion).
+     *         Read-only — write the per-control flag via
+     *         {@link #setAnimated(boolean)}.
      */
-    public final BooleanProperty animatedProperty() { return animated; }
+    public final ReadOnlyBooleanProperty animatedProperty() {
+        return animated.getReadOnlyProperty();
+    }
+    /** @return the combined animated value (per-control flag AND NOT Reduce Motion). */
     public final boolean isAnimated() { return animated.get(); }
-    public final void setAnimated(boolean v) { animated.set(v); }
+    /**
+     * Sets this knob's per-control animation opt-out flag. The effective
+     * {@link #isAnimated()} value also depends on the global Reduce Motion
+     * setting (story 279).
+     *
+     * @param v whether the knob should animate (per-control flag)
+     */
+    public final void setAnimated(boolean v) { localAnimated.set(v); }
 
     // ── valueFormatter (plain — not styleable) ────────────────────────────
 

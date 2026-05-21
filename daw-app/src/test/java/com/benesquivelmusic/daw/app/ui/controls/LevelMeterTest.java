@@ -2,18 +2,25 @@ package com.benesquivelmusic.daw.app.ui.controls;
 
 import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
 import com.benesquivelmusic.daw.app.ui.controls.skin.LevelMeterSkin;
+import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
+import com.benesquivelmusic.daw.app.ui.motion.OsMotionHint;
 
 import javafx.geometry.Orientation;
 import javafx.scene.Scene;
 import javafx.scene.layout.StackPane;
 import javafx.scene.paint.Color;
 
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.prefs.BackingStoreException;
+import java.util.prefs.Preferences;
 
 import static com.benesquivelmusic.daw.app.ui.snapshot.FxSnapshotTest.runOnFxThread;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -22,9 +29,37 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Core behaviour of {@link LevelMeter}: defaults, property accessors, the
  * audio→FX relay, the CssMetaData contract, and the draw-model seams
  * exercised under a live {@link Scene}.
+ *
+ * <p>{@code defaultsAreSane} asserts the default {@code isAnimated()} — the
+ * combined gate ({@code localAnimated AND NOT global Reduce Motion}, story
+ * 279). A deterministic {@link MotionManager} (Reduce Motion off, OS hint
+ * stubbed to "undetected") is installed for the class so the result does
+ * not depend on the host's OS-level animation setting.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 class LevelMeterTest {
+
+    /** An OS hint reporting "undetected" — isolates the test from the real OS. */
+    private static final OsMotionHint NO_HINT = Optional::empty;
+
+    private static Preferences motionNode;
+
+    @BeforeAll
+    static void installDeterministicMotionManager() {
+        motionNode = Preferences.userRoot()
+                .node("levelMeterTest_" + System.nanoTime());
+        MotionManager motion = new MotionManager(motionNode, NO_HINT);
+        motion.setReduceMotion(false);
+        MotionManager.setDefaultForTest(motion);
+    }
+
+    @AfterAll
+    static void clearDeterministicMotionManager() throws BackingStoreException {
+        MotionManager.setDefaultForTest(null);
+        if (motionNode != null) {
+            motionNode.removeNode();
+        }
+    }
 
     /** Meters created by helpers; disposed in {@link #cleanup()} to stop
      *  every attached {@link javafx.animation.AnimationTimer} so timers

@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
+
 import javafx.animation.Interpolator;
 import javafx.animation.ScaleTransition;
 import javafx.scene.control.Button;
@@ -48,11 +50,25 @@ final class ButtonPressAnimator {
         springBack.setToY(1.0);
         springBack.setInterpolator(Interpolator.EASE_OUT);
 
+        // Press feedback is transitional motion (UI Design Book §3.5) —
+        // gated by the global Reduce Motion flag (story 279). When Reduce
+        // Motion is on the click still works, it just does not scale.
         btn.setOnMousePressed(_ -> {
+            if (!MotionManager.getDefault().isAnimationAllowed()) {
+                return;
+            }
             springBack.stop();
             pressDown.playFromStart();
         });
         btn.setOnMouseReleased(_ -> {
+            if (!MotionManager.getDefault().isAnimationAllowed()) {
+                // Ensure the button is never left mid-press if Reduce
+                // Motion was toggled on between press and release.
+                pressDown.stop();
+                btn.setScaleX(1.0);
+                btn.setScaleY(1.0);
+                return;
+            }
             pressDown.stop();
             springBack.playFromStart();
         });

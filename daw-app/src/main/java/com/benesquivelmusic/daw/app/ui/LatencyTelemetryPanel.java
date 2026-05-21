@@ -5,6 +5,8 @@ import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.fx.GpuPipeline;
 import com.benesquivelmusic.daw.sdk.audio.LatencyTelemetry;
 import com.benesquivelmusic.daw.sdk.audio.LatencyTelemetry.NodeKind;
+import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
+
 import javafx.animation.FadeTransition;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
@@ -301,6 +303,12 @@ public final class LatencyTelemetryPanel extends BorderPane {
     }
 
     private static void flash(TreeItem<String> item) {
+        // The fade flash is decorative transitional feedback — gated by
+        // global Reduce Motion (story 279). With Reduce Motion on, no
+        // transient graphic is attached at all (nothing to fade).
+        if (!MotionManager.getDefault().isAnimationAllowed()) {
+            return;
+        }
         // JavaFX TreeItem has no opacity — attach a graphic rectangle that fades.
         Rectangle flash = new Rectangle(8, 8, Color.web("#f0c420"));
         item.setGraphic(flash);

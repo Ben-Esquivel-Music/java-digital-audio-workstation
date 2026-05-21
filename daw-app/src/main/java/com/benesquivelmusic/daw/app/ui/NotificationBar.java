@@ -4,10 +4,16 @@ import javafx.animation.FadeTransition;
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
 import javafx.beans.property.BooleanProperty;
+import javafx.beans.property.ReadOnlyBooleanProperty;
+import javafx.beans.property.ReadOnlyBooleanWrapper;
 import javafx.beans.property.SimpleBooleanProperty;
+import javafx.beans.value.ChangeListener;
+import javafx.beans.value.WeakChangeListener;
 import javafx.scene.AccessibleRole;
 import javafx.scene.layout.StackPane;
 import javafx.util.Duration;
+
+import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 
 import java.util.Optional;
 
@@ -44,9 +50,21 @@ public final class NotificationBar extends StackPane {
 
     private final NotificationPill pill = new NotificationPill(true);
 
-    /** Reduce-motion opt-out (story 279 binds this later — mirrors InspectorDrawer). */
-    private final BooleanProperty animated =
-            new SimpleBooleanProperty(this, "animated", true);
+    // ── Animated flag — two-mechanism design (story 279) ──────────────────
+    // localAnimated is the per-control opt-out (set via setAnimated);
+    // `animated` is the read-only COMBINED value (localAnimated AND NOT
+    // global Reduce Motion). dismiss()/showInternal() read isAnimated(),
+    // so the 200 ms show/dismiss FadeTransition collapses to immediate
+    // under Reduce Motion.
+    private final BooleanProperty localAnimated =
+            new SimpleBooleanProperty(this, "localAnimated", true);
+    private final ReadOnlyBooleanWrapper animated =
+            new ReadOnlyBooleanWrapper(this, "animated", true);
+    // Strong field — lives exactly as long as this bar; registered on the
+    // MotionManager singleton via a WeakChangeListener so the singleton
+    // never pins the bar (story 277/278 pattern).
+    private final ChangeListener<Boolean> reduceMotionListener =
+            (obs, was, now) -> recomputeAnimated();
 
     private Timeline dismissTimeline;
     private FadeTransition dismissFade;
@@ -62,6 +80,23 @@ public final class NotificationBar extends StackPane {
 
         pill.installDismiss(this::dismiss);
         getChildren().add(pill);
+
+        // Combined animated = localAnimated AND NOT global Reduce Motion
+        // (story 279). The global listener is weak so the MotionManager
+        // singleton cannot pin this bar.
+        localAnimated.addListener((obs, was, now) -> recomputeAnimated());
+        MotionManager.getDefault().reduceMotionProperty()
+                .addListener(new WeakChangeListener<>(reduceMotionListener));
+        recomputeAnimated();
+    }
+
+    /**
+     * Recomputes the combined {@link #animatedProperty()} value:
+     * {@code localAnimated AND NOT reduceMotion} (story 279).
+     */
+    private void recomputeAnimated() {
+        animated.set(localAnimated.get()
+                && !MotionManager.getDefault().isReduceMotion());
     }
 
     /**
@@ -202,11 +237,29 @@ public final class NotificationBar extends StackPane {
         return pill;
     }
 
-    // ── Reduce-motion (story 279 binds this later) ────────────────────────
+    // ── Reduce-motion (story 279) ─────────────────────────────────────────
 
-    public BooleanProperty animatedProperty() { return animated; }
+    /**
+     * @return the combined {@code animated} property (default
+     *         {@code true}): {@code true} only when this bar's per-control
+     *         flag is set <em>and</em> global Reduce Motion is off. When
+     *         {@code false} the 200 ms show / dismiss fade is skipped.
+     *         Read-only — write the per-control flag via
+     *         {@link #setAnimated(boolean)}.
+     */
+    public ReadOnlyBooleanProperty animatedProperty() {
+        return animated.getReadOnlyProperty();
+    }
+    /** @return the combined animated value (per-control flag AND NOT Reduce Motion). */
     public boolean isAnimated()                { return animated.get(); }
-    public void setAnimated(boolean a)         { animated.set(a); }
+    /**
+     * Sets this bar's per-control animation opt-out flag. The effective
+     * {@link #isAnimated()} value also depends on the global Reduce Motion
+     * setting (story 279).
+     *
+     * @param a whether the bar should animate (per-control flag)
+     */
+    public void setAnimated(boolean a)         { localAnimated.set(a); }
 
     private void showInternal(NotificationLevel level, String message,
                               String actionLabel, Runnable action) {

@@ -20,6 +20,8 @@ import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
+import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
+
 import javafx.animation.FadeTransition;
 import javafx.animation.PauseTransition;
 import javafx.css.PseudoClass;
@@ -821,12 +823,18 @@ final class TransportController {
             }
         }
 
-        // Smooth fade-in so the status label change feels polished
-        statusLabel.setOpacity(0.0);
-        FadeTransition fadeIn = new FadeTransition(Duration.millis(200), statusLabel);
-        fadeIn.setFromValue(0.0);
-        fadeIn.setToValue(1.0);
-        fadeIn.play();
+        // Smooth fade-in so the status label change feels polished —
+        // decorative transitional motion, gated by global Reduce Motion
+        // (story 279). With Reduce Motion on the label is shown at once.
+        if (MotionManager.getDefault().isAnimationAllowed()) {
+            statusLabel.setOpacity(0.0);
+            FadeTransition fadeIn = new FadeTransition(Duration.millis(200), statusLabel);
+            fadeIn.setFromValue(0.0);
+            fadeIn.setToValue(1.0);
+            fadeIn.play();
+        } else {
+            statusLabel.setOpacity(1.0);
+        }
 
         // Play is a toggle (UI Design Book §5.1) — it stays enabled while
         // playing so the user can pause. Record stays enabled during

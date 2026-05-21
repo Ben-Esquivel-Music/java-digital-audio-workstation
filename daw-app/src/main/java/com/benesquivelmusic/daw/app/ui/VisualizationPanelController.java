@@ -4,6 +4,8 @@ import com.benesquivelmusic.daw.app.ui.VisualizationPreferences.DisplayTile;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 
+import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
+
 import javafx.animation.KeyFrame;
 import javafx.animation.KeyValue;
 import javafx.animation.Timeline;
@@ -231,29 +233,44 @@ public final class VisualizationPanelController {
     }
 
     private void animateRowVisibility(boolean visible) {
+        // Row show/hide is transitional motion (UI Design Book §3.5) —
+        // gated by global Reduce Motion (story 279). With Reduce Motion on
+        // the row snaps to its final height/opacity with no transition.
+        boolean animate = MotionManager.getDefault().isAnimationAllowed();
         if (visible) {
             vizTileRow.setVisible(true);
             vizTileRow.setManaged(true);
-            vizTileRow.setPrefHeight(0);
-            vizTileRow.setOpacity(0.0);
-
-            Timeline timeline = new Timeline(
-                    new KeyFrame(ANIMATION_DURATION,
-                            new KeyValue(vizTileRow.prefHeightProperty(), DEFAULT_ROW_HEIGHT),
-                            new KeyValue(vizTileRow.opacityProperty(), 1.0))
-            );
-            timeline.play();
+            if (animate) {
+                vizTileRow.setPrefHeight(0);
+                vizTileRow.setOpacity(0.0);
+                Timeline timeline = new Timeline(
+                        new KeyFrame(ANIMATION_DURATION,
+                                new KeyValue(vizTileRow.prefHeightProperty(), DEFAULT_ROW_HEIGHT),
+                                new KeyValue(vizTileRow.opacityProperty(), 1.0))
+                );
+                timeline.play();
+            } else {
+                vizTileRow.setPrefHeight(DEFAULT_ROW_HEIGHT);
+                vizTileRow.setOpacity(1.0);
+            }
         } else {
-            Timeline timeline = new Timeline(
-                    new KeyFrame(ANIMATION_DURATION,
-                            new KeyValue(vizTileRow.prefHeightProperty(), 0),
-                            new KeyValue(vizTileRow.opacityProperty(), 0.0))
-            );
-            timeline.setOnFinished(event -> {
+            if (animate) {
+                Timeline timeline = new Timeline(
+                        new KeyFrame(ANIMATION_DURATION,
+                                new KeyValue(vizTileRow.prefHeightProperty(), 0),
+                                new KeyValue(vizTileRow.opacityProperty(), 0.0))
+                );
+                timeline.setOnFinished(event -> {
+                    vizTileRow.setVisible(false);
+                    vizTileRow.setManaged(false);
+                });
+                timeline.play();
+            } else {
+                vizTileRow.setPrefHeight(0);
+                vizTileRow.setOpacity(0.0);
                 vizTileRow.setVisible(false);
                 vizTileRow.setManaged(false);
-            });
-            timeline.play();
+            }
         }
     }
 }

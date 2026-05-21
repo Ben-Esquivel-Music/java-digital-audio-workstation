@@ -12,9 +12,14 @@ import com.benesquivelmusic.daw.app.ui.inspector.sections.TrackSection;
 import com.benesquivelmusic.daw.app.ui.inspector.skin.InspectorDrawerSkin;
 
 import javafx.beans.property.BooleanProperty;
+import javafx.beans.property.ReadOnlyBooleanProperty;
+import javafx.beans.property.ReadOnlyBooleanWrapper;
 import javafx.beans.property.SimpleBooleanProperty;
 import javafx.beans.property.SimpleStringProperty;
 import javafx.beans.property.StringProperty;
+import javafx.beans.value.ChangeListener;
+import javafx.beans.value.WeakChangeListener;
+import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 import javafx.css.CssMetaData;
 import javafx.css.StyleConverter;
 import javafx.css.Styleable;
@@ -100,9 +105,20 @@ public final class InspectorDrawer extends Control {
     private final BooleanProperty expanded =
             new SimpleBooleanProperty(this, "expanded", true);
 
-    /** Reduce-motion opt-out (story 279). */
-    private final BooleanProperty animated =
-            new SimpleBooleanProperty(this, "animated", true);
+    // ── Animated flag — two-mechanism design (story 279) ──────────────────
+    // localAnimated is the per-control opt-out (set via setAnimated);
+    // `animated` is the read-only COMBINED value (localAnimated AND NOT
+    // global Reduce Motion). The skin reads isAnimated() and so collapses
+    // the 220 ms open/close transition to 0 ms under Reduce Motion.
+    private final BooleanProperty localAnimated =
+            new SimpleBooleanProperty(this, "localAnimated", true);
+    private final ReadOnlyBooleanWrapper animated =
+            new ReadOnlyBooleanWrapper(this, "animated", true);
+    // Strong field — lives exactly as long as this control; registered on
+    // the MotionManager singleton via a WeakChangeListener so the
+    // singleton never pins the control (story 277/278 pattern).
+    private final ChangeListener<Boolean> reduceMotionListener =
+            (obs, was, now) -> recomputeAnimated();
 
     /** Header bar text — typically "Track 01 — Drums" once a track is selected. */
     private final StringProperty headerText =
@@ -172,6 +188,23 @@ public final class InspectorDrawer extends Control {
 
         // Keyboard parity — Esc collapses; Ctrl+I toggles.
         addEventHandler(KeyEvent.KEY_PRESSED, this::handleKey);
+
+        // Combined animated = localAnimated AND NOT global Reduce Motion
+        // (story 279). The global listener is weak so the MotionManager
+        // singleton cannot pin this drawer.
+        localAnimated.addListener((obs, was, now) -> recomputeAnimated());
+        MotionManager.getDefault().reduceMotionProperty()
+                .addListener(new WeakChangeListener<>(reduceMotionListener));
+        recomputeAnimated();
+    }
+
+    /**
+     * Recomputes the combined {@link #animatedProperty()} value:
+     * {@code localAnimated AND NOT reduceMotion} (story 279).
+     */
+    private void recomputeAnimated() {
+        animated.set(localAnimated.get()
+                && !MotionManager.getDefault().isReduceMotion());
     }
 
     private void handleKey(KeyEvent e) {
@@ -272,9 +305,27 @@ public final class InspectorDrawer extends Control {
     public final boolean isExpanded()                    { return expanded.get(); }
     public final void setExpanded(boolean e)             { expanded.set(e); }
 
-    public final BooleanProperty animatedProperty()      { return animated; }
+    /**
+     * @return the combined {@code animated} property (default
+     *         {@code true}): {@code true} only when this drawer's
+     *         per-control flag is set <em>and</em> global Reduce Motion is
+     *         off (story 279). When {@code false} the skin's 220 ms
+     *         open/close transition collapses to {@code 0 ms}. Read-only —
+     *         write the per-control flag via {@link #setAnimated(boolean)}.
+     */
+    public final ReadOnlyBooleanProperty animatedProperty() {
+        return animated.getReadOnlyProperty();
+    }
+    /** @return the combined animated value (per-control flag AND NOT Reduce Motion). */
     public final boolean isAnimated()                    { return animated.get(); }
-    public final void setAnimated(boolean a)             { animated.set(a); }
+    /**
+     * Sets this drawer's per-control animation opt-out flag. The effective
+     * {@link #isAnimated()} value also depends on the global Reduce Motion
+     * setting (story 279).
+     *
+     * @param a whether the drawer should animate (per-control flag)
+     */
+    public final void setAnimated(boolean a)             { localAnimated.set(a); }
 
     public final StringProperty headerTextProperty()     { return headerText; }
     public final String getHeaderText()                  { return headerText.get(); }

@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
+
 import javafx.animation.KeyFrame;
 import javafx.animation.KeyValue;
 import javafx.animation.Timeline;
@@ -108,23 +110,36 @@ public final class BrowserPanelController {
     }
 
     private void showPanel() {
-        browserPanel.setOpacity(0.0);
+        // Panel show is transitional motion — gated by global Reduce
+        // Motion (story 279). With Reduce Motion on the panel appears at
+        // once with no opacity fade.
         rootPane.setRight(browserPanel);
-
-        Timeline timeline = new Timeline(
-                new KeyFrame(ANIMATION_DURATION,
-                        new KeyValue(browserPanel.opacityProperty(), 1.0))
-        );
-        timeline.play();
+        if (MotionManager.getDefault().isAnimationAllowed()) {
+            browserPanel.setOpacity(0.0);
+            Timeline timeline = new Timeline(
+                    new KeyFrame(ANIMATION_DURATION,
+                            new KeyValue(browserPanel.opacityProperty(), 1.0))
+            );
+            timeline.play();
+        } else {
+            browserPanel.setOpacity(1.0);
+        }
     }
 
     private void hidePanel() {
-        Timeline timeline = new Timeline(
-                new KeyFrame(ANIMATION_DURATION,
-                        new KeyValue(browserPanel.opacityProperty(), 0.0))
-        );
-        timeline.setOnFinished(event -> rootPane.setRight(null));
-        timeline.play();
+        // Panel hide is transitional motion — gated by global Reduce
+        // Motion (story 279). With Reduce Motion on the panel is removed
+        // at once with no opacity fade.
+        if (MotionManager.getDefault().isAnimationAllowed()) {
+            Timeline timeline = new Timeline(
+                    new KeyFrame(ANIMATION_DURATION,
+                            new KeyValue(browserPanel.opacityProperty(), 0.0))
+            );
+            timeline.setOnFinished(event -> rootPane.setRight(null));
+            timeline.play();
+        } else {
+            rootPane.setRight(null);
+        }
     }
 
     private void updateButtonActiveState() {

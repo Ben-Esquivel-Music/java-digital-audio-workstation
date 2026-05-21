@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
+import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
+
 import javafx.animation.KeyFrame;
 import javafx.animation.KeyValue;
 import javafx.animation.Timeline;
@@ -78,20 +80,32 @@ final class HistoryPanelController {
 
     void toggleHistoryPanel() {
         historyPanelVisible = !historyPanelVisible;
+        // Panel show/hide is transitional motion (UI Design Book §3.5) —
+        // gated by global Reduce Motion (story 279). With Reduce Motion on
+        // the panel is shown/removed at once with no opacity fade.
+        boolean animate = MotionManager.getDefault().isAnimationAllowed();
         if (historyPanelVisible) {
             if (host.isBrowserPanelVisible()) {
                 host.hideBrowserPanel();
             }
-            undoHistoryPanel.setOpacity(0.0);
             rootPane.setRight(undoHistoryPanel);
-            new Timeline(new KeyFrame(Duration.millis(250),
-                    new KeyValue(undoHistoryPanel.opacityProperty(), 1.0))).play();
+            if (animate) {
+                undoHistoryPanel.setOpacity(0.0);
+                new Timeline(new KeyFrame(Duration.millis(250),
+                        new KeyValue(undoHistoryPanel.opacityProperty(), 1.0))).play();
+            } else {
+                undoHistoryPanel.setOpacity(1.0);
+            }
             host.updateStatusBar("Undo History panel opened", DawIcon.HISTORY);
         } else {
-            Timeline timeline = new Timeline(new KeyFrame(Duration.millis(250),
-                    new KeyValue(undoHistoryPanel.opacityProperty(), 0.0)));
-            timeline.setOnFinished(_ -> rootPane.setRight(null));
-            timeline.play();
+            if (animate) {
+                Timeline timeline = new Timeline(new KeyFrame(Duration.millis(250),
+                        new KeyValue(undoHistoryPanel.opacityProperty(), 0.0)));
+                timeline.setOnFinished(_ -> rootPane.setRight(null));
+                timeline.play();
+            } else {
+                rootPane.setRight(null);
+            }
             host.updateStatusBar("Undo History panel closed", DawIcon.HISTORY);
         }
         updateHistoryButtonActiveState();

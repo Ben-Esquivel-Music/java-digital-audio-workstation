@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app;
 
 import com.benesquivelmusic.daw.app.ui.density.DensityManager;
+import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 
 import javafx.application.Application;
@@ -66,6 +67,12 @@ public final class DawApplication extends Application {
         // re-applies it to the registered scene when the user switches
         // density in Preferences, so the UI re-densifies with no restart.
         DensityManager.getDefault().applyTo(scene);
+        // Story 279 — touch MotionManager so its singleton constructs at
+        // startup: this restores the persisted Reduce Motion flag (or, on
+        // first launch, seeds it from the OS-level accessibility hint).
+        // MotionManager is a pure observable flag — controls observe it
+        // directly, so there is no applyTo(scene) call.
+        MotionManager.getDefault();
 
         primaryStage.setTitle(APP_TITLE);
         primaryStage.setScene(scene);

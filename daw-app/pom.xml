@@ -161,10 +161,13 @@
                          enable-native-access flag is repeated here to preserve
                          native access for the daw.core FFM bindings (granted by
                          module name now that daw.core is a named module) and
-                         the headless backend's native code paths. ALL-UNNAMED
-                         is retained for test-only code on the unnamed
-                         classpath. -->
-                    <argLine>--enable-native-access=daw.core,ALL-UNNAMED
+                         the headless backend's native code paths. daw.app is
+                         granted too (story 279): MotionManager's
+                         PlatformMotionHint performs an FFM downcall to
+                         user32!SystemParametersInfoW for OS reduce-motion
+                         detection. ALL-UNNAMED is retained for test-only code
+                         on the unnamed classpath. -->
+                    <argLine>--enable-native-access=daw.core,daw.app,ALL-UNNAMED
                         -Dglass.platform=Headless
                         -Dmonocle.platform=Headless
                         -Dprism.order=sw
@@ -333,6 +336,17 @@
                                 <argument>${project.build.directory}/daw-runtime</argument>
                                 <argument>--module</argument>
                                 <argument>daw.app/com.benesquivelmusic.daw.app.DawLauncher</argument>
+                                <!-- Grant restricted native access to the two
+                                     named modules that perform FFM downcalls:
+                                     daw.core (PortAudio/FluidSynth/CLAP/codec
+                                     bindings) and daw.app (story 279 —
+                                     MotionManager's user32!SystemParametersInfoW
+                                     OS reduce-motion probe). Without this the
+                                     JDK prints a native-access warning per
+                                     module on first downcall; in a future JDK
+                                     the warning becomes a hard error. -->
+                                <argument>--java-options</argument>
+                                <argument>--enable-native-access=daw.core,daw.app</argument>
                                 <argument>--dest</argument>
                                 <argument>${project.build.directory}/dist/app-image</argument>
                                 <!-- Ship the CMake-built native libraries

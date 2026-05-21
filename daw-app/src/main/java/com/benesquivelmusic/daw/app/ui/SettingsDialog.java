@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.density.DensityManager;
 import com.benesquivelmusic.daw.app.ui.density.DensityMode;
+import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 import com.benesquivelmusic.daw.app.ui.dialogs.DawgDialog;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
@@ -100,6 +101,11 @@ public final class SettingsDialog extends DawgDialog<Void> {
     private final ToggleGroup densityGroup;
     private final Map<DensityMode, RadioButton> densityButtons =
             new EnumMap<>(DensityMode.class);
+    // Story 279 — global Reduce Motion accessibility flag (UI Design Book
+    // §2.7 / §3.5). A single checkbox; MotionManager persists under its
+    // own key and is a pure observable flag (no scene re-apply).
+    private final MotionManager motionManager;
+    private final CheckBox reduceMotionCheck;
 
     // ── Plugins tab controls ─────────────────────────────────────────────────
     private final TextField pluginScanPathsField;
@@ -203,6 +209,16 @@ public final class SettingsDialog extends DawgDialog<Void> {
             rb.setSelected(mode == activeDensity);
             densityButtons.put(mode, rb);
         }
+
+        // Story 279 — Reduce Motion checkbox. MotionManager persists under
+        // its own key; the checkbox reflects the current flag and is
+        // applied in applySettings(). A tooltip restates the WCAG 2.3.3
+        // intent (cut transitions, keep real-time meters).
+        motionManager = MotionManager.getDefault();
+        reduceMotionCheck = new CheckBox(msg("appearance.reduceMotion.label"));
+        reduceMotionCheck.setSelected(motionManager.isReduceMotion());
+        reduceMotionCheck.setTooltip(
+                new Tooltip(msg("appearance.reduceMotion.tooltip")));
 
         Tab appearanceTab = new Tab("Appearance", buildAppearancePane());
         appearanceTab.setGraphic(IconNode.of(DawIcon.MONITOR, TAB_ICON_SIZE));
@@ -362,6 +378,12 @@ public final class SettingsDialog extends DawgDialog<Void> {
                 densityButtons.get(DensityMode.COMFORTABLE),
                 densityButtons.get(DensityMode.TOUCH));
         grid.add(densityBox, 1, 6, 2, 1);
+
+        // Story 279 — Reduce Motion accessibility checkbox. Separator +
+        // the single checkbox on the next row, following the same grid
+        // idiom as the theme / density rows above.
+        grid.add(new Separator(), 0, 7, 2, 1);
+        grid.add(reduceMotionCheck, 1, 8, 2, 1);
 
         return grid;
     }
@@ -602,6 +624,12 @@ public final class SettingsDialog extends DawgDialog<Void> {
                 && selectedDensityToggle.getUserData() instanceof DensityMode mode) {
             densityManager.setActiveDensity(mode);
         }
+        // Story 279 — apply + persist the global Reduce Motion flag.
+        // MotionManager is a pure observable flag: every animatable
+        // control observes reduceMotionProperty() and recomputes its
+        // combined animated state, so the change takes effect with no
+        // restart. The flag persists under MotionManager's own key.
+        motionManager.setReduceMotion(reduceMotionCheck.isSelected());
 
         // Plugins
         String paths = pluginScanPathsField.getText();
