@@ -65,6 +65,12 @@ public final class NotificationBar extends StackPane {
     // never pins the bar (story 277/278 pattern).
     private final ChangeListener<Boolean> reduceMotionListener =
             (obs, was, now) -> recomputeAnimated();
+    // Captured once at construction so the WeakChangeListener registration
+    // and recomputeAnimated() always read the SAME MotionManager: a
+    // getDefault() swap mid-life (setDefaultForTest) cannot make them
+    // diverge — the listener firing on instance A while the recompute
+    // reads instance B's flag.
+    private final MotionManager motionManager = MotionManager.getDefault();
 
     private Timeline dismissTimeline;
     private FadeTransition dismissFade;
@@ -85,7 +91,7 @@ public final class NotificationBar extends StackPane {
         // (story 279). The global listener is weak so the MotionManager
         // singleton cannot pin this bar.
         localAnimated.addListener((obs, was, now) -> recomputeAnimated());
-        MotionManager.getDefault().reduceMotionProperty()
+        motionManager.reduceMotionProperty()
                 .addListener(new WeakChangeListener<>(reduceMotionListener));
         recomputeAnimated();
     }
@@ -96,7 +102,7 @@ public final class NotificationBar extends StackPane {
      */
     private void recomputeAnimated() {
         animated.set(localAnimated.get()
-                && !MotionManager.getDefault().isReduceMotion());
+                && !motionManager.isReduceMotion());
     }
 
     /**

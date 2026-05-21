@@ -159,6 +159,12 @@ public final class LevelMeter extends Control {
     // control (story 277/278 sanctioned weak-listener pattern, story 279).
     private final ChangeListener<Boolean> reduceMotionListener =
             (obs, was, now) -> recomputeAnimated();
+    // Captured once at construction so the WeakChangeListener registration
+    // and recomputeAnimated() always read the SAME MotionManager: a
+    // getDefault() swap mid-life (setDefaultForTest) cannot make them
+    // diverge — the listener firing on instance A while the recompute
+    // reads instance B's flag.
+    private final MotionManager motionManager = MotionManager.getDefault();
 
     // ── Lock-free audio → FX relay ────────────────────────────────────────
     // One AtomicLong per double value (NOT AtomicReference<Double> — avoids
@@ -219,7 +225,7 @@ public final class LevelMeter extends Control {
         // listener is weak so the MotionManager singleton cannot pin this
         // control (the strong reduceMotionListener field dies with it).
         localAnimated.addListener((obs, was, now) -> recomputeAnimated());
-        MotionManager.getDefault().reduceMotionProperty()
+        motionManager.reduceMotionProperty()
                 .addListener(new WeakChangeListener<>(reduceMotionListener));
         recomputeAnimated();
     }
@@ -230,7 +236,7 @@ public final class LevelMeter extends Control {
      */
     private void recomputeAnimated() {
         animated.set(localAnimated.get()
-                && !MotionManager.getDefault().isReduceMotion());
+                && !motionManager.isReduceMotion());
     }
 
     @Override

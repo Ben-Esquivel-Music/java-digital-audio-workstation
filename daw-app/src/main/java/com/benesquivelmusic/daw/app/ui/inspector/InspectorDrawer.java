@@ -119,6 +119,12 @@ public final class InspectorDrawer extends Control {
     // singleton never pins the control (story 277/278 pattern).
     private final ChangeListener<Boolean> reduceMotionListener =
             (obs, was, now) -> recomputeAnimated();
+    // Captured once at construction so the WeakChangeListener registration
+    // and recomputeAnimated() always read the SAME MotionManager: a
+    // getDefault() swap mid-life (setDefaultForTest) cannot make them
+    // diverge — the listener firing on instance A while the recompute
+    // reads instance B's flag.
+    private final MotionManager motionManager = MotionManager.getDefault();
 
     /** Header bar text — typically "Track 01 — Drums" once a track is selected. */
     private final StringProperty headerText =
@@ -193,7 +199,7 @@ public final class InspectorDrawer extends Control {
         // (story 279). The global listener is weak so the MotionManager
         // singleton cannot pin this drawer.
         localAnimated.addListener((obs, was, now) -> recomputeAnimated());
-        MotionManager.getDefault().reduceMotionProperty()
+        motionManager.reduceMotionProperty()
                 .addListener(new WeakChangeListener<>(reduceMotionListener));
         recomputeAnimated();
     }
@@ -204,7 +210,7 @@ public final class InspectorDrawer extends Control {
      */
     private void recomputeAnimated() {
         animated.set(localAnimated.get()
-                && !MotionManager.getDefault().isReduceMotion());
+                && !motionManager.isReduceMotion());
     }
 
     private void handleKey(KeyEvent e) {

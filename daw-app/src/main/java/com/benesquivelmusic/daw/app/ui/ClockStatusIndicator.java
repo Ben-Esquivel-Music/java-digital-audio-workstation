@@ -74,6 +74,13 @@ public final class ClockStatusIndicator extends Label {
      */
     private final ChangeListener<Boolean> reduceMotionListener =
             (obs, was, now) -> runOnFx(this::refresh);
+    /**
+     * Captured once at construction so the {@link WeakChangeListener}
+     * registration and {@link #startFlash()} always read the SAME
+     * {@code MotionManager} — a {@code getDefault()} swap mid-life
+     * ({@code setDefaultForTest}) cannot make them diverge.
+     */
+    private final MotionManager motionManager = MotionManager.getDefault();
     private final AtomicReference<ClockSource> activeSource = new AtomicReference<>();
     private final AtomicReference<Flow.Subscription> subscription = new AtomicReference<>();
     private volatile int sampleRate;
@@ -109,7 +116,7 @@ public final class ClockStatusIndicator extends Label {
         flashTimeline.setCycleCount(Animation.INDEFINITE);
         // Story 279 — global Reduce Motion suppresses the decorative flash
         // pulse (see startFlash). React to a live toggle of the setting.
-        MotionManager.getDefault().reduceMotionProperty()
+        motionManager.reduceMotionProperty()
                 .addListener(new WeakChangeListener<>(reduceMotionListener));
     }
 
@@ -212,7 +219,7 @@ public final class ClockStatusIndicator extends Label {
     }
 
     private void startFlash() {
-        if (!MotionManager.getDefault().isAnimationAllowed()) {
+        if (!motionManager.isAnimationAllowed()) {
             // Reduce Motion (story 279) — suppress the 0.5 s pulse. The
             // unlocked state stays unmistakable without it: refresh() has
             // already applied the solid red STYLE_UNLOCKED and the

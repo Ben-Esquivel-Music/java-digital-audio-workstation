@@ -177,6 +177,12 @@ public final class Knob extends Control {
     // singleton never pins the control (story 277/278 pattern).
     private final ChangeListener<Boolean> reduceMotionListener =
             (obs, was, now) -> recomputeAnimated();
+    // Captured once at construction so the WeakChangeListener registration
+    // and recomputeAnimated() always read the SAME MotionManager: a
+    // getDefault() swap mid-life (setDefaultForTest) cannot make them
+    // diverge — the listener firing on instance A while the recompute
+    // reads instance B's flag.
+    private final MotionManager motionManager = MotionManager.getDefault();
 
     /** Default formatter: 1-decimal numeric (UI Design Book §5.8). */
     public static final Function<Double, String> DEFAULT_FORMATTER =
@@ -206,7 +212,7 @@ public final class Knob extends Control {
         // (story 279). The global listener is weak so the MotionManager
         // singleton cannot pin this control.
         localAnimated.addListener((obs, was, now) -> recomputeAnimated());
-        MotionManager.getDefault().reduceMotionProperty()
+        motionManager.reduceMotionProperty()
                 .addListener(new WeakChangeListener<>(reduceMotionListener));
         recomputeAnimated();
     }
@@ -217,7 +223,7 @@ public final class Knob extends Control {
      */
     private void recomputeAnimated() {
         animated.set(localAnimated.get()
-                && !MotionManager.getDefault().isReduceMotion());
+                && !motionManager.isReduceMotion());
     }
 
     @Override
