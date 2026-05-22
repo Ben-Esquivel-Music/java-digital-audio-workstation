@@ -848,7 +848,10 @@ public final class MainController {
                     @Override public void onRecord() { transportController.onRecord(); }
                     @Override public void onToggleLoop() { transportController.onToggleLoop(); }
                     @Override public void onOpenAudioSettings() { MainController.this.onOpenAudioSettings(); }
-                    @Override public void onOpenProjectMenu() { MainController.this.onOpenSettings(); }
+                    @Override public void onNewProject() { projectLifecycleController.onNewProject(); }
+                    @Override public void onOpenProject() { projectLifecycleController.onOpenProject(); }
+                    @Override public void onSaveProject() { projectLifecycleController.onSaveProject(); }
+                    @Override public void onRecentProjects() { projectLifecycleController.onRecentProjects(); }
                 });
     }
 

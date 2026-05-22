@@ -109,8 +109,14 @@ public final class PerformanceStageView extends BorderPane {
         void onExitPerformanceStage();
         /** Open the Audio Settings dialog. */
         void onOpenAudioSettings();
-        /** Open the Project / File menu (or equivalent). */
-        void onOpenProjectMenu();
+        /** New project — invoked from the file sub-overlay. */
+        void onNewProject();
+        /** Open project — invoked from the file sub-overlay. */
+        void onOpenProject();
+        /** Save project — invoked from the file sub-overlay. */
+        void onSaveProject();
+        /** Recent projects — invoked from the file sub-overlay. */
+        void onRecentProjects();
     }
 
     private final ResourceBundle messages;
@@ -127,6 +133,10 @@ public final class PerformanceStageView extends BorderPane {
     private final List<TrackStrip> trackTiles = new ArrayList<>();
     private final Button hamburgerButton;
     private final StackPane overlay;
+    /** Main overlay panel (Standard View / Audio Settings / Project / Exit). */
+    private VBox overlayMainPanel;
+    /** File sub-overlay panel (New / Open / Save / Recent / Back). */
+    private VBox overlayFilePanel;
 
     /**
      * Creates a Performance Stage view bound to the given project.
@@ -274,10 +284,8 @@ public final class PerformanceStageView extends BorderPane {
      * Each tile is a {@link TrackStrip} with the {@code .size-performance}
      * style class (80&nbsp;px row, 18&nbsp;px name, M/S/R toggles) paired
      * with a CUE button that fires a {@link CueLaunchRequestedEvent}.
-     *
-     * @param project the project to read tracks from
      */
-    public void rebuildTrackTiles(DawProject project) {
+    private void rebuildTrackTiles(DawProject project) {
         Objects.requireNonNull(project, "project must not be null");
         trackTileColumn.getChildren().clear();
         trackTiles.clear();
@@ -328,16 +336,40 @@ public final class PerformanceStageView extends BorderPane {
                 host::onExitPerformanceStage);
         Button audioSettings = overlayItem("performanceStage.overlay.audioSettings",
                 host::onOpenAudioSettings);
-        Button projectMenu = overlayItem("performanceStage.overlay.projectMenu",
-                host::onOpenProjectMenu);
+        // The "Project / File…" item is a panel-switch, not an action: it
+        // pivots the overlay to the file sub-panel without closing it.
+        Button projectMenu = new Button(messages.getString("performanceStage.overlay.projectMenu"));
+        projectMenu.getStyleClass().addAll("dawg-button", "size-stage", "performance-stage-overlay-item");
+        projectMenu.setOnAction(_ -> showOverlayPanel(overlayFilePanel));
         Button exit = overlayItem("performanceStage.overlay.exit",
                 host::onExitPerformanceStage);
 
-        VBox panel = new VBox(standardView, audioSettings, projectMenu, exit);
-        panel.setSpacing(SpacingTokens.SPACING_MD);
-        panel.setAlignment(Pos.CENTER);
-        panel.setPadding(new Insets(SpacingTokens.SPACING_XXL));
-        panel.getStyleClass().add("performance-stage-overlay-panel");
+        overlayMainPanel = new VBox(standardView, audioSettings, projectMenu, exit);
+        overlayMainPanel.setSpacing(SpacingTokens.SPACING_MD);
+        overlayMainPanel.setAlignment(Pos.CENTER);
+        overlayMainPanel.setPadding(new Insets(SpacingTokens.SPACING_XXL));
+        overlayMainPanel.getStyleClass().add("performance-stage-overlay-panel");
+
+        // File sub-panel — the four canonical file actions plus Back. File
+        // items close the overlay and run via overlayItem; Back returns to
+        // the main panel without closing.
+        Button fileNew = overlayItem("performanceStage.overlay.fileNew", host::onNewProject);
+        Button fileOpen = overlayItem("performanceStage.overlay.fileOpen", host::onOpenProject);
+        Button fileSave = overlayItem("performanceStage.overlay.fileSave", host::onSaveProject);
+        Button fileRecent = overlayItem("performanceStage.overlay.fileRecent", host::onRecentProjects);
+        Button fileBack = new Button(messages.getString("performanceStage.overlay.fileBack"));
+        fileBack.getStyleClass().addAll("dawg-button", "size-stage", "performance-stage-overlay-item");
+        fileBack.setOnAction(_ -> showOverlayPanel(overlayMainPanel));
+
+        overlayFilePanel = new VBox(fileNew, fileOpen, fileSave, fileRecent, fileBack);
+        overlayFilePanel.setSpacing(SpacingTokens.SPACING_MD);
+        overlayFilePanel.setAlignment(Pos.CENTER);
+        overlayFilePanel.setPadding(new Insets(SpacingTokens.SPACING_XXL));
+        overlayFilePanel.getStyleClass().add("performance-stage-overlay-panel");
+        overlayFilePanel.setVisible(false);
+        overlayFilePanel.setManaged(false);
+
+        StackPane panels = new StackPane(overlayMainPanel, overlayFilePanel);
 
         // A separate translucent backdrop Region carries the opacity so the
         // panel itself stays fully opaque (a low -fx-opacity on the scrim
@@ -345,7 +377,7 @@ public final class PerformanceStageView extends BorderPane {
         Region backdrop = new Region();
         backdrop.getStyleClass().add("performance-stage-overlay-backdrop");
 
-        StackPane scrim = new StackPane(backdrop, panel);
+        StackPane scrim = new StackPane(backdrop, panels);
         scrim.getStyleClass().add("performance-stage-overlay");
         // Clicking the scrim/backdrop (outside the panel) dismisses it.
         scrim.setOnMouseClicked(event -> {
@@ -354,6 +386,19 @@ public final class PerformanceStageView extends BorderPane {
             }
         });
         return scrim;
+    }
+
+    /**
+     * Shows the given overlay panel and hides the other. Toggling between
+     * the main panel and the file sub-panel is a pure visibility swap — the
+     * overlay itself stays open.
+     */
+    private void showOverlayPanel(VBox panel) {
+        boolean showMain = panel == overlayMainPanel;
+        overlayMainPanel.setVisible(showMain);
+        overlayMainPanel.setManaged(showMain);
+        overlayFilePanel.setVisible(!showMain);
+        overlayFilePanel.setManaged(!showMain);
     }
 
     private Button overlayItem(String messageKey, Runnable action) {
@@ -367,11 +412,14 @@ public final class PerformanceStageView extends BorderPane {
     }
 
     /**
-     * Shows or hides the translucent {@code ☰} overlay.
-     *
-     * @param visible {@code true} to open the overlay
+     * Shows or hides the translucent {@code ☰} overlay. Closing always
+     * resets the overlay to its main panel so the next open starts there
+     * (the file sub-panel is a transient drill-down).
      */
-    public void setOverlayVisible(boolean visible) {
+    private void setOverlayVisible(boolean visible) {
+        if (!visible) {
+            showOverlayPanel(overlayMainPanel);
+        }
         overlay.setVisible(visible);
         overlay.setManaged(visible);
         hamburgerButton.setVisible(!visible);
@@ -397,28 +445,28 @@ public final class PerformanceStageView extends BorderPane {
         return playButton;
     }
 
-    /** @return the STOP transport button. */
-    public Button stopButton() {
-        return stopButton;
-    }
-
-    /** @return the REC transport button. */
-    public Button recordButton() {
-        return recordButton;
-    }
-
-    /** @return the LOOP transport button. */
-    public Button loopButton() {
-        return loopButton;
-    }
-
     /** @return an unmodifiable view of the track tile {@link TrackStrip}s. */
     public List<TrackStrip> trackTiles() {
         return List.copyOf(trackTiles);
     }
 
-    /** @return whether the translucent {@code ☰} overlay is open. */
-    public boolean isOverlayVisible() {
-        return overlay.isVisible();
+    /** @return the floating {@code ☰} hamburger button (test seam). */
+    Button hamburgerButton() {
+        return hamburgerButton;
+    }
+
+    /** @return the translucent overlay scrim (test seam). */
+    StackPane overlay() {
+        return overlay;
+    }
+
+    /** @return the main overlay panel (test seam). */
+    VBox overlayMainPanel() {
+        return overlayMainPanel;
+    }
+
+    /** @return the file sub-overlay panel (test seam). */
+    VBox overlayFilePanel() {
+        return overlayFilePanel;
     }
 }

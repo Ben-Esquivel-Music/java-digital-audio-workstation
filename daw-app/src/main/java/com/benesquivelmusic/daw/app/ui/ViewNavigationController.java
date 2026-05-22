@@ -57,8 +57,14 @@ final class ViewNavigationController {
         void onToggleLoop();
         /** Open the Audio Settings dialog (Performance Stage ☰ overlay). */
         void onOpenAudioSettings();
-        /** Open the Project / File menu (Performance Stage ☰ overlay). */
-        void onOpenProjectMenu();
+        /** New project — Performance Stage ☰ file sub-overlay. */
+        void onNewProject();
+        /** Open project — Performance Stage ☰ file sub-overlay. */
+        void onOpenProject();
+        /** Save project — Performance Stage ☰ file sub-overlay. */
+        void onSaveProject();
+        /** Recent projects — Performance Stage ☰ file sub-overlay. */
+        void onRecentProjects();
     }
 
     // ── Dependencies ─────────────────────────────────────────────────────────
@@ -273,14 +279,20 @@ final class ViewNavigationController {
                     @Override public void onToggleLoop() { host.onToggleLoop(); }
                     @Override public void onExitPerformanceStage() { deactivatePerformanceStage(); }
                     @Override public void onOpenAudioSettings() { host.onOpenAudioSettings(); }
-                    @Override public void onOpenProjectMenu() { host.onOpenProjectMenu(); }
+                    @Override public void onNewProject() { host.onNewProject(); }
+                    @Override public void onOpenProject() { host.onOpenProject(); }
+                    @Override public void onSaveProject() { host.onSaveProject(); }
+                    @Override public void onRecentProjects() { host.onRecentProjects(); }
                 });
 
         rootPane.setTop(null);
         rootPane.setLeft(null);
         rootPane.setRight(null);
-        playStageTransition(performanceStageView);
+        // Attach first, then fade — a FadeTransition started before the
+        // node is in the scene can briefly flash at opacity 0 on the first
+        // paint. Symmetric with deactivate (restore-then-fade below).
         rootPane.setCenter(performanceStageView);
+        playStageTransition(performanceStageView);
 
         installStageEscFilter();
         activeView = DawView.PERFORMANCE_STAGE;
@@ -315,6 +327,9 @@ final class ViewNavigationController {
         preStageView = null;
         activeView = restore;
         toolbarStateStore.saveActiveView(restore);
+        // The restored centre is the standard arrangement node — fading
+        // it back in matches the §3.5 view-switch transition (180 ms
+        // EASE_OUT). Reduce Motion skips the fade in playStageTransition.
         playStageTransition(rootPane.getCenter());
         statusBarLabel.setText("Exited Performance Stage");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
@@ -355,6 +370,12 @@ final class ViewNavigationController {
      * Performance Stage on {@code Esc} (story 280). A filter (not a
      * handler) is used so the keypress is consumed before the standard
      * {@code Esc}-bound {@code STOP} accelerator can also fire.
+     *
+     * <p>Assumes the {@code rootPane} stays in the same {@link
+     * javafx.scene.Scene} for the duration of a stage session — a scene
+     * swap between activate and deactivate would leak the filter on the
+     * old scene. Reparenting a live root is not a supported operation in
+     * this DAW today.</p>
      */
     private void installStageEscFilter() {
         javafx.scene.Scene scene = rootPane.getScene();

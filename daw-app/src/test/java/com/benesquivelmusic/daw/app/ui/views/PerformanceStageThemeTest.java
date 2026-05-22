@@ -132,7 +132,10 @@ final class PerformanceStageThemeTest {
         @Override public void onToggleLoop() { }
         @Override public void onExitPerformanceStage() { }
         @Override public void onOpenAudioSettings() { }
-        @Override public void onOpenProjectMenu() { }
+        @Override public void onNewProject() { }
+        @Override public void onOpenProject() { }
+        @Override public void onSaveProject() { }
+        @Override public void onRecentProjects() { }
     }
 
     // ── FX helper (capture + rethrow — swallowed-assertion pitfall) ───────

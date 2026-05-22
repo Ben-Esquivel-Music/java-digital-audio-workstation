@@ -45,6 +45,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>FX-harness pitfalls honoured: real {@link Scene}, FX-thread work,
  * captured-and-rethrown assertions.</p>
+ *
+ * <p>Package placement: see the companion note on
+ * {@link PerformanceStageActivationTest} — this test sits in {@code ui}
+ * for the same package-private reach into {@link ViewNavigationController}.</p>
  */
 @ExtendWith(JavaFxToolkitExtension.class)
 final class PerformanceStageDeactivationTest {
@@ -134,7 +138,10 @@ final class PerformanceStageDeactivationTest {
         @Override public void onRecord() { }
         @Override public void onToggleLoop() { }
         @Override public void onOpenAudioSettings() { }
-        @Override public void onOpenProjectMenu() { }
+        @Override public void onNewProject() { }
+        @Override public void onOpenProject() { }
+        @Override public void onSaveProject() { }
+        @Override public void onRecentProjects() { }
     }
 
     // ── FX helper (capture + rethrow — swallowed-assertion pitfall) ───────
