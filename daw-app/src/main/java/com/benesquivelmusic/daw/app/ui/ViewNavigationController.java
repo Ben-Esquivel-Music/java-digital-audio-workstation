@@ -296,7 +296,6 @@ final class ViewNavigationController {
 
         installStageEscFilter();
         activeView = DawView.PERFORMANCE_STAGE;
-        toolbarStateStore.saveActiveView(DawView.PERFORMANCE_STAGE);
         statusBarLabel.setText("Performance Stage");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
         if (onViewChanged != null) {

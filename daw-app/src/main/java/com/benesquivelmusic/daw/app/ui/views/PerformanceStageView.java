@@ -34,12 +34,12 @@ import java.util.ResourceBundle;
  * <p>Performance Stage is a <em>mode</em>, not a separate application. When
  * activated it replaces the whole standard chrome (toolbar, track list,
  * inspector) with a giant-control layout designed to be readable on stage,
- * on a touch device, or with the screen 1.5&nbsp;m away. The §2.5 promise —
- * "every fader is the same {@code Control} underneath, just skinned at a
- * larger size" — is literal here: this view builds <strong>no parallel
- * widget tree</strong>. It uses the exact same {@link LevelMeter} and
- * {@link TrackStrip} {@code Control}s as the standard view, distinguished
- * only by their {@code .size-performance} style class, and plain
+ * on a touch device, or with the screen 1.5&nbsp;m away. Following the §2.5
+ * principle — "every fader is the same {@code Control} underneath, just
+ * skinned at a larger size" — this view constructs fresh instances of the
+ * same {@link LevelMeter} and {@link TrackStrip} {@code Control} classes
+ * used by the standard view, distinguished only by their
+ * {@code .size-performance} style class, and plain
  * {@code .dawg-button.size-stage} buttons. Theming therefore "just works":
  * a {@code ThemeManager} palette swap re-tints this view with no code
  * change because every colour resolves from the cascade.</p>
