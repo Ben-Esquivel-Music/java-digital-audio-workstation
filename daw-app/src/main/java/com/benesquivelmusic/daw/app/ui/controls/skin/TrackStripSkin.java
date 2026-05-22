@@ -87,6 +87,14 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
     static final double COMPACT_ROW_HEIGHT = 24.0;
     /** Comfortable row density (story 261). */
     static final double COMFORTABLE_ROW_HEIGHT = 32.0;
+    /**
+     * Performance Stage tile height (story 280 — UI Design Book §4
+     * Concept E). The {@code .size-performance} class is NOT a density
+     * profile — it is the dedicated live-performance "tile" size and is
+     * resolved ahead of the three density modes in
+     * {@link #rowHeightForVariant()}.
+     */
+    static final double PERFORMANCE_ROW_HEIGHT = 80.0;
 
     /** Width of the armed left-edge danger bar (§5.3). */
     static final double ARM_BAR_WIDTH = 2.0;
@@ -469,17 +477,29 @@ public final class TrackStripSkin extends SkinBase<TrackStrip> {
     }
 
     /**
-     * The density-derived row height (story 278). Routes through the
-     * single shared {@link DensityMode#resolveFor(javafx.scene.Node)}
-     * bridge: it reads the {@code .density-*} class on the scene root
-     * (the authoritative source set by {@code DensityManager}) and falls
-     * back to the control's own legacy {@code size-*} class for
-     * back-compat. {@code COMPACT} → 24&nbsp;px, {@code COMFORTABLE} →
-     * 28&nbsp;px (default), {@code TOUCH} → 32&nbsp;px — exactly the
-     * three legacy constants, but mapped from {@link DensityMode} (the
-     * source of truth) rather than re-deriving from style classes here.
+     * The row height (story 278 density / story 280 Performance Stage).
+     *
+     * <p>The {@code .size-performance} class (story 280, UI Design Book
+     * §4 Concept E) is checked first and short-circuits to
+     * {@link #PERFORMANCE_ROW_HEIGHT} (80&nbsp;px): a Performance Stage
+     * tile is a dedicated <em>view</em> size, not one of the three
+     * density profiles, so it must not be collapsed onto {@code TOUCH}
+     * by {@link DensityMode#resolveFor(javafx.scene.Node)}.</p>
+     *
+     * <p>Otherwise the height routes through the single shared
+     * {@link DensityMode#resolveFor(javafx.scene.Node)} bridge: it reads
+     * the {@code .density-*} class on the scene root (the authoritative
+     * source set by {@code DensityManager}) and falls back to the
+     * control's own legacy {@code size-*} class for back-compat.
+     * {@code COMPACT} → 24&nbsp;px, {@code COMFORTABLE} → 28&nbsp;px
+     * (default), {@code TOUCH} → 32&nbsp;px — exactly the three legacy
+     * constants, but mapped from {@link DensityMode} (the source of
+     * truth) rather than re-deriving from style classes here.</p>
      */
     private double rowHeightForVariant() {
+        if (getSkinnable().getStyleClass().contains("size-performance")) {
+            return PERFORMANCE_ROW_HEIGHT;             // 80 (story 280)
+        }
         return switch (DensityMode.resolveFor(getSkinnable())) {
             case COMPACT -> COMPACT_ROW_HEIGHT;        // 24
             case COMFORTABLE -> DEFAULT_ROW_HEIGHT;    // 28

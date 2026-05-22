@@ -841,6 +841,14 @@ public final class MainController {
                     @Override public void onEditorFadeIn() { clipEditController.onEditorFadeIn(); }
                     @Override public void onEditorFadeOut() { clipEditController.onEditorFadeOut(); }
                     @Override public void markProjectDirty() { projectDirty = true; }
+                    // ── Performance Stage (story 280) ─────────────────────────
+                    @Override public ResourceBundle messages() { return MESSAGES; }
+                    @Override public void onPlay() { transportController.onPlay(); }
+                    @Override public void onStop() { transportController.onStop(); }
+                    @Override public void onRecord() { transportController.onRecord(); }
+                    @Override public void onToggleLoop() { transportController.onToggleLoop(); }
+                    @Override public void onOpenAudioSettings() { MainController.this.onOpenAudioSettings(); }
+                    @Override public void onOpenProjectMenu() { MainController.this.onOpenSettings(); }
                 });
     }
 

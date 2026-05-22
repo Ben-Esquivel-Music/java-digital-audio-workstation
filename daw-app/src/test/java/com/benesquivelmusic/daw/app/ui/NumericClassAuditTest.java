@@ -32,6 +32,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the four numeric typography classes:
  * <ul>
  *   <li>{@code .numeric-display}  — 14 px hero (transport time, master meter peak)
+ *   <li>{@code .numeric-display-stage} — 48 px Performance Stage clock
+ *                                   (story 280 — the hero family at stage size)
  *   <li>{@code .numeric-value}    — 12 px standard (fader dB, BPM, dialog readouts)
  *   <li>{@code .numeric-caption}  — 11 px tight inline (channel strips, beat labels)
  *   <li>{@code .numeric-mono}     — family + weight only (tight contexts whose
@@ -64,7 +66,8 @@ final class NumericClassAuditTest {
             "/com/benesquivelmusic/daw/app/ui/main-view.fxml";
 
     private static final List<String> NUMERIC_CLASSES = List.of(
-            "numeric-display", "numeric-value", "numeric-caption", "numeric-mono");
+            "numeric-display", "numeric-display-stage",
+            "numeric-value", "numeric-caption", "numeric-mono");
 
     // ── FXML pass ───────────────────────────────────────────────────────
 

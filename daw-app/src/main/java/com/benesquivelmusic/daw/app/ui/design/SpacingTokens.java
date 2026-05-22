@@ -40,6 +40,14 @@ public final class SpacingTokens {
     public static final double SPACING_XL = 24;
     /** Eight grid cells. Dialog-level padding. (-spacing-xxl) */
     public static final double SPACING_XXL = 32;
+    /**
+     * Twelve grid cells. Performance Stage inter-band gaps (story 280 —
+     * UI Design Book §4 Concept E). The Performance Stage's oversized
+     * controls need wider separation than {@link #SPACING_XXL}; this is
+     * the extension of §3.3's scale rather than a hardcoded inline value.
+     * (-spacing-xxxl)
+     */
+    public static final double SPACING_XXXL = 48;
 
     /** Compact row height — dense table rows. (-row-compact) */
     public static final double ROW_COMPACT = 24;

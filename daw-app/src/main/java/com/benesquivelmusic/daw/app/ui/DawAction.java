@@ -198,6 +198,18 @@ public enum DawAction {
             new KeyCodeCombination(KeyCode.DIGIT3, KeyCombination.SHORTCUT_DOWN)),
     VIEW_MASTERING("Mastering View", Category.VIEWS,
             new KeyCodeCombination(KeyCode.DIGIT4, KeyCombination.SHORTCUT_DOWN)),
+    /**
+     * Story 280 — toggle the Performance Stage view (UI Design Book §4
+     * Concept E). Bound to {@code F11}: the story names F11 as the
+     * preferred shortcut "unless it collides with full-screen". There is
+     * no full-screen {@link DawAction} in this DAW (the JavaFX
+     * {@code Stage} full-screen toggle is not wired to a bindable
+     * action), and F11 is not used by any other binding — F3/F4/F5 are
+     * the only function keys taken ({@link #TOGGLE_DOCK_MIXER} etc.) — so
+     * F11 is collision-free and is used as specified.
+     */
+    VIEW_PERFORMANCE_STAGE("Performance Stage View", Category.VIEWS,
+            new KeyCodeCombination(KeyCode.F11)),
     TOGGLE_BROWSER("Toggle Browser", Category.VIEWS,
             new KeyCodeCombination(KeyCode.B, KeyCombination.SHORTCUT_DOWN)),
     TOGGLE_HISTORY("Toggle Undo History", Category.VIEWS,

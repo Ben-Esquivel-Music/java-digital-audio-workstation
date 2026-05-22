@@ -18,5 +18,15 @@ public enum DawView {
     EDITOR,
 
     /** Mastering chain view — signal chain with presets and A/B comparison. */
-    MASTERING
+    MASTERING,
+
+    /**
+     * Performance Stage view — an oversized-control "cockpit" for live
+     * use (story 280, UI Design Book §4 Concept E). Unlike the four
+     * standard views above it does not merely occupy the centre content
+     * area: it replaces the whole standard chrome (toolbar, track list,
+     * inspector) and is entered/left via a dedicated activate/deactivate
+     * path rather than {@code ViewNavigationController#switchView}.
+     */
+    PERFORMANCE_STAGE
 }
