@@ -1,8 +1,8 @@
 package com.benesquivelmusic.daw.app.ui.dock;
 
+import com.benesquivelmusic.daw.app.ui.TinyJsonParser;
 import com.benesquivelmusic.daw.sdk.ui.Rectangle2D;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -72,7 +72,7 @@ public final class DockLayoutJson {
     public static DockLayout parse(String json) {
         if (json == null || json.isBlank()) return DockLayout.empty();
         try {
-            Object root = new TinyJson(json).parseValue();
+            Object root = new TinyJsonParser(json).parseValue();
             if (!(root instanceof Map<?, ?> m)) return DockLayout.empty();
             Object arr = m.get("entries");
             if (!(arr instanceof List<?> list)) return DockLayout.empty();
@@ -143,139 +143,5 @@ public final class DockLayoutJson {
             }
         }
         return sb.toString();
-    }
-
-    /**
-     * Minimal recursive-descent JSON parser, intentionally a near-copy
-     * of the one in {@code WorkspaceJson} so the two stay aligned.
-     */
-    private static final class TinyJson {
-        private final String src;
-        private int i;
-
-        TinyJson(String src) {
-            this.src = src;
-            this.i = 0;
-        }
-
-        Object parseValue() {
-            skipWs();
-            if (i >= src.length()) throw new IllegalArgumentException("eof");
-            char c = src.charAt(i);
-            return switch (c) {
-                case '{' -> parseObject();
-                case '[' -> parseArray();
-                case '"' -> parseString();
-                case 't', 'f' -> parseBool();
-                case 'n' -> parseNull();
-                default -> parseNumber();
-            };
-        }
-
-        private Map<String, Object> parseObject() {
-            expect('{');
-            Map<String, Object> out = new LinkedHashMap<>();
-            skipWs();
-            if (peek() == '}') { i++; return out; }
-            while (true) {
-                skipWs();
-                String key = parseString();
-                skipWs();
-                expect(':');
-                out.put(key, parseValue());
-                skipWs();
-                char c = peek();
-                if (c == ',') { i++; continue; }
-                if (c == '}') { i++; return out; }
-                throw new IllegalArgumentException(", or }");
-            }
-        }
-
-        private List<Object> parseArray() {
-            expect('[');
-            List<Object> out = new ArrayList<>();
-            skipWs();
-            if (peek() == ']') { i++; return out; }
-            while (true) {
-                out.add(parseValue());
-                skipWs();
-                char c = peek();
-                if (c == ',') { i++; continue; }
-                if (c == ']') { i++; return out; }
-                throw new IllegalArgumentException(", or ]");
-            }
-        }
-
-        private String parseString() {
-            expect('"');
-            StringBuilder sb = new StringBuilder();
-            while (i < src.length()) {
-                char c = src.charAt(i++);
-                if (c == '"') return sb.toString();
-                if (c == '\\' && i < src.length()) {
-                    char n = src.charAt(i++);
-                    sb.append(switch (n) {
-                        case '"' -> '"';
-                        case '\\' -> '\\';
-                        case '/' -> '/';
-                        case 'n' -> '\n';
-                        case 'r' -> '\r';
-                        case 't' -> '\t';
-                        case 'b' -> '\b';
-                        case 'f' -> '\f';
-                        default -> n;
-                    });
-                } else {
-                    sb.append(c);
-                }
-            }
-            throw new IllegalArgumentException("unterminated");
-        }
-
-        private Boolean parseBool() {
-            if (src.startsWith("true", i)) { i += 4; return Boolean.TRUE; }
-            if (src.startsWith("false", i)) { i += 5; return Boolean.FALSE; }
-            throw new IllegalArgumentException("bool");
-        }
-
-        private Object parseNull() {
-            if (src.startsWith("null", i)) { i += 4; return null; }
-            throw new IllegalArgumentException("null");
-        }
-
-        private Number parseNumber() {
-            int start = i;
-            if (peek() == '-' || peek() == '+') i++;
-            boolean isFloat = false;
-            while (i < src.length()) {
-                char c = src.charAt(i);
-                if (c >= '0' && c <= '9') { i++; }
-                else if (c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-') {
-                    isFloat = true;
-                    i++;
-                } else break;
-            }
-            String tok = src.substring(start, i);
-            if (tok.isEmpty()) throw new IllegalArgumentException("number");
-            return isFloat ? (Number) Double.valueOf(tok) : (Number) Long.valueOf(tok);
-        }
-
-        private void expect(char c) {
-            skipWs();
-            if (i >= src.length() || src.charAt(i) != c) {
-                throw new IllegalArgumentException("expected " + c);
-            }
-            i++;
-        }
-
-        private char peek() {
-            skipWs();
-            if (i >= src.length()) throw new IllegalArgumentException("eof");
-            return src.charAt(i);
-        }
-
-        private void skipWs() {
-            while (i < src.length() && Character.isWhitespace(src.charAt(i))) i++;
-        }
     }
 }
