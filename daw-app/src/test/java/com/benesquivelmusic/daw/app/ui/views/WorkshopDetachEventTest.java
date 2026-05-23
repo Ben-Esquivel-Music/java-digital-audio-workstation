@@ -51,6 +51,13 @@ final class WorkshopDetachEventTest {
             // button and propagates upward.
             StackPane parent = new StackPane(view);
             new Scene(parent, 1280, 800);
+            // Force the SplitPane skin to be created so items (including
+            // the right pane that hosts the Detach button) become real
+            // children in the scene graph. Without this, the event
+            // dispatch chain from the detach button does not reach the
+            // parent StackPane and the filter never fires.
+            parent.applyCss();
+            parent.layout();
 
             List<DetachPluginRequestedEvent> received = new ArrayList<>();
             parent.addEventFilter(
