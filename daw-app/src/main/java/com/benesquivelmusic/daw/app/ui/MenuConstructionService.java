@@ -323,6 +323,13 @@ final class MenuConstructionService {
                 DawAction.VIEW_EDITOR, () -> host.onSwitchView(DawView.EDITOR));
         MenuItem mastering = menuItem("Mastering", DawIcon.LIMITER,
                 DawAction.VIEW_MASTERING, () -> host.onSwitchView(DawView.MASTERING));
+        // Story 280 — Performance Stage. Routes through the same
+        // onSwitchView(DawView) callback as the four standard views;
+        // ViewNavigationController detects PERFORMANCE_STAGE and runs the
+        // dedicated activate path that swaps the whole standard chrome.
+        MenuItem performanceStage = menuItem("Performance Stage", DawIcon.TIMELINE,
+                DawAction.VIEW_PERFORMANCE_STAGE,
+                () -> host.onSwitchView(DawView.PERFORMANCE_STAGE));
 
         MenuItem toggleBrowser = menuItem("Toggle Browser", DawIcon.LIBRARY,
                 DawAction.TOGGLE_BROWSER, host::onToggleBrowser);
@@ -334,7 +341,7 @@ final class MenuConstructionService {
                 DawAction.TOGGLE_VISUALIZATIONS, host::onToggleVisualizations);
 
         windowMenu.getItems().addAll(
-                arrangement, mixer, editor, mastering,
+                arrangement, mixer, editor, mastering, performanceStage,
                 new SeparatorMenuItem(),
                 toggleBrowser, toggleHistory, toggleNotifications, toggleViz,
                 new SeparatorMenuItem(),

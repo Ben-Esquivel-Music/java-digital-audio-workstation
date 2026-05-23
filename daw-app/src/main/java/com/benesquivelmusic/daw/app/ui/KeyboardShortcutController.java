@@ -226,6 +226,10 @@ final class KeyboardShortcutController {
         actionHandlers.put(DawAction.VIEW_MIXER, () -> host.switchView(DawView.MIXER));
         actionHandlers.put(DawAction.VIEW_EDITOR, () -> host.switchView(DawView.EDITOR));
         actionHandlers.put(DawAction.VIEW_MASTERING, () -> host.switchView(DawView.MASTERING));
+        // Story 280 — F11 toggles the Performance Stage view. Routed
+        // through the same switchView callback as the standard views.
+        actionHandlers.put(DawAction.VIEW_PERFORMANCE_STAGE,
+                () -> host.switchView(DawView.PERFORMANCE_STAGE));
         actionHandlers.put(DawAction.TOGGLE_BROWSER, host::onToggleBrowser);
         actionHandlers.put(DawAction.TOGGLE_HISTORY, host::onToggleHistory);
         actionHandlers.put(DawAction.TOGGLE_NOTIFICATION_HISTORY, host::onToggleNotificationHistory);

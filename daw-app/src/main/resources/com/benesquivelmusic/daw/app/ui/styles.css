@@ -17,7 +17,9 @@
  *   Spacing scale (px):
  *     -spacing-xxs   2     -spacing-xs    4     -spacing-sm    8
  *     -spacing-md   12     -spacing-lg   16     -spacing-xl   24
- *     -spacing-xxl  32
+ *     -spacing-xxl  32     -spacing-xxxl  48
+ *   (-spacing-xxxl, 48 px, was added in story 280 for the Performance
+ *    Stage's larger inter-band gaps — UI Design Book §4 Concept E.)
  *   Row-height scale (px):
  *     -row-compact  24     -row-default  28     -row-touch    32
  *     -row-transport 36
@@ -265,6 +267,33 @@
 
 .dawg-button.size-transport {
     -fx-padding: 8 16;
+}
+
+/* size-stage (story 280 — Performance Stage, UI Design Book §4 Concept E):
+ * the 64 px tall live-performance transport button. Unlike the other
+ * size variants, padding alone (-spacing-md -spacing-lg = 12 16) does not
+ * reach 64 px with an 18 px label, so an explicit -fx-min-height /
+ * -fx-pref-height pins the height; both values are multiples of 4
+ * (TokenValidation). The 18 px / 600 font matches the Performance Stage
+ * type scale (track-tile names are also 18 px). */
+.dawg-button.size-stage {
+    -fx-padding: 12 16;
+    -fx-min-height: 64;
+    -fx-pref-height: 64;
+    -fx-font-size: 18px;
+    -fx-font-weight: 600;
+}
+
+/* Tile-action variant — 28 px touch-size for CUE / action buttons inside
+ * Performance Stage track tiles (story 280 §4 Concept E). Values are
+ * multiples of 4 (TokenValidation); 28 = the grid-aligned touch target
+ * that fits alongside the 80 px track strip without dominating its row. */
+.dawg-button.size-tile-action {
+    -fx-padding: 4 8;
+    -fx-min-height: 28;
+    -fx-pref-height: 28;
+    -fx-font-size: 12px;
+    -fx-font-weight: 600;
 }
 
 /* ── Density profiles (story 278 — UI Design Book §3.7) ──────────────────
@@ -570,6 +599,15 @@
     -fx-font-size: 14px;
     -fx-font-weight: 500;
 }
+/* .numeric-display-stage (story 280 — Performance Stage, UI Design Book
+ * §4 Concept E): the oversized 48 px transport clock. Mirrors
+ * .numeric-display (mono / weight 500) at the hero stage size — same
+ * verbatim mono stack (JavaFX CSS cannot resolve -font-mono). */
+.numeric-display-stage {
+    -fx-font-family: "JetBrains Mono", "IBM Plex Mono", "Cascadia Code", "Consolas", monospace;
+    -fx-font-size: 48px;
+    -fx-font-weight: 500;
+}
 .numeric-value {
     -fx-font-family: "JetBrains Mono", "IBM Plex Mono", "Cascadia Code", "Consolas", monospace;
     -fx-font-size: 12px;
@@ -583,6 +621,60 @@
 .numeric-mono {
     -fx-font-family: "JetBrains Mono", "IBM Plex Mono", "Cascadia Code", "Consolas", monospace;
     -fx-font-weight: 500;
+}
+
+/* ── Performance Stage view (story 280 — UI Design Book §4 Concept E) ──
+ * The oversized live-performance "cockpit". Structural only — every
+ * colour resolves from a role token, so a ThemeManager palette swap
+ * re-tints the stage with no code change (story 277). Every padding /
+ * spacing / radius value is a multiple of 4 (TokenValidation); the
+ * 48 px gaps use the -spacing-xxxl scale extension. */
+.performance-stage-view {
+    -fx-background-color: -surface-bg;
+}
+
+.performance-stage-top-band {
+    -fx-padding: 0 0 16 0;
+}
+
+.performance-stage-clock-band {
+    -fx-padding: 16 0 16 0;
+}
+
+.performance-stage-tile-scroller {
+    -fx-background-color: transparent;
+    -fx-padding: 0 48 48 48;
+}
+
+.performance-stage-tile-scroller > .viewport {
+    -fx-background-color: transparent;
+}
+
+/* The floating ☰ menu sits above the content; circular accent box so it
+ * reads as a single persistent affordance, not a transport control. */
+.performance-stage-menu {
+    -fx-background-radius: 8;
+    -fx-border-radius: 8;
+}
+
+/* Scrim covering the whole view while the menu is open. The translucent
+ * dimming lives on a dedicated backdrop child (.performance-stage-overlay-
+ * backdrop) so the panel above it stays fully opaque. */
+.performance-stage-overlay {
+    -fx-background-color: transparent;
+}
+
+.performance-stage-overlay-backdrop {
+    -fx-background-color: -surface-overlay;
+    -fx-opacity: 0.82;
+}
+
+.performance-stage-overlay-panel {
+    -fx-background-color: -surface-1;
+    -fx-background-radius: 8;
+    -fx-border-color: -line-soft;
+    -fx-border-width: 1;
+    -fx-border-radius: 8;
 }
 
 /* ── Track List Panel ── */

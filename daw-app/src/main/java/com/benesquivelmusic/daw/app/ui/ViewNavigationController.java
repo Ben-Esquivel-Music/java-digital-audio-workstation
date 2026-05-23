@@ -40,6 +40,37 @@ final class ViewNavigationController {
         void onEditorFadeIn();
         void onEditorFadeOut();
         void markProjectDirty();
+
+        // ── Performance Stage (story 280) ─────────────────────────────────
+        /**
+         * @return the {@code Messages} resource bundle for Performance
+         *         Stage user-facing strings (Skill §14)
+         */
+        java.util.ResourceBundle messages();
+        /**
+         * @return the standard toolbar transport time display {@link Label}
+         *         whose text continues updating while hidden (hide-not-unload);
+         *         the Performance Stage clock binds to its {@code textProperty}
+         */
+        Label timeDisplay();
+        /** Toggle play / pause — drives the same transport as the toolbar. */
+        void onPlay();
+        /** Stop transport — drives the same transport as the toolbar. */
+        void onStop();
+        /** Toggle record-arm — drives the same transport as the toolbar. */
+        void onRecord();
+        /** Toggle loop — drives the same transport as the toolbar. */
+        void onToggleLoop();
+        /** Open the Audio Settings dialog (Performance Stage ☰ overlay). */
+        void onOpenAudioSettings();
+        /** New project — Performance Stage ☰ file sub-overlay. */
+        void onNewProject();
+        /** Open project — Performance Stage ☰ file sub-overlay. */
+        void onOpenProject();
+        /** Save project — Performance Stage ☰ file sub-overlay. */
+        void onSaveProject();
+        /** Recent projects — Performance Stage ☰ file sub-overlay. */
+        void onRecentProjects();
     }
 
     // ── Dependencies ─────────────────────────────────────────────────────────
@@ -81,6 +112,38 @@ final class ViewNavigationController {
 
     /** Per-view zoom levels — preserved when switching between views. */
     private final Map<DawView, ZoomLevel> viewZoomLevels = new EnumMap<>(DawView.class);
+
+    // ── Performance Stage state (story 280) ──────────────────────────────────
+
+    /**
+     * The active Performance Stage view, or {@code null} when the standard
+     * chrome is showing. Non-null exactly while
+     * {@link #isPerformanceStageActive()} is {@code true}.
+     */
+    private com.benesquivelmusic.daw.app.ui.views.PerformanceStageView performanceStageView;
+    /**
+     * The standard view that was active when Performance Stage was entered,
+     * so {@code Esc} / "Exit Performance Stage" can restore it.
+     */
+    private DawView preStageView;
+    /**
+     * Snapshot of the standard chrome ({@code BorderPane} top / left /
+     * right / center) taken on activation and restored on deactivation.
+     *
+     * <p>Lifecycle decision — the standard chrome is <strong>hidden, not
+     * unloaded</strong>: the nodes are detached from the {@code BorderPane}
+     * but kept alive in these fields, so exiting Performance Stage restores
+     * the arrangement view with all its state (scroll, selection, zoom)
+     * intact and incurs no rebuild cost. Unloading would force a full
+     * rebuild of the toolbar / track list / inspector on every exit for no
+     * benefit.</p>
+     */
+    private Node savedTop;
+    private Node savedLeft;
+    private Node savedRight;
+    private Node savedCenter;
+    /** {@code Esc} filter installed on the scene while the stage is active. */
+    private javafx.event.EventHandler<javafx.scene.input.KeyEvent> stageEscFilter;
 
     ViewNavigationController(BorderPane rootPane,
                              Label statusBarLabel,
@@ -147,6 +210,22 @@ final class ViewNavigationController {
      * @param view the view to activate
      */
     void switchView(DawView view) {
+        // Story 280 — Performance Stage is a mode, not a centre-content
+        // swap. F11 / the menu toggle it: requesting it while active exits
+        // back to the previously active standard view.
+        if (view == DawView.PERFORMANCE_STAGE) {
+            if (isPerformanceStageActive()) {
+                deactivatePerformanceStage();
+            } else {
+                activatePerformanceStage();
+            }
+            return;
+        }
+        // Switching to a standard view while the stage is active first
+        // tears the stage down so the chrome is restored before the swap.
+        if (isPerformanceStageActive()) {
+            deactivatePerformanceStage();
+        }
         if (view == activeView) {
             return;
         }
@@ -160,6 +239,178 @@ final class ViewNavigationController {
             onViewChanged.run();
         }
         LOG.fine(() -> "Switched to view: " + view);
+    }
+
+    // ── Performance Stage activation (story 280) ─────────────────────────────
+
+    /** @return whether the Performance Stage view is currently active. */
+    boolean isPerformanceStageActive() {
+        return performanceStageView != null;
+    }
+
+    /**
+     * @return the active {@code PerformanceStageView}, or {@code null} when
+     *         the standard chrome is showing (test seam)
+     */
+    com.benesquivelmusic.daw.app.ui.views.PerformanceStageView performanceStageView() {
+        return performanceStageView;
+    }
+
+    /**
+     * Enters Performance Stage (story 280): snapshots the standard chrome
+     * (the {@code BorderPane}'s top / left / right / center), detaches it,
+     * and installs a freshly built {@code PerformanceStageView} as the sole
+     * content. The previously active standard view is recorded so
+     * {@code Esc} / "Exit Performance Stage" can restore it.
+     *
+     * <p>No-op if the stage is already active.</p>
+     */
+    void activatePerformanceStage() {
+        if (isPerformanceStageActive()) {
+            return;
+        }
+        preStageView = activeView;
+        // Hide-not-unload: detach the chrome but keep it alive in fields.
+        savedTop = rootPane.getTop();
+        savedLeft = rootPane.getLeft();
+        savedRight = rootPane.getRight();
+        savedCenter = rootPane.getCenter();
+
+        performanceStageView = new com.benesquivelmusic.daw.app.ui.views.PerformanceStageView(
+                host.project(), host.messages(),
+                new com.benesquivelmusic.daw.app.ui.views.PerformanceStageView.Host() {
+                    @Override public void onPlay() { host.onPlay(); }
+                    @Override public void onStop() { host.onStop(); }
+                    @Override public void onRecord() { host.onRecord(); }
+                    @Override public void onToggleLoop() { host.onToggleLoop(); }
+                    @Override public void onExitPerformanceStage() { deactivatePerformanceStage(); }
+                    @Override public void onOpenAudioSettings() { host.onOpenAudioSettings(); }
+                    @Override public void onNewProject() { host.onNewProject(); }
+                    @Override public void onOpenProject() { host.onOpenProject(); }
+                    @Override public void onSaveProject() { host.onSaveProject(); }
+                    @Override public void onRecentProjects() { host.onRecentProjects(); }
+                });
+
+        rootPane.setTop(null);
+        rootPane.setLeft(null);
+        rootPane.setRight(null);
+        // Bind the stage clock to the standard time display so it updates
+        // in real-time even though the toolbar is hidden (hide-not-unload).
+        performanceStageView.clockLabel().textProperty()
+                .bind(host.timeDisplay().textProperty());
+
+        // Attach first, then fade — a FadeTransition started before the
+        // node is in the scene can briefly flash at opacity 0 on the first
+        // paint. Symmetric with deactivate (restore-then-fade below).
+        rootPane.setCenter(performanceStageView);
+        playStageTransition(performanceStageView);
+
+        installStageEscFilter();
+        activeView = DawView.PERFORMANCE_STAGE;
+        statusBarLabel.setText("Performance Stage");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
+        if (onViewChanged != null) {
+            onViewChanged.run();
+        }
+        LOG.fine("Activated Performance Stage view");
+    }
+
+    /**
+     * Leaves Performance Stage: removes the {@code Esc} filter, restores
+     * the snapshotted standard chrome, and re-activates the standard view
+     * that was showing when the stage was entered. No-op if the stage is
+     * not active.
+     */
+    void deactivatePerformanceStage() {
+        if (!isPerformanceStageActive()) {
+            return;
+        }
+        removeStageEscFilter();
+        // Unbind the stage clock before discarding the view.
+        performanceStageView.clockLabel().textProperty().unbind();
+        rootPane.setCenter(savedCenter);
+        rootPane.setTop(savedTop);
+        rootPane.setLeft(savedLeft);
+        rootPane.setRight(savedRight);
+        savedTop = savedLeft = savedRight = savedCenter = null;
+        performanceStageView = null;
+
+        DawView restore = preStageView != null ? preStageView : DawView.ARRANGEMENT;
+        preStageView = null;
+        activeView = restore;
+        toolbarStateStore.saveActiveView(restore);
+        // The restored centre is whatever standard view was active before
+        // staging began — fading it back in matches the §3.5 view-switch
+        // transition (180 ms EASE_OUT). Reduce Motion skips the fade in
+        // playStageTransition.
+        playStageTransition(rootPane.getCenter());
+        statusBarLabel.setText("Exited Performance Stage");
+        statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
+        if (onViewChanged != null) {
+            onViewChanged.run();
+        }
+        LOG.fine("Deactivated Performance Stage view");
+    }
+
+    /**
+     * Plays the §3.5 view-switch transition (180&nbsp;ms {@code EASE_OUT}
+     * fade-in) on the given node, honouring the Reduce Motion flag (story
+     * 279): when Reduce Motion is on the transition is skipped and the node
+     * is shown immediately.
+     *
+     * @param node the freshly installed content node
+     */
+    private void playStageTransition(Node node) {
+        if (node == null) {
+            return;
+        }
+        if (!com.benesquivelmusic.daw.app.ui.motion.MotionManager
+                .getDefault().isAnimationAllowed()) {
+            node.setOpacity(1.0);
+            return;
+        }
+        node.setOpacity(0.0);
+        javafx.animation.FadeTransition fade = new javafx.animation.FadeTransition(
+                javafx.util.Duration.millis(180), node);
+        fade.setFromValue(0.0);
+        fade.setToValue(1.0);
+        fade.setInterpolator(javafx.animation.Interpolator.EASE_OUT);
+        fade.play();
+    }
+
+    /**
+     * Installs a scene-level {@code KEY_PRESSED} filter that exits
+     * Performance Stage on {@code Esc} (story 280). A filter (not a
+     * handler) is used so the keypress is consumed before the standard
+     * {@code Esc}-bound {@code STOP} accelerator can also fire.
+     *
+     * <p>Assumes the {@code rootPane} stays in the same {@link
+     * javafx.scene.Scene} for the duration of a stage session — a scene
+     * swap between activate and deactivate would leak the filter on the
+     * old scene. Reparenting a live root is not a supported operation in
+     * this DAW today.</p>
+     */
+    private void installStageEscFilter() {
+        javafx.scene.Scene scene = rootPane.getScene();
+        if (scene == null) {
+            return;
+        }
+        stageEscFilter = event -> {
+            if (event.getCode() == javafx.scene.input.KeyCode.ESCAPE) {
+                event.consume();
+                deactivatePerformanceStage();
+            }
+        };
+        scene.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, stageEscFilter);
+    }
+
+    /** Removes the {@code Esc} filter installed by {@link #installStageEscFilter()}. */
+    private void removeStageEscFilter() {
+        javafx.scene.Scene scene = rootPane.getScene();
+        if (scene != null && stageEscFilter != null) {
+            scene.removeEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, stageEscFilter);
+        }
+        stageEscFilter = null;
     }
 
     // ── Edit tool selection ──────────────────────────────────────────────────

@@ -29,9 +29,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Story 266 — guards the rule from UI Design Book §3.2 that every number
  * the user reads from the UI is drawn in {@code -font-mono} via one of
- * the four numeric typography classes:
+ * the five numeric typography classes:
  * <ul>
  *   <li>{@code .numeric-display}  — 14 px hero (transport time, master meter peak)
+ *   <li>{@code .numeric-display-stage} — 48 px Performance Stage clock
+ *                                   (story 280 — the hero family at stage size)
  *   <li>{@code .numeric-value}    — 12 px standard (fader dB, BPM, dialog readouts)
  *   <li>{@code .numeric-caption}  — 11 px tight inline (channel strips, beat labels)
  *   <li>{@code .numeric-mono}     — family + weight only (tight contexts whose
@@ -50,7 +52,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       specifier ({@code %d}, {@code %f}, {@code %e}, {@code %g},
  *       {@code %o}, {@code %x}) — must be followed by a
  *       {@code getStyleClass().add(...)} (or {@code .addAll(...)}) that
- *       includes one of the four numeric classes.
+ *       includes one of the five numeric classes.
  * </ol>
  *
  * <p>Both passes are structural / static checks; they parse the FXML XML
@@ -64,7 +66,8 @@ final class NumericClassAuditTest {
             "/com/benesquivelmusic/daw/app/ui/main-view.fxml";
 
     private static final List<String> NUMERIC_CLASSES = List.of(
-            "numeric-display", "numeric-value", "numeric-caption", "numeric-mono");
+            "numeric-display", "numeric-display-stage",
+            "numeric-value", "numeric-caption", "numeric-mono");
 
     // ── FXML pass ───────────────────────────────────────────────────────
 

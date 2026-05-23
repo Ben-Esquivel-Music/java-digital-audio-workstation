@@ -208,13 +208,16 @@
     -fx-font-size: 13px;
 }
 
-/* size-performance: established here so story 280 (Performance Stage)
- * can ship a stylesheet rule rather than a code change. Currently
- * aliases the comfortable density. */
+/* size-performance (story 280 — UI Design Book §4 Concept E): the
+ * Performance Stage track tile. NOT a density profile — an 80 px row
+ * height is enforced from TrackStripSkin#rowHeightForVariant (kept out
+ * of CSS so the 80 stays consistent with the Java-side measure), with
+ * an 18 px name. The padding scales up to -spacing-lg horizontal so the
+ * larger M/S/R toggles and meter sit comfortably. */
 .track-strip.size-performance {
-    -fx-padding: 0 12 0 12;
+    -fx-padding: 0 16 0 16;
 }
 
 .track-strip.size-performance .track-strip-name {
-    -fx-font-size: 13px;
+    -fx-font-size: 18px;
 }
