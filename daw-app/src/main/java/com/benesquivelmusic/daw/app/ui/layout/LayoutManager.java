@@ -83,6 +83,8 @@ public final class LayoutManager {
     private final Host host;
     private final ObservableList<NamedLayout> savedLayouts =
             FXCollections.observableArrayList();
+    private final ObservableList<NamedLayout> savedLayoutsView =
+            FXCollections.unmodifiableObservableList(savedLayouts);
     private final ReadOnlyStringWrapper currentLayout =
             new ReadOnlyStringWrapper(this, "currentLayout", BuiltInLayouts.DEFAULT);
 
@@ -95,14 +97,15 @@ public final class LayoutManager {
     // ── Read-only views ─────────────────────────────────────────────────────
 
     /**
-     * Live, observable list of every layout known to the manager. The
-     * first five entries are always the built-ins (in
-     * {@link BuiltInLayouts#NAMES} order); user-saved layouts follow in
-     * insertion order. The list is mutable internally but exposed as
-     * {@link ObservableList} so FX consumers can bind to it.
+     * Live, observable, <strong>unmodifiable</strong> view of every layout
+     * known to the manager. The first five entries are always the
+     * built-ins (in {@link BuiltInLayouts#NAMES} order); user-saved
+     * layouts follow in insertion order. All mutations must go through
+     * {@link #saveCurrent(String)}, {@link #load(String)},
+     * {@link #delete(String)}, or {@link #rename(String, String)}.
      */
     public ObservableList<NamedLayout> savedLayouts() {
-        return savedLayouts;
+        return savedLayoutsView;
     }
 
     /** Returns the layout with the given name, or empty. */
@@ -149,7 +152,8 @@ public final class LayoutManager {
         }
         if (BuiltInLayouts.isBuiltIn(trimmed)) {
             LOG.fine(() -> "Refusing to overwrite built-in layout '" + trimmed + "'");
-            return findByName(trimmed).orElseThrow();
+            NamedLayout builtIn = BuiltInLayouts.byName(trimmed);
+            return builtIn != null ? builtIn : findByName(trimmed).orElseThrow();
         }
         String json = host.captureDockLayoutJson();
         NamedLayout snapshot = NamedLayout.user(trimmed, json == null ? "" : json);
