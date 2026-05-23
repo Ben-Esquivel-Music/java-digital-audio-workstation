@@ -224,8 +224,7 @@ final class CanonicalRegressionPresets {
                 DspRegressionPreset.DEFAULT, p -> p);
         DspRegressionPreset.register(DitherProcessor.class,
                 DspRegressionPreset.AGGRESSIVE, p -> {
-                    // Dither processor params via reflective setters; keep
-                    // bit depth low to maximize quantization noise.
+                    // Keep bit depth low to maximize quantization noise.
                     p.setTargetBitDepth(8);
                     return p;
                 });

@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.core.dsp.dynamics;
 
+import com.benesquivelmusic.daw.core.mixer.ReflectiveParameterRegistry;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -57,6 +58,35 @@ class TruePeakLimiterProcessorTest {
         l.setIsr(3); assertThat(l.getIsr()).isEqualTo(2);
         l.setIsr(5); assertThat(l.getIsr()).isEqualTo(4);
         l.setIsr(7); assertThat(l.getIsr()).isEqualTo(8);
+    }
+
+    @Test
+    void setIsrParamSnapsToOversampleSteps() {
+        var l = new TruePeakLimiterProcessor(2, SAMPLE_RATE);
+        // Exact values snap to themselves
+        l.setIsrParam(2.0); assertThat(l.getIsr()).isEqualTo(2);
+        l.setIsrParam(4.0); assertThat(l.getIsr()).isEqualTo(4);
+        l.setIsrParam(8.0); assertThat(l.getIsr()).isEqualTo(8);
+        // Fractional values round to nearest integer then snap
+        l.setIsrParam(2.4); assertThat(l.getIsr()).isEqualTo(2);
+        l.setIsrParam(2.6); assertThat(l.getIsr()).isEqualTo(4);
+        l.setIsrParam(5.9); assertThat(l.getIsr()).isEqualTo(8);
+        l.setIsrParam(6.1); assertThat(l.getIsr()).isEqualTo(8);
+        // Getter reflects the same snapped value
+        l.setIsrParam(3.0);
+        assertThat(l.getIsrParam()).isEqualTo(l.getIsr());
+    }
+
+    @Test
+    void reflectiveParameterDiscoveryBindsIsrParam() {
+        var l = new TruePeakLimiterProcessor(2, SAMPLE_RATE);
+        var handler = ReflectiveParameterRegistry.createParameterHandler(l);
+        // id=3 is the ISR param; set to 7.0 which should snap to 8
+        handler.accept(3, 7.0);
+        assertThat(l.getIsr()).isEqualTo(8);
+        // set to 2.0 which should snap to 2
+        handler.accept(3, 2.0);
+        assertThat(l.getIsr()).isEqualTo(2);
     }
 
     @Test
