@@ -281,8 +281,12 @@ final class ViewNavigationController {
             // Detach the arrangement node from its current parent before
             // re-parenting it into Workshop (JavaFX throws
             // IllegalArgumentException if a Node is added to a new parent
-            // while still attached to another).
-            rootPane.setCenter(null);
+            // while still attached to another). Only clear center when it
+            // actually holds the arrangement node to avoid a visible
+            // blank/flicker when switching from other views (e.g. Mixer).
+            if (rootPane.getCenter() == viewCache.get(DawView.ARRANGEMENT)) {
+                rootPane.setCenter(null);
+            }
             // Move the cached arrangement node into Workshop's left pane.
             workshopView.setArrangementContent(viewCache.get(DawView.ARRANGEMENT));
             // Story 281 Task 2 — apply any selection the user made while

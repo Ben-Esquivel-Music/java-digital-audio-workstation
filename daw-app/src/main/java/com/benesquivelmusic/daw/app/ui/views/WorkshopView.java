@@ -352,8 +352,8 @@ public final class WorkshopView extends BorderPane {
      * @return the ordered segment list
      */
     static List<String> buildSegments(ResourceBundle bundle, int trackIndex, int insertIndex, String pluginName) {
-        String trackSegment = String.format(bundle.getString("workshop.breadcrumb.trackFormat"), trackIndex);
-        String insertSegment = String.format(bundle.getString("workshop.breadcrumb.insertFormat"), insertIndex);
+        String trackSegment = String.format(bundle.getLocale(), bundle.getString("workshop.breadcrumb.trackFormat"), trackIndex);
+        String insertSegment = String.format(bundle.getLocale(), bundle.getString("workshop.breadcrumb.insertFormat"), insertIndex);
         if (pluginName == null || pluginName.isBlank()) {
             return List.of(trackSegment, insertSegment);
         }

@@ -25,6 +25,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
@@ -142,6 +143,14 @@ public final class WorkshopSelectionHostController {
      * with {@link System#identityHashCode(Object)}.
      */
     private final IdentityHashMap<Clip, Node> midiClipEditorCache = new IdentityHashMap<>();
+
+    /**
+     * Per-track last-focused insert index. Updated whenever an
+     * {@link InspectorSelection.InsertSelection} is applied so that
+     * switching back to a {@link InspectorSelection.TrackSelection}
+     * can restore the most-recently-opened plugin for that track.
+     */
+    private final Map<UUID, Integer> lastFocusedInsertByTrack = new HashMap<>();
 
     /**
      * The most-recent selection that arrived while Workshop was inactive,
@@ -311,15 +320,20 @@ public final class WorkshopSelectionHostController {
                 // clip detail below.
                 applyClipSelection(clip);
             }
-            case InspectorSelection.TrackSelection _ -> {
+            case InspectorSelection.TrackSelection ts -> {
                 // Per PR description: "When the active selection is a
                 // track or insert, the Workshop right pane shows that
                 // track's currently-active plugin (the one most-recently
-                // opened)." Keep the last focused plugin visible —
-                // clearing it would contradict the spec. A full per-track
-                // last-opened-insert lookup requires additional state
-                // tracking deferred to a follow-on story.
-                //
+                // opened)." Resolve the last-focused insert for this
+                // track and show its plugin; clear if none exists.
+                UUID trackId = ts.trackId();
+                Integer lastInsert = lastFocusedInsertByTrack.get(trackId);
+                if (lastInsert != null) {
+                    applyInsertSelection(
+                            new InspectorSelection.InsertSelection(trackId, lastInsert));
+                } else {
+                    clearFocusedPlugin();
+                }
                 // Clear only the clip-detail slot — only ClipSelection
                 // populates it.
                 workshopView.setClipDetailContent(null);
@@ -364,6 +378,9 @@ public final class WorkshopSelectionHostController {
             }
             pluginPanelCache.put(key, panel);
         }
+        // Record the last-focused insert for this track so TrackSelection
+        // can restore it.
+        lastFocusedInsertByTrack.put(trackId, insertIndex);
         int trackIdx = ProjectLookups.findTrackIndex(project, trackId);
         int displayIndex = trackIdx < 0 ? 1 : (trackIdx + 1);
         // §4 Concept F breadcrumb — "Track 03 ▸ Insert 2 ▸ Reverb". Push
@@ -462,8 +479,8 @@ public final class WorkshopSelectionHostController {
         } catch (RuntimeException e) {
             // Defensive — never let a misbehaving plugin descriptor crash
             // the Workshop wiring. Log and show the placeholder.
-            LOG.warning(() -> "Failed to build plugin panel for insert '"
-                    + slot.getName() + "': " + e);
+            LOG.log(Level.WARNING, "Failed to build plugin panel for insert '"
+                    + slot.getName() + "'", e);
             return null;
         }
     }
