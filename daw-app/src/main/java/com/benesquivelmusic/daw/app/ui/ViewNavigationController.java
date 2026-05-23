@@ -113,6 +113,16 @@ final class ViewNavigationController {
      */
     private com.benesquivelmusic.daw.app.ui.views.WorkshopView workshopView;
 
+    /**
+     * Story 281 Task 2 — selection-driven push of the focused
+     * plugin GUI / clip-detail editor into the Workshop right pane.
+     * Built lazily alongside {@link #workshopView} on first switch to
+     * {@link DawView#WORKSHOP}; held here so it can outlive the user
+     * exiting and re-entering Workshop (the cache survives).
+     */
+    private com.benesquivelmusic.daw.app.ui.views.WorkshopSelectionHostController
+            workshopSelectionHostController;
+
     /** The currently active edit tool. */
     private EditTool activeEditTool;
 
@@ -263,6 +273,12 @@ final class ViewNavigationController {
             ensureWorkshopBuilt();
             // Move the cached arrangement node into Workshop's left pane.
             workshopView.setArrangementContent(viewCache.get(DawView.ARRANGEMENT));
+            // Story 281 Task 2 — apply any selection the user made while
+            // Workshop was inactive (e.g. clicking an insert in Arrangement
+            // / Mixer view) so the focused plugin appears on entry.
+            if (workshopSelectionHostController != null) {
+                workshopSelectionHostController.applyPendingOnWorkshopActivation();
+            }
         }
         activeView = view;
         toolbarStateStore.saveActiveView(view);
@@ -303,7 +319,43 @@ final class ViewNavigationController {
         }
         workshopView = new com.benesquivelmusic.daw.app.ui.views.WorkshopView(
                 host.messages(), sm);
+
+        // Story 281 — hydrate the persisted divider position before the
+        // view's first layout pass, then write back whenever the user
+        // drags the divider. Range-clamping happens inside the store on
+        // load (a corrupt or extreme value would collapse one pane).
+        workshopView.setDividerPosition(
+                toolbarStateStore.loadWorkshopDividerPosition());
+        var dividers = workshopView.splitPane().getDividers();
+        if (!dividers.isEmpty()) {
+            dividers.get(0).positionProperty().addListener(
+                    (obs, oldPos, newPos) -> toolbarStateStore
+                            .saveWorkshopDividerPosition(newPos.doubleValue()));
+        }
+
+        // Story 281 Task 2 — wire selection-driven plugin / clip-detail
+        // push from the shared selection model into the right pane.
+        // Built once, reused across Workshop enter/exit cycles so its
+        // plugin-panel cache survives.
+        workshopSelectionHostController =
+                new com.benesquivelmusic.daw.app.ui.views.WorkshopSelectionHostController(
+                        workshopView, sm, host::project,
+                        () -> activeView == DawView.WORKSHOP);
+
         viewCache.put(DawView.WORKSHOP, workshopView);
+    }
+
+    /**
+     * Test seam — exposes the Workshop selection-host controller so
+     * verification tests can interrogate its cache size and observe
+     * push behaviour.
+     *
+     * @return the controller, or {@code null} when Workshop has not
+     *         been built yet
+     */
+    com.benesquivelmusic.daw.app.ui.views.WorkshopSelectionHostController
+            workshopSelectionHostController() {
+        return workshopSelectionHostController;
     }
 
     /**

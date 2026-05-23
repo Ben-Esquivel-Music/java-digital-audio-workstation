@@ -262,6 +262,64 @@ public final class WorkshopView extends BorderPane {
     }
 
     /**
+     * Clears the focused-plugin slot back to the empty placeholder and
+     * empties the breadcrumb. Used by the host controller when the
+     * inspector selection transitions to a non-insert (track / send /
+     * bus / empty) so the right pane stops showing a stale plugin.
+     *
+     * <p>Per the {@code WorkshopPluginSwitchTest} contract, this swaps
+     * the {@link PluginViewContainer}'s inner content only — the
+     * container itself is preserved (its parent identity remains the
+     * right pane VBox).</p>
+     */
+    public void clearFocusedPlugin() {
+        breadcrumb.setSegments(List.of());
+        pluginContainer.setPluginView(null);
+    }
+
+    /**
+     * Variant of {@link #setFocusedPlugin(int, String, Node)} that takes
+     * the rendered breadcrumb segments directly — useful when the host
+     * controller has already composed the full {@code Track NN ▸ Insert M
+     * ▸ <plugin name>} triple and wants to push it verbatim (the host
+     * knows the real insert number; this view's default composer
+     * hard-codes "Insert 1" because the standalone view has no project
+     * context).
+     *
+     * @param segments   the breadcrumb segments to render
+     *                   (e.g. {@code ["Track 03", "Insert 2", "Reverb"]});
+     *                   may be {@code null}/empty to clear the breadcrumb
+     * @param pluginNode the focused plugin GUI, or {@code null} to clear
+     */
+    public void setFocusedPlugin(List<String> segments, Node pluginNode) {
+        breadcrumb.setSegments(segments == null ? List.of() : segments);
+        pluginContainer.setPluginView(pluginNode);
+    }
+
+    /**
+     * @return the currently-focused plugin Node, or {@code null} if the
+     *         right pane is showing its empty-state placeholder — test
+     *         seam exposed at the {@link WorkshopView} level for tests
+     *         that assert on identity of the focused plugin across
+     *         selection changes (in addition to the
+     *         {@link PluginViewContainer}-level seam)
+     */
+    public Node focusedPluginNode() {
+        return pluginContainer.getPluginView();
+    }
+
+    /**
+     * @return the clip-detail Node currently shown in the clip-detail
+     *         slot below the plugin pane, or {@code null} when no clip
+     *         is selected — test seam
+     */
+    public Node clipDetailContent() {
+        return clipDetailHost.getChildren().isEmpty()
+                ? null
+                : clipDetailHost.getChildren().get(0);
+    }
+
+    /**
      * Builds the breadcrumb segments for a track / insert / plugin trio.
      * Pure static helper — extracted for testability and because it is the
      * same string assembly the test asserts against.
