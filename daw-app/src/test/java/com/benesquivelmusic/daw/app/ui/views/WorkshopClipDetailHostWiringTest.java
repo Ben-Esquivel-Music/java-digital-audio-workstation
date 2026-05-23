@@ -169,7 +169,7 @@ final class WorkshopClipDetailHostWiringTest {
 
             Supplier<DawProject> projectSupplier = () -> project;
             this.controller = new WorkshopSelectionHostController(
-                    view, selectionModel, projectSupplier, () -> true);
+                    view, selectionModel, projectSupplier, () -> true, messages);
         }
     }
 

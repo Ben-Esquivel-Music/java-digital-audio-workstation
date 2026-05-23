@@ -265,7 +265,7 @@ public final class WorkshopView extends BorderPane {
         // motivation — Workshop today routes the active-insert focus
         // through this single segment; multi-insert disambiguation lands
         // with the inspector wiring story.
-        breadcrumb.setSegments(buildSegments(trackIndex, /* insertIndex= */ 1, pluginName));
+        breadcrumb.setSegments(buildSegments(messages, trackIndex, /* insertIndex= */ 1, pluginName));
         pluginContainer.setPluginView(pluginNode);
     }
 
@@ -334,16 +334,22 @@ public final class WorkshopView extends BorderPane {
      * {@link WorkshopSelectionHostController} (which assembles the full
      * triple with the real insert index from the project model). Kept
      * accessible so the assembly logic lives in exactly one place — the
-     * controller does not re-implement the {@code "Track %02d"} format.
+     * controller does not re-implement the format templates.
      *
+     * <p>Format strings come from the {@code Messages} resource bundle
+     * (keys {@code workshop.breadcrumb.trackFormat} and
+     * {@code workshop.breadcrumb.insertFormat}) so locale overrides can
+     * relabel without touching code (Skill §14).</p>
+     *
+     * @param bundle      the {@code Messages} resource bundle
      * @param trackIndex  the 1-based track index
      * @param insertIndex the 1-based insert index
      * @param pluginName  the plugin display name (may be {@code null} → omitted)
      * @return the ordered segment list
      */
-    static List<String> buildSegments(int trackIndex, int insertIndex, String pluginName) {
-        String trackSegment = String.format("Track %02d", trackIndex);
-        String insertSegment = "Insert " + insertIndex;
+    static List<String> buildSegments(ResourceBundle bundle, int trackIndex, int insertIndex, String pluginName) {
+        String trackSegment = String.format(bundle.getString("workshop.breadcrumb.trackFormat"), trackIndex);
+        String insertSegment = String.format(bundle.getString("workshop.breadcrumb.insertFormat"), insertIndex);
         if (pluginName == null || pluginName.isBlank()) {
             return List.of(trackSegment, insertSegment);
         }

@@ -10,7 +10,6 @@ import javafx.scene.AccessibleRole;
 import javafx.scene.control.Label;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
-import javafx.scene.layout.Region;
 
 import java.util.List;
 
@@ -152,7 +151,8 @@ public final class BreadcrumbBar extends HBox {
             // {leaf}" with the leaf truncating instead of the parents.
             if (i == segments.size() - 1) {
                 HBox.setHgrow(segment, Priority.ALWAYS);
-                segment.setMaxWidth(Region.USE_COMPUTED_SIZE);
+                segment.setMinWidth(0);
+                segment.setMaxWidth(Double.MAX_VALUE);
             }
             getChildren().add(segment);
         }

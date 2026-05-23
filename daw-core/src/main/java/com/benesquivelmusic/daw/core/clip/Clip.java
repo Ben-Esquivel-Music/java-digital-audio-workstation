@@ -12,10 +12,11 @@ import com.benesquivelmusic.daw.core.midi.MidiClip;
  * {@link #isLocked()} / {@link #setLocked(boolean)}.</p>
  *
  * <p>Conceptually this is a sealed interface (only {@link AudioClip} and
- * {@link MidiClip} are permitted); it is declared as a plain
- * {@code public interface} only because {@code daw-core} currently lacks
- * a {@code module-info.java}, and Java's sealed-class rules forbid
- * cross-package permits in the unnamed module.</p>
+ * {@link MidiClip} are permitted). {@code daw-core} has a
+ * {@code module-info.java} now, so the technical prerequisite for
+ * {@code sealed} (a named module) is met; a follow-on may seal this
+ * interface once all implementing classes are confirmed in the same
+ * module.</p>
  *
  * <p>A time-locked clip refuses every operation that would change its
  * timeline position: move, nudge, cross-track drag, slip, and ripple.

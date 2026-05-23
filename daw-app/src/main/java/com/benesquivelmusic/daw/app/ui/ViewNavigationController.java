@@ -343,7 +343,8 @@ final class ViewNavigationController {
         workshopSelectionHostController =
                 new com.benesquivelmusic.daw.app.ui.views.WorkshopSelectionHostController(
                         workshopView, sm, host::project,
-                        () -> activeView == DawView.WORKSHOP);
+                        () -> activeView == DawView.WORKSHOP,
+                        host.messages());
 
         viewCache.put(DawView.WORKSHOP, workshopView);
     }

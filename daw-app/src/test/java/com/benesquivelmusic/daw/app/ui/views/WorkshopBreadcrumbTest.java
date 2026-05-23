@@ -58,7 +58,7 @@ final class WorkshopBreadcrumbTest {
 
             // Sanity: the static composer matches the runtime composer so
             // future callers can reproduce the exact string off-thread.
-            assertThat(WorkshopView.buildSegments(3, 1, "Serum"))
+            assertThat(WorkshopView.buildSegments(messagesBundle(), 3, 1, "Serum"))
                     .as("WorkshopView.buildSegments must produce the same triple")
                     .containsExactly("Track 03", "Insert 1", "Serum");
             return null;
@@ -68,9 +68,12 @@ final class WorkshopBreadcrumbTest {
     // ── Harness ───────────────────────────────────────────────────────────
 
     private static WorkshopView newWorkshopView() {
-        ResourceBundle messages = ResourceBundle.getBundle(
+        return new WorkshopView(messagesBundle());
+    }
+
+    private static ResourceBundle messagesBundle() {
+        return ResourceBundle.getBundle(
                 "com.benesquivelmusic.daw.app.i18n.Messages", Locale.ROOT);
-        return new WorkshopView(messages);
     }
 
     private static <T> T onFxThread(Supplier<T> supplier) throws Exception {

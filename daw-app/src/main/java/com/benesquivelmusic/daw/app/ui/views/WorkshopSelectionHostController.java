@@ -89,6 +89,7 @@ public final class WorkshopSelectionHostController {
     private final InspectorSelectionModel selectionModel;
     private final Supplier<DawProject> projectSupplier;
     private final BooleanSupplier workshopActiveSupplier;
+    private final java.util.ResourceBundle messages;
 
     /**
      * Strong-reference listener field — lives exactly as long as this
@@ -169,11 +170,15 @@ public final class WorkshopSelectionHostController {
      *                               the active view in the host's
      *                               navigation; supplier is re-read on
      *                               every event so it tracks live state
+     * @param messages               the {@code Messages} resource bundle
+     *                               for breadcrumb format strings
+     *                               (Skill §14); must not be {@code null}
      */
     public WorkshopSelectionHostController(WorkshopView workshopView,
                                             InspectorSelectionModel selectionModel,
                                             Supplier<DawProject> projectSupplier,
-                                            BooleanSupplier workshopActiveSupplier) {
+                                            BooleanSupplier workshopActiveSupplier,
+                                            java.util.ResourceBundle messages) {
         this.workshopView = Objects.requireNonNull(workshopView,
                 "workshopView must not be null");
         this.selectionModel = Objects.requireNonNull(selectionModel,
@@ -182,6 +187,8 @@ public final class WorkshopSelectionHostController {
                 "projectSupplier must not be null");
         this.workshopActiveSupplier = Objects.requireNonNull(workshopActiveSupplier,
                 "workshopActiveSupplier must not be null");
+        this.messages = Objects.requireNonNull(messages,
+                "messages must not be null");
 
         this.selectionListener = (obs, oldSel, newSel) -> onSelectionChanged(newSel);
         this.selectionModel.selectionProperty().addListener(selectionListener);
@@ -334,7 +341,7 @@ public final class WorkshopSelectionHostController {
         // the fully-composed segments so the real insert number (not the
         // view's default "Insert 1" placeholder) appears.
         List<String> segments = WorkshopView.buildSegments(
-                displayIndex, insertIndex + 1, slot.getName());
+                messages, displayIndex, insertIndex + 1, slot.getName());
         workshopView.setFocusedPlugin(segments, panel);
     }
 
