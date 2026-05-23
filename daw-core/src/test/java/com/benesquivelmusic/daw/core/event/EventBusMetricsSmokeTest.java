@@ -13,6 +13,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectType;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.mixer.SetPluginParameterAction;
 import com.benesquivelmusic.daw.core.mixer.ToggleBypassAction;
 import com.benesquivelmusic.daw.core.project.AddTrackAction;
 import com.benesquivelmusic.daw.core.project.DawProject;
@@ -98,6 +99,12 @@ class EventBusMetricsSmokeTest {
             new SetNoteVelocityAction(midiTrack.getMidiClip(), addedNote, 80)
                     .execute();
 
+            // 9. PluginEvent.ParameterChanged — plugin parameter set.
+            var paramHandler = InsertEffectFactory.createParameterHandler(
+                    InsertEffectType.PARAMETRIC_EQ, slot.getProcessor());
+            new SetPluginParameterAction(slot, 0, -10.0, -20.0, paramHandler)
+                    .execute();
+
             Map<String, Long> published = bus.metrics().publishedByType();
             assertThat(published)
                     .containsKeys(
@@ -107,6 +114,7 @@ class EventBusMetricsSmokeTest {
                             "ClipEvent.Trimmed",
                             "PluginEvent.Loaded",
                             "PluginEvent.Bypassed",
+                            "PluginEvent.ParameterChanged",
                             "MixerEvent.ChannelAdded");
             assertThat(published.get("ClipEvent.Added")).isPositive();
             assertThat(published.get("ClipEvent.Removed")).isPositive();
@@ -114,6 +122,7 @@ class EventBusMetricsSmokeTest {
             assertThat(published.get("ClipEvent.Trimmed")).isPositive();
             assertThat(published.get("PluginEvent.Loaded")).isPositive();
             assertThat(published.get("PluginEvent.Bypassed")).isPositive();
+            assertThat(published.get("PluginEvent.ParameterChanged")).isPositive();
             assertThat(published.get("MixerEvent.ChannelAdded")).isPositive();
 
             // Sanity check that channelId == trackId by invariant.

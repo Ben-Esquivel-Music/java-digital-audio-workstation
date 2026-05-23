@@ -188,6 +188,7 @@ final class SlipToolHandler {
     private void clearState() {
         kind = null;
         audioClip = null;
+        audioClipTrack = null;
         midiClip = null;
         anchorX = 0;
     }

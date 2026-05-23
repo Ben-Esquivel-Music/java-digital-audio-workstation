@@ -65,11 +65,10 @@ public final class DawApplication extends Application {
                 .build();
         EventBusPublisher.setDefault(bus);
         primaryStage.addEventHandler(WindowEvent.WINDOW_HIDDEN, _ -> {
-            EventBus current = EventBusPublisher.getDefault();
-            if (current != null) {
-                current.close();
+            bus.close();
+            if (EventBusPublisher.getDefault() == bus) {
+                EventBusPublisher.setDefault(null);
             }
-            EventBusPublisher.setDefault(null);
         });
 
         FXMLLoader loader = new FXMLLoader(

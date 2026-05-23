@@ -38,11 +38,12 @@ public final class RemoveClipAction implements UndoableAction {
 
     @Override
     public void execute() {
-        track.removeClip(clip);
-        EventBusPublisher.publish(new ClipEvent.Removed(
-                UUID.fromString(track.getId()),
-                UUID.fromString(clip.getId()),
-                Instant.now()));
+        if (track.removeClip(clip)) {
+            EventBusPublisher.publish(new ClipEvent.Removed(
+                    UUID.fromString(track.getId()),
+                    UUID.fromString(clip.getId()),
+                    Instant.now()));
+        }
     }
 
     @Override

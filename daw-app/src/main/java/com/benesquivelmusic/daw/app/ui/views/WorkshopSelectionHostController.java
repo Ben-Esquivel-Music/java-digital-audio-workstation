@@ -291,6 +291,11 @@ public final class WorkshopSelectionHostController {
             UUID trackId = affectedTrackId;
             pluginPanelCache.entrySet().removeIf(
                     e -> trackId.equals(e.getKey().trackId()));
+        } else {
+            // Cannot derive the affected track — conservatively evict all
+            // plugin-panel cache entries so shifted insertIndex keys don't
+            // leave stale panels.
+            pluginPanelCache.clear();
         }
     }
 
