@@ -29,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Story 266 — guards the rule from UI Design Book §3.2 that every number
  * the user reads from the UI is drawn in {@code -font-mono} via one of
- * the four numeric typography classes:
+ * the five numeric typography classes:
  * <ul>
  *   <li>{@code .numeric-display}  — 14 px hero (transport time, master meter peak)
  *   <li>{@code .numeric-display-stage} — 48 px Performance Stage clock

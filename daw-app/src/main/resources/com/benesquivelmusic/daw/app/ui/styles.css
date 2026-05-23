@@ -284,6 +284,18 @@
     -fx-font-weight: 600;
 }
 
+/* Tile-action variant — 28 px touch-size for CUE / action buttons inside
+ * Performance Stage track tiles (story 280 §4 Concept E). Values are
+ * multiples of 4 (TokenValidation); 28 = the grid-aligned touch target
+ * that fits alongside the 80 px track strip without dominating its row. */
+.dawg-button.size-tile-action {
+    -fx-padding: 4 8;
+    -fx-min-height: 28;
+    -fx-pref-height: 28;
+    -fx-font-size: 12px;
+    -fx-font-weight: 600;
+}
+
 /* ── Density profiles (story 278 — UI Design Book §3.7) ──────────────────
  * Three global density profiles selected by a single root-scope class
  * (.density-compact / .density-comfortable / .density-touch) that

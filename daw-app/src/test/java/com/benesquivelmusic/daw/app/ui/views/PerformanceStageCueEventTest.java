@@ -33,8 +33,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * (skill §12) the story explicitly delivers as the cue stub.
  *
  * <p>The test follows the bubbling-event-test pitfall guidance: the
- * {@code addEventFilter} sits on the {@link PerformanceStageView} root (a
- * parent of every CUE button), and the assertion is on the bubbled
+ * {@code addEventFilter} sits on the tile column ({@code VBox}) ancestor
+ * of every CUE button, and the assertion is on the bubbled
  * {@link CueLaunchRequestedEvent#getTrackIndex()} payload — never on
  * {@code getSource()} identity, which JavaFX rewrites per node during
  * bubble.</p>
@@ -81,7 +81,7 @@ final class PerformanceStageCueEventTest {
 
             assertThat(received)
                     .as("CUE buttons fire CueLaunchRequestedEvent with 1-based indices, "
-                            + "bubbling to a filter at the view root")
+                            + "bubbling to a filter at the tile column ancestor")
                     .containsExactly(1, 2, 3);
             return null;
         });

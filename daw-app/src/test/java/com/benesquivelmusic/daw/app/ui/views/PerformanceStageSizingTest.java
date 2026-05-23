@@ -79,6 +79,14 @@ final class PerformanceStageSizingTest {
                     .as("track tile row height must be 80 ± 2 px (was %s)", tileHeight)
                     .isBetween(78.0, 82.0);
 
+            // CUE button — 28 ± 2 px (.dawg-button.size-tile-action).
+            javafx.scene.control.Button cueBtn = (javafx.scene.control.Button)
+                    ((javafx.scene.layout.HBox) firstTile.getParent()).getChildren().get(1);
+            double cueHeight = cueBtn.getLayoutBounds().getHeight();
+            assertThat(cueHeight)
+                    .as("CUE tile-action button height must be 28 ± 2 px (was %s)", cueHeight)
+                    .isBetween(26.0, 30.0);
+
             stage.close();
             return null;
         });

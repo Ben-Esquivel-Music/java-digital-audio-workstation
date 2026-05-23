@@ -326,9 +326,10 @@ final class ViewNavigationController {
         preStageView = null;
         activeView = restore;
         toolbarStateStore.saveActiveView(restore);
-        // The restored centre is the standard arrangement node — fading
-        // it back in matches the §3.5 view-switch transition (180 ms
-        // EASE_OUT). Reduce Motion skips the fade in playStageTransition.
+        // The restored centre is whatever standard view was active before
+        // staging began — fading it back in matches the §3.5 view-switch
+        // transition (180 ms EASE_OUT). Reduce Motion skips the fade in
+        // playStageTransition.
         playStageTransition(rootPane.getCenter());
         statusBarLabel.setText("Exited Performance Stage");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));

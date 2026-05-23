@@ -38,11 +38,12 @@ import java.util.ResourceBundle;
  * principle — "every fader is the same {@code Control} underneath, just
  * skinned at a larger size" — this view constructs fresh instances of the
  * same {@link LevelMeter} and {@link TrackStrip} {@code Control} classes
- * used by the standard view, distinguished only by their
- * {@code .size-performance} style class, and plain
- * {@code .dawg-button.size-stage} buttons. Theming therefore "just works":
- * a {@code ThemeManager} palette swap re-tints this view with no code
- * change because every colour resolves from the cascade.</p>
+ * used by the standard view (fresh instances, not shared references),
+ * distinguished only by their {@code .size-performance} style class, and
+ * plain {@code .dawg-button.size-tile-action} CUE buttons. Theming
+ * therefore "just works": a {@code ThemeManager} palette swap re-tints
+ * this view with no code change because every colour resolves from the
+ * cascade.</p>
  *
  * <h2>Layout (§4 Concept E)</h2>
  *
@@ -56,7 +57,8 @@ import java.util.ResourceBundle;
  *       LOOP buttons ({@code .dawg-button.size-stage}), text only.</li>
  *   <li><strong>Track tile grid</strong>: one {@link TrackStrip}
  *       ({@code .size-performance}, 80&nbsp;px tall) per project track,
- *       each paired with a CUE button.</li>
+ *       each paired with a 28&nbsp;px CUE button
+ *       ({@code .dawg-button.size-tile-action}).</li>
  *   <li><strong>Floating {@code ☰} hamburger</strong> bottom-right that
  *       opens a translucent overlay (switch to Standard view, Audio
  *       Settings, Project/File menu, Exit Performance Stage).</li>
@@ -306,7 +308,7 @@ public final class PerformanceStageView extends BorderPane {
             trackTiles.add(tile);
 
             Button cue = new Button(messages.getString("performanceStage.cue"));
-            cue.getStyleClass().addAll("dawg-button", "size-stage", "performance-stage-cue");
+            cue.getStyleClass().addAll("dawg-button", "size-tile-action", "performance-stage-cue");
             // Story-280 Non-Goal: no clip-launch engine. Fire a typed,
             // bubbling CueLaunchRequestedEvent so a future consumer can
             // listen at any ancestor (skill §12) — NOT an ad-hoc callback.
