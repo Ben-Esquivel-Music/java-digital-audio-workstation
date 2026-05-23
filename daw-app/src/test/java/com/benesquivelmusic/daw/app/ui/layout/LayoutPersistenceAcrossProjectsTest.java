@@ -54,6 +54,9 @@ class LayoutPersistenceAcrossProjectsTest {
         mgrA2.fromJson(projectLayoutJsonByProject.get("A"));
 
         assertThat(mgrA2.currentLayout()).isEqualTo(BuiltInLayouts.MIXING);
+        // Verify the dock host was actually applied (not just the property).
+        assertThat(hostA2.current)
+                .isEqualTo(BuiltInLayouts.byName(BuiltInLayouts.MIXING).dockLayoutJson());
     }
 
     @Test

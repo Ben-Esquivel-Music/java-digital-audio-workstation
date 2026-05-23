@@ -260,22 +260,24 @@ public final class LayoutManager {
 
     /**
      * Replaces the manager's user-saved layouts with those parsed from
-     * {@code json}. Built-in layouts are <strong>not</strong> touched:
-     * they are always present in {@link #savedLayouts()} regardless of
-     * what's in the project file. The {@link #currentLayoutProperty()}
-     * is updated to the {@code current} field from the JSON if it
-     * matches a known (built-in or user-saved) layout, otherwise falls
-     * back to {@link BuiltInLayouts#DEFAULT}.
+     * {@code json} and <strong>applies the resolved current layout</strong>
+     * to the dock host via {@link #load(String)}. Built-in layouts are
+     * <strong>not</strong> touched: they are always present in
+     * {@link #savedLayouts()} regardless of what's in the project file.
+     * The {@link #currentLayoutProperty()} is updated to the
+     * {@code current} field from the JSON if it matches a known
+     * (built-in or user-saved) layout, otherwise falls back to
+     * {@link BuiltInLayouts#DEFAULT}.
      *
      * <p>Tolerant parser: {@code null}, blank, or malformed JSON resets
-     * the user-saved layouts to empty and the current layout to
-     * "Default" — never throws.</p>
+     * the user-saved layouts to empty, applies the "Default" layout,
+     * and never throws.</p>
      */
     public void fromJson(String json) {
         // Reset user-saved layouts first; built-ins remain.
         savedLayouts.removeIf(l -> !l.builtIn());
         if (json == null || json.isBlank()) {
-            currentLayout.set(BuiltInLayouts.DEFAULT);
+            load(BuiltInLayouts.DEFAULT);
             return;
         }
         try {
@@ -300,12 +302,13 @@ public final class LayoutManager {
                 }
             }
             String wantedCurrent = current instanceof String s ? s : BuiltInLayouts.DEFAULT;
-            currentLayout.set(findByName(wantedCurrent).isPresent()
-                    ? wantedCurrent : BuiltInLayouts.DEFAULT);
+            String resolved = findByName(wantedCurrent).isPresent()
+                    ? wantedCurrent : BuiltInLayouts.DEFAULT;
+            load(resolved);
         } catch (RuntimeException ex) {
             LOG.fine(() -> "Failed to parse layout JSON, resetting: " + ex.getMessage());
             savedLayouts.removeIf(l -> !l.builtIn());
-            currentLayout.set(BuiltInLayouts.DEFAULT);
+            load(BuiltInLayouts.DEFAULT);
         }
     }
 

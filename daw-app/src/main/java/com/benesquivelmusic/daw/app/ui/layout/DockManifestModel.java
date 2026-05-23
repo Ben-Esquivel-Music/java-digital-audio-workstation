@@ -73,6 +73,8 @@ public final class DockManifestModel {
 
     private final DockManager dockManager;
     private final ObservableList<Entry> entries = FXCollections.observableArrayList();
+    private final ObservableList<Entry> entriesView =
+            FXCollections.unmodifiableObservableList(entries);
     private Runnable unsubscribe;
 
     /**
@@ -87,13 +89,15 @@ public final class DockManifestModel {
     }
 
     /**
-     * Live, observable list of manifest entries. Ordering follows the
-     * dock layer's registration order so the manifest is stable
-     * regardless of how panels are reshuffled between zones (matches
-     * the §4 mockup: the manifest is a flat strip, not grouped by zone).
+     * Live, observable, <strong>unmodifiable</strong> list of manifest
+     * entries. Ordering follows the dock layer's registration order so
+     * the manifest is stable regardless of how panels are reshuffled
+     * between zones (matches the §4 mockup: the manifest is a flat
+     * strip, not grouped by zone). All mutations are internal to the
+     * model — external consumers observe but cannot modify.
      */
     public ObservableList<Entry> entries() {
-        return entries;
+        return entriesView;
     }
 
     /** Returns the manifest entry for the given panel id, if any. */
