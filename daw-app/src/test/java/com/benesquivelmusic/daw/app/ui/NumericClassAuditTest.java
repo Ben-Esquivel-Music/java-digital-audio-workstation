@@ -52,7 +52,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       specifier ({@code %d}, {@code %f}, {@code %e}, {@code %g},
  *       {@code %o}, {@code %x}) — must be followed by a
  *       {@code getStyleClass().add(...)} (or {@code .addAll(...)}) that
- *       includes one of the four numeric classes.
+ *       includes one of the five numeric classes.
  * </ol>
  *
  * <p>Both passes are structural / static checks; they parse the FXML XML

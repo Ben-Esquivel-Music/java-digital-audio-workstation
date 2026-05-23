@@ -49,8 +49,8 @@ final class PerformanceStageThemeTest {
 
     @Test
     void switchingToAtelierReThemesTheStageWithNoCodeChange() throws Exception {
-        ThemeManager themeManager = new ThemeManager(
-                Preferences.userRoot().node("psTheme_" + System.nanoTime()));
+        Preferences testNode = Preferences.userRoot().node("psTheme_" + System.nanoTime());
+        ThemeManager themeManager = new ThemeManager(testNode);
         ThemeManager.setDefaultForTest(themeManager);
         try {
             onFxThread(() -> {
@@ -96,6 +96,7 @@ final class PerformanceStageThemeTest {
             });
         } finally {
             ThemeManager.setDefaultForTest(null);
+            testNode.removeNode();
         }
     }
 
