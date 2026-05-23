@@ -47,8 +47,8 @@ public final class MoveMidiNoteAction implements UndoableAction {
         int index = clip.indexOf(originalNote);
         if (index >= 0) {
             clip.replaceNote(index, movedNote);
+            publishTrimmed();
         }
-        publishTrimmed();
     }
 
     @Override
@@ -56,8 +56,8 @@ public final class MoveMidiNoteAction implements UndoableAction {
         int index = clip.indexOf(movedNote);
         if (index >= 0) {
             clip.replaceNote(index, originalNote);
+            publishTrimmed();
         }
-        publishTrimmed();
     }
 
     private void publishTrimmed() {

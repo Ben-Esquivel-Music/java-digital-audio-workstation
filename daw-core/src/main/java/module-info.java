@@ -72,9 +72,11 @@ module daw.core {
     exports com.benesquivelmusic.daw.core.dsp;
     exports com.benesquivelmusic.daw.core.dsp.acoustics;
     // Story 283 — EventBusPublisher seam for production model-mutation
-    // callers (UndoableActions) and the Workshop S3 subscriber. The
-    // DefaultEventBus implementation type remains unexported; only the
-    // SDK EventBus contract and the publisher facade leak.
+    // callers (UndoableActions) and the Workshop S3 subscriber. Note
+    // that exporting this package also exports DefaultEventBus, which
+    // daw.app uses to construct the application-wide bus instance; only
+    // the SDK EventBus contract is the public/stable type, but the
+    // DefaultEventBus implementation is part of the exported core API.
     exports com.benesquivelmusic.daw.core.event;
     exports com.benesquivelmusic.daw.core.dsp.dynamics;
     exports com.benesquivelmusic.daw.core.dsp.eq;

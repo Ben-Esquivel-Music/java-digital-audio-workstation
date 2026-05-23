@@ -247,7 +247,7 @@ public final class DawProject {
         }
         Track copy = track.duplicate(track.getName() + " (copy)");
         tracks.add(index + 1, copy);
-        MixerChannel channel = new MixerChannel(copy.getName());
+        MixerChannel channel = new MixerChannel(copy.getName(), parseUuidOrRandom(copy.getId()));
         channel.setColor(copy.getColor());
         trackChannelMap.put(copy.getId(), channel);
         mixer.addChannel(channel);

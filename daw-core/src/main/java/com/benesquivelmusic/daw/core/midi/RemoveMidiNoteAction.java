@@ -36,8 +36,9 @@ public final class RemoveMidiNoteAction implements UndoableAction {
     @Override
     public void execute() {
         removedIndex = clip.indexOf(note);
-        clip.removeNote(note);
-        publishTrimmed();
+        if (clip.removeNote(note)) {
+            publishTrimmed();
+        }
     }
 
     @Override
