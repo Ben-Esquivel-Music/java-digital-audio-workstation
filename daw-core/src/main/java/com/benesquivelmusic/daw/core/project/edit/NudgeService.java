@@ -3,8 +3,11 @@ package com.benesquivelmusic.daw.core.project.edit;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.NudgeClipsAction;
 import com.benesquivelmusic.daw.core.clip.LockedClipException;
+import com.benesquivelmusic.daw.core.track.Track;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -122,31 +125,39 @@ public final class NudgeService {
 
     /**
      * Builds a single {@link NudgeClipsAction} that nudges every clip
-     * in {@code clips} by the same {@code beatDelta}. The action is
+     * in {@code entries} by the same {@code beatDelta}. The action is
      * <em>one</em> undo step even when many clips are involved —
      * exactly what the user story's "multi-selection nudge is a single
      * undo step" requirement asks for.
      *
-     * <p>If {@code beatDelta} is zero, {@code clips} is empty, or every
+     * <p>If {@code beatDelta} is zero, {@code entries} is empty, or every
      * requested move would be clamped away (negative delta against a
      * selection whose earliest clip is already at beat {@code 0}),
      * {@code null} is returned and the caller should skip the undo
      * push.</p>
      *
-     * @param clips      the clips to nudge (already-resolved selection,
-     *                   possibly from a time-range selection or a
-     *                   multi-selection)
-     * @param beatDelta  the signed beat delta to apply to each clip
+     * <p>Story 283 — entries carry the owning {@link Track} so the
+     * action can publish {@code ClipEvent.Moved} per leaf.</p>
+     *
+     * @param entries   the (track, clip) pairs to nudge (already-resolved
+     *                  selection, possibly from a time-range selection
+     *                  or a multi-selection)
+     * @param beatDelta the signed beat delta to apply to each clip
      * @return the undoable nudge action, or {@code null} for a no-op
      */
-    public static NudgeClipsAction buildAction(List<AudioClip> clips, double beatDelta) {
-        Objects.requireNonNull(clips, "clips must not be null");
-        if (clips.isEmpty() || beatDelta == 0.0 || !Double.isFinite(beatDelta)) {
+    public static NudgeClipsAction buildAction(List<Map.Entry<Track, AudioClip>> entries,
+                                                double beatDelta) {
+        Objects.requireNonNull(entries, "entries must not be null");
+        if (entries.isEmpty() || beatDelta == 0.0 || !Double.isFinite(beatDelta)) {
             return null;
         }
         // Refuse the entire nudge if any selected clip is locked. Surfaced
         // by the UI as a status-bar message — see story
         // "Clip-Level Time Lock Preventing Accidental Movement".
+        List<AudioClip> clips = new ArrayList<>(entries.size());
+        for (Map.Entry<Track, AudioClip> entry : entries) {
+            clips.add(entry.getValue());
+        }
         LockedClipException.requireUnlocked("Nudge", clips);
         // Pre-clamp negative deltas: if every clip in the selection is
         // already at beat 0 (or the selection's earliest start beat is
@@ -163,6 +174,6 @@ public final class NudgeService {
                 return null;
             }
         }
-        return new NudgeClipsAction(clips, beatDelta);
+        return new NudgeClipsAction(entries, beatDelta);
     }
 }

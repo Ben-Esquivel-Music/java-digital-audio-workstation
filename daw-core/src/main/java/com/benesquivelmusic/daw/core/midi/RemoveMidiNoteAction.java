@@ -1,8 +1,12 @@
 package com.benesquivelmusic.daw.core.midi;
 
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.event.ClipEvent;
 
+import java.time.Instant;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * An undoable action that removes a MIDI note from a {@link MidiClip}.
@@ -33,10 +37,21 @@ public final class RemoveMidiNoteAction implements UndoableAction {
     public void execute() {
         removedIndex = clip.indexOf(note);
         clip.removeNote(note);
+        publishTrimmed();
     }
 
     @Override
     public void undo() {
         clip.addNote(note);
+        publishTrimmed();
+    }
+
+    private void publishTrimmed() {
+        UUID trackId = clip.getOwningTrackId();
+        if (trackId == null) {
+            return;
+        }
+        EventBusPublisher.publish(new ClipEvent.Trimmed(
+                trackId, clip.getId(), Instant.now()));
     }
 }

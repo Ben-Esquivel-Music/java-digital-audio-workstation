@@ -3,8 +3,12 @@ package com.benesquivelmusic.daw.app;
 import com.benesquivelmusic.daw.app.ui.density.DensityManager;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
+import com.benesquivelmusic.daw.core.event.DefaultEventBus;
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.sdk.event.EventBus;
 
 import javafx.application.Application;
+import javafx.application.Platform;
 import javafx.fxml.FXMLLoader;
 import javafx.scene.Parent;
 import javafx.scene.Scene;
@@ -50,6 +54,22 @@ public final class DawApplication extends Application {
     @Override
     public void start(Stage primaryStage) throws IOException {
         loadBundledFonts();
+
+        // Story 283 — install the application-wide EventBus before any
+        // controller is constructed. The UI executor is required because
+        // Workshop S3 subscriptions use DispatchMode.ON_UI_THREAD.
+        // Sit alongside Theme/Density/Motion managers — same lifecycle.
+        EventBus bus = DefaultEventBus.builder()
+                .uiExecutor(Platform::runLater)
+                .build();
+        EventBusPublisher.setDefault(bus);
+        primaryStage.setOnHidden(_ -> {
+            EventBus current = EventBusPublisher.getDefault();
+            if (current != null) {
+                current.close();
+            }
+            EventBusPublisher.setDefault(null);
+        });
 
         FXMLLoader loader = new FXMLLoader(
                 getClass().getResource("ui/main-view.fxml"));

@@ -445,7 +445,7 @@ final class ClipInteractionController {
             Track slipTrack = host.tracks().get(trackIndex);
             AudioClip audioHit = clipAt(slipTrack, beat);
             if (audioHit != null) {
-                slipHandler.beginAudioSlip(audioHit, event.getX());
+                slipHandler.beginAudioSlip(slipTrack, audioHit, event.getX());
                 canvas.setCursor(Cursor.H_RESIZE);
                 return;
             }
@@ -788,7 +788,7 @@ final class ClipInteractionController {
     private void executeMove(AudioClip clip, Track track, double newStartBeat) {
         RippleMode mode = host.rippleMode();
         if (mode == RippleMode.OFF) {
-            host.undoManager().execute(new MoveClipAction(clip, newStartBeat));
+            host.undoManager().execute(new MoveClipAction(track, clip, newStartBeat));
             host.refreshCanvas();
             return;
         }

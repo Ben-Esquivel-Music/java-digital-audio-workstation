@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.project.edit.SlipEditService;
+import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata;
 
@@ -57,6 +58,7 @@ final class SlipToolHandler {
 
     private Kind kind;
     private AudioClip audioClip;
+    private Track audioClipTrack;
     private MidiClip midiClip;
     private double anchorX;
 
@@ -70,10 +72,12 @@ final class SlipToolHandler {
     }
 
     /** Begins a slip drag on an audio clip from the given anchor pixel. */
-    void beginAudioSlip(AudioClip clip, double anchorX) {
+    void beginAudioSlip(Track track, AudioClip clip, double anchorX) {
+        Objects.requireNonNull(track, "track must not be null");
         Objects.requireNonNull(clip, "clip must not be null");
         this.kind = Kind.AUDIO;
         this.audioClip = clip;
+        this.audioClipTrack = track;
         this.midiClip = null;
         this.anchorX = anchorX;
         host.setSlipPreview(clip, null, 0.0, false);
@@ -110,7 +114,7 @@ final class SlipToolHandler {
             case AUDIO -> {
                 double sourceLengthBeats = sourceLengthBeatsFor(audioClip);
                 SlipEditService.SlipResult result = SlipEditService.buildAudioSlip(
-                        audioClip, requestedOffsetDelta, sourceLengthBeats);
+                        audioClipTrack, audioClip, requestedOffsetDelta, sourceLengthBeats);
                 // Preview delta is expressed as the visible (content) direction:
                 // a positive beatDelta means the content has been slid right,
                 // equivalent to a negative source-offset delta.
@@ -140,7 +144,7 @@ final class SlipToolHandler {
             case AUDIO -> {
                 double sourceLengthBeats = sourceLengthBeatsFor(audioClip);
                 SlipEditService.SlipResult result = SlipEditService.buildAudioSlip(
-                        audioClip, -beatDelta, sourceLengthBeats);
+                        audioClipTrack, audioClip, -beatDelta, sourceLengthBeats);
                 if (result.hasAction()) {
                     host.undoManager().execute(result.action());
                     LOG.fine(() -> "Completed audio slip on '" + audioClip.getName()

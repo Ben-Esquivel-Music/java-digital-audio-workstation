@@ -227,7 +227,7 @@ public final class RippleEditService {
         double delta = newStartBeat - originalStart;
 
         List<UndoableAction> actions = new ArrayList<>();
-        actions.add(new MoveClipAction(clip, newStartBeat));
+        actions.add(new MoveClipAction(clipTrack, clip, newStartBeat));
 
         if (mode == RippleMode.OFF || Math.abs(delta) <= EPSILON) {
             return new CompoundUndoableAction("Move Clip", actions);
@@ -348,7 +348,7 @@ public final class RippleEditService {
             originalStarts.put(c, c.getStartBeat());
         }
         for (AudioClip c : ordered) {
-            actions.add(new MoveClipAction(c, originalStarts.get(c) + shift));
+            actions.add(new MoveClipAction(track, c, originalStarts.get(c) + shift));
         }
     }
 }

@@ -71,6 +71,11 @@ module daw.core {
     exports com.benesquivelmusic.daw.core.comping;
     exports com.benesquivelmusic.daw.core.dsp;
     exports com.benesquivelmusic.daw.core.dsp.acoustics;
+    // Story 283 — EventBusPublisher seam for production model-mutation
+    // callers (UndoableActions) and the Workshop S3 subscriber. The
+    // DefaultEventBus implementation type remains unexported; only the
+    // SDK EventBus contract and the publisher facade leak.
+    exports com.benesquivelmusic.daw.core.event;
     exports com.benesquivelmusic.daw.core.dsp.dynamics;
     exports com.benesquivelmusic.daw.core.dsp.eq;
     exports com.benesquivelmusic.daw.core.dsp.mastering;
@@ -160,7 +165,6 @@ module daw.core {
     //   com.benesquivelmusic.daw.core.audio.processing
     //   com.benesquivelmusic.daw.core.audio.ringbuffer
     //   com.benesquivelmusic.daw.core.concurrent
-    //   com.benesquivelmusic.daw.core.event
     //   com.benesquivelmusic.daw.core.export.omf
     //   com.benesquivelmusic.daw.core.midi.fluidsynth
     //   com.benesquivelmusic.daw.core.midi.javasound

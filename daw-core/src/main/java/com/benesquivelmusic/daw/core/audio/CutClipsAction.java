@@ -1,8 +1,11 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.event.ClipEvent;
 
+import java.time.Instant;
 import java.util.*;
 
 /**
@@ -40,14 +43,29 @@ public final class CutClipsAction implements UndoableAction {
     @Override
     public void execute() {
         for (Map.Entry<Track, AudioClip> entry : entries) {
-            entry.getKey().removeClip(entry.getValue());
+            Track t = entry.getKey();
+            AudioClip c = entry.getValue();
+            t.removeClip(c);
+            EventBusPublisher.publish(new ClipEvent.Removed(
+                    UUID.fromString(t.getId()),
+                    UUID.fromString(c.getId()),
+                    Instant.now()));
         }
     }
 
     @Override
     public void undo() {
-        for (Map.Entry<Track, AudioClip> entry : entries) {
-            entry.getKey().addClip(entry.getValue());
+        // Reverse order for symmetry with CompoundUndoableAction's
+        // reverse-iteration undo convention.
+        for (int i = entries.size() - 1; i >= 0; i--) {
+            Map.Entry<Track, AudioClip> entry = entries.get(i);
+            Track t = entry.getKey();
+            AudioClip c = entry.getValue();
+            t.addClip(c);
+            EventBusPublisher.publish(new ClipEvent.Added(
+                    UUID.fromString(t.getId()),
+                    UUID.fromString(c.getId()),
+                    Instant.now()));
         }
     }
 }

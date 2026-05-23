@@ -1,9 +1,13 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.event.ClipEvent;
 
+import java.time.Instant;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * An undoable action that splits an {@link AudioClip} at a given beat position.
@@ -48,6 +52,15 @@ public final class SplitClipAction implements UndoableAction {
         originalFadeOutBeats = clip.getFadeOutBeats();
         secondClip = clip.splitAt(splitBeat);
         track.addClip(secondClip);
+        // Compound-order semantics: trim the original clip first, then
+        // surface the new sibling. Subscribers can rely on this ordering
+        // to treat the pair as a single split when they share a track.
+        UUID trackId = UUID.fromString(track.getId());
+        Instant now = Instant.now();
+        EventBusPublisher.publish(new ClipEvent.Trimmed(
+                trackId, UUID.fromString(clip.getId()), now));
+        EventBusPublisher.publish(new ClipEvent.Added(
+                trackId, UUID.fromString(secondClip.getId()), now));
     }
 
     @Override
@@ -55,5 +68,13 @@ public final class SplitClipAction implements UndoableAction {
         track.removeClip(secondClip);
         clip.setDurationBeats(originalDuration);
         clip.setFadeOutBeats(originalFadeOutBeats);
+        // Reverse the execute order: remove the sibling first, then
+        // surface the restored trim on the original clip.
+        UUID trackId = UUID.fromString(track.getId());
+        Instant now = Instant.now();
+        EventBusPublisher.publish(new ClipEvent.Removed(
+                trackId, UUID.fromString(secondClip.getId()), now));
+        EventBusPublisher.publish(new ClipEvent.Trimmed(
+                trackId, UUID.fromString(clip.getId()), now));
     }
 }

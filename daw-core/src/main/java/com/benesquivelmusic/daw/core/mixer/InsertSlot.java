@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * Represents a single insert effect slot on a mixer channel strip.
@@ -21,6 +22,7 @@ import java.util.Objects;
  */
 public final class InsertSlot {
 
+    private final UUID pluginInstanceId = UUID.randomUUID();
     private final String name;
     private final AudioProcessor processor;
     private final InsertEffectType effectType;
@@ -97,6 +99,19 @@ public final class InsertSlot {
                  LESLIE -> true;
             default -> false;
         };
+    }
+
+    /**
+     * Returns the stable, per-instance plugin id used by the typed
+     * {@code PluginEvent} hierarchy (story 283). Each {@code InsertSlot}
+     * instance has its own freshly-generated {@link UUID}; insert /
+     * remove / bypass actions publish events carrying this id so
+     * subscribers can locate the affected slot in the project model.
+     *
+     * @return the plugin instance id (never {@code null})
+     */
+    public UUID getPluginInstanceId() {
+        return pluginInstanceId;
     }
 
     /**

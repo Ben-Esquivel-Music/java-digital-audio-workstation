@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * Represents a single channel strip in the mixer.
@@ -30,6 +31,7 @@ public final class MixerChannel {
     /** Maximum number of insert effect slots per channel. */
     public static final int MAX_INSERT_SLOTS = 8;
 
+    private final UUID id;
     private final String name;
     private double volume;
     private double pan;
@@ -51,11 +53,35 @@ public final class MixerChannel {
     private PluginInvocationSupervisor pluginSupervisor;
 
     /**
-     * Creates a new mixer channel with the specified name.
+     * Creates a new mixer channel with the specified name and a freshly
+     * generated {@link UUID} id.
+     *
+     * <p>Prefer {@link #MixerChannel(String, UUID)} when the channel is
+     * being created in lock-step with a {@code Track} so the two share
+     * the same id — see {@link com.benesquivelmusic.daw.core.project.DawProject#addTrack}
+     * for the project-level invariant that {@code channel.getId()} equals
+     * {@code UUID.fromString(track.getId())}.</p>
      *
      * @param name the display name
      */
     public MixerChannel(String name) {
+        this(name, UUID.randomUUID());
+    }
+
+    /**
+     * Creates a new mixer channel with the specified name and id.
+     *
+     * <p>Story 283 — used by {@code DawProject.addTrack} so the channel
+     * id aligns with its owning track's id, allowing
+     * {@code MixerEvent.ChannelRemoved.channelId()} to be consumed
+     * directly as a {@code trackId} by Workshop S3 cache invalidation
+     * without a project-side lookup.</p>
+     *
+     * @param name the display name (must not be {@code null})
+     * @param id   the channel's persistent id (must not be {@code null})
+     */
+    public MixerChannel(String name, UUID id) {
+        this.id = Objects.requireNonNull(id, "id must not be null");
         this.name = Objects.requireNonNull(name, "name must not be null");
         this.volume = 1.0;
         this.pan = 0.0;
@@ -64,6 +90,16 @@ public final class MixerChannel {
         this.soloSafe = false;
         this.sendLevel = 0.0;
         this.phaseInverted = false;
+    }
+
+    /**
+     * Returns the channel's persistent id. Story 283: when this channel
+     * was created by {@code DawProject.addTrack}, the id equals
+     * {@code UUID.fromString(track.getId())} so subscribers can use a
+     * single value for both {@code trackId} and {@code channelId}.
+     */
+    public UUID getId() {
+        return id;
     }
 
     /** Returns the channel name. */

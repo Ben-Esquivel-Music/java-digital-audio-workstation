@@ -46,9 +46,10 @@ class ClipTimeLockTest {
 
     @Test
     void moveClipActionRefusesLockedClip() {
+        Track track = new Track("t", TrackType.AUDIO);
         AudioClip clip = new AudioClip("a", 0.0, 4.0, null);
         clip.setLocked(true);
-        MoveClipAction action = new MoveClipAction(clip, 8.0);
+        MoveClipAction action = new MoveClipAction(track, clip, 8.0);
 
         assertThatThrownBy(action::execute)
                 .isInstanceOf(LockedClipException.class)
@@ -96,11 +97,13 @@ class ClipTimeLockTest {
 
     @Test
     void nudgeClipsActionRefusesWhenAnyClipLocked() {
+        Track t = new Track("t", TrackType.AUDIO);
         AudioClip a = new AudioClip("a", 4.0, 4.0, null);
         AudioClip b = new AudioClip("b", 8.0, 4.0, null);
         a.setLocked(true);
 
-        NudgeClipsAction action = new NudgeClipsAction(List.of(a, b), 1.0);
+        NudgeClipsAction action = new NudgeClipsAction(
+                List.of(Map.entry(t, a), Map.entry(t, b)), 1.0);
         assertThatThrownBy(action::execute).isInstanceOf(LockedClipException.class);
         assertThat(a.getStartBeat()).isEqualTo(4.0);
         assertThat(b.getStartBeat()).isEqualTo(8.0);
@@ -108,9 +111,10 @@ class ClipTimeLockTest {
 
     @Test
     void slipClipActionRefusesLockedClip() {
+        Track track = new Track("t", TrackType.AUDIO);
         AudioClip clip = new AudioClip("a", 0.0, 4.0, null);
         clip.setLocked(true);
-        SlipClipAction action = new SlipClipAction(clip, 1.0);
+        SlipClipAction action = new SlipClipAction(track, clip, 1.0);
 
         assertThatThrownBy(action::execute).isInstanceOf(LockedClipException.class);
         assertThat(clip.getSourceOffsetBeats()).isEqualTo(0.0);
@@ -129,17 +133,20 @@ class ClipTimeLockTest {
 
     @Test
     void nudgeServiceBuildActionRefusesLockedClip() {
+        Track track = new Track("t", TrackType.AUDIO);
         AudioClip clip = new AudioClip("a", 4.0, 4.0, null);
         clip.setLocked(true);
-        assertThatThrownBy(() -> NudgeService.buildAction(List.of(clip), 1.0))
+        assertThatThrownBy(() -> NudgeService.buildAction(
+                List.of(Map.entry(track, clip)), 1.0))
                 .isInstanceOf(LockedClipException.class);
     }
 
     @Test
     void slipEditServiceRefusesLockedAudioClip() {
+        Track track = new Track("t", TrackType.AUDIO);
         AudioClip clip = new AudioClip("a", 0.0, 4.0, null);
         clip.setLocked(true);
-        assertThatThrownBy(() -> SlipEditService.buildAudioSlip(clip, 1.0, 16.0))
+        assertThatThrownBy(() -> SlipEditService.buildAudioSlip(track, clip, 1.0, 16.0))
                 .isInstanceOf(LockedClipException.class);
     }
 
@@ -198,19 +205,21 @@ class ClipTimeLockTest {
 
     @Test
     void unlockingClipRestoresMobility() {
+        Track track = new Track("t", TrackType.AUDIO);
         AudioClip clip = new AudioClip("a", 0.0, 4.0, null);
         clip.setLocked(true);
-        new SetClipLockedAction(clip, false).execute();
+        new SetClipLockedAction(track, clip, false).execute();
 
         // Unlocked: move now succeeds.
-        new MoveClipAction(clip, 8.0).execute();
+        new MoveClipAction(track, clip, 8.0).execute();
         assertThat(clip.getStartBeat()).isEqualTo(8.0);
     }
 
     @Test
     void setClipLockedActionTogglesAndUndoes() {
+        Track track = new Track("t", TrackType.AUDIO);
         AudioClip clip = new AudioClip("a", 0.0, 4.0, null);
-        SetClipLockedAction lock = new SetClipLockedAction(clip, true);
+        SetClipLockedAction lock = new SetClipLockedAction(track, clip, true);
 
         assertThat(lock.description()).isEqualTo("Lock Clip");
         lock.execute();
@@ -221,8 +230,9 @@ class ClipTimeLockTest {
 
     @Test
     void setClipLockedActionWorksOnMidiClips() {
-        MidiClip clip = new MidiClip();
-        SetClipLockedAction action = new SetClipLockedAction(clip, true);
+        Track track = new Track("t", TrackType.MIDI);
+        MidiClip clip = track.getMidiClip();
+        SetClipLockedAction action = new SetClipLockedAction(track, clip, true);
         action.execute();
         assertThat(clip.isLocked()).isTrue();
         action.undo();
@@ -248,20 +258,23 @@ class ClipTimeLockTest {
 
     @Test
     void lockedClipMessageIsSingularForOneClip() {
+        Track track = new Track("t", TrackType.AUDIO);
         AudioClip clip = new AudioClip("a", 0.0, 4.0, null);
         clip.setLocked(true);
-        assertThatThrownBy(() -> new MoveClipAction(clip, 8.0).execute())
+        assertThatThrownBy(() -> new MoveClipAction(track, clip, 8.0).execute())
                 .isInstanceOf(LockedClipException.class)
                 .hasMessageContaining("1 clip is time-locked");
     }
 
     @Test
     void lockedClipMessageIsPluralForMultiple() {
+        Track t = new Track("t", TrackType.AUDIO);
         AudioClip a = new AudioClip("a", 0.0, 4.0, null);
         AudioClip b = new AudioClip("b", 8.0, 4.0, null);
         a.setLocked(true);
         b.setLocked(true);
-        assertThatThrownBy(() -> new NudgeClipsAction(List.of(a, b), 1.0).execute())
+        assertThatThrownBy(() -> new NudgeClipsAction(
+                List.of(Map.entry(t, a), Map.entry(t, b)), 1.0).execute())
                 .isInstanceOf(LockedClipException.class)
                 .hasMessageContaining("2 clips are time-locked");
     }

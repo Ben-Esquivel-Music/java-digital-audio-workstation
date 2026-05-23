@@ -105,16 +105,36 @@ public final class DawProject {
      * original {@link MixerChannel} is reused rather than creating a new one, which
      * keeps the mixer channel count consistent across add/remove cycles.</p>
      *
+     * <p>Story 283 invariant: when the track's id is a valid UUID string
+     * (the production case — {@link Track#Track(String, TrackType)} always
+     * generates one with {@code UUID.randomUUID().toString()}), the
+     * lazily-created channel is constructed so that
+     * {@code channel.getId().equals(UUID.fromString(track.getId()))} holds.
+     * Subscribers to {@code MixerEvent.ChannelRemoved} can therefore treat
+     * {@code channelId()} as a {@code trackId} directly. A few test
+     * fixtures reflectively forge non-UUID track ids; for those the
+     * channel is built with a random id and the invariant simply does
+     * not apply.</p>
+     *
      * @param track the track to add
      */
     public void addTrack(Track track) {
         Objects.requireNonNull(track, "track must not be null");
         tracks.add(track);
         MixerChannel channel = trackChannelMap.computeIfAbsent(
-                track.getId(), _ -> new MixerChannel(track.getName()));
+                track.getId(),
+                _ -> new MixerChannel(track.getName(), parseUuidOrRandom(track.getId())));
         channel.setColor(track.getColor());
         if (!mixer.getChannels().contains(channel)) {
             mixer.addChannel(channel);
+        }
+    }
+
+    private static UUID parseUuidOrRandom(String s) {
+        try {
+            return UUID.fromString(s);
+        } catch (IllegalArgumentException e) {
+            return UUID.randomUUID();
         }
     }
 

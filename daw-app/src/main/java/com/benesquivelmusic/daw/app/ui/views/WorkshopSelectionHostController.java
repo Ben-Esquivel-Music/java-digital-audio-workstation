@@ -11,6 +11,11 @@ import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.project.ProjectLookups;
 import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.sdk.event.ClipEvent;
+import com.benesquivelmusic.daw.sdk.event.DispatchMode;
+import com.benesquivelmusic.daw.sdk.event.EventBus;
+import com.benesquivelmusic.daw.sdk.event.MixerEvent;
+import com.benesquivelmusic.daw.sdk.event.PluginEvent;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 
 import javafx.beans.value.ChangeListener;
@@ -97,12 +102,47 @@ public final class WorkshopSelectionHostController {
     private final Supplier<DawProject> projectSupplier;
     private final BooleanSupplier workshopActiveSupplier;
     private final java.util.ResourceBundle messages;
+    /**
+     * Captured EventBus reference (story 283 S3). Per the "Capture
+     * swappable singleton reference once" memory, the bus is read once
+     * at construction time and stored in a {@code final} field; the
+     * three Subscription handles below are registered against this
+     * specific instance, never re-read via {@code EventBusPublisher.getDefault()}.
+     * May be {@code null} in tests that don't wire a bus — subscription
+     * registration is skipped in that case so the controller stays
+     * usable.
+     */
+    private final EventBus eventBus;
 
     /**
      * Strong-reference listener field — lives exactly as long as this
      * controller so the selection model never silently orphans the wiring.
      */
     private final ChangeListener<InspectorSelection> selectionListener;
+
+    /**
+     * Subscription handle for {@link PluginEvent.Unloaded}: removes any
+     * cached plugin panel whose slot's pluginInstanceId equals the
+     * event's. {@code null} when {@link #eventBus} is null. Closed in
+     * {@link #dispose()}.
+     */
+    private EventBus.Subscription pluginUnloadedSubscription;
+
+    /**
+     * Subscription handle for {@link MixerEvent.ChannelRemoved}: removes
+     * every cached plugin panel whose key's {@code trackId} equals the
+     * event's {@code channelId()} (per the channelId==trackId invariant
+     * from {@code DawProject.addTrack}). {@code null} when
+     * {@link #eventBus} is null.
+     */
+    private EventBus.Subscription channelRemovedSubscription;
+
+    /**
+     * Subscription handle for {@link ClipEvent.Removed}: evicts the
+     * corresponding entry from the clip-editor cache and disposes the
+     * editor's resources. {@code null} when {@link #eventBus} is null.
+     */
+    private EventBus.Subscription clipRemovedSubscription;
 
     /**
      * Cache of built plugin-parameter panels keyed by
@@ -114,18 +154,9 @@ public final class WorkshopSelectionHostController {
      * is rebuilt. This guarantees the cached panel always corresponds to
      * the live slot at that index.
      *
-     * <p>TODO(story 281 review S3 — deferred): subscribe to
-     * {@code MixerEvent} / {@code PluginEvent} on the daw-core
-     * {@link com.benesquivelmusic.daw.sdk.event.EventBus} once production
-     * code (the {@code RemoveEffectAction} / {@code InsertEffectAction}
-     * paths and the {@code MainController} wiring) actually publishes
-     * those events. The event types are sealed-defined in the SDK but
-     * no production publisher exists today, so wiring the consumer here
-     * would be a silent no-op and a misleading code surface. When the
-     * publishers land, the invalidation rule is: on {@code PluginEvent.Unloaded}
-     * / {@code MixerEvent.ChannelRemoved} affecting a {@code trackId},
-     * drop every entry whose key shares that {@code trackId} (cheaper
-     * than tracking exact reorder semantics).</p>
+     * <p>Story 283 — event-driven invalidation lives on
+     * {@link #pluginUnloadedSubscription} and
+     * {@link #channelRemovedSubscription}.</p>
      */
     private final Map<InsertCacheKey, CachedPanel> pluginPanelCache = new HashMap<>();
 
@@ -135,12 +166,8 @@ public final class WorkshopSelectionHostController {
      * are cached in a separate {@link IdentityHashMap} keyed by object
      * identity to avoid collisions from non-unique identityHashCode values.
      *
-     * <p>TODO(story 281 review S3 — deferred): subscribe to
-     * {@link com.benesquivelmusic.daw.sdk.event.ClipEvent.Removed} on the
-     * daw-core {@code EventBus} once production code publishes it; the
-     * SDK type is defined but no production publisher exists today.
-     * Invalidation: on {@code ClipEvent.Removed(_, clipId, _)},
-     * {@code clipEditorCache.remove(clipId.toString())}.</p>
+     * <p>Story 283 — event-driven invalidation lives on
+     * {@link #clipRemovedSubscription}.</p>
      */
     private final Map<String, Node> clipEditorCache = new HashMap<>();
 
@@ -198,12 +225,21 @@ public final class WorkshopSelectionHostController {
      * @param messages               the {@code Messages} resource bundle
      *                               for breadcrumb format strings
      *                               (Skill §14); must not be {@code null}
+     * @param eventBus               story 283 — the bus this controller
+     *                               subscribes to for cache-invalidation
+     *                               events ({@code PluginEvent.Unloaded},
+     *                               {@code MixerEvent.ChannelRemoved},
+     *                               {@code ClipEvent.Removed}); may be
+     *                               {@code null} for tests that don't
+     *                               care, in which case subscription
+     *                               registration is skipped
      */
     public WorkshopSelectionHostController(WorkshopView workshopView,
                                             InspectorSelectionModel selectionModel,
                                             Supplier<DawProject> projectSupplier,
                                             BooleanSupplier workshopActiveSupplier,
-                                            java.util.ResourceBundle messages) {
+                                            java.util.ResourceBundle messages,
+                                            EventBus eventBus) {
         this.workshopView = Objects.requireNonNull(workshopView,
                 "workshopView must not be null");
         this.selectionModel = Objects.requireNonNull(selectionModel,
@@ -214,22 +250,73 @@ public final class WorkshopSelectionHostController {
                 "workshopActiveSupplier must not be null");
         this.messages = Objects.requireNonNull(messages,
                 "messages must not be null");
+        // eventBus may be null — tests that don't wire it skip
+        // subscriptions cleanly. Capture once in a final field per the
+        // "Capture swappable singleton reference once" memory.
+        this.eventBus = eventBus;
 
         this.selectionListener = (obs, oldSel, newSel) -> onSelectionChanged(newSel);
         this.selectionModel.selectionProperty().addListener(selectionListener);
+
+        if (this.eventBus != null) {
+            this.pluginUnloadedSubscription = this.eventBus.on(
+                    PluginEvent.Unloaded.class,
+                    DispatchMode.ON_UI_THREAD,
+                    this::onPluginUnloaded);
+            this.channelRemovedSubscription = this.eventBus.on(
+                    MixerEvent.ChannelRemoved.class,
+                    DispatchMode.ON_UI_THREAD,
+                    this::onChannelRemoved);
+            this.clipRemovedSubscription = this.eventBus.on(
+                    ClipEvent.Removed.class,
+                    DispatchMode.ON_UI_THREAD,
+                    this::onClipRemoved);
+        }
 
         // Apply the initial selection — covers the case where the
         // controller is built after a selection already exists.
         onSelectionChanged(this.selectionModel.getSelection());
     }
 
+    private void onPluginUnloaded(PluginEvent.Unloaded ev) {
+        UUID instanceId = ev.pluginInstanceId();
+        pluginPanelCache.entrySet().removeIf(
+                e -> instanceId.equals(e.getValue().slot.getPluginInstanceId()));
+    }
+
+    private void onChannelRemoved(MixerEvent.ChannelRemoved ev) {
+        UUID trackId = ev.channelId();
+        pluginPanelCache.entrySet().removeIf(
+                e -> trackId.equals(e.getKey().trackId()));
+    }
+
+    private void onClipRemoved(ClipEvent.Removed ev) {
+        Node removed = clipEditorCache.remove(ev.clipId().toString());
+        if (removed != null) {
+            ClipEditorFactory.disposeEditor(removed);
+        }
+    }
+
     /**
-     * Removes the selection listener — call when the controller's host
-     * is torn down (e.g. on project close) to avoid pinning the
-     * selection model.
+     * Removes the selection listener and closes all event-bus
+     * subscriptions — call when the controller's host is torn down
+     * (e.g. on project close) to avoid pinning the selection model
+     * or leaking subscriptions across re-opens of the view.
      */
     public void dispose() {
         selectionModel.selectionProperty().removeListener(selectionListener);
+        if (pluginUnloadedSubscription != null) {
+            pluginUnloadedSubscription.close();
+            pluginUnloadedSubscription = null;
+        }
+        if (channelRemovedSubscription != null) {
+            channelRemovedSubscription.close();
+            channelRemovedSubscription = null;
+        }
+        if (clipRemovedSubscription != null) {
+            clipRemovedSubscription.close();
+            clipRemovedSubscription = null;
+        }
         resetForNewProject();
     }
 
@@ -311,6 +398,26 @@ public final class WorkshopSelectionHostController {
      */
     int clipEditorCacheSize() {
         return clipEditorCache.size() + midiClipEditorCache.size();
+    }
+
+    /**
+     * Story 283 test seam — seeds the plugin-panel cache without
+     * driving the JavaFX-bound {@code applyInsertSelection} path, so
+     * the S3 cache-invalidation subscriber can be verified in a
+     * headless test.
+     */
+    void seedPluginPanelCacheForTest(UUID trackId, int insertIndex,
+                                      InsertSlot slot, Node panel) {
+        pluginPanelCache.put(new InsertCacheKey(trackId, insertIndex),
+                new CachedPanel(slot, panel));
+    }
+
+    /**
+     * Story 283 test seam — seeds the clip-editor cache without
+     * driving the JavaFX-bound {@code applyClipSelection} path.
+     */
+    void seedClipEditorCacheForTest(String clipId, Node editor) {
+        clipEditorCache.put(clipId, editor);
     }
 
     // ── Internals ─────────────────────────────────────────────────────────

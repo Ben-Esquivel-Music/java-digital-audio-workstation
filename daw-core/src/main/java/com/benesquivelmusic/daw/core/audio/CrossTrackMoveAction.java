@@ -1,10 +1,14 @@
 package com.benesquivelmusic.daw.core.audio;
 
 import com.benesquivelmusic.daw.core.clip.LockedClipException;
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.event.ClipEvent;
 
+import java.time.Instant;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * An undoable action that moves an {@link AudioClip} from one track to another,
@@ -49,6 +53,12 @@ public final class CrossTrackMoveAction implements UndoableAction {
         sourceTrack.removeClip(clip);
         clip.setStartBeat(newStartBeat);
         targetTrack.addClip(clip);
+        Instant now = Instant.now();
+        UUID clipId = UUID.fromString(clip.getId());
+        EventBusPublisher.publish(new ClipEvent.Removed(
+                UUID.fromString(sourceTrack.getId()), clipId, now));
+        EventBusPublisher.publish(new ClipEvent.Added(
+                UUID.fromString(targetTrack.getId()), clipId, now));
     }
 
     @Override
@@ -56,5 +66,11 @@ public final class CrossTrackMoveAction implements UndoableAction {
         targetTrack.removeClip(clip);
         clip.setStartBeat(previousStartBeat);
         sourceTrack.addClip(clip);
+        Instant now = Instant.now();
+        UUID clipId = UUID.fromString(clip.getId());
+        EventBusPublisher.publish(new ClipEvent.Removed(
+                UUID.fromString(targetTrack.getId()), clipId, now));
+        EventBusPublisher.publish(new ClipEvent.Added(
+                UUID.fromString(sourceTrack.getId()), clipId, now));
     }
 }

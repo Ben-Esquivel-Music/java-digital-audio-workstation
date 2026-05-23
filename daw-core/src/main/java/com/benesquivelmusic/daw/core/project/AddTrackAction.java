@@ -1,9 +1,13 @@
 package com.benesquivelmusic.daw.core.project;
 
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.event.MixerEvent;
 
+import java.time.Instant;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * An undoable action that adds an existing track to the project.
@@ -35,10 +39,17 @@ public final class AddTrackAction implements UndoableAction {
     @Override
     public void execute() {
         project.addTrack(track);
+        // Story 283 — channelId == trackId UUID invariant (see
+        // DawProject.addTrack), so the channel-added event also acts as
+        // a track-added signal for Workshop S3 invalidation.
+        EventBusPublisher.publish(new MixerEvent.ChannelAdded(
+                UUID.fromString(track.getId()), Instant.now()));
     }
 
     @Override
     public void undo() {
         project.removeTrack(track);
+        EventBusPublisher.publish(new MixerEvent.ChannelRemoved(
+                UUID.fromString(track.getId()), Instant.now()));
     }
 }

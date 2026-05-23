@@ -192,7 +192,7 @@ final class ClipEditController {
             // which means DECREASING the source offset.
             double sourceLengthBeats = sourceLengthBeatsFor(clip);
             SlipEditService.SlipResult result = SlipEditService.buildAudioSlip(
-                    clip, -beatDelta, sourceLengthBeats);
+                    entry.sourceTrack(), clip, -beatDelta, sourceLengthBeats);
             if (result.hasAction()) {
                 host.undoManager().execute(result.action());
                 applied++;
@@ -291,8 +291,8 @@ final class ClipEditController {
      * multi-clip nudge as one step (Issue 566 acceptance criterion).
      */
     private void nudgeSelection(double directionMultiplier) {
-        List<AudioClip> clips = resolveNudgeTargets();
-        if (clips.isEmpty()) {
+        List<java.util.Map.Entry<Track, AudioClip>> entries = resolveNudgeTargets();
+        if (entries.isEmpty()) {
             return;
         }
         NudgeService.TimingContext ctx = buildTimingContext();
@@ -301,7 +301,7 @@ final class ClipEditController {
         }
         NudgeSettings settings = host.project().getNudgeSettings();
         double beatDelta = NudgeService.beatsFor(settings, ctx, directionMultiplier);
-        applyNudge(clips, beatDelta, settings, directionMultiplier);
+        applyNudge(entries, beatDelta, settings, directionMultiplier);
     }
 
     /**
@@ -310,8 +310,8 @@ final class ClipEditController {
      * shortcut from Issue 566.
      */
     private void nudgeSelectionBySample(double directionMultiplier) {
-        List<AudioClip> clips = resolveNudgeTargets();
-        if (clips.isEmpty()) {
+        List<java.util.Map.Entry<Track, AudioClip>> entries = resolveNudgeTargets();
+        if (entries.isEmpty()) {
             return;
         }
         NudgeService.TimingContext ctx = buildTimingContext();
@@ -319,13 +319,14 @@ final class ClipEditController {
             return;
         }
         double beatDelta = NudgeService.beatsForOneSample(ctx, directionMultiplier);
-        applyNudge(clips, beatDelta,
+        applyNudge(entries, beatDelta,
                 new NudgeSettings(NudgeUnit.FRAMES, 1.0), directionMultiplier);
     }
 
-    private void applyNudge(List<AudioClip> clips, double beatDelta,
+    private void applyNudge(List<java.util.Map.Entry<Track, AudioClip>> entries,
+                            double beatDelta,
                             NudgeSettings settings, double directionMultiplier) {
-        NudgeClipsAction action = NudgeService.buildAction(clips, beatDelta);
+        NudgeClipsAction action = NudgeService.buildAction(entries, beatDelta);
         if (action == null) {
             return;
         }
@@ -338,7 +339,7 @@ final class ClipEditController {
         double mag = Math.abs(directionMultiplier);
         String magDesc = mag == 1.0 ? "" : (mag == 10.0 ? "10× " : String.format("%.1f× ", mag));
         String statusText = String.format("Nudged %d clip(s) %s%s by %s %s",
-                clips.size(), magDesc, dir,
+                entries.size(), magDesc, dir,
                 formatAmount(settings.amount()),
                 formatUnit(settings.unit(), settings.amount()));
         double appliedBeatDelta = action.getAppliedBeatDelta();
@@ -360,15 +361,16 @@ final class ClipEditController {
      * Priority: explicit clip selection → clips contained in the current
      * time selection. Returns an empty list if nothing is selectable.
      */
-    private List<AudioClip> resolveNudgeTargets() {
+    private List<java.util.Map.Entry<Track, AudioClip>> resolveNudgeTargets() {
         SelectionModel sm = host.selectionModel();
         List<ClipboardEntry> selected = sm.getSelectedClips();
         if (!selected.isEmpty()) {
-            List<AudioClip> clips = new ArrayList<>(selected.size());
+            List<java.util.Map.Entry<Track, AudioClip>> entries =
+                    new ArrayList<>(selected.size());
             for (ClipboardEntry entry : selected) {
-                clips.add(entry.clip());
+                entries.add(java.util.Map.entry(entry.sourceTrack(), entry.clip()));
             }
-            return clips;
+            return entries;
         }
         // Fall back to clips that overlap the current time selection
         // (time-range shifts its overlapping clips — Issue 566). Uses the
@@ -378,15 +380,15 @@ final class ClipEditController {
             double s = sm.getStartBeat();
             double e = sm.getEndBeat();
             if (s < e) {
-                List<AudioClip> clips = new ArrayList<>();
+                List<java.util.Map.Entry<Track, AudioClip>> entries = new ArrayList<>();
                 for (Track t : host.project().getTracks()) {
                     for (AudioClip c : t.getClips()) {
                         if (c.getStartBeat() < e && c.getEndBeat() > s) {
-                            clips.add(c);
+                            entries.add(java.util.Map.entry(t, c));
                         }
                     }
                 }
-                return clips;
+                return entries;
             }
         }
         return List.of();

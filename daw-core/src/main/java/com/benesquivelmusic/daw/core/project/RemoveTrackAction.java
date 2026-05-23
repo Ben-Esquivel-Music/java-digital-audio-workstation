@@ -1,9 +1,13 @@
 package com.benesquivelmusic.daw.core.project;
 
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.event.MixerEvent;
 
+import java.time.Instant;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * An undoable action that removes a track from the project.
@@ -38,6 +42,8 @@ public final class RemoveTrackAction implements UndoableAction {
     public void execute() {
         originalIndex = project.getTracks().indexOf(track);
         project.removeTrack(track);
+        EventBusPublisher.publish(new MixerEvent.ChannelRemoved(
+                UUID.fromString(track.getId()), Instant.now()));
     }
 
     @Override
@@ -49,5 +55,7 @@ public final class RemoveTrackAction implements UndoableAction {
                 && originalIndex < project.getTracks().size()) {
             project.moveTrack(currentIndex, originalIndex);
         }
+        EventBusPublisher.publish(new MixerEvent.ChannelAdded(
+                UUID.fromString(track.getId()), Instant.now()));
     }
 }

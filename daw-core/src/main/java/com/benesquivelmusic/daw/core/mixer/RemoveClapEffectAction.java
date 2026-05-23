@@ -1,7 +1,10 @@
 package com.benesquivelmusic.daw.core.mixer;
 
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.event.PluginEvent;
 
+import java.time.Instant;
 import java.util.Objects;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -48,12 +51,18 @@ public final class RemoveClapEffectAction implements UndoableAction {
     @Override
     public void execute() {
         removedSlot = channel.removeInsert(index);
+        if (removedSlot != null) {
+            EventBusPublisher.publish(new PluginEvent.Unloaded(
+                    removedSlot.getPluginInstanceId(), Instant.now()));
+        }
     }
 
     @Override
     public void undo() {
         if (removedSlot != null) {
             channel.insertInsert(index, removedSlot);
+            EventBusPublisher.publish(new PluginEvent.Loaded(
+                    removedSlot.getPluginInstanceId(), Instant.now()));
         }
     }
 

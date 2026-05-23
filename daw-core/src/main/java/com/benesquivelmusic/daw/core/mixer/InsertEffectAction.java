@@ -1,7 +1,10 @@
 package com.benesquivelmusic.daw.core.mixer;
 
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.event.PluginEvent;
 
+import java.time.Instant;
 import java.util.Objects;
 
 /**
@@ -37,10 +40,14 @@ public final class InsertEffectAction implements UndoableAction {
     @Override
     public void execute() {
         channel.insertInsert(index, slot);
+        EventBusPublisher.publish(new PluginEvent.Loaded(
+                slot.getPluginInstanceId(), Instant.now()));
     }
 
     @Override
     public void undo() {
         channel.removeInsert(slot);
+        EventBusPublisher.publish(new PluginEvent.Unloaded(
+                slot.getPluginInstanceId(), Instant.now()));
     }
 }

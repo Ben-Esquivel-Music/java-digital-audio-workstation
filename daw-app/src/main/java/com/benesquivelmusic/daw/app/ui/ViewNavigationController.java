@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 
@@ -360,7 +361,8 @@ final class ViewNavigationController {
                 new com.benesquivelmusic.daw.app.ui.views.WorkshopSelectionHostController(
                         workshopView, sm, host::project,
                         () -> activeView == DawView.WORKSHOP,
-                        host.messages());
+                        host.messages(),
+                        EventBusPublisher.getDefault());
 
         viewCache.put(DawView.WORKSHOP, workshopView);
     }

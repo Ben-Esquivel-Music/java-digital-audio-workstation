@@ -4,6 +4,8 @@ import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.project.edit.SlipEditService.SlipResult;
+import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackType;
 
 import org.junit.jupiter.api.Test;
 
@@ -26,10 +28,11 @@ class SlipEditServiceTest {
 
     @Test
     void audioSlipWithinBoundsAppliesUnchangedDelta() {
+        Track track = new Track("t", TrackType.AUDIO);
         AudioClip clip = new AudioClip("vox", 0.0, 4.0, null);
         clip.setSourceOffsetBeats(2.0);
 
-        SlipResult result = SlipEditService.buildAudioSlip(clip, 1.5, 10.0);
+        SlipResult result = SlipEditService.buildAudioSlip(track, clip, 1.5, 10.0);
 
         assertThat(result.hasAction()).isTrue();
         assertThat(result.appliedBeatDelta()).isEqualTo(1.5, within(EPSILON));
@@ -41,11 +44,12 @@ class SlipEditServiceTest {
 
     @Test
     void audioSlipClampsAtZeroAndFlagsHitEdge() {
+        Track track = new Track("t", TrackType.AUDIO);
         AudioClip clip = new AudioClip("vox", 0.0, 4.0, null);
         clip.setSourceOffsetBeats(1.0);
 
         // Requested -3.0 would push to -2.0; clamp to 0.0.
-        SlipResult result = SlipEditService.buildAudioSlip(clip, -3.0, 10.0);
+        SlipResult result = SlipEditService.buildAudioSlip(track, clip, -3.0, 10.0);
 
         assertThat(result.hasAction()).isTrue();
         assertThat(result.appliedBeatDelta()).isEqualTo(-1.0, within(EPSILON));
@@ -57,11 +61,12 @@ class SlipEditServiceTest {
 
     @Test
     void audioSlipClampsAtSourceEndAndFlagsHitEdge() {
+        Track track = new Track("t", TrackType.AUDIO);
         // sourceLength = 10, duration = 4 → maxOffset = 6
         AudioClip clip = new AudioClip("vox", 0.0, 4.0, null);
         clip.setSourceOffsetBeats(5.0);
 
-        SlipResult result = SlipEditService.buildAudioSlip(clip, 3.0, 10.0);
+        SlipResult result = SlipEditService.buildAudioSlip(track, clip, 3.0, 10.0);
 
         assertThat(result.hasAction()).isTrue();
         assertThat(result.appliedBeatDelta()).isEqualTo(1.0, within(EPSILON));
@@ -73,11 +78,12 @@ class SlipEditServiceTest {
 
     @Test
     void audioSlipWithUnknownSourceLengthTreatsUpperBoundAsUnbounded() {
+        Track track = new Track("t", TrackType.AUDIO);
         AudioClip clip = new AudioClip("vox", 0.0, 4.0, null);
         clip.setSourceOffsetBeats(2.0);
 
         // sourceLengthBeats = 0 → upper bound unbounded; only lower bound enforced.
-        SlipResult result = SlipEditService.buildAudioSlip(clip, 100.0, 0.0);
+        SlipResult result = SlipEditService.buildAudioSlip(track, clip, 100.0, 0.0);
 
         assertThat(result.hasAction()).isTrue();
         assertThat(result.appliedBeatDelta()).isEqualTo(100.0, within(EPSILON));
@@ -86,11 +92,12 @@ class SlipEditServiceTest {
 
     @Test
     void audioSlipWithSourceShorterThanDurationStillClampsAtZero() {
+        Track track = new Track("t", TrackType.AUDIO);
         // Pathological case: source shorter than clip duration → upper bound unbounded.
         AudioClip clip = new AudioClip("vox", 0.0, 4.0, null);
         clip.setSourceOffsetBeats(0.5);
 
-        SlipResult result = SlipEditService.buildAudioSlip(clip, -2.0, 2.0);
+        SlipResult result = SlipEditService.buildAudioSlip(track, clip, -2.0, 2.0);
 
         assertThat(result.hasAction()).isTrue();
         assertThat(result.appliedBeatDelta()).isEqualTo(-0.5, within(EPSILON));
@@ -99,11 +106,12 @@ class SlipEditServiceTest {
 
     @Test
     void audioSlipWithZeroNetDeltaProducesNoAction() {
+        Track track = new Track("t", TrackType.AUDIO);
         AudioClip clip = new AudioClip("vox", 0.0, 4.0, null);
         clip.setSourceOffsetBeats(0.0);
 
         // Requesting -1.0 at offset 0.0 clamps to 0.0 → net delta 0.
-        SlipResult result = SlipEditService.buildAudioSlip(clip, -1.0, 10.0);
+        SlipResult result = SlipEditService.buildAudioSlip(track, clip, -1.0, 10.0);
 
         assertThat(result.hasAction()).isFalse();
         assertThat(result.action()).isNull();
@@ -113,8 +121,16 @@ class SlipEditServiceTest {
 
     @Test
     void audioSlipRejectsNullClip() {
+        Track track = new Track("t", TrackType.AUDIO);
         assertThatNullPointerException()
-                .isThrownBy(() -> SlipEditService.buildAudioSlip(null, 1.0, 10.0));
+                .isThrownBy(() -> SlipEditService.buildAudioSlip(track, null, 1.0, 10.0));
+    }
+
+    @Test
+    void audioSlipRejectsNullTrack() {
+        AudioClip clip = new AudioClip("vox", 0.0, 4.0, null);
+        assertThatNullPointerException()
+                .isThrownBy(() -> SlipEditService.buildAudioSlip(null, clip, 1.0, 10.0));
     }
 
     // ── MIDI slip ──────────────────────────────────────────────────────────

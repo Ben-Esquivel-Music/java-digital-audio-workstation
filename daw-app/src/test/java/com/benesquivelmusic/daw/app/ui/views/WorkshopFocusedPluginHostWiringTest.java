@@ -187,7 +187,8 @@ final class WorkshopFocusedPluginHostWiringTest {
             // is covered by WorkshopPendingSelectionTest).
             Supplier<DawProject> projectSupplier = () -> project;
             this.controller = new WorkshopSelectionHostController(
-                    view, selectionModel, projectSupplier, () -> true, messages);
+                    view, selectionModel, projectSupplier, () -> true, messages,
+                    null /* eventBus — not under test here */);
         }
     }
 

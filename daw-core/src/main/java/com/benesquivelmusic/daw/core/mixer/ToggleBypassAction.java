@@ -1,7 +1,10 @@
 package com.benesquivelmusic.daw.core.mixer;
 
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.event.PluginEvent;
 
+import java.time.Instant;
 import java.util.Objects;
 
 /**
@@ -38,12 +41,18 @@ public final class ToggleBypassAction implements UndoableAction {
 
     @Override
     public void execute() {
-        previousBypassed = channel.getInsertSlots().get(slotIndex).isBypassed();
+        InsertSlot slot = channel.getInsertSlots().get(slotIndex);
+        previousBypassed = slot.isBypassed();
         channel.setInsertBypassed(slotIndex, newBypassed);
+        EventBusPublisher.publish(new PluginEvent.Bypassed(
+                slot.getPluginInstanceId(), newBypassed, Instant.now()));
     }
 
     @Override
     public void undo() {
+        InsertSlot slot = channel.getInsertSlots().get(slotIndex);
         channel.setInsertBypassed(slotIndex, previousBypassed);
+        EventBusPublisher.publish(new PluginEvent.Bypassed(
+                slot.getPluginInstanceId(), previousBypassed, Instant.now()));
     }
 }

@@ -72,6 +72,11 @@ public final class Track {
         this.solo = false;
         this.armed = false;
         this.phaseInverted = false;
+        // Story 283 — wire the MIDI clip's owning-track id so
+        // MidiClip-mutation actions can publish ClipEvent.Trimmed
+        // carrying both clipId and trackId without needing a
+        // project-side reverse lookup.
+        this.midiClip.setOwningTrackId(UUID.fromString(this.id));
     }
 
     /** Returns the unique identifier for this track. */

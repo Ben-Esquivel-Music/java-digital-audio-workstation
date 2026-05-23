@@ -1,8 +1,12 @@
 package com.benesquivelmusic.daw.core.midi;
 
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.event.ClipEvent;
 
+import java.time.Instant;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * An undoable action that changes the duration of a MIDI note within a
@@ -40,6 +44,7 @@ public final class ResizeMidiNoteAction implements UndoableAction {
         if (index >= 0) {
             clip.replaceNote(index, resizedNote);
         }
+        publishTrimmed();
     }
 
     @Override
@@ -48,5 +53,15 @@ public final class ResizeMidiNoteAction implements UndoableAction {
         if (index >= 0) {
             clip.replaceNote(index, originalNote);
         }
+        publishTrimmed();
+    }
+
+    private void publishTrimmed() {
+        UUID trackId = clip.getOwningTrackId();
+        if (trackId == null) {
+            return;
+        }
+        EventBusPublisher.publish(new ClipEvent.Trimmed(
+                trackId, clip.getId(), Instant.now()));
     }
 }
