@@ -94,7 +94,7 @@ public final class DspRegressionHarness {
         String goldenResource = resolveGoldenResource(processor, spec);
         boolean rebaseline = Boolean.getBoolean(REBASELINE_PROPERTY);
 
-        if (rebaseline) {
+        if (rebaseline || !goldenExists(goldenResource)) {
             return rebaseline(processor, spec, goldenResource, output, signal.sampleRate());
         }
         return compareToGolden(processor, spec, goldenResource, output, signal.sampleRate());
@@ -279,6 +279,15 @@ public final class DspRegressionHarness {
                 spec.testSignal(), goldenResource, metrics, true, true);
         System.out.println("[REBASELINE] " + report.summary() + " → wrote " + target);
         return report;
+    }
+
+    private static boolean goldenExists(String resource) {
+        Path src = goldenWritePath(resource);
+        if (Files.isRegularFile(src)) {
+            return true;
+        }
+        ClassLoader cl = Thread.currentThread().getContextClassLoader();
+        return cl.getResource(resource) != null;
     }
 
     private static WavFile.Audio readGoldenResource(String resource) throws IOException {
