@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.core.audio.MoveClipAction;
 import com.benesquivelmusic.daw.core.audio.RemoveClipAction;
 import com.benesquivelmusic.daw.core.midi.AddMidiNoteAction;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
+import com.benesquivelmusic.daw.core.midi.SetNoteVelocityAction;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectAction;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectType;
@@ -90,8 +91,12 @@ class EventBusMetricsSmokeTest {
             //    note-level edits to Trimmed).
             Track midiTrack = new Track("m", TrackType.MIDI);
             new AddTrackAction(project, midiTrack).execute();
-            new AddMidiNoteAction(midiTrack.getMidiClip(),
-                    new MidiNoteData(60, 0, 4, 100, 0)).execute();
+            MidiNoteData addedNote = new MidiNoteData(60, 0, 4, 100, 0);
+            new AddMidiNoteAction(midiTrack.getMidiClip(), addedNote).execute();
+
+            // 8. ClipEvent.Trimmed — velocity edit (story 283).
+            new SetNoteVelocityAction(midiTrack.getMidiClip(), addedNote, 80)
+                    .execute();
 
             Map<String, Long> published = bus.metrics().publishedByType();
             assertThat(published)

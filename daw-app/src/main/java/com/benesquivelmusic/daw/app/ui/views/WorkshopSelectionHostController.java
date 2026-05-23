@@ -280,8 +280,18 @@ public final class WorkshopSelectionHostController {
 
     private void onPluginUnloaded(PluginEvent.Unloaded ev) {
         UUID instanceId = ev.pluginInstanceId();
-        pluginPanelCache.entrySet().removeIf(
-                e -> instanceId.equals(e.getValue().slot.getPluginInstanceId()));
+        UUID affectedTrackId = null;
+        for (var entry : pluginPanelCache.entrySet()) {
+            if (instanceId.equals(entry.getValue().slot.getPluginInstanceId())) {
+                affectedTrackId = entry.getKey().trackId();
+                break;
+            }
+        }
+        if (affectedTrackId != null) {
+            UUID trackId = affectedTrackId;
+            pluginPanelCache.entrySet().removeIf(
+                    e -> trackId.equals(e.getKey().trackId()));
+        }
     }
 
     private void onChannelRemoved(MixerEvent.ChannelRemoved ev) {

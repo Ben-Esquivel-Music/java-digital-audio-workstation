@@ -111,8 +111,8 @@ public final class GlueClipsAction implements UndoableAction {
         EventBusPublisher.publish(new ClipEvent.Removed(
                 trackId, UUID.fromString(merged.getId()), now));
         EventBusPublisher.publish(new ClipEvent.Added(
-                trackId, UUID.fromString(second.getId()), now));
-        EventBusPublisher.publish(new ClipEvent.Added(
                 trackId, UUID.fromString(first.getId()), now));
+        EventBusPublisher.publish(new ClipEvent.Added(
+                trackId, UUID.fromString(second.getId()), now));
     }
 }
