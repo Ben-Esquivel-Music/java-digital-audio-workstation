@@ -111,8 +111,9 @@ public final class LayoutManager {
     /** Returns the layout with the given name, or empty. */
     public Optional<NamedLayout> findByName(String name) {
         Objects.requireNonNull(name, "name must not be null");
+        String stripped = name.strip();
         for (NamedLayout l : savedLayouts) {
-            if (l.name().equals(name)) return Optional.of(l);
+            if (l.name().equals(stripped)) return Optional.of(l);
         }
         return Optional.empty();
     }
@@ -175,11 +176,12 @@ public final class LayoutManager {
      */
     public boolean load(String name) {
         Objects.requireNonNull(name, "name must not be null");
-        Optional<NamedLayout> hit = findByName(name);
+        String stripped = name.strip();
+        Optional<NamedLayout> hit = findByName(stripped);
         if (hit.isEmpty()) return false;
         host.applyDockLayoutJson(hit.get().dockLayoutJson());
         currentLayout.set(hit.get().name());
-        LOG.fine(() -> "Loaded layout '" + name + "'");
+        LOG.fine(() -> "Loaded layout '" + stripped + "'");
         return true;
     }
 
@@ -191,11 +193,12 @@ public final class LayoutManager {
      */
     public boolean delete(String name) {
         Objects.requireNonNull(name, "name must not be null");
-        if (BuiltInLayouts.isBuiltIn(name)) return false;
-        int idx = indexOf(name);
+        String stripped = name.strip();
+        if (BuiltInLayouts.isBuiltIn(stripped)) return false;
+        int idx = indexOf(stripped);
         if (idx < 0) return false;
         savedLayouts.remove(idx);
-        if (name.equals(currentLayout.get())) {
+        if (stripped.equals(currentLayout.get())) {
             currentLayout.set(BuiltInLayouts.DEFAULT);
         }
         return true;
@@ -210,16 +213,17 @@ public final class LayoutManager {
     public boolean rename(String oldName, String newName) {
         Objects.requireNonNull(oldName, "oldName must not be null");
         Objects.requireNonNull(newName, "newName must not be null");
+        String strippedOld = oldName.strip();
         String trimmed = newName.strip();
         if (trimmed.isEmpty()) return false;
-        if (BuiltInLayouts.isBuiltIn(oldName)) return false;
+        if (BuiltInLayouts.isBuiltIn(strippedOld)) return false;
         if (BuiltInLayouts.isBuiltIn(trimmed)) return false;
-        if (!oldName.equals(trimmed) && indexOf(trimmed) >= 0) return false;
-        int idx = indexOf(oldName);
+        if (!strippedOld.equals(trimmed) && indexOf(trimmed) >= 0) return false;
+        int idx = indexOf(strippedOld);
         if (idx < 0) return false;
         NamedLayout renamed = savedLayouts.get(idx).withName(trimmed);
         savedLayouts.set(idx, renamed);
-        if (oldName.equals(currentLayout.get())) {
+        if (strippedOld.equals(currentLayout.get())) {
             currentLayout.set(trimmed);
         }
         return true;
@@ -289,7 +293,9 @@ public final class LayoutManager {
                     if (!(o instanceof Map<?, ?> m)) continue;
                     Object nameObj = m.get("name");
                     Object dockObj = m.get("dock");
-                    if (!(nameObj instanceof String name) || name.isBlank()) continue;
+                    if (!(nameObj instanceof String rawName) || rawName.isBlank()) continue;
+                    String name = rawName.strip();
+                    if (name.isEmpty()) continue;
                     if (BuiltInLayouts.isBuiltIn(name)) continue; // never replace built-ins
                     String dock = dockObj instanceof String s ? s : "";
                     int existing = indexOf(name);
@@ -301,7 +307,7 @@ public final class LayoutManager {
                     }
                 }
             }
-            String wantedCurrent = current instanceof String s ? s : BuiltInLayouts.DEFAULT;
+            String wantedCurrent = current instanceof String s ? s.strip() : BuiltInLayouts.DEFAULT;
             String resolved = findByName(wantedCurrent).isPresent()
                     ? wantedCurrent : BuiltInLayouts.DEFAULT;
             load(resolved);

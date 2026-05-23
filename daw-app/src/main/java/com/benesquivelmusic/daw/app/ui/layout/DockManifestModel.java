@@ -109,12 +109,20 @@ public final class DockManifestModel {
     }
 
     /**
-     * Click handler for a manifest tab: makes the panel visible and (in
-     * a real UI) raises focus. The manifest bar's tab control wires its
-     * {@code onAction} to this method.
+     * Click handler for a manifest tab: makes the panel visible and
+     * raises focus. For docked panels, moves the panel to the end of its
+     * zone's tab strip (making it the selected tab). For floating panels,
+     * making it visible is sufficient (the Host will toFront the window).
+     * The manifest bar's tab control wires its {@code onAction} to this
+     * method.
      */
     public void focusPanel(String panelId) {
         dockManager.setVisible(panelId, true);
+        dockManager.layout().entry(panelId).ifPresent(entry -> {
+            if (entry.zone() != DockZone.FLOATING) {
+                dockManager.moveToEnd(panelId, entry.zone());
+            }
+        });
     }
 
     /**
