@@ -77,8 +77,10 @@ final class WorkshopFocusedPluginHostWiringTest {
             f.selectionModel.setSelection(
                     new InspectorSelection.TrackSelection(trackId));
             assertThat(f.view.focusedPluginNode())
-                    .as("track selection clears the focused plugin slot")
-                    .isNull();
+                    .as("track selection retains the last focused plugin "
+                            + "(per PR description: track selection keeps "
+                            + "the most-recently opened plugin)")
+                    .isSameAs(compressorPanel);
             f.selectionModel.setSelection(
                     new InspectorSelection.InsertSelection(trackId, 0));
             Node compressorPanelAgain = f.view.focusedPluginNode();
@@ -98,15 +100,17 @@ final class WorkshopFocusedPluginHostWiringTest {
                     .isInstanceOf(PluginParameterEditorPanel.class)
                     .isNotSameAs(compressorPanel);
 
-            // 4) Selecting a non-insert (TrackSelection) clears the slot.
+            // 4) Selecting a non-insert (TrackSelection) retains the last
+            // focused plugin — per PR description, track selection keeps
+            // the most-recently opened plugin visible.
             f.selectionModel.setSelection(
                     new InspectorSelection.TrackSelection(trackId));
             assertThat(f.view.focusedPluginNode())
-                    .as("a TrackSelection clears the focused plugin slot")
-                    .isNull();
+                    .as("a TrackSelection retains the last focused plugin")
+                    .isSameAs(reverbPanel);
             assertThat(f.view.breadcrumb().getSegments())
-                    .as("the breadcrumb is also cleared")
-                    .isEmpty();
+                    .as("the breadcrumb is retained with the last plugin")
+                    .isNotEmpty();
 
             // Cache stability: exactly two distinct keys built.
             assertThat(f.controller.pluginPanelCacheSize())

@@ -244,9 +244,13 @@ public final class WorkshopView extends BorderPane {
 
     /**
      * Updates the right pane to show the focused plugin for the given
-     * selection. The breadcrumb is set to {@code Track NN ▸ Insert N ▸
-     * pluginName}; the {@link PluginViewContainer}'s focused-plugin slot
-     * is set to {@code pluginNode}.
+     * selection. The breadcrumb is set to
+     * {@code Track NN ▸ Insert 1 ▸ pluginName} (note: the insert index is
+     * currently hard-coded to {@code 1} as a placeholder — multi-insert
+     * disambiguation lands with the inspector wiring story; use
+     * {@link #setFocusedPlugin(List, Node)} to supply the real insert
+     * index from the project model). The {@link PluginViewContainer}'s
+     * focused-plugin slot is set to {@code pluginNode}.
      *
      * <p>The container itself is <strong>not</strong> rebuilt — only its
      * inner content slot — so the right pane's parent identity is stable

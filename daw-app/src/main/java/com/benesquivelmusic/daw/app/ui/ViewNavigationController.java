@@ -267,7 +267,14 @@ final class ViewNavigationController {
             // Pull arrangement back out of Workshop's left pane before
             // switching elsewhere.
             workshopView.setArrangementContent(null);
-            workshopView.setClipDetailContent(null);
+            // Don't clear clip detail on exit — the selection model still
+            // holds the clip reference and applyPendingOnWorkshopActivation
+            // skips re-applying an unchanged selection (lastApplied memo).
+            // Instead, reset the controller's lastApplied so the next
+            // activation unconditionally re-applies the current selection.
+            if (workshopSelectionHostController != null) {
+                workshopSelectionHostController.resetLastApplied();
+            }
         }
         if (view == DawView.WORKSHOP) {
             ensureWorkshopBuilt();

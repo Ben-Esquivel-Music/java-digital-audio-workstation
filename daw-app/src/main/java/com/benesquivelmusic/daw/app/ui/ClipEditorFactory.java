@@ -36,11 +36,11 @@ import java.util.Objects;
  * <p>This class lives in {@code com.benesquivelmusic.daw.app.ui} to access
  * the package-private editor classes. It is exposed as a {@code public}
  * type so the Workshop wiring controller in {@code …ui.views} can call it.
- * Identity caching by {@code clipId} (stable {@code AudioClip.getId()} /
- * {@code System.identityHashCode(MidiClip)} via the
- * {@code WorkshopSelectionHostController}) is the caller's concern — this
- * factory always returns a freshly-built Node so callers can cache as they
- * see fit.</p>
+ * Identity caching by {@code clipId} (stable {@code AudioClip.getId()} for
+ * audio clips, or object identity via an {@code IdentityHashMap} for MIDI
+ * clips in the {@code WorkshopSelectionHostController}) is the caller's
+ * concern — this factory always returns a freshly-built Node so callers can
+ * cache as they see fit.</p>
  */
 public final class ClipEditorFactory {
 

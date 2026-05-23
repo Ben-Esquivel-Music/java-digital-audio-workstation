@@ -249,6 +249,18 @@ public final class WorkshopSelectionHostController {
         applySelection(target);
     }
 
+    /**
+     * Resets the {@code lastApplied} memo so the next call to
+     * {@link #applyPendingOnWorkshopActivation()} unconditionally
+     * re-applies the current selection. Called by the navigation
+     * controller when leaving Workshop so that re-entering Workshop
+     * restores the clip-detail and plugin slots even when the underlying
+     * selection has not changed.
+     */
+    public void resetLastApplied() {
+        lastApplied = null;
+    }
+
     // ── Visible for tests ─────────────────────────────────────────────────
 
     /**
@@ -300,9 +312,16 @@ public final class WorkshopSelectionHostController {
                 applyClipSelection(clip);
             }
             case InspectorSelection.TrackSelection _ -> {
-                clearFocusedPlugin();
-                // Track / send / bus selections clear the clip-detail
-                // slot too — only ClipSelection populates it.
+                // Per PR description: "When the active selection is a
+                // track or insert, the Workshop right pane shows that
+                // track's currently-active plugin (the one most-recently
+                // opened)." Keep the last focused plugin visible —
+                // clearing it would contradict the spec. A full per-track
+                // last-opened-insert lookup requires additional state
+                // tracking deferred to a follow-on story.
+                //
+                // Clear only the clip-detail slot — only ClipSelection
+                // populates it.
                 workshopView.setClipDetailContent(null);
             }
             case InspectorSelection.SendSelection _ -> {
