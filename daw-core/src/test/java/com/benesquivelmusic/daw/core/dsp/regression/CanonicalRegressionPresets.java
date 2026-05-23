@@ -302,6 +302,7 @@ final class CanonicalRegressionPresets {
         // MidSideWrapper exercises M/S encode → chain → decode logic.
         // A small-gain GainStagingProcessor is added to the mid and/or side
         // chains so the goldens are not trivial pass-throughs.
+        // The SUBTLE preset is bypassed, so it is an intentional passthrough.
         DspRegressionPreset.register(MidSideWrapperProcessor.class,
                 DspRegressionPreset.DEFAULT, p -> {
                     p.setBypassed(false);
@@ -318,7 +319,6 @@ final class CanonicalRegressionPresets {
         DspRegressionPreset.register(MidSideWrapperProcessor.class,
                 DspRegressionPreset.SUBTLE, p -> {
                     p.setBypassed(true);
-                    p.addMidProcessor(new GainStagingProcessor(2, 0.5));
                     return p;
                 });
     }
@@ -328,12 +328,12 @@ final class CanonicalRegressionPresets {
                 DspRegressionPreset.DEFAULT, p -> p);
         DspRegressionPreset.register(MultibandCompressorProcessor.class,
                 DspRegressionPreset.AGGRESSIVE, p -> {
-                    for (int b = 0; b < 3; b++) p.setBandMakeupGainDb(b, 6.0);
+                    for (int b = 0; b < p.getBandCount(); b++) p.setBandMakeupGainDb(b, 6.0);
                     return p;
                 });
         DspRegressionPreset.register(MultibandCompressorProcessor.class,
                 DspRegressionPreset.SUBTLE, p -> {
-                    for (int b = 0; b < 3; b++) p.setBandMakeupGainDb(b, 0.5);
+                    for (int b = 0; b < p.getBandCount(); b++) p.setBandMakeupGainDb(b, 0.5);
                     return p;
                 });
     }
