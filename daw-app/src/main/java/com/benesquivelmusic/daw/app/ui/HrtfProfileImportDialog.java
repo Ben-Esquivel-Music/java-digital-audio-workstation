@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.spatial.binaural.HrtfImportController;
 import com.benesquivelmusic.daw.core.spatial.binaural.HrtfProfileLibrary;
 import com.benesquivelmusic.daw.core.spatial.binaural.SofaFileReader;
@@ -145,7 +146,7 @@ public final class HrtfProfileImportDialog extends Dialog<String> {
             return null;
         });
 
-        DarkThemeHelper.applyTo(this);
+        ThemeManager.getDefault().applyTo(getDialogPane());
     }
 
     // ── File picker ────────────────────────────────────────────────────────

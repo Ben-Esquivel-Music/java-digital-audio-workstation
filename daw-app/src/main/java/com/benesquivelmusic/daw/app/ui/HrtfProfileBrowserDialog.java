@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.spatial.binaural.HrtfImportController;
 import com.benesquivelmusic.daw.core.spatial.binaural.HrtfProfileLibrary;
 import com.benesquivelmusic.daw.sdk.spatial.HrtfProfile;
@@ -106,7 +107,7 @@ public final class HrtfProfileBrowserDialog extends Dialog<String> {
             return selected != null ? selected.displayName() : null;
         });
 
-        DarkThemeHelper.applyTo(this);
+        ThemeManager.getDefault().applyTo(getDialogPane());
         refresh();
     }
 

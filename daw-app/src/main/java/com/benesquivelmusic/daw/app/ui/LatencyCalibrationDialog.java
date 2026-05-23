@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.sdk.audio.AudioChannelInfo;
 import com.benesquivelmusic.daw.sdk.audio.LatencyCalibration;
 import com.benesquivelmusic.daw.sdk.audio.LatencyCalibration.CalibrationResult;
@@ -226,7 +227,7 @@ public final class LatencyCalibrationDialog extends Dialog<LatencyCalibrationDia
 
         getDialogPane().setContent(content);
         getDialogPane().getButtonTypes().addAll(ButtonType.CLOSE);
-        DarkThemeHelper.applyTo(this);
+        ThemeManager.getDefault().applyTo(getDialogPane());
 
         setResultConverter(button -> {
             if (acceptedOverrideFrames != null) {

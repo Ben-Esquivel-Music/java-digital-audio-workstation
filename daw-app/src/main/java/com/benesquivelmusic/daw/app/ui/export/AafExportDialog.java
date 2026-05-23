@@ -1,6 +1,6 @@
 package com.benesquivelmusic.daw.app.ui.export;
 
-import com.benesquivelmusic.daw.app.ui.DarkThemeHelper;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.export.aaf.AafExportConfig;
 import com.benesquivelmusic.daw.core.export.aaf.AafFrameRate;
 import com.benesquivelmusic.daw.core.export.aaf.AafTimecode;
@@ -136,7 +136,7 @@ public final class AafExportDialog extends Dialog<AafExportConfig> {
         getDialogPane().setContent(content);
         getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
 
-        DarkThemeHelper.applyTo(this);
+        ThemeManager.getDefault().applyTo(getDialogPane());
 
         setResultConverter(button -> button == ButtonType.OK ? buildConfig() : null);
     }

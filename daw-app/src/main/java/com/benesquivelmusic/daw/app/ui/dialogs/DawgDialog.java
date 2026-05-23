@@ -1,7 +1,7 @@
 package com.benesquivelmusic.daw.app.ui.dialogs;
 
-import com.benesquivelmusic.daw.app.ui.DarkThemeHelper;
 import com.benesquivelmusic.daw.app.ui.icons.DawgIcon;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 
 import javafx.beans.InvalidationListener;
 import javafx.geometry.Insets;
@@ -221,7 +221,7 @@ public class DawgDialog<R> extends Dialog<R> {
      * secondary button is added). Idempotent.
      */
     private void applyChrome() {
-        DarkThemeHelper.applyTo(this);
+        ThemeManager.getDefault().applyTo(getDialogPane());
         DialogPane pane = getDialogPane();
         addStyleClassOnce(pane, "dawg-dialog");
         installCloseGlyphIfAppropriate();

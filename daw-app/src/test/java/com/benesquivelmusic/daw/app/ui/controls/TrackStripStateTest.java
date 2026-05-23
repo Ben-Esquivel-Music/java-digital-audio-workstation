@@ -37,7 +37,7 @@ class TrackStripStateTest {
             root.getStyleClass().add("root-pane");
             Scene scene = new Scene(root, 320, 60);
             // Apply the app stylesheet so -ts-* token forwards resolve.
-            com.benesquivelmusic.daw.app.ui.DarkThemeHelper.applyTo(scene);
+            com.benesquivelmusic.daw.app.ui.theme.ThemeManager.getDefault().applyTo(scene);
             root.applyCss();
             root.layout();
             TrackStripSkin skin = (TrackStripSkin) strip.getSkin();

@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.audio.NativeLibraryDetector;
@@ -75,7 +76,7 @@ public final class HelpDialog extends Dialog<Void> {
         getDialogPane().setContent(tabPane);
         getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
 
-        DarkThemeHelper.applyTo(this);
+        ThemeManager.getDefault().applyTo(getDialogPane());
 
         setResultConverter(button -> null);
     }

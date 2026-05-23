@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
 import com.benesquivelmusic.daw.core.persistence.ProjectManager;
@@ -173,7 +174,7 @@ final class SnapshotsController {
                 browserStage.initOwner(owner);
             }
             Scene scene = new Scene(browserView, 480, 520);
-            DarkThemeHelper.applyTo(scene);
+            ThemeManager.getDefault().applyTo(scene);
             browserStage.setScene(scene);
         }
         browserView.refresh();
@@ -198,7 +199,7 @@ final class SnapshotsController {
         if (owner != null) {
             dialog.initOwner(owner);
         }
-        DarkThemeHelper.applyTo(dialog);
+        ThemeManager.getDefault().applyTo(dialog.getDialogPane());
         Optional<String> result = dialog.showAndWait();
         // Empty optional == user cancelled. An empty string == accepted with no label.
         if (result.isEmpty()) {
@@ -311,7 +312,7 @@ final class SnapshotsController {
             diffStage.initOwner(owner);
         }
         Scene scene = new Scene(table, 640, 400);
-        DarkThemeHelper.applyTo(scene);
+        ThemeManager.getDefault().applyTo(scene);
         diffStage.setScene(scene);
         diffStage.show();
     }
@@ -325,7 +326,7 @@ final class SnapshotsController {
         if (owner != null) {
             alert.initOwner(owner);
         }
-        DarkThemeHelper.applyTo(alert);
+        ThemeManager.getDefault().applyTo(alert.getDialogPane());
         alert.showAndWait();
     }
 }

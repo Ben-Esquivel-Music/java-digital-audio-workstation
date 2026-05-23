@@ -1,6 +1,6 @@
 package com.benesquivelmusic.daw.app.ui.display;
 
-import com.benesquivelmusic.daw.app.ui.DarkThemeHelper;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.sdk.visualization.CorrelationData;
 import com.benesquivelmusic.daw.sdk.visualization.GoniometerData;
 
@@ -46,7 +46,7 @@ public final class CorrelationDisplayWindow {
 
         Scene scene = new Scene(display, DEFAULT_WIDTH, DEFAULT_HEIGHT);
         scene.setFill(Color.web("#0d0d1a"));
-        DarkThemeHelper.applyTo(scene);
+        ThemeManager.getDefault().applyTo(scene);
         stage.setScene(scene);
         stage.setMinWidth(320);
         stage.setMinHeight(280);

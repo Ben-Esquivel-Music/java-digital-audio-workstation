@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.persistence.migration.MigrationReport;
 import com.benesquivelmusic.daw.core.persistence.migration.MigrationSuppression;
 import javafx.event.ActionEvent;
@@ -116,7 +117,7 @@ public final class MigrationReportDialog extends Dialog<Void> {
         }
         getDialogPane().getButtonTypes().add(ButtonType.OK);
 
-        DarkThemeHelper.applyTo(this);
+        ThemeManager.getDefault().applyTo(getDialogPane());
 
         setResultConverter(button -> {
             if (projectDirectory != null && suppressFutureCheckbox.isSelected()) {
@@ -148,7 +149,7 @@ public final class MigrationReportDialog extends Dialog<Void> {
                         + "file has not been overwritten yet). Any unsaved changes "
                         + "will be lost.");
         confirm.getButtonTypes().setAll(ButtonType.CANCEL, ButtonType.OK);
-        DarkThemeHelper.applyTo(confirm);
+        ThemeManager.getDefault().applyTo(confirm.getDialogPane());
         Optional<ButtonType> result = confirm.showAndWait();
         return result.isPresent() && result.get() == ButtonType.OK;
     }

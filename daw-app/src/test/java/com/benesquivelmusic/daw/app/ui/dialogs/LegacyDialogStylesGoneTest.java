@@ -1,6 +1,6 @@
 package com.benesquivelmusic.daw.app.ui.dialogs;
 
-import com.benesquivelmusic.daw.app.ui.DarkThemeHelper;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 
 import org.junit.jupiter.api.Test;
 
@@ -169,7 +169,7 @@ class LegacyDialogStylesGoneTest {
     }
 
     private static String loadCss() {
-        String url = DarkThemeHelper.getStylesheetUrl();
+        String url = ThemeManager.getDefault().baseStylesheetUrl();
         try (InputStream in = URI.create(url).toURL().openStream()) {
             return new String(in.readAllBytes(), StandardCharsets.UTF_8);
         } catch (IOException e) {

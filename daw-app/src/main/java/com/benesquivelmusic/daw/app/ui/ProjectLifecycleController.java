@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
@@ -238,7 +239,7 @@ final class ProjectLifecycleController {
             summaryDialog.setTitle("Import Summary");
             summaryDialog.setHeaderText("Session imported successfully");
             summaryDialog.setContentText(summary);
-            DarkThemeHelper.applyTo(summaryDialog);
+            ThemeManager.getDefault().applyTo(summaryDialog.getDialogPane());
             summaryDialog.showAndWait();
 
             statusBarLabel.setText("Imported session: " + result.sessionData().projectName());
@@ -284,7 +285,7 @@ final class ProjectLifecycleController {
                 warningDialog.setTitle("Export Warnings");
                 warningDialog.setHeaderText("Session exported with warnings");
                 warningDialog.setContentText(warningText.toString());
-                DarkThemeHelper.applyTo(warningDialog);
+                ThemeManager.getDefault().applyTo(warningDialog.getDialogPane());
                 warningDialog.showAndWait();
             }
 
@@ -569,7 +570,7 @@ final class ProjectLifecycleController {
         ButtonType discardBtn = new ButtonType("Discard");
         ButtonType cancelBtn = ButtonType.CANCEL;
         alert.getButtonTypes().setAll(saveBtn, discardBtn, cancelBtn);
-        DarkThemeHelper.applyTo(alert);
+        ThemeManager.getDefault().applyTo(alert.getDialogPane());
 
         Optional<ButtonType> result = alert.showAndWait();
         if (result.isEmpty() || result.get() == cancelBtn) {

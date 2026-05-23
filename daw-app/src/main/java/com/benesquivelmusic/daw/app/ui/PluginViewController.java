@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplayWindow;
 import com.benesquivelmusic.daw.app.ui.display.TunerDisplayWindow;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.plugin.*;
 import com.benesquivelmusic.daw.core.spatial.binaural.HrtfImportController;
 import com.benesquivelmusic.daw.core.spatial.binaural.HrtfProfileLibrary;
@@ -195,7 +196,7 @@ final class PluginViewController {
         Stage stage = new Stage(StageStyle.UTILITY);
         stage.setTitle("Virtual Keyboard");
         stage.setScene(new Scene(keyboardView));
-        DarkThemeHelper.applyTo(stage.getScene());
+        ThemeManager.getDefault().applyTo(stage.getScene());
         stage.setMinWidth(720);
         stage.setMinHeight(280);
         stage.setOnHidden(_ -> {
@@ -260,7 +261,7 @@ final class PluginViewController {
         Stage stage = new Stage(StageStyle.UTILITY);
         stage.setTitle("Sound Wave Telemetry");
         stage.setScene(new Scene(telemetryPluginView));
-        DarkThemeHelper.applyTo(stage.getScene());
+        ThemeManager.getDefault().applyTo(stage.getScene());
         stage.setMinWidth(800);
         stage.setMinHeight(600);
         stage.setOnShown(_ -> telemetryPluginView.startAnimation());
@@ -287,7 +288,7 @@ final class PluginViewController {
         Stage stage = new Stage(StageStyle.UTILITY);
         stage.setTitle("Bus Compressor");
         stage.setScene(new Scene(busCompressorView));
-        DarkThemeHelper.applyTo(stage.getScene());
+        ThemeManager.getDefault().applyTo(stage.getScene());
         stage.setMinWidth(900);
         stage.setMinHeight(260);
         stage.setOnHidden(_ -> {
@@ -315,7 +316,7 @@ final class PluginViewController {
         Stage stage = new Stage(StageStyle.UTILITY);
         stage.setTitle("Multiband Compressor");
         stage.setScene(new Scene(multibandCompressorView));
-        DarkThemeHelper.applyTo(stage.getScene());
+        ThemeManager.getDefault().applyTo(stage.getScene());
         stage.setMinWidth(960);
         stage.setMinHeight(540);
         stage.setOnHidden(_ -> {
@@ -343,7 +344,7 @@ final class PluginViewController {
         Stage stage = new Stage(StageStyle.UTILITY);
         stage.setTitle("De-Esser");
         stage.setScene(new Scene(deEsserView));
-        DarkThemeHelper.applyTo(stage.getScene());
+        ThemeManager.getDefault().applyTo(stage.getScene());
         stage.setMinWidth(720);
         stage.setMinHeight(260);
         stage.setOnHidden(_ -> {
@@ -371,7 +372,7 @@ final class PluginViewController {
         Stage stage = new Stage(StageStyle.UTILITY);
         stage.setTitle("True-Peak Limiter");
         stage.setScene(new Scene(truePeakLimiterView));
-        DarkThemeHelper.applyTo(stage.getScene());
+        ThemeManager.getDefault().applyTo(stage.getScene());
         stage.setMinWidth(820);
         stage.setMinHeight(280);
         stage.setOnHidden(_ -> {
@@ -399,7 +400,7 @@ final class PluginViewController {
         Stage stage = new Stage(StageStyle.UTILITY);
         stage.setTitle("Transient Shaper");
         stage.setScene(new Scene(transientShaperView));
-        DarkThemeHelper.applyTo(stage.getScene());
+        ThemeManager.getDefault().applyTo(stage.getScene());
         stage.setMinWidth(820);
         stage.setMinHeight(280);
         stage.setOnHidden(_ -> {
@@ -427,7 +428,7 @@ final class PluginViewController {
         Stage stage = new Stage(StageStyle.UTILITY);
         stage.setTitle("Noise Gate");
         stage.setScene(new Scene(noiseGateView));
-        DarkThemeHelper.applyTo(stage.getScene());
+        ThemeManager.getDefault().applyTo(stage.getScene());
         stage.setMinWidth(960);
         stage.setMinHeight(340);
         stage.setOnHidden(_ -> {
@@ -455,7 +456,7 @@ final class PluginViewController {
         Stage stage = new Stage(StageStyle.UTILITY);
         stage.setTitle("Convolution Reverb");
         stage.setScene(new Scene(convolutionReverbView));
-        DarkThemeHelper.applyTo(stage.getScene());
+        ThemeManager.getDefault().applyTo(stage.getScene());
         stage.setMinWidth(720);
         stage.setMinHeight(360);
         stage.setOnHidden(_ -> {
@@ -483,7 +484,7 @@ final class PluginViewController {
         Stage stage = new Stage(StageStyle.UTILITY);
         stage.setTitle("Harmonic Exciter");
         stage.setScene(new Scene(exciterView));
-        DarkThemeHelper.applyTo(stage.getScene());
+        ThemeManager.getDefault().applyTo(stage.getScene());
         stage.setMinWidth(640);
         stage.setMinHeight(320);
         stage.setOnHidden(_ -> {
@@ -533,7 +534,7 @@ final class PluginViewController {
         Stage stage = new Stage(StageStyle.UTILITY);
         stage.setTitle("Binaural Monitor");
         stage.setScene(new Scene(binauralMonitorView));
-        DarkThemeHelper.applyTo(stage.getScene());
+        ThemeManager.getDefault().applyTo(stage.getScene());
         stage.setMinWidth(420);
         stage.setMinHeight(220);
         stage.setOnHidden(_ -> {
@@ -558,7 +559,7 @@ final class PluginViewController {
         Stage stage = new Stage(StageStyle.UTILITY);
         stage.setTitle("Mid/Side Wrapper");
         stage.setScene(new Scene(midSideWrapperView));
-        DarkThemeHelper.applyTo(stage.getScene());
+        ThemeManager.getDefault().applyTo(stage.getScene());
         stage.setMinWidth(520);
         stage.setMinHeight(380);
         stage.setOnHidden(_ -> {

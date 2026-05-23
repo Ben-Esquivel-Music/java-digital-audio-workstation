@@ -136,10 +136,9 @@ public final class ThemeManager {
      * Process-wide default instance, backed by the same per-package
      * {@link Preferences} node the rest of the UI uses
      * ({@code Preferences.userNodeForPackage}). There is no DI container;
-     * {@code DarkThemeHelper} (the deprecated shim) and {@code
-     * SettingsDialog} consult this so dialogs and the Appearance tab
-     * re-theme without threading a {@code ThemeManager} through every
-     * call site.
+     * dialogs, standalone windows and the Appearance tab consult this
+     * so they re-theme without threading a {@code ThemeManager} through
+     * every call site.
      *
      * <p>Lazy-initialized via the initialization-on-demand holder idiom
      * so that merely loading {@code ThemeManager} (e.g. to read
@@ -158,7 +157,7 @@ public final class ThemeManager {
      * Test-only override for the process-wide default returned by
      * {@link #getDefault()}. When non-null, {@code getDefault()} returns
      * this instance instead of the real singleton — isolating tests that
-     * exercise {@code DarkThemeHelper} or {@code SettingsDialog} from
+     * exercise {@code ThemeManager} or {@code SettingsDialog} from
      * the developer's / CI agent's actual user preferences store.
      *
      * <p>Set via {@link #setDefaultForTest(ThemeManager)} and cleared by
@@ -178,7 +177,7 @@ public final class ThemeManager {
      * Preferences testNode = Preferences.userRoot().node("myTest_" + nanoTime());
      * try {
      *     ThemeManager.setDefaultForTest(new ThemeManager(testNode));
-     *     // … exercise DarkThemeHelper / SettingsDialog …
+     *     // … exercise ThemeManager / SettingsDialog …
      * } finally {
      *     ThemeManager.setDefaultForTest(null);
      *     testNode.removeNode();
@@ -424,12 +423,11 @@ public final class ThemeManager {
         });
     }
 
-    // ── Resource resolution (mirrors DarkThemeHelper.getStylesheetUrl) ───────
+    // ── Resource resolution ──────────────────────────────────────────────────
 
     /**
      * @return the external-form URL of the base {@code styles.css},
-     *         resolved lazily and cached (mirrors the
-     *         {@code DarkThemeHelper} resolution it now backs)
+     *         resolved lazily and cached
      */
     public String baseStylesheetUrl() {
         String url = resolvedBaseUrl;
