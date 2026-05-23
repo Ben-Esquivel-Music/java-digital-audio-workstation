@@ -271,6 +271,11 @@ final class ViewNavigationController {
         }
         if (view == DawView.WORKSHOP) {
             ensureWorkshopBuilt();
+            // Detach the arrangement node from its current parent before
+            // re-parenting it into Workshop (JavaFX throws
+            // IllegalArgumentException if a Node is added to a new parent
+            // while still attached to another).
+            rootPane.setCenter(null);
             // Move the cached arrangement node into Workshop's left pane.
             workshopView.setArrangementContent(viewCache.get(DawView.ARRANGEMENT));
             // Story 281 Task 2 — apply any selection the user made while

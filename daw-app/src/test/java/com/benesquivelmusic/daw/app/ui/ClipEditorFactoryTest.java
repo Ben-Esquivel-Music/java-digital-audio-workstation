@@ -10,6 +10,8 @@ import javafx.scene.Node;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
+import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
+
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;

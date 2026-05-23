@@ -17,6 +17,7 @@ import javafx.beans.value.ChangeListener;
 import javafx.scene.Node;
 
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -121,9 +122,10 @@ public final class WorkshopSelectionHostController {
     private final Map<InsertCacheKey, Node> pluginPanelCache = new HashMap<>();
 
     /**
-     * Cache of built clip-editor Nodes keyed by clip identity. Clip ids
-     * are stable UUID strings ({@link AudioClip#getId()}); MIDI clips
-     * lack an id and would key by identity in a future selection path.
+     * Cache of built clip-editor Nodes keyed by clip identity. Audio clip
+     * ids are stable UUID strings ({@link AudioClip#getId()}); MIDI clips
+     * are cached in a separate {@link IdentityHashMap} keyed by object
+     * identity to avoid collisions from non-unique identityHashCode values.
      *
      * <p>TODO(story 281 review S3 — deferred): subscribe to
      * {@link com.benesquivelmusic.daw.sdk.event.ClipEvent.Removed} on the
@@ -133,6 +135,13 @@ public final class WorkshopSelectionHostController {
      * {@code clipEditorCache.remove(clipId.toString())}.</p>
      */
     private final Map<String, Node> clipEditorCache = new HashMap<>();
+
+    /**
+     * Identity-based cache for MIDI clip editors. Uses object identity
+     * (reference equality) as key to avoid collisions that would occur
+     * with {@link System#identityHashCode(Object)}.
+     */
+    private final IdentityHashMap<Clip, Node> midiClipEditorCache = new IdentityHashMap<>();
 
     /**
      * The most-recent selection that arrived while Workshop was inactive,
@@ -207,6 +216,7 @@ public final class WorkshopSelectionHostController {
         selectionModel.selectionProperty().removeListener(selectionListener);
         pluginPanelCache.clear();
         clipEditorCache.clear();
+        midiClipEditorCache.clear();
         pendingSelection = null;
         lastApplied = null;
     }
@@ -254,7 +264,7 @@ public final class WorkshopSelectionHostController {
      * @return the clip-editor cache size — test seam
      */
     int clipEditorCacheSize() {
-        return clipEditorCache.size();
+        return clipEditorCache.size() + midiClipEditorCache.size();
     }
 
     // ── Internals ─────────────────────────────────────────────────────────
@@ -283,10 +293,10 @@ public final class WorkshopSelectionHostController {
         switch (s) {
             case InspectorSelection.InsertSelection ins -> applyInsertSelection(ins);
             case InspectorSelection.ClipSelection clip -> {
-                // Clip selection is purely a clip-detail concern — but
-                // per the host-controller brief, ANY non-InsertSelection
-                // also clears the focused-plugin slot.
-                clearFocusedPlugin();
+                // Clip selection updates the clip-detail slot only;
+                // the focused-plugin pane retains the last focused
+                // plugin so it remains visible side-by-side with the
+                // clip detail below.
                 applyClipSelection(clip);
             }
             case InspectorSelection.TrackSelection _ -> {
@@ -381,15 +391,22 @@ public final class WorkshopSelectionHostController {
             workshopView.setClipDetailContent(null);
             return;
         }
-        // Cache key — AudioClip has a stable id; MIDI clip is keyed by
-        // identity-hash (single-instance per track).
-        String cacheKey = clip instanceof AudioClip ac
-                ? ac.getId()
-                : "midi:" + System.identityHashCode(clip);
-        Node editor = clipEditorCache.get(cacheKey);
-        if (editor == null) {
-            editor = ClipEditorFactory.buildEditor(clip, owningTrack);
-            clipEditorCache.put(cacheKey, editor);
+        Node editor;
+        if (clip instanceof AudioClip ac) {
+            // AudioClip has a stable UUID id for caching.
+            editor = clipEditorCache.get(ac.getId());
+            if (editor == null) {
+                editor = ClipEditorFactory.buildEditor(clip, owningTrack);
+                clipEditorCache.put(ac.getId(), editor);
+            }
+        } else {
+            // MIDI clips use object identity to avoid identityHashCode
+            // collisions between distinct clip instances.
+            editor = midiClipEditorCache.get(clip);
+            if (editor == null) {
+                editor = ClipEditorFactory.buildEditor(clip, owningTrack);
+                midiClipEditorCache.put(clip, editor);
+            }
         }
         workshopView.setClipDetailContent(editor);
     }
