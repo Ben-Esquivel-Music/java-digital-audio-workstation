@@ -843,6 +843,7 @@ public final class MainController {
                     @Override public void markProjectDirty() { projectDirty = true; }
                     // ── Performance Stage (story 280) ─────────────────────────
                     @Override public ResourceBundle messages() { return MESSAGES; }
+                    @Override public Label timeDisplay() { return timeDisplay; }
                     @Override public void onPlay() { transportController.onPlay(); }
                     @Override public void onStop() { transportController.onStop(); }
                     @Override public void onRecord() { transportController.onRecord(); }

@@ -145,6 +145,7 @@ final class PerformanceStageActivationTest {
             return ResourceBundle.getBundle(
                     "com.benesquivelmusic.daw.app.i18n.Messages", Locale.ROOT);
         }
+        @Override public Label timeDisplay() { return new Label("00:00:00.0"); }
         @Override public void onPlay() { }
         @Override public void onStop() { }
         @Override public void onRecord() { }

@@ -305,6 +305,11 @@ public final class PerformanceStageView extends BorderPane {
                     .showMeter(true)
                     .size("performance")
                     .build();
+            // Sync M/S/R toggle changes back to the DawProject Track model
+            // so Performance Stage actions affect the actual engine state.
+            tile.mutedProperty().addListener((_, _, newVal) -> track.setMuted(newVal));
+            tile.soloedProperty().addListener((_, _, newVal) -> track.setSolo(newVal));
+            tile.armedProperty().addListener((_, _, newVal) -> track.setArmed(newVal));
             trackTiles.add(tile);
 
             Button cue = new Button(messages.getString("performanceStage.cue"));

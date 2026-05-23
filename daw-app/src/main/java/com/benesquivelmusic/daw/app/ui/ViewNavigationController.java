@@ -47,6 +47,12 @@ final class ViewNavigationController {
          *         Stage user-facing strings (Skill §14)
          */
         java.util.ResourceBundle messages();
+        /**
+         * @return the standard toolbar transport time display {@link Label}
+         *         whose text continues updating while hidden (hide-not-unload);
+         *         the Performance Stage clock binds to its {@code textProperty}
+         */
+        Label timeDisplay();
         /** Toggle play / pause — drives the same transport as the toolbar. */
         void onPlay();
         /** Stop transport — drives the same transport as the toolbar. */
@@ -288,6 +294,11 @@ final class ViewNavigationController {
         rootPane.setTop(null);
         rootPane.setLeft(null);
         rootPane.setRight(null);
+        // Bind the stage clock to the standard time display so it updates
+        // in real-time even though the toolbar is hidden (hide-not-unload).
+        performanceStageView.clockLabel().textProperty()
+                .bind(host.timeDisplay().textProperty());
+
         // Attach first, then fade — a FadeTransition started before the
         // node is in the scene can briefly flash at opacity 0 on the first
         // paint. Symmetric with deactivate (restore-then-fade below).
@@ -315,6 +326,8 @@ final class ViewNavigationController {
             return;
         }
         removeStageEscFilter();
+        // Unbind the stage clock before discarding the view.
+        performanceStageView.clockLabel().textProperty().unbind();
         rootPane.setCenter(savedCenter);
         rootPane.setTop(savedTop);
         rootPane.setLeft(savedLeft);
