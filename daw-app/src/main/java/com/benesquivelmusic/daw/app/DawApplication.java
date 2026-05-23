@@ -14,6 +14,7 @@ import javafx.scene.Parent;
 import javafx.scene.Scene;
 import javafx.scene.text.Font;
 import javafx.stage.Stage;
+import javafx.stage.WindowEvent;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -63,7 +64,7 @@ public final class DawApplication extends Application {
                 .uiExecutor(Platform::runLater)
                 .build();
         EventBusPublisher.setDefault(bus);
-        primaryStage.setOnHidden(_ -> {
+        primaryStage.addEventHandler(WindowEvent.WINDOW_HIDDEN, _ -> {
             EventBus current = EventBusPublisher.getDefault();
             if (current != null) {
                 current.close();

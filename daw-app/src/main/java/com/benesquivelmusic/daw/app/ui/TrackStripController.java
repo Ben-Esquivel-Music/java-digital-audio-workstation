@@ -8,6 +8,7 @@ import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.automation.AutomationParameter;
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.export.MidiFileExporter;
 import com.benesquivelmusic.daw.core.export.TrackBouncer;
 import com.benesquivelmusic.daw.core.export.WavExporter;
@@ -18,6 +19,7 @@ import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
 import com.benesquivelmusic.daw.sdk.audio.NativeAudioBackend;
+import com.benesquivelmusic.daw.sdk.event.MixerEvent;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 
 import javafx.animation.FadeTransition;
@@ -38,10 +40,12 @@ import javafx.stage.Stage;
 import javafx.util.Duration;
 
 import java.io.IOException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -494,6 +498,8 @@ final class TrackStripController {
                 @Override public String description() { return "Remove Track: " + track.getName(); }
                 @Override public void execute() {
                     project.removeTrack(track);
+                    EventBusPublisher.publish(new MixerEvent.ChannelRemoved(
+                            channelIdFor(track), Instant.now()));
                     trackListPanel.getChildren().remove(trackItem);
                     host.updateArrangementPlaceholder();
                     mixerView.refresh();
@@ -506,6 +512,8 @@ final class TrackStripController {
                             && currentIndex != projectIndex) {
                         project.moveTrack(currentIndex, projectIndex);
                     }
+                    EventBusPublisher.publish(new MixerEvent.ChannelAdded(
+                            channelIdFor(track), Instant.now()));
                     if (removeUiIndex >= 0 && removeUiIndex < trackListPanel.getChildren().size()) {
                         trackListPanel.getChildren().add(removeUiIndex, trackItem);
                     } else {
@@ -715,6 +723,8 @@ final class TrackStripController {
                 @Override public String description() { return "Copy Track: " + track.getName(); }
                 @Override public void execute() {
                     copy = project.duplicateTrack(track);
+                    EventBusPublisher.publish(new MixerEvent.ChannelAdded(
+                            channelIdFor(copy), Instant.now()));
                     // duplicateTrack inserts at index+1 in the model; place UI strip to match
                     int modelIndex = project.getTracks().indexOf(copy);
                     // trackListPanel child 0 is the "TRACKS" header, so offset by 1
@@ -724,6 +734,8 @@ final class TrackStripController {
                 }
                 @Override public void undo() {
                     project.removeTrack(copy);
+                    EventBusPublisher.publish(new MixerEvent.ChannelRemoved(
+                            channelIdFor(copy), Instant.now()));
                     trackListPanel.getChildren().remove(copyTrackItem);
                     host.updateArrangementPlaceholder();
                     mixerView.refresh();
@@ -1668,5 +1680,14 @@ final class TrackStripController {
         trackItem.getChildren().set(labelIndex, editor);
         editor.requestFocus();
         editor.selectAll();
+    }
+
+    private UUID channelIdFor(Track track) {
+        try {
+            return UUID.fromString(track.getId());
+        } catch (IllegalArgumentException e) {
+            var channel = project.getMixerChannelForTrack(track);
+            return channel != null ? channel.getId() : UUID.randomUUID();
+        }
     }
 }
