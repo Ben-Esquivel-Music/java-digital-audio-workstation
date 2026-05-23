@@ -71,13 +71,13 @@ class ArrangementAsDockablePanelTest {
         // Round-trip the typed events the dock manifest and grip-handle
         // drag interaction fire (Skill §12 — typed events, not callbacks).
         PanelDetachRequestedEvent detach = new PanelDetachRequestedEvent("arrangement");
-        assertThat(detach.panelId()).isEqualTo("arrangement");
+        assertThat(detach.getPanelId()).isEqualTo("arrangement");
         assertThat(detach.getEventType())
                 .isEqualTo(PanelDetachRequestedEvent.PANEL_DETACH_REQUESTED);
 
         PanelDockRequestedEvent dock = new PanelDockRequestedEvent("arrangement", DockZone.CENTER);
-        assertThat(dock.panelId()).isEqualTo("arrangement");
-        assertThat(dock.targetZone()).isEqualTo(DockZone.CENTER);
+        assertThat(dock.getPanelId()).isEqualTo("arrangement");
+        assertThat(dock.getTargetZone()).isEqualTo(DockZone.CENTER);
         assertThat(dock.getEventType())
                 .isEqualTo(PanelDockRequestedEvent.PANEL_DOCK_REQUESTED);
     }

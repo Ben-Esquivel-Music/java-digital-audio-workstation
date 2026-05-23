@@ -54,7 +54,7 @@ public final class PanelDetachRequestedEvent extends Event {
     }
 
     /** Stable {@code Dockable#dockId()} of the panel being detached. */
-    public String panelId() {
+    public String getPanelId() {
         return panelId;
     }
 }

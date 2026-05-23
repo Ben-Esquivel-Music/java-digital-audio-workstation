@@ -51,12 +51,12 @@ public final class PanelDockRequestedEvent extends Event {
     }
 
     /** Stable {@code Dockable#dockId()} of the panel being re-docked. */
-    public String panelId() {
+    public String getPanelId() {
         return panelId;
     }
 
     /** Dock zone the user dropped the panel onto. */
-    public DockZone targetZone() {
+    public DockZone getTargetZone() {
         return targetZone;
     }
 
