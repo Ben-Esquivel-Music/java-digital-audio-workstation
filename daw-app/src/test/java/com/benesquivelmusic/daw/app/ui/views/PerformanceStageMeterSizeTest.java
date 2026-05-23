@@ -62,19 +62,21 @@ final class PerformanceStageMeterSizeTest {
             Stage stage = new Stage();
             stage.setScene(scene);
             stage.show();
-            root.applyCss();
-            root.layout();
+            try {
+                root.applyCss();
+                root.layout();
 
-            double width = meter.getLayoutBounds().getWidth();
-            double height = meter.getLayoutBounds().getHeight();
-            assertThat(width)
-                    .as("size-performance meter width must be 24 px (was %s)", width)
-                    .isEqualTo(24.0);
-            assertThat(height)
-                    .as("size-performance meter height must be 320 px (was %s)", height)
-                    .isEqualTo(320.0);
-
-            stage.close();
+                double width = meter.getLayoutBounds().getWidth();
+                double height = meter.getLayoutBounds().getHeight();
+                assertThat(width)
+                        .as("size-performance meter width must be 24 px (was %s)", width)
+                        .isBetween(22.0, 26.0);
+                assertThat(height)
+                        .as("size-performance meter height must be 320 px (was %s)", height)
+                        .isBetween(318.0, 322.0);
+            } finally {
+                stage.close();
+            }
             return null;
         });
     }

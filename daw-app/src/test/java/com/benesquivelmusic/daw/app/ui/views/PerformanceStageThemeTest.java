@@ -61,36 +61,37 @@ final class PerformanceStageThemeTest {
                 Stage stage = new Stage();
                 stage.setScene(scene);
                 stage.show();
+                try {
+                    // Onyx Refined (default token theme) — capture the resolved
+                    // background fill of the .performance-stage-view node.
+                    themeManager.setActiveTheme(ThemeManager.Theme.ONYX_REFINED);
+                    themeManager.applyTo(scene);
+                    root.applyCss();
+                    root.layout();
+                    Color onyxFill = backgroundFill(view);
 
-                // Onyx Refined (default token theme) — capture the resolved
-                // background fill of the .performance-stage-view node.
-                themeManager.setActiveTheme(ThemeManager.Theme.ONYX_REFINED);
-                themeManager.applyTo(scene);
-                root.applyCss();
-                root.layout();
-                Color onyxFill = backgroundFill(view);
+                    // Switch to Atelier — NO code change to the view.
+                    themeManager.setActiveTheme(ThemeManager.Theme.ATELIER);
+                    themeManager.applyTo(scene);
+                    root.applyCss();
+                    root.layout();
+                    Color atelierFill = backgroundFill(view);
 
-                // Switch to Atelier — NO code change to the view.
-                themeManager.setActiveTheme(ThemeManager.Theme.ATELIER);
-                themeManager.applyTo(scene);
-                root.applyCss();
-                root.layout();
-                Color atelierFill = backgroundFill(view);
-
-                assertThat(onyxFill)
-                        .as("the stage must have a resolved background fill under Onyx")
-                        .isNotNull();
-                assertThat(atelierFill)
-                        .as("the stage must have a resolved background fill under Atelier")
-                        .isNotNull();
-                assertThat(colourDistance(onyxFill, atelierFill))
-                        .as("switching to Atelier must re-tint the stage background "
-                                + "(Onyx=%s, Atelier=%s) — the -surface-bg token "
-                                + "cascade reaches the view with no code change",
-                                onyxFill, atelierFill)
-                        .isGreaterThan(0.1);
-
-                stage.close();
+                    assertThat(onyxFill)
+                            .as("the stage must have a resolved background fill under Onyx")
+                            .isNotNull();
+                    assertThat(atelierFill)
+                            .as("the stage must have a resolved background fill under Atelier")
+                            .isNotNull();
+                    assertThat(colourDistance(onyxFill, atelierFill))
+                            .as("switching to Atelier must re-tint the stage background "
+                                    + "(Onyx=%s, Atelier=%s) — the -surface-bg token "
+                                    + "cascade reaches the view with no code change",
+                                    onyxFill, atelierFill)
+                            .isGreaterThan(0.1);
+                } finally {
+                    stage.close();
+                }
                 return null;
             });
         } finally {

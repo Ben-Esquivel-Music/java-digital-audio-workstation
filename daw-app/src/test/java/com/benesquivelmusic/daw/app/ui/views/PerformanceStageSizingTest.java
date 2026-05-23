@@ -56,38 +56,40 @@ final class PerformanceStageSizingTest {
             Stage stage = new Stage();
             stage.setScene(scene);
             stage.show();
-            root.applyCss();
-            root.layout();
+            try {
+                root.applyCss();
+                root.layout();
 
-            // Transport button height — 64 ± 2 px (.dawg-button.size-stage).
-            double playHeight = view.playButton().getLayoutBounds().getHeight();
-            assertThat(playHeight)
-                    .as("PLAY transport button height must be 64 ± 2 px (was %s)", playHeight)
-                    .isBetween(62.0, 66.0);
+                // Transport button height — 64 ± 2 px (.dawg-button.size-stage).
+                double playHeight = view.playButton().getLayoutBounds().getHeight();
+                assertThat(playHeight)
+                        .as("PLAY transport button height must be 64 ± 2 px (was %s)", playHeight)
+                        .isBetween(62.0, 66.0);
 
-            // Clock font — exactly 48 px (.numeric-display-stage). Read the
-            // resolved Font from the Label after applyCss.
-            double clockFont = view.clockLabel().getFont().getSize();
-            assertThat(clockFont)
-                    .as("clock font must be 48 px (was %s)", clockFont)
-                    .isEqualTo(48.0);
+                // Clock font — exactly 48 px (.numeric-display-stage). Read the
+                // resolved Font from the Label after applyCss.
+                double clockFont = view.clockLabel().getFont().getSize();
+                assertThat(clockFont)
+                        .as("clock font must be 48 px (was %s)", clockFont)
+                        .isEqualTo(48.0);
 
-            // Track tile row — 80 ± 2 px (.track-strip.size-performance).
-            TrackStrip firstTile = view.trackTiles().getFirst();
-            double tileHeight = firstTile.getLayoutBounds().getHeight();
-            assertThat(tileHeight)
-                    .as("track tile row height must be 80 ± 2 px (was %s)", tileHeight)
-                    .isBetween(78.0, 82.0);
+                // Track tile row — 80 ± 2 px (.track-strip.size-performance).
+                TrackStrip firstTile = view.trackTiles().getFirst();
+                double tileHeight = firstTile.getLayoutBounds().getHeight();
+                assertThat(tileHeight)
+                        .as("track tile row height must be 80 ± 2 px (was %s)", tileHeight)
+                        .isBetween(78.0, 82.0);
 
-            // CUE button — 28 ± 2 px (.dawg-button.size-tile-action).
-            javafx.scene.control.Button cueBtn = (javafx.scene.control.Button)
-                    ((javafx.scene.layout.HBox) firstTile.getParent()).getChildren().get(1);
-            double cueHeight = cueBtn.getLayoutBounds().getHeight();
-            assertThat(cueHeight)
-                    .as("CUE tile-action button height must be 28 ± 2 px (was %s)", cueHeight)
-                    .isBetween(26.0, 30.0);
-
-            stage.close();
+                // CUE button — 28 ± 2 px (.dawg-button.size-tile-action).
+                javafx.scene.control.Button cueBtn = (javafx.scene.control.Button)
+                        ((javafx.scene.layout.HBox) firstTile.getParent()).getChildren().get(1);
+                double cueHeight = cueBtn.getLayoutBounds().getHeight();
+                assertThat(cueHeight)
+                        .as("CUE tile-action button height must be 28 ± 2 px (was %s)", cueHeight)
+                        .isBetween(26.0, 30.0);
+            } finally {
+                stage.close();
+            }
             return null;
         });
     }
