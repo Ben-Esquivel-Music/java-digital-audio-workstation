@@ -103,6 +103,19 @@ public final class WorkshopSelectionHostController {
      * channel) invalidate entries lazily — a stale entry simply produces
      * an old panel; the resolver would have returned {@link Optional#empty()}
      * for an out-of-range index anyway and skipped the cache lookup.
+     *
+     * <p>TODO(story 281 review S3 — deferred): subscribe to
+     * {@code MixerEvent} / {@code PluginEvent} on the daw-core
+     * {@link com.benesquivelmusic.daw.sdk.event.EventBus} once production
+     * code (the {@code RemoveEffectAction} / {@code InsertEffectAction}
+     * paths and the {@code MainController} wiring) actually publishes
+     * those events. The event types are sealed-defined in the SDK but
+     * no production publisher exists today, so wiring the consumer here
+     * would be a silent no-op and a misleading code surface. When the
+     * publishers land, the invalidation rule is: on {@code PluginEvent.Unloaded}
+     * / {@code MixerEvent.ChannelRemoved} affecting a {@code trackId},
+     * drop every entry whose key shares that {@code trackId} (cheaper
+     * than tracking exact reorder semantics).</p>
      */
     private final Map<InsertCacheKey, Node> pluginPanelCache = new HashMap<>();
 
@@ -110,6 +123,13 @@ public final class WorkshopSelectionHostController {
      * Cache of built clip-editor Nodes keyed by clip identity. Clip ids
      * are stable UUID strings ({@link AudioClip#getId()}); MIDI clips
      * lack an id and would key by identity in a future selection path.
+     *
+     * <p>TODO(story 281 review S3 — deferred): subscribe to
+     * {@link com.benesquivelmusic.daw.sdk.event.ClipEvent.Removed} on the
+     * daw-core {@code EventBus} once production code publishes it; the
+     * SDK type is defined but no production publisher exists today.
+     * Invalidation: on {@code ClipEvent.Removed(_, clipId, _)},
+     * {@code clipEditorCache.remove(clipId.toString())}.</p>
      */
     private final Map<String, Node> clipEditorCache = new HashMap<>();
 
@@ -119,6 +139,17 @@ public final class WorkshopSelectionHostController {
      * pending work.
      */
     private InspectorSelection pendingSelection;
+
+    /**
+     * The selection most recently pushed into the Workshop view by
+     * {@link #applyPendingOnWorkshopActivation()}. Skips re-applying the
+     * same selection on every enter/exit Workshop cycle when nothing
+     * changed (review S2) — rebuilding panels (and the more expensive
+     * clip editors) on a no-op transition is wasteful and can introduce
+     * subtle re-bind flicker. Cleared in {@link #dispose()} so a fresh
+     * controller starts with no memo.
+     */
+    private InspectorSelection lastApplied;
 
     /**
      * Creates the wiring controller. The selection-model listener is
@@ -170,6 +201,7 @@ public final class WorkshopSelectionHostController {
         pluginPanelCache.clear();
         clipEditorCache.clear();
         pendingSelection = null;
+        lastApplied = null;
     }
 
     /**
@@ -179,16 +211,25 @@ public final class WorkshopSelectionHostController {
      * Mixer, etc.) takes effect on entry.
      */
     public void applyPendingOnWorkshopActivation() {
+        InspectorSelection target;
         if (pendingSelection != null) {
-            InspectorSelection s = pendingSelection;
+            target = pendingSelection;
             pendingSelection = null;
-            applySelection(s);
         } else {
             // No pending — but the current selection might have been
             // applied while Workshop was inactive and skipped. Re-apply
             // the current value so the right pane stays in sync.
-            applySelection(selectionModel.getSelection());
+            target = selectionModel.getSelection();
         }
+        // Skip re-applying an unchanged selection on every enter/exit
+        // cycle (review S2). Equality is by record value so e.g. two
+        // InsertSelection(trackId, idx) with the same fields hit the
+        // memo and avoid a full panel rebuild.
+        if (Objects.equals(target, lastApplied)) {
+            return;
+        }
+        lastApplied = target;
+        applySelection(target);
     }
 
     // ── Visible for tests ─────────────────────────────────────────────────
@@ -241,21 +282,21 @@ public final class WorkshopSelectionHostController {
                 clearFocusedPlugin();
                 applyClipSelection(clip);
             }
-            case InspectorSelection.TrackSelection ignored -> {
+            case InspectorSelection.TrackSelection _ -> {
                 clearFocusedPlugin();
                 // Track / send / bus selections clear the clip-detail
                 // slot too — only ClipSelection populates it.
                 workshopView.setClipDetailContent(null);
             }
-            case InspectorSelection.SendSelection ignored -> {
+            case InspectorSelection.SendSelection _ -> {
                 clearFocusedPlugin();
                 workshopView.setClipDetailContent(null);
             }
-            case InspectorSelection.BusSelection ignored -> {
+            case InspectorSelection.BusSelection _ -> {
                 clearFocusedPlugin();
                 workshopView.setClipDetailContent(null);
             }
-            case InspectorSelection.Empty ignored -> {
+            case InspectorSelection.Empty _ -> {
                 clearFocusedPlugin();
                 workshopView.setClipDetailContent(null);
             }

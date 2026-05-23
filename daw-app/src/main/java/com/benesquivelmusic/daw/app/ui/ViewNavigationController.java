@@ -307,18 +307,21 @@ final class ViewNavigationController {
         com.benesquivelmusic.daw.app.ui.inspector.InspectorSelectionModel sm =
                 host.inspectorSelectionModel();
         if (sm == null) {
-            // The inspector isn't wired yet — fall back to a private
-            // selection model so the view is still usable; subsequent
-            // builds will pick up the shared one once it lands. Logged so
-            // the misconfiguration surfaces in test runs.
-            LOG.warning("WorkshopView: inspector selection model unavailable; "
-                    + "falling back to a private InspectorSelectionModel — the "
-                    + "right-pane will not track external selections until the "
-                    + "inspector is wired");
-            sm = new com.benesquivelmusic.daw.app.ui.inspector.InspectorSelectionModel();
+            // Fail-fast (review S9): a missing selection model means the
+            // inspector wasn't wired in time. Silently falling back to a
+            // private model produced a Workshop view that looked correct
+            // but never reflected outside selections — the bug would only
+            // surface when a user clicked an insert and the right pane did
+            // nothing. Throwing here forces the wiring order to be fixed
+            // at construction time.
+            throw new IllegalStateException(
+                    "WorkshopView requires a shared InspectorSelectionModel; "
+                            + "host.inspectorSelectionModel() returned null. "
+                            + "Ensure the inspector is wired before activating "
+                            + "the Workshop view.");
         }
         workshopView = new com.benesquivelmusic.daw.app.ui.views.WorkshopView(
-                host.messages(), sm);
+                host.messages());
 
         // Story 281 — hydrate the persisted divider position before the
         // view's first layout pass, then write back whenever the user
@@ -356,6 +359,24 @@ final class ViewNavigationController {
     com.benesquivelmusic.daw.app.ui.views.WorkshopSelectionHostController
             workshopSelectionHostController() {
         return workshopSelectionHostController;
+    }
+
+    /**
+     * Disposes per-view controllers held by this navigation controller —
+     * called from the primary {@code Stage}'s {@code setOnHidden} hook in
+     * {@code MainController} alongside the other application-lifetime
+     * disposables (review N5). At present only the Workshop selection
+     * host controller has a {@link
+     * com.benesquivelmusic.daw.app.ui.views.WorkshopSelectionHostController#dispose()
+     * dispose()} contract — the standard {@code Mixer}/{@code Editor}/
+     * {@code Mastering} views and {@code Performance Stage} hold no
+     * cross-lifetime listeners. Idempotent: re-calling is safe.
+     */
+    void dispose() {
+        if (workshopSelectionHostController != null) {
+            workshopSelectionHostController.dispose();
+            workshopSelectionHostController = null;
+        }
     }
 
     /**

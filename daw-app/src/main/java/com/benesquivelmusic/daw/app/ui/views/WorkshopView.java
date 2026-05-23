@@ -2,10 +2,7 @@ package com.benesquivelmusic.daw.app.ui.views;
 
 import com.benesquivelmusic.daw.app.ui.controls.BreadcrumbBar;
 import com.benesquivelmusic.daw.app.ui.design.SpacingTokens;
-import com.benesquivelmusic.daw.app.ui.inspector.InspectorSelection;
-import com.benesquivelmusic.daw.app.ui.inspector.InspectorSelectionModel;
 
-import javafx.beans.value.ChangeListener;
 import javafx.geometry.Insets;
 import javafx.geometry.Orientation;
 import javafx.scene.AccessibleRole;
@@ -49,19 +46,27 @@ import java.util.ResourceBundle;
  *         <li>the clip-detail pane below the plugin pane — caller supplies
  *             the existing {@code AudioEditorView} or piano-roll node
  *             <em>verbatim</em> via {@link #setClipDetailContent(Node)}.</li>
- *       </ol></li>
+ *       </ol>
+ *       The plugin pane and the clip-detail pane both grow with
+ *       {@link Priority#ALWAYS}, so a Workshop right-pane that has both
+ *       populated splits the remaining vertical real-estate equally —
+ *       matching the §4 Concept F mockup ("clip detail appears BELOW the
+ *       plugin pane" at roughly half-and-half).</li>
  * </ul>
  *
  * <h2>Selection plumbing</h2>
  *
- * <p>The constructor accepts the shared {@link InspectorSelectionModel} from
- * story 272. When the active selection is a track or insert, the breadcrumb
- * is updated and the right pane shows that selection's currently-focused
- * plugin via {@link #setFocusedPlugin(int, String, Node)}. The application
- * controller (which knows the real plugin runtime) decides what the
- * "currently-focused plugin" Node actually is and pushes it in; Workshop
- * itself just routes it into the stable-identity
- * {@link PluginViewContainer}.</p>
+ * <p>This view is a <strong>passive presenter</strong>: it exposes
+ * {@link #setFocusedPlugin(int, String, Node)} /
+ * {@link #setFocusedPlugin(List, Node)} /
+ * {@link #setClipDetailContent(Node)} as the push surface and never
+ * subscribes to the {@code InspectorSelectionModel} itself. The single
+ * authority over selection-driven push is
+ * {@link WorkshopSelectionHostController}, which the application controller
+ * builds alongside this view and wires to the shared
+ * {@code InspectorSelectionModel}. The view-level listener was removed in
+ * the story-281 review pass — the controller and view were both reacting
+ * to the same model and stomping on each other's writes.</p>
  *
  * <h2>Design type — plain {@link BorderPane}, not Control/Skin</h2>
  *
@@ -106,7 +111,6 @@ public final class WorkshopView extends BorderPane {
     public static final double DEFAULT_DIVIDER_POSITION = 0.6;
 
     private final ResourceBundle messages;
-    private final InspectorSelectionModel selectionModel;
 
     // ── Scene-graph nodes held for test seams / runtime updates ───────────
     private final SplitPane split;
@@ -118,28 +122,26 @@ public final class WorkshopView extends BorderPane {
     private final Label emptyPlaceholder;
     private final VBox rightPane;
 
-    /** Strong field for the selection listener so it never gets GC'd. */
-    private final ChangeListener<InspectorSelection> selectionListener;
-
     /**
-     * Creates a Workshop view bound to the given inspector selection model.
+     * Creates a Workshop view backed by the supplied i18n bundle.
      *
      * <p>The view starts <em>empty</em>: arrangement and clip-detail panes
      * are unset (callers wire them via
      * {@link #setArrangementContent(Node)} / {@link #setClipDetailContent(Node)})
      * and the right pane shows the "No plugin focused" placeholder until a
-     * selection transitions to a track or insert with a focused plugin.</p>
+     * caller pushes a focused-plugin Node via
+     * {@link #setFocusedPlugin(int, String, Node)}.</p>
      *
-     * @param messages       the {@code Messages} resource bundle for all
-     *                       user-facing strings (Skill §14); must not be
-     *                       {@code null}
-     * @param selectionModel the shared {@link InspectorSelectionModel} from
-     *                       story 272; must not be {@code null}
+     * <p>Selection-driven push is the responsibility of
+     * {@link WorkshopSelectionHostController}; this view holds no reference
+     * to the {@code InspectorSelectionModel}.</p>
+     *
+     * @param messages the {@code Messages} resource bundle for all
+     *                 user-facing strings (Skill §14); must not be
+     *                 {@code null}
      */
-    public WorkshopView(ResourceBundle messages, InspectorSelectionModel selectionModel) {
+    public WorkshopView(ResourceBundle messages) {
         this.messages = Objects.requireNonNull(messages, "messages must not be null");
-        this.selectionModel = Objects.requireNonNull(selectionModel,
-                "selectionModel must not be null");
 
         getStyleClass().add(STYLE_CLASS);
         setAccessibleRole(AccessibleRole.NODE);
@@ -148,6 +150,11 @@ public final class WorkshopView extends BorderPane {
         // ── Right pane: breadcrumb / detach / plugin / clip detail ────────
         this.breadcrumb = new BreadcrumbBar();
         this.breadcrumb.getStyleClass().add("workshop-breadcrumb");
+        // Source the separator glyph from the bundle so locale overrides
+        // can swap it without touching code (Skill §14). BreadcrumbBar's
+        // DEFAULT_SEPARATOR remains as a code-level fallback for non-
+        // Workshop callers.
+        this.breadcrumb.setSeparator(messages.getString("workshop.breadcrumb.separator"));
 
         // ◯ Detach button — typed event stub for story 282 (skill §12).
         this.detachButton = new Button(messages.getString("workshop.detach"));
@@ -156,8 +163,11 @@ public final class WorkshopView extends BorderPane {
                 detachButton.fireEvent(new DetachPluginRequestedEvent()));
 
         Region headerSpacer = new Region();
+        // Only the spacer grows — the breadcrumb sits flush left and the
+        // Detach button pins flush right. Letting BOTH the breadcrumb and
+        // the spacer grow (review-flagged S7) split the remainder and
+        // pulled the Detach button off the right edge.
         HBox.setHgrow(headerSpacer, Priority.ALWAYS);
-        HBox.setHgrow(breadcrumb, Priority.ALWAYS);
         HBox breadcrumbHeader = new HBox(breadcrumb, headerSpacer, detachButton);
         breadcrumbHeader.setSpacing(SpacingTokens.SPACING_MD);
         breadcrumbHeader.getStyleClass().add("workshop-breadcrumb-header");
@@ -170,6 +180,12 @@ public final class WorkshopView extends BorderPane {
 
         this.clipDetailHost = new StackPane();
         this.clipDetailHost.getStyleClass().add("workshop-clip-detail-host");
+        // Both the plugin pane and the clip-detail pane grow equally — the
+        // §4 Concept F mockup pairs them at roughly half-and-half of the
+        // right pane's vertical real-estate. Without this both panes
+        // share their parent's space according to pref-height, with no
+        // growth headroom (review S8).
+        VBox.setVgrow(clipDetailHost, Priority.ALWAYS);
 
         this.rightPane = new VBox(breadcrumbHeader, pluginContainer, clipDetailHost);
         this.rightPane.setSpacing(SpacingTokens.SPACING_MD);
@@ -190,14 +206,6 @@ public final class WorkshopView extends BorderPane {
         // any subsequent position through dividerPosition().
         this.split.setDividerPositions(DEFAULT_DIVIDER_POSITION);
         setCenter(split);
-
-        // ── Selection plumbing ────────────────────────────────────────────
-        // Strong listener field so the WorkshopView lifetime governs the
-        // wiring — the selection model is shared and would otherwise pin
-        // this view across the controller's lifetime via a lambda capture.
-        this.selectionListener = (obs, oldSel, newSel) -> applySelection(newSel);
-        this.selectionModel.selectionProperty().addListener(selectionListener);
-        applySelection(this.selectionModel.getSelection());
     }
 
     // ── Caller-supplied content seams ───────────────────────────────────────
@@ -321,8 +329,12 @@ public final class WorkshopView extends BorderPane {
 
     /**
      * Builds the breadcrumb segments for a track / insert / plugin trio.
-     * Pure static helper — extracted for testability and because it is the
-     * same string assembly the test asserts against.
+     * Pure static helper used by both the view (default composer in
+     * {@link #setFocusedPlugin(int, String, Node)}) and the primary caller
+     * {@link WorkshopSelectionHostController} (which assembles the full
+     * triple with the real insert index from the project model). Kept
+     * accessible so the assembly logic lives in exactly one place — the
+     * controller does not re-implement the {@code "Track %02d"} format.
      *
      * @param trackIndex  the 1-based track index
      * @param insertIndex the 1-based insert index
@@ -336,48 +348,6 @@ public final class WorkshopView extends BorderPane {
             return List.of(trackSegment, insertSegment);
         }
         return List.of(trackSegment, insertSegment, pluginName);
-    }
-
-    /**
-     * Reacts to a new inspector selection. Track and insert selections set
-     * the breadcrumb head; all other selections clear it (the right pane
-     * stays mounted but reveals its empty placeholder). This is the
-     * default routing — the application controller can override by calling
-     * {@link #setFocusedPlugin(int, String, Node)} directly when it knows
-     * the focused plugin Node.
-     */
-    private void applySelection(InspectorSelection s) {
-        if (s == null) {
-            clearFocus();
-            return;
-        }
-        switch (s) {
-            case InspectorSelection.TrackSelection ignored -> {
-                // The host knows the focused plugin for the selected track —
-                // it will follow up with setFocusedPlugin(...). Until then
-                // show the placeholder rather than stale content.
-                pluginContainer.setPluginView(null);
-                breadcrumb.setSegments(List.of());
-            }
-            case InspectorSelection.InsertSelection ins ->
-                // Best-effort breadcrumb without a plugin name; the host
-                // will refine it via setFocusedPlugin(...) once it
-                // resolves the actual plugin instance.
-                breadcrumb.setSegments(buildSegments(1, ins.insertIndex() + 1, null));
-            case InspectorSelection.ClipSelection ignored ->
-                clearFocus();
-            case InspectorSelection.SendSelection ignored ->
-                clearFocus();
-            case InspectorSelection.BusSelection ignored ->
-                clearFocus();
-            case InspectorSelection.Empty ignored ->
-                clearFocus();
-        }
-    }
-
-    private void clearFocus() {
-        pluginContainer.setPluginView(null);
-        breadcrumb.setSegments(List.of());
     }
 
     // ── Test seams / runtime accessors ────────────────────────────────────

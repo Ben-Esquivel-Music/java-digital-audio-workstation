@@ -161,7 +161,7 @@ final class WorkshopFocusedPluginHostWiringTest {
             ResourceBundle messages = ResourceBundle.getBundle(
                     "com.benesquivelmusic.daw.app.i18n.Messages", Locale.ROOT);
             this.selectionModel = new InspectorSelectionModel();
-            this.view = new WorkshopView(messages, selectionModel);
+            this.view = new WorkshopView(messages);
 
             this.project = new DawProject("Test", AudioFormat.CD_QUALITY);
             this.drumsTrack = project.createAudioTrack("Drums");

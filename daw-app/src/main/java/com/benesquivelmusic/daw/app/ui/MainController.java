@@ -479,6 +479,13 @@ public final class MainController {
                         if (backupRetentionController != null) {
                             backupRetentionController.shutdown();
                         }
+                        // Story 281 (review N5) — release the
+                        // selection-model listener wired by Workshop's
+                        // host controller, alongside the other lifetime-
+                        // scoped disposables.
+                        if (viewNavigationController != null) {
+                            viewNavigationController.dispose();
+                        }
                         if (lockIndicatorTimeline != null) {
                             lockIndicatorTimeline.stop();
                             lockIndicatorTimeline = null;

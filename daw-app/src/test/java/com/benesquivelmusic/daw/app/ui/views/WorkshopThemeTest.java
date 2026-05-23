@@ -1,7 +1,6 @@
 package com.benesquivelmusic.daw.app.ui.views;
 
 import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
-import com.benesquivelmusic.daw.app.ui.inspector.InspectorSelectionModel;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 
 import javafx.application.Platform;
@@ -159,7 +158,7 @@ final class WorkshopThemeTest {
     private static WorkshopView newWorkshopView() {
         ResourceBundle messages = ResourceBundle.getBundle(
                 "com.benesquivelmusic.daw.app.i18n.Messages", Locale.ROOT);
-        return new WorkshopView(messages, new InspectorSelectionModel());
+        return new WorkshopView(messages);
     }
 
     private static <T> T onFxThread(Supplier<T> supplier) throws Exception {

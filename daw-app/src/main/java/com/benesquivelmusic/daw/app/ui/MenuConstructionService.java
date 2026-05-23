@@ -333,6 +333,12 @@ final class MenuConstructionService {
         // Story 281 — Workshop. A centre-content view (like Editor /
         // Mixer / Mastering) that pairs the existing arrangement panel
         // with a focused plugin pane in a 60/40 SplitPane.
+        // Menu-convention note: the story 281 spec calls this the
+        // "View menu", but the established convention since story 280
+        // (Performance Stage) lives under "Window" — Arrangement /
+        // Mixer / Editor / Mastering / Performance Stage / Workshop
+        // are all sibling Window-menu entries. Keeping Workshop here
+        // mirrors that sibling set; the story doc lags the convention.
         MenuItem workshop = menuItem("Workshop", DawIcon.WAVEFORM,
                 DawAction.VIEW_WORKSHOP,
                 () -> host.onSwitchView(DawView.WORKSHOP));
