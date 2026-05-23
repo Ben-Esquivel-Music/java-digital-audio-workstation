@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.core.dsp.regression;
 
+import com.benesquivelmusic.daw.core.dsp.BiquadFilter;
 import com.benesquivelmusic.daw.core.dsp.CompressorProcessor;
+import com.benesquivelmusic.daw.core.dsp.GainStagingProcessor;
 import com.benesquivelmusic.daw.core.dsp.GraphicEqProcessor;
 import com.benesquivelmusic.daw.core.dsp.MidSideWrapperProcessor;
 import com.benesquivelmusic.daw.core.dsp.MultibandCompressorProcessor;
@@ -297,23 +299,26 @@ final class CanonicalRegressionPresets {
     }
 
     private static void registerMidSideWrapperPresets() {
-        // MidSideWrapper has no audible parameters of its own — when its
-        // mid/side chains are empty it is a pass-through. The three presets
-        // are distinguished only by the {@code bypassed} flag so the golden
-        // files are still byte-distinct.
+        // MidSideWrapper exercises M/S encode → chain → decode logic.
+        // A small-gain GainStagingProcessor is added to the mid and/or side
+        // chains so the goldens are not trivial pass-throughs.
         DspRegressionPreset.register(MidSideWrapperProcessor.class,
                 DspRegressionPreset.DEFAULT, p -> {
                     p.setBypassed(false);
+                    p.addMidProcessor(new GainStagingProcessor(2, 1.0));
                     return p;
                 });
         DspRegressionPreset.register(MidSideWrapperProcessor.class,
                 DspRegressionPreset.AGGRESSIVE, p -> {
                     p.setBypassed(false);
+                    p.addMidProcessor(new GainStagingProcessor(2, 3.0));
+                    p.addSideProcessor(new GainStagingProcessor(2, -2.0));
                     return p;
                 });
         DspRegressionPreset.register(MidSideWrapperProcessor.class,
                 DspRegressionPreset.SUBTLE, p -> {
                     p.setBypassed(true);
+                    p.addMidProcessor(new GainStagingProcessor(2, 0.5));
                     return p;
                 });
     }
@@ -355,15 +360,32 @@ final class CanonicalRegressionPresets {
     }
 
     private static void registerParametricEqPresets() {
-        // ParametricEqProcessor mostly exposes its bands through indexed APIs;
-        // here we just toggle the processing mode for diversity. Filter design
-        // is then exercised by other unit tests.
+        // ParametricEqProcessor presets exercise filter modes and band
+        // configurations so that EQ processing is actually covered.
         DspRegressionPreset.register(ParametricEqProcessor.class,
-                DspRegressionPreset.DEFAULT, p -> p);
+                DspRegressionPreset.DEFAULT, p -> {
+                    p.addBand(ParametricEqProcessor.BandConfig.of(
+                            BiquadFilter.FilterType.PEAK_EQ, 1000, 1.0, 2.0));
+                    return p;
+                });
         DspRegressionPreset.register(ParametricEqProcessor.class,
-                DspRegressionPreset.AGGRESSIVE, p -> p);
+                DspRegressionPreset.AGGRESSIVE, p -> {
+                    p.setFilterMode(ParametricEqProcessor.FilterMode.LINEAR_PHASE);
+                    p.addBand(ParametricEqProcessor.BandConfig.of(
+                            BiquadFilter.FilterType.HIGH_SHELF, 8000, 0.707, 4.0));
+                    p.addBand(ParametricEqProcessor.BandConfig.of(
+                            BiquadFilter.FilterType.LOW_SHELF, 200, 0.707, -3.0));
+                    return p;
+                });
         DspRegressionPreset.register(ParametricEqProcessor.class,
-                DspRegressionPreset.SUBTLE, p -> p);
+                DspRegressionPreset.SUBTLE, p -> {
+                    p.setProcessingMode(ParametricEqProcessor.ProcessingMode.MID_SIDE);
+                    p.addMidBand(ParametricEqProcessor.BandConfig.of(
+                            BiquadFilter.FilterType.PEAK_EQ, 3000, 1.5, -1.0));
+                    p.addSideBand(ParametricEqProcessor.BandConfig.of(
+                            BiquadFilter.FilterType.HIGH_SHELF, 8000, 0.707, 1.5));
+                    return p;
+                });
     }
 
     private static void registerReverbPresets() {
