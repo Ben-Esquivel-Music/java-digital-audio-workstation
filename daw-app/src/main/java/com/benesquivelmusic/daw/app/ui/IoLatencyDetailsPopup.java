@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.sdk.audio.RoundTripLatency;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -138,7 +139,7 @@ public final class IoLatencyDetailsPopup extends Dialog<Void> {
         getDialogPane().setContent(content);
         getDialogPane().getButtonTypes().addAll(ButtonType.CLOSE);
 
-        DarkThemeHelper.applyTo(this);
+        ThemeManager.getDefault().applyTo(getDialogPane());
         setResultConverter(button -> null);
     }
 

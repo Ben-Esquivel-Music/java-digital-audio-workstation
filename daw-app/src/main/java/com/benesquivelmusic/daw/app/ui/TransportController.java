@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
@@ -358,7 +359,7 @@ final class TransportController {
                     ButtonType.OK);
             alert.setTitle("Cannot Record");
             alert.setHeaderText("No Armed Tracks");
-            DarkThemeHelper.applyTo(alert);
+            ThemeManager.getDefault().applyTo(alert.getDialogPane());
             alert.showAndWait();
             return;
         }

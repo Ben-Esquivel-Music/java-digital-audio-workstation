@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.persistence.LockConflictHandler;
 import com.benesquivelmusic.daw.core.persistence.LockConflictResolution;
 import com.benesquivelmusic.daw.core.persistence.ProjectLock;
@@ -95,7 +96,7 @@ public final class LockConflictDialog implements LockConflictHandler {
                 : "Project is locked by " + holder);
         alert.setContentText(buildContent(existingLock, stale));
         alert.getButtonTypes().setAll(readOnlyBtn, takeOverBtn, cancelBtn);
-        DarkThemeHelper.applyTo(alert);
+        ThemeManager.getDefault().applyTo(alert.getDialogPane());
 
         Optional<ButtonType> chosen = alert.showAndWait();
         if (chosen.isEmpty()) {
@@ -133,7 +134,7 @@ public final class LockConflictDialog implements LockConflictHandler {
         confirm.getButtonTypes().setAll(
                 new ButtonType("Steal Lock", ButtonType.OK.getButtonData()),
                 new ButtonType("Cancel", ButtonType.CANCEL.getButtonData()));
-        DarkThemeHelper.applyTo(confirm);
+        ThemeManager.getDefault().applyTo(confirm.getDialogPane());
 
         Optional<ButtonType> result = confirm.showAndWait();
         if (result.isPresent() && result.get().getButtonData() == ButtonType.OK.getButtonData()) {

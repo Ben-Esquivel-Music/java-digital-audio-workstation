@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.app.ui.display.InputMeterStrip;
 import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitor;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.audio.InputRouting;
@@ -1948,7 +1949,7 @@ public final class MixerView extends VBox {
         grid.add(hint, 0, 2, 2, 1);
         dialog.getDialogPane().setContent(grid);
         dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
-        DarkThemeHelper.applyTo(dialog);
+        ThemeManager.getDefault().applyTo(dialog.getDialogPane());
 
         dialog.setResultConverter(button -> {
             if (button == ButtonType.OK) {

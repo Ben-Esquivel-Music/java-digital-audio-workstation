@@ -1,6 +1,6 @@
 package com.benesquivelmusic.daw.app.ui.controls;
 
-import com.benesquivelmusic.daw.app.ui.DarkThemeHelper;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
 
 import javafx.scene.Scene;
@@ -23,7 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code styles.css} cascade.
  *
  * <p>The six story-mandated MixerChannelStrip tests all attach the default
- * {@code DarkThemeHelper} theme, whose Palette&nbsp;A token values are
+ * {@code ThemeManager} theme, whose Palette&nbsp;A token values are
  * <em>identical</em> to the control's user-agent fallback hex. A circular
  * looked-up-colour drop (the exact trap caught on story 267 — a same-named
  * {@code -x: -x;} forward is flagged circular and silently falls back to
@@ -66,7 +66,7 @@ class MixerChannelStripAppThemeCascadeTest {
             StackPane root = new StackPane(s);
             root.getStyleClass().add("root-pane");
             Scene scene = new Scene(root, 88, 600);
-            DarkThemeHelper.applyTo(scene);
+            ThemeManager.getDefault().applyTo(scene);
             root.applyCss();
             root.layout();
             return new Color[] {
@@ -92,7 +92,7 @@ class MixerChannelStripAppThemeCascadeTest {
             StackPane root = new StackPane(s);
             root.getStyleClass().add("root-pane");
             Scene scene = new Scene(root, 88, 600);
-            DarkThemeHelper.applyTo(scene);
+            ThemeManager.getDefault().applyTo(scene);
             // Simulate a story-277 theme re-tinting the role tokens on
             // .root-pane to values distinct from the UA fallback hex.
             root.setStyle("-accent: #0011FF; -text-mute: #FFAA00; "
@@ -131,7 +131,7 @@ class MixerChannelStripAppThemeCascadeTest {
             StackPane root = new StackPane(s);
             root.getStyleClass().add("root-pane");
             Scene scene = new Scene(root, 88, 600);
-            DarkThemeHelper.applyTo(scene);
+            ThemeManager.getDefault().applyTo(scene);
             scene.getStylesheets().add("data:text/css;base64,"
                     + java.util.Base64.getEncoder().encodeToString(
                             (".mixer-channel-strip { -mcs-accent: #0011FF; "

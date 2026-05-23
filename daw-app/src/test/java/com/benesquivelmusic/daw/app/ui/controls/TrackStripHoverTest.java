@@ -1,6 +1,6 @@
 package com.benesquivelmusic.daw.app.ui.controls;
 
-import com.benesquivelmusic.daw.app.ui.DarkThemeHelper;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
 
 import javafx.css.PseudoClass;
@@ -35,7 +35,7 @@ class TrackStripHoverTest {
             StackPane root = new StackPane(strip);
             root.getStyleClass().add("root-pane");
             Scene scene = new Scene(root, 320, 60);
-            DarkThemeHelper.applyTo(scene);
+            ThemeManager.getDefault().applyTo(scene);
             root.applyCss();
             root.layout();
 

@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.mixer.CueBus;
 import com.benesquivelmusic.daw.sdk.transport.ClickOutput;
 import javafx.geometry.Insets;
@@ -167,7 +168,7 @@ public final class MetronomeSettingsDialog extends Dialog<MetronomeSettingsDialo
         getDialogPane().getButtonTypes().addAll(ButtonType.APPLY, ButtonType.CANCEL);
         getDialogPane().setPrefWidth(460);
 
-        DarkThemeHelper.applyTo(this);
+        ThemeManager.getDefault().applyTo(getDialogPane());
 
         setResultConverter(button -> {
             if (button == ButtonType.APPLY) {

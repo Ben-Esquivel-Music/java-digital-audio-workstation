@@ -1,6 +1,6 @@
 package com.benesquivelmusic.daw.app.ui.controls;
 
-import com.benesquivelmusic.daw.app.ui.DarkThemeHelper;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
 import com.benesquivelmusic.daw.app.ui.controls.skin.MixerChannelStripSkin;
 
@@ -43,7 +43,7 @@ class MixerChannelStripStateTest {
             StackPane root = new StackPane(strip);
             root.getStyleClass().add("root-pane");
             Scene scene = new Scene(root, 200, 600);
-            DarkThemeHelper.applyTo(scene);
+            ThemeManager.getDefault().applyTo(scene);
             root.applyCss();
             root.layout();
             MixerChannelStripSkin skin = (MixerChannelStripSkin) strip.getSkin();

@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import javafx.geometry.Insets;
 import javafx.scene.control.*;
 import javafx.scene.layout.VBox;
@@ -68,7 +69,7 @@ public final class MidiInputPortSelectionDialog extends Dialog<MidiDevice.Info> 
         getDialogPane().setContent(content);
         getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
 
-        DarkThemeHelper.applyTo(this);
+        ThemeManager.getDefault().applyTo(getDialogPane());
 
         setResultConverter(button -> {
             if (button == ButtonType.OK) {

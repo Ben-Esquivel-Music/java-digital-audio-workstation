@@ -1,6 +1,6 @@
 package com.benesquivelmusic.daw.app.ui.controls;
 
-import com.benesquivelmusic.daw.app.ui.DarkThemeHelper;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
 
 import javafx.scene.Scene;
@@ -78,7 +78,7 @@ class LevelMeterAppThemeCascadeTest {
             StackPane root = new StackPane(m);
             root.getStyleClass().add("root-pane");
             Scene scene = new Scene(root, 80, 240);
-            DarkThemeHelper.applyTo(scene);
+            ThemeManager.getDefault().applyTo(scene);
             root.applyCss();
             root.layout();
             return new Color[] {m.getMeterLow(), m.getMeterClip(), m.getMeterBackground()};
@@ -95,7 +95,7 @@ class LevelMeterAppThemeCascadeTest {
             StackPane root = new StackPane(m);
             root.getStyleClass().add("root-pane");
             Scene scene = new Scene(root, 80, 240);
-            DarkThemeHelper.applyTo(scene);
+            ThemeManager.getDefault().applyTo(scene);
             // Simulate a story-277 theme re-tinting the -surface-2 token.
             root.setStyle("-surface-2: #654321;");
             root.applyCss();
@@ -122,7 +122,7 @@ class LevelMeterAppThemeCascadeTest {
             StackPane root = new StackPane(m);
             root.getStyleClass().add("root-pane");
             Scene scene = new Scene(root, 80, 240);
-            DarkThemeHelper.applyTo(scene);
+            ThemeManager.getDefault().applyTo(scene);
             // Simulate a theme re-tinting the role tokens on .root-pane.
             root.setStyle("-meter-low: #0011FF; -meter-clip: #FFAA00;");
             root.applyCss();
@@ -146,7 +146,7 @@ class LevelMeterAppThemeCascadeTest {
             StackPane root = new StackPane(m);
             root.getStyleClass().add("root-pane");
             Scene scene = new Scene(root, 80, 240);
-            DarkThemeHelper.applyTo(scene);
+            ThemeManager.getDefault().applyTo(scene);
             scene.getStylesheets().add("data:text/css;base64,"
                     + java.util.Base64.getEncoder().encodeToString(
                             (".level-meter { -meter-low: #0011FF; "

@@ -11,6 +11,7 @@ import com.benesquivelmusic.daw.app.ui.help.OnboardingTour;
 import com.benesquivelmusic.daw.app.ui.help.QuickHelpBar;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.audio.AudioBackendFactory;
 import com.benesquivelmusic.daw.core.audio.AudioDeviceManager;
@@ -2012,7 +2013,7 @@ public final class MainController {
         atmosAbStage = new Stage(javafx.stage.StageStyle.UTILITY);
         atmosAbStage.setTitle("Immersive A/B — QC");
         javafx.scene.Scene scene = new javafx.scene.Scene(atmosAbView);
-        DarkThemeHelper.applyTo(scene);
+        ThemeManager.getDefault().applyTo(scene);
         atmosAbStage.setScene(scene);
         atmosAbStage.setMinWidth(600);
         atmosAbStage.setMinHeight(320);
@@ -2114,7 +2115,7 @@ public final class MainController {
               + "Retry — keep the snapshot (retry not yet implemented).\n"
               + "Clear — discard the persisted queue file.");
         alert.getButtonTypes().setAll(resume, retry, clear);
-        DarkThemeHelper.applyTo(alert);
+        ThemeManager.getDefault().applyTo(alert.getDialogPane());
         alert.showAndWait().ifPresent(choice -> {
             // All three choices clear the persisted snapshot to avoid a
             // recurring prompt on every restart. Resume / Retry are
@@ -2152,7 +2153,7 @@ public final class MainController {
             renderQueueStage.initOwner(rootPane.getScene().getWindow());
         }
         javafx.scene.Scene scene = new javafx.scene.Scene(renderQueueView);
-        DarkThemeHelper.applyTo(scene);
+        ThemeManager.getDefault().applyTo(scene);
         renderQueueStage.setScene(scene);
         renderQueueStage.setMinWidth(560);
         renderQueueStage.setMinHeight(320);

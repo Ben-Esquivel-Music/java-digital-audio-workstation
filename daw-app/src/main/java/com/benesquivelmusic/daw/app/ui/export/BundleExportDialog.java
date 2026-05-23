@@ -1,6 +1,6 @@
 package com.benesquivelmusic.daw.app.ui.export;
 
-import com.benesquivelmusic.daw.app.ui.DarkThemeHelper;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.sdk.export.AudioExportConfig;
 import com.benesquivelmusic.daw.sdk.export.BundleMetadata;
 import com.benesquivelmusic.daw.sdk.export.BundlePreset;
@@ -199,7 +199,7 @@ public final class BundleExportDialog extends Dialog<DeliverableBundle> {
         Button okButton = (Button) getDialogPane().lookupButton(ButtonType.OK);
         okButton.setText("Export Bundle");
 
-        DarkThemeHelper.applyTo(this);
+        ThemeManager.getDefault().applyTo(getDialogPane());
 
         setResultConverter(button -> {
             if (button == ButtonType.OK) {

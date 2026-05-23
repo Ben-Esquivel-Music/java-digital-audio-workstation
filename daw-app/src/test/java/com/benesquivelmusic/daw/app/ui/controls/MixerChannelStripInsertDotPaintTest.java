@@ -1,6 +1,6 @@
 package com.benesquivelmusic.daw.app.ui.controls;
 
-import com.benesquivelmusic.daw.app.ui.DarkThemeHelper;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.app.ui.JavaFxToolkitExtension;
 import com.benesquivelmusic.daw.app.ui.controls.skin.MixerChannelStripSkin;
 
@@ -70,7 +70,7 @@ class MixerChannelStripInsertDotPaintTest {
             StackPane root = new StackPane(strip);
             root.getStyleClass().add("root-pane");
             Scene scene = new Scene(root, 88, 600);
-            DarkThemeHelper.applyTo(scene);
+            ThemeManager.getDefault().applyTo(scene);
             // Re-tint to values distinct from the UA fallback so a broken
             // forward / wrong style class cannot hide behind equal hex.
             root.setStyle("-accent: #0011FF; -text-mute: #FFAA00;");

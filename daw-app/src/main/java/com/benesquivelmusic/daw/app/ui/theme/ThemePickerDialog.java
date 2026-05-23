@@ -1,7 +1,5 @@
 package com.benesquivelmusic.daw.app.ui.theme;
 
-import com.benesquivelmusic.daw.app.ui.DarkThemeHelper;
-
 import javafx.beans.property.SimpleObjectProperty;
 import javafx.collections.FXCollections;
 import javafx.geometry.Insets;
@@ -121,8 +119,8 @@ public final class ThemePickerDialog extends Dialog<Theme> {
 
         setResultConverter(bt -> bt == ButtonType.OK ? selected.get() : null);
 
-        // Apply DAW dark theme stylesheet so the dialog inherits the look.
-        DarkThemeHelper.applyTo(this);
+        // Apply the active token theme so the dialog inherits the look.
+        ThemeManager.getDefault().applyTo(getDialogPane());
 
         // Pre-select active or default theme.
         Theme initial = registry.findOrDefault(activeId);
@@ -247,7 +245,7 @@ public final class ThemePickerDialog extends Dialog<Theme> {
         idDialog.setTitle("New theme id");
         idDialog.setHeaderText("Choose an id for the duplicated theme");
         idDialog.setContentText("id:");
-        DarkThemeHelper.applyTo(idDialog);
+        ThemeManager.getDefault().applyTo(idDialog.getDialogPane());
         String newId = idDialog.showAndWait().orElse(null);
         if (newId == null || newId.isBlank()) {
             return;
@@ -263,7 +261,7 @@ public final class ThemePickerDialog extends Dialog<Theme> {
         editor.setTitle("Edit theme: " + source.name());
         editor.setHeaderText("Pick colors. Pairs failing AA contrast (<4.5:1) are flagged.");
         editor.getDialogPane().setPrefSize(640, 520);
-        DarkThemeHelper.applyTo(editor);
+        ThemeManager.getDefault().applyTo(editor.getDialogPane());
 
         GridPane grid = new GridPane();
         grid.setHgap(10);
@@ -321,7 +319,7 @@ public final class ThemePickerDialog extends Dialog<Theme> {
             LOG.log(Level.WARNING, "Failed to save user theme " + edited.id(), ioe);
             Alert alert = new Alert(Alert.AlertType.ERROR,
                     "Failed to save theme: " + ioe.getMessage(), ButtonType.OK);
-            DarkThemeHelper.applyTo(alert);
+            ThemeManager.getDefault().applyTo(alert.getDialogPane());
             alert.showAndWait();
         }
     }

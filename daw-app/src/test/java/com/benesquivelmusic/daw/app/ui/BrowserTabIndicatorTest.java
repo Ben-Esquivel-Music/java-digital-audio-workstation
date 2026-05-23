@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.BrowserPanel.BrowserSection;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 
 import javafx.application.Platform;
 import javafx.scene.Scene;
@@ -53,7 +54,7 @@ class BrowserTabIndicatorTest {
             StackPane root = new StackPane(panel);
             root.getStyleClass().add("root-pane");
             Scene scene = new Scene(root, 320, 600);
-            DarkThemeHelper.applyTo(scene);
+            ThemeManager.getDefault().applyTo(scene);
             root.applyCss();
             root.layout();
             // Force a full CSS + raster pass so scene-stylesheet rules

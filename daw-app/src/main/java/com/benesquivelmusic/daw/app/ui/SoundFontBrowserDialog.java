@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.midi.SoundFontAssignment;
 import com.benesquivelmusic.daw.sdk.midi.SoundFontInfo;
 import com.benesquivelmusic.daw.sdk.midi.SoundFontPreset;
@@ -111,7 +112,7 @@ public final class SoundFontBrowserDialog extends Dialog<SoundFontAssignment> {
         getDialogPane().setContent(content);
         getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
 
-        DarkThemeHelper.applyTo(this);
+        ThemeManager.getDefault().applyTo(getDialogPane());
 
         // Pre-select the current assignment if one exists
         if (currentAssignment != null) {
