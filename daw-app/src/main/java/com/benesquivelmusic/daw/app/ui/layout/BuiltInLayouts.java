@@ -20,7 +20,7 @@ import java.util.Map;
  * LayoutMenuTest}).</p>
  *
  * <p>Each layout is captured as opaque {@link DockLayout} JSON so the
- * dock-layer schema (story 195) can evolve without touching this class.
+ * dock-layer schema can evolve without touching this class.
  * The layouts deliberately assume only the canonical panel ids used by
  * {@code MainController} ({@code arrangement}, {@code mixer},
  * {@code browser}, {@code inspector}, {@code spectrum}, …); panels that
@@ -49,24 +49,30 @@ public final class BuiltInLayouts {
     public static final List<String> NAMES = List.of(
             DEFAULT, TRACKING, MIXING, MASTERING, LIVE);
 
+    private static final List<NamedLayout> ALL = List.of(
+            NamedLayout.builtIn(DEFAULT,   defaultLayoutJson()),
+            NamedLayout.builtIn(TRACKING,  trackingLayoutJson()),
+            NamedLayout.builtIn(MIXING,    mixingLayoutJson()),
+            NamedLayout.builtIn(MASTERING, masteringLayoutJson()),
+            NamedLayout.builtIn(LIVE,      liveLayoutJson()));
+
+    private static final Map<String, NamedLayout> BY_NAME;
+    static {
+        Map<String, NamedLayout> map = new LinkedHashMap<>();
+        for (NamedLayout l : ALL) map.put(l.name(), l);
+        BY_NAME = Map.copyOf(map);
+    }
+
     private BuiltInLayouts() { }
 
     /** Returns all five built-in layouts in canonical menu order. */
     public static List<NamedLayout> all() {
-        return List.of(
-                NamedLayout.builtIn(DEFAULT,   defaultLayoutJson()),
-                NamedLayout.builtIn(TRACKING,  trackingLayoutJson()),
-                NamedLayout.builtIn(MIXING,    mixingLayoutJson()),
-                NamedLayout.builtIn(MASTERING, masteringLayoutJson()),
-                NamedLayout.builtIn(LIVE,      liveLayoutJson()));
+        return ALL;
     }
 
     /** Returns the built-in with the given name, or {@code null} if none. */
     public static NamedLayout byName(String name) {
-        for (NamedLayout l : all()) {
-            if (l.name().equals(name)) return l;
-        }
-        return null;
+        return BY_NAME.get(name);
     }
 
     /** Returns {@code true} if the given name is one of the built-in layouts. */

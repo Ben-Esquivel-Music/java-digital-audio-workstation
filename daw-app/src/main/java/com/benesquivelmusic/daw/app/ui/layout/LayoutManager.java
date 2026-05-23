@@ -1,11 +1,12 @@
 package com.benesquivelmusic.daw.app.ui.layout;
 
+import com.benesquivelmusic.daw.app.ui.TinyJsonParser;
+
 import javafx.beans.property.ReadOnlyStringProperty;
 import javafx.beans.property.ReadOnlyStringWrapper;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -42,7 +43,7 @@ import java.util.logging.Logger;
  * {@link Host} callback rather than depending on {@code DockManager}
  * directly — this keeps it usable in unit tests without a JavaFX screen
  * (the {@code Host} can be a recording stub) and avoids coupling the
- * layout layer to whichever dock framework story 195 picked.</p>
+ * layout layer to whichever dock framework the dock package picked.</p>
  *
  * <h2>Built-in layouts</h2>
  * The five layouts in {@link BuiltInLayouts} are seeded into
@@ -68,7 +69,7 @@ public final class LayoutManager {
     public interface Host {
         /**
          * Returns the current dock state serialised as JSON in the
-         * format produced by {@code DockLayoutJson} (story 195).
+         * format produced by {@code DockLayoutJson}.
          */
         String captureDockLayoutJson();
 
@@ -285,7 +286,7 @@ public final class LayoutManager {
             return;
         }
         try {
-            Map<String, Object> parsed = MiniJson.parseObject(json);
+            Map<String, Object> parsed = TinyJsonParser.parseObjectString(json);
             Object current = parsed.get("current");
             Object layouts = parsed.get("layouts");
             if (layouts instanceof List<?> list) {
@@ -341,147 +342,5 @@ public final class LayoutManager {
             }
         }
         return sb.toString();
-    }
-
-    /**
-     * Tiny hand-rolled JSON parser, mirroring the style used by
-     * {@code DockLayoutJson} and {@code WorkspaceJson} so the project
-     * stays free of a JSON library dependency at the UI layer.
-     */
-    private static final class MiniJson {
-        private final String src;
-        private int i;
-
-        private MiniJson(String src) {
-            this.src = src;
-            this.i = 0;
-        }
-
-        static Map<String, Object> parseObject(String src) {
-            Object v = new MiniJson(src).parseValue();
-            if (!(v instanceof Map<?, ?> m)) return new LinkedHashMap<>();
-            @SuppressWarnings("unchecked")
-            Map<String, Object> out = (Map<String, Object>) m;
-            return out;
-        }
-
-        private Object parseValue() {
-            skipWs();
-            if (i >= src.length()) throw new IllegalArgumentException("eof");
-            char c = src.charAt(i);
-            return switch (c) {
-                case '{' -> parseObj();
-                case '[' -> parseArr();
-                case '"' -> parseStr();
-                case 't', 'f' -> parseBool();
-                case 'n' -> parseNull();
-                default -> parseNum();
-            };
-        }
-
-        private Map<String, Object> parseObj() {
-            expect('{');
-            Map<String, Object> out = new LinkedHashMap<>();
-            skipWs();
-            if (peek() == '}') { i++; return out; }
-            while (true) {
-                skipWs();
-                String key = parseStr();
-                skipWs();
-                expect(':');
-                out.put(key, parseValue());
-                skipWs();
-                char c = peek();
-                if (c == ',') { i++; continue; }
-                if (c == '}') { i++; return out; }
-                throw new IllegalArgumentException(", or }");
-            }
-        }
-
-        private List<Object> parseArr() {
-            expect('[');
-            List<Object> out = new ArrayList<>();
-            skipWs();
-            if (peek() == ']') { i++; return out; }
-            while (true) {
-                out.add(parseValue());
-                skipWs();
-                char c = peek();
-                if (c == ',') { i++; continue; }
-                if (c == ']') { i++; return out; }
-                throw new IllegalArgumentException(", or ]");
-            }
-        }
-
-        private String parseStr() {
-            expect('"');
-            StringBuilder sb = new StringBuilder();
-            while (i < src.length()) {
-                char c = src.charAt(i++);
-                if (c == '"') return sb.toString();
-                if (c == '\\' && i < src.length()) {
-                    char n = src.charAt(i++);
-                    sb.append(switch (n) {
-                        case '"' -> '"';
-                        case '\\' -> '\\';
-                        case '/' -> '/';
-                        case 'n' -> '\n';
-                        case 'r' -> '\r';
-                        case 't' -> '\t';
-                        case 'b' -> '\b';
-                        case 'f' -> '\f';
-                        default -> n;
-                    });
-                } else {
-                    sb.append(c);
-                }
-            }
-            throw new IllegalArgumentException("unterminated");
-        }
-
-        private Boolean parseBool() {
-            if (src.startsWith("true", i))  { i += 4; return Boolean.TRUE; }
-            if (src.startsWith("false", i)) { i += 5; return Boolean.FALSE; }
-            throw new IllegalArgumentException("bool");
-        }
-
-        private Object parseNull() {
-            if (src.startsWith("null", i)) { i += 4; return null; }
-            throw new IllegalArgumentException("null");
-        }
-
-        private Number parseNum() {
-            int start = i;
-            if (peek() == '-' || peek() == '+') i++;
-            boolean isFloat = false;
-            while (i < src.length()) {
-                char c = src.charAt(i);
-                if (c >= '0' && c <= '9') { i++; }
-                else if (c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-') {
-                    isFloat = true; i++;
-                } else break;
-            }
-            String tok = src.substring(start, i);
-            if (tok.isEmpty()) throw new IllegalArgumentException("number");
-            return isFloat ? (Number) Double.valueOf(tok) : (Number) Long.valueOf(tok);
-        }
-
-        private void expect(char c) {
-            skipWs();
-            if (i >= src.length() || src.charAt(i) != c) {
-                throw new IllegalArgumentException("expected " + c);
-            }
-            i++;
-        }
-
-        private char peek() {
-            skipWs();
-            if (i >= src.length()) throw new IllegalArgumentException("eof");
-            return src.charAt(i);
-        }
-
-        private void skipWs() {
-            while (i < src.length() && Character.isWhitespace(src.charAt(i))) i++;
-        }
     }
 }

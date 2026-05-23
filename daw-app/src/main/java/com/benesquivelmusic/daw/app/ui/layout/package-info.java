@@ -1,8 +1,8 @@
 /**
  * Mission Control layout layer (UI Design Book §4 Concept D, story 282).
  *
- * <p>Builds on the dock framework shipped by story 195
- * ({@code com.benesquivelmusic.daw.app.ui.dock}) and adds the
+ * <p>Builds on the dock framework shipped by
+ * {@code com.benesquivelmusic.daw.app.ui.dock} and adds the
  * <em>named-layout</em> abstraction Concept D requires:</p>
  *
  * <ul>
