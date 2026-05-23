@@ -42,8 +42,8 @@ public final class ProjectLookups {
 
     /**
      * Finds the {@link Track} in {@code project} whose {@link Track#getId()}
-     * parses as the given UUID. Returns the first match; track ids are
-     * unique within a project so there is at most one.
+     * equals the string representation of the given UUID. Returns the first
+     * match; track ids are unique within a project so there is at most one.
      *
      * @param project the project to scan (must not be {@code null})
      * @param trackId the track UUID to match (may be {@code null} → empty)

@@ -95,4 +95,21 @@ public final class ClipEditorFactory {
     public static Node buildEditor(Clip clip) {
         return buildEditor(clip, null);
     }
+
+    /**
+     * Disposes an editor Node previously built by {@link #buildEditor}.
+     * For {@link AudioEditorView} this releases the off-heap
+     * {@code WaveformDisplay} surface; for other editor types this is a
+     * no-op today but provides a single disposal seam for future editors.
+     *
+     * <p>Safe to call multiple times on the same node.</p>
+     *
+     * @param editor the editor node to dispose (may be {@code null} — ignored)
+     */
+    public static void disposeEditor(Node editor) {
+        if (editor instanceof AudioEditorView audioEditor) {
+            audioEditor.dispose();
+        }
+        // MidiEditorView has no off-heap resources; no action needed.
+    }
 }

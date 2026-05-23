@@ -230,6 +230,8 @@ public final class WorkshopSelectionHostController {
      */
     public void dispose() {
         selectionModel.selectionProperty().removeListener(selectionListener);
+        clipEditorCache.values().forEach(ClipEditorFactory::disposeEditor);
+        midiClipEditorCache.values().forEach(ClipEditorFactory::disposeEditor);
         pluginPanelCache.clear();
         clipEditorCache.clear();
         midiClipEditorCache.clear();
