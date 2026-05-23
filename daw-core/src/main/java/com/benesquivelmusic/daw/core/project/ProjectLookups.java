@@ -133,9 +133,10 @@ public final class ProjectLookups {
     }
 
     /**
-     * Resolves the {@link AudioClip} whose {@link AudioClip#getId()} parses
-     * as the given UUID. Walks every track's clip list once; clip ids are
-     * unique within a project so the first match is the answer.
+     * Resolves the {@link AudioClip} whose {@link AudioClip#getId()} equals
+     * the string representation of the given UUID. Walks every track's clip
+     * list once; clip ids are unique within a project so the first match is
+     * the answer.
      *
      * <p>Note: {@link com.benesquivelmusic.daw.core.midi.MidiClip} does not
      * carry an id today; this method therefore resolves AUDIO clips only.
