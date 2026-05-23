@@ -48,7 +48,12 @@ import java.util.logging.Logger;
  *       (or looks up cached) the editor Node via
  *       {@link ClipEditorFactory#buildEditor}, and calls
  *       {@link WorkshopView#setClipDetailContent(Node)}.</li>
- *   <li>Any other selection (track, send, bus, empty) → clears the
+ *   <li>{@link InspectorSelection.TrackSelection} → restores the
+ *       last-focused insert for that track (if any) by delegating to the
+ *       {@code InsertSelection} path above; clears the focused-plugin pane
+ *       only when no insert has ever been focused for the selected track.
+ *       Clip-detail is always cleared on track selection.</li>
+ *   <li>Any other selection (send, bus, empty) → clears the
  *       focused-plugin pane back to its empty placeholder. Clip selection
  *       transitions to non-clip also clear the clip-detail slot.</li>
  * </ul>
@@ -102,10 +107,12 @@ public final class WorkshopSelectionHostController {
     /**
      * Cache of built plugin-parameter panels keyed by
      * {@code (trackId, insertIndex)}. Selecting the same insert twice
-     * returns the same Node. Insert mutations (add/remove/move on the
-     * channel) invalidate entries lazily — a stale entry simply produces
-     * an old panel; the resolver would have returned {@link Optional#empty()}
-     * for an out-of-range index anyway and skipped the cache lookup.
+     * returns the same Node. Each entry stores the resolved
+     * {@link InsertSlot} identity alongside the panel; on cache hit the
+     * identity is compared to the currently-resolved slot — if it differs
+     * (insert chain was edited), the stale entry is evicted and the panel
+     * is rebuilt. This guarantees the cached panel always corresponds to
+     * the live slot at that index.
      *
      * <p>TODO(story 281 review S3 — deferred): subscribe to
      * {@code MixerEvent} / {@code PluginEvent} on the daw-core
@@ -120,7 +127,7 @@ public final class WorkshopSelectionHostController {
      * drop every entry whose key shares that {@code trackId} (cheaper
      * than tracking exact reorder semantics).</p>
      */
-    private final Map<InsertCacheKey, Node> pluginPanelCache = new HashMap<>();
+    private final Map<InsertCacheKey, CachedPanel> pluginPanelCache = new HashMap<>();
 
     /**
      * Cache of built clip-editor Nodes keyed by clip identity. Audio clip
@@ -374,15 +381,21 @@ public final class WorkshopSelectionHostController {
         }
         InsertSlot slot = slotOpt.get();
         InsertCacheKey key = new InsertCacheKey(trackId, insertIndex);
-        Node panel = pluginPanelCache.get(key);
-        if (panel == null) {
+        CachedPanel cached = pluginPanelCache.get(key);
+        Node panel;
+        if (cached != null && cached.slot == slot) {
+            // Cache hit — same slot instance, reuse existing panel.
+            panel = cached.node;
+        } else {
+            // Cache miss or stale (insert chain edited) — rebuild.
             panel = buildPluginPanel(slot);
             if (panel == null) {
                 // No parameters → no panel; show placeholder.
+                pluginPanelCache.remove(key);
                 clearFocusedPlugin();
                 return;
             }
-            pluginPanelCache.put(key, panel);
+            pluginPanelCache.put(key, new CachedPanel(slot, panel));
         }
         // Record the last-focused insert for this track so TrackSelection
         // can restore it.
@@ -504,4 +517,12 @@ public final class WorkshopSelectionHostController {
      * hits the same cache entry.
      */
     private record InsertCacheKey(UUID trackId, int insertIndex) {}
+
+    /**
+     * A cached plugin panel paired with the {@link InsertSlot} it was
+     * built from. On cache hit the stored slot identity is compared to
+     * the currently-resolved slot — if they differ (insert chain was
+     * reordered / edited), the entry is considered stale and rebuilt.
+     */
+    private record CachedPanel(InsertSlot slot, Node node) {}
 }
