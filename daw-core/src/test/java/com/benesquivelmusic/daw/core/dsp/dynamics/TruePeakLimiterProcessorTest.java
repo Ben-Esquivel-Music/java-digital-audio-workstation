@@ -67,11 +67,11 @@ class TruePeakLimiterProcessorTest {
         l.setIsrParam(2.0); assertThat(l.getIsr()).isEqualTo(2);
         l.setIsrParam(4.0); assertThat(l.getIsr()).isEqualTo(4);
         l.setIsrParam(8.0); assertThat(l.getIsr()).isEqualTo(8);
-        // Fractional values round to nearest integer then snap
+        // Fractional values round to nearest integer then snap (ties break toward lower step)
         l.setIsrParam(2.4); assertThat(l.getIsr()).isEqualTo(2);
-        l.setIsrParam(2.6); assertThat(l.getIsr()).isEqualTo(4);
-        l.setIsrParam(5.9); assertThat(l.getIsr()).isEqualTo(8);
-        l.setIsrParam(6.1); assertThat(l.getIsr()).isEqualTo(8);
+        l.setIsrParam(2.6); assertThat(l.getIsr()).isEqualTo(2);
+        l.setIsrParam(5.9); assertThat(l.getIsr()).isEqualTo(4);
+        l.setIsrParam(6.1); assertThat(l.getIsr()).isEqualTo(4);
         // Getter reflects the same snapped value
         l.setIsrParam(3.0);
         assertThat(l.getIsrParam()).isEqualTo(l.getIsr());
