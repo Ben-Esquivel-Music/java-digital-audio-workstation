@@ -491,6 +491,14 @@ public final class TruePeakLimiterProcessor implements AudioProcessor, GainReduc
     }
 
     @ProcessorParam(id = 3, name = "ISR", min = 2.0, max = 8.0, defaultValue = 4.0)
+    public double getIsrParam() { return isr; }
+    /**
+     * {@link ProcessorParam}-compatible setter for the oversampling factor.
+     * Rounds to the nearest integer step and snaps to {@link #OVERSAMPLE_STEPS}
+     * by delegating to {@link #setIsr(int)}.
+     */
+    public void setIsrParam(double isr) { setIsr((int) Math.round(isr)); }
+
     public int getIsr() { return isr; }
     /**
      * Sets the oversampling factor used for true-peak detection. Snapped to
