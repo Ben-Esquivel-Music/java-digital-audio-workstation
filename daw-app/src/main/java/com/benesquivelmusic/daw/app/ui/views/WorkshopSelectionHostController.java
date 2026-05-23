@@ -230,11 +230,27 @@ public final class WorkshopSelectionHostController {
      */
     public void dispose() {
         selectionModel.selectionProperty().removeListener(selectionListener);
+        resetForNewProject();
+    }
+
+    /**
+     * Disposes cached clip editors (releasing off-heap GPU/waveform
+     * resources) and clears all project-scoped caches so that stale UI
+     * nodes from a prior {@link DawProject} are not retained across a
+     * project swap. The selection listener remains installed — only the
+     * cached state is reset.
+     *
+     * <p>Called from {@link
+     * com.benesquivelmusic.daw.app.ui.ViewNavigationController#onProjectChanged()}
+     * whenever {@code MainController} loads/creates a new project.</p>
+     */
+    public void resetForNewProject() {
         clipEditorCache.values().forEach(ClipEditorFactory::disposeEditor);
         midiClipEditorCache.values().forEach(ClipEditorFactory::disposeEditor);
         pluginPanelCache.clear();
         clipEditorCache.clear();
         midiClipEditorCache.clear();
+        lastFocusedInsertByTrack.clear();
         pendingSelection = null;
         lastApplied = null;
     }

@@ -893,7 +893,11 @@ final class ViewNavigationController {
      * Views that hold a project reference should be added here as needed.
      */
     void onProjectChanged() {
-        // Project-scoped view rebinding (e.g. mixer) is handled elsewhere;
-        // telemetry is now a floating plugin window managed by MainController.
+        // Clear project-scoped caches in the Workshop selection host so
+        // stale plugin panels and clip editors (which may hold off-heap
+        // GPU/waveform resources) from the prior project are released.
+        if (workshopSelectionHostController != null) {
+            workshopSelectionHostController.resetForNewProject();
+        }
     }
 }
