@@ -302,23 +302,25 @@ final class CanonicalRegressionPresets {
         // MidSideWrapper exercises M/S encode → chain → decode logic.
         // A small-gain GainStagingProcessor is added to the mid and/or side
         // chains so the goldens are not trivial pass-throughs.
-        // The SUBTLE preset is bypassed, so it is an intentional passthrough.
+        // The SUBTLE preset is bypassed with a non-empty chain, exercising
+        // the explicit bypass branch rather than the empty-chain fast path.
         DspRegressionPreset.register(MidSideWrapperProcessor.class,
                 DspRegressionPreset.DEFAULT, p -> {
                     p.setBypassed(false);
-                    p.addMidProcessor(new GainStagingProcessor(2, 1.0));
+                    p.addMidProcessor(new GainStagingProcessor(1, 1.0));
                     return p;
                 });
         DspRegressionPreset.register(MidSideWrapperProcessor.class,
                 DspRegressionPreset.AGGRESSIVE, p -> {
                     p.setBypassed(false);
-                    p.addMidProcessor(new GainStagingProcessor(2, 3.0));
-                    p.addSideProcessor(new GainStagingProcessor(2, -2.0));
+                    p.addMidProcessor(new GainStagingProcessor(1, 3.0));
+                    p.addSideProcessor(new GainStagingProcessor(1, -2.0));
                     return p;
                 });
         DspRegressionPreset.register(MidSideWrapperProcessor.class,
                 DspRegressionPreset.SUBTLE, p -> {
                     p.setBypassed(true);
+                    p.addMidProcessor(new GainStagingProcessor(1, 0.5));
                     return p;
                 });
     }

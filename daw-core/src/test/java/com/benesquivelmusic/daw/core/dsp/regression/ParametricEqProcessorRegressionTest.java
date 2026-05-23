@@ -31,7 +31,7 @@ class ParametricEqProcessorRegressionTest {
         for (DspRegression spec : getClass()
                 .getDeclaredMethod("parametricEq_sineSweep_allPresets")
                 .getAnnotationsByType(DspRegression.class)) {
-            ParametricEqProcessor proc = new ParametricEqProcessor(1, TestSignals.SAMPLE_RATE);
+            ParametricEqProcessor proc = new ParametricEqProcessor(2, TestSignals.SAMPLE_RATE);
             DspRegressionHarness.Report report = DspRegressionHarness.run(proc, spec);
             assertThat(report.passed())
                     .as("regression case %s", report.summary())
