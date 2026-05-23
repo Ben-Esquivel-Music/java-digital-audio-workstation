@@ -199,7 +199,7 @@ public final class LayoutManager {
         if (idx < 0) return false;
         savedLayouts.remove(idx);
         if (stripped.equals(currentLayout.get())) {
-            currentLayout.set(BuiltInLayouts.DEFAULT);
+            load(BuiltInLayouts.DEFAULT);
         }
         return true;
     }
