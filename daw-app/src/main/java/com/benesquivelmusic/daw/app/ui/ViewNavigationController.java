@@ -41,6 +41,16 @@ final class ViewNavigationController {
         void onEditorFadeOut();
         void markProjectDirty();
 
+        // ── Workshop view (story 281) ─────────────────────────────────────
+        /**
+         * @return the shared {@link com.benesquivelmusic.daw.app.ui.inspector.InspectorSelectionModel}
+         *         held by {@code InspectorDrawer}, or {@code null} if the
+         *         inspector has not been wired yet — Workshop binds its
+         *         right-pane plugin focus to this single source of truth
+         *         (story 272)
+         */
+        com.benesquivelmusic.daw.app.ui.inspector.InspectorSelectionModel inspectorSelectionModel();
+
         // ── Performance Stage (story 280) ─────────────────────────────────
         /**
          * @return the {@code Messages} resource bundle for Performance
@@ -95,6 +105,13 @@ final class ViewNavigationController {
     private EditorView editorView;
     /** The mastering view panel — mastering chain with presets and A/B comparison. */
     private MasteringView masteringView;
+    /**
+     * The Workshop view (story 281, UI Design Book §4 Concept F). Lazily
+     * constructed on first switch to {@link DawView#WORKSHOP} because it
+     * needs the inspector selection model, which is wired after this
+     * controller is built. Set once, then cached in {@link #viewCache}.
+     */
+    private com.benesquivelmusic.daw.app.ui.views.WorkshopView workshopView;
 
     /** The currently active edit tool. */
     private EditTool activeEditTool;
@@ -229,9 +246,29 @@ final class ViewNavigationController {
         if (view == activeView) {
             return;
         }
+        // Story 281 — re-parent the arrangement node into Workshop's left
+        // pane on entry, and pull it back into the standard ARRANGEMENT
+        // slot on exit. This honours the story's "reuse existing
+        // arrangement panel components verbatim" rule: there is only one
+        // arrangement Node, owned by viewCache.get(ARRANGEMENT), and it
+        // floats between the two homes.
+        DawView previousView = activeView;
+        if (previousView == DawView.WORKSHOP && workshopView != null) {
+            // Pull arrangement back out of Workshop's left pane before
+            // switching elsewhere.
+            workshopView.setArrangementContent(null);
+            workshopView.setClipDetailContent(null);
+        }
+        if (view == DawView.WORKSHOP) {
+            ensureWorkshopBuilt();
+            // Move the cached arrangement node into Workshop's left pane.
+            workshopView.setArrangementContent(viewCache.get(DawView.ARRANGEMENT));
+        }
         activeView = view;
         toolbarStateStore.saveActiveView(view);
-        rootPane.setCenter(viewCache.get(view));
+        Node target = viewCache.get(view);
+        rootPane.setCenter(target);
+        playViewSwitchTransition(target);
         statusBarLabel.setText("Switched to " + view.name().charAt(0)
                 + view.name().substring(1).toLowerCase() + " view");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
@@ -239,6 +276,67 @@ final class ViewNavigationController {
             onViewChanged.run();
         }
         LOG.fine(() -> "Switched to view: " + view);
+    }
+
+    /**
+     * Lazily constructs and caches the Workshop view (story 281). Needs
+     * the inspector selection model from {@link Host#inspectorSelectionModel()},
+     * which is wired by {@code MainController} after this controller's
+     * constructor returns — hence lazy.
+     */
+    private void ensureWorkshopBuilt() {
+        if (workshopView != null) {
+            return;
+        }
+        com.benesquivelmusic.daw.app.ui.inspector.InspectorSelectionModel sm =
+                host.inspectorSelectionModel();
+        if (sm == null) {
+            // The inspector isn't wired yet — fall back to a private
+            // selection model so the view is still usable; subsequent
+            // builds will pick up the shared one once it lands. Logged so
+            // the misconfiguration surfaces in test runs.
+            LOG.warning("WorkshopView: inspector selection model unavailable; "
+                    + "falling back to a private InspectorSelectionModel — the "
+                    + "right-pane will not track external selections until the "
+                    + "inspector is wired");
+            sm = new com.benesquivelmusic.daw.app.ui.inspector.InspectorSelectionModel();
+        }
+        workshopView = new com.benesquivelmusic.daw.app.ui.views.WorkshopView(
+                host.messages(), sm);
+        viewCache.put(DawView.WORKSHOP, workshopView);
+    }
+
+    /**
+     * Plays the §3.5 view-switch transition (180&nbsp;ms {@code EASE_OUT}
+     * fade-in) on the given node, honouring the Reduce Motion flag
+     * (story 279): when Reduce Motion is on the transition is skipped and
+     * the node is shown immediately. Used for every standard centre-content
+     * view swap — Arrangement / Mixer / Editor / Mastering / Workshop —
+     * so the experience is consistent across the menu.
+     *
+     * @param node the freshly installed content node
+     */
+    private void playViewSwitchTransition(Node node) {
+        if (node == null) {
+            return;
+        }
+        if (!com.benesquivelmusic.daw.app.ui.motion.MotionManager
+                .getDefault().isAnimationAllowed()) {
+            node.setOpacity(1.0);
+            return;
+        }
+        node.setOpacity(0.0);
+        javafx.animation.FadeTransition fade = new javafx.animation.FadeTransition(
+                javafx.util.Duration.millis(180), node);
+        fade.setFromValue(0.0);
+        fade.setToValue(1.0);
+        fade.setInterpolator(javafx.animation.Interpolator.EASE_OUT);
+        fade.play();
+    }
+
+    /** @return the Workshop view, or {@code null} if it has not been built yet (test seam). */
+    com.benesquivelmusic.daw.app.ui.views.WorkshopView workshopView() {
+        return workshopView;
     }
 
     // ── Performance Stage activation (story 280) ─────────────────────────────

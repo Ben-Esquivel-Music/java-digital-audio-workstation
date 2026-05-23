@@ -9,16 +9,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 class DawViewTest {
 
     @Test
-    void shouldHaveFiveViews() {
-        // Story 280 added PERFORMANCE_STAGE alongside the four standard views.
-        assertThat(DawView.values()).hasSize(5);
+    void shouldHaveSixViews() {
+        // Story 280 added PERFORMANCE_STAGE alongside the four standard views;
+        // story 281 added WORKSHOP.
+        assertThat(DawView.values()).hasSize(6);
     }
 
     @Test
-    void shouldContainArrangementMixerEditorMasteringAndPerformanceStage() {
+    void shouldContainArrangementMixerEditorMasteringPerformanceStageAndWorkshop() {
         assertThat(DawView.values())
                 .containsExactly(DawView.ARRANGEMENT, DawView.MIXER, DawView.EDITOR,
-                        DawView.MASTERING, DawView.PERFORMANCE_STAGE);
+                        DawView.MASTERING, DawView.PERFORMANCE_STAGE, DawView.WORKSHOP);
     }
 
     @ParameterizedTest

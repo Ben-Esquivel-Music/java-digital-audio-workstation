@@ -143,6 +143,13 @@ final class PerformanceStageDeactivationTest {
         @Override public void onOpenProject() { }
         @Override public void onSaveProject() { }
         @Override public void onRecentProjects() { }
+        // Story 281 — Workshop view binds to the inspector selection model;
+        // this stub does not exercise Workshop, so a null model is correct.
+        @Override
+        public com.benesquivelmusic.daw.app.ui.inspector.InspectorSelectionModel
+                inspectorSelectionModel() {
+            return null;
+        }
     }
 
     // ── FX helper (capture + rethrow — swallowed-assertion pitfall) ───────

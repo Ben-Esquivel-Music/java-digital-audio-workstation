@@ -230,6 +230,12 @@ final class KeyboardShortcutController {
         // through the same switchView callback as the standard views.
         actionHandlers.put(DawAction.VIEW_PERFORMANCE_STAGE,
                 () -> host.switchView(DawView.PERFORMANCE_STAGE));
+        // Story 281 — F12 switches to the Workshop view (UI Design Book
+        // §4 Concept F). Routed through the same switchView callback as
+        // the four standard views — Workshop is a centre-content view,
+        // not a chrome replacement like Performance Stage.
+        actionHandlers.put(DawAction.VIEW_WORKSHOP,
+                () -> host.switchView(DawView.WORKSHOP));
         actionHandlers.put(DawAction.TOGGLE_BROWSER, host::onToggleBrowser);
         actionHandlers.put(DawAction.TOGGLE_HISTORY, host::onToggleHistory);
         actionHandlers.put(DawAction.TOGGLE_NOTIFICATION_HISTORY, host::onToggleNotificationHistory);

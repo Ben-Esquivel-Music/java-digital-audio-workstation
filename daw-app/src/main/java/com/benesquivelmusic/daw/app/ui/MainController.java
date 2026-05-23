@@ -853,6 +853,13 @@ public final class MainController {
                     @Override public void onOpenProject() { projectLifecycleController.onOpenProject(); }
                     @Override public void onSaveProject() { projectLifecycleController.onSaveProject(); }
                     @Override public void onRecentProjects() { projectLifecycleController.onRecentProjects(); }
+                    // ── Workshop (story 281) ──────────────────────────────
+                    @Override
+                    public com.benesquivelmusic.daw.app.ui.inspector.InspectorSelectionModel
+                            inspectorSelectionModel() {
+                        return inspectorDrawer == null ? null
+                                : inspectorDrawer.getSelectionModel();
+                    }
                 });
     }
 

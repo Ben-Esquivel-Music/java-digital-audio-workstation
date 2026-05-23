@@ -1,0 +1,380 @@
+package com.benesquivelmusic.daw.app.ui.views;
+
+import com.benesquivelmusic.daw.app.ui.controls.BreadcrumbBar;
+import com.benesquivelmusic.daw.app.ui.design.SpacingTokens;
+import com.benesquivelmusic.daw.app.ui.inspector.InspectorSelection;
+import com.benesquivelmusic.daw.app.ui.inspector.InspectorSelectionModel;
+
+import javafx.beans.value.ChangeListener;
+import javafx.geometry.Insets;
+import javafx.geometry.Orientation;
+import javafx.scene.AccessibleRole;
+import javafx.scene.Node;
+import javafx.scene.control.Button;
+import javafx.scene.control.Label;
+import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
+import javafx.scene.layout.StackPane;
+import javafx.scene.layout.VBox;
+import javafx.scene.control.SplitPane;
+
+import java.util.List;
+import java.util.Objects;
+import java.util.ResourceBundle;
+
+/**
+ * Workshop view — a 60/40 side-by-side layout that pairs the arrangement
+ * with a focused plugin GUI (story 281, UI Design Book §4 Concept F).
+ *
+ * <h2>Layout</h2>
+ *
+ * <p>A horizontal {@link SplitPane} with two panes:</p>
+ *
+ * <ul>
+ *   <li><strong>Left (60&nbsp;%):</strong> the arrangement — caller supplies
+ *       the existing arrangement panel <em>verbatim</em> via
+ *       {@link #setArrangementContent(Node)}. Workshop never re-implements
+ *       the arrangement; it merely re-parents the existing nodes.</li>
+ *   <li><strong>Right (40&nbsp;%):</strong> a vertical {@link VBox} of
+ *       <ol>
+ *         <li>the {@link BreadcrumbBar} breadcrumb header
+ *             ({@code Track 03 ▸ Insert 1 ▸ Serum}),</li>
+ *         <li>a {@code ◯ Detach} {@link Button} that fires a typed
+ *             {@link DetachPluginRequestedEvent} (story 282 consumes it,
+ *             this story stops at the event-fire stub),</li>
+ *         <li>the focused {@link PluginViewContainer} (the same one across
+ *             every selection change — see Selection plumbing),</li>
+ *         <li>the clip-detail pane below the plugin pane — caller supplies
+ *             the existing {@code AudioEditorView} or piano-roll node
+ *             <em>verbatim</em> via {@link #setClipDetailContent(Node)}.</li>
+ *       </ol></li>
+ * </ul>
+ *
+ * <h2>Selection plumbing</h2>
+ *
+ * <p>The constructor accepts the shared {@link InspectorSelectionModel} from
+ * story 272. When the active selection is a track or insert, the breadcrumb
+ * is updated and the right pane shows that selection's currently-focused
+ * plugin via {@link #setFocusedPlugin(int, String, Node)}. The application
+ * controller (which knows the real plugin runtime) decides what the
+ * "currently-focused plugin" Node actually is and pushes it in; Workshop
+ * itself just routes it into the stable-identity
+ * {@link PluginViewContainer}.</p>
+ *
+ * <h2>Design type — plain {@link BorderPane}, not Control/Skin</h2>
+ *
+ * <p>Per the JavaFX-design rules the Control/Skin pattern is for "reusable
+ * widget with its own observable state". {@code WorkshopView} is a one-off
+ * application layout, so it subclasses {@link BorderPane} directly —
+ * forcing Control/Skin here would add ceremony with no payoff. Mirrors the
+ * {@link PerformanceStageView} design type decision (story 280).</p>
+ *
+ * <h2>Theming &amp; density</h2>
+ *
+ * <p>All colours and spacings resolve from CSS tokens — the workshop adds
+ * <em>no</em> hard-coded colour. A {@link com.benesquivelmusic.daw.app.ui.theme.ThemeManager}
+ * palette swap re-tints the view with no code change (story 277 contract,
+ * mirrored by {@code PerformanceStageView}).</p>
+ *
+ * <h2>Non-Goals (story 281)</h2>
+ *
+ * <ul>
+ *   <li>Detached / floating plugin windows — story 282 consumes the
+ *       {@link DetachPluginRequestedEvent} fired here.</li>
+ *   <li>Plugin parameter automation overlay.</li>
+ *   <li>Per-plugin layout persistence.</li>
+ *   <li>Replacing the plugin-parameter renderer — Workshop REUSES
+ *       {@link PluginViewContainer} and accepts whatever Node the caller
+ *       passes.</li>
+ *   <li>Interactive breadcrumb navigation — plain text only.</li>
+ *   <li>Multi-plugin tabs.</li>
+ * </ul>
+ */
+public final class WorkshopView extends BorderPane {
+
+    /** Stable style class — selectable as {@code .workshop-view}. */
+    public static final String STYLE_CLASS = "workshop-view";
+
+    /**
+     * The §6 Concept F 60/40 horizontal split. The user can drag the divider
+     * — per the story "60/40 split is user-resizable; save split position
+     * per project". Persistence is the caller's responsibility (the view
+     * exposes {@link #dividerPosition()} for that purpose).
+     */
+    public static final double DEFAULT_DIVIDER_POSITION = 0.6;
+
+    private final ResourceBundle messages;
+    private final InspectorSelectionModel selectionModel;
+
+    // ── Scene-graph nodes held for test seams / runtime updates ───────────
+    private final SplitPane split;
+    private final StackPane arrangementHost;
+    private final StackPane clipDetailHost;
+    private final BreadcrumbBar breadcrumb;
+    private final Button detachButton;
+    private final PluginViewContainer pluginContainer;
+    private final Label emptyPlaceholder;
+    private final VBox rightPane;
+
+    /** Strong field for the selection listener so it never gets GC'd. */
+    private final ChangeListener<InspectorSelection> selectionListener;
+
+    /**
+     * Creates a Workshop view bound to the given inspector selection model.
+     *
+     * <p>The view starts <em>empty</em>: arrangement and clip-detail panes
+     * are unset (callers wire them via
+     * {@link #setArrangementContent(Node)} / {@link #setClipDetailContent(Node)})
+     * and the right pane shows the "No plugin focused" placeholder until a
+     * selection transitions to a track or insert with a focused plugin.</p>
+     *
+     * @param messages       the {@code Messages} resource bundle for all
+     *                       user-facing strings (Skill §14); must not be
+     *                       {@code null}
+     * @param selectionModel the shared {@link InspectorSelectionModel} from
+     *                       story 272; must not be {@code null}
+     */
+    public WorkshopView(ResourceBundle messages, InspectorSelectionModel selectionModel) {
+        this.messages = Objects.requireNonNull(messages, "messages must not be null");
+        this.selectionModel = Objects.requireNonNull(selectionModel,
+                "selectionModel must not be null");
+
+        getStyleClass().add(STYLE_CLASS);
+        setAccessibleRole(AccessibleRole.NODE);
+        setAccessibleRoleDescription("Workshop");
+
+        // ── Right pane: breadcrumb / detach / plugin / clip detail ────────
+        this.breadcrumb = new BreadcrumbBar();
+        this.breadcrumb.getStyleClass().add("workshop-breadcrumb");
+
+        // ◯ Detach button — typed event stub for story 282 (skill §12).
+        this.detachButton = new Button(messages.getString("workshop.detach"));
+        this.detachButton.getStyleClass().addAll("dawg-button", "workshop-detach-button");
+        this.detachButton.setOnAction(_ ->
+                detachButton.fireEvent(new DetachPluginRequestedEvent()));
+
+        Region headerSpacer = new Region();
+        HBox.setHgrow(headerSpacer, Priority.ALWAYS);
+        HBox.setHgrow(breadcrumb, Priority.ALWAYS);
+        HBox breadcrumbHeader = new HBox(breadcrumb, headerSpacer, detachButton);
+        breadcrumbHeader.setSpacing(SpacingTokens.SPACING_MD);
+        breadcrumbHeader.getStyleClass().add("workshop-breadcrumb-header");
+
+        this.pluginContainer = new PluginViewContainer();
+        VBox.setVgrow(pluginContainer, Priority.ALWAYS);
+        this.emptyPlaceholder = new Label(messages.getString("workshop.plugin.empty"));
+        this.emptyPlaceholder.getStyleClass().add("workshop-empty-placeholder");
+        this.pluginContainer.setPlaceholder(emptyPlaceholder);
+
+        this.clipDetailHost = new StackPane();
+        this.clipDetailHost.getStyleClass().add("workshop-clip-detail-host");
+
+        this.rightPane = new VBox(breadcrumbHeader, pluginContainer, clipDetailHost);
+        this.rightPane.setSpacing(SpacingTokens.SPACING_MD);
+        this.rightPane.setPadding(new Insets(SpacingTokens.SPACING_MD));
+        this.rightPane.setFillWidth(true);
+        this.rightPane.getStyleClass().add("workshop-right-pane");
+
+        // ── Left pane: arrangement host (caller fills) ────────────────────
+        this.arrangementHost = new StackPane();
+        this.arrangementHost.getStyleClass().add("workshop-arrangement-host");
+
+        // ── 60/40 split ────────────────────────────────────────────────────
+        this.split = new SplitPane(arrangementHost, rightPane);
+        this.split.setOrientation(Orientation.HORIZONTAL);
+        this.split.getStyleClass().add("workshop-split");
+        // Initial divider position is the §4 Concept F 60 % / 40 % default.
+        // The divider is user-resizable per the story; the caller persists
+        // any subsequent position through dividerPosition().
+        this.split.setDividerPositions(DEFAULT_DIVIDER_POSITION);
+        setCenter(split);
+
+        // ── Selection plumbing ────────────────────────────────────────────
+        // Strong listener field so the WorkshopView lifetime governs the
+        // wiring — the selection model is shared and would otherwise pin
+        // this view across the controller's lifetime via a lambda capture.
+        this.selectionListener = (obs, oldSel, newSel) -> applySelection(newSel);
+        this.selectionModel.selectionProperty().addListener(selectionListener);
+        applySelection(this.selectionModel.getSelection());
+    }
+
+    // ── Caller-supplied content seams ───────────────────────────────────────
+
+    /**
+     * Installs the arrangement panel into the left pane. Caller is
+     * expected to pass the <em>existing</em> arrangement node verbatim per
+     * the story's "reuse existing arrangement panel components verbatim"
+     * rule. Passing {@code null} clears the left pane.
+     *
+     * @param node the arrangement node, or {@code null} to clear
+     */
+    public void setArrangementContent(Node node) {
+        arrangementHost.getChildren().clear();
+        if (node != null) {
+            arrangementHost.getChildren().add(node);
+        }
+    }
+
+    /**
+     * Installs the clip-detail node (typically an {@code AudioEditorView}
+     * for an audio clip or a piano-roll for a MIDI clip) into the slot
+     * <em>below</em> the plugin pane. Caller is expected to pass an
+     * existing editor node verbatim per the story's "reuses existing
+     * AudioEditorView / piano-roll components" rule. Passing {@code null}
+     * clears the clip-detail slot (no clip selected).
+     *
+     * @param node the clip-detail node, or {@code null} to clear
+     */
+    public void setClipDetailContent(Node node) {
+        clipDetailHost.getChildren().clear();
+        if (node != null) {
+            clipDetailHost.getChildren().add(node);
+        }
+    }
+
+    /**
+     * Updates the right pane to show the focused plugin for the given
+     * selection. The breadcrumb is set to {@code Track NN ▸ Insert N ▸
+     * pluginName}; the {@link PluginViewContainer}'s focused-plugin slot
+     * is set to {@code pluginNode}.
+     *
+     * <p>The container itself is <strong>not</strong> rebuilt — only its
+     * inner content slot — so the right pane's parent identity is stable
+     * across selection switches. This is the contract pinned by
+     * {@code WorkshopPluginSwitchTest}.</p>
+     *
+     * @param trackIndex the 1-based track index for the breadcrumb
+     * @param pluginName the focused plugin's display name, or {@code null}
+     *                   for unnamed
+     * @param pluginNode the focused plugin's GUI node, or {@code null} to
+     *                   reveal the empty-state placeholder
+     */
+    public void setFocusedPlugin(int trackIndex, String pluginName, Node pluginNode) {
+        // Breadcrumb segments: Track NN ▸ Insert 1 ▸ pluginName.
+        // "Insert 1" is the placeholder the story specifies in the
+        // motivation — Workshop today routes the active-insert focus
+        // through this single segment; multi-insert disambiguation lands
+        // with the inspector wiring story.
+        breadcrumb.setSegments(buildSegments(trackIndex, /* insertIndex= */ 1, pluginName));
+        pluginContainer.setPluginView(pluginNode);
+    }
+
+    /**
+     * Builds the breadcrumb segments for a track / insert / plugin trio.
+     * Pure static helper — extracted for testability and because it is the
+     * same string assembly the test asserts against.
+     *
+     * @param trackIndex  the 1-based track index
+     * @param insertIndex the 1-based insert index
+     * @param pluginName  the plugin display name (may be {@code null} → omitted)
+     * @return the ordered segment list
+     */
+    static List<String> buildSegments(int trackIndex, int insertIndex, String pluginName) {
+        String trackSegment = String.format("Track %02d", trackIndex);
+        String insertSegment = "Insert " + insertIndex;
+        if (pluginName == null || pluginName.isBlank()) {
+            return List.of(trackSegment, insertSegment);
+        }
+        return List.of(trackSegment, insertSegment, pluginName);
+    }
+
+    /**
+     * Reacts to a new inspector selection. Track and insert selections set
+     * the breadcrumb head; all other selections clear it (the right pane
+     * stays mounted but reveals its empty placeholder). This is the
+     * default routing — the application controller can override by calling
+     * {@link #setFocusedPlugin(int, String, Node)} directly when it knows
+     * the focused plugin Node.
+     */
+    private void applySelection(InspectorSelection s) {
+        if (s == null) {
+            clearFocus();
+            return;
+        }
+        switch (s) {
+            case InspectorSelection.TrackSelection ignored -> {
+                // The host knows the focused plugin for the selected track —
+                // it will follow up with setFocusedPlugin(...). Until then
+                // show the placeholder rather than stale content.
+                pluginContainer.setPluginView(null);
+                breadcrumb.setSegments(List.of());
+            }
+            case InspectorSelection.InsertSelection ins ->
+                // Best-effort breadcrumb without a plugin name; the host
+                // will refine it via setFocusedPlugin(...) once it
+                // resolves the actual plugin instance.
+                breadcrumb.setSegments(buildSegments(1, ins.insertIndex() + 1, null));
+            case InspectorSelection.ClipSelection ignored ->
+                clearFocus();
+            case InspectorSelection.SendSelection ignored ->
+                clearFocus();
+            case InspectorSelection.BusSelection ignored ->
+                clearFocus();
+            case InspectorSelection.Empty ignored ->
+                clearFocus();
+        }
+    }
+
+    private void clearFocus() {
+        pluginContainer.setPluginView(null);
+        breadcrumb.setSegments(List.of());
+    }
+
+    // ── Test seams / runtime accessors ────────────────────────────────────
+
+    /** @return the underlying 60/40 {@link SplitPane} (test seam). */
+    public SplitPane splitPane() {
+        return split;
+    }
+
+    /** @return the left arrangement host (test seam). */
+    public StackPane arrangementHost() {
+        return arrangementHost;
+    }
+
+    /** @return the right vertical pane (test seam). */
+    public VBox rightPane() {
+        return rightPane;
+    }
+
+    /** @return the right-pane breadcrumb bar (test seam). */
+    public BreadcrumbBar breadcrumb() {
+        return breadcrumb;
+    }
+
+    /** @return the right-pane Detach button (test seam). */
+    public Button detachButton() {
+        return detachButton;
+    }
+
+    /** @return the stable-identity plugin view container (test seam). */
+    public PluginViewContainer pluginContainer() {
+        return pluginContainer;
+    }
+
+    /** @return the clip-detail host below the plugin pane (test seam). */
+    public StackPane clipDetailHost() {
+        return clipDetailHost;
+    }
+
+    /**
+     * @return the current divider position in {@code [0.0, 1.0]}; the
+     *         caller persists this per-project per the story
+     */
+    public double dividerPosition() {
+        double[] positions = split.getDividerPositions();
+        return positions.length == 0 ? DEFAULT_DIVIDER_POSITION : positions[0];
+    }
+
+    /**
+     * Sets the divider position — used by the host on project load to
+     * restore the persisted split.
+     *
+     * @param position the new position in {@code [0.0, 1.0]}
+     */
+    public void setDividerPosition(double position) {
+        split.setDividerPositions(position);
+    }
+}

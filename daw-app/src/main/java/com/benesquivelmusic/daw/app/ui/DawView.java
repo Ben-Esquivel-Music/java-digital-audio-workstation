@@ -29,5 +29,16 @@ public enum DawView {
      * value by toggling activate/deactivate rather than performing a
      * simple centre-content swap.
      */
-    PERFORMANCE_STAGE
+    PERFORMANCE_STAGE,
+
+    /**
+     * Workshop view — sound-design layout pairing a 60&nbsp;% arrangement
+     * pane with a 40&nbsp;% focused-plugin pane plus clip detail below
+     * (story 281, UI Design Book §4 Concept F). Unlike Performance Stage,
+     * Workshop is a standard centre-content view: it occupies the same
+     * slot as Arrangement / Mixer / Editor / Mastering and reuses the
+     * existing arrangement panel and audio/MIDI editor verbatim inside its
+     * own {@link javafx.scene.control.SplitPane} layout.
+     */
+    WORKSHOP
 }

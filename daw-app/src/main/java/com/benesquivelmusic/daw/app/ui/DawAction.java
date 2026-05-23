@@ -210,6 +210,17 @@ public enum DawAction {
      */
     VIEW_PERFORMANCE_STAGE("Performance Stage View", Category.VIEWS,
             new KeyCodeCombination(KeyCode.F11)),
+    /**
+     * Story 281 — switch to the Workshop view (UI Design Book §4 Concept
+     * F): a 60/40 arrangement + focused plugin layout for sound-design
+     * sessions. Bound to {@code F12}, the next free function key after
+     * {@code F11} ({@link #VIEW_PERFORMANCE_STAGE}). {@code F12} is not
+     * used by any other DawAction binding today and is the shortcut the
+     * story specifies ("or non-colliding"). Users may rebind in
+     * {@code Settings → Key Bindings}.
+     */
+    VIEW_WORKSHOP("Workshop View", Category.VIEWS,
+            new KeyCodeCombination(KeyCode.F12)),
     TOGGLE_BROWSER("Toggle Browser", Category.VIEWS,
             new KeyCodeCombination(KeyCode.B, KeyCombination.SHORTCUT_DOWN)),
     TOGGLE_HISTORY("Toggle Undo History", Category.VIEWS,
