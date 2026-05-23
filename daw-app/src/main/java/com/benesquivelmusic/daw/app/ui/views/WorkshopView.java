@@ -264,12 +264,18 @@ public final class WorkshopView extends BorderPane {
      *                   reveal the empty-state placeholder
      */
     public void setFocusedPlugin(int trackIndex, String pluginName, Node pluginNode) {
-        // Breadcrumb segments: Track NN ▸ Insert 1 ▸ pluginName.
-        // "Insert 1" is the placeholder the story specifies in the
-        // motivation — Workshop today routes the active-insert focus
-        // through this single segment; multi-insert disambiguation lands
-        // with the inspector wiring story.
-        breadcrumb.setSegments(buildSegments(messages, trackIndex, /* insertIndex= */ 1, pluginName));
+        if (pluginNode == null) {
+            // Empty state — clear breadcrumb so UI is self-consistent
+            // with the "No plugin focused" placeholder.
+            breadcrumb.setSegments(List.of());
+        } else {
+            // Breadcrumb segments: Track NN ▸ Insert 1 ▸ pluginName.
+            // "Insert 1" is the placeholder the story specifies in the
+            // motivation — Workshop today routes the active-insert focus
+            // through this single segment; multi-insert disambiguation lands
+            // with the inspector wiring story.
+            breadcrumb.setSegments(buildSegments(messages, trackIndex, /* insertIndex= */ 1, pluginName));
+        }
         pluginContainer.setPluginView(pluginNode);
     }
 

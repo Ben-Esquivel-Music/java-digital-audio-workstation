@@ -312,7 +312,13 @@ public final class WorkshopSelectionHostController {
             return;
         }
         switch (s) {
-            case InspectorSelection.InsertSelection ins -> applyInsertSelection(ins);
+            case InspectorSelection.InsertSelection ins -> {
+                applyInsertSelection(ins);
+                // InsertSelection is a non-clip selection — clear any stale
+                // clip-detail content (the class Javadoc states non-clip
+                // selections clear the clip-detail slot).
+                workshopView.setClipDetailContent(null);
+            }
             case InspectorSelection.ClipSelection clip -> {
                 // Clip selection updates the clip-detail slot only;
                 // the focused-plugin pane retains the last focused
