@@ -330,6 +330,18 @@ final class MenuConstructionService {
         MenuItem performanceStage = menuItem("Performance Stage", DawIcon.TIMELINE,
                 DawAction.VIEW_PERFORMANCE_STAGE,
                 () -> host.onSwitchView(DawView.PERFORMANCE_STAGE));
+        // Story 281 — Workshop. A centre-content view (like Editor /
+        // Mixer / Mastering) that pairs the existing arrangement panel
+        // with a focused plugin pane in a 60/40 SplitPane.
+        // Menu-convention note: the story 281 spec calls this the
+        // "View menu", but the established convention since story 280
+        // (Performance Stage) lives under "Window" — Arrangement /
+        // Mixer / Editor / Mastering / Performance Stage / Workshop
+        // are all sibling Window-menu entries. Keeping Workshop here
+        // mirrors that sibling set; the story doc lags the convention.
+        MenuItem workshop = menuItem("Workshop", DawIcon.WAVEFORM,
+                DawAction.VIEW_WORKSHOP,
+                () -> host.onSwitchView(DawView.WORKSHOP));
 
         MenuItem toggleBrowser = menuItem("Toggle Browser", DawIcon.LIBRARY,
                 DawAction.TOGGLE_BROWSER, host::onToggleBrowser);
@@ -341,7 +353,7 @@ final class MenuConstructionService {
                 DawAction.TOGGLE_VISUALIZATIONS, host::onToggleVisualizations);
 
         windowMenu.getItems().addAll(
-                arrangement, mixer, editor, mastering, performanceStage,
+                arrangement, mixer, editor, mastering, performanceStage, workshop,
                 new SeparatorMenuItem(),
                 toggleBrowser, toggleHistory, toggleNotifications, toggleViz,
                 new SeparatorMenuItem(),

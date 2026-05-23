@@ -63,6 +63,11 @@ module daw.core {
     // Sample preview engine — surfaced to daw.app's BrowserPanel per-row
     // audition button (story 275). Single-channel auditioner.
     exports com.benesquivelmusic.daw.core.browser;
+    // Story 281 Task 2 — Clip sealed-ish interface is referenced by
+    // daw.app's ClipEditorFactory / WorkshopSelectionHostController as
+    // the common type that dispatches AudioClip vs MidiClip into the
+    // Workshop clip-detail slot.
+    exports com.benesquivelmusic.daw.core.clip;
     exports com.benesquivelmusic.daw.core.comping;
     exports com.benesquivelmusic.daw.core.dsp;
     exports com.benesquivelmusic.daw.core.dsp.acoustics;
@@ -154,7 +159,6 @@ module daw.core {
     //   com.benesquivelmusic.daw.core.analysis.quality
     //   com.benesquivelmusic.daw.core.audio.processing
     //   com.benesquivelmusic.daw.core.audio.ringbuffer
-    //   com.benesquivelmusic.daw.core.clip
     //   com.benesquivelmusic.daw.core.concurrent
     //   com.benesquivelmusic.daw.core.event
     //   com.benesquivelmusic.daw.core.export.omf

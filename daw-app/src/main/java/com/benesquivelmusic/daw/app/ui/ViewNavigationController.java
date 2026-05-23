@@ -41,6 +41,16 @@ final class ViewNavigationController {
         void onEditorFadeOut();
         void markProjectDirty();
 
+        // ── Workshop view (story 281) ─────────────────────────────────────
+        /**
+         * @return the shared {@link com.benesquivelmusic.daw.app.ui.inspector.InspectorSelectionModel}
+         *         held by {@code InspectorDrawer}, or {@code null} if the
+         *         inspector has not been wired yet — Workshop binds its
+         *         right-pane plugin focus to this single source of truth
+         *         (story 272)
+         */
+        com.benesquivelmusic.daw.app.ui.inspector.InspectorSelectionModel inspectorSelectionModel();
+
         // ── Performance Stage (story 280) ─────────────────────────────────
         /**
          * @return the {@code Messages} resource bundle for Performance
@@ -95,6 +105,23 @@ final class ViewNavigationController {
     private EditorView editorView;
     /** The mastering view panel — mastering chain with presets and A/B comparison. */
     private MasteringView masteringView;
+    /**
+     * The Workshop view (story 281, UI Design Book §4 Concept F). Lazily
+     * constructed on first switch to {@link DawView#WORKSHOP} because it
+     * needs the inspector selection model, which is wired after this
+     * controller is built. Set once, then cached in {@link #viewCache}.
+     */
+    private com.benesquivelmusic.daw.app.ui.views.WorkshopView workshopView;
+
+    /**
+     * Story 281 Task 2 — selection-driven push of the focused
+     * plugin GUI / clip-detail editor into the Workshop right pane.
+     * Built lazily alongside {@link #workshopView} on first switch to
+     * {@link DawView#WORKSHOP}; held here so it can outlive the user
+     * exiting and re-entering Workshop (the cache survives).
+     */
+    private com.benesquivelmusic.daw.app.ui.views.WorkshopSelectionHostController
+            workshopSelectionHostController;
 
     /** The currently active edit tool. */
     private EditTool activeEditTool;
@@ -229,9 +256,51 @@ final class ViewNavigationController {
         if (view == activeView) {
             return;
         }
+        // Story 281 — re-parent the arrangement node into Workshop's left
+        // pane on entry, and pull it back into the standard ARRANGEMENT
+        // slot on exit. This honours the story's "reuse existing
+        // arrangement panel components verbatim" rule: there is only one
+        // arrangement Node, owned by viewCache.get(ARRANGEMENT), and it
+        // floats between the two homes.
+        DawView previousView = activeView;
+        if (previousView == DawView.WORKSHOP && workshopView != null) {
+            // Pull arrangement back out of Workshop's left pane before
+            // switching elsewhere.
+            workshopView.setArrangementContent(null);
+            // Don't clear clip detail on exit — the selection model still
+            // holds the clip reference and applyPendingOnWorkshopActivation
+            // skips re-applying an unchanged selection (lastApplied memo).
+            // Instead, reset the controller's lastApplied so the next
+            // activation unconditionally re-applies the current selection.
+            if (workshopSelectionHostController != null) {
+                workshopSelectionHostController.resetLastApplied();
+            }
+        }
+        if (view == DawView.WORKSHOP) {
+            ensureWorkshopBuilt();
+            // Detach the arrangement node from its current parent before
+            // re-parenting it into Workshop (JavaFX throws
+            // IllegalArgumentException if a Node is added to a new parent
+            // while still attached to another). Only clear center when it
+            // actually holds the arrangement node to avoid a visible
+            // blank/flicker when switching from other views (e.g. Mixer).
+            if (rootPane.getCenter() == viewCache.get(DawView.ARRANGEMENT)) {
+                rootPane.setCenter(null);
+            }
+            // Move the cached arrangement node into Workshop's left pane.
+            workshopView.setArrangementContent(viewCache.get(DawView.ARRANGEMENT));
+            // Story 281 Task 2 — apply any selection the user made while
+            // Workshop was inactive (e.g. clicking an insert in Arrangement
+            // / Mixer view) so the focused plugin appears on entry.
+            if (workshopSelectionHostController != null) {
+                workshopSelectionHostController.applyPendingOnWorkshopActivation();
+            }
+        }
         activeView = view;
         toolbarStateStore.saveActiveView(view);
-        rootPane.setCenter(viewCache.get(view));
+        Node target = viewCache.get(view);
+        rootPane.setCenter(target);
+        playViewSwitchTransition(target);
         statusBarLabel.setText("Switched to " + view.name().charAt(0)
                 + view.name().substring(1).toLowerCase() + " view");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.STATUS, 12));
@@ -239,6 +308,125 @@ final class ViewNavigationController {
             onViewChanged.run();
         }
         LOG.fine(() -> "Switched to view: " + view);
+    }
+
+    /**
+     * Lazily constructs and caches the Workshop view (story 281). Needs
+     * the inspector selection model from {@link Host#inspectorSelectionModel()},
+     * which is wired by {@code MainController} after this controller's
+     * constructor returns — hence lazy.
+     */
+    private void ensureWorkshopBuilt() {
+        if (workshopView != null) {
+            return;
+        }
+        com.benesquivelmusic.daw.app.ui.inspector.InspectorSelectionModel sm =
+                host.inspectorSelectionModel();
+        if (sm == null) {
+            // Fail-fast (review S9): a missing selection model means the
+            // inspector wasn't wired in time. Silently falling back to a
+            // private model produced a Workshop view that looked correct
+            // but never reflected outside selections — the bug would only
+            // surface when a user clicked an insert and the right pane did
+            // nothing. Throwing here forces the wiring order to be fixed
+            // at construction time.
+            throw new IllegalStateException(
+                    "WorkshopView requires a shared InspectorSelectionModel; "
+                            + "host.inspectorSelectionModel() returned null. "
+                            + "Ensure the inspector is wired before activating "
+                            + "the Workshop view.");
+        }
+        workshopView = new com.benesquivelmusic.daw.app.ui.views.WorkshopView(
+                host.messages());
+
+        // Story 281 — hydrate the persisted divider position before the
+        // view's first layout pass, then write back whenever the user
+        // drags the divider. Range-clamping happens inside the store on
+        // load (a corrupt or extreme value would collapse one pane).
+        workshopView.setDividerPosition(
+                toolbarStateStore.loadWorkshopDividerPosition());
+        var dividers = workshopView.splitPane().getDividers();
+        if (!dividers.isEmpty()) {
+            dividers.get(0).positionProperty().addListener(
+                    (obs, oldPos, newPos) -> toolbarStateStore
+                            .saveWorkshopDividerPosition(newPos.doubleValue()));
+        }
+
+        // Story 281 Task 2 — wire selection-driven plugin / clip-detail
+        // push from the shared selection model into the right pane.
+        // Built once, reused across Workshop enter/exit cycles so its
+        // plugin-panel cache survives.
+        workshopSelectionHostController =
+                new com.benesquivelmusic.daw.app.ui.views.WorkshopSelectionHostController(
+                        workshopView, sm, host::project,
+                        () -> activeView == DawView.WORKSHOP,
+                        host.messages());
+
+        viewCache.put(DawView.WORKSHOP, workshopView);
+    }
+
+    /**
+     * Test seam — exposes the Workshop selection-host controller so
+     * verification tests can interrogate its cache size and observe
+     * push behaviour.
+     *
+     * @return the controller, or {@code null} when Workshop has not
+     *         been built yet
+     */
+    com.benesquivelmusic.daw.app.ui.views.WorkshopSelectionHostController
+            workshopSelectionHostController() {
+        return workshopSelectionHostController;
+    }
+
+    /**
+     * Disposes per-view controllers held by this navigation controller —
+     * called from the primary {@code Stage}'s {@code setOnHidden} hook in
+     * {@code MainController} alongside the other application-lifetime
+     * disposables (review N5). At present only the Workshop selection
+     * host controller has a {@link
+     * com.benesquivelmusic.daw.app.ui.views.WorkshopSelectionHostController#dispose()
+     * dispose()} contract — the standard {@code Mixer}/{@code Editor}/
+     * {@code Mastering} views and {@code Performance Stage} hold no
+     * cross-lifetime listeners. Idempotent: re-calling is safe.
+     */
+    void dispose() {
+        if (workshopSelectionHostController != null) {
+            workshopSelectionHostController.dispose();
+            workshopSelectionHostController = null;
+        }
+    }
+
+    /**
+     * Plays the §3.5 view-switch transition (180&nbsp;ms {@code EASE_OUT}
+     * fade-in) on the given node, honouring the Reduce Motion flag
+     * (story 279): when Reduce Motion is on the transition is skipped and
+     * the node is shown immediately. Used for every standard centre-content
+     * view swap — Arrangement / Mixer / Editor / Mastering / Workshop —
+     * so the experience is consistent across the menu.
+     *
+     * @param node the freshly installed content node
+     */
+    private void playViewSwitchTransition(Node node) {
+        if (node == null) {
+            return;
+        }
+        if (!com.benesquivelmusic.daw.app.ui.motion.MotionManager
+                .getDefault().isAnimationAllowed()) {
+            node.setOpacity(1.0);
+            return;
+        }
+        node.setOpacity(0.0);
+        javafx.animation.FadeTransition fade = new javafx.animation.FadeTransition(
+                javafx.util.Duration.millis(180), node);
+        fade.setFromValue(0.0);
+        fade.setToValue(1.0);
+        fade.setInterpolator(javafx.animation.Interpolator.EASE_OUT);
+        fade.play();
+    }
+
+    /** @return the Workshop view, or {@code null} if it has not been built yet (test seam). */
+    com.benesquivelmusic.daw.app.ui.views.WorkshopView workshopView() {
+        return workshopView;
     }
 
     // ── Performance Stage activation (story 280) ─────────────────────────────
@@ -705,7 +893,11 @@ final class ViewNavigationController {
      * Views that hold a project reference should be added here as needed.
      */
     void onProjectChanged() {
-        // Project-scoped view rebinding (e.g. mixer) is handled elsewhere;
-        // telemetry is now a floating plugin window managed by MainController.
+        // Clear project-scoped caches in the Workshop selection host so
+        // stale plugin panels and clip editors (which may hold off-heap
+        // GPU/waveform resources) from the prior project are released.
+        if (workshopSelectionHostController != null) {
+            workshopSelectionHostController.resetForNewProject();
+        }
     }
 }

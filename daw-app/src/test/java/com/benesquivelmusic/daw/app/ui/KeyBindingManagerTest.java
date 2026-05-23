@@ -16,6 +16,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class KeyBindingManagerTest {
 
+    /**
+     * A {@link KeyCode} that has no default {@link DawAction} binding —
+     * used as the canonical "unused key" sentinel for conflict-detection
+     * tests. Originally this was {@code F12}; story 281 introduced
+     * {@code F12 = VIEW_WORKSHOP}, so the sentinel moved to {@code F10}.
+     * If a future story binds {@code F10}, update this constant — the
+     * value just needs to be a key with no default {@code DawAction}.
+     */
+    private static final KeyCode UNUSED_KEY = KeyCode.F10;
+
     private Preferences prefs;
     private KeyBindingManager manager;
 
@@ -89,7 +99,7 @@ class KeyBindingManagerTest {
 
     @Test
     void shouldSetCustomBinding() {
-        KeyCombination custom = new KeyCodeCombination(KeyCode.F12);
+        KeyCombination custom = new KeyCodeCombination(UNUSED_KEY);
         manager.setBinding(DawAction.PLAY_STOP, custom);
 
         Optional<KeyCombination> result = manager.getBinding(DawAction.PLAY_STOP);
@@ -113,7 +123,7 @@ class KeyBindingManagerTest {
 
     @Test
     void setBindingShouldRejectNullAction() {
-        KeyCombination combo = new KeyCodeCombination(KeyCode.F12);
+        KeyCombination combo = new KeyCodeCombination(UNUSED_KEY);
         assertThatThrownBy(() -> manager.setBinding(null, combo))
                 .isInstanceOf(NullPointerException.class);
     }
@@ -122,7 +132,7 @@ class KeyBindingManagerTest {
 
     @Test
     void shouldPersistCustomBinding() {
-        KeyCombination custom = new KeyCodeCombination(KeyCode.F12);
+        KeyCombination custom = new KeyCodeCombination(UNUSED_KEY);
         manager.setBinding(DawAction.PLAY_STOP, custom);
 
         KeyBindingManager reloaded = new KeyBindingManager(prefs);
@@ -165,7 +175,7 @@ class KeyBindingManagerTest {
 
     @Test
     void findConflictShouldReturnEmptyForUnusedBinding() {
-        KeyCombination unused = new KeyCodeCombination(KeyCode.F12);
+        KeyCombination unused = new KeyCodeCombination(UNUSED_KEY);
         Optional<DawAction> conflict = manager.findConflict(DawAction.PLAY_STOP, unused);
         assertThat(conflict).isEmpty();
     }
@@ -197,7 +207,7 @@ class KeyBindingManagerTest {
 
     @Test
     void shouldReturnEmptyForUnboundCombination() {
-        KeyCombination unused = new KeyCodeCombination(KeyCode.F12);
+        KeyCombination unused = new KeyCodeCombination(UNUSED_KEY);
         Optional<DawAction> action = manager.getActionForBinding(unused);
         assertThat(action).isEmpty();
     }
@@ -263,7 +273,7 @@ class KeyBindingManagerTest {
     @Test
     void isCustomizedShouldReturnTrueForChangedBinding() {
         manager.setBinding(DawAction.PLAY_STOP,
-                new KeyCodeCombination(KeyCode.F12));
+                new KeyCodeCombination(UNUSED_KEY));
         assertThat(manager.isCustomized(DawAction.PLAY_STOP)).isTrue();
     }
 
@@ -284,7 +294,7 @@ class KeyBindingManagerTest {
     @Test
     void shouldLoadStoredValidBinding() {
         // Store a valid binding in preferences
-        KeyCombination custom = new KeyCodeCombination(KeyCode.F12);
+        KeyCombination custom = new KeyCodeCombination(UNUSED_KEY);
         prefs.put("keybinding.PLAY_STOP", custom.getName());
 
         KeyBindingManager reloaded = new KeyBindingManager(prefs);

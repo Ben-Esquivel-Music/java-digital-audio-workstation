@@ -35,12 +35,29 @@ public final class ToolbarStateStore {
     static final String KEY_BROWSER_VISIBLE = "toolbar.browserVisible";
     static final String KEY_RIPPLE_ALL_TRACKS_PROMPT_SUPPRESSED =
             "toolbar.rippleAllTracksPromptSuppressed";
+    static final String KEY_WORKSHOP_DIVIDER_POSITION = "toolbar.workshopDividerPosition";
 
     static final DawView DEFAULT_ACTIVE_VIEW = DawView.ARRANGEMENT;
     static final EditTool DEFAULT_EDIT_TOOL = EditTool.POINTER;
     static final boolean DEFAULT_SNAP_ENABLED = true;
     static final GridResolution DEFAULT_GRID_RESOLUTION = GridResolution.QUARTER;
     static final boolean DEFAULT_BROWSER_VISIBLE = false;
+    /**
+     * The default Workshop (story 281) split-pane divider position — 60 %
+     * arrangement / 40 % focused-plugin per UI Design Book §4 Concept F.
+     * Matches {@code WorkshopView.DEFAULT_DIVIDER_POSITION}; kept here to
+     * avoid a layering dependency from this store onto the view package.
+     */
+    static final double DEFAULT_WORKSHOP_DIVIDER_POSITION = 0.6;
+    /**
+     * Range-clamp on {@link #loadWorkshopDividerPosition()}: stored values
+     * outside {@code [0.1, 0.9]} fall back to
+     * {@link #DEFAULT_WORKSHOP_DIVIDER_POSITION}. A corrupt or extreme
+     * value would otherwise collapse one pane to zero width, hiding the
+     * arrangement or the plugin pane entirely.
+     */
+    static final double MIN_WORKSHOP_DIVIDER_POSITION = 0.1;
+    static final double MAX_WORKSHOP_DIVIDER_POSITION = 0.9;
 
     private final Preferences prefs;
 
@@ -188,5 +205,49 @@ public final class ToolbarStateStore {
      */
     public void saveRippleAllTracksPromptSuppressed(boolean suppressed) {
         prefs.putBoolean(KEY_RIPPLE_ALL_TRACKS_PROMPT_SUPPRESSED, suppressed);
+    }
+
+    // ── Workshop divider position (story 281) ────────────────────────────────
+
+    /**
+     * Loads the persisted Workshop split-pane divider position, falling
+     * back to {@link #DEFAULT_WORKSHOP_DIVIDER_POSITION} when the stored
+     * value is missing or outside
+     * {@code [MIN_WORKSHOP_DIVIDER_POSITION, MAX_WORKSHOP_DIVIDER_POSITION]}.
+     *
+     * <p>Range-clamping is deliberate — a corrupt or extreme value (e.g.
+     * {@code 0.0} or {@code 1.0}) would otherwise collapse one pane to
+     * zero width, hiding the arrangement or the plugin pane entirely.</p>
+     *
+     * @return the persisted divider position in
+     *         {@code [MIN_WORKSHOP_DIVIDER_POSITION,
+     *          MAX_WORKSHOP_DIVIDER_POSITION]}
+     */
+    public double loadWorkshopDividerPosition() {
+        double value = prefs.getDouble(
+                KEY_WORKSHOP_DIVIDER_POSITION, DEFAULT_WORKSHOP_DIVIDER_POSITION);
+        if (Double.isNaN(value)
+                || value < MIN_WORKSHOP_DIVIDER_POSITION
+                || value > MAX_WORKSHOP_DIVIDER_POSITION) {
+            LOG.log(Level.WARNING, "Workshop divider position out of range "
+                    + "({0}); defaulting to {1}",
+                    new Object[]{value, DEFAULT_WORKSHOP_DIVIDER_POSITION});
+            return DEFAULT_WORKSHOP_DIVIDER_POSITION;
+        }
+        return value;
+    }
+
+    /**
+     * Persists the Workshop split-pane divider position.
+     *
+     * <p>No clamping on write — JavaFX's {@code SplitPane} itself
+     * constrains positions to {@code [0.0, 1.0]}, and the read-side clamp
+     * guards against any corrupt value that nonetheless lands in the
+     * store.</p>
+     *
+     * @param position the current divider position
+     */
+    public void saveWorkshopDividerPosition(double position) {
+        prefs.putDouble(KEY_WORKSHOP_DIVIDER_POSITION, position);
     }
 }

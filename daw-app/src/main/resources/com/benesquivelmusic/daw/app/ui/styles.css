@@ -677,6 +677,67 @@
     -fx-border-radius: 8;
 }
 
+/* ── Workshop view (story 281 — UI Design Book §4 Concept F) ──
+ * 60/40 SplitPane pairing the arrangement with a focused-plugin pane and
+ * clip detail below. Structural only — every colour resolves from a role
+ * token so a ThemeManager palette swap re-tints with no code change
+ * (story 277 contract, mirrored from .performance-stage-view above). */
+.workshop-view {
+    -fx-background-color: -surface-bg;
+}
+
+.workshop-split {
+    -fx-background-color: transparent;
+    -fx-padding: 0;
+}
+
+.workshop-right-pane {
+    -fx-background-color: -surface-1;
+    -fx-background-radius: 8;
+    -fx-border-color: -line-soft;
+    -fx-border-width: 1;
+    -fx-border-radius: 8;
+}
+
+.workshop-breadcrumb-header {
+    -fx-padding: 0 0 8 0;
+    -fx-border-color: transparent transparent -line-soft transparent;
+    -fx-border-width: 0 0 1 0;
+}
+
+.workshop-arrangement-host,
+.workshop-clip-detail-host,
+.plugin-view-container {
+    -fx-background-color: transparent;
+}
+
+.workshop-empty-placeholder {
+    -fx-text-fill: -text-mute;
+    -fx-font-style: italic;
+    -fx-padding: 24;
+}
+
+.workshop-detach-button {
+    -fx-background-radius: 4;
+    -fx-border-radius: 4;
+}
+
+/* Breadcrumb bar (story 281) — text-only navigation crumb. Hgap/spacing
+ * uses the 4 px grid. Pure token references — no inline colours. */
+.breadcrumb-bar {
+    -fx-spacing: 4;
+    -fx-padding: 4 8 4 8;
+}
+
+.breadcrumb-segment {
+    -fx-text-fill: -text-hi;
+}
+
+.breadcrumb-separator {
+    -fx-text-fill: -text-mute;
+    -fx-padding: 0 4 0 4;
+}
+
 /* ── Track List Panel ── */
 .track-list-panel {
     -fx-background-color: -surface-1;
