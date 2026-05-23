@@ -307,6 +307,8 @@ Operationalises the canonical UI vision in [`docs/design/UI_DESIGN_BOOK.md`](../
 | 201 | [Immutable Record Domain Models](201-immutable-record-domain-models.md) | 🟡 Medium | Refactoring |
 | 202 | [Sealed Event Hierarchy](202-sealed-event-hierarchy.md) | 🟡 Medium | Refactoring |
 | 203 | [Central Typed Event Bus](203-central-typed-event-bus.md) | 🟠 High | Refactoring |
+| 283 | [Wire EventBus Publishers in Core Action Classes](283-wire-eventbus-publishers-in-core-actions.md) | 🟠 High | Events |
+| 284 | [Extract GpuCanvasView Base from Display Region-Shell Boilerplate](284-gpu-canvas-view-extract-display-shell.md) | 🟢 Low | Refactoring |
 
 ## Performance
 
