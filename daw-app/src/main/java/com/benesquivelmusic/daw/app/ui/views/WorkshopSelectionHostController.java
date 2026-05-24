@@ -626,14 +626,16 @@ public final class WorkshopSelectionHostController {
         try {
             com.benesquivelmusic.daw.app.ui.PluginParameterEditorPanel panel =
                     new com.benesquivelmusic.daw.app.ui.PluginParameterEditorPanel(params);
-            panel.setOnParameterChanged(
-                    InsertEffectFactory.createPublishingParameterHandler(slot, type));
+            // Initialize current values BEFORE installing the publishing handler,
+            // so refreshControls() does not emit spurious ParameterChanged events.
             Map<Integer, Double> currentValues =
                     InsertEffectFactory.getParameterValues(type, slot.getProcessor());
             if (!currentValues.isEmpty()) {
                 panel.getState().loadValues(currentValues);
                 panel.refreshControls();
             }
+            panel.setOnParameterChanged(
+                    InsertEffectFactory.createPublishingParameterHandler(slot, type));
             return panel;
         } catch (RuntimeException e) {
             // Defensive — never let a misbehaving plugin descriptor crash
