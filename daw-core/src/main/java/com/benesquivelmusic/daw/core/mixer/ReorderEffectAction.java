@@ -40,17 +40,27 @@ public final class ReorderEffectAction implements UndoableAction {
 
     @Override
     public void execute() {
+        if (fromIndex == toIndex) {
+            return;
+        }
         InsertSlot slot = channel.getInsertSlots().get(fromIndex);
         channel.moveInsert(fromIndex, toIndex);
-        EventBusPublisher.publish(new PluginEvent.Reordered(
+        EventBusPublisher.publish(new PluginEvent.Unloaded(
+                slot.getPluginInstanceId(), Instant.now()));
+        EventBusPublisher.publish(new PluginEvent.Loaded(
                 slot.getPluginInstanceId(), Instant.now()));
     }
 
     @Override
     public void undo() {
+        if (fromIndex == toIndex) {
+            return;
+        }
         InsertSlot slot = channel.getInsertSlots().get(toIndex);
         channel.moveInsert(toIndex, fromIndex);
-        EventBusPublisher.publish(new PluginEvent.Reordered(
+        EventBusPublisher.publish(new PluginEvent.Unloaded(
+                slot.getPluginInstanceId(), Instant.now()));
+        EventBusPublisher.publish(new PluginEvent.Loaded(
                 slot.getPluginInstanceId(), Instant.now()));
     }
 }

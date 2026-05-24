@@ -106,7 +106,8 @@ class EventBusMetricsSmokeTest {
             new SetPluginParameterAction(slot, 0, -10.0, -20.0, paramHandler)
                     .execute();
 
-            // 10. PluginEvent.Reordered — insert effect reorder.
+            // 10. PluginEvent.Unloaded/Loaded — insert effect reorder models
+            //     the move as an unload+load pair (no dedicated Reordered variant).
             InsertSlot slot2 = new InsertSlot("Comp",
                     InsertEffectFactory.createProcessor(
                             InsertEffectType.COMPRESSOR, 2, 44_100),
@@ -122,18 +123,18 @@ class EventBusMetricsSmokeTest {
                             "ClipEvent.Moved",
                             "ClipEvent.Trimmed",
                             "PluginEvent.Loaded",
+                            "PluginEvent.Unloaded",
                             "PluginEvent.Bypassed",
                             "PluginEvent.ParameterChanged",
-                            "PluginEvent.Reordered",
                             "MixerEvent.ChannelAdded");
             assertThat(published.get("ClipEvent.Added")).isPositive();
             assertThat(published.get("ClipEvent.Removed")).isPositive();
             assertThat(published.get("ClipEvent.Moved")).isPositive();
             assertThat(published.get("ClipEvent.Trimmed")).isPositive();
             assertThat(published.get("PluginEvent.Loaded")).isPositive();
+            assertThat(published.get("PluginEvent.Unloaded")).isPositive();
             assertThat(published.get("PluginEvent.Bypassed")).isPositive();
             assertThat(published.get("PluginEvent.ParameterChanged")).isPositive();
-            assertThat(published.get("PluginEvent.Reordered")).isPositive();
             assertThat(published.get("MixerEvent.ChannelAdded")).isPositive();
 
             // Sanity check that channelId == trackId by invariant.

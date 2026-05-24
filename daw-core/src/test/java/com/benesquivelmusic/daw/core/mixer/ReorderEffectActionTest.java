@@ -83,7 +83,7 @@ class ReorderEffectActionTest {
     }
 
     @Test
-    void shouldPublishPluginReorderedOnExecuteAndUndo() throws Exception {
+    void shouldPublishPluginUnloadedAndLoadedOnExecuteAndUndo() throws Exception {
         MixerChannel channel = new MixerChannel("Drums");
         InsertSlot comp = new InsertSlot("Compressor", createDummyProcessor());
         InsertSlot eq = new InsertSlot("EQ", createDummyProcessor());
@@ -94,7 +94,7 @@ class ReorderEffectActionTest {
         EventBusPublisher.setDefault(bus);
         try {
             List<PluginEvent> events = new CopyOnWriteArrayList<>();
-            CountDownLatch latch = new CountDownLatch(2);
+            CountDownLatch latch = new CountDownLatch(4);
             bus.on(PluginEvent.class, e -> {
                 events.add(e);
                 latch.countDown();
@@ -105,15 +105,46 @@ class ReorderEffectActionTest {
             action.undo();
 
             assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
-            assertThat(events).hasSize(2);
-            assertThat(events.get(0)).isInstanceOf(PluginEvent.Reordered.class);
-            assertThat(events.get(1)).isInstanceOf(PluginEvent.Reordered.class);
-            // Execute moves comp (at index 0) to index 1
+            assertThat(events).hasSize(4);
+            // Execute: Unloaded + Loaded for comp (moved from 0 to 1)
+            assertThat(events.get(0)).isInstanceOf(PluginEvent.Unloaded.class);
             assertThat(events.get(0).pluginInstanceId())
                     .isEqualTo(comp.getPluginInstanceId());
-            // Undo moves comp (now at index 1) back to index 0
+            assertThat(events.get(1)).isInstanceOf(PluginEvent.Loaded.class);
             assertThat(events.get(1).pluginInstanceId())
                     .isEqualTo(comp.getPluginInstanceId());
+            // Undo: Unloaded + Loaded for comp (moved back from 1 to 0)
+            assertThat(events.get(2)).isInstanceOf(PluginEvent.Unloaded.class);
+            assertThat(events.get(2).pluginInstanceId())
+                    .isEqualTo(comp.getPluginInstanceId());
+            assertThat(events.get(3)).isInstanceOf(PluginEvent.Loaded.class);
+            assertThat(events.get(3).pluginInstanceId())
+                    .isEqualTo(comp.getPluginInstanceId());
+        } finally {
+            EventBusPublisher.setDefault(null);
+            bus.close();
+        }
+    }
+
+    @Test
+    void shouldNotPublishEventsForNoOpReorder() throws Exception {
+        MixerChannel channel = new MixerChannel("Drums");
+        InsertSlot comp = new InsertSlot("Compressor", createDummyProcessor());
+        channel.addInsert(comp);
+
+        EventBus bus = DefaultEventBus.builder().build();
+        EventBusPublisher.setDefault(bus);
+        try {
+            List<PluginEvent> events = new CopyOnWriteArrayList<>();
+            bus.on(PluginEvent.class, events::add);
+
+            ReorderEffectAction action = new ReorderEffectAction(channel, 0, 0);
+            action.execute();
+            action.undo();
+
+            // Give a short window for any spurious events to arrive
+            Thread.sleep(100);
+            assertThat(events).isEmpty();
         } finally {
             EventBusPublisher.setDefault(null);
             bus.close();

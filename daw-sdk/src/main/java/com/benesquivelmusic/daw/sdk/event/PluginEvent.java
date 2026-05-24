@@ -18,7 +18,6 @@ public sealed interface PluginEvent extends DawEvent
                 PluginEvent.Unloaded,
                 PluginEvent.Bypassed,
                 PluginEvent.ParameterChanged,
-                PluginEvent.Reordered,
                 PluginEvent.Crashed {
 
     /** Returns the id of the affected plugin instance. */
@@ -83,20 +82,6 @@ public sealed interface PluginEvent extends DawEvent
             if (parameterId.isBlank()) {
                 throw new IllegalArgumentException("parameterId must not be blank");
             }
-            Objects.requireNonNull(timestamp, "timestamp must not be null");
-        }
-    }
-
-    /**
-     * Emitted when a plugin instance is moved to a different position
-     * within the insert chain.
-     *
-     * @param pluginInstanceId id of the reordered plugin instance
-     * @param timestamp        wall-clock instant of the event
-     */
-    record Reordered(UUID pluginInstanceId, Instant timestamp) implements PluginEvent {
-        public Reordered {
-            Objects.requireNonNull(pluginInstanceId, "pluginInstanceId must not be null");
             Objects.requireNonNull(timestamp, "timestamp must not be null");
         }
     }
