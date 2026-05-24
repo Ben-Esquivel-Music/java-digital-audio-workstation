@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.core.event;
 
 import com.benesquivelmusic.daw.core.audio.AddClipAction;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
+import com.benesquivelmusic.daw.core.audio.ClipEdgeTrimAction;
 import com.benesquivelmusic.daw.core.audio.CutClipsAction;
 import com.benesquivelmusic.daw.core.audio.MoveClipAction;
 import com.benesquivelmusic.daw.core.audio.RemoveClipAction;
@@ -82,6 +83,11 @@ class EventBusMetricsSmokeTest {
             AudioClip cutA = new AudioClip("e", 16.0, 4.0, null);
             track.addClip(cutA);
             new CutClipsAction(List.of(Map.entry(track, cutA))).execute();
+
+            // 5b. ClipEvent.Trimmed — ClipEdgeTrimAction (audio edge-trim path).
+            AudioClip trimTarget = new AudioClip("f", 20.0, 8.0, null);
+            track.addClip(trimTarget);
+            new ClipEdgeTrimAction(track, trimTarget, 22.0, 6.0, 2.0).execute();
 
             // 6. PluginEvent.Loaded — InsertEffectAction (+
             //    PluginEvent.Bypassed via ToggleBypassAction).

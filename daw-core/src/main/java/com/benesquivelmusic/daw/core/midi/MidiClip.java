@@ -23,10 +23,10 @@ public final class MidiClip implements Clip {
     private final UUID id = UUID.randomUUID();
     /**
      * Set by {@link com.benesquivelmusic.daw.core.track.Track Track}'s
-     * constructor (package-private — see {@link #setOwningTrackId}) so
-     * MIDI-clip-mutation actions can publish {@code ClipEvent.Trimmed}
-     * carrying the owning track id alongside the clip id. Volatile so
-     * that publishers see the latest value if a clip is ever rewired.
+     * constructor (see {@link #setOwningTrackId}) so MIDI-clip-mutation
+     * actions can publish {@code ClipEvent.Trimmed} carrying the owning
+     * track id alongside the clip id. Volatile so that publishers see
+     * the latest value if a clip is ever rewired.
      */
     private volatile UUID owningTrackId;
     private final List<MidiNoteData> notes = new ArrayList<>();

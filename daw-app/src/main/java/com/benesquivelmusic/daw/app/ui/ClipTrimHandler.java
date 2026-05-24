@@ -74,6 +74,7 @@ final class ClipTrimHandler {
 
     // ── Drag state ───────────────────────────────────────────────────────────
 
+    private Track trimTrack;
     private AudioClip trimClip;
     private TrimEdge trimEdge;
     private double originalStartBeat;
@@ -90,9 +91,10 @@ final class ClipTrimHandler {
     }
 
     /**
-     * Result of an edge hit test, pairing the detected clip with the edge.
+     * Result of an edge hit test, pairing the detected clip with the edge
+     * and the owning track.
      */
-    record EdgeHit(AudioClip clip, TrimEdge edge) {}
+    record EdgeHit(Track track, AudioClip clip, TrimEdge edge) {}
 
     // ── Edge detection ───────────────────────────────────────────────────────
 
@@ -121,12 +123,12 @@ final class ClipTrimHandler {
             if (Math.abs(x - leftEdgeX) <= EDGE_THRESHOLD_PIXELS
                     && beat >= clip.getStartBeat() - beatThreshold()
                     && beat <= clip.getEndBeat()) {
-                return new EdgeHit(clip, TrimEdge.LEFT);
+                return new EdgeHit(track, clip, TrimEdge.LEFT);
             }
             if (Math.abs(x - rightEdgeX) <= EDGE_THRESHOLD_PIXELS
                     && beat >= clip.getStartBeat()
                     && beat <= clip.getEndBeat() + beatThreshold()) {
-                return new EdgeHit(clip, TrimEdge.RIGHT);
+                return new EdgeHit(track, clip, TrimEdge.RIGHT);
             }
         }
         return null;
@@ -137,12 +139,15 @@ final class ClipTrimHandler {
     /**
      * Begins a trim drag on the given clip edge.
      *
-     * @param clip the clip being trimmed
-     * @param edge the edge to drag
+     * @param track the track that owns the clip
+     * @param clip  the clip being trimmed
+     * @param edge  the edge to drag
      */
-    void beginTrim(AudioClip clip, TrimEdge edge) {
+    void beginTrim(Track track, AudioClip clip, TrimEdge edge) {
+        Objects.requireNonNull(track, "track must not be null");
         Objects.requireNonNull(clip, "clip must not be null");
         Objects.requireNonNull(edge, "edge must not be null");
+        this.trimTrack = track;
         this.trimClip = clip;
         this.trimEdge = edge;
         this.originalStartBeat = clip.getStartBeat();
@@ -226,7 +231,7 @@ final class ClipTrimHandler {
         boolean durationChanged = Math.abs(newDurationBeats - originalDurationBeats) > 0.001;
         if (startChanged || durationChanged) {
             host.undoManager().execute(new ClipEdgeTrimAction(
-                    trimClip, newStartBeat, newDurationBeats, newSourceOffsetBeats));
+                    trimTrack, trimClip, newStartBeat, newDurationBeats, newSourceOffsetBeats));
             LOG.fine(() -> "Completed trim: " + trimEdge + " edge of '" + trimClip.getName()
                     + "' start=" + newStartBeat + " duration=" + newDurationBeats);
         }
@@ -335,6 +340,7 @@ final class ClipTrimHandler {
     }
 
     private void clearState() {
+        trimTrack = null;
         trimClip = null;
         trimEdge = null;
         previewBeat = -1.0;

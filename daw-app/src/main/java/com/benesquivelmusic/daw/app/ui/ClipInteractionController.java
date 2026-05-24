@@ -471,7 +471,7 @@ final class ClipInteractionController {
         if (host.activeTool() == EditTool.POINTER && trackIndex >= 0) {
             ClipTrimHandler.EdgeHit hit = trimHandler.hitTestEdge(event.getX(), event.getY());
             if (hit != null) {
-                trimHandler.beginTrim(hit.clip(), hit.edge());
+                trimHandler.beginTrim(hit.track(), hit.clip(), hit.edge());
                 canvas.setCursor(Cursor.H_RESIZE);
                 return;
             }

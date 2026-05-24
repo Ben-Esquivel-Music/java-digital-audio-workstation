@@ -46,13 +46,14 @@ public final class RecordMidiNotesAction implements UndoableAction {
         if (initialExecute) {
             // Notes are already in the clip from real-time recording
             initialExecute = false;
+        } else {
+            for (MidiNoteData note : notes) {
+                clip.addNote(note);
+            }
+        }
+        if (!notes.isEmpty()) {
             publishTrimmed();
-            return;
         }
-        for (MidiNoteData note : notes) {
-            clip.addNote(note);
-        }
-        publishTrimmed();
     }
 
     @Override
@@ -60,7 +61,9 @@ public final class RecordMidiNotesAction implements UndoableAction {
         for (MidiNoteData note : notes) {
             clip.removeNote(note);
         }
-        publishTrimmed();
+        if (!notes.isEmpty()) {
+            publishTrimmed();
+        }
     }
 
     private void publishTrimmed() {

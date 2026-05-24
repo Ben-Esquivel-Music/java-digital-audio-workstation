@@ -1,8 +1,13 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.event.ClipEvent;
 
+import java.time.Instant;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * An undoable action that adjusts an {@link AudioClip}'s start, duration,
@@ -13,9 +18,14 @@ import java.util.Objects;
  * This allows both extending and shrinking the clip boundaries, which is
  * needed for interactive edge dragging where a previously trimmed clip
  * may be extended back toward its original source boundary.</p>
+ *
+ * <p>Story 283 — the owning {@link Track} is now a constructor
+ * parameter so {@code execute()}/{@code undo()} can publish
+ * {@code ClipEvent.Trimmed(trackId, clipId, …)}.</p>
  */
 public final class ClipEdgeTrimAction implements UndoableAction {
 
+    private final Track track;
     private final AudioClip clip;
     private final double newStartBeat;
     private final double newDurationBeats;
@@ -29,13 +39,16 @@ public final class ClipEdgeTrimAction implements UndoableAction {
     /**
      * Creates a new clip edge trim action.
      *
+     * @param track               the track that owns the clip (required for
+     *                            event publication)
      * @param clip                the clip to trim
      * @param newStartBeat        the new start beat (must be &ge; 0)
      * @param newDurationBeats    the new duration in beats (must be &gt; 0)
      * @param newSourceOffsetBeats the new source offset in beats (must be &ge; 0)
      */
-    public ClipEdgeTrimAction(AudioClip clip, double newStartBeat,
+    public ClipEdgeTrimAction(Track track, AudioClip clip, double newStartBeat,
                                double newDurationBeats, double newSourceOffsetBeats) {
+        this.track = Objects.requireNonNull(track, "track must not be null");
         this.clip = Objects.requireNonNull(clip, "clip must not be null");
         if (newStartBeat < 0) {
             throw new IllegalArgumentException("newStartBeat must not be negative: " + newStartBeat);
@@ -64,6 +77,10 @@ public final class ClipEdgeTrimAction implements UndoableAction {
         clip.setSourceOffsetBeats(newSourceOffsetBeats);
         clip.setStartBeat(newStartBeat);
         clip.setDurationBeats(newDurationBeats);
+        EventBusPublisher.publish(new ClipEvent.Trimmed(
+                UUID.fromString(track.getId()),
+                UUID.fromString(clip.getId()),
+                Instant.now()));
     }
 
     @Override
@@ -71,5 +88,9 @@ public final class ClipEdgeTrimAction implements UndoableAction {
         clip.setSourceOffsetBeats(originalSourceOffset);
         clip.setStartBeat(originalStartBeat);
         clip.setDurationBeats(originalDuration);
+        EventBusPublisher.publish(new ClipEvent.Trimmed(
+                UUID.fromString(track.getId()),
+                UUID.fromString(clip.getId()),
+                Instant.now()));
     }
 }
