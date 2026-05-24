@@ -13,6 +13,7 @@ import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectType;
 import com.benesquivelmusic.daw.core.mixer.InsertSlot;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
+import com.benesquivelmusic.daw.core.mixer.ReorderEffectAction;
 import com.benesquivelmusic.daw.core.mixer.SetPluginParameterAction;
 import com.benesquivelmusic.daw.core.mixer.ToggleBypassAction;
 import com.benesquivelmusic.daw.core.project.AddTrackAction;
@@ -105,6 +106,14 @@ class EventBusMetricsSmokeTest {
             new SetPluginParameterAction(slot, 0, -10.0, -20.0, paramHandler)
                     .execute();
 
+            // 10. PluginEvent.Reordered — insert effect reorder.
+            InsertSlot slot2 = new InsertSlot("Comp",
+                    InsertEffectFactory.createProcessor(
+                            InsertEffectType.COMPRESSOR, 2, 44_100),
+                    InsertEffectType.COMPRESSOR);
+            new InsertEffectAction(channel, 1, slot2).execute();
+            new ReorderEffectAction(channel, 0, 1).execute();
+
             Map<String, Long> published = bus.metrics().publishedByType();
             assertThat(published)
                     .containsKeys(
@@ -115,6 +124,7 @@ class EventBusMetricsSmokeTest {
                             "PluginEvent.Loaded",
                             "PluginEvent.Bypassed",
                             "PluginEvent.ParameterChanged",
+                            "PluginEvent.Reordered",
                             "MixerEvent.ChannelAdded");
             assertThat(published.get("ClipEvent.Added")).isPositive();
             assertThat(published.get("ClipEvent.Removed")).isPositive();
@@ -123,6 +133,7 @@ class EventBusMetricsSmokeTest {
             assertThat(published.get("PluginEvent.Loaded")).isPositive();
             assertThat(published.get("PluginEvent.Bypassed")).isPositive();
             assertThat(published.get("PluginEvent.ParameterChanged")).isPositive();
+            assertThat(published.get("PluginEvent.Reordered")).isPositive();
             assertThat(published.get("MixerEvent.ChannelAdded")).isPositive();
 
             // Sanity check that channelId == trackId by invariant.

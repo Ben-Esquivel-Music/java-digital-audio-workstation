@@ -1,10 +1,13 @@
 package com.benesquivelmusic.daw.core.mixer;
 
 import com.benesquivelmusic.daw.core.dsp.*;
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.sdk.audio.AudioProcessor;
+import com.benesquivelmusic.daw.sdk.event.PluginEvent;
 import com.benesquivelmusic.daw.sdk.plugin.DawPlugin;
 import com.benesquivelmusic.daw.sdk.plugin.PluginParameter;
 
+import java.time.Instant;
 import java.util.*;
 import java.util.function.BiConsumer;
 
@@ -255,6 +258,31 @@ public final class InsertEffectFactory {
                 yield graphicEqHandler(p);
             }
             default -> (_, _) -> { };
+        };
+    }
+
+    /**
+     * Creates a parameter-change handler that also publishes a
+     * {@link PluginEvent.ParameterChanged} event on each invocation.
+     *
+     * <p>Use this from UI parameter editors where each change should be
+     * observable on the event bus. Non-UI paths (deserialization, snapshot
+     * restore) should use {@link #createParameterHandler} directly.</p>
+     *
+     * @param slot the insert slot whose parameters are being edited
+     * @param type the effect type
+     * @return a publishing parameter-change handler
+     */
+    public static BiConsumer<Integer, Double> createPublishingParameterHandler(
+            InsertSlot slot, InsertEffectType type) {
+        Objects.requireNonNull(slot, "slot must not be null");
+        BiConsumer<Integer, Double> raw = createParameterHandler(type, slot.getProcessor());
+        return (parameterId, value) -> {
+            raw.accept(parameterId, value);
+            EventBusPublisher.publish(new PluginEvent.ParameterChanged(
+                    slot.getPluginInstanceId(),
+                    String.valueOf(parameterId),
+                    Instant.now()));
         };
     }
 

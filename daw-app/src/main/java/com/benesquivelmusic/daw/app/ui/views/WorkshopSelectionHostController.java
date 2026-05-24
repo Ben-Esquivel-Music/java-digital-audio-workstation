@@ -627,7 +627,7 @@ public final class WorkshopSelectionHostController {
             com.benesquivelmusic.daw.app.ui.PluginParameterEditorPanel panel =
                     new com.benesquivelmusic.daw.app.ui.PluginParameterEditorPanel(params);
             panel.setOnParameterChanged(
-                    InsertEffectFactory.createParameterHandler(type, slot.getProcessor()));
+                    InsertEffectFactory.createPublishingParameterHandler(slot, type));
             Map<Integer, Double> currentValues =
                     InsertEffectFactory.getParameterValues(type, slot.getProcessor());
             if (!currentValues.isEmpty()) {

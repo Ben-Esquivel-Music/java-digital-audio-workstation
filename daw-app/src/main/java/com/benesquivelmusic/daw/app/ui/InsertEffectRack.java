@@ -542,7 +542,7 @@ public final class InsertEffectRack extends VBox {
 
         PluginParameterEditorPanel editor = new PluginParameterEditorPanel(params);
         BiConsumer<Integer, Double> handler =
-                InsertEffectFactory.createParameterHandler(type, slot.getProcessor());
+                InsertEffectFactory.createPublishingParameterHandler(slot, type);
         editor.setOnParameterChanged(handler);
 
         // Initialize editor controls with the processor's current parameter values
