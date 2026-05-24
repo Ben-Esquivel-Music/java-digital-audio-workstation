@@ -5,7 +5,6 @@ import com.benesquivelmusic.daw.fx.GpuCanvas;
 import com.benesquivelmusic.daw.fx.GpuRenderContext;
 
 import javafx.scene.canvas.GraphicsContext;
-import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
@@ -33,7 +32,7 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * </ul>
  */
 @HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
-public final class TunerDisplay extends Region {
+public final class TunerDisplay extends GpuCanvasView {
 
     private static final Color BACKGROUND = Color.web("#0d0d1a");
     private static final Color TEXT_COLOR = Color.web("#ffffff", 0.5);
@@ -52,24 +51,17 @@ public final class TunerDisplay extends Region {
     private static final double CLOSE_CENTS = 15.0;
     private static final double IN_TUNE_CENTS = 3.0;
 
-    private final GpuCanvas gpuCanvas;
     private TuningResult currentResult;
-    private boolean disposed;
-
     /**
      * Creates a new tuner display.
      */
     public TunerDisplay() {
+        super(BACKGROUND, true);
         // Compose a GpuCanvas (daw-fx) — owns size binding, per-frame
         // AnimationTimer (gated on Scene attachment), and background clear.
         // Callers that remove the display from the scene graph should call
         // dispose() to release the off-heap surface and stop the timer.
-        gpuCanvas = GpuCanvas.create()
-                .renderer(this::renderFrame)
-                .clearColor(BACKGROUND)
-                .animated(true)
-                .build();
-        getChildren().add(gpuCanvas);
+        setRenderer(this::renderFrame);
     }
 
     /**
@@ -83,28 +75,14 @@ public final class TunerDisplay extends Region {
         // timer frame will pick up the new snapshot — no extra render needed.
         // When the timer is gated off (e.g. one-shot updates from tests),
         // request an immediate render so the value is visible.
-        if (getScene() == null) {
-            gpuCanvas.requestRender();
-        }
+        requestRender();
     }
 
     /**
      * Returns the embedded {@link GpuCanvas}. Visible for tests.
      */
     GpuCanvas getGpuCanvas() {
-        return gpuCanvas;
-    }
-
-    /**
-     * Stops the GpuCanvas render loop and releases its off-heap surface.
-     * Must be called from the JavaFX Application Thread. Safe to call
-     * multiple times.
-     */
-    public void dispose() {
-        if (disposed) return;
-        disposed = true;
-        gpuCanvas.setAnimated(false);
-        gpuCanvas.dispose();
+        return gpuCanvas();
     }
 
     /**
@@ -274,8 +252,4 @@ public final class TunerDisplay extends Region {
         return text.length() * fontSize * 0.6;
     }
 
-    @Override
-    protected void layoutChildren() {
-        gpuCanvas.resizeRelocate(0, 0, getWidth(), getHeight());
-    }
 }

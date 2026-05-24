@@ -5,7 +5,6 @@ import com.benesquivelmusic.daw.fx.GpuRenderContext;
 import com.benesquivelmusic.daw.sdk.visualization.LevelData;
 
 import javafx.scene.canvas.GraphicsContext;
-import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
 import javafx.scene.paint.CycleMethod;
 import javafx.scene.paint.LinearGradient;
@@ -30,7 +29,7 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * research (§4 — Dynamics Processing, §8 — Loudness Standards).</p>
  */
 @HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
-public final class LevelMeterDisplay extends Region {
+public final class LevelMeterDisplay extends GpuCanvasView {
 
     private static final Color BACKGROUND = Color.web("#0d0d1a");
     private static final Color CLIP_COLOR = Color.web("#ff1744");
@@ -40,7 +39,6 @@ public final class LevelMeterDisplay extends Region {
     private static final double MIN_DB = -60.0;
     private static final double MAX_DB = 6.0;
 
-    private final GpuCanvas gpuCanvas;
     private final MeterAnimator rmsAnimator;
     private final MeterAnimator peakAnimator;
     private final boolean vertical;
@@ -48,24 +46,18 @@ public final class LevelMeterDisplay extends Region {
     private double pendingRmsDb = -120.0;
     private double pendingPeakDb = -120.0;
     private boolean clipping;
-    private boolean disposed;
-
     /**
      * Creates a level meter display.
      *
      * @param vertical {@code true} for vertical orientation, {@code false} for horizontal
      */
     public LevelMeterDisplay(boolean vertical) {
+        super(BACKGROUND, true);
         this.vertical = vertical;
         rmsAnimator = new MeterAnimator(0.01, 0.15, 0);
         peakAnimator = new MeterAnimator(0.001, 0.5, 1.5);
 
-        gpuCanvas = GpuCanvas.create()
-                .renderer(this::renderFrame)
-                .clearColor(BACKGROUND)
-                .animated(true)
-                .build();
-        getChildren().add(gpuCanvas);
+        setRenderer(this::renderFrame);
     }
 
     /**
@@ -85,7 +77,7 @@ public final class LevelMeterDisplay extends Region {
      * @param data the current level data
      */
     public void update(LevelData data) {
-        if (data == null || disposed) return;
+        if (data == null || isDisposed()) return;
         pendingRmsDb = data.rmsDb();
         pendingPeakDb = data.peakDb();
         clipping = data.clipping();
@@ -93,9 +85,7 @@ public final class LevelMeterDisplay extends Region {
         // timer frame will pick up the new snapshot — no extra render needed.
         // When the timer is gated off (e.g. one-shot updates from tests),
         // request an immediate render so the value is visible.
-        if (getScene() == null) {
-            gpuCanvas.requestRender();
-        }
+        requestRender();
     }
 
     /**
@@ -103,7 +93,7 @@ public final class LevelMeterDisplay extends Region {
      * loop and off-heap pixel surface. Visible for tests.
      */
     GpuCanvas getGpuCanvas() {
-        return gpuCanvas;
+        return gpuCanvas();
     }
 
     /** Returns the RMS ballistic animator. Visible for tests. */
@@ -114,18 +104,6 @@ public final class LevelMeterDisplay extends Region {
     /** Returns the peak ballistic animator. Visible for tests. */
     MeterAnimator getPeakAnimator() {
         return peakAnimator;
-    }
-
-    /**
-     * Stops the GpuCanvas render loop and releases its off-heap surface.
-     * Must be called from the JavaFX Application Thread. Safe to call
-     * multiple times.
-     */
-    public void dispose() {
-        if (disposed) return;
-        disposed = true;
-        gpuCanvas.setAnimated(false);
-        gpuCanvas.dispose();
     }
 
     private void renderFrame(GpuRenderContext ctx) {
@@ -243,10 +221,4 @@ public final class LevelMeterDisplay extends Region {
         return (db - MIN_DB) / (MAX_DB - MIN_DB);
     }
 
-    @Override
-    protected void layoutChildren() {
-        // GpuCanvas is itself a Region and re-renders on its own size change
-        // listeners, so we just resize it here to fill the display.
-        gpuCanvas.resizeRelocate(0, 0, getWidth(), getHeight());
-    }
 }

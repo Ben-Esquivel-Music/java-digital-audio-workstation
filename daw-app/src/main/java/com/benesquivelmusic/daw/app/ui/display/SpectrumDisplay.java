@@ -6,7 +6,6 @@ import com.benesquivelmusic.daw.sdk.visualization.FrequencyRange;
 import com.benesquivelmusic.daw.sdk.visualization.SpectrumData;
 import com.benesquivelmusic.daw.sdk.visualization.StereoMode;
 import javafx.scene.canvas.GraphicsContext;
-import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
 import javafx.scene.paint.CycleMethod;
 import javafx.scene.paint.LinearGradient;
@@ -36,7 +35,7 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * </ul>
  */
 @HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
-public final class SpectrumDisplay extends Region {
+public final class SpectrumDisplay extends GpuCanvasView {
 
     private static final Color BACKGROUND = Color.web("#0d0d1a");
     private static final Color GRID_COLOR = Color.web("#ffffff", 0.08);
@@ -64,7 +63,6 @@ public final class SpectrumDisplay extends Region {
             -90, -80, -70, -60, -50, -40, -30, -20, -10, 0
     };
 
-    private final GpuCanvas gpuCanvas;
     private final float[] smoothedBins;
     private final float[] peakHoldBins;
     private final float[] averageBins;
@@ -76,14 +74,13 @@ public final class SpectrumDisplay extends Region {
     private SpectrumData rightChannelData;
     private boolean logarithmicScale = true;
     private boolean averageTraceEnabled;
-    private boolean disposed;
-
     /**
      * Creates a new spectrum display with the specified number of display bars.
      *
      * @param displayBars the number of visible frequency bars
      */
     public SpectrumDisplay(int displayBars) {
+        super(BACKGROUND, true);
         if (displayBars <= 0) {
             throw new IllegalArgumentException("displayBars must be positive: " + displayBars);
         }
@@ -94,13 +91,7 @@ public final class SpectrumDisplay extends Region {
         // visibility or Stage showing state); callers that remove the display
         // from the scene graph should call dispose() to release the off-heap
         // surface and stop the timer.
-        gpuCanvas = GpuCanvas.create()
-                .renderer(this::renderFrame)
-                .clearColor(BACKGROUND)
-                .animated(true)
-                .build();
-        getChildren().add(gpuCanvas);
-
+        setRenderer(this::renderFrame);
         smoothedBins = new float[displayBars];
         Arrays.fill(smoothedBins, (float) MIN_DB);
         peakHoldBins = new float[displayBars];
@@ -173,9 +164,7 @@ public final class SpectrumDisplay extends Region {
         // timer frame will pick up the new snapshot — no extra render needed.
         // When the timer is gated off (e.g. one-shot updates from tests),
         // request an immediate render so the value is visible.
-        if (getScene() == null) {
-            gpuCanvas.requestRender();
-        }
+        requestRender();
     }
 
     /**
@@ -232,7 +221,7 @@ public final class SpectrumDisplay extends Region {
                             + "bar aggregation and rendering are still logarithmic.");
         }
         this.logarithmicScale = true;
-        requestRender();
+        renderNow();
     }
 
     /**
@@ -251,7 +240,7 @@ public final class SpectrumDisplay extends Region {
      */
     public void setAverageTraceEnabled(boolean enabled) {
         this.averageTraceEnabled = enabled;
-        requestRender();
+        renderNow();
     }
 
     /**
@@ -268,19 +257,7 @@ public final class SpectrumDisplay extends Region {
      * loop and off-heap pixel surface. Visible for tests.
      */
     GpuCanvas getGpuCanvas() {
-        return gpuCanvas;
-    }
-
-    /**
-     * Stops the GpuCanvas render loop and releases its off-heap surface.
-     * Must be called from the JavaFX Application Thread. Safe to call
-     * multiple times.
-     */
-    public void dispose() {
-        if (disposed) return;
-        disposed = true;
-        gpuCanvas.setAnimated(false);
-        gpuCanvas.dispose();
+        return gpuCanvas();
     }
 
     /**
@@ -289,14 +266,14 @@ public final class SpectrumDisplay extends Region {
      * (average trace toggle, logarithmic scale), regardless of whether
      * the animation timer is running.
      */
-    private void requestRender() {
-        if (disposed) return;
-        gpuCanvas.requestRender();
+    private void renderNow() {
+        if (isDisposed()) return;
+        gpuCanvas().requestRender();
     }
 
     /**
      * Per-frame draw callback invoked by the GpuCanvas AnimationTimer (or
-     * by {@link #requestRender()} for one-off updates). Draws onto the
+     * by {@link #renderNow()} for one-off updates). Draws onto the
      * overlay GraphicsContext exposed by {@link GpuRenderContext#gc()}.
      * Background fill is provided by {@link GpuCanvas#setClearColor(Color)},
      * so we do not issue a redundant background {@code fillRect}.
@@ -488,10 +465,4 @@ public final class SpectrumDisplay extends Region {
         return height - (db - MIN_DB) / (MAX_DB - MIN_DB) * height;
     }
 
-    @Override
-    protected void layoutChildren() {
-        // GpuCanvas is itself a Region and re-renders on its own size change
-        // listeners, so we just resize it here to fill the display.
-        gpuCanvas.resizeRelocate(0, 0, getWidth(), getHeight());
-    }
 }
