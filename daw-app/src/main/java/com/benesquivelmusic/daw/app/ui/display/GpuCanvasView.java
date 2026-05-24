@@ -103,13 +103,13 @@ public abstract class GpuCanvasView extends Region {
     /**
      * Scene-aware refresh helper.
      *
-     * <p>When the view is attached to a {@link javafx.scene.Scene} the
-     * {@link GpuCanvas} {@link javafx.animation.AnimationTimer} is driving
-     * frames, so an extra {@code requestRender()} would just duplicate the
-     * next pulse — this method is a no-op. When the view has no scene
-     * (e.g. a display fed data before being added to the graph, or one
-     * temporarily detached) the timer is gated off, so we trigger a
-     * single immediate render to keep the off-screen surface current.</p>
+     * <p>When the view is attached to a {@link javafx.scene.Scene} this
+     * method is a no-op — the scene graph's own pulse mechanism (or, if the
+     * canvas is animated, its {@link javafx.animation.AnimationTimer}) is
+     * responsible for driving renders. When the view has no scene (e.g. a
+     * display fed data before being added to the graph, or one temporarily
+     * detached) the timer is gated off, so we trigger a single immediate
+     * render to keep the off-screen surface current.</p>
      */
     protected final void requestRender() {
         if (getScene() == null) {
