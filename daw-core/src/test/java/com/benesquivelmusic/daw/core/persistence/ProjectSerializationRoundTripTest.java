@@ -1232,7 +1232,7 @@ class ProjectSerializationRoundTripTest {
         track.addClip(clip);
 
         // Simulate a slip edit: move the source offset to 1.75 via SlipClipAction.
-        SlipClipAction slip = new SlipClipAction(clip, 1.75);
+        SlipClipAction slip = new SlipClipAction(track, clip, 1.75);
         slip.execute();
         assertThat(clip.getSourceOffsetBeats()).isCloseTo(1.75, within(1e-6));
 
@@ -1271,7 +1271,7 @@ class ProjectSerializationRoundTripTest {
         track.addClip(clip);
 
         // Execute slip, then undo — offset should be back to 2.0 before serializing.
-        SlipClipAction slip = new SlipClipAction(clip, 5.0);
+        SlipClipAction slip = new SlipClipAction(track, clip, 5.0);
         slip.execute();
         assertThat(clip.getSourceOffsetBeats()).isCloseTo(5.0, within(1e-6));
         slip.undo();

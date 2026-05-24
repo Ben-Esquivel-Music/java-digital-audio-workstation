@@ -1,8 +1,11 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.event.ClipEvent;
 
+import java.time.Instant;
 import java.util.*;
 
 /**
@@ -59,13 +62,24 @@ public final class DuplicateClipsAction implements UndoableAction {
             duplicate.setStartBeat(original.getStartBeat() + groupShift);
             track.addClip(duplicate);
             duplicatedEntries.add(Map.entry(track, duplicate));
+            EventBusPublisher.publish(new ClipEvent.Added(
+                    UUID.fromString(track.getId()),
+                    UUID.fromString(duplicate.getId()),
+                    Instant.now()));
         }
     }
 
     @Override
     public void undo() {
-        for (Map.Entry<Track, AudioClip> entry : duplicatedEntries) {
-            entry.getKey().removeClip(entry.getValue());
+        for (int i = duplicatedEntries.size() - 1; i >= 0; i--) {
+            Map.Entry<Track, AudioClip> entry = duplicatedEntries.get(i);
+            Track t = entry.getKey();
+            AudioClip c = entry.getValue();
+            t.removeClip(c);
+            EventBusPublisher.publish(new ClipEvent.Removed(
+                    UUID.fromString(t.getId()),
+                    UUID.fromString(c.getId()),
+                    Instant.now()));
         }
     }
 }

@@ -6,6 +6,7 @@ import com.benesquivelmusic.daw.core.clip.LockedClipException;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
 import com.benesquivelmusic.daw.core.midi.SlipMidiClipAction;
+import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 
 import java.util.Objects;
@@ -69,6 +70,12 @@ public final class SlipEditService {
      * {@code sourceLengthBeats <= 0} (e.g. no audio data loaded), the upper
      * bound is treated as unbounded — only the lower bound (≥ 0) is enforced.</p>
      *
+     * <p>Story 283 — the owning {@link Track} is now required so the
+     * built {@link SlipClipAction} can publish {@code ClipEvent.Trimmed}
+     * carrying both clipId and trackId.</p>
+     *
+     * @param track               the track that owns the clip (required for
+     *                            event publication on execute / undo)
      * @param clip                the audio clip to slip
      * @param requestedBeatDelta  the requested delta applied to
      *                            {@code sourceOffsetBeats}; positive moves the
@@ -78,11 +85,13 @@ public final class SlipEditService {
      * @param sourceLengthBeats   the total length of the source audio in beats,
      *                            or {@code 0.0} / negative if unknown/unbounded
      * @return the slip result
-     * @throws NullPointerException if {@code clip} is {@code null}
+     * @throws NullPointerException if {@code track} or {@code clip} is {@code null}
      */
-    public static SlipResult buildAudioSlip(AudioClip clip,
+    public static SlipResult buildAudioSlip(Track track,
+                                            AudioClip clip,
                                             double requestedBeatDelta,
                                             double sourceLengthBeats) {
+        Objects.requireNonNull(track, "track must not be null");
         Objects.requireNonNull(clip, "clip must not be null");
 
         double currentOffset = clip.getSourceOffsetBeats();
@@ -104,7 +113,8 @@ public final class SlipEditService {
             return new SlipResult(null, 0.0, hitEdge);
         }
         LockedClipException.requireUnlocked("Slip", clip);
-        return new SlipResult(new SlipClipAction(clip, clampedOffset), appliedDelta, hitEdge);
+        return new SlipResult(new SlipClipAction(track, clip, clampedOffset),
+                appliedDelta, hitEdge);
     }
 
     /**

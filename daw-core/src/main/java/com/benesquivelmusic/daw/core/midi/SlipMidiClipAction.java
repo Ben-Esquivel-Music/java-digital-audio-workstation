@@ -1,11 +1,15 @@
 package com.benesquivelmusic.daw.core.midi;
 
 import com.benesquivelmusic.daw.core.clip.LockedClipException;
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.event.ClipEvent;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * An undoable action that slips every note in a {@link MidiClip} by a shared
@@ -54,11 +58,23 @@ public final class SlipMidiClipAction implements UndoableAction {
     public void execute() {
         LockedClipException.requireUnlocked("Slip", clip);
         shiftAllNotes(columnDelta);
+        publishTrimmed();
     }
 
     @Override
     public void undo() {
         shiftAllNotes(-columnDelta);
+        publishTrimmed();
+    }
+
+    private void publishTrimmed() {
+        UUID trackId = clip.getOwningTrackId();
+        if (trackId == null) {
+            // Clip not yet wired into a track — skip publish (defensive).
+            return;
+        }
+        EventBusPublisher.publish(new ClipEvent.Trimmed(
+                trackId, clip.getId(), Instant.now()));
     }
 
     private void shiftAllNotes(int delta) {

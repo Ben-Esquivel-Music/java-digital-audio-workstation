@@ -1,9 +1,13 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.event.ClipEvent;
 
+import java.time.Instant;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * An undoable action that glues (merges) two adjacent {@link AudioClip}s on
@@ -87,6 +91,14 @@ public final class GlueClipsAction implements UndoableAction {
         track.removeClip(first);
         track.removeClip(second);
         track.addClip(merged);
+        UUID trackId = UUID.fromString(track.getId());
+        Instant now = Instant.now();
+        EventBusPublisher.publish(new ClipEvent.Removed(
+                trackId, UUID.fromString(first.getId()), now));
+        EventBusPublisher.publish(new ClipEvent.Removed(
+                trackId, UUID.fromString(second.getId()), now));
+        EventBusPublisher.publish(new ClipEvent.Added(
+                trackId, UUID.fromString(merged.getId()), now));
     }
 
     @Override
@@ -94,5 +106,13 @@ public final class GlueClipsAction implements UndoableAction {
         track.removeClip(merged);
         track.addClip(first);
         track.addClip(second);
+        UUID trackId = UUID.fromString(track.getId());
+        Instant now = Instant.now();
+        EventBusPublisher.publish(new ClipEvent.Removed(
+                trackId, UUID.fromString(merged.getId()), now));
+        EventBusPublisher.publish(new ClipEvent.Added(
+                trackId, UUID.fromString(first.getId()), now));
+        EventBusPublisher.publish(new ClipEvent.Added(
+                trackId, UUID.fromString(second.getId()), now));
     }
 }

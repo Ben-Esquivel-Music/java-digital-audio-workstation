@@ -1,9 +1,13 @@
 package com.benesquivelmusic.daw.core.midi;
 
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.event.ClipEvent;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * An undoable action that sets, replaces, or inserts a CC breakpoint
@@ -24,6 +28,7 @@ import java.util.Objects;
  */
 public final class SetCcValueAction implements UndoableAction {
 
+    private final MidiClip clip;
     private final MidiCcLane lane;
     private final MidiCcEvent newEvent;
     private MidiCcEvent replaced; // captured at execute time (may be null)
@@ -32,11 +37,13 @@ public final class SetCcValueAction implements UndoableAction {
     /**
      * Creates a new set-CC-value action.
      *
+     * @param clip     the owning clip (used for event publishing)
      * @param lane     the lane to modify
      * @param newEvent the breakpoint to add or replace (its column
      *                 determines which existing event, if any, is replaced)
      */
-    public SetCcValueAction(MidiCcLane lane, MidiCcEvent newEvent) {
+    public SetCcValueAction(MidiClip clip, MidiCcLane lane, MidiCcEvent newEvent) {
+        this.clip = Objects.requireNonNull(clip, "clip must not be null");
         this.lane = Objects.requireNonNull(lane, "lane must not be null");
         this.newEvent = Objects.requireNonNull(newEvent, "newEvent must not be null");
     }
@@ -58,21 +65,35 @@ public final class SetCcValueAction implements UndoableAction {
                 replaced = e;
                 wasInsert = false;
                 lane.replaceEvent(i, newEvent);
+                publishTrimmed();
                 return;
             }
         }
         lane.addEvent(newEvent);
+        publishTrimmed();
     }
 
     @Override
     public void undo() {
         if (wasInsert) {
-            lane.removeEvent(newEvent);
+            if (lane.removeEvent(newEvent)) {
+                publishTrimmed();
+            }
         } else if (replaced != null) {
             int idx = lane.indexOf(newEvent);
             if (idx >= 0) {
                 lane.replaceEvent(idx, replaced);
+                publishTrimmed();
             }
         }
+    }
+
+    private void publishTrimmed() {
+        UUID trackId = clip.getOwningTrackId();
+        if (trackId == null) {
+            return;
+        }
+        EventBusPublisher.publish(new ClipEvent.Trimmed(
+                trackId, clip.getId(), Instant.now()));
     }
 }

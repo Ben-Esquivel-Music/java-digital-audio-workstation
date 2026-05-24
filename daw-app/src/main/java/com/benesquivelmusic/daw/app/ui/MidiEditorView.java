@@ -852,10 +852,10 @@ final class MidiEditorView extends VBox {
         int newValue = (int) Math.round(ratio * maxValue);
         MidiCcEvent ev = new MidiCcEvent(column, newValue);
         if (undoManager != null) {
-            undoManager.execute(new SetCcValueAction(lane, ev));
+            undoManager.execute(new SetCcValueAction(currentClip, lane, ev));
         } else {
             // Fall through: insert directly when no undo manager is wired.
-            new SetCcValueAction(lane, ev).execute();
+            new SetCcValueAction(currentClip, lane, ev).execute();
         }
 
         // Remember this column for the R-key ramp helper.
@@ -901,9 +901,9 @@ final class MidiEditorView extends VBox {
         List<MidiCcEvent> ramp = MidiCcRamp.generate(left, right, stepColumns);
         for (MidiCcEvent r : ramp) {
             if (undoManager != null) {
-                undoManager.execute(new SetCcValueAction(lane, r));
+                undoManager.execute(new SetCcValueAction(currentClip, lane, r));
             } else {
-                new SetCcValueAction(lane, r).execute();
+                new SetCcValueAction(currentClip, lane, r).execute();
             }
         }
         renderVelocityLane();

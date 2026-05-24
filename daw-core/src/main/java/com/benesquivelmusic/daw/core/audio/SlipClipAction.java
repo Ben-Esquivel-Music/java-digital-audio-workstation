@@ -1,9 +1,14 @@
 package com.benesquivelmusic.daw.core.audio;
 
 import com.benesquivelmusic.daw.core.clip.LockedClipException;
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.event.ClipEvent;
 
+import java.time.Instant;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * An undoable action that slips an {@link AudioClip}'s source-offset window
@@ -22,9 +27,16 @@ import java.util.Objects;
  * applies the delta it was given and records the previous offset for undo.</p>
  *
  * <p>Story 139 — {@code docs/user-stories/139-slip-edit-within-clip.md}.</p>
+ *
+ * <p>Story 283 — the owning {@link Track} is now a constructor
+ * parameter so {@code execute()}/{@code undo()} can publish
+ * {@code ClipEvent.Trimmed(trackId, clipId, …)} for the slip
+ * (source-offset is a clip-content edit, captured as a trim event).
+ * The previous 2-arg constructor was removed.</p>
  */
 public final class SlipClipAction implements UndoableAction {
 
+    private final Track track;
     private final AudioClip clip;
     private final double newSourceOffsetBeats;
     private double previousSourceOffsetBeats;
@@ -32,11 +44,14 @@ public final class SlipClipAction implements UndoableAction {
     /**
      * Creates a new slip action.
      *
+     * @param track                the track that owns the clip (required
+     *                             for event publication)
      * @param clip                 the clip whose source offset is being slipped
      * @param newSourceOffsetBeats the new, already-clamped source offset in beats
-     * @throws NullPointerException if {@code clip} is {@code null}
+     * @throws NullPointerException if {@code track} or {@code clip} is {@code null}
      */
-    public SlipClipAction(AudioClip clip, double newSourceOffsetBeats) {
+    public SlipClipAction(Track track, AudioClip clip, double newSourceOffsetBeats) {
+        this.track = Objects.requireNonNull(track, "track must not be null");
         this.clip = Objects.requireNonNull(clip, "clip must not be null");
         this.newSourceOffsetBeats = newSourceOffsetBeats;
     }
@@ -51,10 +66,18 @@ public final class SlipClipAction implements UndoableAction {
         LockedClipException.requireUnlocked("Slip", clip);
         previousSourceOffsetBeats = clip.getSourceOffsetBeats();
         clip.setSourceOffsetBeats(newSourceOffsetBeats);
+        EventBusPublisher.publish(new ClipEvent.Trimmed(
+                UUID.fromString(track.getId()),
+                UUID.fromString(clip.getId()),
+                Instant.now()));
     }
 
     @Override
     public void undo() {
         clip.setSourceOffsetBeats(previousSourceOffsetBeats);
+        EventBusPublisher.publish(new ClipEvent.Trimmed(
+                UUID.fromString(track.getId()),
+                UUID.fromString(clip.getId()),
+                Instant.now()));
     }
 }

@@ -1,8 +1,12 @@
 package com.benesquivelmusic.daw.core.midi;
 
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.event.ClipEvent;
 
+import java.time.Instant;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * An undoable action that moves a MIDI note to a new position within a
@@ -43,6 +47,7 @@ public final class MoveMidiNoteAction implements UndoableAction {
         int index = clip.indexOf(originalNote);
         if (index >= 0) {
             clip.replaceNote(index, movedNote);
+            publishTrimmed();
         }
     }
 
@@ -51,6 +56,16 @@ public final class MoveMidiNoteAction implements UndoableAction {
         int index = clip.indexOf(movedNote);
         if (index >= 0) {
             clip.replaceNote(index, originalNote);
+            publishTrimmed();
         }
+    }
+
+    private void publishTrimmed() {
+        UUID trackId = clip.getOwningTrackId();
+        if (trackId == null) {
+            return;
+        }
+        EventBusPublisher.publish(new ClipEvent.Trimmed(
+                trackId, clip.getId(), Instant.now()));
     }
 }

@@ -127,7 +127,7 @@ class ClipTrimHandlerTest {
 
         ClipTrimHandler handler = createHandler();
 
-        handler.beginTrim(clip, ClipTrimHandler.TrimEdge.LEFT);
+        handler.beginTrim(track, clip, ClipTrimHandler.TrimEdge.LEFT);
         assertThat(handler.isTrimming()).isTrue();
         assertThat(handler.getActiveEdge()).isEqualTo(ClipTrimHandler.TrimEdge.LEFT);
 
@@ -149,7 +149,7 @@ class ClipTrimHandlerTest {
 
         ClipTrimHandler handler = createHandler();
 
-        handler.beginTrim(clip, ClipTrimHandler.TrimEdge.RIGHT);
+        handler.beginTrim(track, clip, ClipTrimHandler.TrimEdge.RIGHT);
 
         // Drag right edge to beat 10.0 (pixel 400)
         handler.completeTrim(400.0);
@@ -171,7 +171,7 @@ class ClipTrimHandlerTest {
 
         ClipTrimHandler handler = createHandler();
 
-        handler.beginTrim(clip, ClipTrimHandler.TrimEdge.LEFT);
+        handler.beginTrim(track, clip, ClipTrimHandler.TrimEdge.LEFT);
         // Try to drag left edge to beat 2.0 (pixel 80) — should be clamped to 4.0
         handler.completeTrim(80.0);
 
@@ -190,7 +190,7 @@ class ClipTrimHandlerTest {
 
         ClipTrimHandler handler = createHandler();
 
-        handler.beginTrim(clip, ClipTrimHandler.TrimEdge.LEFT);
+        handler.beginTrim(track, clip, ClipTrimHandler.TrimEdge.LEFT);
         // Try to drag far left to beat -5.0 (pixel -200) — should clamp to 0.0
         handler.completeTrim(-200.0);
 
@@ -208,7 +208,7 @@ class ClipTrimHandlerTest {
 
         ClipTrimHandler handler = createHandler();
 
-        handler.beginTrim(clip, ClipTrimHandler.TrimEdge.RIGHT);
+        handler.beginTrim(track, clip, ClipTrimHandler.TrimEdge.RIGHT);
         // Try to extend right edge beyond the original end (beat 12.0)
         handler.completeTrim(600.0); // beat 15.0
 
@@ -226,7 +226,7 @@ class ClipTrimHandlerTest {
 
         ClipTrimHandler handler = createHandler();
 
-        handler.beginTrim(clip, ClipTrimHandler.TrimEdge.RIGHT);
+        handler.beginTrim(track, clip, ClipTrimHandler.TrimEdge.RIGHT);
         // Try to drag right edge all the way to the start
         handler.completeTrim(160.0); // beat 4.0
 
@@ -248,7 +248,7 @@ class ClipTrimHandlerTest {
 
         ClipTrimHandler handler = createHandler();
 
-        handler.beginTrim(clip, ClipTrimHandler.TrimEdge.RIGHT);
+        handler.beginTrim(track, clip, ClipTrimHandler.TrimEdge.RIGHT);
         // Drag right edge to beat 9.3 (pixel 372) — should snap to 9.0
         handler.completeTrim(372.0);
 
@@ -266,7 +266,7 @@ class ClipTrimHandlerTest {
 
         ClipTrimHandler handler = createHandler();
 
-        handler.beginTrim(clip, ClipTrimHandler.TrimEdge.LEFT);
+        handler.beginTrim(track, clip, ClipTrimHandler.TrimEdge.LEFT);
         handler.completeTrim(240.0); // beat 6.0
 
         assertThat(clip.getStartBeat()).isEqualTo(6.0);
@@ -287,7 +287,7 @@ class ClipTrimHandlerTest {
 
         ClipTrimHandler handler = createHandler();
 
-        handler.beginTrim(clip, ClipTrimHandler.TrimEdge.LEFT);
+        handler.beginTrim(track, clip, ClipTrimHandler.TrimEdge.LEFT);
         // Release at the same position (beat 4.0 = pixel 160)
         handler.completeTrim(160.0);
 
@@ -305,7 +305,7 @@ class ClipTrimHandlerTest {
 
         ClipTrimHandler handler = createHandler();
 
-        handler.beginTrim(clip, ClipTrimHandler.TrimEdge.LEFT);
+        handler.beginTrim(track, clip, ClipTrimHandler.TrimEdge.LEFT);
         handler.updateTrim(240.0, 0); // Preview at beat 6.0
         handler.cancelTrim();
 
@@ -325,7 +325,7 @@ class ClipTrimHandlerTest {
 
         ClipTrimHandler handler = createHandler();
 
-        handler.beginTrim(clip, ClipTrimHandler.TrimEdge.RIGHT);
+        handler.beginTrim(track, clip, ClipTrimHandler.TrimEdge.RIGHT);
         handler.updateTrim(400.0, 0); // beat 10.0
 
         assertThat(handler.getPreviewBeat()).isCloseTo(10.0, offset(0.01));
@@ -341,7 +341,7 @@ class ClipTrimHandlerTest {
 
         ClipTrimHandler handler = createHandler();
 
-        handler.beginTrim(clip, ClipTrimHandler.TrimEdge.RIGHT);
+        handler.beginTrim(track, clip, ClipTrimHandler.TrimEdge.RIGHT);
         // Drag right edge to beat 15.0 (beyond original end 12.0)
         handler.updateTrim(600.0, 0);
 
@@ -358,7 +358,7 @@ class ClipTrimHandlerTest {
 
         ClipTrimHandler handler = createHandler();
 
-        handler.beginTrim(clip, ClipTrimHandler.TrimEdge.RIGHT);
+        handler.beginTrim(track, clip, ClipTrimHandler.TrimEdge.RIGHT);
         handler.completeTrim(400.0);
 
         assertThat(handler.getPreviewBeat()).isLessThan(0);
@@ -384,7 +384,7 @@ class ClipTrimHandlerTest {
 
         ClipTrimHandler handler = createHandler();
 
-        handler.beginTrim(clip, ClipTrimHandler.TrimEdge.LEFT);
+        handler.beginTrim(track, clip, ClipTrimHandler.TrimEdge.LEFT);
         // Drag left to beat 4.0 (pixel 160) — extending the clip back
         handler.completeTrim(160.0);
 

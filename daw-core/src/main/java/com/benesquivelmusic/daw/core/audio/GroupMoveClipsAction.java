@@ -1,9 +1,12 @@
 package com.benesquivelmusic.daw.core.audio;
 
 import com.benesquivelmusic.daw.core.clip.LockedClipException;
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.event.ClipEvent;
 
+import java.time.Instant;
 import java.util.*;
 
 /**
@@ -128,8 +131,18 @@ public final class GroupMoveClipsAction implements UndoableAction {
                 sourceTrack.removeClip(clip);
                 clip.setStartBeat(newStart);
                 targetTrack.addClip(clip);
+                Instant now = Instant.now();
+                UUID clipId = UUID.fromString(clip.getId());
+                EventBusPublisher.publish(new ClipEvent.Removed(
+                        UUID.fromString(sourceTrack.getId()), clipId, now));
+                EventBusPublisher.publish(new ClipEvent.Added(
+                        UUID.fromString(targetTrack.getId()), clipId, now));
             } else {
                 clip.setStartBeat(newStart);
+                EventBusPublisher.publish(new ClipEvent.Moved(
+                        UUID.fromString(sourceTrack.getId()),
+                        UUID.fromString(clip.getId()),
+                        Instant.now()));
             }
             newTracks.add(targetTrack);
         }
@@ -147,8 +160,18 @@ public final class GroupMoveClipsAction implements UndoableAction {
                 currentTrack.removeClip(clip);
                 clip.setStartBeat(originalStart);
                 originalTrack.addClip(clip);
+                Instant now = Instant.now();
+                UUID clipId = UUID.fromString(clip.getId());
+                EventBusPublisher.publish(new ClipEvent.Removed(
+                        UUID.fromString(currentTrack.getId()), clipId, now));
+                EventBusPublisher.publish(new ClipEvent.Added(
+                        UUID.fromString(originalTrack.getId()), clipId, now));
             } else {
                 clip.setStartBeat(originalStart);
+                EventBusPublisher.publish(new ClipEvent.Moved(
+                        UUID.fromString(originalTrack.getId()),
+                        UUID.fromString(clip.getId()),
+                        Instant.now()));
             }
         }
     }

@@ -1,9 +1,14 @@
 package com.benesquivelmusic.daw.core.project;
 
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
+import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.event.MixerEvent;
 
+import java.time.Instant;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * An undoable action that removes a track from the project.
@@ -37,7 +42,13 @@ public final class RemoveTrackAction implements UndoableAction {
     @Override
     public void execute() {
         originalIndex = project.getTracks().indexOf(track);
-        project.removeTrack(track);
+        boolean removed = project.removeTrack(track);
+        // Story 283 — mirror DawProject.addTrack's parse/fallback so a
+        // non-UUID track id (test fixtures) doesn't throw post-mutation.
+        if (removed) {
+            EventBusPublisher.publish(new MixerEvent.ChannelRemoved(
+                    channelIdFor(track), Instant.now()));
+        }
     }
 
     @Override
@@ -48,6 +59,17 @@ public final class RemoveTrackAction implements UndoableAction {
         if (currentIndex != originalIndex && originalIndex >= 0
                 && originalIndex < project.getTracks().size()) {
             project.moveTrack(currentIndex, originalIndex);
+        }
+        EventBusPublisher.publish(new MixerEvent.ChannelAdded(
+                channelIdFor(track), Instant.now()));
+    }
+
+    private UUID channelIdFor(Track track) {
+        try {
+            return UUID.fromString(track.getId());
+        } catch (IllegalArgumentException e) {
+            MixerChannel channel = project.getMixerChannelForTrack(track);
+            return channel != null ? channel.getId() : UUID.randomUUID();
         }
     }
 }

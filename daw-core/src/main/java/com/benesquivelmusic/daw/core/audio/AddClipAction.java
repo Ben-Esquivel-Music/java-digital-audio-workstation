@@ -1,9 +1,13 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.event.ClipEvent;
 
+import java.time.Instant;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * An undoable action that adds an {@link AudioClip} to a {@link Track}.
@@ -35,10 +39,18 @@ public final class AddClipAction implements UndoableAction {
     @Override
     public void execute() {
         track.addClip(clip);
+        EventBusPublisher.publish(new ClipEvent.Added(
+                UUID.fromString(track.getId()),
+                UUID.fromString(clip.getId()),
+                Instant.now()));
     }
 
     @Override
     public void undo() {
         track.removeClip(clip);
+        EventBusPublisher.publish(new ClipEvent.Removed(
+                UUID.fromString(track.getId()),
+                UUID.fromString(clip.getId()),
+                Instant.now()));
     }
 }

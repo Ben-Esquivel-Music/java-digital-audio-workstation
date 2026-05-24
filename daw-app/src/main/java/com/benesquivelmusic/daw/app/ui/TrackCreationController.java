@@ -2,15 +2,19 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.core.audio.AudioDeviceManager;
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
+import com.benesquivelmusic.daw.sdk.event.MixerEvent;
 import javafx.scene.layout.HBox;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.logging.Logger;
 
 /**
@@ -79,11 +83,15 @@ final class TrackCreationController {
                     host.project().addTrack(track);
                     host.trackListPanel().getChildren().add(trackItem);
                 }
+                EventBusPublisher.publish(new MixerEvent.ChannelAdded(
+                        channelIdFor(track, host.project()), Instant.now()));
                 host.updateArrangementPlaceholder();
                 host.mixerView().refresh();
             }
             @Override public void undo() {
                 host.project().removeTrack(track);
+                EventBusPublisher.publish(new MixerEvent.ChannelRemoved(
+                        channelIdFor(track, host.project()), Instant.now()));
                 host.trackListPanel().getChildren().remove(trackItem);
                 audioTrackCounter--;
                 host.updateArrangementPlaceholder();
@@ -122,11 +130,15 @@ final class TrackCreationController {
                     host.project().addTrack(track);
                     host.trackListPanel().getChildren().add(trackItem);
                 }
+                EventBusPublisher.publish(new MixerEvent.ChannelAdded(
+                        channelIdFor(track, host.project()), Instant.now()));
                 host.updateArrangementPlaceholder();
                 host.mixerView().refresh();
             }
             @Override public void undo() {
                 host.project().removeTrack(track);
+                EventBusPublisher.publish(new MixerEvent.ChannelRemoved(
+                        channelIdFor(track, host.project()), Instant.now()));
                 host.trackListPanel().getChildren().remove(trackItem);
                 midiTrackCounter--;
                 host.updateArrangementPlaceholder();
@@ -138,5 +150,14 @@ final class TrackCreationController {
         host.showNotification(NotificationLevel.SUCCESS, "Added MIDI track: " + name);
         host.markProjectDirty();
         LOG.fine(() -> "Added MIDI track: " + name + " with input: " + selectedMidi.getName());
+    }
+
+    private static UUID channelIdFor(Track track, DawProject project) {
+        try {
+            return UUID.fromString(track.getId());
+        } catch (IllegalArgumentException e) {
+            var channel = project.getMixerChannelForTrack(track);
+            return channel != null ? channel.getId() : UUID.randomUUID();
+        }
     }
 }

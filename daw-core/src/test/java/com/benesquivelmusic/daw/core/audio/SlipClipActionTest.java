@@ -1,5 +1,8 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackType;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -15,10 +18,11 @@ class SlipClipActionTest {
 
     @Test
     void executeSetsSourceOffsetAndUndoRestoresIt() {
+        Track track = new Track("t", TrackType.AUDIO);
         AudioClip clip = new AudioClip("vox", 8.0, 4.0, null);
         clip.setSourceOffsetBeats(2.0);
 
-        SlipClipAction action = new SlipClipAction(clip, 3.5);
+        SlipClipAction action = new SlipClipAction(track, clip, 3.5);
         action.execute();
         assertThat(clip.getSourceOffsetBeats()).isEqualTo(3.5);
 
@@ -28,10 +32,11 @@ class SlipClipActionTest {
 
     @Test
     void slipDoesNotChangeStartBeatOrDuration() {
+        Track track = new Track("t", TrackType.AUDIO);
         AudioClip clip = new AudioClip("drums", 12.0, 8.0, null);
         clip.setSourceOffsetBeats(1.0);
 
-        new SlipClipAction(clip, 5.0).execute();
+        new SlipClipAction(track, clip, 5.0).execute();
 
         assertThat(clip.getStartBeat()).isEqualTo(12.0);
         assertThat(clip.getDurationBeats()).isEqualTo(8.0);
@@ -40,10 +45,11 @@ class SlipClipActionTest {
 
     @Test
     void redoAfterUndoReappliesOffset() {
+        Track track = new Track("t", TrackType.AUDIO);
         AudioClip clip = new AudioClip("guitar", 0.0, 2.0, null);
         clip.setSourceOffsetBeats(0.5);
 
-        SlipClipAction action = new SlipClipAction(clip, 1.5);
+        SlipClipAction action = new SlipClipAction(track, clip, 1.5);
         action.execute();
         action.undo();
         action.execute();
@@ -53,8 +59,9 @@ class SlipClipActionTest {
 
     @Test
     void descriptionIsStable() {
+        Track track = new Track("t", TrackType.AUDIO);
         AudioClip clip = new AudioClip("pad", 0.0, 1.0, null);
-        assertThat(new SlipClipAction(clip, 0.0).description())
+        assertThat(new SlipClipAction(track, clip, 0.0).description())
                 .isEqualTo("Slip Clip");
     }
 }

@@ -541,17 +541,20 @@ public final class InsertEffectRack extends VBox {
         }
 
         PluginParameterEditorPanel editor = new PluginParameterEditorPanel(params);
-        BiConsumer<Integer, Double> handler =
-                InsertEffectFactory.createParameterHandler(type, slot.getProcessor());
-        editor.setOnParameterChanged(handler);
 
         // Initialize editor controls with the processor's current parameter values
+        // BEFORE installing the publishing handler, so refreshControls() does not
+        // emit spurious PluginEvent.ParameterChanged events for every slider.
         Map<Integer, Double> currentValues =
                 InsertEffectFactory.getParameterValues(type, slot.getProcessor());
         if (!currentValues.isEmpty()) {
             editor.getState().loadValues(currentValues);
             editor.refreshControls();
         }
+
+        BiConsumer<Integer, Double> handler =
+                InsertEffectFactory.createPublishingParameterHandler(slot, type);
+        editor.setOnParameterChanged(handler);
 
         Stage stage = new Stage();
         stage.setTitle(slot.getName() + " — Parameters");

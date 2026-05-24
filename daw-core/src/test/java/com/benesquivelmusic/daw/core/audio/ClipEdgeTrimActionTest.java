@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.core.audio;
 
+import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackType;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -11,10 +13,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ClipEdgeTrimActionTest {
 
     private UndoManager undoManager;
+    private Track track;
 
     @BeforeEach
     void setUp() {
         undoManager = new UndoManager();
+        track = new Track("audio", TrackType.AUDIO);
     }
 
     @Test
@@ -22,7 +26,7 @@ class ClipEdgeTrimActionTest {
         AudioClip clip = new AudioClip("Vocal", 4.0, 8.0, "/audio/vocal.wav");
         clip.setSourceOffsetBeats(0.0);
 
-        ClipEdgeTrimAction action = new ClipEdgeTrimAction(clip, 6.0, 6.0, 2.0);
+        ClipEdgeTrimAction action = new ClipEdgeTrimAction(track, clip, 6.0, 6.0, 2.0);
         undoManager.execute(action);
 
         assertThat(clip.getStartBeat()).isEqualTo(6.0);
@@ -34,7 +38,7 @@ class ClipEdgeTrimActionTest {
     void shouldTrimRightEdge() {
         AudioClip clip = new AudioClip("Vocal", 4.0, 8.0, "/audio/vocal.wav");
 
-        ClipEdgeTrimAction action = new ClipEdgeTrimAction(clip, 4.0, 6.0, 0.0);
+        ClipEdgeTrimAction action = new ClipEdgeTrimAction(track, clip, 4.0, 6.0, 0.0);
         undoManager.execute(action);
 
         assertThat(clip.getStartBeat()).isEqualTo(4.0);
@@ -47,7 +51,7 @@ class ClipEdgeTrimActionTest {
         AudioClip clip = new AudioClip("Vocal", 4.0, 8.0, "/audio/vocal.wav");
         clip.setSourceOffsetBeats(1.0);
 
-        ClipEdgeTrimAction action = new ClipEdgeTrimAction(clip, 6.0, 6.0, 3.0);
+        ClipEdgeTrimAction action = new ClipEdgeTrimAction(track, clip, 6.0, 6.0, 3.0);
         undoManager.execute(action);
         undoManager.undo();
 
@@ -60,7 +64,7 @@ class ClipEdgeTrimActionTest {
     void shouldRedoAfterUndo() {
         AudioClip clip = new AudioClip("Vocal", 4.0, 8.0, null);
 
-        ClipEdgeTrimAction action = new ClipEdgeTrimAction(clip, 6.0, 6.0, 2.0);
+        ClipEdgeTrimAction action = new ClipEdgeTrimAction(track, clip, 6.0, 6.0, 2.0);
         undoManager.execute(action);
         undoManager.undo();
         undoManager.redo();
@@ -73,14 +77,22 @@ class ClipEdgeTrimActionTest {
     @Test
     void shouldHaveCorrectDescription() {
         AudioClip clip = new AudioClip("Test", 0.0, 8.0, null);
-        ClipEdgeTrimAction action = new ClipEdgeTrimAction(clip, 2.0, 6.0, 2.0);
+        ClipEdgeTrimAction action = new ClipEdgeTrimAction(track, clip, 2.0, 6.0, 2.0);
 
         assertThat(action.description()).isEqualTo("Trim Clip Edge");
     }
 
     @Test
+    void shouldRejectNullTrack() {
+        AudioClip clip = new AudioClip("Test", 0.0, 4.0, null);
+        assertThatThrownBy(() -> new ClipEdgeTrimAction(null, clip, 0.0, 4.0, 0.0))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("track must not be null");
+    }
+
+    @Test
     void shouldRejectNullClip() {
-        assertThatThrownBy(() -> new ClipEdgeTrimAction(null, 0.0, 4.0, 0.0))
+        assertThatThrownBy(() -> new ClipEdgeTrimAction(track, null, 0.0, 4.0, 0.0))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("clip must not be null");
     }
@@ -88,7 +100,7 @@ class ClipEdgeTrimActionTest {
     @Test
     void shouldRejectNegativeStartBeat() {
         AudioClip clip = new AudioClip("Test", 0.0, 8.0, null);
-        assertThatThrownBy(() -> new ClipEdgeTrimAction(clip, -1.0, 4.0, 0.0))
+        assertThatThrownBy(() -> new ClipEdgeTrimAction(track, clip, -1.0, 4.0, 0.0))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("newStartBeat must not be negative");
     }
@@ -96,7 +108,7 @@ class ClipEdgeTrimActionTest {
     @Test
     void shouldRejectNonPositiveDuration() {
         AudioClip clip = new AudioClip("Test", 0.0, 8.0, null);
-        assertThatThrownBy(() -> new ClipEdgeTrimAction(clip, 0.0, 0.0, 0.0))
+        assertThatThrownBy(() -> new ClipEdgeTrimAction(track, clip, 0.0, 0.0, 0.0))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("newDurationBeats must be positive");
     }
@@ -104,7 +116,7 @@ class ClipEdgeTrimActionTest {
     @Test
     void shouldRejectNegativeSourceOffset() {
         AudioClip clip = new AudioClip("Test", 0.0, 8.0, null);
-        assertThatThrownBy(() -> new ClipEdgeTrimAction(clip, 0.0, 4.0, -1.0))
+        assertThatThrownBy(() -> new ClipEdgeTrimAction(track, clip, 0.0, 4.0, -1.0))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("newSourceOffsetBeats must not be negative");
     }
@@ -116,7 +128,7 @@ class ClipEdgeTrimActionTest {
         clip.setSourceOffsetBeats(2.0);
 
         // Extend left edge back to beat 4.0 (original position)
-        ClipEdgeTrimAction action = new ClipEdgeTrimAction(clip, 4.0, 8.0, 0.0);
+        ClipEdgeTrimAction action = new ClipEdgeTrimAction(track, clip, 4.0, 8.0, 0.0);
         undoManager.execute(action);
 
         assertThat(clip.getStartBeat()).isEqualTo(4.0);

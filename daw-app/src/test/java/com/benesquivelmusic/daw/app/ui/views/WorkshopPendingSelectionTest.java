@@ -160,7 +160,8 @@ final class WorkshopPendingSelectionTest {
 
             Supplier<DawProject> projectSupplier = () -> project;
             this.controller = new WorkshopSelectionHostController(
-                    view, selectionModel, projectSupplier, workshopActive::get, messages);
+                    view, selectionModel, projectSupplier, workshopActive::get, messages,
+                    null /* eventBus — not under test here */);
         }
     }
 

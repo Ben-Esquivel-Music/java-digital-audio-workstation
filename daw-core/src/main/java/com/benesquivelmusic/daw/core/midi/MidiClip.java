@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * A mutable container for MIDI notes placed on a track's timeline.
@@ -19,6 +20,15 @@ import java.util.Objects;
  */
 public final class MidiClip implements Clip {
 
+    private final UUID id = UUID.randomUUID();
+    /**
+     * Set by {@link com.benesquivelmusic.daw.core.track.Track Track}'s
+     * constructor (see {@link #setOwningTrackId}) so MIDI-clip-mutation
+     * actions can publish {@code ClipEvent.Trimmed} carrying the owning
+     * track id alongside the clip id. Volatile so that publishers see
+     * the latest value if a clip is ever rewired.
+     */
+    private volatile UUID owningTrackId;
     private final List<MidiNoteData> notes = new ArrayList<>();
     private final List<MidiCcLane> ccLanes = new ArrayList<>();
     private boolean locked;
@@ -27,6 +37,40 @@ public final class MidiClip implements Clip {
      * Creates an empty MIDI clip.
      */
     public MidiClip() {
+    }
+
+    /**
+     * Returns the stable id of this clip (story 283). MIDI-clip
+     * mutations publish {@code ClipEvent} variants carrying this id so
+     * subscribers can locate the clip in the project model.
+     *
+     * @return the clip id (never {@code null})
+     */
+    public UUID getId() {
+        return id;
+    }
+
+    /**
+     * Returns the id of the track that owns this clip, or {@code null}
+     * if the clip has not yet been wired into a track (rare — only
+     * happens during deserialization sequencing).
+     *
+     * @return the owning track id, or {@code null}
+     */
+    public UUID getOwningTrackId() {
+        return owningTrackId;
+    }
+
+    /**
+     * Records the id of the {@link com.benesquivelmusic.daw.core.track.Track Track}
+     * that owns this clip. Only the {@code Track} constructor should
+     * call this method; once set, the value is stable for the
+     * lifetime of the clip.
+     *
+     * @param trackId the owning track id (may be {@code null})
+     */
+    public void setOwningTrackId(UUID trackId) {
+        this.owningTrackId = trackId;
     }
 
     /**

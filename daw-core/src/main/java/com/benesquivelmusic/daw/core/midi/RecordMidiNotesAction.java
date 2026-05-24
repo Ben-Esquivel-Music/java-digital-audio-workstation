@@ -1,9 +1,13 @@
 package com.benesquivelmusic.daw.core.midi;
 
+import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
+import com.benesquivelmusic.daw.sdk.event.ClipEvent;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * An undoable action that adds a batch of recorded MIDI notes to a
@@ -42,10 +46,13 @@ public final class RecordMidiNotesAction implements UndoableAction {
         if (initialExecute) {
             // Notes are already in the clip from real-time recording
             initialExecute = false;
-            return;
+        } else {
+            for (MidiNoteData note : notes) {
+                clip.addNote(note);
+            }
         }
-        for (MidiNoteData note : notes) {
-            clip.addNote(note);
+        if (!notes.isEmpty()) {
+            publishTrimmed();
         }
     }
 
@@ -54,6 +61,18 @@ public final class RecordMidiNotesAction implements UndoableAction {
         for (MidiNoteData note : notes) {
             clip.removeNote(note);
         }
+        if (!notes.isEmpty()) {
+            publishTrimmed();
+        }
+    }
+
+    private void publishTrimmed() {
+        UUID trackId = clip.getOwningTrackId();
+        if (trackId == null) {
+            return;
+        }
+        EventBusPublisher.publish(new ClipEvent.Trimmed(
+                trackId, clip.getId(), Instant.now()));
     }
 
     /**

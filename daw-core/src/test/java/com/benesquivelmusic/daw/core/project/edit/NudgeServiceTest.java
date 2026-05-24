@@ -3,10 +3,13 @@ package com.benesquivelmusic.daw.core.project.edit;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.NudgeClipsAction;
 import com.benesquivelmusic.daw.core.project.edit.NudgeService.TimingContext;
+import com.benesquivelmusic.daw.core.track.Track;
+import com.benesquivelmusic.daw.core.track.TrackType;
 
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
@@ -135,16 +138,19 @@ class NudgeServiceTest {
 
     @Test
     void buildActionReturnsNullForZeroDelta() {
+        Track track = new Track("t", TrackType.AUDIO);
         AudioClip clip = new AudioClip("c", 2.0, 4.0, null);
-        assertThat(NudgeService.buildAction(List.of(clip), 0.0)).isNull();
+        assertThat(NudgeService.buildAction(List.of(Map.entry(track, clip)), 0.0)).isNull();
     }
 
     @Test
     void executeMovesAllClipsByDelta() {
+        Track track = new Track("t", TrackType.AUDIO);
         AudioClip c1 = new AudioClip("a", 4.0, 2.0, null);
         AudioClip c2 = new AudioClip("b", 8.0, 2.0, null);
 
-        NudgeClipsAction action = NudgeService.buildAction(List.of(c1, c2), 0.5);
+        NudgeClipsAction action = NudgeService.buildAction(
+                List.of(Map.entry(track, c1), Map.entry(track, c2)), 0.5);
         assertThat(action).isNotNull();
         action.execute();
 
@@ -155,10 +161,12 @@ class NudgeServiceTest {
 
     @Test
     void undoRestoresAllClipPositions() {
+        Track track = new Track("t", TrackType.AUDIO);
         AudioClip c1 = new AudioClip("a", 4.0, 2.0, null);
         AudioClip c2 = new AudioClip("b", 8.0, 2.0, null);
 
-        NudgeClipsAction action = NudgeService.buildAction(List.of(c1, c2), -1.0);
+        NudgeClipsAction action = NudgeService.buildAction(
+                List.of(Map.entry(track, c1), Map.entry(track, c2)), -1.0);
         action.execute();
         action.undo();
 
@@ -170,10 +178,12 @@ class NudgeServiceTest {
     void boundaryClampPreventsNegativePositions() {
         // Earliest clip is at beat 1.0; asking for -5.0 must clamp to -1.0
         // so nothing goes negative and relative spacing is preserved.
+        Track track = new Track("t", TrackType.AUDIO);
         AudioClip early = new AudioClip("early", 1.0, 1.0, null);
         AudioClip later = new AudioClip("later", 5.0, 1.0, null);
 
-        NudgeClipsAction action = NudgeService.buildAction(List.of(early, later), -5.0);
+        NudgeClipsAction action = NudgeService.buildAction(
+                List.of(Map.entry(track, early), Map.entry(track, later)), -5.0);
         action.execute();
 
         assertThat(action.getAppliedBeatDelta()).isEqualTo(-1.0, within(EPS));
@@ -185,11 +195,13 @@ class NudgeServiceTest {
     void multiSelectionNudgeIsSingleUndoStep() {
         // The whole selection must move/undo through one action object,
         // so the undo manager sees exactly one step for N clips.
+        Track track = new Track("t", TrackType.AUDIO);
         AudioClip a = new AudioClip("a", 2.0, 1.0, null);
         AudioClip b = new AudioClip("b", 5.0, 1.0, null);
         AudioClip c = new AudioClip("c", 9.0, 1.0, null);
 
-        NudgeClipsAction action = NudgeService.buildAction(List.of(a, b, c), 0.25);
+        NudgeClipsAction action = NudgeService.buildAction(
+                List.of(Map.entry(track, a), Map.entry(track, b), Map.entry(track, c)), 0.25);
         assertThat(action).isNotNull();
         action.execute();
         assertThat(a.getStartBeat()).isEqualTo(2.25, within(EPS));
@@ -206,16 +218,19 @@ class NudgeServiceTest {
 
     @Test
     void nudgeClipsActionRejectsEmptyList() {
+        List<Map.Entry<Track, AudioClip>> empty = List.of();
         assertThatIllegalArgumentException()
-                .isThrownBy(() -> new NudgeClipsAction(List.of(), 1.0));
+                .isThrownBy(() -> new NudgeClipsAction(empty, 1.0));
     }
 
     @Test
     void nudgeClipsActionRejectsNonFiniteDelta() {
+        Track track = new Track("t", TrackType.AUDIO);
         AudioClip c = new AudioClip("c", 0.0, 1.0, null);
+        var entries = List.of(Map.entry(track, c));
         assertThatIllegalArgumentException()
-                .isThrownBy(() -> new NudgeClipsAction(List.of(c), Double.NaN));
+                .isThrownBy(() -> new NudgeClipsAction(entries, Double.NaN));
         assertThatIllegalArgumentException()
-                .isThrownBy(() -> new NudgeClipsAction(List.of(c), Double.POSITIVE_INFINITY));
+                .isThrownBy(() -> new NudgeClipsAction(entries, Double.POSITIVE_INFINITY));
     }
 }
