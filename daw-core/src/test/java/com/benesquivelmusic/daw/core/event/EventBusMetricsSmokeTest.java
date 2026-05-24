@@ -6,7 +6,11 @@ import com.benesquivelmusic.daw.core.audio.CutClipsAction;
 import com.benesquivelmusic.daw.core.audio.MoveClipAction;
 import com.benesquivelmusic.daw.core.audio.RemoveClipAction;
 import com.benesquivelmusic.daw.core.midi.AddMidiNoteAction;
+import com.benesquivelmusic.daw.core.midi.MidiCcEvent;
+import com.benesquivelmusic.daw.core.midi.MidiCcLane;
+import com.benesquivelmusic.daw.core.midi.MidiCcLaneType;
 import com.benesquivelmusic.daw.core.midi.MidiNoteData;
+import com.benesquivelmusic.daw.core.midi.SetCcValueAction;
 import com.benesquivelmusic.daw.core.midi.SetNoteVelocityAction;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectAction;
 import com.benesquivelmusic.daw.core.mixer.InsertEffectFactory;
@@ -100,13 +104,18 @@ class EventBusMetricsSmokeTest {
             new SetNoteVelocityAction(midiTrack.getMidiClip(), addedNote, 80)
                     .execute();
 
-            // 9. PluginEvent.ParameterChanged — plugin parameter set.
+            // 9. ClipEvent.Trimmed — CC edit (story 283).
+            MidiCcLane ccLane = MidiCcLane.preset(MidiCcLaneType.MOD_WHEEL, false);
+            new SetCcValueAction(midiTrack.getMidiClip(), ccLane,
+                    new MidiCcEvent(0, 64)).execute();
+
+            // 10. PluginEvent.ParameterChanged — plugin parameter set.
             var paramHandler = InsertEffectFactory.createParameterHandler(
                     InsertEffectType.PARAMETRIC_EQ, slot.getProcessor());
             new SetPluginParameterAction(slot, 0, -10.0, -20.0, paramHandler)
                     .execute();
 
-            // 10. PluginEvent.Unloaded/Loaded — insert effect reorder models
+            // 11. PluginEvent.Unloaded/Loaded — insert effect reorder models
             //     the move as an unload+load pair (no dedicated Reordered variant).
             InsertSlot slot2 = new InsertSlot("Comp",
                     InsertEffectFactory.createProcessor(

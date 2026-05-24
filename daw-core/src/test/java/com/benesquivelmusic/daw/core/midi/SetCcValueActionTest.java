@@ -9,24 +9,26 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class SetCcValueActionTest {
 
+    private MidiClip clip;
     private MidiCcLane lane;
     private UndoManager undo;
 
     @BeforeEach
     void setUp() {
+        clip = new MidiClip();
         lane = MidiCcLane.preset(MidiCcLaneType.MOD_WHEEL, false);
         undo = new UndoManager();
     }
 
     @Test
     void shouldHaveDescriptiveName() {
-        assertThat(new SetCcValueAction(lane, new MidiCcEvent(0, 64))
+        assertThat(new SetCcValueAction(clip, lane, new MidiCcEvent(0, 64))
                 .description()).isEqualTo("Set CC Value");
     }
 
     @Test
     void insertsBreakpointWhenColumnIsNew() {
-        undo.execute(new SetCcValueAction(lane, new MidiCcEvent(4, 80)));
+        undo.execute(new SetCcValueAction(clip, lane, new MidiCcEvent(4, 80)));
         assertThat(lane.getEvents()).hasSize(1);
         assertThat(lane.getEvents().get(0).value()).isEqualTo(80);
     }
@@ -34,14 +36,14 @@ class SetCcValueActionTest {
     @Test
     void replacesBreakpointWhenColumnAlreadyExists() {
         lane.addEvent(new MidiCcEvent(4, 30));
-        undo.execute(new SetCcValueAction(lane, new MidiCcEvent(4, 90)));
+        undo.execute(new SetCcValueAction(clip, lane, new MidiCcEvent(4, 90)));
         assertThat(lane.getEvents()).hasSize(1);
         assertThat(lane.getEvents().get(0).value()).isEqualTo(90);
     }
 
     @Test
     void undoRemovesInsertedBreakpoint() {
-        undo.execute(new SetCcValueAction(lane, new MidiCcEvent(4, 80)));
+        undo.execute(new SetCcValueAction(clip, lane, new MidiCcEvent(4, 80)));
         undo.undo();
         assertThat(lane.getEvents()).isEmpty();
     }
@@ -49,7 +51,7 @@ class SetCcValueActionTest {
     @Test
     void undoRestoresReplacedBreakpoint() {
         lane.addEvent(new MidiCcEvent(4, 30));
-        undo.execute(new SetCcValueAction(lane, new MidiCcEvent(4, 90)));
+        undo.execute(new SetCcValueAction(clip, lane, new MidiCcEvent(4, 90)));
         undo.undo();
         assertThat(lane.getEvents()).hasSize(1);
         assertThat(lane.getEvents().get(0).value()).isEqualTo(30);
@@ -58,7 +60,7 @@ class SetCcValueActionTest {
     @Test
     void redoReappliesChange() {
         lane.addEvent(new MidiCcEvent(4, 30));
-        undo.execute(new SetCcValueAction(lane, new MidiCcEvent(4, 90)));
+        undo.execute(new SetCcValueAction(clip, lane, new MidiCcEvent(4, 90)));
         undo.undo();
         undo.redo();
         assertThat(lane.getEvents().get(0).value()).isEqualTo(90);

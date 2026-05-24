@@ -45,11 +45,12 @@ public final class CutClipsAction implements UndoableAction {
         for (Map.Entry<Track, AudioClip> entry : entries) {
             Track t = entry.getKey();
             AudioClip c = entry.getValue();
-            t.removeClip(c);
-            EventBusPublisher.publish(new ClipEvent.Removed(
-                    UUID.fromString(t.getId()),
-                    UUID.fromString(c.getId()),
-                    Instant.now()));
+            if (t.removeClip(c)) {
+                EventBusPublisher.publish(new ClipEvent.Removed(
+                        UUID.fromString(t.getId()),
+                        UUID.fromString(c.getId()),
+                        Instant.now()));
+            }
         }
     }
 
