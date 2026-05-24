@@ -42,11 +42,13 @@ public final class RemoveTrackAction implements UndoableAction {
     @Override
     public void execute() {
         originalIndex = project.getTracks().indexOf(track);
-        project.removeTrack(track);
+        boolean removed = project.removeTrack(track);
         // Story 283 — mirror DawProject.addTrack's parse/fallback so a
         // non-UUID track id (test fixtures) doesn't throw post-mutation.
-        EventBusPublisher.publish(new MixerEvent.ChannelRemoved(
-                channelIdFor(track), Instant.now()));
+        if (removed) {
+            EventBusPublisher.publish(new MixerEvent.ChannelRemoved(
+                    channelIdFor(track), Instant.now()));
+        }
     }
 
     @Override
