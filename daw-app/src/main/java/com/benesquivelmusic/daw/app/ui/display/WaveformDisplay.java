@@ -4,7 +4,6 @@ import com.benesquivelmusic.daw.fx.GpuCanvas;
 import com.benesquivelmusic.daw.fx.GpuRenderContext;
 import com.benesquivelmusic.daw.sdk.visualization.WaveformData;
 import javafx.scene.canvas.GraphicsContext;
-import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
 import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
@@ -33,15 +32,13 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * speed is correct regardless of frame rate.</p>
  */
 @HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
-public final class WaveformDisplay extends Region {
+public final class WaveformDisplay extends GpuCanvasView {
 
     private static final Color DEFAULT_PEAK_COLOR = Color.web("#00e5ff");
     private static final Color DEFAULT_RMS_COLOR = Color.web("#00e5ff", 0.4);
     private static final Color DEFAULT_CURSOR_COLOR = Color.web("#ff1744");
     private static final Color DEFAULT_BACKGROUND = Color.web("#1a1a2e");
     private static final Color DEFAULT_CENTER_LINE = Color.web("#ffffff", 0.15);
-
-    private final GpuCanvas gpuCanvas;
 
     private WaveformData data;
     private double cursorPosition; // 0.0 to 1.0
@@ -51,18 +48,12 @@ public final class WaveformDisplay extends Region {
     private Color rmsColor = DEFAULT_RMS_COLOR;
     private Color cursorColor = DEFAULT_CURSOR_COLOR;
 
-    private boolean disposed;
-
     /**
      * Creates a new waveform display.
      */
     public WaveformDisplay() {
-        gpuCanvas = GpuCanvas.create()
-                .renderer(this::renderFrame)
-                .clearColor(DEFAULT_BACKGROUND)
-                .animated(false)
-                .build();
-        getChildren().add(gpuCanvas);
+        super(DEFAULT_BACKGROUND, false);
+        setRenderer(this::renderFrame);
     }
 
     /**
@@ -72,7 +63,7 @@ public final class WaveformDisplay extends Region {
      */
     public void setWaveformData(WaveformData data) {
         this.data = data;
-        gpuCanvas.requestRender();
+        gpuCanvas().requestRender();
     }
 
     /**
@@ -87,7 +78,7 @@ public final class WaveformDisplay extends Region {
      */
     public void setCursorPosition(double position) {
         this.cursorPosition = clampPosition(position);
-        gpuCanvas.requestRender();
+        gpuCanvas().requestRender();
     }
 
     /**
@@ -127,14 +118,14 @@ public final class WaveformDisplay extends Region {
      *                 timer, {@code false} to render only on demand
      */
     public void setAnimated(boolean animated) {
-        gpuCanvas.setAnimated(animated);
+        gpuCanvas().setAnimated(animated);
     }
 
     /**
      * Returns whether the GpuCanvas animation timer is currently running.
      */
     public boolean isAnimated() {
-        return gpuCanvas.isAnimated();
+        return gpuCanvas().isAnimated();
     }
 
     /**
@@ -142,7 +133,7 @@ public final class WaveformDisplay extends Region {
      */
     public void setPeakColor(Color color) {
         this.peakColor = color;
-        gpuCanvas.requestRender();
+        gpuCanvas().requestRender();
     }
 
     /**
@@ -150,7 +141,7 @@ public final class WaveformDisplay extends Region {
      */
     public void setRmsColor(Color color) {
         this.rmsColor = color;
-        gpuCanvas.requestRender();
+        gpuCanvas().requestRender();
     }
 
     /**
@@ -158,7 +149,7 @@ public final class WaveformDisplay extends Region {
      */
     public void setCursorColor(Color color) {
         this.cursorColor = color;
-        gpuCanvas.requestRender();
+        gpuCanvas().requestRender();
     }
 
     /**
@@ -168,7 +159,7 @@ public final class WaveformDisplay extends Region {
      * a redraw when the clear color changes.
      */
     public void setBackgroundColor(Color color) {
-        gpuCanvas.setClearColor(color);
+        gpuCanvas().setClearColor(color);
     }
 
     /**
@@ -178,26 +169,14 @@ public final class WaveformDisplay extends Region {
      * underlying audio data so the visual representation is updated.</p>
      */
     public void refresh() {
-        gpuCanvas.requestRender();
+        gpuCanvas().requestRender();
     }
 
     /**
      * Returns the embedded {@link GpuCanvas}. Visible for tests.
      */
     GpuCanvas getGpuCanvas() {
-        return gpuCanvas;
-    }
-
-    /**
-     * Stops the GpuCanvas render loop and releases its off-heap surface.
-     * Must be called from the JavaFX Application Thread. Safe to call
-     * multiple times.
-     */
-    public void dispose() {
-        if (disposed) return;
-        disposed = true;
-        gpuCanvas.setAnimated(false);
-        gpuCanvas.dispose();
+        return gpuCanvas();
     }
 
     // ── Rendering ───────────────────────────────────────────────────────
@@ -274,8 +253,4 @@ public final class WaveformDisplay extends Region {
         return Math.max(0.0, Math.min(1.0, v));
     }
 
-    @Override
-    protected void layoutChildren() {
-        gpuCanvas.resizeRelocate(0, 0, getWidth(), getHeight());
-    }
 }

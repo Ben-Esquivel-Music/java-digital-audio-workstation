@@ -6,7 +6,6 @@ import com.benesquivelmusic.daw.sdk.spatial.SpatialPannerData;
 import com.benesquivelmusic.daw.sdk.spatial.SpatialPosition;
 
 import javafx.scene.canvas.GraphicsContext;
-import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
 import javafx.scene.paint.CycleMethod;
 import javafx.scene.paint.RadialGradient;
@@ -39,7 +38,7 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * {@code AmbisonicEncoder}.</p>
  */
 @HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
-public final class SpatialPannerDisplay extends Region {
+public final class SpatialPannerDisplay extends GpuCanvasView {
 
     // ── Color palette ─────────────────────────────────────────────
     private static final Color BACKGROUND = Color.web("#0a0a1e");
@@ -71,11 +70,7 @@ public final class SpatialPannerDisplay extends Region {
     private static final Font READOUT_FONT = Font.font("Monospace", 11);
     private static final Font HEADER_FONT = Font.font("Monospace", 10);
 
-    private final GpuCanvas gpuCanvas;
-
     private SpatialPannerData pannerData;
-    private boolean disposed;
-
     /**
      * Creates a new spatial panner display.
      *
@@ -88,15 +83,8 @@ public final class SpatialPannerDisplay extends Region {
      * and stop the timer.
      */
     public SpatialPannerDisplay() {
-        gpuCanvas = GpuCanvas.create()
-                .renderer(this::renderFrame)
-                .clearColor(BACKGROUND)
-                // Static dot when transport is stopped — no need to spin the
-                // pulse. setPlaying(true) flips this on while playback advances
-                // the trajectory dot between automation breakpoints.
-                .animated(false)
-                .build();
-        getChildren().add(gpuCanvas);
+        super(BACKGROUND, false);
+        setRenderer(this::renderFrame);
         getStyleClass().add("spatial-panner-display");
     }
 
@@ -107,15 +95,15 @@ public final class SpatialPannerDisplay extends Region {
      */
     public void update(SpatialPannerData data) {
         this.pannerData = data;
-        if (disposed) {
+        if (isDisposed()) {
             return;
         }
         // While the AnimationTimer is running it will pick up the new data on
         // the next pulse; while stopped (the common case — transport is not
         // playing) we still need a one-shot render so the dot reflects the
         // latest mouse drag.
-        if (!gpuCanvas.isAnimated()) {
-            gpuCanvas.requestRender();
+        if (!gpuCanvas().isAnimated()) {
+            gpuCanvas().requestRender();
         }
     }
 
@@ -139,10 +127,10 @@ public final class SpatialPannerDisplay extends Region {
      * @param playing whether transport is currently playing back
      */
     public void setPlaying(boolean playing) {
-        if (disposed) {
+        if (isDisposed()) {
             return;
         }
-        gpuCanvas.setAnimated(playing);
+        gpuCanvas().setAnimated(playing);
     }
 
     /**
@@ -154,28 +142,14 @@ public final class SpatialPannerDisplay extends Region {
      * gated on Scene attachment).
      */
     public boolean isPlaying() {
-        return gpuCanvas.isAnimated();
-    }
-
-    /**
-     * Stops the GpuCanvas render loop and releases its off-heap surface.
-     * Must be called from the JavaFX Application Thread. Safe to call
-     * multiple times.
-     */
-    public void dispose() {
-        if (disposed) {
-            return;
-        }
-        disposed = true;
-        gpuCanvas.setAnimated(false);
-        gpuCanvas.dispose();
+        return gpuCanvas().isAnimated();
     }
 
     /**
      * Returns the embedded {@link GpuCanvas}. Package-private for testing.
      */
     GpuCanvas getGpuCanvas() {
-        return gpuCanvas;
+        return gpuCanvas();
     }
 
     // ── Coordinate mapping (package-private for testing) ──────────
@@ -531,11 +505,4 @@ public final class SpatialPannerDisplay extends Region {
         gc.fillText(gainText, spacing * 3 + 8, drawHeight + 18);
     }
 
-    @Override
-    protected void layoutChildren() {
-        // GpuCanvas is itself a Region — resize it to fill the display. Its
-        // own size listeners drive the per-frame redraw, so there is no need
-        // to invoke the renderer manually here.
-        gpuCanvas.resizeRelocate(0, 0, getWidth(), getHeight());
-    }
 }

@@ -9,7 +9,6 @@ import com.benesquivelmusic.daw.sdk.visualization.GoniometerData;
 
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.Label;
-import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.TextAlignment;
@@ -41,7 +40,7 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * correlation metering for mono compatibility verification.</p>
  */
 @HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
-public final class CorrelationDisplay extends Region {
+public final class CorrelationDisplay extends GpuCanvasView {
 
     private static final Color BACKGROUND = Color.web("#0d0d1a");
     private static final Color RING_COLOR = Color.web("#ffffff", 0.15);
@@ -60,7 +59,6 @@ public final class CorrelationDisplay extends Region {
 
     private static final double OVERLAY_ICON_SIZE = 9;
 
-    private final GpuCanvas gpuCanvas;
     private final double[] correlationHistory;
     private int historyIndex;
     private int historyCount;
@@ -83,23 +81,16 @@ public final class CorrelationDisplay extends Region {
 
     private boolean goniometerMode;
     private GoniometerData goniometerData;
-    private boolean disposed;
-
     /**
      * Creates a new correlation display.
      */
     public CorrelationDisplay() {
+        super(BACKGROUND, true);
         // Compose a GpuCanvas (daw-fx) — owns size binding, per-frame
         // AnimationTimer (gated on Scene attachment), and background clear.
         // Callers that remove the display from the scene graph should call
         // dispose() to release the off-heap surface and stop the timer.
-        gpuCanvas = GpuCanvas.create()
-                .renderer(this::renderFrame)
-                .clearColor(BACKGROUND)
-                .animated(true)
-                .build();
-        getChildren().add(gpuCanvas);
-
+        setRenderer(this::renderFrame);
         correlationHistory = new double[HISTORY_SIZE];
         java.util.Arrays.fill(correlationHistory, 1.0);
 
@@ -143,9 +134,7 @@ public final class CorrelationDisplay extends Region {
         historyIndex = (historyIndex + 1) % HISTORY_SIZE;
         historyCount = Math.min(historyCount + 1, HISTORY_SIZE);
 
-        if (getScene() == null) {
-            gpuCanvas.requestRender();
-        }
+        requestRender();
     }
 
     /**
@@ -155,9 +144,7 @@ public final class CorrelationDisplay extends Region {
      */
     public void updateGoniometer(GoniometerData data) {
         this.goniometerData = data;
-        if (getScene() == null) {
-            gpuCanvas.requestRender();
-        }
+        requestRender();
     }
 
     /**
@@ -169,7 +156,7 @@ public final class CorrelationDisplay extends Region {
         this.goniometerMode = enabled;
         midLabel.setVisible(enabled);
         sideLabel.setVisible(enabled);
-        gpuCanvas.requestRender();
+        gpuCanvas().requestRender();
     }
 
     /** Returns whether goniometer mode is active. */
@@ -181,19 +168,7 @@ public final class CorrelationDisplay extends Region {
      * Returns the embedded {@link GpuCanvas}. Visible for tests.
      */
     GpuCanvas getGpuCanvas() {
-        return gpuCanvas;
-    }
-
-    /**
-     * Stops the GpuCanvas render loop and releases its off-heap surface.
-     * Must be called from the JavaFX Application Thread. Safe to call
-     * multiple times.
-     */
-    public void dispose() {
-        if (disposed) return;
-        disposed = true;
-        gpuCanvas.setAnimated(false);
-        gpuCanvas.dispose();
+        return gpuCanvas();
     }
 
     /**
@@ -381,12 +356,12 @@ public final class CorrelationDisplay extends Region {
 
     @Override
     protected void layoutChildren() {
+        // Let the base class resize the underlying GpuCanvas to fill the
+        // region; we only need to place the icon overlay labels.
+        super.layoutChildren();
+
         double w = getWidth();
         double h = getHeight();
-
-        // GpuCanvas is itself a Region — resize it to fill the display.
-        // Its own size listeners drive the per-frame redraw.
-        gpuCanvas.resizeRelocate(0, 0, w, h);
 
         // Position icon overlay labels at the same coordinates used by the old fillText() calls.
         double topSection = h * 0.45;

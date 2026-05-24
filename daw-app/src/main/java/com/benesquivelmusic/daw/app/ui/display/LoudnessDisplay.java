@@ -6,7 +6,6 @@ import com.benesquivelmusic.daw.sdk.visualization.LoudnessData;
 import com.benesquivelmusic.daw.sdk.visualization.LoudnessTarget;
 
 import javafx.scene.canvas.GraphicsContext;
-import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.TextAlignment;
@@ -28,7 +27,7 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * research (§8 — Loudness Standards and Metering).</p>
  */
 @HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
-public final class LoudnessDisplay extends Region {
+public final class LoudnessDisplay extends GpuCanvasView {
 
     private static final Color BACKGROUND = Color.web("#0d0d1a");
     private static final Color GRID_COLOR = Color.web("#ffffff", 0.08);
@@ -47,7 +46,6 @@ public final class LoudnessDisplay extends Region {
     private static final int HISTORY_SIZE = 300;
     private static final double COMPLIANCE_TOLERANCE_LU = 1.0;
 
-    private final GpuCanvas gpuCanvas;
     private final double[] momentaryHistory;
     private final double[] shortTermHistory;
     private final double[] integratedHistory;
@@ -61,12 +59,11 @@ public final class LoudnessDisplay extends Region {
     private double truePeakDbfs = Double.NEGATIVE_INFINITY;
     private double targetLufs = -14.0; // Default: Spotify/YouTube
     private String targetName = "Spotify";
-    private boolean disposed;
-
     /**
      * Creates a new loudness display.
      */
     public LoudnessDisplay() {
+        super(BACKGROUND, false);
         momentaryHistory = new double[HISTORY_SIZE];
         shortTermHistory = new double[HISTORY_SIZE];
         integratedHistory = new double[HISTORY_SIZE];
@@ -74,12 +71,7 @@ public final class LoudnessDisplay extends Region {
         java.util.Arrays.fill(shortTermHistory, MIN_LUFS);
         java.util.Arrays.fill(integratedHistory, MIN_LUFS);
 
-        gpuCanvas = GpuCanvas.create()
-                .renderer(this::renderFrame)
-                .clearColor(BACKGROUND)
-                .animated(false)
-                .build();
-        getChildren().add(gpuCanvas);
+        setRenderer(this::renderFrame);
     }
 
     /**
@@ -88,7 +80,7 @@ public final class LoudnessDisplay extends Region {
      * @param data the latest loudness measurement
      */
     public void update(LoudnessData data) {
-        if (data == null || disposed) return;
+        if (data == null || isDisposed()) return;
 
         momentaryHistory[historyIndex] = Math.max(data.momentaryLufs(), MIN_LUFS);
         shortTermHistory[historyIndex] = Math.max(data.shortTermLufs(), MIN_LUFS);
@@ -102,7 +94,7 @@ public final class LoudnessDisplay extends Region {
         loudnessRange = data.loudnessRange();
         truePeakDbfs = data.truePeakDbfs();
 
-        gpuCanvas.requestRender();
+        gpuCanvas().requestRender();
     }
 
     /**
@@ -112,7 +104,7 @@ public final class LoudnessDisplay extends Region {
      */
     public void setTargetLufs(double lufs) {
         this.targetLufs = lufs;
-        gpuCanvas.requestRender();
+        gpuCanvas().requestRender();
     }
 
     /**
@@ -124,7 +116,7 @@ public final class LoudnessDisplay extends Region {
         if (target == null) return;
         this.targetLufs = target.targetIntegratedLufs();
         this.targetName = target.displayName();
-        gpuCanvas.requestRender();
+        gpuCanvas().requestRender();
     }
 
     /**
@@ -158,19 +150,7 @@ public final class LoudnessDisplay extends Region {
      * Returns the embedded {@link GpuCanvas}. Visible for tests.
      */
     GpuCanvas getGpuCanvas() {
-        return gpuCanvas;
-    }
-
-    /**
-     * Stops the GpuCanvas render loop and releases its off-heap surface.
-     * Must be called from the JavaFX Application Thread. Safe to call
-     * multiple times.
-     */
-    public void dispose() {
-        if (disposed) return;
-        disposed = true;
-        gpuCanvas.setAnimated(false);
-        gpuCanvas.dispose();
+        return gpuCanvas();
     }
 
     private void renderFrame(GpuRenderContext ctx) {
@@ -335,8 +315,4 @@ public final class LoudnessDisplay extends Region {
         }
     }
 
-    @Override
-    protected void layoutChildren() {
-        gpuCanvas.resizeRelocate(0, 0, getWidth(), getHeight());
-    }
 }

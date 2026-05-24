@@ -8,7 +8,6 @@ import com.benesquivelmusic.daw.sdk.analysis.InputLevelMeter;
 
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.input.MouseButton;
-import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
 
 import java.util.Objects;
@@ -31,7 +30,7 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * delegated to the shared substrate.</p>
  */
 @HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
-public final class MiniClipIndicator extends Region {
+public final class MiniClipIndicator extends GpuCanvasView {
 
     private static final double SIZE = 10.0;
 
@@ -39,14 +38,15 @@ public final class MiniClipIndicator extends Region {
     private static final Color ON = Color.web("#ff1744");
     private static final Color BORDER = Color.web("#000000", 0.5);
 
-    private final GpuCanvas gpuCanvas;
     private final InputLevelMonitor monitor;
     private final InputLevelMonitorRegistry registry;
     private InputLevelMeter lastSnapshot = InputLevelMeter.SILENCE;
-    private boolean disposed;
 
     public MiniClipIndicator(InputLevelMonitor monitor,
                              InputLevelMonitorRegistry registry) {
+        // Transparent background — the round LED is drawn over a transparent
+        // rect so any parent background shows through.
+        super(null, true);
         this.monitor = Objects.requireNonNull(monitor, "monitor must not be null");
         this.registry = Objects.requireNonNull(registry, "registry must not be null");
 
@@ -54,15 +54,8 @@ public final class MiniClipIndicator extends Region {
         setMinSize(SIZE, SIZE);
         setMaxSize(SIZE, SIZE);
 
-        gpuCanvas = GpuCanvas.create()
-                .renderer(this::renderFrame)
-                // Transparent background — the round LED is drawn over a
-                // transparent rect so any parent background shows through.
-                .clearColor(null)
-                .animated(true)
-                .prefSize(SIZE, SIZE)
-                .build();
-        getChildren().add(gpuCanvas);
+        setRenderer(this::renderFrame);
+        gpuCanvas().setPrefSize(SIZE, SIZE);
 
         setOnMouseClicked(event -> {
             if (event.getButton() != MouseButton.PRIMARY) {
@@ -74,7 +67,7 @@ public final class MiniClipIndicator extends Region {
                 monitor.reset();
             }
             lastSnapshot = monitor.snapshot();
-            gpuCanvas.requestRender();
+            gpuCanvas().requestRender();
         });
     }
 
@@ -83,8 +76,8 @@ public final class MiniClipIndicator extends Region {
      * Idempotent; the underlying timer is gated by Scene attachment.
      */
     public void start() {
-        if (disposed) return;
-        gpuCanvas.setAnimated(true);
+        if (isDisposed()) return;
+        gpuCanvas().setAnimated(true);
     }
 
     /**
@@ -96,17 +89,6 @@ public final class MiniClipIndicator extends Region {
         dispose();
     }
 
-    /**
-     * Stops the GpuCanvas render loop and releases its off-heap surface.
-     * Safe to call multiple times. Equivalent to {@link #stop()}.
-     */
-    public void dispose() {
-        if (disposed) return;
-        disposed = true;
-        gpuCanvas.setAnimated(false);
-        gpuCanvas.dispose();
-    }
-
     /** Returns the monitor this indicator is bound to. */
     public InputLevelMonitor getMonitor() {
         return monitor;
@@ -114,12 +96,7 @@ public final class MiniClipIndicator extends Region {
 
     /** Returns the embedded {@link GpuCanvas}. Visible for tests. */
     GpuCanvas getGpuCanvas() {
-        return gpuCanvas;
-    }
-
-    @Override
-    protected void layoutChildren() {
-        gpuCanvas.resizeRelocate(0, 0, getWidth(), getHeight());
+        return gpuCanvas();
     }
 
     private void renderFrame(GpuRenderContext ctx) {
