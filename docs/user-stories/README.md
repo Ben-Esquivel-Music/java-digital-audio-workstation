@@ -293,6 +293,8 @@ Operationalises the canonical UI vision in [`docs/design/UI_DESIGN_BOOK.md`](../
 | 280 | [Performance Stage View: Oversized Skinned Controls for Live Use](280-performance-stage-view.md) | 🟢 Low | Performance Stage |
 | 281 | [Workshop View: 60/40 Arrangement + Focused Plugin GUI Side-by-Side](281-workshop-view-arrangement-plus-plugin-focus.md) | 🟢 Low | Workshop View |
 | 282 | [Mission Control: Dock-and-Float Layout with Per-Project Persistence](282-mission-control-dock-and-float-layout.md) | 🟢 Low | Docking |
+| 285 | [Mission Control: Wire Dock Manifest Bar and View → Layout Menu (282 Follow-On)](285-mission-control-dock-manifest-and-layout-menu-wiring.md) | 🟢 Low | Docking |
+| 286 | [Mission Control: Promote Arrangement and Visualisation Tiles to First-Class Dockable Panels (282 Follow-On)](286-mission-control-arrangement-and-visualisations-as-dockable-panels.md) | 🟢 Low | Docking |
 
 ## Code Quality & Refactoring
 
@@ -308,6 +310,7 @@ Operationalises the canonical UI vision in [`docs/design/UI_DESIGN_BOOK.md`](../
 | 202 | [Sealed Event Hierarchy](202-sealed-event-hierarchy.md) | 🟡 Medium | Refactoring |
 | 203 | [Central Typed Event Bus](203-central-typed-event-bus.md) | 🟠 High | Refactoring |
 | 283 | [Wire EventBus Publishers in Core Action Classes](283-wire-eventbus-publishers-in-core-actions.md) | 🟠 High | Events |
+| 287 | [Wire EventBus Publishers for Track, Automation, Transport, and Project Events (283 Stretch Scope)](287-wire-eventbus-publishers-track-automation-transport-project.md) | 🟡 Medium | Events |
 | 284 | [Extract GpuCanvasView Base from Display Region-Shell Boilerplate](284-gpu-canvas-view-extract-display-shell.md) | 🟢 Low | Refactoring |
 
 ## Performance
