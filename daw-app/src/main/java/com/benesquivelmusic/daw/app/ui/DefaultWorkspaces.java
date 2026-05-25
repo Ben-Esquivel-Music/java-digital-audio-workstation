@@ -45,6 +45,14 @@ public final class DefaultWorkspaces {
     public static final String PANEL_SPATIAL = "spatial";
     /** Loudness / LUFS metering panel. */
     public static final String PANEL_LOUDNESS = "loudness";
+    /**
+     * Telemetry setup panel (story 285). Constant added so
+     * {@link TelemetrySetupPanel} can advertise a stable {@code dockId};
+     * not added to {@link #panelIds()} because the panel is owned by
+     * {@code TelemetryView} (a plugin view) and is not yet registered as
+     * a top-level dock surface — a future story will elevate it.
+     */
+    public static final String PANEL_TELEMETRY = "telemetry";
 
     private DefaultWorkspaces() { }
 

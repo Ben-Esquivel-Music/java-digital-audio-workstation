@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.display.LoudnessDisplay;
+import com.benesquivelmusic.daw.app.ui.dock.Dockable;
+import com.benesquivelmusic.daw.app.ui.dock.DockZone;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.mastering.MasteringChain;
@@ -45,7 +47,7 @@ import java.util.Objects;
  * <p>Uses existing CSS classes: {@code .content-area}, {@code .panel-header},
  * {@code .mixer-channel}.</p>
  */
-public final class MasteringView extends VBox {
+public final class MasteringView extends VBox implements Dockable {
 
     private static final double STAGE_CARD_WIDTH = 140;
     private static final double METER_WIDTH = 10;
@@ -190,6 +192,12 @@ public final class MasteringView extends VBox {
             }
         });
     }
+
+    // ── Dockable contract (story 285) ────────────────────────────────────────
+    @Override public String dockId()            { return DefaultWorkspaces.PANEL_MASTERING; }
+    @Override public String displayName()       { return "Mastering"; }
+    @Override public String iconName()          { return "MASTERING"; }
+    @Override public DockZone preferredZone()   { return DockZone.CENTER; }
 
     /**
      * Rebuilds the stage cards from the current mastering chain state.

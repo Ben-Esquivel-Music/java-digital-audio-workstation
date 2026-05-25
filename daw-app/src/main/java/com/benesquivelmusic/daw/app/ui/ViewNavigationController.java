@@ -880,6 +880,27 @@ final class ViewNavigationController {
     }
 
     /**
+     * Returns the mastering view instance.
+     *
+     * @return the mastering view
+     */
+    MasteringView getMasteringView() {
+        return masteringView;
+    }
+
+    /**
+     * Returns the cached arrangement {@link Node} (FXML-mounted
+     * {@code .arrangement-panel}) — story 285 dock host uses this when the
+     * arrangement panel is detached into a floating window.
+     *
+     * @return the arrangement node (may be {@code null} before
+     *         {@link #initializeViewNavigation()} has run)
+     */
+    Node getCachedArrangementNode() {
+        return viewCache.get(DawView.ARRANGEMENT);
+    }
+
+    /**
      * Replaces the mixer view (e.g. after a project reload) and updates the view cache.
      *
      * @param newMixerView the new mixer view instance

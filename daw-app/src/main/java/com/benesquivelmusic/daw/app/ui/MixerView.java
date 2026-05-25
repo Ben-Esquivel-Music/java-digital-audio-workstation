@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.display.InputMeterStrip;
 import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
+import com.benesquivelmusic.daw.app.ui.dock.Dockable;
+import com.benesquivelmusic.daw.app.ui.dock.DockZone;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
@@ -75,7 +77,7 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * {@code .mixer-channel-name}, {@code .mixer-fader}.</p>
  */
 @HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
-public final class MixerView extends VBox {
+public final class MixerView extends VBox implements Dockable {
 
     private static final Logger LOG = Logger.getLogger(MixerView.class.getName());
     /**
@@ -459,6 +461,12 @@ public final class MixerView extends VBox {
 
         refresh();
     }
+
+    // ── Dockable contract (story 285) ────────────────────────────────────────
+    @Override public String dockId()            { return DefaultWorkspaces.PANEL_MIXER; }
+    @Override public String displayName()       { return "Mixer"; }
+    @Override public String iconName()          { return "MIXER"; }
+    @Override public DockZone preferredZone()   { return DockZone.BOTTOM; }
 
     private boolean mainAreaContains(javafx.scene.Node node) {
         return mainArea != null && mainArea.getChildren().contains(node);

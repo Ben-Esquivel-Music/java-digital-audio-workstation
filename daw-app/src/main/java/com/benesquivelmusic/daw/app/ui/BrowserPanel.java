@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.dock.Dockable;
+import com.benesquivelmusic.daw.app.ui.dock.DockZone;
 import com.benesquivelmusic.daw.app.ui.drag.DragSourceKind;
 import com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor;
 import com.benesquivelmusic.daw.app.ui.drag.DropTargetKind;
@@ -73,7 +75,7 @@ import java.util.logging.Logger;
  * row is playing. With no auditioner installed the button is
  * {@code :disabled} (the unified {@code .dawg-button:disabled} rule).</p>
  */
-public final class BrowserPanel extends VBox {
+public final class BrowserPanel extends VBox implements Dockable {
 
     private static final Logger LOG = Logger.getLogger(BrowserPanel.class.getName());
 
@@ -342,6 +344,12 @@ public final class BrowserPanel extends VBox {
         tabIndicators.put(section, indicator);
         return container;
     }
+
+    // ── Dockable contract (story 285) ────────────────────────────────────────
+    @Override public String dockId()            { return DefaultWorkspaces.PANEL_BROWSER; }
+    @Override public String displayName()       { return "Browser"; }
+    @Override public String iconName()          { return "BROWSER"; }
+    @Override public DockZone preferredZone()   { return DockZone.LEFT; }
 
     /**
      * Returns the persistent search/filter text field.
