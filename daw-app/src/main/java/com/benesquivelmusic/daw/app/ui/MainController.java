@@ -1851,7 +1851,27 @@ public final class MainController {
             // If a Stage was previously open for this panel, close it now
             // (panel was re-docked).
             Stage existing = floatingStages.remove(id);
+            boolean wasFloating = existing != null;
             if (existing != null) existing.close();
+            if (wasFloating) {
+                // The panel node is still parented inside the closed stage's
+                // scene. Detach it so it can be re-parented into the main
+                // chrome by the reconcile helpers below.
+                detachFromParent(resolveNode(id));
+                // Force the controller's internal state to diverge from the
+                // desired state so the standard show paths fire. The
+                // controllers' flags (panelVisible / activeView) were never
+                // updated when the panel was floated — they're stale.
+                if (id.equals(DefaultWorkspaces.PANEL_BROWSER)) {
+                    if (browserPanelController != null
+                            && browserPanelController.isPanelVisible()) {
+                        browserPanelController.toggleBrowserPanel();
+                    }
+                } else if (CENTER_ZONE_PANELS.contains(id)
+                        && viewNavigationController != null) {
+                    viewNavigationController.invalidateActiveViewCache();
+                }
+            }
             switch (id) {
                 case DefaultWorkspaces.PANEL_BROWSER -> reconcileBrowser(entry.visible());
                 case DefaultWorkspaces.PANEL_ARRANGEMENT -> reconcileCenterView(
@@ -1863,6 +1883,20 @@ public final class MainController {
                 case DefaultWorkspaces.PANEL_MASTERING -> reconcileCenterView(
                         entry.visible(), DawView.MASTERING);
                 default -> { /* unknown id — forward compatible */ }
+            }
+        }
+
+        private void detachFromParent(Node content) {
+            if (content == null) return;
+            javafx.scene.Parent parent = content.getParent();
+            if (parent instanceof javafx.scene.layout.BorderPane bp) {
+                if (bp.getCenter() == content) bp.setCenter(null);
+                else if (bp.getLeft() == content) bp.setLeft(null);
+                else if (bp.getRight() == content) bp.setRight(null);
+                else if (bp.getTop() == content) bp.setTop(null);
+                else if (bp.getBottom() == content) bp.setBottom(null);
+            } else if (parent instanceof Pane pane) {
+                pane.getChildren().remove(content);
             }
         }
 
@@ -1902,20 +1936,7 @@ public final class MainController {
                 if (rootPane.getScene() != null && rootPane.getScene().getWindow() != null) {
                     stage.initOwner(rootPane.getScene().getWindow());
                 }
-                javafx.scene.Parent parent = content.getParent();
-                // BorderPane extends Pane — test for BorderPane (the rootPane
-                // slot setter case) first so generic Pane removal doesn't
-                // strip a node out of a BorderPane slot without clearing the
-                // setter.
-                if (parent instanceof javafx.scene.layout.BorderPane bp) {
-                    if (bp.getCenter() == content) bp.setCenter(null);
-                    else if (bp.getLeft() == content) bp.setLeft(null);
-                    else if (bp.getRight() == content) bp.setRight(null);
-                    else if (bp.getTop() == content) bp.setTop(null);
-                    else if (bp.getBottom() == content) bp.setBottom(null);
-                } else if (parent instanceof Pane pane) {
-                    pane.getChildren().remove(content);
-                }
+                detachFromParent(content);
                 javafx.scene.Scene scene = new javafx.scene.Scene(
                         content instanceof javafx.scene.Parent p ? p
                                 : new javafx.scene.layout.StackPane(content));
@@ -1925,13 +1946,16 @@ public final class MainController {
                 com.benesquivelmusic.daw.app.ui.theme.ThemeManager.getDefault().applyTo(scene);
                 stage.setScene(scene);
                 // When the user dismisses the floating window via the OS
-                // close button, mark the panel hidden in the dock layout so
-                // the manager doesn't re-open it on the next layout change.
+                // close button, move the panel back to its preferred dock
+                // zone so it isn't trapped in a hidden-floating state.
                 final String idForHandler = panelId;
                 stage.setOnCloseRequest(e -> {
                     floatingStages.remove(idForHandler);
                     if (dockManager != null) {
-                        dockManager.setVisible(idForHandler, false);
+                        DockZone preferred = dockManager.panel(idForHandler)
+                                .map(Dockable::preferredZone)
+                                .orElse(DockZone.CENTER);
+                        dockManager.move(idForHandler, preferred, 0);
                     }
                 });
                 floatingStages.put(panelId, stage);
