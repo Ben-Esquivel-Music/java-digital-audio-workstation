@@ -15,7 +15,7 @@
 
 ## 0. How to use this book
 
-1. **Read §1 first.** A frank inventory of why project management feels flakey today,
+1. **Read §1 first.** A frank inventory of why project management feels flaky today,
    cross‑referenced with the actual code paths in `daw-core` and `daw-app`. Every
    later section is judged against the problems listed there.
 2. **§2 is the foundation.** Six non‑negotiable principles for a project manager that
@@ -43,7 +43,7 @@ rather than icons. Render this file in a monospace‑capable viewer.
 
 ## 1. Critique of today's project management
 
-A frank inventory of the user’s "extremely flakey" complaint, cross‑referenced with
+A frank inventory of the user's "extremely flaky" complaint, cross‑referenced with
 the codebase. This is the baseline every later section has to improve on.
 
 ### 1.1 The Save button is the only way to feel safe
@@ -72,19 +72,19 @@ There are three things wrong with that single path from a user’s point of view
 ### 1.2 Checkpoints are invisible
 
 `CheckpointManager` (in `daw-core/src/main/java/com/benesquivelmusic/daw/core/persistence/`)
-serialises the full project to `checkpoints/checkpoint-NNN-yyyyMMddThhmmss.daw`
+serialises the full project to `checkpoints/checkpoint-NNN-yyyyMMddTHHmmss.daw`
 every 5 minutes by default (`AutoSaveConfig.DEFAULT`) — with a `LONG_SESSION`
 preset that drops the interval to 30 seconds. None of that is surfaced anywhere:
 
 - The user cannot see *when* the next checkpoint will fire.
 - The user cannot see *the last one* (size, time, success/failure).
 - The user cannot browse the checkpoint history. They are files in a folder, named
-  `checkpoint-042-20260321T2200.daw`. Opening one means manually copying it over
+  `checkpoint-042-20260321T220045.daw`. Opening one means manually copying it over
   `project.daw` outside the app.
 - A failure to write a checkpoint only emits a log line — there is no UI signal.
 
 For a system whose job is to protect hours‑long sessions, having zero user‑visible
-surface is the single biggest reason it feels flakey.
+surface is the single biggest reason it feels flaky.
 
 ### 1.3 Locks recover from conflict but never explain themselves
 
@@ -270,9 +270,11 @@ assets.
 
 Archive, restore, and "open and migrate" each spawn multiple subtasks — checksum,
 copy, serialise, write‑header. The redesign expresses these with
-**`StructuredTaskScope.ShutdownOnFailure`** (JEP 505, sixth preview in JDK 26).
-If any subtask fails the rest are cancelled and the user sees a single error —
-not a partial archive on disk.
+**`DawScope.openShutdownOnFailure`** (the codebase's own wrapper over structured
+concurrency in `daw-core/src/main/java/com/benesquivelmusic/daw/core/concurrent/DawScope.java`,
+designed to mirror `StructuredTaskScope` from JEP 505 without requiring
+`--enable-preview`). If any subtask fails the rest are cancelled and the user
+sees a single error — not a partial archive on disk.
 
 `ScopedValue` (JEP 506, second preview in JDK 26) carries the active project
 context (path, lock token, request id) down the worker tree without polluting
@@ -365,10 +367,11 @@ auto‑rotated). Snapshots **never** auto‑delete.
 ### 3.7 Journal segment
 
 An append‑only event log. Every undoable state mutation (`UndoManager` actions)
-writes a compact record to the current journal segment **on the same virtual
-thread that produced it** (§5.3). The journal is the truth between checkpoints —
-if the JVM dies, a launch can replay the journal onto the last checkpoint to
-recover work that was never saved.
+enqueues a compact record to the journal writer's bounded queue; a **single
+dedicated journal‑writer virtual thread** (§5.3) drains the queue, appends, and
+`fsync()`s. The journal is the truth between checkpoints — if the JVM dies, a
+launch can replay the journal onto the last checkpoint to recover work that was
+never saved.
 
 Segments are rotated when a checkpoint succeeds (the new checkpoint subsumes the
 prior segment) or when the segment crosses 16 MB.
@@ -630,7 +633,7 @@ lost, but the user is told the obvious truth: the next checkpoint will be huge.
 
 The technical detail expander shows the journal segment file, its size, and the
 event types. The replay runs on a virtual thread inside a
-`StructuredTaskScope.ShutdownOnFailure` — partial recovery is never half‑applied.
+`DawScope.openShutdownOnFailure` — partial recovery is never half‑applied.
 
 #### 4.6.2 Migration log (replaces today's one‑shot dialog)
 
@@ -748,15 +751,16 @@ prior file intact. The existing code does some of this; the redesign makes it
   record; the writer appends + `fsync()`s + acknowledges. The queue is bounded so
   a stalled disk applies back‑pressure to undo operations *before* memory fills.
 - A separate **checkpoint writer** virtual thread, driven by the
-  `ScheduledExecutorService` that already exists in `CheckpointManager`. It
-  takes a snapshot of the in‑memory project (deep copy via the existing
-  serializer) on the FX thread, then hands the bytes to the writer.
+  `ScheduledExecutorService` that already exists in `CheckpointManager`. The FX
+  thread performs only a fast in‑memory deep‑copy (snapshot) of the project
+  state; the heavy serialisation‑to‑bytes and disk write happen entirely on the
+  checkpoint writer thread so the FX thread is never blocked on I/O.
 - A **lock heartbeat** virtual thread refreshes the lock mtime on a 2 s schedule.
 - An **archive worker** virtual thread (one per archive operation), already in
   place in `ProjectLifecycleController`.
 
-These workers compose via `StructuredTaskScope` for any operation that needs
-several of them — e.g. *Restore archive* runs `unzip` + `rewrite-xml` + `seed-
+These workers compose via `DawScope` (§2.6) for any operation that needs several
+of them — e.g. *Restore archive* runs `unzip` + `rewrite-xml` + `seed-
 checkpoint` inside one scope, and rolls everything back on any failure.
 
 ### 5.4 ScopedValue for request context (from `java26-setup` §2)
@@ -964,7 +968,7 @@ already in the model.
 |---|---|---|
 | §2.1 | `javafx-application-design` §11 | All I/O on virtual threads / `Task`, never on FX |
 | §2.2 / §4.4 | `javafx-application-design` §4 | Every visible status is a `Property` binding |
-| §2.6 / §5.3 | `java26-setup` §2 | `StructuredTaskScope.ShutdownOnFailure` for fan‑out ops |
+| §2.6 / §5.3 | `java26-setup` §2 | `DawScope.openShutdownOnFailure` for fan‑out ops |
 | §5.4 | `java26-setup` §2 | `ScopedValue` replaces `ThreadLocal` for request context |
 | §4.2 / §4.3 | `javafx-application-design` §3 | `ProjectCard`, `SessionEventRow`, `StatusStripCell` are `Control` + `Skin` |
 | §4.4 (countdown) | `javafx-application-design` §6 | Canvas + `AnimationTimer` at 1 Hz for the checkpoint timer |
