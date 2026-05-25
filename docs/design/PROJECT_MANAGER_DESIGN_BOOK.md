@@ -51,8 +51,10 @@ the codebase. This is the baseline every later section has to improve on.
 `daw-app/src/main/java/com/benesquivelmusic/daw/app/ui/ProjectLifecycleController.java`
 implements `trySaveProject()` as:
 
-> if no project on disk yet, create a temp dir, save into it, then write the
-> metadata file, then trigger a checkpoint.
+> if no project on disk yet, call `Files.createTempDirectory(...)` then
+> `projectManager.createProject(...)` (which writes the initial metadata-only
+> `project.daw`, acquires the lock, and starts heartbeat/autosave), then performs
+> two full writes + checkpoints via `saveDawProject()` and `saveProject()`.
 
 There are three things wrong with that single path from a user’s point of view:
 
@@ -89,16 +91,20 @@ surface is the single biggest reason it feels flaky.
 ### 1.3 Locks recover from conflict but never explain themselves
 
 `ProjectLockManager` writes a heartbeat lock file and detects stale locks. The
-`ProjectLockedException` and `LockConflictHandler` interfaces exist, but the only
-UI handler today resolves to `CANCEL` by default, surfacing a generic error
-notification ("Open failed: …"). The user does not see:
+`ProjectLockedException` and `LockConflictHandler` interfaces exist, and
+`MainController` wires `LockConflictDialog` via
+`projectManager.setLockConflictHandler(new LockConflictDialog())`. The dialog
+surfaces holder identity and staleness and offers Open Read‑Only / Take Over /
+Cancel. However, the UX around this conflict resolution still has gaps — the user
+does not see:
 
-- *Who* is holding the lock (user, host, PID — already captured in `ProjectLock`).
-- *How fresh* the lock is (the field `stale()` is available — never shown).
-- The three available resolutions (Cancel / Open Read‑Only / Take Over) as a real
-  choice.
+- *How* the conflict was resolved last time (history of lock negotiations).
+- An active notification *after* Take Over completes (so the original holder
+  knows they lost the lock).
+- Proactive warning *before* closing when another instance is waiting.
 
-The information is in the model. The UI throws it away.
+The dialog covers the initial negotiation, but the lock lifecycle before and after
+that single decision is invisible.
 
 ### 1.4 Recent‑projects is a flat list with no judgement
 
@@ -131,9 +137,10 @@ plumbing (`UndoManager`) but does not connect it to persistence.
 
 ### 1.6 Migration is a one‑shot dialog
 
-`MigrationReportDialog` only appears once after a load, and the rollback path is
-manual: copy the newest sibling `project.daw.v<n>.*.bak` over `project.daw`. There
-is no:
+`MigrationReportDialog` appears once after a load and offers an in‑app "Roll
+back…" action; `ProjectLifecycleController.rollbackMigration(...)` performs the
+copy/reload when a backup exists (or abandons the in‑memory migrated project when
+it doesn't). However, the broader migration UX is limited — there is no:
 
 - *Catalogue* of migrations applied across this project's life.
 - *Preview* of what changed.
@@ -196,7 +203,8 @@ The data model is genuinely good. These pieces work and should not be touched:
 - **`.dawz` archive format** with `ArchiveHeader`, `MissingAssetResolver`, and the
   background virtual‑thread workers the user already wrote.
 - **Recent‑projects store** is at least persistent across runs.
-- **Lock conflict handler interface** — the seam exists, just unused.
+- **Lock conflict handler** — wired via `LockConflictDialog` in `MainController`,
+  surfacing holder identity, staleness, and three resolutions.
 
 The flakiness is **almost entirely at the UI seam**, not in `daw-core`. The job
 of this design book is to expose what `daw-core` already does.
