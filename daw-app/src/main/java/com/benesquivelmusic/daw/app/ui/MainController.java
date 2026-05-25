@@ -1950,7 +1950,6 @@ public final class MainController {
                 // zone so it isn't trapped in a hidden-floating state.
                 final String idForHandler = panelId;
                 stage.setOnCloseRequest(e -> {
-                    floatingStages.remove(idForHandler);
                     if (dockManager != null) {
                         DockZone preferred = dockManager.panel(idForHandler)
                                 .map(Dockable::preferredZone)
