@@ -101,7 +101,14 @@ final class HistoryPanelController {
             if (animate) {
                 Timeline timeline = new Timeline(new KeyFrame(Duration.millis(250),
                         new KeyValue(undoHistoryPanel.opacityProperty(), 0.0)));
-                timeline.setOnFinished(_ -> rootPane.setRight(null));
+                // Guard: only clear the right slot if WE still own it. A sibling
+                // right-pane (e.g. BrowserPanel) may have taken it over while
+                // our fade was in flight; clearing unconditionally would wipe it.
+                timeline.setOnFinished(_ -> {
+                    if (rootPane.getRight() == undoHistoryPanel) {
+                        rootPane.setRight(null);
+                    }
+                });
                 timeline.play();
             } else {
                 rootPane.setRight(null);
