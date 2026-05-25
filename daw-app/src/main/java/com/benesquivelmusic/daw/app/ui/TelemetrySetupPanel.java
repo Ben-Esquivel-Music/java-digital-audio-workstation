@@ -1,7 +1,5 @@
 package com.benesquivelmusic.daw.app.ui;
 
-import com.benesquivelmusic.daw.app.ui.dock.Dockable;
-import com.benesquivelmusic.daw.app.ui.dock.DockZone;
 import com.benesquivelmusic.daw.app.ui.telemetry.BoundaryResponsePanel;
 import com.benesquivelmusic.daw.app.ui.telemetry.RoomModesPanel;
 import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
@@ -30,7 +28,7 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * {@link InputPortSelectionDialog}.</p>
  */
 @HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
-public final class TelemetrySetupPanel extends ScrollPane implements Dockable {
+public final class TelemetrySetupPanel extends ScrollPane {
 
     private static final String BACKGROUND_STYLE =
             "-fx-background-color: #1a1a2e; -fx-background: #1a1a2e;";
@@ -137,11 +135,11 @@ public final class TelemetrySetupPanel extends ScrollPane implements Dockable {
      */
     private boolean autoSizeActive = false;
 
-    // ── Dockable contract (story 285) ────────────────────────────────────────
-    @Override public String dockId()            { return DefaultWorkspaces.PANEL_TELEMETRY; }
-    @Override public String displayName()       { return "Telemetry"; }
-    @Override public String iconName()          { return "TELEMETRY"; }
-    @Override public DockZone preferredZone()   { return DockZone.RIGHT; }
+    // ── Dockable contract deferred ───────────────────────────────────────────
+    // Story 285 — TelemetrySetupPanel is owned by TelemetryView (plugin view)
+    // and is not yet wired as a top-level dock surface, so the Dockable
+    // contract is not published here. A future story can re-add it (and
+    // PANEL_TELEMETRY in DefaultWorkspaces) once there is a consumer.
 
     /**
      * Creates a new telemetry setup panel with sensible defaults.

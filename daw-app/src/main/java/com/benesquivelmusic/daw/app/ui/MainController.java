@@ -1176,13 +1176,13 @@ public final class MainController {
                     // viewNavigationController / browserPanelController as the
                     // underlying mechanism (not a parallel one).
                     @Override public void onToggleDockMixer() {
-                        if (dockManager != null) dockManager.toggleVisible(DefaultWorkspaces.PANEL_MIXER);
+                        toggleCenterDockPanel(DefaultWorkspaces.PANEL_MIXER);
                     }
                     @Override public void onToggleDockBrowser() {
                         if (dockManager != null) dockManager.toggleVisible(DefaultWorkspaces.PANEL_BROWSER);
                     }
                     @Override public void onToggleDockArrangement() {
-                        if (dockManager != null) dockManager.toggleVisible(DefaultWorkspaces.PANEL_ARRANGEMENT);
+                        toggleCenterDockPanel(DefaultWorkspaces.PANEL_ARRANGEMENT);
                     }
                     @Override public void onMixerToggleAB() {
                         if (viewNavigationController != null
@@ -1758,10 +1758,6 @@ public final class MainController {
         if (browserPanelController != null && browserPanelController.getBrowserPanel() != null) {
             dockManager.register(browserPanelController.getBrowserPanel());
         }
-        // TelemetrySetupPanel implements Dockable as a contract addition; it
-        // is owned by TelemetryView (plugin view) and is not yet registered
-        // as a top-level dock surface — a future story will elevate it.
-
         // Align initial dock visibility with the live chrome before
         // releasing the host's reconciliation guard, so the first
         // toggleVisible() the user invokes reflects the actual seam (e.g.
@@ -1776,6 +1772,37 @@ public final class MainController {
         dockManager.setVisible(DefaultWorkspaces.PANEL_BROWSER,
                 browserPanelController != null && browserPanelController.isPanelVisible());
         dockHostReconciliationSuppressed = false;
+    }
+
+    /**
+     * CENTER zone is a single-selection slot — only one of
+     * {@link DefaultWorkspaces#PANEL_ARRANGEMENT},
+     * {@link DefaultWorkspaces#PANEL_MIXER},
+     * {@link DefaultWorkspaces#PANEL_EDITOR}, or
+     * {@link DefaultWorkspaces#PANEL_MASTERING} can be visible at a time.
+     * Wraps {@link DockManager#toggleVisible(String)} so that toggling a
+     * CENTER panel ON automatically hides any other CENTER panel that was
+     * visible (avoiding order-dependent "last entry wins" reconciliation).
+     * Toggling the active CENTER panel OFF is a no-op (radio-button
+     * behaviour) — the slot has to hold something while the story defers
+     * tabbed CENTER targets.
+     */
+    private void toggleCenterDockPanel(String panelId) {
+        if (dockManager == null) return;
+        DockEntry entry = dockManager.layout().entry(panelId).orElse(null);
+        if (entry == null) return;
+        if (entry.visible()) {
+            // Active panel — radio-button behaviour: no-op.
+            return;
+        }
+        // Hide every other CENTER panel before showing the requested one so
+        // reconciliation sees exactly one visible CENTER entry.
+        for (String other : java.util.List.of(
+                DefaultWorkspaces.PANEL_ARRANGEMENT, DefaultWorkspaces.PANEL_MIXER,
+                DefaultWorkspaces.PANEL_EDITOR, DefaultWorkspaces.PANEL_MASTERING)) {
+            if (!other.equals(panelId)) dockManager.setVisible(other, false);
+        }
+        dockManager.setVisible(panelId, true);
     }
 
     /**
@@ -1843,13 +1870,13 @@ public final class MainController {
             DawView active = viewNavigationController.getActiveView();
             if (wantVisible && active != view) {
                 viewNavigationController.switchView(view);
-            } else if (!wantVisible && active == view && view != DawView.ARRANGEMENT) {
-                // Hide-on-CENTER for a non-arrangement panel: fall back to
-                // arrangement so the dock layout's visible=false matches the
-                // live chrome (the story defers tabbed CENTER targets, so the
-                // slot has to hold *something*).
-                viewNavigationController.switchView(DawView.ARRANGEMENT);
             }
+            // No hide-fallback: CENTER is a single-selection slot (see
+            // {@link MainController#toggleCenterDockPanel}). Hiding a panel
+            // that isn't the active CENTER view is already consistent with
+            // the live chrome; hiding the active one is a no-op (the slot
+            // has to hold something while the story defers tabbed CENTER
+            // targets, so a sibling becoming visible is what changes it).
         }
 
         private void ensureFloating(String panelId, DockEntry entry) {
@@ -1861,18 +1888,44 @@ public final class MainController {
             if (stage == null) {
                 stage = new Stage();
                 stage.setTitle(displayNameFor(panelId));
+                // Own the floating window to the primary stage so it closes
+                // when the app exits (cascaded from MainController's
+                // setOnHidden lifetime cleanup on the primary Stage).
+                if (rootPane.getScene() != null && rootPane.getScene().getWindow() != null) {
+                    stage.initOwner(rootPane.getScene().getWindow());
+                }
                 javafx.scene.Parent parent = content.getParent();
-                if (parent instanceof Pane pane) {
+                // BorderPane extends Pane — test for BorderPane (the rootPane
+                // slot setter case) first so generic Pane removal doesn't
+                // strip a node out of a BorderPane slot without clearing the
+                // setter.
+                if (parent instanceof javafx.scene.layout.BorderPane bp) {
+                    if (bp.getCenter() == content) bp.setCenter(null);
+                    else if (bp.getLeft() == content) bp.setLeft(null);
+                    else if (bp.getRight() == content) bp.setRight(null);
+                    else if (bp.getTop() == content) bp.setTop(null);
+                    else if (bp.getBottom() == content) bp.setBottom(null);
+                } else if (parent instanceof Pane pane) {
                     pane.getChildren().remove(content);
-                } else if (rootPane.getCenter() == content) rootPane.setCenter(null);
-                else if (rootPane.getLeft() == content) rootPane.setLeft(null);
-                else if (rootPane.getRight() == content) rootPane.setRight(null);
-                else if (rootPane.getTop() == content) rootPane.setTop(null);
-                else if (rootPane.getBottom() == content) rootPane.setBottom(null);
+                }
                 javafx.scene.Scene scene = new javafx.scene.Scene(
                         content instanceof javafx.scene.Parent p ? p
                                 : new javafx.scene.layout.StackPane(content));
+                // Apply the active theme + register for live re-theming so
+                // the floating panel inherits root-pane styling instead of
+                // showing the default JavaFX white background.
+                com.benesquivelmusic.daw.app.ui.theme.ThemeManager.getDefault().applyTo(scene);
                 stage.setScene(scene);
+                // When the user dismisses the floating window via the OS
+                // close button, mark the panel hidden in the dock layout so
+                // the manager doesn't re-open it on the next layout change.
+                final String idForHandler = panelId;
+                stage.setOnCloseRequest(e -> {
+                    floatingStages.remove(idForHandler);
+                    if (dockManager != null) {
+                        dockManager.setVisible(idForHandler, false);
+                    }
+                });
                 floatingStages.put(panelId, stage);
             }
             stage.setX(b.x());

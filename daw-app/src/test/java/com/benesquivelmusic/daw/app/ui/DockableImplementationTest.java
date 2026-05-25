@@ -71,26 +71,10 @@ class DockableImplementationTest {
         assertThat(d.preferredZone()).isEqualTo(DockZone.CENTER);
     }
 
-    @Test
-    void telemetrySetupPanelImplementsDockable() throws Exception {
-        TelemetrySetupPanel view = createOnFxThread(TelemetrySetupPanel::new);
-        assertThat(view).isInstanceOf(Dockable.class);
-        Dockable d = view;
-        assertThat(d.dockId()).isEqualTo(DefaultWorkspaces.PANEL_TELEMETRY);
-        assertThat(d.displayName()).isEqualTo("Telemetry");
-        assertThat(d.iconName()).isEqualTo("TELEMETRY");
-        assertThat(d.preferredZone()).isEqualTo(DockZone.RIGHT);
-    }
-
-    @Test
-    void panelTelemetryConstantExists() {
-        // PANEL_TELEMETRY is the story 285 addition; deliberately NOT in
-        // DefaultWorkspaces.panelIds() because TelemetrySetupPanel is owned
-        // by TelemetryView (plugin view), not the top-level chrome.
-        assertThat(DefaultWorkspaces.PANEL_TELEMETRY).isEqualTo("telemetry");
-        assertThat(DefaultWorkspaces.panelIds())
-                .doesNotContain(DefaultWorkspaces.PANEL_TELEMETRY);
-    }
+    // TelemetrySetupPanel Dockable contract intentionally deferred — see
+    // TelemetrySetupPanel.java: the panel is owned by TelemetryView (plugin
+    // view) and not yet registered as a top-level dock surface, so the
+    // contract isn't published until there is a consumer.
 
     private interface FxSupplier<T> {
         T get();
