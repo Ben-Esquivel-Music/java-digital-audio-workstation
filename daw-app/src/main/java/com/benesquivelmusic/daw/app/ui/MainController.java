@@ -1904,6 +1904,13 @@ public final class MainController {
                 else if (bp.getBottom() == content) bp.setBottom(null);
             } else if (parent instanceof Pane pane) {
                 pane.getChildren().remove(content);
+            } else if (parent == null && content instanceof javafx.scene.Parent p
+                    && p.getScene() != null) {
+                // The node is a Scene root (getParent() == null but still held
+                // by Scene.setRoot). Replace it with an empty Group so the node
+                // can be re-parented into the main BorderPane without JavaFX
+                // throwing "already set as root of another scene".
+                p.getScene().setRoot(new javafx.scene.Group());
             }
         }
 
