@@ -77,6 +77,8 @@ class RightPaneToggleRaceTest {
         AtomicReference<BrowserPanel> browserRef = new AtomicReference<>();
         AtomicReference<BorderPane> rootRef = new AtomicReference<>();
         AtomicReference<UndoHistoryPanel> fadedPanelRef = new AtomicReference<>();
+        AtomicReference<BrowserPanelController> browserCtlRef = new AtomicReference<>();
+        AtomicReference<HistoryPanelController> historyCtlRef = new AtomicReference<>();
 
         runAndRethrow(() -> {
             BorderPane root = new BorderPane();
@@ -98,15 +100,26 @@ class RightPaneToggleRaceTest {
             assertThat(root.getRight()).isInstanceOf(UndoHistoryPanel.class);
             fadedPanelRef.set((UndoHistoryPanel) root.getRight());
 
-            // Now toggle to browser: history.hide() starts a fade-out
-            // whose setOnFinished lambda will, pre-fix, wipe the right slot.
-            historyCtl.toggleHistoryPanel();
-            browserCtl.toggleBrowserPanel();
-            // Browser must be installed immediately.
-            assertThat(root.getRight()).isSameAs(browserPanel);
-
             browserRef.set(browserPanel);
             rootRef.set(root);
+            browserCtlRef.set(browserCtl);
+            historyCtlRef.set(historyCtl);
+        });
+
+        // Wait for the fade-in to complete (opacity reaches 1.0) so that
+        // when the hide is triggered the fade-out starts from a non-zero
+        // opacity. This guarantees awaitOpacityZero later actually implies
+        // the fade-out Timeline ran to completion (not a no-op check on an
+        // already-zero value).
+        awaitOpacityOne(fadedPanelRef.get());
+
+        runAndRethrow(() -> {
+            // Now toggle to browser: history.hide() starts a fade-out
+            // whose setOnFinished lambda will, pre-fix, wipe the right slot.
+            historyCtlRef.get().toggleHistoryPanel();
+            browserCtlRef.get().toggleBrowserPanel();
+            // Browser must be installed immediately.
+            assertThat(rootRef.get().getRight()).isSameAs(browserRef.get());
         });
 
         // Wait for the history panel's fade-out opacity to reach 0.0,
@@ -128,6 +141,7 @@ class RightPaneToggleRaceTest {
     void browserHideFadeMustNotWipeNewlyInstalledHistory() throws Exception {
         AtomicReference<BorderPane> rootRef = new AtomicReference<>();
         AtomicReference<BrowserPanel> fadedBrowserRef = new AtomicReference<>();
+        AtomicReference<HistoryPanelController> historyCtlRef = new AtomicReference<>();
 
         runAndRethrow(() -> {
             BorderPane root = new BorderPane();
@@ -144,17 +158,25 @@ class RightPaneToggleRaceTest {
                     new HistoryPanelController(root, historyButton, new StubHost(browserCtl));
             historyCtl.build();
 
-            // Open browser, then directly call history.toggle() which
-            // internally calls host.hideBrowserPanel() (a fade-out) and
-            // synchronously installs the history panel.
+            // Open browser (synchronous install + fade-in).
             browserCtl.toggleBrowserPanel();
             assertThat(root.getRight()).isSameAs(browserPanel);
 
-            historyCtl.toggleHistoryPanel();
-            assertThat(root.getRight()).isInstanceOf(UndoHistoryPanel.class);
-
             fadedBrowserRef.set(browserPanel);
             rootRef.set(root);
+            historyCtlRef.set(historyCtl);
+        });
+
+        // Wait for the browser fade-in to complete (opacity reaches 1.0)
+        // so the subsequent fade-out starts from a non-zero opacity,
+        // ensuring awaitOpacityZero actually confirms Timeline completion.
+        awaitOpacityOne(fadedBrowserRef.get());
+
+        runAndRethrow(() -> {
+            // Toggle to history: internally calls host.hideBrowserPanel()
+            // (a fade-out) and synchronously installs the history panel.
+            historyCtlRef.get().toggleHistoryPanel();
+            assertThat(rootRef.get().getRight()).isInstanceOf(UndoHistoryPanel.class);
         });
 
         // Wait for the browser panel's fade-out opacity to reach 0.0,
@@ -166,6 +188,45 @@ class RightPaneToggleRaceTest {
             // it no longer owns the right slot.
             assertThat(rootRef.get().getRight()).isInstanceOf(UndoHistoryPanel.class);
         });
+    }
+
+    /**
+     * Polls the FX thread until the given node's opacity reaches 1.0
+     * (confirming the fade-in Timeline actually completed) or a deadline
+     * is exceeded. Called before triggering a hide so the subsequent
+     * fade-out starts from a non-zero opacity — guaranteeing that
+     * {@code awaitOpacityZero} later implies actual Timeline completion.
+     */
+    private static void awaitOpacityOne(javafx.scene.Node node) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(FADE_WAIT_MS);
+        while (System.nanoTime() < deadline) {
+            CountDownLatch poll = new CountDownLatch(1);
+            AtomicReference<Double> opacityRef = new AtomicReference<>();
+            Platform.runLater(() -> {
+                opacityRef.set(node.getOpacity());
+                poll.countDown();
+            });
+            if (!poll.await(2, TimeUnit.SECONDS)) {
+                break;
+            }
+            Double opacity = opacityRef.get();
+            if (opacity != null && opacity >= 1.0) {
+                return;
+            }
+            Thread.sleep(20);
+        }
+        // Final check — assert so failure message is informative.
+        CountDownLatch finalLatch = new CountDownLatch(1);
+        AtomicReference<Double> finalOpacity = new AtomicReference<>();
+        Platform.runLater(() -> {
+            finalOpacity.set(node.getOpacity());
+            finalLatch.countDown();
+        });
+        finalLatch.await(2, TimeUnit.SECONDS);
+        assertThat(finalOpacity.get())
+                .as("Panel opacity should reach 1.0 (fade-in Timeline must have completed)")
+                .isNotNull()
+                .isEqualTo(1.0);
     }
 
     /**
