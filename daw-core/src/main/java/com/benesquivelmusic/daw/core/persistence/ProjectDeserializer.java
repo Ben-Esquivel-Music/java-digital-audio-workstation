@@ -336,6 +336,18 @@ public final class ProjectDeserializer {
             }
         }
 
+        // Story 282 — opaque LayoutManager JSON blob. Treated as an
+        // arbitrary string; the layout package parses it. Missing element
+        // is the normal case for legacy projects and is equivalent to
+        // "use the Default built-in layout".
+        List<Element> layoutElements = getDirectChildElements(root, "layout");
+        if (!layoutElements.isEmpty()) {
+            String json = layoutElements.getFirst().getTextContent();
+            if (json != null && !json.isBlank()) {
+                project.setLayoutJson(json);
+            }
+        }
+
         return project;
     }
 

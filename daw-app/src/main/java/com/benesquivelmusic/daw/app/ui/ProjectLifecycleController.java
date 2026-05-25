@@ -74,6 +74,24 @@ final class ProjectLifecycleController {
         void resetTrackCounters();
         void rebuildHistoryPanel();
         void onProjectUIRebuild(MixerView mixerView);
+
+        /**
+         * Story 282 — Mission Control. Captures the live layout state
+         * to embed in the project file before save. Implementations
+         * return {@code LayoutManager.toJson()}, or {@code null} when
+         * the layout manager has not been installed (early startup /
+         * headless tests). Default returns {@code null}.
+         */
+        default String captureLayoutJson() { return null; }
+
+        /**
+         * Story 282 — applies a previously-persisted layout JSON blob
+         * after a project load. Implementations call
+         * {@code LayoutManager.fromJson(json)}; {@code null} is a valid
+         * input meaning "no persisted layout — fall back to Default".
+         * Default is a no-op.
+         */
+        default void applyLayoutJson(String json) { /* no-op */ }
     }
 
     private final ProjectManager projectManager;
@@ -125,6 +143,11 @@ final class ProjectLifecycleController {
                 Path tempDir = Files.createTempDirectory("daw-project-");
                 projectManager.createProject(host.project().getName(), tempDir);
             }
+            // Story 282 — capture the live layout state into the project
+            // model before serialisation. {@code null} from the host
+            // clears the field so legacy projects round-trip byte-
+            // identical when the layout manager is not installed.
+            host.project().setLayoutJson(host.captureLayoutJson());
             projectManager.saveDawProject(host.project());
             projectManager.saveProject();
             host.setProjectDirty(false);
@@ -605,6 +628,11 @@ final class ProjectLifecycleController {
             host.resetTrackCounters();
             host.setProjectDirty(false);
             rebuildUI();
+            // Story 282 — Mission Control. Apply the layout JSON blob
+            // embedded in the project file (may be {@code null} for
+            // legacy projects, in which case the layout manager falls
+            // back to the Default built-in).
+            host.applyLayoutJson(dawProject.getLayoutJson());
             statusBarLabel.setText("Opened: " + projectDir.getFileName());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.FOLDER, 12));
             notificationBar.show(NotificationLevel.SUCCESS,
