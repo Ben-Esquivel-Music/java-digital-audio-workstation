@@ -135,11 +135,15 @@ public final class BrowserPanelController {
                     new KeyFrame(ANIMATION_DURATION,
                             new KeyValue(browserPanel.opacityProperty(), 0.0))
             );
-            // Guard: only clear the right slot if WE still own it. A sibling
-            // right-pane (e.g. UndoHistoryPanel) may have taken it over while
-            // our fade was in flight; clearing unconditionally would wipe it.
+            // Guard: only clear the right slot if WE still own it AND the
+            // panel is still meant to be hidden. A sibling right-pane (e.g.
+            // UndoHistoryPanel) may have taken it over while our fade was in
+            // flight; clearing unconditionally would wipe it. Likewise, if
+            // the user hid then re-showed the browser before this fade
+            // completes, panelVisible will be true again and we must not
+            // clear the newly re-shown panel.
             timeline.setOnFinished(event -> {
-                if (rootPane.getRight() == browserPanel) {
+                if (!panelVisible && rootPane.getRight() == browserPanel) {
                     rootPane.setRight(null);
                 }
             });

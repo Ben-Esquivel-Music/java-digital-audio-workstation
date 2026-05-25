@@ -35,15 +35,18 @@ class RightPaneToggleRaceTest {
     /** Generous margin above the 250 ms fade duration. */
     private static final long FADE_WAIT_MS = 600;
 
+    /** Isolated Preferences node created per test; removed during teardown. */
+    private Preferences isolatedPrefs;
+
     @BeforeEach
     void enableAnimationsForTest() {
         // Force animations ON regardless of the developer's saved Reduce
         // Motion preference — the race only exists when the fade Timeline
         // runs. Uses an isolated Preferences node so we don't pollute the
         // user's real settings.
-        Preferences isolated = Preferences.userRoot().node(
+        isolatedPrefs = Preferences.userRoot().node(
                 "test/" + RightPaneToggleRaceTest.class.getName() + "/" + System.nanoTime());
-        MotionManager testInstance = new MotionManager(isolated);
+        MotionManager testInstance = new MotionManager(isolatedPrefs);
         testInstance.setReduceMotion(false);
         MotionManager.setDefaultForTest(testInstance);
     }
@@ -51,6 +54,16 @@ class RightPaneToggleRaceTest {
     @AfterEach
     void restoreDefault() {
         MotionManager.setDefaultForTest(null);
+        // Best-effort: remove the isolated Preferences node so we don't
+        // accumulate per-run nodes under the user root over time.
+        if (isolatedPrefs != null) {
+            try {
+                isolatedPrefs.removeNode();
+            } catch (java.util.prefs.BackingStoreException ignored) {
+                // Best-effort cleanup; leave node behind if backing store rejects.
+            }
+            isolatedPrefs = null;
+        }
     }
 
     /**
