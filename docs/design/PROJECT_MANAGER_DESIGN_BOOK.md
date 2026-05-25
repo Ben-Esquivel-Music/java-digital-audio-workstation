@@ -300,14 +300,13 @@ The names that show up on screen. Each term gets exactly one definition.
 ```
 WORKSPACE
    └── PROJECT (directory on disk: <name>/project.daw + audio/ + checkpoints/ + journal/)
-         └── SESSION (a named span of work, e.g. "Tracking day 2 — 2026-03-21")
-               ├── TAKE (one recorded pass on one or more armed tracks)
-               ├── CHECKPOINT (timed autosave; numbered; contains full project state only when projectDataSupplier is configured, otherwise a minimal summary)
-               └── JOURNAL SEGMENT (append-only log of state mutations)
-
-   SNAPSHOT (user-named save — "before mix down", "client review v3")
-   ARCHIVE  (.dawz portable bundle, self-contained with assets)
-   BACKUP   (pre-migration sibling of project.daw)
+         ├── SESSION (a named span of work, e.g. "Tracking day 2 — 2026-03-21")
+         │     ├── TAKE (one recorded pass on one or more armed tracks)
+         │     ├── CHECKPOINT (timed autosave; numbered; contains full project state only when projectDataSupplier is configured, otherwise a minimal summary)
+         │     └── JOURNAL SEGMENT (append-only log of state mutations)
+         ├── SNAPSHOT (user-named save — "before mix down", "client review v3")
+         ├── ARCHIVE  (.dawz portable bundle, self-contained with assets)
+         └── BACKUP   (pre-migration sibling of project.daw)
 ```
 
 ### 3.1 Workspace
@@ -958,7 +957,7 @@ For implementers. Where each surface in §4 attaches to today's code.
 
 | §4 surface | Today's code | What changes |
 |---|---|---|
-| Welcome / Recover | `MainController` startup, `RecentProjectsStore` | New `WelcomeView`; recover‑scan uses `ProjectLockManager.isStale()` and journal presence |
+| Welcome / Recover | `MainController` startup, `RecentProjectsStore` | New `WelcomeView`; recover‑scan uses `ProjectLockManager.isStale(ProjectLock, Instant)` and `AcquisitionResult.stale()` from `tryAcquire(...)`, plus journal presence |
 | Project Hub | `onRecentProjects` (`ProjectLifecycleController:179`) | Replaced by `ProjectHubView`; menu retains a "Project Hub…" item |
 | Session Manager dock | none today (sessions are implicit) | New `SessionManagerDock`; reads `sessions/*.session.xml` |
 | Status strip | `statusBarLabel`, `checkpointLabel` (`ProjectLifecycleController:82-83`) | Both replaced by `SessionStatusStrip` bound to `ProjectOperationProgress` |
