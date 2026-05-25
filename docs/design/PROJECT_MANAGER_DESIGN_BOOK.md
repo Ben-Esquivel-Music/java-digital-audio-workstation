@@ -324,7 +324,7 @@ A directory on disk. Today’s layout, extended:
 ```
 MyProject/
   project.daw              — current full state (XML)
-  project.daw.lock         — heartbeat lock
+  .project.lock            — heartbeat lock
   project.daw.v<n>.<ts>.bak — pre-migration backups
   audio/                   — recorded clips and rendered files
   checkpoints/             — timed autosaves (rotated)
@@ -766,7 +766,7 @@ prior file intact. The existing code does some of this; the redesign makes it
   thread performs only a fast in‑memory deep‑copy (snapshot) of the project
   state; the heavy serialisation‑to‑bytes and disk write happen entirely on the
   checkpoint writer thread so the FX thread is never blocked on I/O.
-- A **lock heartbeat** virtual thread refreshes the lock mtime on a 2 s schedule.
+- A **lock heartbeat** virtual thread refreshes `.project.lock` mtime on a 2 s schedule.
 - An **archive worker** virtual thread (one per archive operation), already in
   place in `ProjectLifecycleController`.
 
