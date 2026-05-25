@@ -135,6 +135,12 @@ public final class TelemetrySetupPanel extends ScrollPane {
      */
     private boolean autoSizeActive = false;
 
+    // ── Dockable contract deferred ───────────────────────────────────────────
+    // Story 285 — TelemetrySetupPanel is owned by TelemetryView (plugin view)
+    // and is not yet wired as a top-level dock surface, so the Dockable
+    // contract is not published here. A future story can re-add it (and
+    // PANEL_TELEMETRY in DefaultWorkspaces) once there is a consumer.
+
     /**
      * Creates a new telemetry setup panel with sensible defaults.
      */

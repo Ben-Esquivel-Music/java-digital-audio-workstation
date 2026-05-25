@@ -1,6 +1,8 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.display.WaveformDisplay;
+import com.benesquivelmusic.daw.app.ui.dock.Dockable;
+import com.benesquivelmusic.daw.app.ui.dock.DockZone;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
@@ -37,7 +39,7 @@ import java.util.function.Consumer;
  * <p>Uses existing CSS classes: {@code .editor-panel}, {@code .content-area},
  * {@code .panel-header}, {@code .placeholder-label}.</p>
  */
-public final class EditorView extends VBox {
+public final class EditorView extends VBox implements Dockable {
 
     /** The mode the editor is currently operating in. */
     public enum Mode {
@@ -120,6 +122,12 @@ public final class EditorView extends VBox {
             }
         });
     }
+
+    // ── Dockable contract (story 285) ────────────────────────────────────────
+    @Override public String dockId()            { return DefaultWorkspaces.PANEL_EDITOR; }
+    @Override public String displayName()       { return "Editor"; }
+    @Override public String iconName()          { return "EDITOR"; }
+    @Override public DockZone preferredZone()   { return DockZone.CENTER; }
 
     /**
      * Sets the track to edit. If the track is {@code null}, the editor

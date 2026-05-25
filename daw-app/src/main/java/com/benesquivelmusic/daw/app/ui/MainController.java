@@ -38,6 +38,11 @@ import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackend;
 import com.benesquivelmusic.daw.sdk.audio.AudioChannelInfo;
 import com.benesquivelmusic.daw.sdk.audio.DeviceId;
+import com.benesquivelmusic.daw.app.ui.dock.DockEntry;
+import com.benesquivelmusic.daw.app.ui.dock.DockLayout;
+import com.benesquivelmusic.daw.app.ui.dock.DockManager;
+import com.benesquivelmusic.daw.app.ui.dock.DockZone;
+import com.benesquivelmusic.daw.app.ui.dock.Dockable;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 
 import javafx.animation.FadeTransition;
@@ -49,6 +54,7 @@ import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.Tooltip;
 import javafx.scene.layout.*;
+import javafx.stage.Screen;
 import javafx.stage.Stage;
 import javafx.stage.Window;
 import javafx.util.Duration;
@@ -197,7 +203,28 @@ public final class MainController {
     private KeyBindingManager keyBindingManager;
     private CommandPaletteView commandPaletteView;
     private WorkspaceManager workspaceManager;
-    private com.benesquivelmusic.daw.app.ui.dock.DockManager dockManager;
+    private DockManager dockManager;
+    /** Floating windows currently owned by the dock host, keyed by panel id. */
+    private final java.util.Map<String, Stage> floatingStages = new java.util.LinkedHashMap<>();
+
+    /**
+     * Panel ids that compete for the CENTER dock zone. Treated as a
+     * single-selection slot by {@link #toggleCenterDockPanel(String)} —
+     * only one is visible at a time while tabbed CENTER targets are
+     * deferred.
+     */
+    private static final java.util.List<String> CENTER_ZONE_PANELS = java.util.List.of(
+            DefaultWorkspaces.PANEL_ARRANGEMENT, DefaultWorkspaces.PANEL_MIXER,
+            DefaultWorkspaces.PANEL_EDITOR, DefaultWorkspaces.PANEL_MASTERING);
+    /**
+     * Suppresses {@code DockManager.Host.onLayoutChanged} side-effects while
+     * the dock manager is being seeded. Without this flag the initial
+     * {@code register(mixer)} would fire a layout snapshot saying
+     * "mixer visible in BOTTOM" and the host would call
+     * {@code viewNavigationController.switchView(MIXER)} at startup —
+     * stealing the centre slot from the arrangement view the user persisted.
+     */
+    private boolean dockHostReconciliationSuppressed = true;
     /**
      * Story 190 — Snapshot History Browser. Owns the data-only
      * SnapshotBrowserService and the lazy SnapshotBrowser dialog;
@@ -457,6 +484,14 @@ public final class MainController {
         viewNavigationController.initializeSnapControls();
         viewNavigationController.initializeZoomControls();
         createMenuBar();
+        // Story 285 — instantiate the single application-wide DockManager
+        // and register every top-level Dockable. Must run after both
+        // viewNavigationController.initializeViewNavigation() (mixer/editor/
+        // mastering views exist) and buildBrowserPanel(...) (browser panel
+        // exists), and after createMenuBar() so workspaceManager is live and
+        // captureDockLayoutJson()/applyDockLayoutJson() flow through this
+        // manager.
+        installDockManager();
         selectionModel.setSelectionChangeListener(() -> {
             if (menuBarController != null) menuBarController.syncMenuState();
         });
@@ -1146,31 +1181,18 @@ public final class MainController {
                         }
                     }
                     // ── Dockable panels (F3 / F4 / F5) ────────────────────
-                    // Preserve legacy visible behavior unless the docking
-                    // path is the only available way to service the toggle.
+                    // Story 285 — the dock manager is the single entry point;
+                    // its Host then calls into the legacy
+                    // viewNavigationController / browserPanelController as the
+                    // underlying mechanism (not a parallel one).
                     @Override public void onToggleDockMixer() {
-                        if (viewNavigationController != null) {
-                            viewNavigationController.switchView(DawView.MIXER);
-                        } else if (dockManager != null
-                                && dockManager.layout().contains(DefaultWorkspaces.PANEL_MIXER)) {
-                            dockManager.toggleVisible(DefaultWorkspaces.PANEL_MIXER);
-                        }
+                        toggleCenterDockPanel(DefaultWorkspaces.PANEL_MIXER);
                     }
                     @Override public void onToggleDockBrowser() {
-                        if (browserPanelController != null) {
-                            browserPanelController.toggleBrowserPanel();
-                        } else if (dockManager != null
-                                && dockManager.layout().contains(DefaultWorkspaces.PANEL_BROWSER)) {
-                            dockManager.toggleVisible(DefaultWorkspaces.PANEL_BROWSER);
-                        }
+                        if (dockManager != null) dockManager.toggleVisible(DefaultWorkspaces.PANEL_BROWSER);
                     }
                     @Override public void onToggleDockArrangement() {
-                        if (viewNavigationController != null) {
-                            viewNavigationController.switchView(DawView.ARRANGEMENT);
-                        } else if (dockManager != null
-                                && dockManager.layout().contains(DefaultWorkspaces.PANEL_ARRANGEMENT)) {
-                            dockManager.toggleVisible(DefaultWorkspaces.PANEL_ARRANGEMENT);
-                        }
+                        toggleCenterDockPanel(DefaultWorkspaces.PANEL_ARRANGEMENT);
                     }
                     @Override public void onMixerToggleAB() {
                         if (viewNavigationController != null
@@ -1609,11 +1631,6 @@ public final class MainController {
     }
 
     private void installWorkspacesMenu(javafx.scene.control.MenuBar bar) {
-        // Do not create/register a DockManager until the JavaFX docking
-        // adapter is available to reconcile layout changes back into the
-        // existing panel controllers. Creating it early would make workspace
-        // apply and keyboard actions mutate dock state without updating the
-        // visible UI, effectively bypassing legacy behavior.
         workspaceManager = new WorkspaceManager(buildWorkspaceHost());
         WorkspacesMenu menuBuilder = new WorkspacesMenu(
                 workspaceManager,
@@ -1720,28 +1737,296 @@ public final class MainController {
     }
 
     /**
-     * Registers the well-known top-level panels (arrangement, mixer,
-     * editor, mastering, browser) with the {@link
-     * com.benesquivelmusic.daw.app.ui.dock.DockManager} so workspace
-     * switches can save/restore their dock placement. Each registration
-     * is a lightweight {@link com.benesquivelmusic.daw.app.ui.dock.Dockable}
-     * — a record carrying the stable id, display name, icon, and
-     * preferred zone.
+     * Adapter Dockable for the arrangement view — the cached arrangement
+     * node is owned by {@link ViewNavigationController}'s {@code viewCache}
+     * (a {@code Node}, not a class that can implement {@link Dockable}), so
+     * the contract is supplied here.
      */
-    private void registerDockablePanels(com.benesquivelmusic.daw.app.ui.dock.DockManager dm) {
-        record Panel(String dockId, String displayName, String iconName,
-                     com.benesquivelmusic.daw.app.ui.dock.DockZone preferredZone)
-                implements com.benesquivelmusic.daw.app.ui.dock.Dockable { }
-        dm.register(new Panel(DefaultWorkspaces.PANEL_ARRANGEMENT, "Arrangement",
-                "TIMELINE", com.benesquivelmusic.daw.app.ui.dock.DockZone.CENTER));
-        dm.register(new Panel(DefaultWorkspaces.PANEL_MIXER, "Mixer",
-                "MIXER", com.benesquivelmusic.daw.app.ui.dock.DockZone.BOTTOM));
-        dm.register(new Panel(DefaultWorkspaces.PANEL_EDITOR, "Editor",
-                "EDITOR", com.benesquivelmusic.daw.app.ui.dock.DockZone.CENTER));
-        dm.register(new Panel(DefaultWorkspaces.PANEL_MASTERING, "Mastering",
-                "MASTERING", com.benesquivelmusic.daw.app.ui.dock.DockZone.CENTER));
-        dm.register(new Panel(DefaultWorkspaces.PANEL_BROWSER, "Browser",
-                "BROWSER", com.benesquivelmusic.daw.app.ui.dock.DockZone.LEFT));
+    private record ArrangementDockable() implements Dockable {
+        @Override public String dockId()          { return DefaultWorkspaces.PANEL_ARRANGEMENT; }
+        @Override public String displayName()     { return "Arrangement"; }
+        @Override public String iconName()        { return "TIMELINE"; }
+        @Override public DockZone preferredZone() { return DockZone.CENTER; }
+    }
+
+    /**
+     * Story 285 — instantiates the single application-wide {@link DockManager}
+     * and registers every top-level panel. Called once from
+     * {@link #initialize()} after the menu bar / workspace manager are wired.
+     */
+    private void installDockManager() {
+        dockManager = new DockManager(new MainControllerDockHost());
+        dockManager.register(new ArrangementDockable());
+        if (viewNavigationController != null) {
+            MixerView mixer = viewNavigationController.getMixerView();
+            if (mixer != null) dockManager.register(mixer);
+            EditorView editor = viewNavigationController.getEditorView();
+            if (editor != null) dockManager.register(editor);
+            MasteringView mastering = viewNavigationController.getMasteringView();
+            if (mastering != null) dockManager.register(mastering);
+        }
+        if (browserPanelController != null && browserPanelController.getBrowserPanel() != null) {
+            dockManager.register(browserPanelController.getBrowserPanel());
+        }
+        // Align initial dock visibility with the live chrome before
+        // releasing the host's reconciliation guard, so the first
+        // toggleVisible() the user invokes reflects the actual seam (e.g.
+        // F3 from a hidden mixer flips visible=false → true).
+        DawView active = viewNavigationController == null
+                ? DawView.ARRANGEMENT
+                : viewNavigationController.getActiveView();
+        dockManager.setVisible(DefaultWorkspaces.PANEL_ARRANGEMENT, active == DawView.ARRANGEMENT);
+        dockManager.setVisible(DefaultWorkspaces.PANEL_MIXER, active == DawView.MIXER);
+        dockManager.setVisible(DefaultWorkspaces.PANEL_EDITOR, active == DawView.EDITOR);
+        dockManager.setVisible(DefaultWorkspaces.PANEL_MASTERING, active == DawView.MASTERING);
+        dockManager.setVisible(DefaultWorkspaces.PANEL_BROWSER,
+                browserPanelController != null && browserPanelController.isPanelVisible());
+        dockHostReconciliationSuppressed = false;
+    }
+
+    /**
+     * CENTER zone is a single-selection slot — only one of
+     * {@link DefaultWorkspaces#PANEL_ARRANGEMENT},
+     * {@link DefaultWorkspaces#PANEL_MIXER},
+     * {@link DefaultWorkspaces#PANEL_EDITOR}, or
+     * {@link DefaultWorkspaces#PANEL_MASTERING} can be visible at a time.
+     * Wraps {@link DockManager#toggleVisible(String)} so that toggling a
+     * CENTER panel ON automatically hides any other CENTER panel that was
+     * visible (avoiding order-dependent "last entry wins" reconciliation).
+     * Toggling the active CENTER panel OFF is a no-op (radio-button
+     * behaviour) — the slot has to hold something while the story defers
+     * tabbed CENTER targets.
+     */
+    private void toggleCenterDockPanel(String panelId) {
+        if (dockManager == null) return;
+        DockEntry entry = dockManager.layout().entry(panelId).orElse(null);
+        if (entry == null) return;
+        if (entry.visible()) {
+            // Active panel — radio-button behaviour: no-op.
+            return;
+        }
+        // Suppress reconciliation while hiding siblings so we don't fire
+        // N × N reconcile passes. Only the final setVisible (which shows
+        // the requested panel) fires onLayoutChanged — a single pass that
+        // reconciles the entire batch atomically.
+        dockHostReconciliationSuppressed = true;
+        try {
+            for (String other : CENTER_ZONE_PANELS) {
+                if (!other.equals(panelId)) dockManager.setVisible(other, false);
+            }
+        } finally {
+            dockHostReconciliationSuppressed = false;
+        }
+        dockManager.setVisible(panelId, true);
+    }
+
+    /**
+     * {@link DockManager.Host} that reconciles dock layout snapshots back
+     * into the existing controllers ({@link BrowserPanelController},
+     * {@link ViewNavigationController}) and a per-panel floating {@link Stage}
+     * registry. Idempotent: an {@code onLayoutChanged} that matches the
+     * current actual state of the chrome is a no-op, so the first fire after
+     * register/applyLayout cannot clobber the FXML-mounted view.
+     */
+    private final class MainControllerDockHost implements DockManager.Host {
+
+        @Override public void onLayoutChanged(DockLayout newLayout) {
+            if (dockHostReconciliationSuppressed) return;
+            for (DockEntry entry : newLayout.entries().values()) {
+                reconcile(entry);
+            }
+        }
+
+        @Override public boolean isScreenAvailableFor(
+                com.benesquivelmusic.daw.sdk.ui.Rectangle2D bounds) {
+            if (bounds == null) return false;
+            javafx.geometry.Rectangle2D fxBounds = new javafx.geometry.Rectangle2D(
+                    bounds.x(), bounds.y(),
+                    Math.max(1, bounds.width()), Math.max(1, bounds.height()));
+            for (Screen screen : Screen.getScreens()) {
+                if (screen.getBounds().intersects(fxBounds)) return true;
+            }
+            return false;
+        }
+
+        private void reconcile(DockEntry entry) {
+            String id = entry.panelId();
+            if (entry.zone() == DockZone.FLOATING) {
+                ensureFloating(id, entry);
+                return;
+            }
+            // If a Stage was previously open for this panel, close it now
+            // (panel was re-docked).
+            Stage existing = floatingStages.remove(id);
+            boolean wasFloating = existing != null;
+            if (existing != null) existing.close();
+            if (wasFloating) {
+                // The panel node is still parented inside the closed stage's
+                // scene. Detach it so it can be re-parented into the main
+                // chrome by the reconcile helpers below.
+                detachFromParent(resolveNode(id));
+                // Force the controller's internal state to diverge from the
+                // desired state so the standard show paths fire. The
+                // controllers' flags (panelVisible / activeView) were never
+                // updated when the panel was floated — they're stale.
+                if (id.equals(DefaultWorkspaces.PANEL_BROWSER)) {
+                    if (browserPanelController != null
+                            && browserPanelController.isPanelVisible()) {
+                        browserPanelController.toggleBrowserPanel();
+                    }
+                } else if (CENTER_ZONE_PANELS.contains(id)
+                        && viewNavigationController != null) {
+                    viewNavigationController.invalidateActiveViewCache();
+                }
+            }
+            switch (id) {
+                case DefaultWorkspaces.PANEL_BROWSER -> reconcileBrowser(entry.visible());
+                case DefaultWorkspaces.PANEL_ARRANGEMENT -> reconcileCenterView(
+                        entry.visible(), DawView.ARRANGEMENT);
+                case DefaultWorkspaces.PANEL_MIXER -> reconcileCenterView(
+                        entry.visible(), DawView.MIXER);
+                case DefaultWorkspaces.PANEL_EDITOR -> reconcileCenterView(
+                        entry.visible(), DawView.EDITOR);
+                case DefaultWorkspaces.PANEL_MASTERING -> reconcileCenterView(
+                        entry.visible(), DawView.MASTERING);
+                default -> { /* unknown id — forward compatible */ }
+            }
+        }
+
+        private void detachFromParent(Node content) {
+            if (content == null) return;
+            javafx.scene.Parent parent = content.getParent();
+            if (parent instanceof javafx.scene.layout.BorderPane bp) {
+                if (bp.getCenter() == content) bp.setCenter(null);
+                else if (bp.getLeft() == content) bp.setLeft(null);
+                else if (bp.getRight() == content) bp.setRight(null);
+                else if (bp.getTop() == content) bp.setTop(null);
+                else if (bp.getBottom() == content) bp.setBottom(null);
+            } else if (parent instanceof Pane pane) {
+                pane.getChildren().remove(content);
+            } else if (parent == null && content instanceof javafx.scene.Parent p
+                    && p.getScene() != null) {
+                // The node is a Scene root (getParent() == null but still held
+                // by Scene.setRoot). Replace it with an empty Group so the node
+                // can be re-parented into the main BorderPane without JavaFX
+                // throwing "already set as root of another scene".
+                p.getScene().setRoot(new javafx.scene.Group());
+            }
+        }
+
+        private void reconcileBrowser(boolean wantVisible) {
+            if (browserPanelController == null) return;
+            if (browserPanelController.isPanelVisible() != wantVisible) {
+                browserPanelController.toggleBrowserPanel();
+            }
+        }
+
+        private void reconcileCenterView(boolean wantVisible, DawView view) {
+            if (viewNavigationController == null) return;
+            DawView active = viewNavigationController.getActiveView();
+            if (wantVisible && active != view) {
+                viewNavigationController.switchView(view);
+            }
+            // No hide-fallback: CENTER is a single-selection slot (see
+            // {@link MainController#toggleCenterDockPanel}). Hiding a panel
+            // that isn't the active CENTER view is already consistent with
+            // the live chrome; hiding the active one is a no-op (the slot
+            // has to hold something while the story defers tabbed CENTER
+            // targets, so a sibling becoming visible is what changes it).
+        }
+
+        private void ensureFloating(String panelId, DockEntry entry) {
+            Node content = resolveNode(panelId);
+            if (content == null) return;
+            com.benesquivelmusic.daw.sdk.ui.Rectangle2D b = entry.floatingBounds();
+            if (b == null) return;
+            Stage stage = floatingStages.get(panelId);
+            if (stage == null) {
+                stage = new Stage();
+                stage.setTitle(displayNameFor(panelId));
+                // Own the floating window to the primary stage so it closes
+                // when the app exits (cascaded from MainController's
+                // setOnHidden lifetime cleanup on the primary Stage).
+                if (rootPane.getScene() != null && rootPane.getScene().getWindow() != null) {
+                    stage.initOwner(rootPane.getScene().getWindow());
+                }
+                detachFromParent(content);
+                javafx.scene.Scene scene = new javafx.scene.Scene(
+                        content instanceof javafx.scene.Parent p ? p
+                                : new javafx.scene.layout.StackPane(content));
+                // Apply the active theme + register for live re-theming so
+                // the floating panel inherits root-pane styling instead of
+                // showing the default JavaFX white background.
+                com.benesquivelmusic.daw.app.ui.theme.ThemeManager.getDefault().applyTo(scene);
+                stage.setScene(scene);
+                // When the user dismisses the floating window via the OS
+                // close button, move the panel back to its preferred dock
+                // zone so it isn't trapped in a hidden-floating state.
+                final String idForHandler = panelId;
+                stage.setOnCloseRequest(e -> {
+                    if (dockManager != null) {
+                        DockZone preferred = dockManager.panel(idForHandler)
+                                .map(Dockable::preferredZone)
+                                .orElse(DockZone.CENTER);
+                        dockManager.move(idForHandler, preferred, 0);
+                    }
+                });
+                // Propagate user-driven position/size changes back to the
+                // DockManager so workspace captures reflect the actual
+                // window placement (not just the launch bounds).
+                final Stage stageRef = stage;
+                javafx.beans.value.ChangeListener<Number> boundsListener = (obs, oldVal, newVal) -> {
+                    if (dockManager == null) return;
+                    var currentEntry = dockManager.layout().entry(idForHandler).orElse(null);
+                    if (currentEntry == null || currentEntry.zone() != DockZone.FLOATING) return;
+                    com.benesquivelmusic.daw.sdk.ui.Rectangle2D actual =
+                            new com.benesquivelmusic.daw.sdk.ui.Rectangle2D(
+                                    stageRef.getX(), stageRef.getY(),
+                                    stageRef.getWidth(), stageRef.getHeight());
+                    if (!actual.equals(currentEntry.floatingBounds())) {
+                        dockManager.updateFloatingBounds(idForHandler, actual);
+                    }
+                };
+                stage.xProperty().addListener(boundsListener);
+                stage.yProperty().addListener(boundsListener);
+                stage.widthProperty().addListener(boundsListener);
+                stage.heightProperty().addListener(boundsListener);
+                floatingStages.put(panelId, stage);
+            }
+            stage.setX(b.x());
+            stage.setY(b.y());
+            stage.setWidth(b.width());
+            stage.setHeight(b.height());
+            if (entry.visible() && !stage.isShowing()) stage.show();
+            else if (!entry.visible() && stage.isShowing()) stage.hide();
+        }
+
+        private Node resolveNode(String panelId) {
+            return switch (panelId) {
+                case DefaultWorkspaces.PANEL_BROWSER ->
+                        browserPanelController == null ? null
+                                : browserPanelController.getBrowserPanel();
+                case DefaultWorkspaces.PANEL_MIXER ->
+                        viewNavigationController == null ? null
+                                : viewNavigationController.getMixerView();
+                case DefaultWorkspaces.PANEL_EDITOR ->
+                        viewNavigationController == null ? null
+                                : viewNavigationController.getEditorView();
+                case DefaultWorkspaces.PANEL_MASTERING ->
+                        viewNavigationController == null ? null
+                                : viewNavigationController.getMasteringView();
+                case DefaultWorkspaces.PANEL_ARRANGEMENT ->
+                        viewNavigationController == null ? null
+                                : viewNavigationController.getCachedArrangementNode();
+                default -> null;
+            };
+        }
+
+        private String displayNameFor(String panelId) {
+            Dockable d = dockManager == null ? null
+                    : dockManager.panel(panelId).orElse(null);
+            return d == null ? panelId : d.displayName();
+        }
     }
 
     private String promptWorkspaceName() {

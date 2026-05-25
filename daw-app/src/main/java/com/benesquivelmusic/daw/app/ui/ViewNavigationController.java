@@ -862,6 +862,16 @@ final class ViewNavigationController {
     }
 
     /**
+     * Invalidates the active-view cache so the next {@link #switchView}
+     * call re-attaches the panel node even if it matches the stored active
+     * view. Used by the dock reconciler when a center panel transitions
+     * from FLOATING back to a docked zone.
+     */
+    void invalidateActiveViewCache() {
+        activeView = null;
+    }
+
+    /**
      * Returns the mixer view instance.
      *
      * @return the mixer view
@@ -877,6 +887,27 @@ final class ViewNavigationController {
      */
     EditorView getEditorView() {
         return editorView;
+    }
+
+    /**
+     * Returns the mastering view instance.
+     *
+     * @return the mastering view
+     */
+    MasteringView getMasteringView() {
+        return masteringView;
+    }
+
+    /**
+     * Returns the cached arrangement {@link Node} (FXML-mounted
+     * {@code .arrangement-panel}) — story 285 dock host uses this when the
+     * arrangement panel is detached into a floating window.
+     *
+     * @return the arrangement node (may be {@code null} before
+     *         {@link #initializeViewNavigation()} has run)
+     */
+    Node getCachedArrangementNode() {
+        return viewCache.get(DawView.ARRANGEMENT);
     }
 
     /**
