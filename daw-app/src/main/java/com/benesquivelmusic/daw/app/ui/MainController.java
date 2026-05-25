@@ -1805,10 +1805,17 @@ public final class MainController {
             // Active panel — radio-button behaviour: no-op.
             return;
         }
-        // Hide every other CENTER panel before showing the requested one so
-        // reconciliation sees exactly one visible CENTER entry.
-        for (String other : CENTER_ZONE_PANELS) {
-            if (!other.equals(panelId)) dockManager.setVisible(other, false);
+        // Suppress reconciliation while hiding siblings so we don't fire
+        // N × N reconcile passes. Only the final setVisible (which shows
+        // the requested panel) fires onLayoutChanged — a single pass that
+        // reconciles the entire batch atomically.
+        dockHostReconciliationSuppressed = true;
+        try {
+            for (String other : CENTER_ZONE_PANELS) {
+                if (!other.equals(panelId)) dockManager.setVisible(other, false);
+            }
+        } finally {
+            dockHostReconciliationSuppressed = false;
         }
         dockManager.setVisible(panelId, true);
     }
@@ -1957,6 +1964,26 @@ public final class MainController {
                         dockManager.move(idForHandler, preferred, 0);
                     }
                 });
+                // Propagate user-driven position/size changes back to the
+                // DockManager so workspace captures reflect the actual
+                // window placement (not just the launch bounds).
+                final Stage stageRef = stage;
+                javafx.beans.value.ChangeListener<Number> boundsListener = (obs, oldVal, newVal) -> {
+                    if (dockManager == null) return;
+                    var currentEntry = dockManager.layout().entry(idForHandler).orElse(null);
+                    if (currentEntry == null || currentEntry.zone() != DockZone.FLOATING) return;
+                    com.benesquivelmusic.daw.sdk.ui.Rectangle2D actual =
+                            new com.benesquivelmusic.daw.sdk.ui.Rectangle2D(
+                                    stageRef.getX(), stageRef.getY(),
+                                    stageRef.getWidth(), stageRef.getHeight());
+                    if (!actual.equals(currentEntry.floatingBounds())) {
+                        dockManager.updateFloatingBounds(idForHandler, actual);
+                    }
+                };
+                stage.xProperty().addListener(boundsListener);
+                stage.yProperty().addListener(boundsListener);
+                stage.widthProperty().addListener(boundsListener);
+                stage.heightProperty().addListener(boundsListener);
                 floatingStages.put(panelId, stage);
             }
             stage.setX(b.x());
