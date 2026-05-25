@@ -873,12 +873,13 @@ its lid mid‑session does not surface a recovery dialog.
   acts.
 
   > **Fallback workspace policy.** The fallback path must **never** default to
-  > the OS temp directory (that would reintroduce §1.1's silent `/tmp` problem).
-  > Instead: (1) the user configures a fallback workspace in Preferences
-  > (required on first launch; no implicit default), or (2) if unconfigured,
-  > the `ENOSPC` failure surfaces a **blocking modal** that refuses to dismiss
-  > until the user picks a location or frees space. Once a fallback is in use,
-  > the strip shows a persistent red banner ("⚠ Checkpoints writing to fallback:
+  > the OS temp directory (temp directories are silently cleared during system
+  > maintenance or reboot, which would lose checkpoint data). Instead: (1) the
+  > user configures a fallback workspace in Preferences (required on first
+  > launch; no implicit default), or (2) if unconfigured, the `ENOSPC` failure
+  > surfaces a **blocking modal** that refuses to dismiss until the user picks a
+  > location or frees space. Once a fallback is in use, the strip shows a
+  > persistent red banner ("⚠ Checkpoints writing to fallback:
   > /Volumes/Backup/…") and offers a one‑click "Copy back to primary" action
   > that runs on a background virtual thread when primary space is restored.
   > Automatic copy‑back may be enabled in Preferences but is **off** by default
@@ -889,7 +890,7 @@ its lid mid‑session does not surface a recovery dialog.
 The journal queue (§5.3) uses a **non‑blocking `offer()`** on the FX thread.
 If the queue is full (disk is slow), the enqueue fails and the strip immediately
 shows a "Disk is slow — events buffering in memory" warning. Events spill into
-an unbounded in‑memory overflow list (capped at 64 MB) that the writer drains
+an in‑memory overflow list (bounded at 64 MB) that the writer drains
 once disk I/O resumes. This guarantees the FX thread **never blocks on disk**.
 
 If the overflow list itself fills (catastrophic disk stall), the strip escalates
