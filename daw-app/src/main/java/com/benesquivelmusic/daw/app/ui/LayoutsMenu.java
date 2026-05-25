@@ -91,6 +91,7 @@ public final class LayoutsMenu {
 
     private void populate(Menu menu, ToggleGroup group) {
         menu.getItems().clear();
+        group.getToggles().clear();
         for (NamedLayout layout : layoutManager.savedLayouts()) {
             menu.getItems().add(radioItem(group, layout.name()));
         }

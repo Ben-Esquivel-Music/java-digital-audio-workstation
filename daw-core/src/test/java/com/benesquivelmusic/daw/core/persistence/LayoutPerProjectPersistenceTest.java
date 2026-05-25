@@ -6,7 +6,6 @@ import com.benesquivelmusic.daw.core.project.DawProject;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -25,8 +24,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class LayoutPerProjectPersistenceTest {
 
     @Test
-    void layoutJsonRoundTripsThroughProjectFile(@org.junit.jupiter.api.io.TempDir Path tmp)
-            throws IOException {
+    void layoutJsonRoundTripsThroughProjectFile() throws IOException {
         DawProject p = new DawProject("Test", AudioFormat.STUDIO_QUALITY);
         String layoutJson = "{\"current\":\"Mixing\",\"layouts\":["
                 + "{\"name\":\"MyMix\",\"dock\":\"{}\"}"

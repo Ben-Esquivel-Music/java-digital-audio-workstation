@@ -159,7 +159,15 @@ public final class ProjectSerializer {
             return;
         }
         Element elem = document.createElement("layout");
-        elem.appendChild(document.createCDATASection(json));
+        // Split the content around "]]>" so we never prematurely terminate
+        // a CDATA section — each segment is safe inside its own CDATA block.
+        String[] parts = json.split("]]>", -1);
+        for (int i = 0; i < parts.length; i++) {
+            elem.appendChild(document.createCDATASection(parts[i] + (i < parts.length - 1 ? "]]" : "")));
+            if (i < parts.length - 1) {
+                elem.appendChild(document.createTextNode(">"));
+            }
+        }
         root.appendChild(elem);
     }
 

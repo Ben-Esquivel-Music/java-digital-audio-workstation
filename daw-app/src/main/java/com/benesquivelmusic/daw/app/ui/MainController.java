@@ -543,6 +543,9 @@ public final class MainController {
                             lockIndicatorTimeline.stop();
                             lockIndicatorTimeline = null;
                         }
+                        if (dockManifestModel != null) {
+                            dockManifestModel.dispose();
+                        }
                     });
                 }
             }
