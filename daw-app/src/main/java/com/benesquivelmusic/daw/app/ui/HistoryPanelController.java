@@ -99,8 +99,9 @@ final class HistoryPanelController {
             host.updateStatusBar("Undo History panel opened", DawIcon.HISTORY);
         } else {
             if (animate) {
+                final var fadingPanel = undoHistoryPanel;
                 Timeline timeline = new Timeline(new KeyFrame(Duration.millis(250),
-                        new KeyValue(undoHistoryPanel.opacityProperty(), 0.0)));
+                        new KeyValue(fadingPanel.opacityProperty(), 0.0)));
                 // Guard: only clear the right slot if WE still own it AND
                 // the panel is still meant to be hidden. A sibling right-pane
                 // (e.g. BrowserPanel) may have taken it over while our fade
@@ -108,8 +109,11 @@ final class HistoryPanelController {
                 // Likewise, if the user closed and quickly reopened the
                 // History panel before this fade completes, historyPanelVisible
                 // will be true again and we must not clear the re-opened panel.
+                // We compare against the captured fadingPanel (not the mutable
+                // field) so that rebuild() during the fade doesn't bypass the
+                // guard.
                 timeline.setOnFinished(_ -> {
-                    if (!historyPanelVisible && rootPane.getRight() == undoHistoryPanel) {
+                    if (!historyPanelVisible && rootPane.getRight() == fadingPanel) {
                         rootPane.setRight(null);
                     }
                 });
