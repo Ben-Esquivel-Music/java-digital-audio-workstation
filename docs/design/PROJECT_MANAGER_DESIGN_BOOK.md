@@ -291,6 +291,13 @@ sees a single error — not a partial archive on disk.
 context (path, lock token, request id) down the worker tree without polluting
 method signatures and without the `ThreadLocal` pitfalls flagged in the SKILL.
 
+> **Preview‑feature note.** `ScopedValue` requires `--enable-preview` in JDK 26.
+> Until the API is finalized, the implementation **may** use an explicit
+> `ProjectContext` record passed through the `DawScope` fork methods as a
+> non‑preview fallback. The design treats `ScopedValue` as the *target* API and
+> the explicit‑context pattern as the *interim* shipping path — both satisfy the
+> "no `ThreadLocal`" constraint.
+
 ---
 
 ## 3. Information model
@@ -357,6 +364,15 @@ When the user re‑opens a project the next day, the previous session is **close
 manifest lives in `sessions/<date>-<slug>.session.xml`.
 
 This makes "what did I do today?" answerable.
+
+> **Naming disambiguation.** The existing codebase uses "Session" in
+> `SessionExportResult` / `SessionImportResult` to mean a DAWproject interchange
+> payload. That concept is renamed in the UI to **"DAWproject Exchange"** (menu:
+> File ▸ Import ▸ DAWproject Exchange…, File ▸ Export ▸ DAWproject Exchange…). The
+> unqualified word "Session" in the UI, code comments, and this design book
+> always means the §3.3 working‑session object. Implementers must never reuse
+> the term "Session" for import/export paths; grep for `SessionExport` /
+> `SessionImport` when in doubt.
 
 ### 3.4 Take
 
@@ -592,6 +608,21 @@ Concretely:
 
 This single strip *is* the §2.2 visibility principle.
 
+**Narrow‑window behaviour.** When the window width drops below 1200 px the strip
+collapses cells in a fixed priority order (lowest priority hidden first):
+
+1. Workspace cell — hidden first (rarely changes mid‑session).
+2. Schema cell — hidden next.
+3. Lock cell — collapsed to icon‑only (🔒).
+4. Disk cell — collapsed to icon + number ("💾 412 GB").
+5. Journal cell — collapsed to icon + count ("📝 4").
+
+The **Session**, **Saved**, and **Checkpoint timer** cells never collapse — they
+are the three most critical facts during active work. Below 900 px the strip
+switches to a single scrollable row. A "⋯" overflow button at the trailing edge
+opens a popover showing all hidden cells. This mirrors the priority‑based
+toolbar overflow pattern in `javafx-application-design` §10.
+
 ### 4.5 Save / Autosave HUD
 
 > Inline, non‑modal feedback for save events. Replaces "Project saved"
@@ -765,6 +796,18 @@ prior file intact. The existing code does some of this; the redesign makes it
   thread performs only a fast in‑memory deep‑copy (snapshot) of the project
   state; the heavy serialisation‑to‑bytes and disk write happen entirely on the
   checkpoint writer thread so the FX thread is never blocked on I/O.
+
+  > **Snapshot scaling strategy.** A naïve deep‑copy grows linearly with project
+  > size and will eventually stall the FX thread for large sessions. The
+  > implementation should use a **copy‑on‑write (CoW) versioned tree**: the
+  > project state is a persistent/immutable data structure where mutations
+  > produce new nodes sharing unchanged subtrees with the prior version. The
+  > "snapshot" then becomes a single reference swap (O(1) on the FX thread) —
+  > the checkpoint writer serialises from the captured root at its own pace.
+  > If CoW is not feasible in the first stage, the fallback is a **dirty‑flag
+  > incremental copy**: only objects marked dirty since the last checkpoint are
+  > deep‑copied; clean subtrees are reused. Either approach keeps the FX‑thread
+  > cost sub‑millisecond regardless of project size.
 - A **lock heartbeat** virtual thread refreshes `.project.lock` mtime on a 2 s schedule.
 - An **archive worker** virtual thread (one per archive operation), already in
   place in `ProjectLifecycleController`.
@@ -780,6 +823,13 @@ twenty layers of method signatures, the controller binds them once with
 `ScopedValue.runWhere(...)`. Every virtual thread spawned inside that scope
 inherits the binding for free. Replaces every ad‑hoc `ThreadLocal` and removes
 the cleanup risk the SKILL warns about.
+
+> **Preview status.** `ScopedValue` (JEP 506) is a second‑preview API in JDK 26
+> and requires `--enable-preview`. Until it finalizes, the shipping code uses an
+> explicit `ProjectContext` record threaded through `DawScope` fork lambdas as
+> the non‑preview equivalent. The design targets `ScopedValue` as the eventual
+> API; switching is a single‑commit mechanical refactor once the JEP exits
+> preview. See also §2.6 note.
 
 ### 5.5 Single, named status model
 
@@ -819,15 +869,33 @@ its lid mid‑session does not surface a recovery dialog.
 - At under 5 minutes, the next record arm prompts a confirm with two options:
   "Pick a different location for new captures" or "Record anyway".
 - Checkpoint writes that fail with `ENOSPC` are retried into a **fallback
-  workspace** (configurable; defaults to the OS temp directory) and surfaced as
-  a permanent warning in the strip until the user acts.
+  workspace** and surfaced as a permanent warning in the strip until the user
+  acts.
+
+  > **Fallback workspace policy.** The fallback path must **never** default to
+  > the OS temp directory (that would reintroduce §1.1's silent `/tmp` problem).
+  > Instead: (1) the user configures a fallback workspace in Preferences
+  > (required on first launch; no implicit default), or (2) if unconfigured,
+  > the `ENOSPC` failure surfaces a **blocking modal** that refuses to dismiss
+  > until the user picks a location or frees space. Once a fallback is in use,
+  > the strip shows a persistent red banner ("⚠ Checkpoints writing to fallback:
+  > /Volumes/Backup/…") and offers a one‑click "Copy back to primary" action
+  > that runs on a background virtual thread when primary space is restored.
+  > Automatic copy‑back may be enabled in Preferences but is **off** by default
+  > to avoid surprise large writes.
 
 ### 6.3 Journal back‑pressure, never data loss
 
-The bounded journal queue (§5.3) blocks the FX thread *for at most one event
-group* if disk falls behind, then surfaces a "Disk is slow" indicator in the
-strip. The user is told the truth. The alternative — silently dropping events —
-is forbidden.
+The journal queue (§5.3) uses a **non‑blocking `offer()`** on the FX thread.
+If the queue is full (disk is slow), the enqueue fails and the strip immediately
+shows a "Disk is slow — events buffering in memory" warning. Events spill into
+an unbounded in‑memory overflow list (capped at 64 MB) that the writer drains
+once disk I/O resumes. This guarantees the FX thread **never blocks on disk**.
+
+If the overflow list itself fills (catastrophic disk stall), the strip escalates
+to a red "Save your work — disk unresponsive" alert and the next user‑initiated
+save forces a synchronous flush on a background thread (never FX). The
+alternative — silently dropping events — is forbidden.
 
 ### 6.4 Rotation policy
 
