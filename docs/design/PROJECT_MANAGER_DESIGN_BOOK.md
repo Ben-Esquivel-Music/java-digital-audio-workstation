@@ -74,9 +74,12 @@ There are three things wrong with that single path from a user’s point of view
 ### 1.2 Checkpoints are invisible
 
 `CheckpointManager` (in `daw-core/src/main/java/com/benesquivelmusic/daw/core/persistence/`)
-serialises the full project to `checkpoints/checkpoint-NNN-yyyyMMddTHHmmss.daw`
-every 5 minutes by default (`AutoSaveConfig.DEFAULT`) — with a `LONG_SESSION`
-preset that drops the interval to 30 seconds. None of that is surfaced anywhere:
+writes to `checkpoints/checkpoint-NNN-yyyyMMddTHHmmss.daw` every 5 minutes by
+default (`AutoSaveConfig.DEFAULT`) — with a `LONG_SESSION` preset that drops the
+interval to 30 seconds. If a `projectDataSupplier` has been configured via
+`setProjectDataSupplier(...)`, the checkpoint contains the full serialized project
+state; otherwise it writes only a minimal summary. None of that is surfaced
+anywhere:
 
 - The user cannot see *when* the next checkpoint will fire.
 - The user cannot see *the last one* (size, time, success/failure).
@@ -299,7 +302,7 @@ WORKSPACE
    └── PROJECT (directory on disk: <name>/project.daw + audio/ + checkpoints/ + journal/)
          └── SESSION (a named span of work, e.g. "Tracking day 2 — 2026-03-21")
                ├── TAKE (one recorded pass on one or more armed tracks)
-               ├── CHECKPOINT (timed autosave; numbered)
+               ├── CHECKPOINT (timed autosave; numbered; contains full project state only when projectDataSupplier is configured, otherwise a minimal summary)
                └── JOURNAL SEGMENT (append-only log of state mutations)
 
    SNAPSHOT (user-named save — "before mix down", "client review v3")
