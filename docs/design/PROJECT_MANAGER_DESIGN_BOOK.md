@@ -25,9 +25,9 @@
 3. **§3 is the information model.** Names matter. A clear, layered model
    (Workspace → Project → Session → Take → Checkpoint → Snapshot → Archive) makes
    every later UI affordance obvious.
-4. **§4 is the UI catalogue.** Six surfaces with ASCII mockups: Start screen,
-   Project Hub, Session Manager dock, Save/Autosave HUD, Recovery & Migration,
-   Archive & Restore.
+4. **§4 is the UI catalogue.** Seven surfaces with ASCII mockups: Start screen,
+   Project Hub, Session Manager dock, Session Status Strip, Save/Autosave HUD,
+   Recovery & Migration, Archive & Restore.
 5. **§5 is the engine.** The threading, journaling, locking, and disk‑space contract
    that the UI in §4 sits on top of. The UI is only as trustworthy as the engine.
 6. **§6 is the long‑session contract.** Specific guarantees for sessions that run
