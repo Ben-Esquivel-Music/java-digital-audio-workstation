@@ -6,6 +6,8 @@ import com.benesquivelmusic.daw.app.ui.dock.DockZone;
 import com.benesquivelmusic.daw.app.ui.dock.Dockable;
 import com.benesquivelmusic.daw.app.ui.dock.FloatingWindowStore;
 
+import javafx.event.EventHandler;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -41,12 +43,13 @@ class PanelDetachEventBridgeTest {
                 new FloatingWindowStore(tmp.resolve("f.json")));
         dm.register(new TestPanel("mixer", "Mixer", DockZone.BOTTOM));
 
-        // Mirrors MainController.installLayoutManager()'s rootPane
-        // handler: PANEL_DETACH_REQUESTED → dockManager.float_(...).
-        PanelDetachRequestedEvent e = new PanelDetachRequestedEvent("mixer");
-        // Run the handler body inline — this is exactly the lambda
-        // installed at the rootPane level in production.
-        dm.float_(e.getPanelId(), null);
+        // The same handler that MainController installs on rootPane:
+        EventHandler<PanelDetachRequestedEvent> handler =
+                e -> dm.float_(e.getPanelId(), null);
+
+        // Fire the event through the handler, verifying the event's
+        // panelId is what drives the DockManager call.
+        handler.handle(new PanelDetachRequestedEvent("mixer"));
 
         var entry = dm.layout().entry("mixer").orElseThrow();
         assertThat(entry.zone()).isEqualTo(DockZone.FLOATING);
@@ -62,10 +65,13 @@ class PanelDetachEventBridgeTest {
         assertThat(dm.layout().entry("mixer").orElseThrow().zone())
                 .isEqualTo(DockZone.FLOATING);
 
-        // Mirrors MainController.installLayoutManager()'s rootPane
-        // handler: PANEL_DOCK_REQUESTED → dockManager.moveToEnd(...).
-        PanelDockRequestedEvent e = new PanelDockRequestedEvent("mixer", DockZone.BOTTOM);
-        dm.moveToEnd(e.getPanelId(), e.getTargetZone());
+        // The same handler that MainController installs on rootPane:
+        EventHandler<PanelDockRequestedEvent> handler =
+                e -> dm.moveToEnd(e.getPanelId(), e.getTargetZone());
+
+        // Fire the event through the handler, verifying the event's
+        // panelId and targetZone are what drive the DockManager call.
+        handler.handle(new PanelDockRequestedEvent("mixer", DockZone.BOTTOM));
 
         assertThat(dm.layout().entry("mixer").orElseThrow().zone())
                 .isEqualTo(DockZone.BOTTOM);

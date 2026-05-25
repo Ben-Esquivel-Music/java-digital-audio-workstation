@@ -43,6 +43,7 @@ import com.benesquivelmusic.daw.app.ui.dock.DockLayout;
 import com.benesquivelmusic.daw.app.ui.dock.DockManager;
 import com.benesquivelmusic.daw.app.ui.dock.DockZone;
 import com.benesquivelmusic.daw.app.ui.dock.Dockable;
+import com.benesquivelmusic.daw.app.ui.layout.BuiltInLayouts;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 
 import javafx.animation.FadeTransition;
@@ -739,7 +740,13 @@ public final class MainController {
                     }
                     // Story 282 — Mission Control per-project persistence.
                     @Override public String captureLayoutJson() {
-                        return layoutManager == null ? null : layoutManager.toJson();
+                        if (layoutManager == null) return null;
+                        // Omit layout JSON when still in the implicit default
+                        // state so legacy projects round-trip unchanged.
+                        boolean isDefault = BuiltInLayouts.DEFAULT.equals(layoutManager.currentLayout())
+                                && layoutManager.savedLayouts().stream()
+                                        .noneMatch(l -> !l.builtIn());
+                        return isDefault ? null : layoutManager.toJson();
                     }
                     @Override public void applyLayoutJson(String json) {
                         if (layoutManager != null) {
@@ -1914,9 +1921,7 @@ public final class MainController {
             Button btn = new Button(entry.displayName());
             btn.getStyleClass().addAll("dawg-button", "size-default", "dock-manifest-tab");
             btn.setUserData(panelId);
-            btn.setOnAction(_ -> {
-                if (dockManager != null) dockManager.toggleVisible(panelId);
-            });
+            btn.setOnAction(_ -> dockManifestModel.focusPanel(panelId));
             bar.getChildren().add(btn);
         }
     }
