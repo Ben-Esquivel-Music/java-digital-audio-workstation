@@ -206,6 +206,16 @@ public final class MainController {
     private DockManager dockManager;
     /** Floating windows currently owned by the dock host, keyed by panel id. */
     private final java.util.Map<String, Stage> floatingStages = new java.util.LinkedHashMap<>();
+
+    /**
+     * Panel ids that compete for the CENTER dock zone. Treated as a
+     * single-selection slot by {@link #toggleCenterDockPanel(String)} —
+     * only one is visible at a time while tabbed CENTER targets are
+     * deferred.
+     */
+    private static final java.util.List<String> CENTER_ZONE_PANELS = java.util.List.of(
+            DefaultWorkspaces.PANEL_ARRANGEMENT, DefaultWorkspaces.PANEL_MIXER,
+            DefaultWorkspaces.PANEL_EDITOR, DefaultWorkspaces.PANEL_MASTERING);
     /**
      * Suppresses {@code DockManager.Host.onLayoutChanged} side-effects while
      * the dock manager is being seeded. Without this flag the initial
@@ -1797,9 +1807,7 @@ public final class MainController {
         }
         // Hide every other CENTER panel before showing the requested one so
         // reconciliation sees exactly one visible CENTER entry.
-        for (String other : java.util.List.of(
-                DefaultWorkspaces.PANEL_ARRANGEMENT, DefaultWorkspaces.PANEL_MIXER,
-                DefaultWorkspaces.PANEL_EDITOR, DefaultWorkspaces.PANEL_MASTERING)) {
+        for (String other : CENTER_ZONE_PANELS) {
             if (!other.equals(panelId)) dockManager.setVisible(other, false);
         }
         dockManager.setVisible(panelId, true);
