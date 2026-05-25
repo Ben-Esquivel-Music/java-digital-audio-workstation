@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 
 import javafx.application.Platform;
+import javafx.scene.Scene;
 import javafx.scene.control.Button;
 import javafx.scene.layout.BorderPane;
 
@@ -75,9 +76,13 @@ class RightPaneToggleRaceTest {
     void historyHideFadeMustNotWipeNewlyInstalledBrowser() throws Exception {
         AtomicReference<BrowserPanel> browserRef = new AtomicReference<>();
         AtomicReference<BorderPane> rootRef = new AtomicReference<>();
+        AtomicReference<UndoHistoryPanel> fadedPanelRef = new AtomicReference<>();
 
         runAndRethrow(() -> {
             BorderPane root = new BorderPane();
+            // Mount root into a Scene so the JavaFX animation timer
+            // pulses drive the Timeline forward in headless mode.
+            new Scene(root, 800, 600);
             Button browserButton = new Button("Library");
             Button historyButton = new Button("History");
             BrowserPanel browserPanel = new BrowserPanel();
@@ -91,6 +96,7 @@ class RightPaneToggleRaceTest {
             // Open history (synchronous install + fade-in).
             historyCtl.toggleHistoryPanel();
             assertThat(root.getRight()).isInstanceOf(UndoHistoryPanel.class);
+            fadedPanelRef.set((UndoHistoryPanel) root.getRight());
 
             // Now toggle to browser: history.hide() starts a fade-out
             // whose setOnFinished lambda will, pre-fix, wipe the right slot.
@@ -103,9 +109,9 @@ class RightPaneToggleRaceTest {
             rootRef.set(root);
         });
 
-        // Wait past the 250 ms hide-fade so the stale setOnFinished fires.
-        // Background sleep — FX thread continues servicing Timeline pulses.
-        Thread.sleep(FADE_WAIT_MS);
+        // Wait for the history panel's fade-out opacity to reach 0.0,
+        // confirming the Timeline actually finished (not just that time elapsed).
+        awaitOpacityZero(fadedPanelRef.get());
 
         runAndRethrow(() -> {
             // Pre-fix: rootRef.getRight() == null (browser wiped by stale lambda).
@@ -121,9 +127,13 @@ class RightPaneToggleRaceTest {
     @Test
     void browserHideFadeMustNotWipeNewlyInstalledHistory() throws Exception {
         AtomicReference<BorderPane> rootRef = new AtomicReference<>();
+        AtomicReference<BrowserPanel> fadedBrowserRef = new AtomicReference<>();
 
         runAndRethrow(() -> {
             BorderPane root = new BorderPane();
+            // Mount root into a Scene so the JavaFX animation timer
+            // pulses drive the Timeline forward in headless mode.
+            new Scene(root, 800, 600);
             Button browserButton = new Button("Library");
             Button historyButton = new Button("History");
             BrowserPanel browserPanel = new BrowserPanel();
@@ -143,16 +153,53 @@ class RightPaneToggleRaceTest {
             historyCtl.toggleHistoryPanel();
             assertThat(root.getRight()).isInstanceOf(UndoHistoryPanel.class);
 
+            fadedBrowserRef.set(browserPanel);
             rootRef.set(root);
         });
 
-        Thread.sleep(FADE_WAIT_MS);
+        // Wait for the browser panel's fade-out opacity to reach 0.0,
+        // confirming the Timeline actually finished.
+        awaitOpacityZero(fadedBrowserRef.get());
 
         runAndRethrow(() -> {
             // Post-fix guard: browser's stale fade lambda no-ops because
             // it no longer owns the right slot.
             assertThat(rootRef.get().getRight()).isInstanceOf(UndoHistoryPanel.class);
         });
+    }
+
+    /**
+     * Polls the FX thread until the given node's opacity reaches 0.0
+     * (confirming the fade-out Timeline actually completed) or a deadline
+     * is exceeded. This replaces a fixed {@code Thread.sleep} and
+     * guarantees the {@code setOnFinished} path has been exercised.
+     */
+    private static void awaitOpacityZero(javafx.scene.Node node) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(FADE_WAIT_MS);
+        while (System.nanoTime() < deadline) {
+            CountDownLatch poll = new CountDownLatch(1);
+            AtomicReference<Double> opacityRef = new AtomicReference<>();
+            Platform.runLater(() -> {
+                opacityRef.set(node.getOpacity());
+                poll.countDown();
+            });
+            poll.await(2, TimeUnit.SECONDS);
+            if (opacityRef.get() <= 0.0) {
+                return;
+            }
+            Thread.sleep(20);
+        }
+        // Final check — assert so failure message is informative.
+        CountDownLatch finalLatch = new CountDownLatch(1);
+        AtomicReference<Double> finalOpacity = new AtomicReference<>();
+        Platform.runLater(() -> {
+            finalOpacity.set(node.getOpacity());
+            finalLatch.countDown();
+        });
+        finalLatch.await(2, TimeUnit.SECONDS);
+        assertThat(finalOpacity.get())
+                .as("Fading panel opacity should reach 0.0 (Timeline must have completed)")
+                .isEqualTo(0.0);
     }
 
     /**
