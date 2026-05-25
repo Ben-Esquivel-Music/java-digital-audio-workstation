@@ -414,7 +414,7 @@ Pre‑migration sibling of `project.daw`. Unchanged.
 
 ## 4. UI surfaces
 
-Six surfaces. Each is described as a complete proposal — what it does, why, and
+Seven surfaces. Each is described as a complete proposal — what it does, why, and
 an ASCII mockup. All surfaces share the §3.1‑§3.5 tokens from the main UI design
 book (4 px grid, Palette A by default, one accent, no rainbow).
 
@@ -480,7 +480,7 @@ Notes:
 - **Recover ahead of recent.** The user just lost work; they should not have to
   hunt for the project name.
 - The recent row badge ("✓ healthy", "⚠ migrated") is derived from a single quick
-  scan (existence of `.lock`, `last-migration-report.xml`, missing assets) — runs
+  scan (existence of `.project.lock`, `.migration-report-suppressed`, missing assets) — runs
   on a virtual thread the moment the welcome screen appears.
 - "Free disk: 412 GB ≈ 38 h record" is the §1.8 disk‑space contract surfaced.
 - Workspace dropdown is the top‑left §3.1 selector.
@@ -788,9 +788,11 @@ prior file intact. The existing code does some of this; the redesign makes it
 ### 5.3 Virtual threads, one writer per file (from `java-26.agent.md` Project Loom §2, javafx §11)
 
 - A single **journal writer** virtual thread serialises journal appends from the
-  FX thread via a bounded `LinkedBlockingQueue`. The FX thread enqueues an event
-  record; the writer appends + `fsync()`s + acknowledges. The queue is bounded so
-  a stalled disk applies back‑pressure to undo operations *before* memory fills.
+  FX thread via a bounded `LinkedBlockingQueue`. The FX thread enqueues via
+  non‑blocking `offer()`; if the queue is full the event spills into an in‑memory
+  overflow buffer (see §6.3). This guarantees the FX thread **never blocks on
+  disk**. The writer drains both queue and overflow, appends + `fsync()`s +
+  acknowledges.
 - A separate **checkpoint writer** virtual thread, driven by the
   `ScheduledExecutorService` that already exists in `CheckpointManager`. The FX
   thread performs only a fast in‑memory deep‑copy (snapshot) of the project
