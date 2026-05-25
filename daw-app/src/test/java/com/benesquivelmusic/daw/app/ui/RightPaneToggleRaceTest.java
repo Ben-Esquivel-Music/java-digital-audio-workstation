@@ -183,8 +183,11 @@ class RightPaneToggleRaceTest {
                 opacityRef.set(node.getOpacity());
                 poll.countDown();
             });
-            poll.await(2, TimeUnit.SECONDS);
-            if (opacityRef.get() <= 0.0) {
+            if (!poll.await(2, TimeUnit.SECONDS)) {
+                break;
+            }
+            Double opacity = opacityRef.get();
+            if (opacity != null && opacity <= 0.0) {
                 return;
             }
             Thread.sleep(20);
@@ -199,6 +202,7 @@ class RightPaneToggleRaceTest {
         finalLatch.await(2, TimeUnit.SECONDS);
         assertThat(finalOpacity.get())
                 .as("Fading panel opacity should reach 0.0 (Timeline must have completed)")
+                .isNotNull()
                 .isEqualTo(0.0);
     }
 
