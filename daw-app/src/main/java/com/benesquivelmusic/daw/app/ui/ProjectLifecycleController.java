@@ -179,6 +179,10 @@ final class ProjectLifecycleController {
         host.resetTrackCounters();
         host.setProjectDirty(false);
         rebuildUI();
+        // Story 282 — Reset layouts to the built-in Default so that a
+        // previously opened project's saved layouts don't leak into the
+        // new project.
+        host.applyLayoutJson(null);
         statusBarLabel.setText("New project created");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.FOLDER, 12));
         notificationBar.show(NotificationLevel.SUCCESS, "New project created");
