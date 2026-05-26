@@ -43,6 +43,7 @@ import com.benesquivelmusic.daw.app.ui.dock.DockLayout;
 import com.benesquivelmusic.daw.app.ui.dock.DockManager;
 import com.benesquivelmusic.daw.app.ui.dock.DockZone;
 import com.benesquivelmusic.daw.app.ui.dock.Dockable;
+import com.benesquivelmusic.daw.app.ui.layout.BuiltInLayouts;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 
 import javafx.animation.FadeTransition;
@@ -204,6 +205,18 @@ public final class MainController {
     private CommandPaletteView commandPaletteView;
     private WorkspaceManager workspaceManager;
     private DockManager dockManager;
+    /**
+     * Story 282 — Mission Control named-layout façade. Instantiated in
+     * {@link #installLayoutManager()} after the dock manager is live so
+     * the {@link com.benesquivelmusic.daw.app.ui.layout.LayoutManager.Host}
+     * bridge can read / write {@link DockManager#captureJson()}.
+     */
+    private com.benesquivelmusic.daw.app.ui.layout.LayoutManager layoutManager;
+    /**
+     * Story 282 — observable manifest of every registered dockable panel,
+     * rendered as the bottom-of-window manifest bar.
+     */
+    private com.benesquivelmusic.daw.app.ui.layout.DockManifestModel dockManifestModel;
     /** Floating windows currently owned by the dock host, keyed by panel id. */
     private final java.util.Map<String, Stage> floatingStages = new java.util.LinkedHashMap<>();
 
@@ -492,6 +505,11 @@ public final class MainController {
         // captureDockLayoutJson()/applyDockLayoutJson() flow through this
         // manager.
         installDockManager();
+        // Story 282 — Mission Control named layouts and the persistent
+        // bottom-of-window dock manifest bar. Must run after
+        // installDockManager() so the LayoutManager.Host bridge has a
+        // live DockManager to query / mutate.
+        installLayoutManager();
         selectionModel.setSelectionChangeListener(() -> {
             if (menuBarController != null) menuBarController.syncMenuState();
         });
@@ -525,6 +543,9 @@ public final class MainController {
                         if (lockIndicatorTimeline != null) {
                             lockIndicatorTimeline.stop();
                             lockIndicatorTimeline = null;
+                        }
+                        if (dockManifestModel != null) {
+                            dockManifestModel.dispose();
                         }
                     });
                 }
@@ -716,6 +737,21 @@ public final class MainController {
                     @Override public void rebuildHistoryPanel() { historyPanelController.rebuild(); }
                     @Override public void onProjectUIRebuild(MixerView newMixerView) {
                         handleProjectRebuild(newMixerView);
+                    }
+                    // Story 282 — Mission Control per-project persistence.
+                    @Override public String captureLayoutJson() {
+                        if (layoutManager == null) return null;
+                        // Omit layout JSON when still in the implicit default
+                        // state so legacy projects round-trip unchanged.
+                        boolean isDefault = BuiltInLayouts.DEFAULT.equals(layoutManager.currentLayout())
+                                && layoutManager.savedLayouts().stream()
+                                        .noneMatch(l -> !l.builtIn());
+                        return isDefault ? null : layoutManager.toJson();
+                    }
+                    @Override public void applyLayoutJson(String json) {
+                        if (layoutManager != null) {
+                            layoutManager.fromJson(json);
+                        }
                     }
                 },
                 new ProjectArchiver());
@@ -1783,6 +1819,199 @@ public final class MainController {
                 browserPanelController != null && browserPanelController.isPanelVisible());
         dockHostReconciliationSuppressed = false;
     }
+
+    /**
+     * Story 282 — instantiates the application-wide
+     * {@link com.benesquivelmusic.daw.app.ui.layout.LayoutManager} with a
+     * {@link com.benesquivelmusic.daw.app.ui.layout.LayoutManager.Host}
+     * bridge to the production {@link DockManager}, wires the View →
+     * Layout menu, mounts the persistent bottom-of-window dock manifest
+     * bar, and installs scene-root handlers for
+     * {@link com.benesquivelmusic.daw.app.ui.layout.PanelDetachRequestedEvent}
+     * and {@link com.benesquivelmusic.daw.app.ui.layout.PanelDockRequestedEvent}
+     * so panels published from {@code LayoutManager}-aware code flow
+     * through the dock manager's float / re-dock API.
+     */
+    private void installLayoutManager() {
+        if (dockManager == null) return;
+        com.benesquivelmusic.daw.app.ui.layout.LayoutManager.Host host =
+                new com.benesquivelmusic.daw.app.ui.layout.LayoutManager.Host() {
+                    @Override public String captureDockLayoutJson() {
+                        return dockManager.captureJson();
+                    }
+                    @Override public void applyDockLayoutJson(String json) {
+                        if (json != null && !json.isBlank()) {
+                            try {
+                                dockManager.applyJson(json);
+                            } catch (Exception e) {
+                                LOG.log(Level.WARNING,
+                                        "Failed to apply dock layout JSON; keeping current layout", e);
+                            }
+                        }
+                    }
+                };
+        layoutManager = new com.benesquivelmusic.daw.app.ui.layout.LayoutManager(host);
+        dockManifestModel =
+                new com.benesquivelmusic.daw.app.ui.layout.DockManifestModel(dockManager);
+
+        // ── View → Layout menu (alongside Workspaces). ──────────────
+        if (menuBarController != null) {
+            javafx.scene.control.MenuBar bar = menuBarController.getMenuBar();
+            if (bar != null) {
+                LayoutsMenu builder = new LayoutsMenu(
+                        layoutManager,
+                        this::promptLayoutName,
+                        this::reportLayoutError,
+                        this::openManageLayoutsDialog);
+                javafx.scene.control.Menu layoutMenu = builder.build();
+                var menus = bar.getMenus();
+                // Keep Help right-most; place Layout adjacent to Workspaces.
+                int insertIndex = Math.max(0, menus.size() - 1);
+                menus.add(insertIndex, layoutMenu);
+            }
+        }
+
+        // ── PanelDetach / PanelDock event bridges. ──────────────────
+        rootPane.addEventHandler(
+                com.benesquivelmusic.daw.app.ui.layout.PanelDetachRequestedEvent.PANEL_DETACH_REQUESTED,
+                e -> {
+                    if (dockManager != null) {
+                        dockManager.float_(e.getPanelId(), null);
+                    }
+                });
+        rootPane.addEventHandler(
+                com.benesquivelmusic.daw.app.ui.layout.PanelDockRequestedEvent.PANEL_DOCK_REQUESTED,
+                e -> {
+                    if (dockManager != null) {
+                        dockManager.moveToEnd(e.getPanelId(), e.getTargetZone());
+                    }
+                });
+
+        // ── Bottom manifest bar (above the status bar). ─────────────
+        mountDockManifestBar();
+    }
+
+    /**
+     * Mounts the manifest bar — a horizontal strip of {@code dawg-button}s,
+     * one per registered dockable panel — at the bottom of the main
+     * window, immediately above the status bar. Each button focuses /
+     * unhides its panel via {@link DockManager#toggleVisible(String)}.
+     */
+    private void mountDockManifestBar() {
+        if (dockManifestModel == null) return;
+        javafx.scene.layout.HBox bar = new javafx.scene.layout.HBox(4);
+        bar.getStyleClass().add("dock-manifest-bar");
+        bar.setId("dockManifestBar");
+        rebuildManifestBar(bar);
+        dockManifestModel.entries().addListener(
+                (javafx.collections.ListChangeListener<
+                        com.benesquivelmusic.daw.app.ui.layout.DockManifestModel.Entry>) _ ->
+                        rebuildManifestBar(bar));
+        Node bottom = rootPane.getBottom();
+        if (bottom instanceof VBox bottomBox) {
+            // Insert above the status bar (which is the last child).
+            int idx = Math.max(0, bottomBox.getChildren().size() - 1);
+            bottomBox.getChildren().add(idx, bar);
+        } else if (bottom == null) {
+            VBox wrap = new VBox();
+            wrap.getChildren().add(bar);
+            rootPane.setBottom(wrap);
+        }
+    }
+
+    private void rebuildManifestBar(javafx.scene.layout.HBox bar) {
+        bar.getChildren().clear();
+        for (var entry : dockManifestModel.entries()) {
+            String panelId = entry.panelId();
+            Button btn = new Button(entry.displayName());
+            btn.getStyleClass().addAll("dawg-button", "size-default", "dock-manifest-tab");
+            btn.setUserData(panelId);
+            btn.setOnAction(_ -> dockManifestModel.focusPanel(panelId));
+            bar.getChildren().add(btn);
+        }
+    }
+
+    /**
+     * Story 282 — Mission Control "Save Layout As…" prompt. Uses a
+     * {@code TextInputDialog} for now; will be migrated to {@code
+     * DawgDialog} (story 276 chrome) in a follow-up.
+     */
+    private String promptLayoutName() {
+        var dialog = new javafx.scene.control.TextInputDialog("My Layout");
+        dialog.setTitle("Save Layout As");
+        dialog.setHeaderText("Save current dock arrangement");
+        dialog.setContentText("Layout name:");
+        return dialog.showAndWait().orElse(null);
+    }
+
+    private void reportLayoutError(String message) {
+        if (notificationBar != null) {
+            notificationBar.show(NotificationLevel.WARNING, message);
+        } else {
+            LOG.warning(message);
+        }
+    }
+
+    private void openManageLayoutsDialog() {
+        // Lightweight in-line manager: lists user-saved layouts and lets
+        // the user delete them. Built-ins are read-only and absent here.
+        var dialog = new javafx.scene.control.Dialog<Void>();
+        dialog.setTitle("Manage Layouts");
+        dialog.setHeaderText("User-saved layouts (built-ins are read-only)");
+        javafx.scene.control.ListView<String> list = new javafx.scene.control.ListView<>();
+        for (var l : layoutManager.savedLayouts()) {
+            if (!l.builtIn()) list.getItems().add(l.name());
+        }
+        Button deleteBtn = new Button("Delete");
+        Button renameBtn = new Button("Rename\u2026");
+        deleteBtn.setOnAction(_ -> {
+            String sel = list.getSelectionModel().getSelectedItem();
+            if (sel != null && layoutManager.delete(sel)) {
+                list.getItems().remove(sel);
+            }
+        });
+        renameBtn.setOnAction(_ -> {
+            String sel = list.getSelectionModel().getSelectedItem();
+            if (sel == null) return;
+            var prompt = new javafx.scene.control.TextInputDialog(sel);
+            prompt.setTitle("Rename Layout");
+            prompt.setContentText("New name:");
+            String newName = prompt.showAndWait().orElse(null);
+            if (newName != null && !newName.isBlank()
+                    && layoutManager.rename(sel, newName.strip())) {
+                int idx = list.getItems().indexOf(sel);
+                list.getItems().set(idx, newName.strip());
+            }
+        });
+        javafx.scene.layout.HBox buttons = new javafx.scene.layout.HBox(8, renameBtn, deleteBtn);
+        VBox content = new VBox(8, list, buttons);
+        dialog.getDialogPane().setContent(content);
+        dialog.getDialogPane().getButtonTypes()
+                .add(javafx.scene.control.ButtonType.CLOSE);
+        dialog.showAndWait();
+    }
+
+    /**
+     * Returns the application-wide {@link com.benesquivelmusic.daw.app.ui.layout.LayoutManager},
+     * or {@code null} if it has not been instantiated yet (e.g. during
+     * very early startup or in headless tests that did not call
+     * {@code initialize()}). Exposed for the story 282 acceptance tests
+     * and for {@link ProjectLifecycleController}'s per-project
+     * persistence hook.
+     */
+    com.benesquivelmusic.daw.app.ui.layout.LayoutManager getLayoutManager() {
+        return layoutManager;
+    }
+
+    /**
+     * Returns the {@link com.benesquivelmusic.daw.app.ui.layout.DockManifestModel}
+     * driving the bottom-of-window manifest bar, or {@code null} if the
+     * dock manager has not been installed yet.
+     */
+    com.benesquivelmusic.daw.app.ui.layout.DockManifestModel getDockManifestModel() {
+        return dockManifestModel;
+    }
+
 
     /**
      * CENTER zone is a single-selection slot — only one of

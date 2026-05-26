@@ -143,6 +143,32 @@ public final class ProjectSerializer {
         buildNudgeSettings(document, root, project);
         buildLoudnessTarget(document, root, project);
         buildActiveHrtfProfile(document, root, project);
+        buildLayout(document, root, project);
+    }
+
+    /**
+     * Persists the opaque {@code LayoutManager} JSON blob (story 282).
+     * Embedded as a CDATA-wrapped text node so the (hand-rolled) inner
+     * JSON does not need re-escaping. Omitted entirely when the project
+     * has no layout state, so legacy projects round-trip byte-identical
+     * until the user explicitly saves a layout.
+     */
+    private void buildLayout(Document document, Element root, DawProject project) {
+        String json = project.getLayoutJson();
+        if (json == null || json.isBlank()) {
+            return;
+        }
+        Element elem = document.createElement("layout");
+        // Split the content around "]]>" so we never prematurely terminate
+        // a CDATA section — each segment is safe inside its own CDATA block.
+        String[] parts = json.split("]]>", -1);
+        for (int i = 0; i < parts.length; i++) {
+            elem.appendChild(document.createCDATASection(parts[i] + (i < parts.length - 1 ? "]]" : "")));
+            if (i < parts.length - 1) {
+                elem.appendChild(document.createTextNode(">"));
+            }
+        }
+        root.appendChild(elem);
     }
 
     private void buildActiveHrtfProfile(Document document, Element root, DawProject project) {

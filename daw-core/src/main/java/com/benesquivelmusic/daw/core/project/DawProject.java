@@ -64,6 +64,16 @@ public final class DawProject {
     private NudgeSettings nudgeSettings = NudgeSettings.DEFAULT;
     private LoudnessTarget loudnessTarget = LoudnessTarget.SPOTIFY;
     private String activeHrtfProfileName;
+    /**
+     * Story 282 — Mission Control named-layout JSON blob, written by
+     * {@code LayoutManager.toJson()} and consumed by
+     * {@code LayoutManager.fromJson(String)}. The schema is opaque to
+     * the project layer — it is treated as a string and round-tripped
+     * through {@code ProjectSerializer} / {@code ProjectDeserializer}
+     * verbatim. {@code null} (default for new / legacy projects) means
+     * "no saved layouts; fall back to the Default built-in".
+     */
+    private String layoutJson;
 
     /**
      * Creates a new DAW project.
@@ -648,5 +658,31 @@ public final class DawProject {
      */
     public void setActiveHrtfProfileName(String name) {
         this.activeHrtfProfileName = (name == null || name.isBlank()) ? null : name;
+    }
+
+    // ── Mission Control named layout (story 282) ─────────────────────────────
+
+    /**
+     * Returns the opaque {@code LayoutManager} JSON blob that captures
+     * the project's user-saved named layouts and the currently-active
+     * layout name. The string is produced by
+     * {@code LayoutManager.toJson()} and consumed by
+     * {@code LayoutManager.fromJson(String)}; the project layer treats
+     * it as opaque.
+     *
+     * @return the layout JSON, or {@code null} if the project has no
+     *         persisted layout state (legacy projects / new projects)
+     */
+    public String getLayoutJson() {
+        return layoutJson;
+    }
+
+    /**
+     * Sets the opaque {@code LayoutManager} JSON blob to be persisted
+     * with this project. Blank / {@code null} clears the field so the
+     * loader falls back to the Default built-in.
+     */
+    public void setLayoutJson(String json) {
+        this.layoutJson = (json == null || json.isBlank()) ? null : json;
     }
 }
