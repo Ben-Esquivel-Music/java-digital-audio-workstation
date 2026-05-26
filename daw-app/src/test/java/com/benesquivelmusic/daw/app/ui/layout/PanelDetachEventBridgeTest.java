@@ -16,7 +16,7 @@ import java.nio.file.Path;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Story 282 acceptance criterion ({@code PanelDetachEventBridgesToDockManagerTest}):
+ * Story 282 acceptance criterion ({@code PanelDetachEventBridgeTest}):
  * synthesise a {@link PanelDetachRequestedEvent} and verify the
  * MainController-installed handler routes it to
  * {@link DockManager#float_(String, com.benesquivelmusic.daw.sdk.ui.Rectangle2D)}.

@@ -63,7 +63,7 @@ class LayoutPerProjectPersistenceTest {
     }
 
     @Test
-    void layoutJsonSurvivesAcrossMultipleSaveLoadCycles() throws IOException {
+    void perProjectIsolation_switchingProjectsDoesNotContaminate() throws IOException {
         // Project A: "Mixing" layout.
         DawProject a = new DawProject("A", AudioFormat.STUDIO_QUALITY);
         a.setLayoutJson("{\"current\":\"Mixing\",\"layouts\":[]}");
@@ -81,5 +81,21 @@ class LayoutPerProjectPersistenceTest {
 
         DawProject reloadedB = new ProjectDeserializer().deserialize(xmlB);
         assertThat(reloadedB.getLayoutJson()).contains("\"current\":\"Tracking\"");
+    }
+
+    @Test
+    void layoutJsonContainingCdataTerminatorRoundTrips() throws IOException {
+        // The CDATA terminator sequence "]]>" inside JSON must survive
+        // serialisation — ProjectSerializer splits CDATA sections around it.
+        DawProject p = new DawProject("Test", AudioFormat.STUDIO_QUALITY);
+        String jsonWithCdata = "{\"current\":\"Mix\",\"layouts\":["
+                + "{\"name\":\"A]]>B\",\"dock\":\"{}\"}"
+                + "]}";
+        p.setLayoutJson(jsonWithCdata);
+
+        String xml = new ProjectSerializer().serialize(p);
+        DawProject reloaded = new ProjectDeserializer().deserialize(xml);
+
+        assertThat(reloaded.getLayoutJson()).isEqualTo(jsonWithCdata);
     }
 }

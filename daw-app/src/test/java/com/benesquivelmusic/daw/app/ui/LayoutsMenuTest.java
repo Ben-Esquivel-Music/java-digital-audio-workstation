@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Story 282 acceptance criterion ({@code ViewLayoutMenuTest}): assert
+ * Story 282 acceptance criterion ({@code LayoutsMenuTest}): assert
  * the View menu contains a "Layout" submenu with five radio entries
  * (one per built-in), that selecting one calls
  * {@link LayoutManager#load(String)}, and that the radio check reflects
