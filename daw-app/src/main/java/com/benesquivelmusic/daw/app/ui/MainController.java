@@ -1841,7 +1841,12 @@ public final class MainController {
                     }
                     @Override public void applyDockLayoutJson(String json) {
                         if (json != null && !json.isBlank()) {
-                            dockManager.applyJson(json);
+                            try {
+                                dockManager.applyJson(json);
+                            } catch (Exception e) {
+                                LOG.log(Level.WARNING,
+                                        "Failed to apply dock layout JSON; keeping current layout", e);
+                            }
                         }
                     }
                 };
