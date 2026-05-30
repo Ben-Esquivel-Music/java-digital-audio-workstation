@@ -2211,16 +2211,19 @@ public final class MainController {
                 });
 
         // ── Story 288 — drop-zone highlight + re-dock gesture. ───────
-        // Bind the dock drop behaviour to the five BorderPane slot
-        // PROPERTIES (not fixed nodes): CENTER is swapped per view, LEFT is
-        // null while the browser is hidden, and the Performance Stage
-        // save/restore replaces whole slots — binding to the property lets
-        // the drop zone follow the live content. Handlers are additive
-        // (addEventHandler), so the existing clip/sample DnD keeps working.
+        // Bind the dock drop behaviour for TOP/LEFT/RIGHT/CENTER to the
+        // BorderPane slot PROPERTIES (not fixed nodes): CENTER is swapped per
+        // view, LEFT is null while the browser is hidden, and the Performance
+        // Stage save/restore replaces whole slots — binding to the property
+        // lets the drop zone follow the live content. The BOTTOM slot is the
+        // bottom VBox chrome stack (notification bar, analyzer strip, manifest
+        // bar, status bar), so it is bound to the analyzer strip node below
+        // instead of the whole slot, keeping the status/manifest chrome out of
+        // the BOTTOM hit-region. Handlers are additive (addEventHandler), so
+        // the existing clip/sample DnD keeps working.
         com.benesquivelmusic.daw.app.ui.dock.DockDropZones dropZones =
                 new com.benesquivelmusic.daw.app.ui.dock.DockDropZones(rootPane);
         dropZones.bindSlot(rootPane.topProperty(), DockZone.TOP);
-        dropZones.bindSlot(rootPane.bottomProperty(), DockZone.BOTTOM);
         dropZones.bindSlot(rootPane.leftProperty(), DockZone.LEFT);
         dropZones.bindSlot(rootPane.rightProperty(), DockZone.RIGHT);
         dropZones.bindSlot(rootPane.centerProperty(), DockZone.CENTER);
@@ -2241,6 +2244,12 @@ public final class MainController {
 
         // ── Story 287 — bottom analyzer strip (above the manifest bar). ──
         mountVisualizationDockStrip();
+        // ── Story 288 — scope the BOTTOM drop zone to the analyzer strip
+        // (the BOTTOM-dock content node), not the whole bottom slot, so the
+        // status bar and dock manifest bar are not dock drop targets.
+        if (vizBottomStrip != null) {
+            dropZones.bindNode(vizBottomStrip, DockZone.BOTTOM);
+        }
         // ── Bottom manifest bar (above the status bar). ─────────────
         mountDockManifestBar();
         // Story 287 — mount the BOTTOM-zone analyzer panels that are

@@ -98,6 +98,27 @@ public final class DockDropZones {
     }
 
     /**
+     * Binds dock drop behaviour to a fixed content node rather than a
+     * {@code BorderPane} slot property. Used for the BOTTOM zone, whose
+     * {@code BorderPane} slot is the bottom {@code VBox} chrome stack
+     * (notification bar, analyzer strip, manifest bar, status bar). Binding
+     * the whole slot would make the status bar and the dock manifest bar
+     * accept dock drops; scoping to the BOTTOM-dock content node (the
+     * analyzer strip) keeps the chrome out of the hit-region.
+     *
+     * @param node the fixed content node that represents the zone (non-null)
+     * @param zone the dock zone this node represents
+     */
+    public void bindNode(Node node, DockZone zone) {
+        Objects.requireNonNull(node, "node must not be null");
+        Objects.requireNonNull(zone, "zone must not be null");
+        if (zone == DockZone.FLOATING) {
+            throw new IllegalArgumentException("FLOATING is not a drop slot");
+        }
+        new SlotBinding(zone).attachTo(node);
+    }
+
+    /**
      * Adds or removes the {@link #DROP_TARGET_ACTIVE_CLASS} highlight on a
      * zone node. Per UI Design Book §7.3 the active state is a background
      * swap to {@code -accent-soft} via this style class — never a border —
