@@ -147,11 +147,10 @@
                     </StackPane>
                 </VBox>
             </SplitPane>
-
-            <!-- Lower row: Visualization Display Tiles -->
-            <HBox fx:id="vizTileRow" styleClass="viz-tile-row" spacing="8">
-                <!-- Tiles added programmatically by MainController -->
-            </HBox>
+            <!-- Story 287 — the fixed visualization tile row was retired in
+                 favour of first-class dockable analyzer panels (Spectrum /
+                 Peak-RMS / Oscilloscope / Correlation / Loudness / Tuner),
+                 mounted into the bottom dock strip by MainController. -->
         </VBox>
     </center>
 

@@ -35,6 +35,15 @@ final class PluginViewController {
         void switchToMasteringView();
         void updateStatusBar(String text, com.benesquivelmusic.daw.app.ui.icons.DawIcon icon);
         void showNotification(NotificationLevel level, String message);
+
+        /**
+         * Story 287 — shows / focuses the docked Sound Wave Telemetry
+         * panel (the shared {@code TelemetryView}), instead of opening a
+         * standalone window. The host routes this through the
+         * {@code DockManager} so the panel docks, floats, and persists
+         * with every other analyzer.
+         */
+        void showTelemetryPanel();
     }
 
     private final Host host;
@@ -42,8 +51,6 @@ final class PluginViewController {
     private Stage virtualKeyboardStage;
     private SpectrumDisplayWindow builtInSpectrumWindow;
     private TunerDisplayWindow tunerDisplayWindow;
-    private Stage telemetryPluginStage;
-    private TelemetryView telemetryPluginView;
     private Stage busCompressorStage;
     private BusCompressorPluginView busCompressorView;
     private Stage multibandCompressorStage;
@@ -106,12 +113,6 @@ final class PluginViewController {
         }
     }
 
-    void onProjectChanged(com.benesquivelmusic.daw.core.project.DawProject project) {
-        if (telemetryPluginView != null) {
-            telemetryPluginView.setProject(project);
-        }
-    }
-
     void dispose() {
         if (virtualKeyboardStage != null) {
             virtualKeyboardStage.hide();
@@ -121,9 +122,6 @@ final class PluginViewController {
         }
         if (tunerDisplayWindow != null) {
             tunerDisplayWindow.getStage().hide();
-        }
-        if (telemetryPluginStage != null) {
-            telemetryPluginStage.hide();
         }
         if (busCompressorStage != null) {
             busCompressorStage.hide();
@@ -247,33 +245,21 @@ final class PluginViewController {
         tunerDisplayWindow.show();
     }
 
+    /**
+     * Story 287 — the Sound Wave Telemetry view is no longer a standalone
+     * {@code Stage}. It is the shared {@code TelemetryView} owned by
+     * {@code MainController} and registered with the {@code DockManager}
+     * as {@code PANEL_TELEMETRY} / {@code PANEL_ROOM_3D}. Activating the
+     * plugin (done by the caller in {@link #onActivateBuiltInPlugin}
+     * before this method runs) keeps the armed-track source subscription
+     * live; here we simply route to the host to show / focus the docked
+     * panel. The plugin is deactivated on app shutdown via
+     * {@link #dispose()} (its {@code dispose()} unsubscribes the provider),
+     * not on window-hide — the panel can now be hidden and re-shown
+     * without tearing down the plugin.
+     */
     private void openSoundWaveTelemetryWindow(SoundWaveTelemetryPlugin plugin) {
-        if (telemetryPluginStage != null) {
-            telemetryPluginStage.show();
-            telemetryPluginStage.toFront();
-            return;
-        }
-
-        telemetryPluginView = new TelemetryView();
-        telemetryPluginView.setProject(host.project());
-        telemetryPluginView.setOnDirtyChanged(host::setProjectDirty);
-
-        Stage stage = new Stage(StageStyle.UTILITY);
-        stage.setTitle("Sound Wave Telemetry");
-        stage.setScene(new Scene(telemetryPluginView));
-        ThemeManager.getDefault().applyTo(stage.getScene());
-        stage.setMinWidth(800);
-        stage.setMinHeight(600);
-        stage.setOnShown(_ -> telemetryPluginView.startAnimation());
-        stage.setOnHidden(_ -> {
-            telemetryPluginView.stopAnimation();
-            plugin.deactivate();
-            telemetryPluginStage = null;
-            telemetryPluginView = null;
-        });
-        stage.show();
-        stage.toFront();
-        telemetryPluginStage = stage;
+        host.showTelemetryPanel();
     }
 
     private void openBusCompressorWindow(BusCompressorPlugin plugin) {

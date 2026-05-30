@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.dock.DockZone;
+import com.benesquivelmusic.daw.app.ui.dock.Dockable;
 import com.benesquivelmusic.daw.app.ui.telemetry.BoundaryResponsePanel;
 import com.benesquivelmusic.daw.app.ui.telemetry.RoomModesPanel;
 import com.benesquivelmusic.daw.core.telemetry.RoomConfiguration;
@@ -26,9 +28,16 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * panel works at any window size. Uses inline dark-theme styles
  * consistent with {@link SettingsDialog} and
  * {@link InputPortSelectionDialog}.</p>
+ *
+ * <p>Story 287 — this panel is a first-class {@link Dockable}
+ * ({@code PANEL_TELEMETRY}, {@link DockZone#RIGHT}). The instance the
+ * dock manager registers is the single one owned by {@link TelemetryView}
+ * (its setup-state child); see {@link TelemetryView#getSetupPanel()}. No
+ * second instance is constructed for the dock, so the docked panel and
+ * {@code TelemetryView}'s setup⇄display state machine never diverge.</p>
  */
 @HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
-public final class TelemetrySetupPanel extends ScrollPane {
+public final class TelemetrySetupPanel extends ScrollPane implements Dockable {
 
     private static final String BACKGROUND_STYLE =
             "-fx-background-color: #1a1a2e; -fx-background: #1a1a2e;";
@@ -135,11 +144,15 @@ public final class TelemetrySetupPanel extends ScrollPane {
      */
     private boolean autoSizeActive = false;
 
-    // ── Dockable contract deferred ───────────────────────────────────────────
-    // Story 285 — TelemetrySetupPanel is owned by TelemetryView (plugin view)
-    // and is not yet wired as a top-level dock surface, so the Dockable
-    // contract is not published here. A future story can re-add it (and
-    // PANEL_TELEMETRY in DefaultWorkspaces) once there is a consumer.
+    // ── Dockable contract (story 287) ────────────────────────────────────────
+    // Published as the consumer story 285 deferred. The dock host registers
+    // the single instance TelemetryView owns (getSetupPanel()), so there is
+    // no duplicate panel and TelemetryView's setup⇄display swap is unaffected.
+
+    @Override public String dockId()          { return DefaultWorkspaces.PANEL_TELEMETRY; }
+    @Override public String displayName()     { return "Telemetry"; }
+    @Override public String iconName()        { return "SURROUND"; }
+    @Override public DockZone preferredZone() { return DockZone.RIGHT; }
 
     /**
      * Creates a new telemetry setup panel with sensible defaults.

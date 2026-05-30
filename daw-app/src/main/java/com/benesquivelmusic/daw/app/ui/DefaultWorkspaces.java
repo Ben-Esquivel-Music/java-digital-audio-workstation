@@ -45,6 +45,20 @@ public final class DefaultWorkspaces {
     public static final String PANEL_SPATIAL = "spatial";
     /** Loudness / LUFS metering panel. */
     public static final String PANEL_LOUDNESS = "loudness";
+    /** Spectrum analyzer dockable panel (story 287). */
+    public static final String PANEL_SPECTRUM = "spectrum";
+    /** Peak / RMS level-meter dockable panel (story 287). */
+    public static final String PANEL_LEVELS = "levels";
+    /** Oscilloscope (waveform) dockable panel (story 287). */
+    public static final String PANEL_WAVEFORM = "waveform";
+    /** Stereo correlation / phase dockable panel (story 287). */
+    public static final String PANEL_CORRELATION = "correlation";
+    /** Chromatic tuner dockable panel (story 287). */
+    public static final String PANEL_TUNER = "tuner";
+    /** Room-3D sound-wave telemetry display dockable panel (story 287). */
+    public static final String PANEL_ROOM_3D = "room3d";
+    /** Telemetry setup (room configuration) dockable panel (story 287). */
+    public static final String PANEL_TELEMETRY = "telemetry";
 
     private DefaultWorkspaces() { }
 
