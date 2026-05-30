@@ -89,13 +89,15 @@ DAW honours for "show this plugin's editor" today is the hard‑coded
 case BusCompressorPlugin.PLUGIN_ID         -> openBusCompressorWindow(...);
 case MultibandCompressorPlugin.PLUGIN_ID   -> openMultibandCompressorWindow(...);
 case DeEsserPlugin.PLUGIN_ID               -> openDeEsserWindow(...);
-… (13 more)
+… (remaining built-in cases)
 default -> LOG.fine("No associated built-in view mapping for plugin id: " + pluginId);
 ```
 
 A third‑party developer who registers a plugin via `PluginManagerDialog`
-hits the `default` branch and gets **silence**. There is no documented
-extension point that lets their GUI surface in the focused pane.
+gets only the generic parameter editor (when parameters exist) because
+`openBuiltInPluginView()` only accepts `BuiltInDawPlugin`. There is no
+path for a custom UI — `PluginUI.createUI()` is never called — and no
+documented extension point that lets their GUI surface in the focused pane.
 
 ### 1.3 `Object createUI()` is a non‑contract
 
@@ -142,8 +144,8 @@ SDK does not actually accept from outside the tree.
 
 `PluginViewController` opens every built‑in in a floating `Stage` of style
 `UTILITY`. `PluginViewContainer` is built for *embedded* editors in the
-Workshop right pane. `DetachPluginRequestedEvent` is stubbed but unused
-(story 281 explicitly defers detach to story 282). The result: there is
+Workshop right pane. `DetachPluginRequestedEvent` is fired by `WorkshopView` but no consumer
+handles it yet (story 281 explicitly defers detach to story 282). The result: there is
 no shared mental model for *where* a plugin lives. A developer cannot
 say "make my plugin appear embedded" or "always floating" or "user
 chooses" because the surface does not have a vocabulary for it.
@@ -158,7 +160,7 @@ or freezes the editor with no recovery path visible to the user.
 ### 1.8 No theming contract for third‑party GUIs
 
 `styles.css` exposes a documented set of role tokens on `.root-pane`
-(stored memory, verified). A plugin GUI mounted into the Workshop right
+(see `styles.css:78` and the Palette A block at `styles.css:35`). A plugin GUI mounted into the Workshop right
 pane today inherits whatever class chain the `Node` happened to carry — no
 guarantee its sliders, labels, and meters honour the active palette. A
 plugin author has no documented set of style classes they can opt into.
@@ -232,7 +234,7 @@ appear.
 
 Every host‑rendered chrome surface and every host‑rendered control inside
 a plugin view consumes the same role tokens declared on `.root-pane`
-(stored CSS memory, verified). A plugin in **canvas** mode is given the
+(see `styles.css:78` and the Palette A block at `styles.css:35`). A plugin in **canvas** mode is given the
 resolved token values (background, foreground, accent, meter‑safe,
 meter‑warn, meter‑clip) by the host so its custom drawing tracks the
 active palette.
