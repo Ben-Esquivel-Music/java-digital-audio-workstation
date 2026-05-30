@@ -2017,10 +2017,26 @@ public final class MainController {
     //    analyzer panels are treated as a group: "Toggle Visualizations" and
     //    the Mixing/Mastering workspace presets show/hide them together.
 
-    /** Returns {@code true} if any of the six BOTTOM analyzer panels is visible. */
+    /**
+     * Returns {@code true} if the given analyzer panel currently lives in its
+     * own floating window (zone {@code FLOATING}) rather than the bottom strip.
+     * Floated analyzers are independent of the strip group toggle.
+     */
+    private boolean isVizPanelFloating(String panelId) {
+        return dockManager != null && dockManager.layout().entry(panelId)
+                .map(e -> e.zone() == DockZone.FLOATING).orElse(false);
+    }
+
+    /**
+     * Returns {@code true} if any analyzer panel is visible <em>in the bottom
+     * strip</em>. A panel the user has floated into its own window is excluded:
+     * floating detaches it from the strip group, so it neither counts toward
+     * nor is touched by the group toggle (see {@link #setBottomVizGroupVisible}).
+     */
     private boolean isAnyBottomVizVisible() {
         if (dockManager == null) return false;
         for (String id : vizDockables.keySet()) {
+            if (isVizPanelFloating(id)) continue;
             if (dockManager.layout().entry(id).map(DockEntry::visible).orElse(false)) {
                 return true;
             }
@@ -2029,13 +2045,17 @@ public final class MainController {
     }
 
     /**
-     * Sets all six BOTTOM analyzer panels visible / hidden as a group.
-     * The model updates are batched under the reconciliation guard (so no
-     * per-panel reconcile passes fire); the strip is then mounted/unmounted
-     * directly. Mounting directly — rather than relying on a final firing
-     * {@code setVisible} — is robust even when the last panel's visibility
-     * was already at the target (in which case {@code setVisible} is a
-     * no-op and would fire nothing).
+     * Sets the analyzer panels visible / hidden as a group. The model updates
+     * are batched under the reconciliation guard (so no per-panel reconcile
+     * passes fire); the strip is then mounted/unmounted directly. Mounting
+     * directly — rather than relying on a final firing {@code setVisible} — is
+     * robust even when the last panel's visibility was already at the target
+     * (in which case {@code setVisible} is a no-op and would fire nothing).
+     *
+     * <p>Panels the user has floated into their own windows are skipped
+     * entirely: a floated analyzer is independent of the strip group, so the
+     * group toggle must neither flip its visibility flag nor yank its node back
+     * into the strip (which would strand an empty floating window).</p>
      */
     private void setBottomVizGroupVisible(boolean visible) {
         if (dockManager == null || vizDockables.isEmpty()) return;
@@ -2043,12 +2063,14 @@ public final class MainController {
         dockHostReconciliationSuppressed = true;
         try {
             for (String id : vizDockables.keySet()) {
+                if (isVizPanelFloating(id)) continue;
                 dockManager.setVisible(id, visible);
             }
         } finally {
             dockHostReconciliationSuppressed = prior;
         }
         for (String id : vizDockables.keySet()) {
+            if (isVizPanelFloating(id)) continue;
             mountBottomVizPanel(id, visible);
         }
     }
@@ -2161,6 +2183,22 @@ public final class MainController {
     }
 
     /**
+     * Inserts {@code child} into the bottom-region {@code VBox} immediately
+     * above the status bar (its last child), so the bottom region stacks
+     * analyzer-strip → manifest-bar → status-bar from top to bottom. The
+     * bottom region is the {@code <bottom><VBox>} declared by
+     * {@code main-view.fxml}, so it is always present and a {@code VBox}; if
+     * that invariant ever changes the child is skipped rather than mounted in
+     * the wrong place.
+     */
+    private void insertAboveStatusBar(Node child) {
+        if (rootPane.getBottom() instanceof VBox bottomBox) {
+            int idx = Math.max(0, bottomBox.getChildren().size() - 1);
+            bottomBox.getChildren().add(idx, child);
+        }
+    }
+
+    /**
      * Story 287 — creates the bottom analyzer strip and inserts it into the
      * bottom {@code VBox} directly above the dock manifest bar (top-to-bottom
      * in the bottom region: analyzer strip, manifest bar, status bar). The
@@ -2174,18 +2212,10 @@ public final class MainController {
         vizBottomStrip.setPrefHeight(120);
         vizBottomStrip.setMinHeight(0);
         syncVizStripVisibility();
-        Node bottom = rootPane.getBottom();
-        if (bottom instanceof VBox bottomBox) {
-            // Insert above the manifest bar + status bar (the last children).
-            // At this point the manifest bar is not yet mounted, so place it
-            // before the status bar; mountDockManifestBar() then inserts the
-            // manifest bar after this strip but before the status bar.
-            int idx = Math.max(0, bottomBox.getChildren().size() - 1);
-            bottomBox.getChildren().add(idx, vizBottomStrip);
-        } else if (bottom == null) {
-            VBox wrap = new VBox(vizBottomStrip);
-            rootPane.setBottom(wrap);
-        }
+        // The manifest bar is not yet mounted, so the strip lands directly
+        // above the status bar; mountDockManifestBar() then inserts the
+        // manifest bar between this strip and the status bar.
+        insertAboveStatusBar(vizBottomStrip);
     }
 
     /**
@@ -2254,16 +2284,7 @@ public final class MainController {
                 (javafx.collections.ListChangeListener<
                         com.benesquivelmusic.daw.app.ui.layout.DockManifestModel.Entry>) _ ->
                         rebuildManifestBar(bar));
-        Node bottom = rootPane.getBottom();
-        if (bottom instanceof VBox bottomBox) {
-            // Insert above the status bar (which is the last child).
-            int idx = Math.max(0, bottomBox.getChildren().size() - 1);
-            bottomBox.getChildren().add(idx, bar);
-        } else if (bottom == null) {
-            VBox wrap = new VBox();
-            wrap.getChildren().add(bar);
-            rootPane.setBottom(wrap);
-        }
+        insertAboveStatusBar(bar);
     }
 
     private void rebuildManifestBar(javafx.scene.layout.HBox bar) {
@@ -2492,6 +2513,10 @@ public final class MainController {
                 else if (bp.getBottom() == content) bp.setBottom(null);
             } else if (parent instanceof Pane pane) {
                 pane.getChildren().remove(content);
+                // Story 287 — floating a BOTTOM analyzer detaches it from the
+                // analyzer strip; collapse the strip when it becomes empty so
+                // the 120px band doesn't linger with no children.
+                if (pane == vizBottomStrip) syncVizStripVisibility();
             } else if (parent == null && content instanceof javafx.scene.Parent p
                     && p.getScene() != null) {
                 // The node is a Scene root (getParent() == null but still held
@@ -2651,6 +2676,23 @@ public final class MainController {
                 stage.yProperty().addListener(boundsListener);
                 stage.widthProperty().addListener(boundsListener);
                 stage.heightProperty().addListener(boundsListener);
+                // Story 287 — gate the shared TelemetryView's GpuCanvas
+                // animation to this window's visibility. GpuCanvas only
+                // auto-stops its AnimationTimer when getScene() == null, but a
+                // hidden Stage keeps its node's Scene attached — so without this
+                // the RoomTelemetryDisplay render loop would keep spinning
+                // (CPU/GPU) while the telemetry window is hidden. startAnimation()
+                // is a no-op unless the view is in display state, so this is safe
+                // in setup state too. (The six BOTTOM analyzers never reach this
+                // hidden-but-retained state — they are docked or visibly
+                // floating — so the gating is scoped to the telemetry ids.)
+                if (isTelemetryPanel(panelId) && telemetryView != null) {
+                    final TelemetryView tvRef = telemetryView;
+                    stage.showingProperty().addListener((obs, wasShowing, showing) -> {
+                        if (showing) tvRef.startAnimation();
+                        else tvRef.stopAnimation();
+                    });
+                }
                 floatingStages.put(panelId, stage);
             }
             stage.setX(b.x());

@@ -55,7 +55,7 @@ class VisualizationLayoutPersistedTest {
         // Register the panels the built-in layouts reference so applyJson
         // does not drop them, plus loudness (the panel under test).
         dm.register(new TestPanel(DefaultWorkspaces.PANEL_ARRANGEMENT, "Arrangement", DockZone.CENTER));
-        dm.register(new TestPanel(DefaultWorkspaces.PANEL_MIXER, "Mixer", DockZone.BOTTOM));
+        dm.register(new TestPanel(DefaultWorkspaces.PANEL_MIXER, "Mixer", DockZone.CENTER));
         dm.register(new TestPanel(DefaultWorkspaces.PANEL_BROWSER, "Browser", DockZone.LEFT));
         dm.register(new TestPanel(DefaultWorkspaces.PANEL_LOUDNESS, "Loudness", DockZone.BOTTOM));
 
