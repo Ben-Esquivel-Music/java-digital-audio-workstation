@@ -65,9 +65,10 @@ lines** and is the central nervous system. It owns dozens of imperative refresh 
 `updateTempoDisplay()`, `updateProjectInfo()`, `refreshLockStatusIndicator()`,
 `updateCheckpointStatus()`, `updateArrangementPlaceholder()`, `refreshArrangementCanvas()`,
 `updateUndoRedoState()`, `updatePlayheadFromTransport()`, `syncLoopRegionToCanvas()`,
-`syncSelectionToCanvas()` (`MainController.java:2957‑3104`) — and **22 distinct `Host`
-callback interfaces** are implemented as anonymous inner classes inside it so the
-sub‑controllers can call back "up" to trigger those refreshes.
+`syncSelectionToCanvas()` (`MainController.java:2957‑3104`) — and **25 distinct `Host`
+callback interfaces** are declared in the sub‑controller files (not inside
+`MainController` itself) so the sub‑controllers can call back "up" to trigger those
+refreshes.
 
 The result is that synchronization is *manual and ambient*: there is no declarative
 statement of "when X changes, Y and Z must update". Instead, every call site that mutates
@@ -131,7 +132,7 @@ State arrives on the FX thread from at least three other threads: the MIDI recei
 (`TransportController.Host.flashMidiActivity(...)` is documented as called via
 `Platform.runLater`), the audio/metering thread, and background virtual threads doing I/O
 (archiving/restoring per the stored memory on `ProjectLifecycleController` and
-`TrackFreezeController`). There are **23 separate files** in the UI package that call
+`TrackFreezeController`). There are **27 separate files** in the UI package that call
 `Platform.runLater` directly. Each is an independent, un‑coordinated hop onto the FX thread.
 Nothing guarantees ordering between them, nothing coalesces a burst of meter updates into
 one repaint, and nothing documents which signals are allowed to originate off‑thread.
@@ -350,9 +351,12 @@ unsubscribe token; `DockManager.java:123‑128`).
 - **Publish/subscribe**, not callback‑up. A controller subscribes to the facts it cares
   about at construction and disposes the token in `dispose()`
   (`javafx-application-design §3, §4`: register in constructor, unregister in `dispose()`).
-- **Replaces all 22 `Host` interfaces.** `host.updateUndoRedoState()` becomes "publish
+- **Replaces all 25 `Host` interfaces.** `host.updateUndoRedoState()` becomes "publish
   `UndoStateChanged`; whoever cares is already subscribed." The Edit menu, the history
   panel, and the toolbar each subscribe once instead of being poked from nine call sites.
+  This completes the migration onto the existing `EventBus`/`DawEvent` hierarchy
+  (`daw-sdk/.../event/EventBus.java`, `DawEvent.java`) and `DefaultEventBus`
+  (`daw-core/.../event/DefaultEventBus.java`) rather than introducing a new bus.
 
 ### 4.3 The view‑model layer (replaces manual refresh methods)
 
@@ -401,7 +405,7 @@ the FX thread (`§2.6`; `javafx-application-design §11`).
   threads — `ProjectLifecycleController`, `TrackFreezeController` per stored memory) are
   posted as `DawEvent`s through the dispatcher, which publishes them on the bus on the FX
   thread, preserving order.
-- No other class calls `Platform.runLater` (replacing the 23 ad‑hoc call sites of §1.5).
+- No other class calls `Platform.runLater` (replacing the 27 ad‑hoc call sites of §1.5).
 
 ### 4.6 Where the engine seam lives
 
@@ -626,9 +630,11 @@ every shared fact is a named VM property or event, owned once, observed everywhe
 Ship incrementally; the tree is never frozen and every stage is independently shippable
 (`javafx-application-design §2`).
 
-### Stage 1 — Introduce the bus and dispatcher (no behaviour change)
-Add `DawEventBus` and `FxDispatcher`. Route the *existing* `Host` callbacks through the bus
-internally so behaviour is identical, but the seam now exists. Move the 23 ad‑hoc
+### Stage 1 — Wire through the existing bus and dispatcher (no behaviour change)
+Add `FxDispatcher`. Route the *existing* `Host` callbacks through the existing
+`EventBus`/`DawEvent`/`DefaultEventBus` infrastructure (`daw-sdk/.../event/EventBus.java`,
+`daw-core/.../event/DefaultEventBus.java`) and `EventBusPublisher` internally so behaviour
+is identical, but the seam now exists. Move the 27 ad‑hoc
 `Platform.runLater` sites behind the dispatcher.
 
 ### Stage 2 — View‑model for one vertical slice (transport)
@@ -685,8 +691,8 @@ For implementers. Where each construct in this book attaches to today's code.
 
 | This book | Today's code | What changes |
 |---|---|---|
-| `DawEventBus` (§4.2) | 22 anonymous `Host` interfaces in `MainController` | Typed publish/subscribe; generalises `DockManager.addListener` token pattern (`DockManager.java:123‑128`) |
-| `FxDispatcher` (§4.5) | 23 ad‑hoc `Platform.runLater` sites; `TransportController.Host.flashMidiActivity` | One marshalling seam + per‑frame coalescing `AnimationTimer` |
+| Existing `EventBus`/`DawEvent` (§4.2) | 25 `Host` interfaces in sub‑controller files; existing `EventBus.java`, `DawEvent.java` (`daw-sdk`), `DefaultEventBus.java`, `EventBusPublisher.java` (`daw-core`) | Complete migration onto typed publish/subscribe; generalises `DockManager.addListener` token pattern (`DockManager.java:123‑128`) |
+| `FxDispatcher` (§4.5) | 27 ad‑hoc `Platform.runLater` sites; `TransportController.Host.flashMidiActivity` | One marshalling seam + per‑frame coalescing `AnimationTimer` |
 | `TransportVM` (§5.2) | `updateTempoDisplay()`, `updatePlayheadFromTransport()`, `syncLoopRegionToCanvas()` (`MainController.java:2957, 3083, 3090`) | Properties bound by transport bar; methods deleted |
 | `TrackVM`/`ChannelVM` (§5.3‑5.4) | nine cascade copies in `TrackStripController.java:504‑1060`; `Track.java:32,159‑169` | Track intents + §5.3 contract; single mute/solo flag both surfaces bind |
 | `ProjectVM.dirty` (§5.6) | `host.markProjectDirty()`; `DawProject.java:52,422‑436` | One dirty bit set in phase 3, bound by title + HUD |
