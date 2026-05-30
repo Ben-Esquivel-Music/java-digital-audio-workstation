@@ -293,6 +293,8 @@ Operationalises the canonical UI vision in [`docs/design/UI_DESIGN_BOOK.md`](../
 | 280 | [Performance Stage View: Oversized Skinned Controls for Live Use](280-performance-stage-view.md) | 🟢 Low | Performance Stage |
 | 281 | [Workshop View: 60/40 Arrangement + Focused Plugin GUI Side-by-Side](281-workshop-view-arrangement-plus-plugin-focus.md) | 🟢 Low | Workshop View |
 | 282 | [Mission Control: Dock-and-Float Layout with Per-Project Persistence](282-mission-control-dock-and-float-layout.md) | 🟢 Low | Docking |
+| 287 | [Make Visualization Analyzers + Telemetry Setup Panel First-Class Dockable Panels](287-make-visualization-analyzers-first-class-dockable-panels.md) | 🟢 Low | Docking |
+| 288 | [Panel Grip-Handle Drag-to-Detach and Dock Drop-Zone Highlight](288-panel-grip-handle-drag-to-detach-and-dock-drop-zone-highlight.md) | 🟢 Low | Docking |
 
 ## Code Quality & Refactoring
 

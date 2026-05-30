@@ -102,3 +102,49 @@ These are *not* gaps — listed only so a future audit can skip them.
 | Story 232 / 233 plugin wrappers / templates | "Are they reachable?" | `PluginViewController`, `TrackTemplateController` both wired into `MainController`. |
 | Story 256 asioshim CI | "Is the workflow present?" | `.github/workflows/windows-asioshim.yml` is committed and runs on path-filtered PRs. |
 | Story 284 GpuCanvasView | "Are all 10 displays migrated?" | All 10 `extends GpuCanvasView`. Story 284 itself is uncommitted but landed in source. |
+
+---
+
+# Follow-up Audit — 2026-05-30
+
+Second pass after stories **285** (DockManager wire-up, PR #877) and **286**
+(LayoutManager wire-up, PR #878) both landed and the tree went clean. With the
+docking foundation now live, the focus was: did 285/286 fully close out their
+parent feature story **282 (Mission Control)**, and are there model-only
+features elsewhere with no production surface?
+
+## Filed as new stories
+
+| # | Gap | Decisive evidence |
+| --- | --- | --- |
+| 287 | 282 Goal "visualisation tiles as first-class panels" (spectrum / correlation / loudness / tuner / room-3D) undelivered — they remain a fixed `@FXML` `HBox` row + standalone `*DisplayWindow`s. | Only 5 panels registered (`MainController.java:1795-1805`); no `ui/display/*` type `implements Dockable`; appears in no Goal/Non-Goal of 285 or 286. |
+| 288 | 282 Goal "grip handle → drag to detach" + "dock targets light up with `-accent-soft` overlay" undelivered. 286 wired the *receiving* event bridge but nothing *fires* the events and there is no grip/drop-zone gesture. | `new PanelDetach/DockRequestedEvent(...)` exists only in 4 test lines; no `setOnDragDetected`/drop-zone in `ui/dock/`; bridge passes `null` bounds (`MainController.java:1879`). 285 line 63 explicitly assigns "grip handles / drop-zone highlight" to story 282 — i.e. in-scope, undone, on no deferral list. |
+
+288 deliberately handles **panel** detach (`PanelDetachRequestedEvent`), **not**
+the deferred **plugin** `DetachPluginRequestedEvent` stub (held-off item above).
+
+## Re-confirmed done — NOT gaps (skip next time)
+
+- **Rest of 282** is delivered: `LayoutManager` + View → Layout menu + dock
+  manifest bar + per-project persistence via 286 (`MainController.installLayoutManager()` ~`:1835`,
+  manifest `:1900-1932`, persistence `ProjectLifecycleController.java:150,639`);
+  arrangement-as-dock-host via 285 (`ArrangementDockable`, `DockZone.CENTER`).
+  The CENTER-single-selection (vs free/tabbed) residue is the *tabbed dock
+  targets* item **both 282 (line 66) and 285 (line 62) explicitly defer** — not a gap.
+- **DSP plugins 155-169** (BusCompressor, MatchEq, Mid/Side, Multiband,
+  De-esser, True-Peak Limiter, Transient Shaper, Noise Gate, Convolution Reverb,
+  Exciter, Dither): all discoverable as `ServiceLoader` providers in
+  `daw-core/.../module-info.java`. NB: discovery migrated sealed-`permits` →
+  `ServiceLoader`, so `dawg-annotations-reflection` SKILL §1/§2 is stale on that
+  point (informational — not in scope to fix here).
+- **192** Command Palette wired; **168** ISRC/CD-Text (`AlbumAssemblyView`);
+  **249** comping (`CompToolHandler`); **241** Atmos A/B instantiated; **234**
+  Track Freeze menu items; **250-254/284** GpuCanvas migration (all displays
+  `extends GpuCanvasView`).
+- **TelemetrySetupPanel** does NOT implement `Dockable` and is NOT registered
+  (the `Dockable` contract was deferred entirely — see the "Dockable contract
+  deferred" comment at `TelemetrySetupPanel.java:138-142`, which hands the work
+  to "a future story … once there is a consumer"). **User escalated 2026-05-30 →
+  folded into story 287** as `PANEL_TELEMETRY` / `DockZone.RIGHT`, with the
+  ownership caveat that it is the setup-state child of `TelemetryView` (register
+  a single shared instance). No longer "left for the user".
