@@ -19,6 +19,17 @@ The ASCII mockups are deliberately wide (≈120 columns) so they read like wiref
 
 ## 1. Critique of the UI shipping today
 
+> **Status note (kept for the record).** This critique — and the `styles.css:NNN`
+> line references throughout it — describes the codebase *as it was when this book was
+> written*, before the UI overhaul it specifies. Much of §1's diagnosis has since been
+> addressed: `styles.css` has been refactored to **semantic tokens** (Palette A "Onyx
+> Refined" token values live in a fenced `.root-pane` block, `-accent: #7C8CFF`; the
+> three legacy button classes are now aliases), and `ThemeManager` / `DensityManager` /
+> `MotionManager` have shipped (see §6 and the UI‑overhaul backlog). The line numbers
+> below therefore point at a *pre‑refactor* `styles.css` and will not resolve against the
+> current file. They are preserved so the original baseline stays legible; treat §6 as
+> the source of truth for what remains.
+
 A frank inventory of the problems the user called out, cross‑referenced with the actual codebase. This is the baseline every concept must improve on.
 
 ### 1.1 Palette overload
@@ -1059,6 +1070,15 @@ danger   ┃ !  Plugin "Reaktor" failed to load.                            Show
 ## 6. Migration roadmap
 
 A redesign at this scale cannot ship in one PR. This is the order in which I'd take it on, with each phase being a *complete*, *shippable* improvement.
+
+> **Progress note.** Phases 1–3 are now substantially **delivered**, not pending:
+> the literal hex was replaced with looked‑up token variables scoped to `.root-pane`
+> (Phase 1); track/channel/meter/knob controls and the theming infrastructure were
+> built out, and `ThemeManager` / `DensityManager` / `MotionManager` ship a Theme,
+> a Density, and a Reduce‑Motion setting respectively (Phases 2–3). Phase 4 (docking
+> and Performance Stage) has also largely landed. The phases below are retained as the
+> original sequencing rationale; consult the UI‑overhaul backlog for current per‑story
+> status rather than treating these as open work.
 
 ### Phase 1 — Tokens and grid (1–2 PRs)
 

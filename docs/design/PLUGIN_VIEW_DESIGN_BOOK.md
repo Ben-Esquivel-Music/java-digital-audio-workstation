@@ -160,7 +160,7 @@ or freezes the editor with no recovery path visible to the user.
 ### 1.8 No theming contract for third‑party GUIs
 
 `styles.css` exposes a documented set of role tokens on `.root-pane`
-(see `styles.css:78` and the Palette A block at `styles.css:35`). A plugin GUI mounted into the Workshop right
+(see the `.root-pane` token block at `styles.css:78` and the Palette A token values at `styles.css:77`). A plugin GUI mounted into the Workshop right
 pane today inherits whatever class chain the `Node` happened to carry — no
 guarantee its sliders, labels, and meters honour the active palette. A
 plugin author has no documented set of style classes they can opt into.
@@ -234,7 +234,7 @@ appear.
 
 Every host‑rendered chrome surface and every host‑rendered control inside
 a plugin view consumes the same role tokens declared on `.root-pane`
-(see `styles.css:78` and the Palette A block at `styles.css:35`). A plugin in **canvas** mode is given the
+(see the `.root-pane` token block at `styles.css:78` and the Palette A token values at `styles.css:77`). A plugin in **canvas** mode is given the
 resolved token values (background, foreground, accent, meter‑safe,
 meter‑warn, meter‑clip) by the host so its custom drawing tracks the
 active palette.
@@ -907,10 +907,25 @@ One built‑in at a time, in order of triviality:
 6. `VirtualKeyboardPlugin`, `TunerPlugin` → `PluginEditorFactory.Panel`
    with `EditorHints.chrome() == MINIMAL` (compact strip in §5.C is a
    future enhancement, not required for the migration).
+7. `ArpeggiatorPlugin` → `PluginEditorFactory.Panel`. (It already ships
+   an `ArpeggiatorPluginView.java` but, unlike the others, has **no** arm
+   in `PluginViewController`'s `switch` today — fold it in here so it gains
+   a contract‑driven editor and the orphaned view class is retired.)
 
-After each step the legacy `switch` arm and the corresponding
-hand‑rolled `*PluginView.java` class are deleted. The `switch` shrinks
-monotonically; when the last arm is removed, the dispatcher is deleted.
+After each step the legacy `switch` arm and its hand‑rolled view class are
+deleted. Note the view class is **not** uniformly a `*PluginView.java`:
+items 1–4, plus `BinauralMonitorPlugin`/`MatchEqPlugin`/`ArpeggiatorPlugin`,
+are backed by the thirteen `*PluginView.java` classes (§1.1), but
+`SpectrumAnalyzerPlugin`, `SoundWaveTelemetryPlugin`, `VirtualKeyboardPlugin`,
+and `TunerPlugin` are backed by **bespoke view classes** opened through
+`openSpectrumAnalyzerWindow(...)` / `openSoundWaveTelemetryWindow(...)` /
+`openVirtualKeyboardWindow(...)` (e.g. `KeyboardProcessorView`) /
+`openTunerWindow(...)` — those `open…Window` helpers are deleted alongside
+the arm. Three further arms (`ParametricEqPlugin`, `CompressorPlugin`,
+`ReverbPlugin`) don't open an editor at all — they route to
+`host.switchToMasteringView()` — and are simply dropped from the `switch`.
+The `switch` shrinks monotonically; when the last arm is removed, the
+dispatcher is deleted.
 
 ### 8.4 Phase 4 — install UX rewrite
 

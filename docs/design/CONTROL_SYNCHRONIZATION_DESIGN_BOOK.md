@@ -81,18 +81,23 @@ muscle memory of whoever wrote each handler, not in the type system.
 over and over:
 
 ```
-host.updateArrangementPlaceholder();
 host.updateUndoRedoState();
 host.markProjectDirty();
 ```
 
-This triple appears at `TrackStripController.java:504‑527`, again at `732‑749`, again at
-`780‑785`, `839‑845`, `882‑887`, `916‑921`, `960‑965`, `1011‑1016`, `1055‑1060` — nine
-near‑identical copies in one file. Each copy is an opportunity to **forget one line**.
+This pair appears at the tail of nine handlers within `TrackStripController.java:526‑1060`
+(`526‑527`, `744‑749`, `780‑785`, `839‑845`, `882‑887`, `916‑921`, `960‑965`,
+`1011‑1016`, `1055‑1060`) — and twice more at `1565‑1566` and `1665‑1666`, eleven
+near‑identical copies in one file. Several handlers also poke
+`host.updateArrangementPlaceholder()` (and `mixerView.refresh()`) — but inside the
+`undo()`/`redo()` lambda bodies of their `UndoableAction` (e.g. `504`, `522`, `732`, `740`),
+not in the trailing cascade — so the *exact* set of trailing effects already varies from
+handler to handler. Each copy is an opportunity to **forget one line**.
 Forget `markProjectDirty()` and the autosave HUD lies about the project being saved
 (contradicting `PROJECT_MANAGER_DESIGN_BOOK.md §2.2 "State is always visible"`). Forget
-`updateUndoRedoState()` and the Edit menu shows a stale "Undo" label. Forget
-`updateArrangementPlaceholder()` and the canvas shows a track that no longer exists.
+`updateUndoRedoState()` and the Edit menu shows a stale "Undo" label. Forget an
+`updateArrangementPlaceholder()` in an undo path and the canvas shows a track that no
+longer exists.
 
 There is no single place that says "mutating a track is always followed by exactly these
 effects". That is the definition of flaky.
@@ -339,24 +344,38 @@ No surface calls another surface directly. The bus and the view‑model are the 
 seams, which is what dissolves the 3,114‑line god controller (§1.1) into thin, independent
 controllers.
 
-### 4.2 The event bus (replaces the 22 `Host` callbacks)
+### 4.2 The event bus (replaces the 25 `Host` callbacks)
 
-A single, typed, synchronous‑on‑FX‑thread **`DawEventBus`** carries discrete facts. It
-generalises the pattern `DockManager` already uses (subscribe returns a `Runnable`
-unsubscribe token; `DockManager.java:123‑128`).
+The discrete facts ride the **existing typed `EventBus`** — *not* a new bus. That bus is
+already in the tree: the `EventBus` interface (`daw-sdk/.../event/EventBus.java`) over the
+**sealed `DawEvent` hierarchy** (`daw-sdk/.../event/DawEvent.java`, which already
+`permits TransportEvent, MixerEvent, TrackEvent, ClipEvent, ProjectEvent, AutomationEvent,
+PluginEvent, XrunEvent`), the `DefaultEventBus` implementation
+(`daw-core/.../event/DefaultEventBus.java`), and the `EventBusPublisher` publish seam
+(`daw-core/.../event/EventBusPublisher.java`, live since story 283). It generalises the
+pattern `DockManager` already uses (subscribe returns a `Runnable` unsubscribe token;
+`DockManager.java:123‑128`).
 
-- **Typed events**, one `EventType` per fact (`TrackAdded`, `TrackRemoved`,
-  `SelectionChanged`, `TransportStateChanged`, `ProjectLoaded`, `ProjectDirtyChanged`,
-  `UndoStateChanged`, `ThemeChanged`, …), per `javafx-application-design §12`.
+- **Typed events on the sealed hierarchy.** The UI facts this book needs
+  (`TrackAdded`/`TrackRemoved` → `TrackEvent`, `SelectionChanged`,
+  `TransportStateChanged` → `TransportEvent`, `ProjectLoaded`/`ProjectDirtyChanged` →
+  `ProjectEvent`, `UndoStateChanged`, `ThemeChanged`, …) are added as records under the
+  matching existing family, never as a parallel event type, per `javafx-application-design
+  §12`. (`SelectionChanged`, `UndoStateChanged`, and `ThemeChanged` are UI‑only and need a
+  new sealed family or a small UI‑event addition — see §7/Appendix A.)
+- **Threading is the subscriber's choice, not the bus's.** A `DawEvent` is a *notification*
+  (consumers re‑read the post‑change state from the project snapshot, never a state‑bearing
+  delta), and `EventBusPublisher` producers never thread‑marshal — each `EventBus#on(...)`
+  subscription declares its own `DispatchMode`. UI subscribers therefore subscribe with an
+  FX‑thread dispatch mode; the bus itself is not "synchronous‑on‑FX‑thread". The single
+  FX‑thread marshalling seam in §4.5 (`FxDispatcher`) is what feeds off‑thread *origins*
+  into that path.
 - **Publish/subscribe**, not callback‑up. A controller subscribes to the facts it cares
   about at construction and disposes the token in `dispose()`
   (`javafx-application-design §3, §4`: register in constructor, unregister in `dispose()`).
 - **Replaces all 25 `Host` interfaces.** `host.updateUndoRedoState()` becomes "publish
   `UndoStateChanged`; whoever cares is already subscribed." The Edit menu, the history
   panel, and the toolbar each subscribe once instead of being poked from nine call sites.
-  This completes the migration onto the existing `EventBus`/`DawEvent` hierarchy
-  (`daw-sdk/.../event/EventBus.java`, `DawEvent.java`) and `DefaultEventBus`
-  (`daw-core/.../event/DefaultEventBus.java`) rather than introducing a new bus.
 
 ### 4.3 The view‑model layer (replaces manual refresh methods)
 
@@ -654,7 +673,7 @@ owns the single dirty bit and the full‑load cascade (§5.7).
 ### Stage 5 — Retire the god controller
 With every refresh method replaced by a binding/subscription, `MainController` shrinks to
 *composition root* only (construct VMs, wire the bus, own the Stage). Delete the dozen
-`update*/refresh*/sync*` methods and the 22 `Host` interfaces. Remove the re‑entrancy guard
+`update*/refresh*/sync*` methods and the 25 `Host` interfaces. Remove the re‑entrancy guard
 flags (§1.4) made unnecessary by single‑writer binding.
 
 ### Stage 6 — Plugin / settings / project surfaces onto the bus
@@ -694,7 +713,7 @@ For implementers. Where each construct in this book attaches to today's code.
 | Existing `EventBus`/`DawEvent` (§4.2) | 25 `Host` interfaces in sub‑controller files; existing `EventBus.java`, `DawEvent.java` (`daw-sdk`), `DefaultEventBus.java`, `EventBusPublisher.java` (`daw-core`) | Complete migration onto typed publish/subscribe; generalises `DockManager.addListener` token pattern (`DockManager.java:123‑128`) |
 | `FxDispatcher` (§4.5) | 27 ad‑hoc `Platform.runLater` sites; `TransportController.Host.flashMidiActivity` | One marshalling seam + per‑frame coalescing `AnimationTimer` |
 | `TransportVM` (§5.2) | `updateTempoDisplay()`, `updatePlayheadFromTransport()`, `syncLoopRegionToCanvas()` (`MainController.java:2957, 3083, 3090`) | Properties bound by transport bar; methods deleted |
-| `TrackVM`/`ChannelVM` (§5.3‑5.4) | nine cascade copies in `TrackStripController.java:504‑1060`; `Track.java:32,159‑169` | Track intents + §5.3 contract; single mute/solo flag both surfaces bind |
+| `TrackVM`/`ChannelVM` (§5.3‑5.4) | repeated trailing cascade in `TrackStripController` (eleven copies; nine within `526‑1060`, §1.2); `Track.java:32,159‑169` | Track intents + §5.3 contract; single mute/solo flag both surfaces bind |
 | `ProjectVM.dirty` (§5.6) | `host.markProjectDirty()`; `DawProject.java:52,422‑436` | One dirty bit set in phase 3, bound by title + HUD |
 | `HistoryVM` (§5.6) | `updateUndoRedoState()` (`MainController.java:3063`) | `canUndo/canRedo/labels` bound by menu + toolbar |
 | `SelectionVM` (§5.5) | `syncSelectionToCanvas()` (`MainController.java:3104`), `SelectionModel` | Properties + `SelectionChanged` event |
