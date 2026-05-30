@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.app.ui.display.InputMeterStrip;
 import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.dock.Dockable;
 import com.benesquivelmusic.daw.app.ui.dock.DockZone;
+import com.benesquivelmusic.daw.app.ui.dock.PanelGripHandle;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
@@ -388,7 +389,11 @@ public final class MixerView extends VBox implements Dockable {
 
         Region toolbarSpacer = new Region();
         HBox.setHgrow(toolbarSpacer, Priority.ALWAYS);
+        // Story 288 — dock grip leads the header. Its own drag gesture
+        // consumes, so it never collides with the per-channel-strip
+        // (TransferMode.LINK) drag wired in buildChannelStrip(...).
         HBox headerRow = new HBox(8,
+                new PanelGripHandle(dockId(), this),
                 header, toolbarSpacer,
                 slotAButton, slotBButton,
                 snapshotsToggleButton, mixerMenu);

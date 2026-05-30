@@ -1168,6 +1168,28 @@
     -fx-spacing: 8;
 }
 
+/* ── Dock grip handle + drop-zone highlight (story 288) ── */
+/* The grip (⋮⋮ grip-vertical glyph) is the drag affordance on every
+ * dockable panel's chrome. Muted by default, brightening on hover, with a
+ * hand cursor — mirrors the track-strip-drag-handle convention. */
+.dock-grip {
+    -fx-cursor: hand;
+    -fx-padding: 0 4 0 0;
+    -fx-alignment: center;
+}
+.dock-grip .dawg-icon {
+    -fx-icon-color: -text-mute;
+}
+.dock-grip:hover .dawg-icon {
+    -fx-icon-color: -text-hi;
+}
+/* §7.3: an active drop target is a BACKGROUND SWAP to -accent-soft, never
+ * a border. Instantaneous (no fade) per the Reduce-Motion default
+ * (story 279). */
+.dock-drop-target-active {
+    -fx-background-color: -accent-soft;
+}
+
 .viz-tile {
     -fx-background-color: -surface-1;
     -fx-background-radius: 6;

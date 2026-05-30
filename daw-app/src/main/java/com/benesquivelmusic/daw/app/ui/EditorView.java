@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.display.WaveformDisplay;
 import com.benesquivelmusic.daw.app.ui.dock.Dockable;
 import com.benesquivelmusic.daw.app.ui.dock.DockZone;
+import com.benesquivelmusic.daw.app.ui.dock.PanelGripHandle;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
@@ -110,7 +111,13 @@ public final class EditorView extends VBox implements Dockable {
         contentArea.getStyleClass().add("content-area");
         VBox.setVgrow(contentArea, Priority.ALWAYS);
 
-        getChildren().addAll(header, toolBar, contentArea);
+        // Story 288 — wrap the bare header label in a row led by the dock
+        // grip so the editor can be detached / re-docked by direct
+        // manipulation like the other dockable panels.
+        HBox headerRow = new HBox(8, new PanelGripHandle(dockId(), this), header);
+        headerRow.setAlignment(Pos.CENTER_LEFT);
+
+        getChildren().addAll(headerRow, toolBar, contentArea);
         setPadding(new Insets(8));
 
         // Enable keyboard events for Delete key

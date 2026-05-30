@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.display.LoudnessDisplay;
 import com.benesquivelmusic.daw.app.ui.dock.Dockable;
 import com.benesquivelmusic.daw.app.ui.dock.DockZone;
+import com.benesquivelmusic.daw.app.ui.dock.PanelGripHandle;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.core.mastering.MasteringChain;
@@ -152,7 +153,10 @@ public final class MasteringView extends VBox implements Dockable {
             statusLabel.setText(bypassed ? "Chain bypassed (B) — dry signal" : "Chain active (A) — processed signal");
         });
 
-        HBox headerBar = new HBox(8, headerLabel, headerSpacer, presetSelector, abToggle);
+        // Story 288 — dock grip leads the header bar.
+        HBox headerBar = new HBox(8,
+                new PanelGripHandle(dockId(), this),
+                headerLabel, headerSpacer, presetSelector, abToggle);
         headerBar.setAlignment(Pos.CENTER_LEFT);
         headerBar.setPadding(new Insets(4, 10, 4, 0));
 

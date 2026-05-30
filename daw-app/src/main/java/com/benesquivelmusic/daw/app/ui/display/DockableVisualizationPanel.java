@@ -2,11 +2,14 @@ package com.benesquivelmusic.daw.app.ui.display;
 
 import com.benesquivelmusic.daw.app.ui.dock.DockZone;
 import com.benesquivelmusic.daw.app.ui.dock.Dockable;
+import com.benesquivelmusic.daw.app.ui.dock.PanelGripHandle;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 
 import javafx.geometry.Insets;
+import javafx.geometry.Pos;
 import javafx.scene.control.Label;
+import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
@@ -80,10 +83,16 @@ public final class DockableVisualizationPanel extends VBox implements Dockable {
             header.setGraphic(IconNode.of(icon, 12));
         }
 
+        // Story 288 — dock grip leads the tile header so every analyzer
+        // tile can be detached / re-docked by direct manipulation. dockId
+        // is already assigned above, so reading it here is safe.
+        HBox headerRow = new HBox(6, new PanelGripHandle(dockId(), this), header);
+        headerRow.setAlignment(Pos.CENTER_LEFT);
+
         content.setMinHeight(0);
         VBox.setVgrow(content, Priority.ALWAYS);
 
-        getChildren().addAll(header, content);
+        getChildren().addAll(headerRow, content);
     }
 
     /** Returns the wrapped analyzer display node. */
