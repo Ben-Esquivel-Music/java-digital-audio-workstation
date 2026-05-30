@@ -131,7 +131,6 @@ public final class MainController {
     @FXML private HBox undoRedoGroup;
     @FXML private HBox utilityGroup;
     @FXML private VBox trackListPanel;
-    @FXML private HBox vizTileRow;
     /** Story 272 — unified Inspector drawer on the right edge of the centre BorderPane. */
     @FXML private com.benesquivelmusic.daw.app.ui.inspector.InspectorDrawer inspectorDrawer;
 
@@ -186,7 +185,6 @@ public final class MainController {
     private MetronomeController metronomeController;
     private ProjectLifecycleController projectLifecycleController;
     private ViewNavigationController viewNavigationController;
-    private VisualizationPanelController vizPanelController;
     private BrowserPanelController browserPanelController;
     private ToolbarAppearanceController toolbarAppearanceController;
     private TrackStripController trackStripController;
@@ -239,6 +237,17 @@ public final class MainController {
      */
     private boolean dockHostReconciliationSuppressed = true;
     /**
+     * Story 287 — {@code true} while a saved / built-in dock layout is being
+     * applied via {@link DockManager#applyJson(String)}. The RIGHT-zone
+     * telemetry panels float only on an <em>explicit</em> user action (the
+     * Sound Wave Telemetry menu item or a manifest-bar click), never as a
+     * side effect of {@code applyLayout} force-showing the panels an incoming
+     * layout never mentioned — otherwise a floating telemetry window would
+     * pop on every File → New / Open and built-in-layout load (the shipped
+     * built-in layouts predate these panels).
+     */
+    private boolean applyingDockLayout = false;
+    /**
      * Story 190 — Snapshot History Browser. Owns the data-only
      * SnapshotBrowserService and the lazy SnapshotBrowser dialog;
      * surfaces "File → Snapshots…" and "File → Create Checkpoint"
@@ -289,8 +298,33 @@ public final class MainController {
     private ArrangementCanvas arrangementCanvas;
     private ClipInteractionController clipInteractionController;
     private TimelineRuler timelineRuler;
+    // ── Story 287 — dockable analyzer displays ──────────────────────────────
+    // The spectrum + level-meter displays are still the live, idle-demo-fed
+    // instances handed to AnimationController; the other four are decorative
+    // shells (Non-Goal #1). All six are wrapped in DockableVisualizationPanel
+    // adapters (keyed by panel id in vizDockables) and mounted into the
+    // bottom dock strip when visible.
     private SpectrumDisplay spectrumDisplay;
     private LevelMeterDisplay levelMeterDisplay;
+    private com.benesquivelmusic.daw.app.ui.display.WaveformDisplay waveformDisplay;
+    private com.benesquivelmusic.daw.app.ui.display.LoudnessDisplay loudnessDisplay;
+    private com.benesquivelmusic.daw.app.ui.display.CorrelationDisplay correlationDisplay;
+    private com.benesquivelmusic.daw.app.ui.display.TunerDisplay tunerDisplay;
+    /** The six BOTTOM-zone analyzer adapters, keyed by dock id (story 287). */
+    private final java.util.Map<String, com.benesquivelmusic.daw.app.ui.display.DockableVisualizationPanel>
+            vizDockables = new java.util.LinkedHashMap<>();
+    /**
+     * Story 287 — single eager {@link TelemetryView}. Its
+     * {@code getSetupPanel()} is registered as {@code PANEL_TELEMETRY} and
+     * the whole view is the mounted node for both {@code PANEL_TELEMETRY}
+     * and {@code PANEL_ROOM_3D} (they are the two faces of one plugin
+     * view; see {@code resolveNode}). Constructed in {@link #installDockManager()}.
+     */
+    private TelemetryView telemetryView;
+    /** Bottom dock strip hosting visible BOTTOM-zone analyzer panels (story 287). */
+    private javafx.scene.layout.HBox vizBottomStrip;
+    /** RIGHT-zone dock host for the telemetry view, alongside the inspector (story 287). */
+    private javafx.scene.layout.HBox rightDockHost;
 
     /** Contextual help registry — loads markdown topics from {@code resources/help/}. */
     private final HelpRegistry helpRegistry = HelpRegistry.loadDefault();
@@ -400,10 +434,18 @@ public final class MainController {
 
         createToolbarAppearanceController();
         toolbarAppearanceController.apply();
-        VisualizationTileBuilder.Result vizResult = VisualizationTileBuilder.build(vizTileRow);
-        spectrumDisplay = vizResult.spectrumDisplay();
-        levelMeterDisplay = vizResult.levelMeterDisplay();
-        vizPanelController = vizResult.panelController();
+        // Story 287 — construct the analyzer displays directly (the fixed
+        // vizTileRow + VisualizationTileBuilder/VisualizationPanelController
+        // are retired). spectrumDisplay + levelMeterDisplay remain the
+        // idle-demo-fed instances AnimationController needs; the rest are
+        // decorative shells. They are wrapped + registered in
+        // installDockManager().
+        spectrumDisplay = new SpectrumDisplay();
+        levelMeterDisplay = new LevelMeterDisplay();
+        waveformDisplay = new com.benesquivelmusic.daw.app.ui.display.WaveformDisplay();
+        loudnessDisplay = new com.benesquivelmusic.daw.app.ui.display.LoudnessDisplay();
+        correlationDisplay = new com.benesquivelmusic.daw.app.ui.display.CorrelationDisplay();
+        tunerDisplay = new com.benesquivelmusic.daw.app.ui.display.TunerDisplay();
         buildBrowserPanel(toolbarStateStore.loadBrowserVisible());
         createTempoEditController();
         initializeNotificationBar();
@@ -547,6 +589,11 @@ public final class MainController {
                         if (dockManifestModel != null) {
                             dockManifestModel.dispose();
                         }
+                        // Story 287 — stop AnimationTimers and free the
+                        // off-heap GpuCanvas surfaces of the analyzer
+                        // displays + telemetry view we now own (FX thread;
+                        // GpuCanvasView.dispose() is idempotent).
+                        disposeVisualizationDisplays();
                     });
                 }
             }
@@ -785,7 +832,11 @@ public final class MainController {
         // and possibly a different sample-rate / buffer-size — rewire
         // the per-track CPU budget enforcer and its UI binding.
         installTrackCpuBudgetEnforcer();
-        pluginViewController.onProjectChanged(project);
+        // Story 287 — the shared telemetry view (formerly owned by the
+        // plugin controller's standalone window) now follows the project.
+        if (telemetryView != null) {
+            telemetryView.setProject(project);
+        }
         metronome = new Metronome(project.getFormat().sampleRate(), project.getFormat().channels());
         createTransportController();
         mountPreRollPostRollControls();
@@ -977,7 +1028,32 @@ public final class MainController {
             @Override public void switchToMasteringView() { viewNavigationController.switchView(DawView.MASTERING); }
             @Override public void updateStatusBar(String text, DawIcon icon) { status(text, icon); }
             @Override public void showNotification(NotificationLevel level, String message) { notificationBar.show(level, message); }
+            @Override public void showTelemetryPanel() { MainController.this.showTelemetryPanel(); }
         });
+    }
+
+    /**
+     * Story 287 — shows / focuses the docked Sound Wave Telemetry panel
+     * (the shared {@link #telemetryView}). Replaces the old standalone
+     * telemetry {@code Stage}. If the panel is floating, its window is
+     * brought to front; otherwise it is made visible (and focused) via
+     * the dock manifest's focus semantics.
+     */
+    private void showTelemetryPanel() {
+        if (dockManager == null) return;
+        DockEntry entry = dockManager.layout().entry(DefaultWorkspaces.PANEL_TELEMETRY).orElse(null);
+        if (entry != null && entry.zone() == DockZone.FLOATING) {
+            dockManager.setVisible(DefaultWorkspaces.PANEL_TELEMETRY, true);
+            Stage stage = floatingStages.get(DefaultWorkspaces.PANEL_TELEMETRY);
+            if (stage != null) stage.toFront();
+        } else if (dockManifestModel != null) {
+            // focusPanel makes it visible + moves it to the end of its zone
+            // strip (becoming the selected tab) — the same path the manifest
+            // bar button uses.
+            dockManifestModel.focusPanel(DefaultWorkspaces.PANEL_TELEMETRY);
+        } else {
+            dockManager.setVisible(DefaultWorkspaces.PANEL_TELEMETRY, true);
+        }
     }
 
     private void createClipEditController() {
@@ -1172,7 +1248,7 @@ public final class MainController {
                     }
                     @Override public void onToggleHistory() { historyPanelController.toggleHistoryPanel(); }
                     @Override public void onToggleNotificationHistory() { toggleNotificationHistory(); }
-                    @Override public void onToggleVisualizations() { vizPanelController.toggleRowVisibility(); }
+                    @Override public void onToggleVisualizations() { toggleBottomVizGroup(); }
                     @Override public void onOpenSettings() { MainController.this.onOpenSettings(); }
                     @Override public void onCopy() { clipEditController.onCopy(); }
                     @Override public void onCut() { clipEditController.onCut(); }
@@ -1633,7 +1709,7 @@ public final class MainController {
                     }
                     @Override public void onToggleHistory() { historyPanelController.toggleHistoryPanel(); }
                     @Override public void onToggleNotificationHistory() { toggleNotificationHistory(); }
-                    @Override public void onToggleVisualizations() { vizPanelController.toggleRowVisibility(); }
+                    @Override public void onToggleVisualizations() { toggleBottomVizGroup(); }
                     @Override public void onToggleFoldFocusedTrack() { MainController.this.onToggleFoldFocusedTrack(); }
                     @Override public void onToggleFoldSelectedTracks() { MainController.this.onToggleFoldSelectedTracks(); }
                     @Override public void onFoldAllAutomation() { MainController.this.onFoldAllAutomation(); }
@@ -1695,8 +1771,7 @@ public final class MainController {
                     case DefaultWorkspaces.PANEL_NOTIFICATIONS ->
                             isNotificationHistoryVisible();
                     case DefaultWorkspaces.PANEL_VISUALIZATIONS ->
-                            vizPanelController != null
-                                    && vizPanelController.isRowVisible();
+                            isAnyBottomVizVisible();
                     case DefaultWorkspaces.PANEL_ARRANGEMENT ->
                             viewNavigationController != null
                                     && viewNavigationController.getActiveView() == DawView.ARRANGEMENT;
@@ -1732,9 +1807,8 @@ public final class MainController {
                         }
                     }
                     case DefaultWorkspaces.PANEL_VISUALIZATIONS -> {
-                        if (vizPanelController != null
-                                && vizPanelController.isRowVisible() != visible) {
-                            vizPanelController.toggleRowVisibility();
+                        if (isAnyBottomVizVisible() != visible) {
+                            setBottomVizGroupVisible(visible);
                         }
                     }
                     case DefaultWorkspaces.PANEL_ARRANGEMENT -> {
@@ -1765,9 +1839,7 @@ public final class MainController {
                 return dockManager == null ? "" : dockManager.captureJson();
             }
             @Override public void applyDockLayoutJson(String dockLayoutJson) {
-                if (dockManager != null && dockLayoutJson != null && !dockLayoutJson.isEmpty()) {
-                    dockManager.applyJson(dockLayoutJson);
-                }
+                applyDockLayoutJsonGuarded(dockLayoutJson);
             }
         };
     }
@@ -1783,6 +1855,19 @@ public final class MainController {
         @Override public String displayName()     { return "Arrangement"; }
         @Override public String iconName()        { return "TIMELINE"; }
         @Override public DockZone preferredZone() { return DockZone.CENTER; }
+    }
+
+    /**
+     * Story 287 — metadata-only {@link Dockable} for the Room-3D telemetry
+     * display. Its mounted node is the shared {@link #telemetryView} (the
+     * Room-3D display and the telemetry setup form are the two faces of one
+     * plugin view), so there is no second {@code RoomTelemetryDisplay}.
+     */
+    private record RoomTelemetryDockable() implements Dockable {
+        @Override public String dockId()          { return DefaultWorkspaces.PANEL_ROOM_3D; }
+        @Override public String displayName()     { return "Room 3D"; }
+        @Override public String iconName()        { return "SURROUND"; }
+        @Override public DockZone preferredZone() { return DockZone.RIGHT; }
     }
 
     /**
@@ -1804,6 +1889,8 @@ public final class MainController {
         if (browserPanelController != null && browserPanelController.getBrowserPanel() != null) {
             dockManager.register(browserPanelController.getBrowserPanel());
         }
+        // Story 287 — register the eight visualization dockables.
+        registerVisualizationDockables();
         // Align initial dock visibility with the live chrome before
         // releasing the host's reconciliation guard, so the first
         // toggleVisible() the user invokes reflects the actual seam (e.g.
@@ -1817,7 +1904,158 @@ public final class MainController {
         dockManager.setVisible(DefaultWorkspaces.PANEL_MASTERING, active == DawView.MASTERING);
         dockManager.setVisible(DefaultWorkspaces.PANEL_BROWSER,
                 browserPanelController != null && browserPanelController.isPanelVisible());
+        // Story 287 — seed analyzer visibility from VisualizationPreferences
+        // (the read-only initial-visibility seed that replaced the row
+        // controller's live state). Telemetry / Room-3D start hidden.
+        seedVisualizationVisibility();
         dockHostReconciliationSuppressed = false;
+    }
+
+    /**
+     * Story 287 — wraps each analyzer display in a
+     * {@link com.benesquivelmusic.daw.app.ui.display.DockableVisualizationPanel}
+     * adapter (BOTTOM zone, kept in {@link #vizDockables} so the host can
+     * mount them), constructs the single eager {@link #telemetryView}, and
+     * registers its {@code getSetupPanel()} as {@code PANEL_TELEMETRY} plus
+     * a {@link RoomTelemetryDockable} for {@code PANEL_ROOM_3D}.
+     */
+    private void registerVisualizationDockables() {
+        registerVizPanel(DefaultWorkspaces.PANEL_SPECTRUM, "Spectrum",
+                "SPECTRUM", DawIcon.SPECTRUM, "tile-header-accent-green", spectrumDisplay);
+        registerVizPanel(DefaultWorkspaces.PANEL_LEVELS, "Peak / RMS",
+                "PEAK", DawIcon.PEAK, "tile-header-accent-orange", levelMeterDisplay);
+        registerVizPanel(DefaultWorkspaces.PANEL_WAVEFORM, "Oscilloscope",
+                "OSCILLOSCOPE", DawIcon.OSCILLOSCOPE, "tile-header-accent-cyan", waveformDisplay);
+        registerVizPanel(DefaultWorkspaces.PANEL_CORRELATION, "Correlation",
+                "PHASE_METER", DawIcon.PHASE_METER, "tile-header-accent-red", correlationDisplay);
+        registerVizPanel(DefaultWorkspaces.PANEL_LOUDNESS, "Loudness",
+                "LOUDNESS_METER", DawIcon.LOUDNESS_METER, "tile-header-accent-purple", loudnessDisplay);
+        // No dedicated tuner glyph in DawIcon (story 265 Lucide set) — MUSIC_NOTE
+        // is the closest pitch-related metering glyph.
+        registerVizPanel(DefaultWorkspaces.PANEL_TUNER, "Tuner",
+                "MUSIC_NOTE", DawIcon.MUSIC_NOTE, "tile-header-accent-green", tunerDisplay);
+
+        // Telemetry / Room-3D share one eager TelemetryView (story 287
+        // Decision 1). The registered Dockable for PANEL_TELEMETRY is the
+        // setup-panel instance (for identity / anti-duplication); the
+        // mounted node for BOTH ids is the parent telemetryView (resolveNode).
+        createTelemetryView();
+        dockManager.register(telemetryView.getSetupPanel());
+        dockManager.register(new RoomTelemetryDockable());
+    }
+
+    private void registerVizPanel(String dockId, String displayName, String iconName,
+                                  DawIcon icon, String accentStyleClass,
+                                  javafx.scene.layout.Region display) {
+        var panel = new com.benesquivelmusic.daw.app.ui.display.DockableVisualizationPanel(
+                dockId, displayName, iconName, DockZone.BOTTOM, icon, accentStyleClass, display);
+        vizDockables.put(dockId, panel);
+        dockManager.register(panel);
+    }
+
+    /**
+     * Story 287 — constructs the single application-wide {@link TelemetryView}
+     * if not already created, wiring it to the current project and the
+     * dirty-flag callback (the lifecycle the old standalone telemetry
+     * window used to own in {@code PluginViewController}).
+     */
+    private void createTelemetryView() {
+        if (telemetryView != null) return;
+        telemetryView = new TelemetryView();
+        telemetryView.setProject(project);
+        telemetryView.setOnDirtyChanged(this::setProjectDirtyFromTelemetry);
+    }
+
+    private void setProjectDirtyFromTelemetry() {
+        projectDirty = true;
+        if (menuBarController != null) menuBarController.syncMenuState();
+    }
+
+    /**
+     * Story 287 — seeds the five preference-backed analyzer panels'
+     * visibility from {@link VisualizationPreferences} (a read-only seed
+     * after the row controller's removal). A panel is initially visible
+     * iff the row was visible AND that tile was visible. Tuner, Room-3D,
+     * and Telemetry start hidden (they were never part of the bottom row).
+     */
+    private void seedVisualizationVisibility() {
+        VisualizationPreferences prefs = new VisualizationPreferences(
+                Preferences.userNodeForPackage(VisualizationPreferences.class));
+        boolean row = prefs.isRowVisible();
+        dockManager.setVisible(DefaultWorkspaces.PANEL_SPECTRUM,
+                row && prefs.isTileVisible(VisualizationPreferences.DisplayTile.SPECTRUM));
+        dockManager.setVisible(DefaultWorkspaces.PANEL_LEVELS,
+                row && prefs.isTileVisible(VisualizationPreferences.DisplayTile.LEVELS));
+        dockManager.setVisible(DefaultWorkspaces.PANEL_WAVEFORM,
+                row && prefs.isTileVisible(VisualizationPreferences.DisplayTile.WAVEFORM));
+        dockManager.setVisible(DefaultWorkspaces.PANEL_LOUDNESS,
+                row && prefs.isTileVisible(VisualizationPreferences.DisplayTile.LOUDNESS));
+        dockManager.setVisible(DefaultWorkspaces.PANEL_CORRELATION,
+                row && prefs.isTileVisible(VisualizationPreferences.DisplayTile.CORRELATION));
+        dockManager.setVisible(DefaultWorkspaces.PANEL_TUNER, false);
+        dockManager.setVisible(DefaultWorkspaces.PANEL_ROOM_3D, false);
+        dockManager.setVisible(DefaultWorkspaces.PANEL_TELEMETRY, false);
+    }
+
+    /**
+     * Story 287 — disposes the analyzer GpuCanvas displays and the shared
+     * telemetry view on app shutdown (FX thread). {@code GpuCanvasView.dispose()}
+     * is idempotent, so a display also disposed elsewhere is safe.
+     */
+    private void disposeVisualizationDisplays() {
+        if (spectrumDisplay != null) spectrumDisplay.dispose();
+        if (levelMeterDisplay != null) levelMeterDisplay.dispose();
+        if (waveformDisplay != null) waveformDisplay.dispose();
+        if (loudnessDisplay != null) loudnessDisplay.dispose();
+        if (correlationDisplay != null) correlationDisplay.dispose();
+        if (tunerDisplay != null) tunerDisplay.dispose();
+        if (telemetryView != null) telemetryView.dispose();
+    }
+
+    // ── Story 287 — bottom-analyzer group toggle (replaces the retired
+    //    VisualizationPanelController row-visibility toggle). The six BOTTOM
+    //    analyzer panels are treated as a group: "Toggle Visualizations" and
+    //    the Mixing/Mastering workspace presets show/hide them together.
+
+    /** Returns {@code true} if any of the six BOTTOM analyzer panels is visible. */
+    private boolean isAnyBottomVizVisible() {
+        if (dockManager == null) return false;
+        for (String id : vizDockables.keySet()) {
+            if (dockManager.layout().entry(id).map(DockEntry::visible).orElse(false)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Sets all six BOTTOM analyzer panels visible / hidden as a group.
+     * The model updates are batched under the reconciliation guard (so no
+     * per-panel reconcile passes fire); the strip is then mounted/unmounted
+     * directly. Mounting directly — rather than relying on a final firing
+     * {@code setVisible} — is robust even when the last panel's visibility
+     * was already at the target (in which case {@code setVisible} is a
+     * no-op and would fire nothing).
+     */
+    private void setBottomVizGroupVisible(boolean visible) {
+        if (dockManager == null || vizDockables.isEmpty()) return;
+        boolean prior = dockHostReconciliationSuppressed;
+        dockHostReconciliationSuppressed = true;
+        try {
+            for (String id : vizDockables.keySet()) {
+                dockManager.setVisible(id, visible);
+            }
+        } finally {
+            dockHostReconciliationSuppressed = prior;
+        }
+        for (String id : vizDockables.keySet()) {
+            mountBottomVizPanel(id, visible);
+        }
+    }
+
+    /** Toggles the BOTTOM analyzer group: any visible → hide all; else show all. */
+    private void toggleBottomVizGroup() {
+        setBottomVizGroupVisible(!isAnyBottomVizVisible());
     }
 
     /**
@@ -1832,6 +2070,24 @@ public final class MainController {
      * so panels published from {@code LayoutManager}-aware code flow
      * through the dock manager's float / re-dock API.
      */
+    /**
+     * Story 287 — applies dock-layout JSON with {@link #applyingDockLayout}
+     * set, so {@code reconcileTelemetry} does not auto-float the RIGHT-zone
+     * telemetry panels that {@code applyLayout} force-shows for ids the
+     * incoming layout never mentioned. Both the LayoutManager and
+     * WorkspaceManager dock-restore hosts route through here.
+     */
+    private void applyDockLayoutJsonGuarded(String json) {
+        if (dockManager == null || json == null || json.isEmpty()) return;
+        boolean prior = applyingDockLayout;
+        applyingDockLayout = true;
+        try {
+            dockManager.applyJson(json);
+        } finally {
+            applyingDockLayout = prior;
+        }
+    }
+
     private void installLayoutManager() {
         if (dockManager == null) return;
         com.benesquivelmusic.daw.app.ui.layout.LayoutManager.Host host =
@@ -1842,7 +2098,7 @@ public final class MainController {
                     @Override public void applyDockLayoutJson(String json) {
                         if (json != null && !json.isBlank()) {
                             try {
-                                dockManager.applyJson(json);
+                                applyDockLayoutJsonGuarded(json);
                             } catch (Exception e) {
                                 LOG.log(Level.WARNING,
                                         "Failed to apply dock layout JSON; keeping current layout", e);
@@ -1887,8 +2143,99 @@ public final class MainController {
                     }
                 });
 
+        // ── Story 287 — bottom analyzer strip (above the manifest bar). ──
+        mountVisualizationDockStrip();
         // ── Bottom manifest bar (above the status bar). ─────────────
         mountDockManifestBar();
+        // Story 287 — mount the BOTTOM-zone analyzer panels that are
+        // initially visible. The FXML-pre-mounted panels reconcile lazily
+        // on the first toggle, but these adapters are not in the scene yet,
+        // so seed them from the live layout now (reconciliation guard was
+        // already lifted by installDockManager()).
+        for (var id : vizDockables.keySet()) {
+            DockEntry e = dockManager.layout().entry(id).orElse(null);
+            if (e != null && e.zone() != DockZone.FLOATING) {
+                mountBottomVizPanel(id, e.visible());
+            }
+        }
+    }
+
+    /**
+     * Story 287 — creates the bottom analyzer strip and inserts it into the
+     * bottom {@code VBox} directly above the dock manifest bar (top-to-bottom
+     * in the bottom region: analyzer strip, manifest bar, status bar). The
+     * strip stays {@code managed=false} while empty so it takes no vertical
+     * space until at least one analyzer is visible.
+     */
+    private void mountVisualizationDockStrip() {
+        vizBottomStrip = new javafx.scene.layout.HBox(8);
+        vizBottomStrip.getStyleClass().add("dock-viz-strip");
+        vizBottomStrip.setId("vizBottomStrip");
+        vizBottomStrip.setPrefHeight(120);
+        vizBottomStrip.setMinHeight(0);
+        syncVizStripVisibility();
+        Node bottom = rootPane.getBottom();
+        if (bottom instanceof VBox bottomBox) {
+            // Insert above the manifest bar + status bar (the last children).
+            // At this point the manifest bar is not yet mounted, so place it
+            // before the status bar; mountDockManifestBar() then inserts the
+            // manifest bar after this strip but before the status bar.
+            int idx = Math.max(0, bottomBox.getChildren().size() - 1);
+            bottomBox.getChildren().add(idx, vizBottomStrip);
+        } else if (bottom == null) {
+            VBox wrap = new VBox(vizBottomStrip);
+            rootPane.setBottom(wrap);
+        }
+    }
+
+    /**
+     * Story 287 — mounts or unmounts a BOTTOM-zone analyzer adapter into
+     * the bottom strip. Idempotent: a panel already in the desired state
+     * is left alone. Preserves left-to-right order by the panel's dock
+     * tab-index when (re-)inserting. The strip's own visibility tracks
+     * whether it has any children so an empty strip takes no space.
+     */
+    private void mountBottomVizPanel(String panelId, boolean wantVisible) {
+        if (vizBottomStrip == null) return;
+        var panel = vizDockables.get(panelId);
+        if (panel == null) return;
+        boolean present = vizBottomStrip.getChildren().contains(panel);
+        if (wantVisible && !present) {
+            int insertAt = bottomVizInsertIndex(panelId);
+            vizBottomStrip.getChildren().add(insertAt, panel);
+            javafx.scene.layout.HBox.setHgrow(panel, javafx.scene.layout.Priority.ALWAYS);
+        } else if (!wantVisible && present) {
+            vizBottomStrip.getChildren().remove(panel);
+        }
+        syncVizStripVisibility();
+    }
+
+    /**
+     * Computes the insertion index for a BOTTOM analyzer adapter so the
+     * strip stays ordered by dock tab-index (matching {@code move()} /
+     * named-layout ordering) regardless of show/hide order.
+     */
+    private int bottomVizInsertIndex(String panelId) {
+        int myTab = dockManager.layout().entry(panelId)
+                .map(DockEntry::tabIndex).orElse(Integer.MAX_VALUE);
+        int idx = 0;
+        for (Node child : vizBottomStrip.getChildren()) {
+            String childId = child instanceof Dockable d ? d.dockId() : null;
+            int childTab = childId == null ? Integer.MAX_VALUE
+                    : dockManager.layout().entry(childId)
+                            .map(DockEntry::tabIndex).orElse(Integer.MAX_VALUE);
+            if (childTab <= myTab) idx++;
+            else break;
+        }
+        return idx;
+    }
+
+    /** Story 287 — an empty analyzer strip is hidden + unmanaged (no space). */
+    private void syncVizStripVisibility() {
+        if (vizBottomStrip == null) return;
+        boolean hasChildren = !vizBottomStrip.getChildren().isEmpty();
+        vizBottomStrip.setVisible(hasChildren);
+        vizBottomStrip.setManaged(hasChildren);
     }
 
     /**
@@ -2118,7 +2465,19 @@ public final class MainController {
                         entry.visible(), DawView.EDITOR);
                 case DefaultWorkspaces.PANEL_MASTERING -> reconcileCenterView(
                         entry.visible(), DawView.MASTERING);
-                default -> { /* unknown id — forward compatible */ }
+                case DefaultWorkspaces.PANEL_TELEMETRY,
+                     DefaultWorkspaces.PANEL_ROOM_3D -> reconcileTelemetry(id, entry.visible());
+                default -> {
+                    // Story 287 — the six BOTTOM-zone analyzer panels are
+                    // additive (independent show/hide), mounted into the
+                    // bottom strip regardless of which edge zone they land
+                    // in (built-in layouts may place them in RIGHT; the
+                    // analyzer strip is their canonical home).
+                    if (vizDockables.containsKey(id)) {
+                        mountBottomVizPanel(id, entry.visible());
+                    }
+                    // else: unknown id — forward compatible.
+                }
             }
         }
 
@@ -2164,6 +2523,71 @@ public final class MainController {
             // targets, so a sibling becoming visible is what changes it).
         }
 
+        /**
+         * Story 287 — reconciles a RIGHT-zone telemetry panel
+         * ({@code PANEL_TELEMETRY} / {@code PANEL_ROOM_3D}). The main
+         * window's RIGHT slot is a single contended slot already swapped
+         * between inspector / browser / history (and snapshotted by the
+         * Performance Stage), so docking a panel <em>inline</em> alongside
+         * the inspector would break those {@code getRight()==X} identity
+         * checks. Instead, an explicitly-shown RIGHT telemetry panel is floated
+         * into its own {@code Stage} via the standard {@code float_} path
+         * (story Non-Goal #2 explicitly allows floating via the API), but never
+         * while a layout is being applied ({@code applyingDockLayout}) — so a
+         * built-in / restored layout that force-shows the panel never pops a
+         * window on File → New / Open. Hiding it hides that window. Both ids resolve to the shared
+         * {@link #telemetryView}, so whichever is shown brings up the same
+         * view (its internal setup⇄display swap decides the face).
+         */
+        private void reconcileTelemetry(String id, boolean wantVisible) {
+            if (dockManager == null) return;
+            // Float only on an explicit user action — never while a layout is
+            // being applied. applyLayout force-shows registered panels the
+            // incoming layout never mentioned (the built-in layouts predate
+            // these panels), which would otherwise pop the telemetry window on
+            // File → New / Open / built-in-layout load. A user-saved *floating*
+            // telemetry restores via the FLOATING short-circuit in reconcile()
+            // (ensureFloating), not this arm, so guarding here doesn't lose it.
+            if (wantVisible && !applyingDockLayout) {
+                // Both telemetry ids share ONE TelemetryView node, so they
+                // are mutually exclusive — showing one hides the other (and
+                // its now-empty stage) so the single node is never fought
+                // over by two stages. Done under the reconciliation guard so
+                // hiding the sibling doesn't trigger an extra reconcile pass.
+                String sibling = id.equals(DefaultWorkspaces.PANEL_TELEMETRY)
+                        ? DefaultWorkspaces.PANEL_ROOM_3D
+                        : DefaultWorkspaces.PANEL_TELEMETRY;
+                DockEntry sib = dockManager.layout().entry(sibling).orElse(null);
+                if (sib != null && sib.visible()) {
+                    boolean prior = dockHostReconciliationSuppressed;
+                    dockHostReconciliationSuppressed = true;
+                    try {
+                        dockManager.setVisible(sibling, false);
+                    } finally {
+                        dockHostReconciliationSuppressed = prior;
+                    }
+                    // Close + REMOVE (not just hide) the sibling's stage so the
+                    // shared TelemetryView node re-attaches to a fresh stage the
+                    // next time the sibling is shown — a hidden-but-retained
+                    // stage would re-show empty once the node has moved into our
+                    // stage (ensureFloating only re-parents when creating anew).
+                    Stage sibStage = floatingStages.remove(sibling);
+                    if (sibStage != null) sibStage.close();
+                }
+                // Float it (idempotent — float_ on an already-floating panel
+                // just refreshes bounds). ensureFloating then shows the Stage.
+                dockManager.float_(id, null);
+            } else {
+                Stage stage = floatingStages.get(id);
+                if (stage != null && stage.isShowing()) stage.hide();
+            }
+        }
+
+        private boolean isTelemetryPanel(String panelId) {
+            return DefaultWorkspaces.PANEL_TELEMETRY.equals(panelId)
+                    || DefaultWorkspaces.PANEL_ROOM_3D.equals(panelId);
+        }
+
         private void ensureFloating(String panelId, DockEntry entry) {
             Node content = resolveNode(panelId);
             if (content == null) return;
@@ -2193,12 +2617,19 @@ public final class MainController {
                 // zone so it isn't trapped in a hidden-floating state.
                 final String idForHandler = panelId;
                 stage.setOnCloseRequest(e -> {
-                    if (dockManager != null) {
-                        DockZone preferred = dockManager.panel(idForHandler)
-                                .map(Dockable::preferredZone)
-                                .orElse(DockZone.CENTER);
-                        dockManager.move(idForHandler, preferred, 0);
+                    if (dockManager == null) return;
+                    // Story 287 — telemetry panels live only as floating-or-
+                    // hidden (the RIGHT slot is contended; see
+                    // reconcileTelemetry). Re-docking would immediately
+                    // re-float them, so a close just hides them instead.
+                    if (isTelemetryPanel(idForHandler)) {
+                        dockManager.setVisible(idForHandler, false);
+                        return;
                     }
+                    DockZone preferred = dockManager.panel(idForHandler)
+                            .map(Dockable::preferredZone)
+                            .orElse(DockZone.CENTER);
+                    dockManager.move(idForHandler, preferred, 0);
                 });
                 // Propagate user-driven position/size changes back to the
                 // DockManager so workspace captures reflect the actual
@@ -2247,7 +2678,19 @@ public final class MainController {
                 case DefaultWorkspaces.PANEL_ARRANGEMENT ->
                         viewNavigationController == null ? null
                                 : viewNavigationController.getCachedArrangementNode();
-                default -> null;
+                // Story 287 — both telemetry ids resolve to the SAME shared
+                // TelemetryView: the Room-3D display and the setup form are
+                // its two faces, so the whole functional view (Generate /
+                // Reconfigure chrome + current face) floats as one unit.
+                // (The registered Dockable for PANEL_TELEMETRY is the
+                // setup-panel instance for identity; the mounted/floated
+                // node is the parent view — intentional, not a bug.)
+                case DefaultWorkspaces.PANEL_TELEMETRY,
+                     DefaultWorkspaces.PANEL_ROOM_3D -> telemetryView;
+                default ->
+                        // Story 287 — the six BOTTOM analyzer adapters resolve
+                        // to themselves (used when floating one out).
+                        vizDockables.get(panelId);
             };
         }
 

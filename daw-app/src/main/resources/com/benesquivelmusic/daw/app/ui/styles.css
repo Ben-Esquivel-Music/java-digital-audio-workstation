@@ -1150,7 +1150,19 @@
 }
 
 /* ── Visualization Tiles Row ── */
+/* .viz-tile-row is retired (story 287 — the fixed row became dockable
+ * analyzer panels). The rule is left in place per the "don't chase dead
+ * CSS" convention; the live container is now .dock-viz-strip below. */
 .viz-tile-row {
+    -fx-background-color: -surface-bg;
+    -fx-padding: 8 8 0 8;
+    -fx-spacing: 8;
+}
+
+/* ── Bottom dock analyzer strip (story 287) ── */
+/* Hosts the visible BOTTOM-zone analyzer panels above the dock manifest
+ * bar. Mirrors the retired .viz-tile-row chrome with design tokens. */
+.dock-viz-strip {
     -fx-background-color: -surface-bg;
     -fx-padding: 8 8 0 8;
     -fx-spacing: 8;
