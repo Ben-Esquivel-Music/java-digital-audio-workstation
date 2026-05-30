@@ -12,8 +12,6 @@ import com.benesquivelmusic.daw.app.ui.display.LoudnessDisplay;
 import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplay;
 import com.benesquivelmusic.daw.app.ui.display.TunerDisplay;
 import com.benesquivelmusic.daw.app.ui.display.WaveformDisplay;
-import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
-
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
@@ -46,13 +44,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 @ExtendWith(JavaFxToolkitExtension.class)
 class VisualizationDockablesRegisteredTest {
 
-    private record RoomTelemetryDockable() implements Dockable {
-        @Override public String dockId()          { return DefaultWorkspaces.PANEL_ROOM_3D; }
-        @Override public String displayName()     { return "Room 3D"; }
-        @Override public String iconName()        { return "SURROUND"; }
-        @Override public DockZone preferredZone() { return DockZone.RIGHT; }
-    }
-
     private static final class SilentHost implements DockManager.Host {
         @Override public void onLayoutChanged(DockLayout newLayout) { /* no-op */ }
     }
@@ -62,27 +53,15 @@ class VisualizationDockablesRegisteredTest {
         return onFx(() -> {
             DockManager dm = new DockManager(new SilentHost(),
                     new FloatingWindowStore(tmp.resolve("f.json")));
-            dm.register(new DockableVisualizationPanel(DefaultWorkspaces.PANEL_SPECTRUM,
-                    "Spectrum", "SPECTRUM", DockZone.BOTTOM, DawIcon.SPECTRUM,
-                    "tile-header-accent-green", new SpectrumDisplay()));
-            dm.register(new DockableVisualizationPanel(DefaultWorkspaces.PANEL_LEVELS,
-                    "Peak / RMS", "PEAK", DockZone.BOTTOM, DawIcon.PEAK,
-                    "tile-header-accent-orange", new LevelMeterDisplay()));
-            dm.register(new DockableVisualizationPanel(DefaultWorkspaces.PANEL_WAVEFORM,
-                    "Oscilloscope", "OSCILLOSCOPE", DockZone.BOTTOM, DawIcon.OSCILLOSCOPE,
-                    "tile-header-accent-cyan", new WaveformDisplay()));
-            dm.register(new DockableVisualizationPanel(DefaultWorkspaces.PANEL_CORRELATION,
-                    "Correlation", "PHASE_METER", DockZone.BOTTOM, DawIcon.PHASE_METER,
-                    "tile-header-accent-red", new CorrelationDisplay()));
-            dm.register(new DockableVisualizationPanel(DefaultWorkspaces.PANEL_LOUDNESS,
-                    "Loudness", "LOUDNESS_METER", DockZone.BOTTOM, DawIcon.LOUDNESS_METER,
-                    "tile-header-accent-purple", new LoudnessDisplay()));
-            dm.register(new DockableVisualizationPanel(DefaultWorkspaces.PANEL_TUNER,
-                    "Tuner", "MUSIC_NOTE", DockZone.BOTTOM, DawIcon.MUSIC_NOTE,
-                    "tile-header-accent-green", new TunerDisplay()));
-            TelemetryView telemetry = new TelemetryView();
-            dm.register(telemetry.getSetupPanel());
-            dm.register(new RoomTelemetryDockable());
+            // Exercise the real production registration list (ids, zones, the
+            // six adapter registrations plus telemetry / Room-3D) via the
+            // package-private seam, so a regression in MainController is caught
+            // here instead of being masked by a re-implemented test fixture.
+            MainController.registerVisualizationDockables(dm,
+                    new java.util.LinkedHashMap<>(),
+                    new SpectrumDisplay(), new LevelMeterDisplay(), new WaveformDisplay(),
+                    new CorrelationDisplay(), new LoudnessDisplay(), new TunerDisplay(),
+                    new TelemetryView());
             return dm;
         });
     }

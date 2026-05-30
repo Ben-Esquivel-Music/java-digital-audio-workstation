@@ -1920,33 +1920,61 @@ public final class MainController {
      * a {@link RoomTelemetryDockable} for {@code PANEL_ROOM_3D}.
      */
     private void registerVisualizationDockables() {
-        registerVizPanel(DefaultWorkspaces.PANEL_SPECTRUM, "Spectrum",
+        createTelemetryView();
+        registerVisualizationDockables(dockManager, vizDockables,
+                spectrumDisplay, levelMeterDisplay, waveformDisplay,
+                correlationDisplay, loudnessDisplay, tunerDisplay, telemetryView);
+    }
+
+    /**
+     * Story 287 — the canonical registration of the six BOTTOM analyzer
+     * dockables plus the shared telemetry / Room-3D dockables. Extracted as a
+     * package-private seam so {@code VisualizationDockablesRegisteredTest} can
+     * assert against the real production registration list (ids, zones,
+     * adapter count) without FXML-loading {@code MainController}. The caller
+     * supplies the six analyzer display regions and the shared
+     * {@link TelemetryView}; the populated adapters are stored in
+     * {@code vizDockables} so the host can later mount them.
+     */
+    static void registerVisualizationDockables(
+            DockManager dockManager,
+            java.util.Map<String, com.benesquivelmusic.daw.app.ui.display.DockableVisualizationPanel> vizDockables,
+            javafx.scene.layout.Region spectrumDisplay,
+            javafx.scene.layout.Region levelMeterDisplay,
+            javafx.scene.layout.Region waveformDisplay,
+            javafx.scene.layout.Region correlationDisplay,
+            javafx.scene.layout.Region loudnessDisplay,
+            javafx.scene.layout.Region tunerDisplay,
+            TelemetryView telemetryView) {
+        registerVizPanel(dockManager, vizDockables, DefaultWorkspaces.PANEL_SPECTRUM, "Spectrum",
                 "SPECTRUM", DawIcon.SPECTRUM, "tile-header-accent-green", spectrumDisplay);
-        registerVizPanel(DefaultWorkspaces.PANEL_LEVELS, "Peak / RMS",
+        registerVizPanel(dockManager, vizDockables, DefaultWorkspaces.PANEL_LEVELS, "Peak / RMS",
                 "PEAK", DawIcon.PEAK, "tile-header-accent-orange", levelMeterDisplay);
-        registerVizPanel(DefaultWorkspaces.PANEL_WAVEFORM, "Oscilloscope",
+        registerVizPanel(dockManager, vizDockables, DefaultWorkspaces.PANEL_WAVEFORM, "Oscilloscope",
                 "OSCILLOSCOPE", DawIcon.OSCILLOSCOPE, "tile-header-accent-cyan", waveformDisplay);
-        registerVizPanel(DefaultWorkspaces.PANEL_CORRELATION, "Correlation",
+        registerVizPanel(dockManager, vizDockables, DefaultWorkspaces.PANEL_CORRELATION, "Correlation",
                 "PHASE_METER", DawIcon.PHASE_METER, "tile-header-accent-red", correlationDisplay);
-        registerVizPanel(DefaultWorkspaces.PANEL_LOUDNESS, "Loudness",
+        registerVizPanel(dockManager, vizDockables, DefaultWorkspaces.PANEL_LOUDNESS, "Loudness",
                 "LOUDNESS_METER", DawIcon.LOUDNESS_METER, "tile-header-accent-purple", loudnessDisplay);
         // No dedicated tuner glyph in DawIcon (story 265 Lucide set) — MUSIC_NOTE
         // is the closest pitch-related metering glyph.
-        registerVizPanel(DefaultWorkspaces.PANEL_TUNER, "Tuner",
+        registerVizPanel(dockManager, vizDockables, DefaultWorkspaces.PANEL_TUNER, "Tuner",
                 "MUSIC_NOTE", DawIcon.MUSIC_NOTE, "tile-header-accent-green", tunerDisplay);
 
         // Telemetry / Room-3D share one eager TelemetryView (story 287
         // Decision 1). The registered Dockable for PANEL_TELEMETRY is the
         // setup-panel instance (for identity / anti-duplication); the
         // mounted node for BOTH ids is the parent telemetryView (resolveNode).
-        createTelemetryView();
         dockManager.register(telemetryView.getSetupPanel());
         dockManager.register(new RoomTelemetryDockable());
     }
 
-    private void registerVizPanel(String dockId, String displayName, String iconName,
-                                  DawIcon icon, String accentStyleClass,
-                                  javafx.scene.layout.Region display) {
+    private static void registerVizPanel(
+            DockManager dockManager,
+            java.util.Map<String, com.benesquivelmusic.daw.app.ui.display.DockableVisualizationPanel> vizDockables,
+            String dockId, String displayName, String iconName,
+            DawIcon icon, String accentStyleClass,
+            javafx.scene.layout.Region display) {
         var panel = new com.benesquivelmusic.daw.app.ui.display.DockableVisualizationPanel(
                 dockId, displayName, iconName, DockZone.BOTTOM, icon, accentStyleClass, display);
         vizDockables.put(dockId, panel);
@@ -2603,6 +2631,25 @@ public final class MainController {
                 // just refreshes bounds). ensureFloating then shows the Stage.
                 dockManager.float_(id, null);
             } else {
+                // Story 287 — a restored / built-in layout may mark a
+                // telemetry panel visible in its preferred RIGHT zone.
+                // reconcile() only short-circuits FLOATING-zoned entries to
+                // ensureFloating, so this arm always runs for a non-FLOATING
+                // zone. Telemetry panels only ever live floating-or-hidden and
+                // must not auto-pop their window during layout application
+                // (the applyingDockLayout guard above), so coerce the model's
+                // visible flag to false to keep the manifest chrome consistent
+                // with the hidden rendering instead of silently leaving a
+                // "visible" entry that is mounted nowhere.
+                if (wantVisible && applyingDockLayout) {
+                    boolean prior = dockHostReconciliationSuppressed;
+                    dockHostReconciliationSuppressed = true;
+                    try {
+                        dockManager.setVisible(id, false);
+                    } finally {
+                        dockHostReconciliationSuppressed = prior;
+                    }
+                }
                 Stage stage = floatingStages.get(id);
                 if (stage != null && stage.isShowing()) stage.hide();
             }
