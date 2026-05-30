@@ -144,8 +144,9 @@ paths). Some are project defaults that only apply to *new* projects
 (default tempo, auto‑save interval — `SettingsModel.java:36-37`). Some are
 machine/device‑specific (audio backend, devices). The current UI mixes all
 three on the same tab with no indication of how far a change reaches. A
-user changing "Default Tempo" reasonably expects the open project's tempo
-to change — it does not.
+user changing "Default Tempo" might not realize that Apply
+(`LiveSettingsApplier.apply(...)`) pushes it into the open project's
+transport — there is no visual cue confirming the live effect.
 
 ### 1.9 No keyboard navigation between categories
 
