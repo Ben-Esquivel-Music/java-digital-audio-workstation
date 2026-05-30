@@ -260,14 +260,15 @@ Scope ──▶ Category ──▶ Group ──▶ Setting
 | Scope | Persisted to | Takes effect | Example |
 |---|---|---|---|
 | **Application** | `Preferences` (user node) | The whole app, all projects | UI scale, theme, plugin scan paths |
-| **Project defaults** | `Preferences` (user node) | *New* projects only | Default tempo, auto‑save interval |
+| **Project defaults** | `Preferences` (user node) | New projects + live‑applied to the open project via `LiveSettingsApplier` | Default tempo, auto‑save interval |
 | **This project** | the open project file | The open project now | (new) per‑project tempo, metronome routing |
 | **Audio device** | `Preferences` + engine | The audio engine on this machine | Backend, devices, buffer size, SRC quality |
 
 > Note: today `defaultTempo` and `autoSaveIntervalSeconds`
-> (`SettingsModel.java:36-37`) are **Project defaults** but read like
-> "current project" settings. The scope tag fixes that ambiguity (§1.8)
-> without changing the stored value.
+> (`SettingsModel.java:36-37`) are stored as **Project defaults** but
+> `LiveSettingsApplier.apply(...)` also pushes them into the open
+> project's transport and checkpoint manager on Apply. The scope tag
+> makes this dual reach explicit (§1.8) without changing the stored value.
 
 ### 3.3 Proposed categories
 
@@ -282,7 +283,7 @@ categories, each absorbing settings scattered across today's four dialogs:
 | **Recording** | `MetronomeSettingsDialog` | Metronome · Click routing · Cue mix |
 | **Backups** | `BackupSettingsDialog` | Retention · Disk usage |
 | **Key Bindings** | Key Bindings tab | (per‑action, grouped by `DawAction.Category`) |
-| **Plugins** | Plugins tab | Scan paths · (future) manager |
+| **Plugins** | Plugins tab | Scan paths · Manager (`PluginManagerDialog`) |
 | **General** | (new) | Startup · Language · Reset & profiles |
 
 ### 3.4 Setting descriptor
@@ -433,7 +434,7 @@ and consumes UI Design Book §3 tokens.
    Matching settings render with the query highlighted; the rail
    dims categories with no matches and shows a per‑category count.
    Esc clears; the field is reachable with the documented
-   "focus search" key binding (§2.9 / Concept C mode).
+   "focus search" key binding (§6.5 / Concept C mode).
 ```
 
 ### 5.3 Pane header (scope + category)
