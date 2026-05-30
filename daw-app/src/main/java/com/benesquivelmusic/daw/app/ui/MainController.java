@@ -111,6 +111,8 @@ public final class MainController {
     @FXML private Label statusBarLabel;
     @FXML private Label arrangementPlaceholder;
     @FXML private Label arrangementPanelHeader;
+    /** Story 288 — timeline-header HBox that hosts the arrangement dock grip. */
+    @FXML private HBox arrangementTimelineHeader;
     @FXML private StackPane arrangementContentPane;
     @FXML private Label tracksPanelHeader;
     @FXML private Label ioRoutingLabel;
@@ -2182,16 +2184,60 @@ public final class MainController {
                 com.benesquivelmusic.daw.app.ui.layout.PanelDetachRequestedEvent.PANEL_DETACH_REQUESTED,
                 e -> {
                     if (dockManager != null) {
-                        dockManager.float_(e.getPanelId(), null);
+                        // Story 288 — honour the grip-gesture drop point when
+                        // present; a null bounds preserves the prior
+                        // remembered/default placement behaviour.
+                        dockManager.float_(e.getPanelId(), e.getBounds());
                     }
                 });
         rootPane.addEventHandler(
                 com.benesquivelmusic.daw.app.ui.layout.PanelDockRequestedEvent.PANEL_DOCK_REQUESTED,
                 e -> {
                     if (dockManager != null) {
-                        dockManager.moveToEnd(e.getPanelId(), e.getTargetZone());
+                        // Story 288 review — reconcile() is the authority on
+                        // each canonical panel's docked home: it re-derives
+                        // placement from the panel id and ignores the recorded
+                        // zone. Recording the geometric drop zone would persist
+                        // a zone the reconciler never honours (and the manifest
+                        // bar, which renders DockEntry.zone, would show it),
+                        // while the panel snaps back to its real home. Coerce
+                        // the re-dock to that home so model and view agree.
+                        DockZone home = dockHomeZone(
+                                e.getPanelId(),
+                                vizDockables.containsKey(e.getPanelId()),
+                                e.getTargetZone());
+                        dockManager.moveToEnd(e.getPanelId(), home);
                     }
                 });
+
+        // ── Story 288 — drop-zone highlight + re-dock gesture. ───────
+        // Bind the dock drop behaviour to the five BorderPane slot
+        // PROPERTIES (not fixed nodes): CENTER is swapped per view, LEFT is
+        // null while the browser is hidden, and the Performance Stage
+        // save/restore replaces whole slots — binding to the property lets
+        // the drop zone follow the live content. Handlers are additive
+        // (addEventHandler), so the existing clip/sample DnD keeps working.
+        com.benesquivelmusic.daw.app.ui.dock.DockDropZones dropZones =
+                new com.benesquivelmusic.daw.app.ui.dock.DockDropZones(rootPane);
+        dropZones.bindSlot(rootPane.topProperty(), DockZone.TOP);
+        dropZones.bindSlot(rootPane.bottomProperty(), DockZone.BOTTOM);
+        dropZones.bindSlot(rootPane.leftProperty(), DockZone.LEFT);
+        dropZones.bindSlot(rootPane.rightProperty(), DockZone.RIGHT);
+        dropZones.bindSlot(rootPane.centerProperty(), DockZone.CENTER);
+
+        // ── Story 288 — mount the arrangement grip in the timeline header.
+        // The arrangement panel lives in FXML (timeline-header HBox); its
+        // grip detaches/re-docks the PANEL_ARRANGEMENT dockable. Size the
+        // floating window from the cached arrangement node when available.
+        if (arrangementTimelineHeader != null) {
+            Region arrangementBounds = viewNavigationController != null
+                    && viewNavigationController.getCachedArrangementNode() instanceof Region r
+                    ? r
+                    : rootPane;
+            arrangementTimelineHeader.getChildren().add(0,
+                    new com.benesquivelmusic.daw.app.ui.dock.PanelGripHandle(
+                            DefaultWorkspaces.PANEL_ARRANGEMENT, arrangementBounds));
+        }
 
         // ── Story 287 — bottom analyzer strip (above the manifest bar). ──
         mountVisualizationDockStrip();
@@ -2208,6 +2254,44 @@ public final class MainController {
                 mountBottomVizPanel(id, e.visible());
             }
         }
+    }
+
+    /**
+     * Resolves the docked home zone for a panel id, mirroring the authority
+     * encoded in {@code MainControllerDockHost.reconcile(...)} — which
+     * re-derives each canonical panel's placement from its id and ignores
+     * the recorded zone.
+     * The drop-zone re-dock gesture (story 288) coerces to this so the
+     * persisted zone, and the manifest bar that renders {@code
+     * DockEntry.zone}, match where the panel actually lands instead of the
+     * arbitrary geometric zone the user happened to release over.
+     *
+     * <p>Telemetry panels home to {@code RIGHT} even though {@code
+     * reconcileTelemetry} ultimately floats them: {@code RIGHT} is still
+     * their nominal/recorded zone, so this keeps the model self-consistent.
+     * Kept in lock-step with {@code reconcile(...)}; pinned by
+     * {@code DockHomeZoneTest}.</p>
+     *
+     * @param panelId         the dragged panel id
+     * @param isVisualization whether {@code panelId} is one of the BOTTOM
+     *                        analyzer adapters ({@code vizDockables})
+     * @param fallback        zone for an unrecognised id (forward-compatible)
+     */
+    static DockZone dockHomeZone(String panelId, boolean isVisualization, DockZone fallback) {
+        if (DefaultWorkspaces.PANEL_BROWSER.equals(panelId)) {
+            return DockZone.LEFT;
+        }
+        if (CENTER_ZONE_PANELS.contains(panelId)) {
+            return DockZone.CENTER;
+        }
+        if (DefaultWorkspaces.PANEL_TELEMETRY.equals(panelId)
+                || DefaultWorkspaces.PANEL_ROOM_3D.equals(panelId)) {
+            return DockZone.RIGHT;
+        }
+        if (isVisualization) {
+            return DockZone.BOTTOM;
+        }
+        return fallback;
     }
 
     /**

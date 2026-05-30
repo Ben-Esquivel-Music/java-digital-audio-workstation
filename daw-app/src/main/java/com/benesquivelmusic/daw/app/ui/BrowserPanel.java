@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.dock.Dockable;
 import com.benesquivelmusic.daw.app.ui.dock.DockZone;
+import com.benesquivelmusic.daw.app.ui.dock.PanelGripHandle;
 import com.benesquivelmusic.daw.app.ui.drag.DragSourceKind;
 import com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor;
 import com.benesquivelmusic.daw.app.ui.drag.DropTargetKind;
@@ -189,6 +190,13 @@ public final class BrowserPanel extends VBox implements Dockable {
         Label headerLabel = new Label("BROWSER");
         headerLabel.getStyleClass().add("panel-header");
         headerLabel.setGraphic(IconNode.of(DawIcon.LIBRARY, ICON_SIZE));
+        // Story 288 — dock grip leads the header so the browser can be
+        // detached / re-docked by direct manipulation. The grip's gesture
+        // consumes and uses the dedicated dock DataFormat, so it stays
+        // distinct from the file-tree sample drag (TransferMode.COPY,
+        // putString) wired below.
+        HBox headerRow = new HBox(8, new PanelGripHandle(dockId(), this), headerLabel);
+        headerRow.setAlignment(Pos.CENTER_LEFT);
 
         // ── Persistent search field (story 275, UI Design Book §5.5) ────────
         // SEARCH icon (story 265) as a leading affordance; the text is
@@ -309,7 +317,7 @@ public final class BrowserPanel extends VBox implements Dockable {
             }
         });
 
-        getChildren().addAll(headerLabel, searchBar, tabStrip, contentArea);
+        getChildren().addAll(headerRow, searchBar, tabStrip, contentArea);
 
         selectSection(BrowserSection.FILES);
 

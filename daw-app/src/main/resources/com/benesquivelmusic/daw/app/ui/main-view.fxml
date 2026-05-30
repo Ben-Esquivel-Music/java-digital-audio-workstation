@@ -125,7 +125,8 @@
 
                 <!-- Right: Arrangement Timeline Tile -->
                 <VBox styleClass="arrangement-panel">
-                    <HBox styleClass="timeline-header" alignment="CENTER_LEFT" spacing="20">
+                    <HBox fx:id="arrangementTimelineHeader" styleClass="timeline-header"
+                          alignment="CENTER_LEFT" spacing="20">
                         <Label fx:id="arrangementPanelHeader" text="ARRANGEMENT"
                                styleClass="panel-header"/>
                         <!-- Beat markers — .timeline-label keeps the muted
