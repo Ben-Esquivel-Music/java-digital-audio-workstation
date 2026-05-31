@@ -3,6 +3,11 @@ package com.benesquivelmusic.daw.core.transport;
 import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
+import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Consumer;
+
 /**
  * Controls the playback transport of the DAW (play, stop, record, pause).
  *
@@ -12,11 +17,57 @@ import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
  * <p>Tempo and time signature data are managed by an associated
  * {@link TempoMap}, which supports multiple tempo and time signature
  * changes along the timeline.</p>
+ *
+ * <h2>Toolkit-neutral change notification</h2>
+ *
+ * <p>Per the Control Synchronization Design Book (§1.3, §2.5, §3.2) the
+ * transport exposes a <em>toolkit-neutral</em> notification seam: observers
+ * register a {@link Consumer}&lt;{@link ChangeKind}&gt; via
+ * {@link #addChangeListener(Consumer)} and are invoked <strong>after</strong>
+ * each field mutation completes, so an observer that re-reads the transport in
+ * its callback always sees the post-mutation value. The signal carries only a
+ * small {@link ChangeKind} tag describing <em>what</em> slice changed — never a
+ * state-bearing delta and, critically, never a {@code javafx.beans.*} type: the
+ * core stays JavaFX-free so the view-model adapter
+ * ({@code daw-app/.../ui/vm/TransportVM}) is the sole bridge to FX Properties
+ * (§9 rejection list). Notification is lock-free and allocation-free (a
+ * {@link CopyOnWriteArrayList} iterated by index), so {@link #advancePosition(double)}
+ * may fire from the {@code @RealTimeSafe} render path; the only sanctioned
+ * cross-thread sink is the view-model's lock-free, single-reader buffer (§4.1,
+ * §4.6).</p>
  */
 public final class Transport {
 
     private static final double DEFAULT_LOOP_START = 0.0;
     private static final double DEFAULT_LOOP_END = 16.0;
+
+    /**
+     * The kind of transport slice that a change notification refers to.
+     *
+     * <p>An observer registered via {@link Transport#addChangeListener(Consumer)}
+     * re-reads only the affected slice from the transport when it receives the
+     * matching tag (Control Synchronization Design Book §3.2, §3.4).</p>
+     */
+    public enum ChangeKind {
+        /** The {@linkplain TransportState transport state} changed (play/stop/pause/record). */
+        STATE,
+        /** The initial tempo (BPM) changed. */
+        TEMPO,
+        /** The initial time signature changed. */
+        TIME_SIGNATURE,
+        /** The loop region or loop-enabled flag changed. */
+        LOOP,
+        /** The playback position changed (seek, scrub, or per-block advance). */
+        POSITION
+    }
+
+    /**
+     * Registered change observers. {@link CopyOnWriteArrayList} so
+     * {@link #notifyChange(ChangeKind)} can iterate by index without taking a
+     * lock or allocating an iterator — safe to invoke from the
+     * {@code @RealTimeSafe} render path via {@link #advancePosition(double)}.
+     */
+    private final List<Consumer<ChangeKind>> changeListeners = new CopyOnWriteArrayList<>();
 
     private TransportState state = TransportState.STOPPED;
     private double positionInBeats = 0.0;
@@ -34,6 +85,7 @@ public final class Transport {
         state = TransportState.PLAYING;
         inPreRoll = false;
         inPostRoll = false;
+        notifyChange(ChangeKind.STATE);
     }
 
     /** Stops playback and resets the position to zero. */
@@ -42,18 +94,21 @@ public final class Transport {
         positionInBeats = 0.0;
         inPreRoll = false;
         inPostRoll = false;
+        notifyChange(ChangeKind.STATE);
     }
 
     /** Pauses playback at the current position. */
     public void pause() {
         if (state == TransportState.PLAYING || state == TransportState.RECORDING) {
             state = TransportState.PAUSED;
+            notifyChange(ChangeKind.STATE);
         }
     }
 
     /** Starts recording from the current position. */
     public void record() {
         state = TransportState.RECORDING;
+        notifyChange(ChangeKind.STATE);
     }
 
     /** Returns the current transport state. */
@@ -72,6 +127,7 @@ public final class Transport {
             throw new IllegalArgumentException("position must not be negative: " + positionInBeats);
         }
         this.positionInBeats = positionInBeats;
+        notifyChange(ChangeKind.POSITION);
     }
 
     /**
@@ -103,6 +159,7 @@ public final class Transport {
             throw new IllegalArgumentException("tempo must be between 20 and 999 BPM: " + tempo);
         }
         tempoMap.addTempoChange(TempoChangeEvent.instant(0.0, tempo));
+        notifyChange(ChangeKind.TEMPO);
     }
 
     /**
@@ -139,6 +196,7 @@ public final class Transport {
             throw new IllegalArgumentException("denominator must be positive: " + denominator);
         }
         tempoMap.addTimeSignatureChange(new TimeSignatureChangeEvent(0.0, numerator, denominator));
+        notifyChange(ChangeKind.TIME_SIGNATURE);
     }
 
     /** Returns {@code true} if loop mode is enabled. */
@@ -149,6 +207,7 @@ public final class Transport {
     /** Enables or disables loop mode. */
     public void setLoopEnabled(boolean loopEnabled) {
         this.loopEnabled = loopEnabled;
+        notifyChange(ChangeKind.LOOP);
     }
 
     /** Returns the loop start position in beats. */
@@ -177,6 +236,7 @@ public final class Transport {
         }
         this.loopStartInBeats = startInBeats;
         this.loopEndInBeats = endInBeats;
+        notifyChange(ChangeKind.LOOP);
     }
 
     /**
@@ -198,6 +258,7 @@ public final class Transport {
                 positionInBeats -= loopLength;
             }
         }
+        notifyChange(ChangeKind.POSITION);
     }
 
     /**
@@ -398,5 +459,55 @@ public final class Transport {
      */
     public boolean isInputCaptureGated() {
         return inPreRoll || inPostRoll;
+    }
+
+    // ── Toolkit-neutral change notification ────────────────────────────────
+
+    /**
+     * Registers a toolkit-neutral change observer that is invoked
+     * <strong>after</strong> each transport field mutation completes, carrying
+     * the {@link ChangeKind} tag of the slice that changed.
+     *
+     * <p>Because the callback fires post-mutation, an observer that re-reads the
+     * transport inside its callback always sees the new value (Control
+     * Synchronization Design Book §3.2). The observer must do only lock-free,
+     * non-blocking work when it may be invoked from the {@code @RealTimeSafe}
+     * render path (via {@link #advancePosition(double)}) — the sanctioned sink
+     * is the view-model's lock-free, single-reader buffer (§4.1, §4.6).</p>
+     *
+     * @param listener the observer to register; must not be {@code null}
+     * @return a removal token; run it to unregister the observer (mirrors the
+     *         {@code DockManager.addListener} convention)
+     * @throws NullPointerException if {@code listener} is {@code null}
+     */
+    public Runnable addChangeListener(Consumer<ChangeKind> listener) {
+        Objects.requireNonNull(listener, "listener must not be null");
+        changeListeners.add(listener);
+        return () -> changeListeners.remove(listener);
+    }
+
+    /**
+     * Removes a previously {@linkplain #addChangeListener(Consumer) registered}
+     * observer. Equivalent to running the token returned by
+     * {@code addChangeListener}. Safe to call with an unregistered listener
+     * (no-op).
+     *
+     * @param listener the observer to remove; must not be {@code null}
+     * @throws NullPointerException if {@code listener} is {@code null}
+     */
+    public void removeChangeListener(Consumer<ChangeKind> listener) {
+        Objects.requireNonNull(listener, "listener must not be null");
+        changeListeners.remove(listener);
+    }
+
+    /**
+     * Notifies every registered observer of a change. Iterates the
+     * {@link CopyOnWriteArrayList} by index so no iterator is allocated and no
+     * lock is taken — safe to call from the {@code @RealTimeSafe} render path.
+     */
+    private void notifyChange(ChangeKind kind) {
+        for (int i = 0, n = changeListeners.size(); i < n; i++) {
+            changeListeners.get(i).accept(kind);
+        }
     }
 }
