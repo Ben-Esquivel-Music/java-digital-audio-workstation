@@ -11,6 +11,7 @@ import com.benesquivelmusic.daw.app.ui.help.OnboardingTour;
 import com.benesquivelmusic.daw.app.ui.help.QuickHelpBar;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.audio.AudioBackendFactory;
@@ -338,6 +339,59 @@ public final class MainController {
     /** F1 / Shift+F1 key handler installed on the primary scene. */
     private HelpKeyHandler helpKeyHandler;
 
+    /**
+     * Story 289 — the single FX-thread marshalling seam (Control
+     * Synchronization Design Book §4.5). Injected by {@code DawApplication}
+     * via {@link #setFxDispatcher(FxDispatcher)} immediately after
+     * {@code FXMLLoader.load()} returns, because the {@code fx:controller} is
+     * instantiated by FXML through a no-arg constructor and so cannot be
+     * constructor-injected. {@code DawApplication} installs the same instance
+     * as the {@link FxDispatcher#getDefault() app-scoped default} before the
+     * FXML loads, so {@link #dispatcher()} resolves it even for the brief
+     * window during {@link #initialize()} before the setter has run.
+     */
+    private FxDispatcher fxDispatcher;
+
+    /**
+     * Injects the application's {@link FxDispatcher}. Set once at app init by
+     * the composition root (see {@link #fxDispatcher}); never reassigned at
+     * runtime.
+     *
+     * @param dispatcher the marshalling seam; must not be {@code null}
+     */
+    public void setFxDispatcher(FxDispatcher dispatcher) {
+        this.fxDispatcher = java.util.Objects.requireNonNull(dispatcher, "dispatcher");
+    }
+
+    /**
+     * Resolves the marshalling seam: the injected instance if present,
+     * otherwise the {@link FxDispatcher#getDefault() app-scoped default}. The
+     * fallback keeps the few listeners wired in {@link #initialize()} (which
+     * runs <em>during</em> {@code FXMLLoader.load()}, before the setter) safe
+     * even if they were ever to fire before injection — the production default
+     * is installed before the FXML loads. Returns {@code null} only in a
+     * pure-unit context that installed no dispatcher.
+     *
+     * @return the seam, or {@code null} if none is available
+     */
+    private FxDispatcher dispatcher() {
+        return fxDispatcher != null ? fxDispatcher : FxDispatcher.getDefault();
+    }
+
+    /**
+     * Posts {@code work} to the FX thread through the {@link #fxDispatcher
+     * injected seam} when present, else the {@link FxDispatcher#getDefault()
+     * app-scoped default} (and a bare {@code runLater} when neither is
+     * installed). This is the same null-tolerant hop the other UI controllers
+     * use via {@code FxDispatcher.runOnFx(...)}; a listener wired in
+     * {@link #initialize()} that fired before {@link #setFxDispatcher} (or in a
+     * pure-unit context with no dispatcher at all) therefore never dereferences
+     * a null seam, where {@code dispatcher().onFx(...)} would have thrown.
+     */
+    private void postFx(Runnable work) {
+        FxDispatcher.runOnFx(fxDispatcher, work);
+    }
+
     @FXML
     private void initialize() {
         project = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
@@ -348,7 +402,7 @@ public final class MainController {
                 updateUndoRedoState();
                 refreshArrangementCanvas();
             } else {
-                javafx.application.Platform.runLater(() -> {
+                postFx(() -> {
                     updateUndoRedoState();
                     refreshArrangementCanvas();
                 });
@@ -425,7 +479,8 @@ public final class MainController {
                     @Override public void applyRestoredProject(DawProject restored, String label) {
                         applySnapshotRestoredProject(restored, label);
                     }
-                });
+                },
+                dispatcher());
         toolbarStateStore = new ToolbarStateStore(prefs);
         keyBindingManager = new KeyBindingManager(prefs.node("keybindings"));
 
@@ -699,7 +754,8 @@ public final class MainController {
                                 ? audioEngineController.reportedLatency()
                                 : com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN;
                     }
-                });
+                },
+                dispatcher());
     }
 
     private void status(String text, DawIcon icon) {
@@ -803,7 +859,8 @@ public final class MainController {
                         }
                     }
                 },
-                new ProjectArchiver());
+                new ProjectArchiver(),
+                dispatcher());
     }
 
     private void handleProjectRebuild(MixerView newMixerView) {
@@ -885,7 +942,7 @@ public final class MainController {
         header.getStyleClass().add("panel-header");
         // No icon-next-to-label per UI Design Book §2.4.
         trackListPanel.getChildren().add(header);
-        MixerView newMixerView = new MixerView(project, undoManager);
+        MixerView newMixerView = new MixerView(project, undoManager, dispatcher());
         handleProjectRebuild(newMixerView);
         if (notificationBar != null && label != null) {
             notificationBar.show(NotificationLevel.INFO,
@@ -992,7 +1049,8 @@ public final class MainController {
                         return inspectorDrawer == null ? null
                                 : inspectorDrawer.getSelectionModel();
                     }
-                });
+                },
+                dispatcher());
     }
 
     private void createTrackStripController() {
@@ -1194,7 +1252,8 @@ public final class MainController {
                     }
                     projectDirty = true;
                 },
-                this::status);
+                this::status,
+                dispatcher());
     }
 
     private void createHistoryPanelController() {
@@ -1207,7 +1266,8 @@ public final class MainController {
                     @Override public boolean isBrowserPanelVisible() { return browserPanelController.isPanelVisible(); }
                     @Override public void hideBrowserPanel() { browserPanelController.toggleBrowserPanel(); }
                     @Override public void updateStatusBar(String text, DawIcon icon) { status(text, icon); }
-                });
+                },
+                dispatcher());
         historyPanelController.build();
     }
 
@@ -1474,7 +1534,7 @@ public final class MainController {
             // degraded badge set on the JavaFX thread.
             NotificationManager toastSink = message -> {
                 if (notificationBar != null) {
-                    javafx.application.Platform.runLater(() -> notificationBar.show(
+                    postFx(() -> notificationBar.show(
                             NotificationLevel.WARNING, message));
                 }
             };
@@ -1489,7 +1549,7 @@ public final class MainController {
                             mv.refresh();
                         }
                     },
-                    javafx.application.Platform::runLater,
+                    this::postFx,
                     System::nanoTime);
             cpuBudgetEnforcer.performanceEvents().subscribe(trackBudgetUiBinding);
 
@@ -1571,7 +1631,7 @@ public final class MainController {
     private void initializePluginFaultIsolation() {
         try {
             pluginSupervisor = new PluginInvocationSupervisor();
-            pluginFaultUiController = new PluginFaultUiController(pluginSupervisor, notificationBar);
+            pluginFaultUiController = new PluginFaultUiController(pluginSupervisor, notificationBar, dispatcher());
             // Mixer.setPluginSupervisor both installs the supervisor on every
             // current channel/bus/master AND remembers it so channels added
             // later (new tracks, return buses) inherit it automatically.
@@ -1590,7 +1650,7 @@ public final class MainController {
     }
 
     private void buildBrowserPanel(boolean initiallyVisible) {
-        BrowserPanel browserPanel = new BrowserPanel();
+        BrowserPanel browserPanel = new BrowserPanel(dispatcher());
         // Per-row audition wiring (story 275) — single-channel preview
         // engine from daw.core (com.benesquivelmusic.daw.core.browser).
         browserPanel.setSampleAuditioner(new SamplePreviewAuditioner());
@@ -3204,7 +3264,7 @@ public final class MainController {
                 case CANCELLED -> NotificationLevel.WARNING;
                 default        -> NotificationLevel.INFO;
             };
-            javafx.application.Platform.runLater(() -> {
+            postFx(() -> {
                 if (notificationBar != null) {
                     notificationBar.show(level, msg);
                 }
@@ -3641,7 +3701,7 @@ public final class MainController {
         if (!(parent instanceof HBox bar)) {
             return;
         }
-        lockStatusIndicator = new LockStatusIndicator();
+        lockStatusIndicator = new LockStatusIndicator(dispatcher());
         int idx = bar.getChildren().indexOf(projectInfoLabel);
         bar.getChildren().add(idx + 1, lockStatusIndicator);
         refreshLockStatusIndicator();

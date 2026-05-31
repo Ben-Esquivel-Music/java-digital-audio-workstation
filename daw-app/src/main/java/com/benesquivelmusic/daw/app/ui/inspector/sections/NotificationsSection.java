@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.app.ui.NotificationHistoryService;
 import com.benesquivelmusic.daw.app.ui.NotificationPill;
 import com.benesquivelmusic.daw.app.ui.inspector.InspectorDrawer;
 import com.benesquivelmusic.daw.app.ui.inspector.InspectorSection;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 
 import javafx.application.Platform;
 import javafx.geometry.Pos;
@@ -95,7 +96,7 @@ public final class NotificationsSection extends InspectorSection {
             if (Platform.isFxApplicationThread()) {
                 rebuild();
             } else {
-                Platform.runLater(this::rebuild);
+                FxDispatcher.runOnFx(this::rebuild);
             }
         };
 

@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.mixer.MixerChannel;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.track.BatchFreezeTracksAction;
@@ -70,6 +71,14 @@ public final class TrackFreezeController {
     private final Runnable onSelectionFreezeChanged;
     private final BiConsumer<String, DawIcon> statusReporter;
     private final Window owner;
+    /**
+     * The FX-thread marshalling seam (story 289), injected on the production
+     * path and threaded into the modeless {@link TaskProgressIndicator}. May be
+     * {@code null} in a pure-unit context (the compatibility constructor
+     * defaults it to {@link FxDispatcher#getDefault()}); {@link #postFx}
+     * tolerates the null.
+     */
+    private final FxDispatcher fxDispatcher;
 
     /** Per-track-id provenance map for the snowflake tooltip. Thread-safe
      *  because recordFreeze() is called from the virtual worker thread while
@@ -105,12 +114,54 @@ public final class TrackFreezeController {
                                  Consumer<Track> onTrackFreezeChanged,
                                  Runnable onSelectionFreezeChanged,
                                  BiConsumer<String, DawIcon> statusReporter) {
+        this(project, undoManager, owner, onTrackFreezeChanged,
+                onSelectionFreezeChanged, statusReporter, FxDispatcher.getDefault());
+    }
+
+    /**
+     * Creates a new controller with an explicit FX-thread marshalling seam
+     * (story 289).
+     *
+     * @param project                  project supplying tracks, mixer,
+     *                                 sample rate and tempo (non-null)
+     * @param undoManager              undo manager to register actions with
+     *                                 (non-null)
+     * @param owner                    owning JavaFX window for the progress
+     *                                 indicator; may be {@code null}
+     * @param onTrackFreezeChanged     single-track freeze-state callback
+     * @param onSelectionFreezeChanged batch freeze/unfreeze callback
+     * @param statusReporter           status-bar reporter (message + icon)
+     * @param fxDispatcher             the FX-thread marshalling seam, or
+     *                                 {@code null} to use the
+     *                                 {@link FxDispatcher#getDefault() default}
+     */
+    public TrackFreezeController(DawProject project,
+                                 UndoManager undoManager,
+                                 Window owner,
+                                 Consumer<Track> onTrackFreezeChanged,
+                                 Runnable onSelectionFreezeChanged,
+                                 BiConsumer<String, DawIcon> statusReporter,
+                                 FxDispatcher fxDispatcher) {
         this.project = Objects.requireNonNull(project, "project must not be null");
         this.undoManager = Objects.requireNonNull(undoManager, "undoManager must not be null");
         this.onTrackFreezeChanged = onTrackFreezeChanged != null ? onTrackFreezeChanged : t -> {};
         this.onSelectionFreezeChanged = onSelectionFreezeChanged != null ? onSelectionFreezeChanged : () -> {};
         this.statusReporter = statusReporter != null ? statusReporter : (m, i) -> {};
         this.owner = owner;
+        // May be null in a pure-unit context; postFx() / TaskProgressIndicator
+        // fall back to the static seam, preserving today's behaviour exactly.
+        this.fxDispatcher = fxDispatcher;
+    }
+
+    /**
+     * Posts {@code work} to the FX thread through the injected
+     * {@link FxDispatcher} when present, else the static app-scoped seam — the
+     * null branch reproduces today's behaviour exactly (story 289). Callers
+     * already guard with {@code Platform.isFxApplicationThread()}; this is only
+     * the off-thread hop.
+     */
+    private void postFx(Runnable work) {
+        FxDispatcher.runOnFx(fxDispatcher, work);
     }
 
     /**
@@ -258,7 +309,8 @@ public final class TrackFreezeController {
      */
     private void runFreezeAsync(List<Track> targets, boolean batch) {
         TaskProgressIndicator progress = new TaskProgressIndicator(
-                owner, batch ? "Freezing " + targets.size() + " tracks…" : "Freezing track…");
+                owner, batch ? "Freezing " + targets.size() + " tracks…" : "Freezing track…",
+                fxDispatcher);
         AtomicBoolean cancelled = new AtomicBoolean(false);
         progress.setOnCancel(() -> cancelled.set(true));
         if (!batch) {
@@ -352,7 +404,7 @@ public final class TrackFreezeController {
                         if (Platform.isFxApplicationThread()) {
                             refresh.run();
                         } else {
-                            Platform.runLater(refresh);
+                            postFx(refresh);
                         }
                     }
                 });
@@ -360,13 +412,14 @@ public final class TrackFreezeController {
 
     /**
      * Reports a status message on the FX thread. Safe to call from any
-     * thread — hops via {@link Platform#runLater} when off the FX thread.
+     * thread — marshals through the {@link FxDispatcher} seam (story 289)
+     * when off the FX thread.
      */
     private void reportStatus(String message, DawIcon icon) {
         if (Platform.isFxApplicationThread()) {
             statusReporter.accept(message, icon);
         } else {
-            Platform.runLater(() -> statusReporter.accept(message, icon));
+            postFx(() -> statusReporter.accept(message, icon));
         }
     }
 
@@ -378,7 +431,7 @@ public final class TrackFreezeController {
      * modified from one thread. If called from the FX thread already,
      * the runnable is executed inline.
      */
-    private static void runOnFxThreadAndWait(Runnable action) {
+    private void runOnFxThreadAndWait(Runnable action) {
         if (Platform.isFxApplicationThread()) {
             action.run();
             return;
@@ -386,7 +439,7 @@ public final class TrackFreezeController {
         Object lock = new Object();
         var done = new AtomicBoolean(false);
         var failure = new java.util.concurrent.atomic.AtomicReference<RuntimeException>();
-        Platform.runLater(() -> {
+        postFx(() -> {
             try {
                 action.run();
             } catch (RuntimeException e) {

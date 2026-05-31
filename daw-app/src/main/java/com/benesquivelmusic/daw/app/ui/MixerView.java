@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.app.ui.dock.DockZone;
 import com.benesquivelmusic.daw.app.ui.dock.PanelGripHandle;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitor;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
@@ -250,6 +251,14 @@ public final class MixerView extends VBox implements Dockable {
      * mixer channel; null hides the menu entry.
      */
     private java.util.function.Consumer<MixerChannel> onConfigureCpuBudget;
+    /**
+     * The FX-thread marshalling seam (story 289), injected on the production
+     * path and threaded into every {@link InsertEffectRack} this view builds.
+     * May be {@code null} in a pure-unit context (the compatibility
+     * constructors default it to {@link FxDispatcher#getDefault()});
+     * {@link #postFx} tolerates the null.
+     */
+    private final FxDispatcher fxDispatcher;
 
     /**
      * Creates a new mixer view bound to the given project.
@@ -267,8 +276,24 @@ public final class MixerView extends VBox implements Dockable {
      * @param undoManager the undo manager for insert effect operations (may be {@code null})
      */
     public MixerView(DawProject project, UndoManager undoManager) {
+        this(project, undoManager, FxDispatcher.getDefault());
+    }
+
+    /**
+     * Creates a new mixer view bound to the given project, with undo support
+     * and an explicit FX-thread marshalling seam (story 289).
+     *
+     * @param project      the DAW project to visualize
+     * @param undoManager  the undo manager for insert effect operations (may be {@code null})
+     * @param fxDispatcher the FX-thread marshalling seam, or {@code null} to use
+     *                     the {@link FxDispatcher#getDefault() app-scoped default}
+     */
+    public MixerView(DawProject project, UndoManager undoManager, FxDispatcher fxDispatcher) {
         this.project = Objects.requireNonNull(project, "project must not be null");
         this.undoManager = undoManager;
+        // May be null in a pure-unit context; postFx() / InsertEffectRack fall
+        // back to the static seam, preserving today's behaviour byte-for-byte.
+        this.fxDispatcher = fxDispatcher;
         getStyleClass().add("mixer-panel");
 
         // Refresh solo-safe button rings and "Solo safe" checkmarks after
@@ -280,7 +305,7 @@ public final class MixerView extends VBox implements Dockable {
             if (javafx.application.Platform.isFxApplicationThread()) {
                 runSoloSafeSyncCallbacks();
             } else {
-                javafx.application.Platform.runLater(this::runSoloSafeSyncCallbacks);
+                postFx(this::runSoloSafeSyncCallbacks);
             }
         };
         if (this.undoManager != null) {
@@ -296,7 +321,7 @@ public final class MixerView extends VBox implements Dockable {
             if (javafx.application.Platform.isFxApplicationThread()) {
                 refresh();
             } else {
-                javafx.application.Platform.runLater(this::refresh);
+                postFx(this::refresh);
             }
         };
         project.getChannelLinkManager().addListener(this.channelLinkListener);
@@ -456,7 +481,7 @@ public final class MixerView extends VBox implements Dockable {
                     snapshotsPanel.refresh();
                     syncSlotButtons();
                 } else {
-                    javafx.application.Platform.runLater(() -> {
+                    postFx(() -> {
                         snapshotsPanel.refresh();
                         syncSlotButtons();
                     });
@@ -465,6 +490,17 @@ public final class MixerView extends VBox implements Dockable {
         }
 
         refresh();
+    }
+
+    /**
+     * Posts {@code work} to the FX thread through the injected
+     * {@link FxDispatcher} when present, else the static app-scoped seam — the
+     * null branch reproduces today's behaviour exactly (story 289). Callers
+     * already guard with {@code Platform.isFxApplicationThread()} where an
+     * inline run is wanted; this is only the off-thread hop.
+     */
+    private void postFx(Runnable work) {
+        FxDispatcher.runOnFx(fxDispatcher, work);
     }
 
     // ── Dockable contract (story 285) ────────────────────────────────────────
@@ -1446,7 +1482,7 @@ public final class MixerView extends VBox implements Dockable {
         int channels = project.getFormat().channels();
         double sr = project.getFormat().sampleRate();
         int bs = project.getFormat().bufferSize();
-        InsertEffectRack insertRack = new InsertEffectRack(mixerChannel, channels, sr, bs, undoManager);
+        InsertEffectRack insertRack = new InsertEffectRack(mixerChannel, channels, sr, bs, undoManager, fxDispatcher);
         insertRack.setPluginRegistry(pluginRegistry);
         insertRack.setMixer(project.getMixer());
         insertRack.setDragVisualAdvisor(dragVisualAdvisor);
@@ -1683,7 +1719,7 @@ public final class MixerView extends VBox implements Dockable {
         int channels = project.getFormat().channels();
         double sr = project.getFormat().sampleRate();
         int bs = project.getFormat().bufferSize();
-        InsertEffectRack insertRack = new InsertEffectRack(returnBus, channels, sr, bs, undoManager);
+        InsertEffectRack insertRack = new InsertEffectRack(returnBus, channels, sr, bs, undoManager, fxDispatcher);
         insertRack.setPluginRegistry(pluginRegistry);
         insertRack.setMixer(project.getMixer());
         insertRack.setDragVisualAdvisor(dragVisualAdvisor);

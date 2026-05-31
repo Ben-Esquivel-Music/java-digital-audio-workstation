@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -41,6 +43,13 @@ public final class TaskProgressIndicator {
     private final Button cancelButton;
     private volatile Runnable onCancel;
     private volatile boolean cancelled;
+    /**
+     * The FX-thread marshalling seam (story 289), injected on the production
+     * path by the owning controller. May be {@code null} in a pure-unit context
+     * (the compatibility constructor defaults it to
+     * {@link FxDispatcher#getDefault()}); {@link #postFx} tolerates the null.
+     */
+    private final FxDispatcher fxDispatcher;
 
     /**
      * Creates a new progress indicator.
@@ -50,6 +59,23 @@ public final class TaskProgressIndicator {
      * @param title the initial window title and headline label
      */
     public TaskProgressIndicator(Window owner, String title) {
+        this(owner, title, FxDispatcher.getDefault());
+    }
+
+    /**
+     * Creates a new progress indicator with an explicit FX-thread marshalling
+     * seam (story 289).
+     *
+     * @param owner        the owning window for visual stacking; may be
+     *                     {@code null} for a free-floating indicator
+     * @param title        the initial window title and headline label
+     * @param fxDispatcher the FX-thread marshalling seam, or {@code null} to use
+     *                     the {@link FxDispatcher#getDefault() app-scoped default}
+     */
+    public TaskProgressIndicator(Window owner, String title, FxDispatcher fxDispatcher) {
+        // May be null in a pure-unit context; postFx() falls back to the
+        // static seam, preserving today's behaviour byte-for-byte.
+        this.fxDispatcher = fxDispatcher;
         this.titleLabel = new Label(title);
         this.titleLabel.getStyleClass().add("panel-header");
         this.detailLabel = new Label("");
@@ -101,7 +127,7 @@ public final class TaskProgressIndicator {
         if (Platform.isFxApplicationThread()) {
             r.run();
         } else {
-            Platform.runLater(r);
+            postFx(r);
         }
     }
 
@@ -114,7 +140,7 @@ public final class TaskProgressIndicator {
         if (Platform.isFxApplicationThread()) {
             r.run();
         } else {
-            Platform.runLater(r);
+            postFx(r);
         }
     }
 
@@ -123,7 +149,7 @@ public final class TaskProgressIndicator {
         if (Platform.isFxApplicationThread()) {
             if (!stage.isShowing()) stage.show();
         } else {
-            Platform.runLater(() -> { if (!stage.isShowing()) stage.show(); });
+            postFx(() -> { if (!stage.isShowing()) stage.show(); });
         }
     }
 
@@ -132,7 +158,7 @@ public final class TaskProgressIndicator {
         if (Platform.isFxApplicationThread()) {
             stage.close();
         } else {
-            Platform.runLater(stage::close);
+            postFx(stage::close);
         }
     }
 
@@ -152,7 +178,7 @@ public final class TaskProgressIndicator {
         if (Platform.isFxApplicationThread()) {
             uiUpdate.run();
         } else {
-            Platform.runLater(uiUpdate);
+            postFx(uiUpdate);
         }
         Runnable cb = onCancel;
         if (cb != null) cb.run();
@@ -171,13 +197,24 @@ public final class TaskProgressIndicator {
         if (Platform.isFxApplicationThread()) {
             r.run();
         } else {
-            Platform.runLater(r);
+            postFx(r);
         }
     }
 
     /** Returns {@code true} once {@link #requestCancel()} has been invoked. */
     public boolean isCancelled() {
         return cancelled;
+    }
+
+    /**
+     * Posts {@code work} to the FX thread through the injected
+     * {@link FxDispatcher} when present, else the static app-scoped seam — the
+     * null branch reproduces today's behaviour exactly (story 289). Callers
+     * already guard with {@code Platform.isFxApplicationThread()}; this is only
+     * the off-thread hop.
+     */
+    private void postFx(Runnable work) {
+        FxDispatcher.runOnFx(fxDispatcher, work);
     }
 
     /** Package-private accessor used by tests to verify state without an FX scene. */

@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.dialogs.DawgDialog;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.sdk.audio.AudioBackendException;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceEvent;
 import com.benesquivelmusic.daw.sdk.audio.AudioDeviceInfo;
@@ -964,7 +965,7 @@ public final class AudioSettingsDialog extends DawgDialog<Void> {
         Thread.ofVirtual().name("audio-control-panel").start(() -> {
             try {
                 runnable.run();
-                Platform.runLater(() -> {
+                FxDispatcher.runOnFx(() -> {
                     // Cancel the pending subscription before calling
                     // refreshCapabilities() so it doesn't fire again
                     // when the same refresh has already happened.
@@ -1044,7 +1045,7 @@ public final class AudioSettingsDialog extends DawgDialog<Void> {
                         var ignoredDevice, var ignoredFormat, FormatChangeReason reason)
                         && isCapabilityChanging(reason)) {
                     proxy.cancel();
-                    Platform.runLater(AudioSettingsDialog.this::refreshCapabilities);
+                    FxDispatcher.runOnFx(AudioSettingsDialog.this::refreshCapabilities);
                 }
             }
 
@@ -1267,7 +1268,7 @@ public final class AudioSettingsDialog extends DawgDialog<Void> {
         if (Platform.isFxApplicationThread()) {
             action.run();
         } else {
-            Platform.runLater(action);
+            FxDispatcher.runOnFx(action);
         }
     }
 
@@ -1275,7 +1276,7 @@ public final class AudioSettingsDialog extends DawgDialog<Void> {
         // story 276 — route through DawgDialog.error(...) so the error
         // dialog gets the §5.9 flat chrome instead of JavaFX's Alert
         // (whose header gradient bypasses the author stylesheet).
-        Platform.runLater(() ->
+        FxDispatcher.runOnFx(() ->
                 DawgDialog.error(header, content).showAndWait());
     }
 

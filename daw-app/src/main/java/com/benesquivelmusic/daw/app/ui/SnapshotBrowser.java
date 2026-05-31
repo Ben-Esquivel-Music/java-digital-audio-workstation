@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.snapshot.SnapshotBrowserService;
 import com.benesquivelmusic.daw.core.snapshot.SnapshotEntry;
 import com.benesquivelmusic.daw.core.snapshot.SnapshotKind;
@@ -78,12 +79,37 @@ public final class SnapshotBrowser extends VBox {
     private Runnable onCreateCheckpoint = () -> {};
 
     /**
-     * Creates a new snapshot browser bound to the given service.
+     * The FX-thread marshalling seam (story 289), injected on the production
+     * path. May be {@code null} in a pure-unit context (the compatibility
+     * constructor defaults it to {@link FxDispatcher#getDefault()});
+     * {@link #postFx} tolerates the null.
+     */
+    private final FxDispatcher fxDispatcher;
+
+    /**
+     * Creates a new snapshot browser bound to the given service, marshalling
+     * off-thread refreshes through the {@link FxDispatcher#getDefault()
+     * app-scoped default} seam.
      *
      * @param service the snapshot service that supplies entries
      */
     public SnapshotBrowser(SnapshotBrowserService service) {
+        this(service, FxDispatcher.getDefault());
+    }
+
+    /**
+     * Creates a new snapshot browser bound to the given service with an
+     * explicit FX-thread marshalling seam (story 289).
+     *
+     * @param service      the snapshot service that supplies entries
+     * @param fxDispatcher the FX-thread marshalling seam, or {@code null} to use
+     *                     the {@link FxDispatcher#getDefault() app-scoped default}
+     */
+    public SnapshotBrowser(SnapshotBrowserService service, FxDispatcher fxDispatcher) {
         this.service = Objects.requireNonNull(service, "service must not be null");
+        // May be null in a pure-unit context; postFx() falls back to the
+        // static seam, preserving today's behaviour byte-for-byte.
+        this.fxDispatcher = fxDispatcher;
 
         getStyleClass().add("browser-panel");
         setPrefWidth(DEFAULT_WIDTH);
@@ -217,8 +243,17 @@ public final class SnapshotBrowser extends VBox {
         if (Platform.isFxApplicationThread()) {
             doRefresh();
         } else {
-            Platform.runLater(this::doRefresh);
+            postFx(this::doRefresh);
         }
+    }
+
+    /**
+     * Posts {@code work} to the FX thread through the injected
+     * {@link FxDispatcher} when present, else the static app-scoped seam — the
+     * null branch reproduces today's behaviour exactly (story 289).
+     */
+    private void postFx(Runnable work) {
+        FxDispatcher.runOnFx(fxDispatcher, work);
     }
 
     private void doRefresh() {

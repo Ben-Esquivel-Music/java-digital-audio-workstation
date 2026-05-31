@@ -1,8 +1,9 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
-import com.benesquivelmusic.daw.core.undo.UndoManager;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
+import com.benesquivelmusic.daw.core.undo.UndoManager;
 
 import javafx.animation.KeyFrame;
 import javafx.animation.KeyValue;
@@ -39,6 +40,14 @@ final class HistoryPanelController {
     private final BorderPane rootPane;
     private final javafx.scene.control.Button historyButton;
     private final Host host;
+    /**
+     * The FX-thread marshalling seam (story 289), injected on the production
+     * path and threaded into every {@link UndoHistoryPanel} this controller
+     * builds. May be {@code null} in a pure-unit context (the compatibility
+     * constructor defaults it to {@link FxDispatcher#getDefault()});
+     * {@link #postFx} tolerates the null.
+     */
+    private final FxDispatcher fxDispatcher;
 
     private UndoHistoryPanel undoHistoryPanel;
     private boolean historyPanelVisible;
@@ -46,13 +55,32 @@ final class HistoryPanelController {
     HistoryPanelController(BorderPane rootPane,
                            javafx.scene.control.Button historyButton,
                            Host host) {
+        this(rootPane, historyButton, host, FxDispatcher.getDefault());
+    }
+
+    HistoryPanelController(BorderPane rootPane,
+                           javafx.scene.control.Button historyButton,
+                           Host host,
+                           FxDispatcher fxDispatcher) {
         this.rootPane = rootPane;
         this.historyButton = historyButton;
         this.host = host;
+        // May be null in a pure-unit context; postFx() / UndoHistoryPanel fall
+        // back to the static seam, preserving today's behaviour byte-for-byte.
+        this.fxDispatcher = fxDispatcher;
+    }
+
+    /**
+     * Posts {@code work} to the FX thread through the injected
+     * {@link FxDispatcher} when present, else the static app-scoped seam — the
+     * null branch reproduces today's behaviour exactly (story 289).
+     */
+    private void postFx(Runnable work) {
+        FxDispatcher.runOnFx(fxDispatcher, work);
     }
 
     void build() {
-        undoHistoryPanel = new UndoHistoryPanel(host.undoManager());
+        undoHistoryPanel = new UndoHistoryPanel(host.undoManager(), fxDispatcher);
         historyButton.setOnAction(_ -> toggleHistoryPanel());
         LOG.fine("Built undo history panel");
     }
@@ -66,13 +94,13 @@ final class HistoryPanelController {
                 host.updateUndoRedoState();
                 host.refreshArrangementCanvas();
             } else {
-                javafx.application.Platform.runLater(() -> {
+                postFx(() -> {
                     host.updateUndoRedoState();
                     host.refreshArrangementCanvas();
                 });
             }
         });
-        undoHistoryPanel = new UndoHistoryPanel(host.undoManager());
+        undoHistoryPanel = new UndoHistoryPanel(host.undoManager(), fxDispatcher);
         if (historyPanelVisible) {
             rootPane.setRight(undoHistoryPanel);
         }

@@ -15,6 +15,7 @@ import javafx.scene.paint.Color;
 import javafx.scene.shape.Circle;
 
 import java.util.Objects;
+import com.benesquivelmusic.daw.app.ui.marshal.FxAnimationTimerAllowed;
 import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
@@ -33,6 +34,9 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * {@link NoiseGateProcessor}).</p>
  */
 @HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
+@FxAnimationTimerAllowed("Per-frame input-level meter timer owned by this plugin "
+        + "view (javafx-application-design §6 control-owns-timer); not a "
+        + "cross-thread seam — story 289 sentinel.")
 public final class NoiseGatePluginView extends VBox {
 
     /** Maximum displayed level on the input meter, in dBFS (top of bar). */

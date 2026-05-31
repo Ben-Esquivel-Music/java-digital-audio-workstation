@@ -1,8 +1,8 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.plugin.PluginFault;
 import com.benesquivelmusic.daw.core.plugin.PluginInvocationSupervisor;
-import javafx.application.Platform;
 
 import java.util.Objects;
 import java.util.concurrent.Flow;
@@ -21,12 +21,51 @@ public final class PluginFaultUiController {
     private final PluginFaultLogDialog dialog;
     private final ToastSubscriber toastSubscriber = new ToastSubscriber();
 
+    /**
+     * The FX-thread marshalling seam (story 289), injected on the production
+     * path. May be {@code null} in a pure-unit context (the compatibility
+     * constructor defaults it to {@link FxDispatcher#getDefault()});
+     * {@link #postFx} tolerates the null.
+     */
+    private final FxDispatcher fxDispatcher;
+
+    /**
+     * Creates a controller that marshals fault toasts onto the FX thread
+     * through the {@link FxDispatcher#getDefault() app-scoped default} seam.
+     */
     public PluginFaultUiController(PluginInvocationSupervisor supervisor,
                                    NotificationBar notificationBar) {
+        this(supervisor, notificationBar, FxDispatcher.getDefault());
+    }
+
+    /**
+     * Creates a controller with an explicit FX-thread marshalling seam
+     * (story 289).
+     *
+     * @param supervisor      the plugin invocation supervisor whose faults to surface
+     * @param notificationBar the bar that shows fault toasts
+     * @param fxDispatcher    the FX-thread marshalling seam, or {@code null} to use
+     *                        the {@link FxDispatcher#getDefault() app-scoped default}
+     */
+    public PluginFaultUiController(PluginInvocationSupervisor supervisor,
+                                   NotificationBar notificationBar,
+                                   FxDispatcher fxDispatcher) {
         Objects.requireNonNull(supervisor, "supervisor must not be null");
         this.notificationBar = Objects.requireNonNull(notificationBar, "notificationBar must not be null");
+        // May be null in a pure-unit context; postFx() falls back to the
+        // static seam, preserving today's behaviour byte-for-byte.
+        this.fxDispatcher = fxDispatcher;
         this.dialog = new PluginFaultLogDialog(supervisor);
         supervisor.publisher().subscribe(toastSubscriber);
+    }
+
+    /**
+     * Posts {@code work} to the FX thread through the injected
+     * {@link FxDispatcher} when present, else the static app-scoped seam — the
+     * null branch reproduces today's behaviour exactly (story 289).
+     */
+    private void postFx(Runnable work) {
+        FxDispatcher.runOnFx(fxDispatcher, work);
     }
 
     /** Opens the fault log dialog (for menu-bar wiring). */
@@ -55,7 +94,7 @@ public final class PluginFaultUiController {
 
         @Override
         public void onNext(PluginFault item) {
-            Platform.runLater(() -> {
+            postFx(() -> {
                 String msg = "Plugin " + item.pluginId() + " was bypassed due to an error — "
                         + "open Plugin Fault Log for details"
                         + (item.quarantined() ? " (quarantined)" : "");

@@ -16,6 +16,7 @@ import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 
 import java.util.Objects;
+import com.benesquivelmusic.daw.app.ui.marshal.FxAnimationTimerAllowed;
 import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
@@ -34,6 +35,9 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * {@link DeEsserProcessor}).</p>
  */
 @HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
+@FxAnimationTimerAllowed("Per-frame gain-reduction meter timer owned by this "
+        + "plugin view (javafx-application-design §6 control-owns-timer); not a "
+        + "cross-thread seam — story 289 sentinel.")
 public final class DeEsserPluginView extends VBox {
 
     /** Maximum gain-reduction shown on the meter, in dB (display range: 0 .. -MAX). */

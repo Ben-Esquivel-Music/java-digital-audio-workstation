@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.event.EventBusPublisher;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
@@ -90,6 +91,15 @@ final class ViewNavigationController {
     private final Label statusBarLabel;
     private final ToolbarStateStore toolbarStateStore;
     private final Host host;
+
+    /**
+     * The FX-thread marshalling seam (story 289), forwarded to the
+     * {@link MixerView} this controller builds. May be {@code null} in a
+     * pure-unit context (the compatibility constructor defaults it to
+     * {@link FxDispatcher#getDefault()}); {@code MixerView} tolerates the null
+     * via its own fallback.
+     */
+    private final FxDispatcher fxDispatcher;
 
     // Snap button (top toolbar)
     private final Button snapButton;
@@ -182,11 +192,29 @@ final class ViewNavigationController {
                              boolean initialSnapEnabled,
                              GridResolution initialGridResolution,
                              Host host) {
+        this(rootPane, statusBarLabel, toolbarStateStore, snapButton, initialView,
+                initialEditTool, initialSnapEnabled, initialGridResolution, host,
+                FxDispatcher.getDefault());
+    }
+
+    ViewNavigationController(BorderPane rootPane,
+                             Label statusBarLabel,
+                             ToolbarStateStore toolbarStateStore,
+                             Button snapButton,
+                             DawView initialView,
+                             EditTool initialEditTool,
+                             boolean initialSnapEnabled,
+                             GridResolution initialGridResolution,
+                             Host host,
+                             FxDispatcher fxDispatcher) {
         this.rootPane = Objects.requireNonNull(rootPane, "rootPane must not be null");
         this.statusBarLabel = Objects.requireNonNull(statusBarLabel, "statusBarLabel must not be null");
         this.toolbarStateStore = Objects.requireNonNull(toolbarStateStore, "toolbarStateStore must not be null");
         this.snapButton = Objects.requireNonNull(snapButton, "snapButton must not be null");
         this.host = Objects.requireNonNull(host, "host must not be null");
+        // May be null in a pure-unit context; MixerView falls back to the
+        // static seam, preserving today's behaviour byte-for-byte.
+        this.fxDispatcher = fxDispatcher;
 
         this.activeView = Objects.requireNonNull(initialView, "initialView must not be null");
         this.activeEditTool = Objects.requireNonNull(initialEditTool, "initialEditTool must not be null");
@@ -205,7 +233,7 @@ final class ViewNavigationController {
         viewCache.put(DawView.ARRANGEMENT, rootPane.getCenter());
 
         // Mixer view — real channel-strip mixer panel
-        mixerView = new MixerView(host.project(), host.undoManager());
+        mixerView = new MixerView(host.project(), host.undoManager(), fxDispatcher);
         viewCache.put(DawView.MIXER, mixerView);
 
         // Editor view — MIDI piano-roll / audio waveform editor panel

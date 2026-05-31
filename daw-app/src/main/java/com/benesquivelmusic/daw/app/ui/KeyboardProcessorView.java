@@ -2,6 +2,8 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.marshal.FxAnimationTimerAllowed;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.midi.KeyboardPreset;
 import com.benesquivelmusic.daw.core.midi.KeyboardProcessor;
 import com.benesquivelmusic.daw.core.midi.VelocityCurve;
@@ -42,6 +44,9 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * names on white keys.</p>
  */
 @HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
+@FxAnimationTimerAllowed("Per-frame MIDI-playback advancement timer owned by "
+        + "this keyboard view (javafx-application-design §6 control-owns-timer); "
+        + "not a cross-thread seam — story 289 sentinel.")
 public final class KeyboardProcessorView extends VBox {
 
     // ── Layout Constants ───────────────────────────────────────────────
@@ -199,7 +204,7 @@ public final class KeyboardProcessorView extends VBox {
             if (Platform.isFxApplicationThread()) {
                 paintKeyboard();
             } else {
-                Platform.runLater(this::paintKeyboard);
+                FxDispatcher.runOnFx(this::paintKeyboard);
             }
         };
         processor.addListener(keyboardListener);

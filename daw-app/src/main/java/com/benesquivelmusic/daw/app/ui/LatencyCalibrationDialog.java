@@ -2,11 +2,11 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.sdk.audio.AudioChannelInfo;
 import com.benesquivelmusic.daw.sdk.audio.LatencyCalibration;
 import com.benesquivelmusic.daw.sdk.audio.LatencyCalibration.CalibrationResult;
-import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.Button;
@@ -322,11 +322,11 @@ public final class LatencyCalibrationDialog extends Dialog<LatencyCalibrationDia
                 .unstarted(() -> {
                     try {
                         CalibrationResult r = runner.run(input);
-                        Platform.runLater(() -> applyResult(r));
+                        FxDispatcher.runOnFx(() -> applyResult(r));
                     } catch (Exception ex) {
                         final String msg = ex.getMessage() != null ? ex.getMessage()
                                 : ex.getClass().getSimpleName();
-                        Platform.runLater(() -> applyError(msg));
+                        FxDispatcher.runOnFx(() -> applyError(msg));
                     }
                 });
         worker.start();

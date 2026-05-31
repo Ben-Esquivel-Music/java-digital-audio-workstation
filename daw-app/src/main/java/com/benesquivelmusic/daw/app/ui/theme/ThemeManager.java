@@ -1,5 +1,7 @@
 package com.benesquivelmusic.daw.app.ui.theme;
 
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+
 import javafx.application.Platform;
 import javafx.beans.property.ObjectProperty;
 import javafx.beans.property.SimpleObjectProperty;
@@ -496,7 +498,7 @@ public final class ThemeManager {
             return;
         }
         try {
-            Platform.runLater(r);
+            FxDispatcher.runOnFx(r);
         } catch (IllegalStateException toolkitNotRunning) {
             // No JavaFX toolkit yet / toolkit already shut down (a
             // pure-unit context, or a theme change racing application

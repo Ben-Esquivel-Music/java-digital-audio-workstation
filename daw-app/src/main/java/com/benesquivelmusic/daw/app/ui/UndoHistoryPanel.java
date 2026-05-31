@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.undo.UndoHistoryListener;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.core.undo.UndoableAction;
@@ -41,6 +42,13 @@ public final class UndoHistoryPanel extends VBox {
     private final ObservableList<String> historyItems;
     private final UndoHistoryListener listener;
     private boolean updating;
+    /**
+     * The FX-thread marshalling seam (story 289), injected on the production
+     * path. May be {@code null} in a pure-unit context (the compatibility
+     * constructor defaults it to {@link FxDispatcher#getDefault()});
+     * {@link #postFx} tolerates the null.
+     */
+    private final FxDispatcher fxDispatcher;
 
     /**
      * Creates a new undo history panel bound to the given {@link UndoManager}.
@@ -48,7 +56,22 @@ public final class UndoHistoryPanel extends VBox {
      * @param undoManager the undo manager whose history to display
      */
     public UndoHistoryPanel(UndoManager undoManager) {
+        this(undoManager, FxDispatcher.getDefault());
+    }
+
+    /**
+     * Creates a new undo history panel with an explicit FX-thread marshalling
+     * seam (story 289).
+     *
+     * @param undoManager  the undo manager whose history to display
+     * @param fxDispatcher the FX-thread marshalling seam, or {@code null} to use
+     *                     the {@link FxDispatcher#getDefault() app-scoped default}
+     */
+    public UndoHistoryPanel(UndoManager undoManager, FxDispatcher fxDispatcher) {
         this.undoManager = Objects.requireNonNull(undoManager, "undoManager must not be null");
+        // May be null in a pure-unit context; postFx() falls back to the
+        // static seam, preserving today's behaviour byte-for-byte.
+        this.fxDispatcher = fxDispatcher;
 
         getStyleClass().add("browser-panel");
         setPrefWidth(DEFAULT_WIDTH);
@@ -83,12 +106,21 @@ public final class UndoHistoryPanel extends VBox {
             if (Platform.isFxApplicationThread()) {
                 refreshHistory();
             } else {
-                Platform.runLater(this::refreshHistory);
+                postFx(this::refreshHistory);
             }
         };
         undoManager.addHistoryListener(listener);
 
         refreshHistory();
+    }
+
+    /**
+     * Posts {@code work} to the FX thread through the injected
+     * {@link FxDispatcher} when present, else the static app-scoped seam — the
+     * null branch reproduces today's behaviour exactly (story 289).
+     */
+    private void postFx(Runnable work) {
+        FxDispatcher.runOnFx(fxDispatcher, work);
     }
 
     /**

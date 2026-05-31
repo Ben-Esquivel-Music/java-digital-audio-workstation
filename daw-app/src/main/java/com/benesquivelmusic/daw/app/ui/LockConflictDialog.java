@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.persistence.LockConflictHandler;
 import com.benesquivelmusic.daw.core.persistence.LockConflictResolution;
@@ -66,7 +67,7 @@ public final class LockConflictDialog implements LockConflictHandler {
         AtomicReference<LockConflictResolution> result =
                 new AtomicReference<>(DEFAULT_RESOLUTION);
         CountDownLatch latch = new CountDownLatch(1);
-        Platform.runLater(() -> {
+        FxDispatcher.runOnFx(() -> {
             try {
                 result.set(showAndAwait(existingLock, stale));
             } finally {
