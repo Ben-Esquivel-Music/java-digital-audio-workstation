@@ -36,6 +36,9 @@ Stories are organized by priority and functional area. Use the [issue creation s
 | 216 | [Hardware Clock Source Selection](216-hardware-clock-source-selection.md) | 🟡 Medium | Audio Engine |
 | 217 | [Driver-Reported Round-Trip Latency Compensation](217-driver-reported-roundtrip-latency-recording-compensation.md) | 🟠 High | Audio Engine |
 | 218 | [Driver-Initiated Reset Request Handling](218-driver-initiated-reset-request-handling.md) | 🟠 High | Audio Engine |
+| 310 | [ASIO Driver Enumeration and Init/Exit Lifecycle](310-asio-driver-enumeration-and-lifecycle.md) | 🔴 Critical | Audio Engine |
+| 311 | [ASIO Real-Time Audio Streaming via bufferSwitch](311-asio-realtime-streaming-bufferswitch.md) | 🔴 Critical | Audio Engine |
+| 312 | [ASIOSampleType Conversion at the Buffer-Switch Boundary](312-asio-sample-format-conversion.md) | 🟠 High | Audio Engine |
 
 ## Recording & Monitoring
 
