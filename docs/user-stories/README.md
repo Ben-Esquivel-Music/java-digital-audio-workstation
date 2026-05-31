@@ -296,6 +296,59 @@ Operationalises the canonical UI vision in [`docs/design/UI_DESIGN_BOOK.md`](../
 | 287 | [Make Visualization Analyzers + Telemetry Setup Panel First-Class Dockable Panels](287-make-visualization-analyzers-first-class-dockable-panels.md) | 🟢 Low | Docking |
 | 288 | [Panel Grip-Handle Drag-to-Detach and Dock Drop-Zone Highlight](288-panel-grip-handle-drag-to-detach-and-dock-drop-zone-highlight.md) | 🟢 Low | Docking |
 
+## Reliability & Surface Overhaul (Companion Design Books)
+
+Operationalises the four **companion** design books in [`docs/design/`](../design/) that the visual overhaul (260–288) did not cover. Where the UI Design Book made the DAW *look* right, these make it *behave* right — they target the **behavioural flakiness** the user called out: control synchronisation, project-lifecycle visibility, the plugin surface, and settings. Each book ships a staged migration path; one story per stage, authored **Control-Synchronisation-first** because the other three books bind to its view-model / event layer.
+
+### Control Synchronisation (the wiring layer)
+
+Operationalises [`CONTROL_SYNCHRONIZATION_DESIGN_BOOK.md`](../design/CONTROL_SYNCHRONIZATION_DESIGN_BOOK.md) §8 — the book's own diagnosed root cause of the "flaky" feeling. Replaces the 3.7 k-line god controller's manual refresh cascades with a one-directional Model → ViewModel → View loop over the existing typed `EventBus`, on a single `FxDispatcher` marshalling seam.
+
+| # | Story | Priority | Area |
+|---|-------|----------|------|
+| 289 | [FxDispatcher Marshalling Seam + EventBus Routing (No Behaviour Change)](289-introduce-fxdispatcher-marshalling-seam-route-cross-surface-updates-through-eventbus.md) | 🟠 High | Control Sync |
+| 290 | [TransportVM Slice + Toolkit-Neutral Core Notification Seam](290-transportvm-view-model-slice-and-toolkit-neutral-core-notification-seam.md) | 🟠 High | Control Sync |
+| 291 | [TrackVM / ChannelVM and the Cascade Contract](291-trackvm-channelvm-and-the-cascade-contract-one-mute-solo-flag-both-surfaces-bind.md) | 🟠 High | Control Sync |
+| 292 | [SelectionVM, HistoryVM, ProjectVM and the Full-Load Cascade](292-selectionvm-historyvm-projectvm-and-the-ordered-full-load-cascade.md) | 🟠 High | Control Sync |
+| 293 | [Retire the God Controller: Bindings Replace update*/refresh*/sync*](293-retire-the-god-controller-replace-update-refresh-sync-methods-and-host-callbacks-with-bindings.md) | 🟠 High | Control Sync |
+| 294 | [Migrate Plugin, Settings, and Project Surfaces Onto the Shared Wiring](294-migrate-the-plugin-settings-and-project-surfaces-onto-the-shared-wiring.md) | 🟡 Medium | Control Sync |
+
+### Project Manager (lifecycle visibility & crash-safety)
+
+Operationalises [`PROJECT_MANAGER_DESIGN_BOOK.md`](../design/PROJECT_MANAGER_DESIGN_BOOK.md) §7 — surfaces the invisible save / checkpoint / lock state `daw-core` already maintains, and adds journal-based crash recovery.
+
+| # | Story | Priority | Area |
+|---|-------|----------|------|
+| 295 | [Session Status Strip + ProjectOperationProgress Model](295-session-status-strip-and-project-operation-progress-model.md) | 🟠 High | Project Manager |
+| 296 | [Project Hub and Welcome Screen with a ProjectCard Control](296-project-hub-welcome-screen-with-project-card-control.md) | 🟡 Medium | Project Manager |
+| 297 | [Sessions as a First-Class Object with the Session Manager Dock](297-sessions-as-a-first-class-object-with-session-manager-dock.md) | 🟡 Medium | Project Manager |
+| 298 | [Write-Ahead Journal and the Crash Recovery Dialog](298-write-ahead-journal-and-crash-recovery-dialog.md) | 🟠 High | Project Manager |
+| 299 | [Named Snapshots, Migration History Log, and Per-Asset Archive](299-named-snapshots-migration-history-log-and-per-asset-archive-decisions.md) | 🟡 Medium | Project Manager |
+
+### Plugin View (editor surface + SDK contract)
+
+Operationalises [`PLUGIN_VIEW_DESIGN_BOOK.md`](../design/PLUGIN_VIEW_DESIGN_BOOK.md) §8 — one SDK editor contract (declarative / panel / canvas) with host-owned chrome, replacing the hard-coded `switch` over built-in plugin ids and the "type a class name" install field.
+
+| # | Story | Priority | Area |
+|---|-------|----------|------|
+| 300 | [PluginEditorFactory SDK Contract, PluginManifest, Deprecate PluginUI](300-plugineditorfactory-sdk-contract-pluginmanifest-and-deprecation-of-orphaned-pluginui.md) | 🟠 High | Plugin View |
+| 301 | [Host Honours the Editor Contract: Standard Chrome Around Editors](301-host-honours-the-editor-contract-standard-chrome-around-declarative-panel-canvas-editors.md) | 🟠 High | Plugin View |
+| 302 | [Migrate Built-In Plugin Views to the Contract, Delete the Switch](302-migrate-built-in-plugin-views-onto-the-editor-contract-and-delete-the-pluginviewcontroller-switch.md) | 🟡 Medium | Plugin View |
+| 303 | [Plugin Browser and Drag-a-JAR Install Flow](303-plugin-browser-and-drag-a-jar-install-flow-retire-the-type-a-class-name-field.md) | 🟡 Medium | Plugin View |
+| 304 | [Remove the Deprecated PluginUI and Class-Name Install Fallback](304-remove-the-deprecated-pluginui-and-the-legacy-class-name-install-fallback.md) | 🟢 Low | Plugin View |
+
+### Settings View (one searchable surface)
+
+Operationalises [`SETTINGS_VIEW_DESIGN_BOOK.md`](../design/SETTINGS_VIEW_DESIGN_BOOK.md) §7 — collapses four scattered dialogs into one searchable Rail & Pane surface over a uniform setting descriptor, with honest apply-class badges and scope labels.
+
+| # | Story | Priority | Area |
+|---|-------|----------|------|
+| 305 | [Setting Descriptor Model Backing the Existing SettingsDialog](305-setting-descriptor-model-backing-the-existing-settings-dialog.md) | 🟠 High | Settings |
+| 306 | [Rail & Pane Settings Shell with Search and Per-Setting Reset](306-rail-and-pane-settings-shell-with-search-and-per-setting-reset.md) | 🟠 High | Settings |
+| 307 | [Absorb the Audio Device Dialog into the Audio Category](307-absorb-the-audio-device-dialog-into-the-audio-category.md) | 🟡 Medium | Settings |
+| 308 | [Absorb the Metronome and Backup Dialogs into Categories](308-absorb-metronome-recording-and-backup-dialogs-into-settings-categories.md) | 🟡 Medium | Settings |
+| 309 | [Scope Labels, Import / Export Profiles, and First-Run Wizard](309-setting-scope-labels-import-export-profiles-and-first-run-wizard.md) | 🟡 Medium | Settings |
+
 ## Code Quality & Refactoring
 
 | # | Story | Priority | Area |
