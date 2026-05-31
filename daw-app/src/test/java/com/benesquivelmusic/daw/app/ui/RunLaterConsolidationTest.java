@@ -59,7 +59,7 @@ final class RunLaterConsolidationTest {
 
     /** {@code new AnimationTimer} / {@code extends AnimationTimer} — a per-frame loop. */
     private static final Pattern ANIMATION_TIMER =
-            Pattern.compile("\\b(?:new|extends)\\s+AnimationTimer\\b");
+            Pattern.compile("\\b(?:new|extends)\\s+(?:javafx\\s*\\.\\s*animation\\s*\\.\\s*)?AnimationTimer\\b");
 
     /**
      * The class-level sentinel <em>with</em> its mandatory {@code value()}

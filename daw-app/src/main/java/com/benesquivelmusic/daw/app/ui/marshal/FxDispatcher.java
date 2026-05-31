@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.sdk.annotation.RealTimeSafe;
 import javafx.animation.AnimationTimer;
 import javafx.application.Platform;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -341,15 +342,18 @@ public final class FxDispatcher {
      * than relying on a live timer.</p>
      */
     public void pulse() {
-        // Snapshot-and-clear the keyed map so a runnable that re-posts the same
-        // key schedules for the NEXT pulse, not this one (no starvation, no
-        // ConcurrentModification). Iteration over an entrySet of the live map
-        // would be unsafe against concurrent puts; drain by removing each key.
+        // Snapshot the keyed entries first, then remove each by key AND value, so
+        // work posted while this pulse runs (including a runnable that re-posts
+        // under the same key) stays queued for the NEXT pulse. A weakly
+        // consistent keySet() iterator could otherwise pick up such concurrent
+        // posts and run them in this same pulse nondeterministically, violating
+        // the documented per-frame coalescing contract.
         if (!keyedWork.isEmpty()) {
-            for (Object key : keyedWork.keySet()) {
-                Runnable work = keyedWork.remove(key);
-                if (work != null) {
-                    work.run();
+            List<Map.Entry<Object, Runnable>> snapshot =
+                    new ArrayList<>(keyedWork.entrySet());
+            for (Map.Entry<Object, Runnable> entry : snapshot) {
+                if (keyedWork.remove(entry.getKey(), entry.getValue())) {
+                    entry.getValue().run();
                 }
             }
         }
