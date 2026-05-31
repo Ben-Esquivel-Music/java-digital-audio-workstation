@@ -18,7 +18,7 @@ On the project's primary platform (Windows + a multi-channel USB interface), the
 ## Goals
 
 - Extend the `daw-core/native/asio/` shim with driver enumeration and lifecycle exports, documented in `asioshim.h` alongside the existing ABI notes:
-  - `asioshim_listDrivers(void* outArray, int* outCount)` — enumerate installed ASIO drivers from the Windows registry via the SDK's `AsioDrivers` glue, writing a fixed-width record per driver (driver name, CLSID string) using the same normalised int32 / fixed-`char[]` struct convention already established for `asioshim_getClockSources` and `asioshim_getChannelInfo`.
+  - `asioshim_listDrivers(void* outArray, int* outCount)` — enumerate installed ASIO drivers from the Windows registry via the SDK's `AsioDrivers` glue, writing a fixed-width record per driver (driver name, CLSID string) using the same normalised int32 / fixed-`char[]` struct convention already established for `asioshim_getClockSources` and `asioshim_getChannelInfo`. `outCount` uses capacity-in/actual-out semantics: on entry it specifies the maximum number of records `outArray` can hold; on return it contains the actual number written (capped at the input capacity).
   - `asioshim_loadDriver(const char* driverName)` — instantiate the named driver's COM object and call `ASIOInit`, returning `1` (`SHIM_OK`) on `ASE_OK` and `0` otherwise, following the existing return-code convention.
   - `asioshim_getDriverName(void* outName, int nameCapacity)` and `asioshim_getDriverInfo(...)` to surface the active driver's name and version for display.
   - `asioshim_unloadDriver(void)` — call `ASIOExit` and release the COM object; idempotent and safe to call when no driver is loaded.
