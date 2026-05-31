@@ -1549,7 +1549,7 @@ public final class MainController {
                             mv.refresh();
                         }
                     },
-                    javafx.application.Platform::runLater,
+                    this::postFx,
                     System::nanoTime);
             cpuBudgetEnforcer.performanceEvents().subscribe(trackBudgetUiBinding);
 

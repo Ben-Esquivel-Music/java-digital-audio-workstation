@@ -53,9 +53,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 final class RunLaterConsolidationTest {
 
-    /** {@code Platform.runLater(} — the ad-hoc cross-thread hop this story retires. */
+    /**
+     * {@code Platform.runLater(} or {@code Platform::runLater} — the ad-hoc
+     * cross-thread hop this story retires, matched both as a call expression and
+     * as a method reference (the fully qualified {@code
+     * javafx.application.Platform} form is covered too, since {@code \bPlatform}
+     * matches after the package dots).
+     */
     private static final Pattern PLATFORM_RUN_LATER =
-            Pattern.compile("\\bPlatform\\s*\\.\\s*runLater\\s*\\(");
+            Pattern.compile(
+                    "\\bPlatform\\s*(?:\\.\\s*runLater\\s*\\(|::\\s*runLater\\b)");
 
     /** {@code new AnimationTimer} / {@code extends AnimationTimer} — a per-frame loop. */
     private static final Pattern ANIMATION_TIMER =
