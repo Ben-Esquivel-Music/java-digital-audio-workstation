@@ -81,8 +81,9 @@ class FxDispatcherDrainTest {
         AtomicReference<Long> elapsedNanos = new AtomicReference<>();
 
         // A writer thread hammers publish() WITHOUT any concurrent drain: the
-        // SPSC ring is wait-free and drops on full rather than blocking, so even
-        // a million writes against an undrained buffer must return promptly.
+        // depth-1 latest-wins mailbox is wait-free and overwrites the pending
+        // value rather than blocking, so even a million writes against an
+        // undrained buffer must return promptly.
         Thread writer = new Thread(() -> {
             try {
                 long start = System.nanoTime();

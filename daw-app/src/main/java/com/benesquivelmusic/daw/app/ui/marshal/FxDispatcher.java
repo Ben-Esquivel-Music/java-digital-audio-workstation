@@ -298,10 +298,11 @@ public final class FxDispatcher {
     public interface ContinuousChannel<T> {
         /**
          * Publishes the latest value. Lock-free, wait-free and non-blocking —
-         * safe to call from the {@link RealTimeSafe} audio thread. If the
-         * backing buffer is momentarily full the value is dropped (the next
-         * frame's drain keeps only the latest anyway), so the producer never
-         * blocks on the UI.
+         * safe to call from the {@link RealTimeSafe} audio thread. The backing
+         * buffer is a depth-1 latest-wins mailbox: a value published before the
+         * next frame's drain overwrites the previous unconsumed value, so the
+         * newest sample is never lost (an earlier un-drained value is) and the
+         * producer never blocks on the UI.
          *
          * @param value the value to publish; must not be {@code null}
          */
