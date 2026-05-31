@@ -1,9 +1,9 @@
 ---
-title: "ASIOSampleType Conversion at the Buffer-Switch Boundary (Int16/Int24/Int32/Float32, LSB & MSB)"
+title: "ASIOSampleType Conversion at the Buffer-Switch Boundary (Int16/Int24/Int32/Float32/Float64, LSB & MSB)"
 labels: ["bug", "audio-engine", "native", "windows", "asio", "dsp"]
 ---
 
-# ASIOSampleType Conversion at the Buffer-Switch Boundary (Int16/Int24/Int32/Float32, LSB & MSB)
+# ASIOSampleType Conversion at the Buffer-Switch Boundary (Int16/Int24/Int32/Float32/Float64, LSB & MSB)
 
 ## Motivation
 
