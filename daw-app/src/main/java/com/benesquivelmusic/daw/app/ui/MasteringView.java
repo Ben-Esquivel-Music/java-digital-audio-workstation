@@ -7,6 +7,7 @@ import com.benesquivelmusic.daw.app.ui.dock.DockZone;
 import com.benesquivelmusic.daw.app.ui.dock.PanelGripHandle;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.marshal.FxAnimationTimerAllowed;
 import com.benesquivelmusic.daw.core.mastering.MasteringChain;
 import com.benesquivelmusic.daw.core.mastering.MasteringChainPresets;
 import com.benesquivelmusic.daw.core.mastering.MasteringProcessorFactory;
@@ -48,6 +49,9 @@ import java.util.Objects;
  * <p>Uses existing CSS classes: {@code .content-area}, {@code .panel-header},
  * {@code .mixer-channel}.</p>
  */
+@FxAnimationTimerAllowed("Per-frame loudness/level meter timer owned by this view "
+        + "(javafx-application-design §6 control-owns-timer); not a cross-thread "
+        + "seam — story 289 sentinel.")
 public final class MasteringView extends VBox implements Dockable {
 
     private static final double STAGE_CARD_WIDTH = 140;

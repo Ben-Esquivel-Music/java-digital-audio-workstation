@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.persistence.CheckpointManager;
 import com.benesquivelmusic.daw.core.persistence.ProjectDeserializer;
@@ -91,6 +92,14 @@ final class SnapshotsController {
     private final ProjectSerializer serializer = new ProjectSerializer();
     private final ProjectDeserializer deserializer = new ProjectDeserializer();
 
+    /**
+     * The FX-thread marshalling seam (story 289), forwarded to the lazily-built
+     * {@link SnapshotBrowser}. May be {@code null} in a pure-unit context (the
+     * compatibility constructor defaults it to {@link FxDispatcher#getDefault()});
+     * the browser tolerates the null via its own fallback.
+     */
+    private final FxDispatcher fxDispatcher;
+
     /** The last project checkpoint directory registered with the service,
      *  tracked so it can be removed when a different project is opened. */
     private Path lastRegisteredDirectory;
@@ -101,12 +110,23 @@ final class SnapshotsController {
                         CheckpointManager checkpointManager,
                         ProjectManager projectManager,
                         Host host) {
+        this(service, checkpointManager, projectManager, host, FxDispatcher.getDefault());
+    }
+
+    SnapshotsController(SnapshotBrowserService service,
+                        CheckpointManager checkpointManager,
+                        ProjectManager projectManager,
+                        Host host,
+                        FxDispatcher fxDispatcher) {
         this.service = Objects.requireNonNull(service, "service must not be null");
         this.checkpointManager = Objects.requireNonNull(checkpointManager,
                 "checkpointManager must not be null");
         this.projectManager = Objects.requireNonNull(projectManager,
                 "projectManager must not be null");
         this.host = Objects.requireNonNull(host, "host must not be null");
+        // May be null in a pure-unit context; SnapshotBrowser falls back to the
+        // static seam, preserving today's behaviour byte-for-byte.
+        this.fxDispatcher = fxDispatcher;
     }
 
     /** Returns the underlying snapshot service (intended for tests). */
@@ -162,7 +182,7 @@ final class SnapshotsController {
     void openBrowser() {
         registerCurrentProjectDirectory();
         if (browserStage == null) {
-            browserView = new SnapshotBrowser(service);
+            browserView = new SnapshotBrowser(service, fxDispatcher);
             browserView.setOnRestore(this::restore);
             browserView.setOnCompare(this::compare);
             browserView.setOnCreateCheckpoint(this::createCheckpoint);

@@ -1,8 +1,8 @@
 package com.benesquivelmusic.daw.app.ui.export;
 
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.export.RenderQueue;
 import com.benesquivelmusic.daw.sdk.export.JobProgress;
-import javafx.application.Platform;
 import javafx.beans.binding.Bindings;
 import javafx.beans.property.SimpleDoubleProperty;
 import javafx.beans.property.SimpleObjectProperty;
@@ -66,7 +66,7 @@ public final class RenderQueueView extends VBox {
                 subscription = s;
                 s.request(Long.MAX_VALUE);
             }
-            @Override public void onNext(JobProgress p) { Platform.runLater(() -> applyUpdate(p)); }
+            @Override public void onNext(JobProgress p) { FxDispatcher.runOnFx(() -> applyUpdate(p)); }
             @Override public void onError(Throwable t) { /* ignore */ }
             @Override public void onComplete() { /* ignore */ }
         });

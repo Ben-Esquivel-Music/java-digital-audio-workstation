@@ -17,6 +17,7 @@ import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 
 import java.util.Objects;
+import com.benesquivelmusic.daw.app.ui.marshal.FxAnimationTimerAllowed;
 import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
@@ -34,6 +35,9 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * (scalar primitive writes are safe for the simple fields used here).</p>
  */
 @HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
+@FxAnimationTimerAllowed("Per-frame step-light indicator timer owned by this "
+        + "plugin view (javafx-application-design §6 control-owns-timer); not a "
+        + "cross-thread seam — story 289 sentinel.")
 public final class ArpeggiatorPluginView extends VBox {
 
     /** Number of step lights drawn in the indicator row. */

@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.dsp.reverb.ConvolutionReverbProcessor;
 import com.benesquivelmusic.daw.core.dsp.reverb.ImpulseResponseLibrary;
 import javafx.geometry.Insets;
@@ -90,7 +91,7 @@ public final class ConvolutionReverbPluginView extends VBox {
             if (f != null) {
                 statusLabel.setText("Loading…");
                 processor.loadImpulseResponseFromFileAsync(Path.of(f.getAbsolutePath()))
-                        .whenComplete((_, ex) -> javafx.application.Platform.runLater(() -> {
+                        .whenComplete((_, ex) -> FxDispatcher.runOnFx(() -> {
                             if (ex != null) {
                                 statusLabel.setText("Failed: " + ex.getMessage());
                             } else {

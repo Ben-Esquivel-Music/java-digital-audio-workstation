@@ -15,6 +15,7 @@ import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 
 import java.util.Objects;
+import com.benesquivelmusic.daw.app.ui.marshal.FxAnimationTimerAllowed;
 import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
 
 /**
@@ -30,6 +31,9 @@ import com.benesquivelmusic.daw.app.ui.theme.HardcodedColorAllowed;
  * buffer.</p>
  */
 @HardcodedColorAllowed("story 277 follow-up: migrate Canvas/inline paints to resolved -token CSS")
+@FxAnimationTimerAllowed("Per-frame input/output/envelope meter timer owned by "
+        + "this plugin view (javafx-application-design §6 control-owns-timer); "
+        + "not a cross-thread seam — story 289 sentinel.")
 public final class TransientShaperPluginView extends VBox {
 
     /** Maximum displayed level on the input/output meters, in dBFS (top of bar). */

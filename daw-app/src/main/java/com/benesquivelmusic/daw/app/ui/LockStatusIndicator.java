@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.persistence.LockStatus;
 import com.benesquivelmusic.daw.core.persistence.ProjectLock;
 import com.benesquivelmusic.daw.core.persistence.ProjectLockManager;
@@ -24,7 +25,33 @@ public final class LockStatusIndicator extends Label {
 
     private static final String STYLE_BASE = "-fx-padding: 2 8 2 8; -fx-background-radius: 8;";
 
+    /**
+     * The FX-thread marshalling seam (story 289), injected on the production
+     * path. May be {@code null} in a pure-unit context (the compatibility
+     * constructor defaults it to {@link FxDispatcher#getDefault()});
+     * {@link #postFx} tolerates the null.
+     */
+    private final FxDispatcher fxDispatcher;
+
+    /**
+     * Creates an indicator that marshals off-thread updates through the
+     * {@link FxDispatcher#getDefault() app-scoped default} seam.
+     */
     public LockStatusIndicator() {
+        this(FxDispatcher.getDefault());
+    }
+
+    /**
+     * Creates an indicator with an explicit FX-thread marshalling seam
+     * (story 289).
+     *
+     * @param fxDispatcher the FX-thread marshalling seam, or {@code null} to use
+     *                     the {@link FxDispatcher#getDefault() app-scoped default}
+     */
+    public LockStatusIndicator(FxDispatcher fxDispatcher) {
+        // May be null in a pure-unit context; postFx() falls back to the
+        // static seam, preserving today's behaviour byte-for-byte.
+        this.fxDispatcher = fxDispatcher;
         getStyleClass().add("lock-status-indicator");
         applyStatus(LockStatus.NONE, null);
     }
@@ -49,8 +76,17 @@ public final class LockStatusIndicator extends Label {
         } else {
             LockStatus s = status;
             ProjectLock l = lock;
-            Platform.runLater(() -> applyStatus(s, l));
+            postFx(() -> applyStatus(s, l));
         }
+    }
+
+    /**
+     * Posts {@code work} to the FX thread through the injected
+     * {@link FxDispatcher} when present, else the static app-scoped seam — the
+     * null branch reproduces today's behaviour exactly (story 289).
+     */
+    private void postFx(Runnable work) {
+        FxDispatcher.runOnFx(fxDispatcher, work);
     }
 
     private void applyStatus(LockStatus status, ProjectLock lock) {

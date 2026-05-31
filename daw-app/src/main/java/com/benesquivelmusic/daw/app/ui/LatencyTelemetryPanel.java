@@ -5,6 +5,7 @@ import com.benesquivelmusic.daw.core.mixer.Mixer;
 import com.benesquivelmusic.daw.fx.GpuPipeline;
 import com.benesquivelmusic.daw.sdk.audio.LatencyTelemetry;
 import com.benesquivelmusic.daw.sdk.audio.LatencyTelemetry.NodeKind;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 
 import javafx.animation.FadeTransition;
@@ -179,7 +180,7 @@ public final class LatencyTelemetryPanel extends BorderPane {
         if (Platform.isFxApplicationThread()) {
             applySnapshot(snapshot, changed);
         } else {
-            Platform.runLater(() -> applySnapshot(snapshot, changed));
+            FxDispatcher.runOnFx(() -> applySnapshot(snapshot, changed));
         }
     }
 

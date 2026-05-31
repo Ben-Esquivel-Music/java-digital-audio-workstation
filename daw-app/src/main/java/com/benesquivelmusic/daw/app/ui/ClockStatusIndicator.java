@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
 import com.benesquivelmusic.daw.sdk.audio.ClockKind;
 import com.benesquivelmusic.daw.sdk.audio.ClockLockEvent;
@@ -268,7 +269,7 @@ public final class ClockStatusIndicator extends Label {
         if (Platform.isFxApplicationThread()) {
             r.run();
         } else {
-            Platform.runLater(r);
+            FxDispatcher.runOnFx(r);
         }
     }
 }

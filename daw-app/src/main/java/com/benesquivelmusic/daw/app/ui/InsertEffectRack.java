@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.drag.DragSourceKind;
 import com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.mixer.*;
 import com.benesquivelmusic.daw.core.plugin.ExternalPluginEntry;
 import com.benesquivelmusic.daw.core.plugin.ExternalPluginLoader;
@@ -59,6 +60,13 @@ public final class InsertEffectRack extends VBox {
     private final int bufferSize;
     private final UndoManager undoManager;
     private final UndoHistoryListener historyListener;
+    /**
+     * The FX-thread marshalling seam (story 289), injected on the production
+     * path. May be {@code null} in a pure-unit context (the compatibility
+     * constructor defaults it to {@link FxDispatcher#getDefault()});
+     * {@link #postFx} tolerates the null.
+     */
+    private final FxDispatcher fxDispatcher;
     private PluginRegistry pluginRegistry;
     private Mixer mixer;
     private Runnable onSlotsChanged;
@@ -89,11 +97,33 @@ public final class InsertEffectRack extends VBox {
      */
     public InsertEffectRack(MixerChannel channel, int audioChannels, double sampleRate,
                             int bufferSize, UndoManager undoManager) {
+        this(channel, audioChannels, sampleRate, bufferSize, undoManager,
+                FxDispatcher.getDefault());
+    }
+
+    /**
+     * Creates a new insert-effects rack with an explicit FX-thread marshalling
+     * seam (story 289).
+     *
+     * @param channel       the mixer channel to manage inserts for
+     * @param audioChannels the number of audio channels (e.g., 2 for stereo)
+     * @param sampleRate    the project sample rate in Hz
+     * @param bufferSize    the project buffer size in sample frames
+     * @param undoManager   the undo manager (may be {@code null})
+     * @param fxDispatcher  the FX-thread marshalling seam, or {@code null} to use
+     *                      the {@link FxDispatcher#getDefault() app-scoped default}
+     */
+    public InsertEffectRack(MixerChannel channel, int audioChannels, double sampleRate,
+                            int bufferSize, UndoManager undoManager,
+                            FxDispatcher fxDispatcher) {
         this.channel = Objects.requireNonNull(channel, "channel must not be null");
         this.audioChannels = audioChannels;
         this.sampleRate = sampleRate;
         this.bufferSize = bufferSize;
         this.undoManager = undoManager;
+        // May be null in a pure-unit context; postFx() falls back to the
+        // static seam, preserving today's behaviour byte-for-byte.
+        this.fxDispatcher = fxDispatcher;
 
         setSpacing(2);
         setAlignment(Pos.TOP_CENTER);
@@ -113,13 +143,22 @@ public final class InsertEffectRack extends VBox {
                 if (Platform.isFxApplicationThread()) {
                     rebuildSlots();
                 } else {
-                    Platform.runLater(this::rebuildSlots);
+                    postFx(this::rebuildSlots);
                 }
             };
             undoManager.addHistoryListener(historyListener);
         } else {
             historyListener = null;
         }
+    }
+
+    /**
+     * Posts {@code work} to the FX thread through the injected
+     * {@link FxDispatcher} when present, else the static app-scoped seam — the
+     * null branch reproduces today's behaviour exactly (story 289).
+     */
+    private void postFx(Runnable work) {
+        FxDispatcher.runOnFx(fxDispatcher, work);
     }
 
     /**

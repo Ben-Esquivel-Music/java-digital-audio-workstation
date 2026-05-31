@@ -4,6 +4,7 @@ import com.benesquivelmusic.daw.app.ui.display.LevelMeterDisplay;
 import com.benesquivelmusic.daw.app.ui.display.SpectrumDisplay;
 import com.benesquivelmusic.daw.app.ui.drag.AnimationProfile;
 import com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor;
+import com.benesquivelmusic.daw.app.ui.marshal.FxAnimationTimerAllowed;
 import com.benesquivelmusic.daw.core.transport.TransportState;
 
 import javafx.animation.AnimationTimer;
@@ -32,6 +33,10 @@ import java.util.Objects;
  * {@link MainController}. Issue: "Decompose Remaining God-Class
  * Controllers into Focused Services."</p>
  */
+@FxAnimationTimerAllowed("Owns the single per-frame animation timer driving idle "
+        + "visualization, transport glow, and the time ticker "
+        + "(javafx-application-design §6 control-owns-timer); not a cross-thread "
+        + "seam — story 289 sentinel.")
 final class AnimationController {
 
     /**

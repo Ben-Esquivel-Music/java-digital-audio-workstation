@@ -1,8 +1,8 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.plugin.PluginFault;
 import com.benesquivelmusic.daw.core.plugin.PluginInvocationSupervisor;
-import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.geometry.Insets;
@@ -104,7 +104,7 @@ public final class PluginFaultLogDialog {
 
         @Override
         public void onNext(PluginFault item) {
-            Platform.runLater(() -> rows.addFirst(new FaultRow(item)));
+            FxDispatcher.runOnFx(() -> rows.addFirst(new FaultRow(item)));
         }
 
         @Override

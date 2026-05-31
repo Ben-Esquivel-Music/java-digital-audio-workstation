@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.dialogs.DawgDialog;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.persistence.backup.BackupRetentionService;
 import com.benesquivelmusic.daw.core.persistence.backup.ProjectDiskUsage;
 import com.benesquivelmusic.daw.sdk.persistence.BackupRetentionPolicy;
@@ -293,7 +294,7 @@ public final class BackupSettingsDialog extends DawgDialog<BackupRetentionPolicy
         if (Platform.isFxApplicationThread()) {
             apply.run();
         } else {
-            Platform.runLater(apply);
+            FxDispatcher.runOnFx(apply);
         }
     }
 

@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioEngine;
@@ -121,6 +122,15 @@ final class TransportController {
     private final Host host;
 
     /**
+     * The FX-thread marshalling seam (story 289). Injected on the production
+     * path by the composition root; {@code null} in a pure-unit context (the
+     * compatibility constructor defaults it to {@link FxDispatcher#getDefault()},
+     * which is unset when {@code DawApplication} never started). {@link #postFx}
+     * tolerates the null and falls back to the static seam.
+     */
+    private final FxDispatcher fxDispatcher;
+
+    /**
      * UI Design Book §2.1 / §7.2 — the {@code :active} pseudo-class is
      * the single source of truth for "this transport button is in the
      * one-accent-at-a-time armed state". Wired here on Play (during
@@ -178,6 +188,25 @@ final class TransportController {
                         Button recordButton,
                         Button loopButton,
                         Host host) {
+        this(project, audioEngine, undoManager, notificationBar, statusLabel,
+                timeDisplay, statusBarLabel, recIndicator, playButton, stopButton,
+                recordButton, loopButton, host, FxDispatcher.getDefault());
+    }
+
+    TransportController(DawProject project,
+                        AudioEngine audioEngine,
+                        UndoManager undoManager,
+                        NotificationBar notificationBar,
+                        Label statusLabel,
+                        Label timeDisplay,
+                        Label statusBarLabel,
+                        Label recIndicator,
+                        Button playButton,
+                        Button stopButton,
+                        Button recordButton,
+                        Button loopButton,
+                        Host host,
+                        FxDispatcher fxDispatcher) {
         this.project = Objects.requireNonNull(project, "project must not be null");
         this.audioEngine = Objects.requireNonNull(audioEngine, "audioEngine must not be null");
         this.undoManager = Objects.requireNonNull(undoManager, "undoManager must not be null");
@@ -191,6 +220,18 @@ final class TransportController {
         this.recordButton = Objects.requireNonNull(recordButton, "recordButton must not be null");
         this.loopButton = Objects.requireNonNull(loopButton, "loopButton must not be null");
         this.host = Objects.requireNonNull(host, "host must not be null");
+        // May be null in a pure-unit context; postFx() falls back to the
+        // static seam, preserving today's behaviour byte-for-byte.
+        this.fxDispatcher = fxDispatcher;
+    }
+
+    /**
+     * Posts {@code work} to the FX thread through the injected
+     * {@link FxDispatcher} when present, else the static app-scoped seam — the
+     * null branch reproduces today's behaviour exactly (story 289).
+     */
+    private void postFx(Runnable work) {
+        FxDispatcher.runOnFx(fxDispatcher, work);
     }
 
     // ── Transport action handlers ────────────────────────────────────────────
@@ -717,8 +758,11 @@ final class TransportController {
             recorder.setStartColumnOffset(startColumnOffset);
             recorder.setCountInDurationUs(countInDurationUs);
 
-            // Wire MIDI activity indicator — flash the track strip on each event
-            recorder.addEventListener(_ -> javafx.application.Platform.runLater(
+            // Wire MIDI activity indicator — flash the track strip on each
+            // event. The recorder fires on the MIDI receiver thread, so the
+            // flash is marshalled onto the FX thread through the FxDispatcher
+            // seam (story 289; Control Synchronization Design Book §1.5, §4.5).
+            recorder.addEventListener(_ -> postFx(
                     () -> host.flashMidiActivity(track)));
 
             try {

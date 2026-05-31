@@ -8,7 +8,7 @@ import com.benesquivelmusic.daw.app.ui.drag.DragVisualAdvisor;
 import com.benesquivelmusic.daw.app.ui.drag.DropTargetKind;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
-import javafx.application.Platform;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.collections.transformation.FilteredList;
@@ -177,9 +177,32 @@ public final class BrowserPanel extends VBox implements Dockable {
     private DragVisualAdvisor dragVisualAdvisor;
 
     /**
-     * Creates a new browser panel with default width.
+     * The FX-thread marshalling seam (story 289), injected on the production
+     * path. May be {@code null} in a pure-unit context (the compatibility
+     * constructor defaults it to {@link FxDispatcher#getDefault()});
+     * {@link #postFx} tolerates the null.
+     */
+    private final FxDispatcher fxDispatcher;
+
+    /**
+     * Creates a new browser panel with default width, marshalling off-thread
+     * hops through the {@link FxDispatcher#getDefault() app-scoped default} seam.
      */
     public BrowserPanel() {
+        this(FxDispatcher.getDefault());
+    }
+
+    /**
+     * Creates a new browser panel with an explicit FX-thread marshalling seam
+     * (story 289).
+     *
+     * @param fxDispatcher the FX-thread marshalling seam, or {@code null} to use
+     *                     the {@link FxDispatcher#getDefault() app-scoped default}
+     */
+    public BrowserPanel(FxDispatcher fxDispatcher) {
+        // May be null in a pure-unit context; postFx() falls back to the
+        // static seam, preserving today's behaviour byte-for-byte.
+        this.fxDispatcher = fxDispatcher;
         getStyleClass().add("browser-panel");
         setPrefWidth(DEFAULT_WIDTH);
         setMinWidth(MIN_WIDTH);
@@ -421,7 +444,16 @@ public final class BrowserPanel extends VBox implements Dockable {
         measure.run();
         // The button may not be laid out yet on first selection; remeasure
         // once a layout pass has produced a real text width.
-        Platform.runLater(measure);
+        postFx(measure);
+    }
+
+    /**
+     * Posts {@code work} to the FX thread through the injected
+     * {@link FxDispatcher} when present, else the static app-scoped seam — the
+     * null branch reproduces today's behaviour exactly (story 289).
+     */
+    private void postFx(Runnable work) {
+        FxDispatcher.runOnFx(fxDispatcher, work);
     }
 
     /**
@@ -500,7 +532,7 @@ public final class BrowserPanel extends VBox implements Dockable {
         // fires on the player's daemon thread, so marshal to the FX
         // thread before touching the scene graph (JavaFX threading rule).
         if (auditioner != null) {
-            auditioner.setOnPlaybackFinished(() -> Platform.runLater(() -> {
+            auditioner.setOnPlaybackFinished(() -> postFx(() -> {
                 auditioningItem = null;
                 refreshListCells();
             }));

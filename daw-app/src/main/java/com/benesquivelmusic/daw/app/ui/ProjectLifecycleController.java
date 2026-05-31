@@ -2,6 +2,7 @@ package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
@@ -20,7 +21,6 @@ import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.session.SessionExportResult;
 import com.benesquivelmusic.daw.sdk.session.SessionImportResult;
-import javafx.application.Platform;
 import javafx.scene.control.*;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.VBox;
@@ -104,6 +104,14 @@ final class ProjectLifecycleController {
     private final Host host;
     /** Story 189 — engine for {@code .dawz} archive save/restore. */
     private final ProjectArchiver projectArchiver;
+    /**
+     * The FX-thread marshalling seam (story 289), injected on the production
+     * path and threaded into the modeless {@link TaskProgressIndicator}s and
+     * the rebuilt {@link MixerView}. May be {@code null} in a pure-unit context
+     * (the compatibility constructor defaults it to
+     * {@link FxDispatcher#getDefault()}); {@link #postFx} tolerates the null.
+     */
+    private final FxDispatcher fxDispatcher;
 
     ProjectLifecycleController(ProjectManager projectManager,
                                SessionInterchangeController sessionInterchangeController,
@@ -114,6 +122,21 @@ final class ProjectLifecycleController {
                                VBox trackListPanel,
                                Host host,
                                ProjectArchiver projectArchiver) {
+        this(projectManager, sessionInterchangeController, notificationBar,
+                statusBarLabel, checkpointLabel, rootPane, trackListPanel, host,
+                projectArchiver, FxDispatcher.getDefault());
+    }
+
+    ProjectLifecycleController(ProjectManager projectManager,
+                               SessionInterchangeController sessionInterchangeController,
+                               NotificationBar notificationBar,
+                               Label statusBarLabel,
+                               Label checkpointLabel,
+                               BorderPane rootPane,
+                               VBox trackListPanel,
+                               Host host,
+                               ProjectArchiver projectArchiver,
+                               FxDispatcher fxDispatcher) {
         this.projectManager = Objects.requireNonNull(projectManager, "projectManager must not be null");
         this.sessionInterchangeController = Objects.requireNonNull(sessionInterchangeController,
                 "sessionInterchangeController must not be null");
@@ -124,6 +147,18 @@ final class ProjectLifecycleController {
         this.trackListPanel = Objects.requireNonNull(trackListPanel, "trackListPanel must not be null");
         this.host = Objects.requireNonNull(host, "host must not be null");
         this.projectArchiver = Objects.requireNonNull(projectArchiver, "projectArchiver must not be null");
+        // May be null in a pure-unit context; postFx() / the leaf views fall
+        // back to the static seam, preserving today's behaviour byte-for-byte.
+        this.fxDispatcher = fxDispatcher;
+    }
+
+    /**
+     * Posts {@code work} to the FX thread through the injected
+     * {@link FxDispatcher} when present, else the static app-scoped seam — the
+     * null branch reproduces today's behaviour exactly (story 289).
+     */
+    private void postFx(Runnable work) {
+        FxDispatcher.runOnFx(fxDispatcher, work);
     }
 
     // ── Project action handlers ──────────────────────────────────────────────
@@ -382,7 +417,7 @@ final class ProjectLifecycleController {
         // Progress is surfaced through a modeless TaskProgressIndicator
         // following the same pattern used by TrackFreezeController.
         Window owner = rootPane.getScene().getWindow();
-        TaskProgressIndicator progress = new TaskProgressIndicator(owner, "Archiving project\u2026");
+        TaskProgressIndicator progress = new TaskProgressIndicator(owner, "Archiving project\u2026", fxDispatcher);
         progress.hideCancelButton();
         progress.show();
         progress.update(-1.0, "Writing archive\u2026");
@@ -395,7 +430,7 @@ final class ProjectLifecycleController {
                         ProjectArchiveSummary summary = projectArchiver.saveAsArchive(
                                 current, finalArchivePath);
                         String headline = ArchiveSummaryDialog.formatHeadline(summary);
-                        Platform.runLater(() -> {
+                        postFx(() -> {
                             progress.close();
                             statusBarLabel.setText(headline);
                             statusBarLabel.setGraphic(IconNode.of(DawIcon.UPLOAD, 12));
@@ -408,7 +443,7 @@ final class ProjectLifecycleController {
                                 + " (" + summary.uniqueAssetCount() + " assets, "
                                 + summary.totalAssetBytes() + " bytes)");
                     } catch (IOException | IllegalArgumentException e) {
-                        Platform.runLater(() -> {
+                        postFx(() -> {
                             progress.close();
                             statusBarLabel.setText("Archive failed: " + e.getMessage());
                             statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
@@ -467,10 +502,11 @@ final class ProjectLifecycleController {
         Path destination = parentDir.toPath().resolve(stem + "-" + stamp);
 
         // Run the potentially expensive ZIP extraction on a background
-        // virtual thread. UI updates (load + notification) happen via
-        // Platform.runLater once extraction is complete.
+        // virtual thread. UI updates (load + notification) are marshalled
+        // onto the FX thread via the FxDispatcher seam (story 289) once
+        // extraction is complete.
         Window owner = rootPane.getScene().getWindow();
-        TaskProgressIndicator progress = new TaskProgressIndicator(owner, "Restoring archive\u2026");
+        TaskProgressIndicator progress = new TaskProgressIndicator(owner, "Restoring archive\u2026", fxDispatcher);
         progress.hideCancelButton();
         progress.show();
         progress.update(-1.0, "Extracting archive\u2026");
@@ -497,7 +533,7 @@ final class ProjectLifecycleController {
 
                         // Load the restored project on the FX thread; only
                         // show the success notification if loading succeeded.
-                        Platform.runLater(() -> {
+                        postFx(() -> {
                             progress.close();
                             boolean loaded = loadProjectFromPath(destination);
                             if (loaded) {
@@ -513,7 +549,7 @@ final class ProjectLifecycleController {
                         LOG.info(() -> "Restored archive " + archivePath
                                 + " into " + destination);
                     } catch (IOException e) {
-                        Platform.runLater(() -> {
+                        postFx(() -> {
                             progress.close();
                             statusBarLabel.setText("Restore failed: " + e.getMessage());
                             statusBarLabel.setGraphic(IconNode.of(DawIcon.WARNING, 12));
@@ -775,7 +811,7 @@ final class ProjectLifecycleController {
         header.getStyleClass().add("panel-header");
         // No icon-next-to-label per UI Design Book §2.4.
         trackListPanel.getChildren().add(header);
-        MixerView newMixerView = new MixerView(host.project(), host.undoManager());
+        MixerView newMixerView = new MixerView(host.project(), host.undoManager(), fxDispatcher);
         host.onProjectUIRebuild(newMixerView);
     }
 }

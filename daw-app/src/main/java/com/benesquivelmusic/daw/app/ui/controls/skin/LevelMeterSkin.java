@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.app.ui.controls.skin;
 
 import com.benesquivelmusic.daw.app.ui.controls.LevelMeter;
+import com.benesquivelmusic.daw.app.ui.marshal.FxAnimationTimerAllowed;
 
 import javafx.animation.AnimationTimer;
 import javafx.beans.value.ChangeListener;
@@ -51,6 +52,11 @@ import java.util.function.LongSupplier;
  * {@link #tick(long)} so tests can drive it deterministically with
  * synthetic timestamps (no real sleeps).
  */
+@FxAnimationTimerAllowed("Per-frame meter-render loop owned by this skin, gated on "
+        + "scene attachment; relays the control's own lock-free atomic levels to "
+        + "its JavaFX properties (javafx-application-design §6 control-owns-timer). "
+        + "It is not a Platform.runLater cross-thread hop and not the central "
+        + "marshalling seam — story 289 sentinel.")
 public final class LevelMeterSkin extends SkinBase<LevelMeter> {
 
     /** Peak-hold duration in nanoseconds (2 s). */

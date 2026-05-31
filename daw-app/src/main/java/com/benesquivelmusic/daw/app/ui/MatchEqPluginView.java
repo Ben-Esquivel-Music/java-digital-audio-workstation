@@ -1,5 +1,6 @@
 package com.benesquivelmusic.daw.app.ui;
 
+import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.core.dsp.eq.MatchEqProcessor;
 import com.benesquivelmusic.daw.core.plugin.MatchEqPlugin;
 import com.benesquivelmusic.daw.core.reference.ReferenceTrack;
@@ -222,7 +223,7 @@ public final class MatchEqPluginView extends VBox {
         if (Platform.isFxApplicationThread()) {
             statusLabel.setText(text);
         } else {
-            Platform.runLater(() -> statusLabel.setText(text));
+            FxDispatcher.runOnFx(() -> statusLabel.setText(text));
         }
     }
 
