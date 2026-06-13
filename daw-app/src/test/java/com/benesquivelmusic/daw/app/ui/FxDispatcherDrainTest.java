@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 /**
  * Story 289 — verifies the {@link FxDispatcher} continuous lock-free path
@@ -165,5 +166,96 @@ class FxDispatcherDrainTest {
         assertThat(delivered)
                 .as("a post-run sentinel must be delivered by the final drain")
                 .contains(sentinel);
+    }
+
+    @Test
+    void closingAGenericChannelRemovesItFromTheDrainSoItCannotLeak() {
+        FxDispatcher dispatcher = new FxDispatcher();
+        AtomicInteger drains = new AtomicInteger(0);
+        FxDispatcher.ContinuousChannel<Integer> channel =
+                dispatcher.openContinuous(v -> drains.incrementAndGet());
+        assertThat(dispatcher.openChannelCount())
+                .as("openContinuous registers one channel").isEqualTo(1);
+
+        channel.publish(7);
+        dispatcher.pulse();
+        assertThat(drains.get()).as("an open channel is drained").isEqualTo(1);
+
+        channel.close();
+        assertThat(dispatcher.openChannelCount())
+                .as("close() removes the channel from the dispatcher (no leak)").isZero();
+
+        // A value published after close is never delivered — the channel is gone.
+        channel.publish(8);
+        dispatcher.pulse();
+        assertThat(drains.get())
+                .as("a closed channel is no longer drained").isEqualTo(1);
+
+        channel.close(); // idempotent
+        assertThat(dispatcher.openChannelCount()).isZero();
+    }
+
+    @Test
+    void doubleChannelCoalescesABurstToTheLatestValue() {
+        FxDispatcher dispatcher = new FxDispatcher();
+        AtomicInteger drains = new AtomicInteger(0);
+        double[] lastDelivered = {Double.NaN};
+        FxDispatcher.ContinuousDoubleChannel channel =
+                dispatcher.openContinuousDouble(v -> {
+                    drains.incrementAndGet();
+                    lastDelivered[0] = v; // DoubleConsumer.accept(double) — no box
+                });
+
+        // A primitive burst coalesces to the latest, drained exactly once.
+        for (int i = 1; i <= 500; i++) {
+            channel.publish(i * 0.25);
+        }
+        dispatcher.pulse();
+        assertThat(drains.get())
+                .as("a burst drained once delivers exactly one coalesced value").isEqualTo(1);
+        assertThat(lastDelivered[0])
+                .as("the delivered value is the latest published").isEqualTo(125.0);
+
+        // An empty drain must not re-deliver.
+        dispatcher.pulse();
+        assertThat(drains.get()).as("an empty drain does not invoke the consumer").isEqualTo(1);
+
+        // 0.0 is a real value distinct from the NaN empty-sentinel — it must deliver.
+        channel.publish(0.0);
+        dispatcher.pulse();
+        assertThat(drains.get()).isEqualTo(2);
+        assertThat(lastDelivered[0])
+                .as("zero is a real value, not the empty sentinel").isEqualTo(0.0);
+    }
+
+    @Test
+    void doubleChannelRejectsNaNAsTheReservedEmptySentinel() {
+        FxDispatcher dispatcher = new FxDispatcher();
+        FxDispatcher.ContinuousDoubleChannel channel =
+                dispatcher.openContinuousDouble(v -> { });
+        assertThatIllegalArgumentException()
+                .as("NaN is the empty-mailbox sentinel and must be rejected")
+                .isThrownBy(() -> channel.publish(Double.NaN));
+    }
+
+    @Test
+    void closingADoubleChannelRemovesItFromTheDrainSoItCannotLeak() {
+        FxDispatcher dispatcher = new FxDispatcher();
+        AtomicInteger drains = new AtomicInteger(0);
+        FxDispatcher.ContinuousDoubleChannel channel =
+                dispatcher.openContinuousDouble(v -> drains.incrementAndGet());
+        assertThat(dispatcher.openChannelCount()).isEqualTo(1);
+
+        channel.publish(3.0);
+        dispatcher.pulse();
+        assertThat(drains.get()).isEqualTo(1);
+
+        channel.close();
+        assertThat(dispatcher.openChannelCount())
+                .as("close() removes the double channel (no leak)").isZero();
+        channel.publish(4.0);
+        dispatcher.pulse();
+        assertThat(drains.get())
+                .as("a closed double channel is no longer drained").isEqualTo(1);
     }
 }

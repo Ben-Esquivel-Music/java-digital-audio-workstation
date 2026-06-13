@@ -109,4 +109,87 @@ Tests (assert on properties / `ChangeKind` callbacks / bus events — never on r
 - SKILL: `javafx-application-design` (§4 Properties, §11 threading, §12 typed events, §15 anti-patterns),
   `research-daw` (§1 modular, §3 real-time / lock-free), `dawg-annotations-reflection` (`@RealTimeSafe`).
 - Build/verify: `mvn -pl daw-core -am test -Dtest=CoreTransportSignal* -Dsurefire.failIfNoSpecifiedTests=false`
-  then `mvn -pl daw-app -am test -Dtest=TransportVM*,TransportBinding*,TransportCommandEvent* -Dsurefire.failIfNoSpecifiedTests=false`.
+  then `mvn -pl daw-app -am test -Dtest=TransportVM*,TransportBinding*,TransportCommandEvent*,FxDispatcher*,RunLaterConsolidation* -Dsurefire.failIfNoSpecifiedTests=false`
+  (the `FxDispatcher*`/`RunLaterConsolidation*` runs were added because the playhead fix below touches the story-289 seam — see the Implementation Note).
+
+## Implementation Note (2026-06-13)
+
+Delivered. The vertical slice — core change signal → view-model property → control binding → command
+cascade — is implemented and the second of the companion-book stories (after 289) to land production code.
+
+As built:
+
+- **Core seam** (`daw-core/.../transport/Transport.java`, JavaFX-free): `enum ChangeKind {STATE, TEMPO,
+  TIME_SIGNATURE, LOOP, POSITION}`; `addChangeListener(Consumer<ChangeKind>)` returns a `Runnable`
+  removal token (+ `removeChangeListener`); `notifyChange(kind)` fires **after** each field mutation,
+  lock-free **and allocation-free** via an immutable listener-snapshot array (read once into a local and
+  iterated by index) so it is safe from the `@RealTimeSafe` `advancePosition` path. `CoreTransportSignalTest`
+  runs with no JavaFX on the classpath (§2.5, §9).
+- **View-model** (`daw-app/.../ui/vm/`): `TransportVM` exposes read-only `state` / `tempo` /
+  `timeSignature` / `loopRegion` / `playhead`; `TimeSignature` and `LoopRegion` are validating value
+  records (no `EnumProperty<T>`); discrete facts marshal via `FxDispatcher.onFx`, the continuous playhead
+  via the dispatcher channel. `TransportControlBinder` binds control visible-state to the VM and routes
+  gestures to commands (no write-back).
+- **Commands** (`daw-app/.../ui/vm/command/`): sealed `TransportCommand` (Start/Stop/ToggleRecord/
+  SetTempo/ToggleLoop) over a `TransportIntentHandler` seam; `CoreTransportIntentHandler` runs
+  VALIDATE → MUTATE → ANNOUNCE (publishes the existing `TransportEvent` via `EventBusPublisher`). The
+  PROJECT phase (`ProjectVM.dirty`) is left to story 292 as planned.
+
+Five refinements surfaced by code review, all applied (the first three from a diff review, the
+last two from later GitHub Copilot passes):
+
+- **Playhead is allocation-free on the `@RealTimeSafe` path.** Publishing the playhead through the
+  generic `ContinuousChannel<Double>` boxed a `double` on every `POSITION`/`STATE` signal — at odds with
+  the §4.1/§4.6 "the audio thread allocates nothing" intent and the core's own allocation-free notify.
+  Rather than defer (the story builds on 289's existing channel), 289's seam was extended with a
+  primitive `FxDispatcher.ContinuousDoubleChannel` (a depth-1 `AtomicLong`-of-raw-bits mailbox; `NaN` is
+  the reserved empty sentinel, so `publish(double)` rejects `NaN`; a `DoubleConsumer` drain). `TransportVM`
+  now publishes the playhead through it with zero `Double` box. This refines the Technical Note that the
+  playhead "crosses via the lock-free buffer": that buffer is now the primitive specialization.
+- **`dispose()` closes the continuous channel** (honoring the AC "unregisters and closes any
+  subscription — no leaked listeners"). The channel lives in the long-lived app-scoped dispatcher and
+  holds the FX consumer (hence the VM), so unregistering only the core listener leaked it across every
+  create/dispose cycle. `close()` was added to the channel API (removes the channel from the drain list;
+  idempotent) for both the generic and the new double channel; a test-visibility `openChannelCount()`
+  makes the close verifiable.
+- **The tempo field snaps back on a VALIDATE-phase rejection, not only on unparseable text.** The commit
+  handler caught only `NumberFormatException`, so an out-of-range / `NaN` tempo let
+  `CoreTransportIntentHandler.setTempo`'s `IllegalArgumentException` escape onto the FX thread and left
+  the invalid text in the field. The catch was widened to `IllegalArgumentException` (the supertype of
+  `NumberFormatException`), so every rejected edit snaps back to the committed tempo.
+- **Start is a no-op while RECORDING, not just while PLAYING.** `CoreTransportIntentHandler.start()`
+  guarded only `PLAYING`, but the existing documented semantics (`TransportController.onPlay`:
+  "RECORDING → no-op (Stop is the only way out of record)") treat RECORDING as a no-op for Start too.
+  Because `Transport.play()` *unconditionally* sets `PLAYING`, a Start command issued while recording
+  would silently drop out of record **and** announce `TransportEvent.Started`. VALIDATE now no-ops on
+  `PLAYING || RECORDING` (state read once into a local, mirroring `stop()`'s `before`), so the command
+  layer reproduces every branch of the legacy handler's state table — not just the obvious one.
+- **Change notification is immune to mid-notify listener removal (and stays allocation-free).** The
+  original `notifyChange` cached `changeListeners.size()` then read each element via `get(i)` on a
+  `CopyOnWriteArrayList`. Because COW's `get` re-reads the *current* backing array, a listener removed
+  during notification — reentrantly (one listener unregistering another) or cross-thread (the FX thread
+  running a removal token while `advancePosition` notifies on the `@RealTimeSafe` audio thread) — shrinks
+  the array, so the next `get(i)` throws `IndexOutOfBoundsException`. Copilot's minimal fix (an
+  enhanced-for over the COW list) is correct but allocates a `COWIterator` per notify, breaking the
+  triple-documented allocation-free guarantee. Instead the COW list was replaced with a `volatile
+  Consumer<ChangeKind>[]` snapshot rebuilt under a lock only on add/remove; `notifyChange` reads the
+  volatile once into a stable local and iterates the array by index — no lock, no iterator/lambda
+  allocation, and the in-flight notify is unaffected because the captured array reference never mutates.
+
+Tests: `CoreTransportSignalTest` (daw-core — incl. the new
+`aListenerRemovingAnotherDuringNotificationDoesNotThrowAndKeepsSnapshotSemantics`, discriminating: it throws
+`IndexOutOfBoundsException` under the old cached-size + `get(i)` loop), `TransportVMTest`,
+`TransportBindingTest`, `TransportCommandEventTest`
+(incl. `startCommandIsANoOpWhileRecordingAndNeverDropsOutOfRecordOrAnnounces`, which is discriminating —
+it fails under the old `PLAYING`-only guard), and the extended `FxDispatcherDrainTest`. `daw-core` suite
+green (1031); full `daw-app` suite green (2558).
+
+Scoped items recorded rather than dropped silently:
+
+- **God-controller refreshers still live, by design.** `MainController.updateTempoDisplay()` /
+  `updatePlayheadFromTransport()` / `syncLoopRegionToCanvas()` are untouched here — their removal and the
+  re-entrancy-guard deletions are **story 293** (consistent with this story's Non-Goals).
+- **`NaN` playhead position now fails fast.** `Transport.setPositionInBeats` / `advancePosition` guard
+  `< 0` but not `NaN`, and the primitive channel reserves `NaN` as its empty sentinel, so a `NaN` position
+  would throw at publish. A `NaN` playhead is already a bug and no path produces one; tightening the
+  `Transport` position guards is a candidate follow-up, not done here.
