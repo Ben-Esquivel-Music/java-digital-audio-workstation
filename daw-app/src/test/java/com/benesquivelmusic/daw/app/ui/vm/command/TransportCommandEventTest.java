@@ -93,6 +93,26 @@ class TransportCommandEventTest {
     }
 
     @Test
+    void startCommandIsANoOpWhileRecordingAndNeverDropsOutOfRecordOrAnnounces() {
+        Transport transport = new Transport();
+        transport.record();
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, SAMPLE_RATE);
+
+        AtomicReference<TransportEvent.Started> announced = new AtomicReference<>();
+        try (EventBus.Subscription sub = bus.on(TransportEvent.Started.class,
+                DispatchMode.ON_CALLER_THREAD, announced::set)) {
+
+            new StartTransportCommand().execute(handler);
+
+            assertThat(transport.getState())
+                    .as("Start is a no-op while RECORDING — Stop is the only way out of record")
+                    .isEqualTo(TransportState.RECORDING);
+            assertThat(announced.get())
+                    .as("no Started is announced when Start is a no-op").isNull();
+        }
+    }
+
+    @Test
     void outOfRangeTempoIsRejectedInValidateAndNeverMutatesOrAnnounces() {
         Transport transport = new Transport();
         transport.setTempo(120.0);

@@ -11,8 +11,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.DoubleConsumer;
 
 /**
  * The single marshalling seam between non-JavaFX threads and the JavaFX
@@ -73,6 +75,13 @@ import java.util.function.Consumer;
  * frame", §11 "the FX thread is sacred — marshal deliberately"). Each channel
  * is backed by a lock-free, wait-free, single-reader latest-value buffer (a
  * depth-1 coalescing mailbox; {@code @RealTimeSafe}). See {@link Channel}.</p>
+ *
+ * <p>For a high-frequency primitive {@code double} (the playhead, a meter level)
+ * {@link #openContinuousDouble(DoubleConsumer)} returns a
+ * {@link ContinuousDoubleChannel} with the same coalescing and lifecycle, but its
+ * {@code publish(double)} stores raw bits in an {@link AtomicLong} so the
+ * {@link RealTimeSafe} producer allocates no {@link Double} box. See
+ * {@link DoubleChannel}.</p>
  *
  * <h2>Coalescing pulse</h2>
  *
@@ -136,8 +145,22 @@ public final class FxDispatcher {
      */
     private final Map<Object, Runnable> keyedWork = new ConcurrentHashMap<>();
 
-    /** Open continuous channels drained on every {@link #pulse()}. */
-    private final List<Channel<?>> channels = new CopyOnWriteArrayList<>();
+    /**
+     * Open continuous channels drained on every {@link #pulse()}. Holds both the
+     * generic {@link Channel} and the primitive {@link DoubleChannel} via the
+     * private {@link DrainableChannel} view, so the pulse drains them uniformly
+     * and each channel can {@linkplain ContinuousChannel#close() remove itself}.
+     */
+    private final List<DrainableChannel> channels = new CopyOnWriteArrayList<>();
+
+    /**
+     * Empty-mailbox sentinel for a {@link DoubleChannel}: the canonical NaN bit
+     * pattern. {@link ContinuousDoubleChannel#publish(double)} forbids {@code NaN},
+     * so no real value can ever collide with it — letting a single
+     * {@link AtomicLong} encode both "latest value" and "drained" with no box and
+     * no second field.
+     */
+    private static final long DOUBLE_CHANNEL_EMPTY = Double.doubleToRawLongBits(Double.NaN);
 
     /** The single per-frame coalescing timer; non-null only between
      *  {@link #start()} and {@link #dispose()}. */
@@ -308,6 +331,47 @@ public final class FxDispatcher {
          */
         @RealTimeSafe
         void publish(T value);
+
+        /**
+         * Closes this channel and removes it from the dispatcher so it is no
+         * longer drained on a {@link #pulse()}. Idempotent — a second call is a
+         * no-op (removing an absent element from a {@link CopyOnWriteArrayList}).
+         *
+         * <p>Call this from the owning view-model's {@code dispose()}: the channel
+         * holds the FX-thread consumer (hence, transitively, the view-model), so a
+         * channel left open in this long-lived, app-scoped dispatcher leaks across
+         * every create/dispose cycle. Unregistering only the upstream
+         * change-listener is <em>not</em> enough ({@code javafx-application-design}
+         * §4/§11/§15). Thread-safe; normally called on the FX thread.</p>
+         */
+        void close();
+    }
+
+    /**
+     * The primitive-{@code double} specialization of {@link ContinuousChannel}.
+     * Stores the latest value as raw {@code double} bits in an {@link AtomicLong},
+     * so neither {@link #publish(double)} nor the per-frame drain allocates a
+     * {@link Double} box — the playhead/meter producer on the {@link RealTimeSafe}
+     * audio thread must allocate nothing (§4.1, §4.6, §9). Same depth-1
+     * latest-wins coalescing and {@link #close()} lifecycle as the generic channel.
+     */
+    public interface ContinuousDoubleChannel {
+        /**
+         * Publishes the latest value. Lock-free, wait-free, non-blocking and
+         * <strong>allocation-free</strong> — safe for the {@link RealTimeSafe}
+         * audio thread. Depth-1 latest-wins mailbox, exactly as
+         * {@link ContinuousChannel#publish(Object)}.
+         *
+         * @param value the value to publish; must not be {@code NaN} ({@code NaN}
+         *              is reserved as the empty-mailbox sentinel so the buffer needs
+         *              no {@link Double} box)
+         * @throws IllegalArgumentException if {@code value} is {@code NaN}
+         */
+        @RealTimeSafe
+        void publish(double value);
+
+        /** Closes this channel; see {@link ContinuousChannel#close()}. */
+        void close();
     }
 
     /**
@@ -315,7 +379,8 @@ public final class FxDispatcher {
      * {@code fxConsumer} on the FX thread at most once per frame. On each
      * {@link #pulse()} the channel's latest value is taken (and cleared), and —
      * only if a value was published since the last pulse — {@code fxConsumer} is
-     * invoked with it. The channel stays open until {@link #dispose()}.
+     * invoked with it. The channel stays open until {@link ContinuousChannel#close()
+     * closed} (or the dispatcher is {@link #dispose() disposed}).
      *
      * @param fxConsumer the FX-thread consumer of the coalesced latest value;
      *                   must not be {@code null}
@@ -327,6 +392,39 @@ public final class FxDispatcher {
         Channel<T> channel = new Channel<>(fxConsumer);
         channels.add(channel);
         return channel;
+    }
+
+    /**
+     * Opens a primitive-{@code double} continuous channel — the allocation-free
+     * specialization of {@link #openContinuous(Consumer)} for a high-frequency
+     * {@code double} such as the playhead or a meter level. Identical coalescing
+     * and {@link ContinuousDoubleChannel#close() lifecycle} to the generic channel,
+     * but {@link ContinuousDoubleChannel#publish(double)} and the drain carry a
+     * primitive {@code double}, so the {@link RealTimeSafe} producer allocates no
+     * {@link Double} box.
+     *
+     * @param fxConsumer the FX-thread consumer of the coalesced latest value;
+     *                   must not be {@code null}
+     * @return the channel the producer publishes into
+     */
+    public ContinuousDoubleChannel openContinuousDouble(DoubleConsumer fxConsumer) {
+        Objects.requireNonNull(fxConsumer, "fxConsumer must not be null");
+        DoubleChannel channel = new DoubleChannel(fxConsumer);
+        channels.add(channel);
+        return channel;
+    }
+
+    /**
+     * Returns the number of continuous channels currently open (drained on each
+     * {@link #pulse()}). Exposed — like {@link #pulse()} — for the story's tests,
+     * so a view-model's {@code dispose()} can be verified to
+     * {@linkplain ContinuousChannel#close() close} its channel rather than leak it
+     * here; it is not part of the production marshalling API.
+     *
+     * @return the open continuous-channel count
+     */
+    public int openChannelCount() {
+        return channels.size();
     }
 
     // ── pulse / lifecycle ────────────────────────────────────────────────────
@@ -358,7 +456,7 @@ public final class FxDispatcher {
                 }
             }
         }
-        for (Channel<?> channel : channels) {
+        for (DrainableChannel channel : channels) {
             channel.drain();
         }
     }
@@ -408,6 +506,18 @@ public final class FxDispatcher {
     }
 
     /**
+     * The drain-and-remove view of a continuous channel that {@link #pulse()}
+     * sees, regardless of whether the channel is the generic {@link Channel} or
+     * the primitive {@link DoubleChannel}. Lets the pulse drain a heterogeneous
+     * {@link #channels} list uniformly while each concrete channel keeps its own
+     * typed {@code publish}.
+     */
+    private interface DrainableChannel {
+        /** Takes the latest value (if any) and delivers it once on the FX thread. */
+        void drain();
+    }
+
+    /**
      * One continuous channel: a lock-free, wait-free, single-reader
      * latest-value buffer (a depth-1 coalescing mailbox). The producer
      * {@link #publish(Object) publishes} the newest value; the FX-thread
@@ -425,9 +535,12 @@ public final class FxDispatcher {
      * sufficient and avoids a full fence, and the producer never blocks on the
      * consumer (§4.1, §4.6 — safe for the {@link RealTimeSafe} audio thread).</p>
      *
+     * <p>Non-static so {@link #close()} can remove itself from the enclosing
+     * dispatcher's {@link #channels} list.</p>
+     *
      * @param <T> the value type
      */
-    private static final class Channel<T> implements ContinuousChannel<T> {
+    private final class Channel<T> implements ContinuousChannel<T>, DrainableChannel {
 
         /** Holds the latest published value, or {@code null} when drained / empty. */
         private final AtomicReference<T> latest = new AtomicReference<>();
@@ -446,12 +559,62 @@ public final class FxDispatcher {
             latest.lazySet(value);
         }
 
-        /** Takes the latest value (if any) and delivers it once on the FX thread. */
-        void drain() {
+        @Override
+        public void drain() {
             T value = latest.getAndSet(null);
             if (value != null) {
                 fxConsumer.accept(value);
             }
+        }
+
+        @Override
+        public void close() {
+            channels.remove(this);
+        }
+    }
+
+    /**
+     * The primitive-{@code double} mailbox behind {@link ContinuousDoubleChannel}.
+     * Identical depth-1 latest-wins, wait-free SPSC semantics to {@link Channel},
+     * but the latest value is held as raw {@code double} bits in an
+     * {@link AtomicLong} with {@link #DOUBLE_CHANNEL_EMPTY} as the drained
+     * sentinel — so {@link #publish(double)} and {@link #drain()} carry a
+     * primitive and allocate no {@link Double} box on the {@link RealTimeSafe}
+     * producer path. Non-static so {@link #close()} can remove itself from
+     * {@link #channels}.
+     */
+    private final class DoubleChannel implements ContinuousDoubleChannel, DrainableChannel {
+
+        /** Latest published value as raw bits, or {@link #DOUBLE_CHANNEL_EMPTY} when drained. */
+        private final AtomicLong latestBits = new AtomicLong(DOUBLE_CHANNEL_EMPTY);
+        private final DoubleConsumer fxConsumer;
+
+        DoubleChannel(DoubleConsumer fxConsumer) {
+            this.fxConsumer = fxConsumer;
+        }
+
+        @Override
+        @RealTimeSafe
+        public void publish(double value) {
+            if (Double.isNaN(value)) {
+                throw new IllegalArgumentException(
+                        "value must not be NaN (reserved as the empty-mailbox sentinel)");
+            }
+            // Wait-free latest-wins overwrite of a primitive — no box (§4.1, §4.6).
+            latestBits.lazySet(Double.doubleToRawLongBits(value));
+        }
+
+        @Override
+        public void drain() {
+            long bits = latestBits.getAndSet(DOUBLE_CHANNEL_EMPTY);
+            if (bits != DOUBLE_CHANNEL_EMPTY) {
+                fxConsumer.accept(Double.longBitsToDouble(bits));
+            }
+        }
+
+        @Override
+        public void close() {
+            channels.remove(this);
         }
     }
 }

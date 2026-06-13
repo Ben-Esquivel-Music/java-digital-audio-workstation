@@ -9,6 +9,7 @@ import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
@@ -131,6 +132,39 @@ class CoreTransportSignalTest {
         transport.stop();
 
         assertThat(fires.get()).isEqualTo(1);
+    }
+
+    @Test
+    void aListenerRemovingAnotherDuringNotificationDoesNotThrowAndKeepsSnapshotSemantics() {
+        Transport transport = new Transport();
+        List<ChangeKind> secondSaw = new ArrayList<>();
+
+        // The first listener unregisters the second one *during* notification. Under the
+        // old cached-size + get(i) loop this shrank the backing list, so the next get(i)
+        // read a now-shorter array and threw IndexOutOfBoundsException. The snapshot array
+        // captured once at notify start makes the in-flight notify immune to the removal.
+        AtomicReference<Runnable> removeSecond = new AtomicReference<>();
+        transport.addChangeListener(kind -> {
+            Runnable token = removeSecond.getAndSet(null);
+            if (token != null) {
+                token.run(); // reentrant remove of the *second* listener
+            }
+        });
+        removeSecond.set(transport.addChangeListener(secondSaw::add));
+
+        transport.play(); // must not throw IndexOutOfBoundsException
+
+        assertThat(secondSaw)
+                .as("the snapshot captured at notify start is stable: a listener removed "
+                        + "mid-notify still fires once this round")
+                .containsExactly(ChangeKind.STATE);
+
+        secondSaw.clear();
+        transport.stop();
+
+        assertThat(secondSaw)
+                .as("after the reentrant removal, the second listener receives no further signals")
+                .isEmpty();
     }
 
     @Test

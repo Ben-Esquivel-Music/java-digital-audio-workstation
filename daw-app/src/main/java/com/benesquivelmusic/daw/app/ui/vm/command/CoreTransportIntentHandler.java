@@ -60,8 +60,13 @@ public final class CoreTransportIntentHandler implements TransportIntentHandler 
 
     @Override
     public void start() {
-        if (transport.getState() == TransportState.PLAYING) {
-            return; // VALIDATE: already playing — no-op
+        TransportState state = transport.getState();
+        // VALIDATE: no-op when already playing, and also when RECORDING — Stop is
+        // the only way out of record (mirrors TransportController.onPlay). Without
+        // the RECORDING guard, transport.play() (which unconditionally sets PLAYING)
+        // would silently drop out of record and still announce Started.
+        if (state == TransportState.PLAYING || state == TransportState.RECORDING) {
+            return;
         }
         transport.play();
         EventBusPublisher.publish(new TransportEvent.Started(positionFrames(), Instant.now()));

@@ -129,7 +129,12 @@ public final class TransportControlBinder {
      * Binds an editable tempo field: it displays the VM tempo and, on commit
      * (Enter / focus-loss), raises {@link SetTempoCommand} with the typed value —
      * never a per-keystroke write-back (§4.4). The field is refreshed from the VM
-     * whenever the committed tempo changes, so a rejected edit snaps back.
+     * whenever the committed tempo changes, so an accepted edit lands once the VM
+     * republishes; a <em>rejected</em> edit — unparseable text <em>or</em> a value
+     * the handler's VALIDATE phase refuses (out of range / NaN, which throws an
+     * {@link IllegalArgumentException}) — snaps the field back to the committed
+     * tempo rather than leaving invalid text or letting the exception escape onto
+     * the FX thread.
      *
      * @param tempoField the tempo text field; must not be {@code null}
      */
@@ -145,8 +150,15 @@ public final class TransportControlBinder {
         Runnable commit = () -> {
             try {
                 commandSink.accept(new SetTempoCommand(Double.parseDouble(tempoField.getText().trim())));
-            } catch (NumberFormatException ignored) {
-                tempoField.setText(formatTempo(vm.getTempo())); // reject: snap back
+            } catch (IllegalArgumentException rejected) {
+                // Snap back on any rejection. NumberFormatException (unparseable
+                // text) IS an IllegalArgumentException, and so is the handler's
+                // out-of-range / NaN rejection (CoreTransportIntentHandler.setTempo):
+                // catching only the former left an out-of-range entry showing invalid
+                // text while the IAE escaped uncaught onto the FX thread. The VM tempo
+                // is unchanged on a rejected edit (no MUTATE fired), so it is the
+                // correct value to restore.
+                tempoField.setText(formatTempo(vm.getTempo()));
             }
         };
         tempoField.setOnAction(_ -> commit.run());

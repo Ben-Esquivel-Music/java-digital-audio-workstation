@@ -39,9 +39,10 @@ import java.util.function.Consumer;
  *       TIME_SIGNATURE}, {@link ChangeKind#LOOP LOOP}) are posted with
  *       {@link FxDispatcher#onFx(Runnable)}.</li>
  *   <li>The <strong>continuous</strong> {@link #playhead} is published into the
- *       dispatcher's lock-free, single-reader buffer and delivered once per frame
- *       by the drain (§4.5, §5.2) — never a per-tick {@code runLater}. The
- *       producer side ({@code publish}) is wait-free, safe to call from the audio
+ *       dispatcher's lock-free, single-reader primitive-{@code double} buffer and
+ *       delivered once per frame by the drain (§4.5, §5.2) — never a per-tick
+ *       {@code runLater}. The producer side ({@code publish}) is wait-free and
+ *       allocation-free (no {@link Double} box), safe to call from the audio
  *       thread (§4.1, §4.6).</li>
  * </ul>
  *
@@ -68,8 +69,14 @@ public final class TransportVM {
     private final ReadOnlyDoubleWrapper playhead =
             new ReadOnlyDoubleWrapper(this, "playhead");
 
-    /** Lock-free, single-reader buffer feeding the continuous {@link #playhead} (§4.5). */
-    private final FxDispatcher.ContinuousChannel<Double> playheadChannel;
+    /**
+     * Lock-free, single-reader primitive-{@code double} buffer feeding the
+     * continuous {@link #playhead} (§4.5). The {@code double} specialization
+     * ({@link FxDispatcher#openContinuousDouble}) so a publish from the
+     * {@code @RealTimeSafe} render path (via {@link Transport#advancePosition(double)})
+     * allocates no {@link Double} box. Closed in {@link #dispose()}.
+     */
+    private final FxDispatcher.ContinuousDoubleChannel playheadChannel;
 
     /** Removal token returned by {@link Transport#addChangeListener(Consumer)}. */
     private final Runnable unregister;
@@ -88,7 +95,7 @@ public final class TransportVM {
         this.transport = Objects.requireNonNull(transport, "transport must not be null");
         this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher must not be null");
 
-        this.playheadChannel = dispatcher.openContinuous(playhead::set);
+        this.playheadChannel = dispatcher.openContinuousDouble(playhead::set);
 
         // Seed every property with the current state so a control binding shows
         // the correct value before the first signal arrives.
@@ -190,8 +197,14 @@ public final class TransportVM {
     }
 
     /**
-     * Unregisters the core change signal so no listener leaks. Idempotent —
-     * a second call is a no-op. After disposal the VM receives no further
+     * Unregisters the core change signal <em>and</em> closes the continuous
+     * playhead channel so nothing leaks (story 290 AC: "{@code dispose()} that
+     * unregisters and closes any subscription — no leaked listeners"). Closing
+     * the channel matters because it lives in the long-lived, app-scoped
+     * {@link FxDispatcher} and holds the FX consumer (hence this VM); leaving it
+     * open would leak the VM across every create/dispose cycle, not just the
+     * upstream listener ({@code javafx-application-design} §4/§11/§15). Idempotent
+     * — a second call is a no-op. After disposal the VM receives no further
      * signals; its properties retain their last values.
      */
     public void dispose() {
@@ -200,5 +213,6 @@ public final class TransportVM {
         }
         disposed = true;
         unregister.run();
+        playheadChannel.close();
     }
 }

@@ -1,16 +1,20 @@
 package com.benesquivelmusic.daw.app.ui.vm;
 
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.app.ui.vm.command.CoreTransportIntentHandler;
 import com.benesquivelmusic.daw.app.ui.vm.command.StartTransportCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.ToggleLoopCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.ToggleRecordCommand;
 import com.benesquivelmusic.daw.app.ui.vm.command.TransportCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.TransportIntentHandler;
 import com.benesquivelmusic.daw.core.transport.Transport;
 
 import javafx.application.Platform;
 import javafx.css.PseudoClass;
+import javafx.event.ActionEvent;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.control.TextField;
 import javafx.scene.control.ToggleButton;
 
 import org.junit.jupiter.api.BeforeAll;
@@ -21,6 +25,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -155,6 +160,57 @@ class TransportBindingTest {
                             new StartTransportCommand(),
                             new ToggleRecordCommand(),
                             new ToggleLoopCommand());
+        } finally {
+            computeOnFx(() -> { binder.dispose(); return null; });
+            vm.dispose();
+        }
+    }
+
+    @Test
+    void tempoFieldRejectedEditSnapsBackToTheCommittedTempoWithoutThrowing() throws Exception {
+        Transport transport = new Transport();
+        transport.setTempo(120.0);
+        FxDispatcher dispatcher = new FxDispatcher();
+        TransportVM vm = new TransportVM(transport, dispatcher);
+
+        // The production wiring: a control gesture raises a command that runs
+        // against the validating handler, which throws IllegalArgumentException
+        // for an out-of-range tempo (the VALIDATE phase). The binder must catch
+        // that and snap back — not let it escape onto the FX thread.
+        TransportIntentHandler handler = new CoreTransportIntentHandler(transport, 48_000.0);
+        Consumer<TransportCommand> sink = cmd -> cmd.execute(handler);
+
+        TextField field = computeOnFx(TextField::new);
+        TransportControlBinder binder = new TransportControlBinder(vm, sink);
+        try {
+            computeOnFx(() -> { binder.bindTempoField(field); return null; });
+            assertThat(computeOnFx(() -> field.getText())).isEqualTo("120.0");
+
+            // 1) Out-of-range numeric entry. parseDouble succeeds, the handler
+            //    rejects it with IllegalArgumentException. If the binder failed to
+            //    catch that, the IAE would propagate out of the action handler and
+            //    computeOnFx would capture + rethrow it, failing this test.
+            computeOnFx(() -> {
+                field.setText("5000");
+                field.getOnAction().handle(new ActionEvent());
+                return null;
+            });
+            assertThat(computeOnFx(() -> field.getText()))
+                    .as("an out-of-range tempo snaps back to the committed value")
+                    .isEqualTo("120.0");
+            assertThat(transport.getTempo())
+                    .as("a rejected edit never mutates the transport").isEqualTo(120.0);
+
+            // 2) Unparseable entry: parseDouble throws NumberFormatException (an
+            //    IllegalArgumentException subtype) — same snap-back, sink never run.
+            computeOnFx(() -> {
+                field.setText("not-a-number");
+                field.getOnAction().handle(new ActionEvent());
+                return null;
+            });
+            assertThat(computeOnFx(() -> field.getText()))
+                    .as("unparseable text snaps back to the committed value")
+                    .isEqualTo("120.0");
         } finally {
             computeOnFx(() -> { binder.dispose(); return null; });
             vm.dispose();

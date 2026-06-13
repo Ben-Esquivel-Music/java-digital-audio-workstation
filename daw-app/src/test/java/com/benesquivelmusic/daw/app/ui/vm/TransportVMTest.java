@@ -153,6 +153,32 @@ class TransportVMTest {
     }
 
     @Test
+    void disposeClosesTheContinuousChannelSoItDoesNotLeakInTheDispatcher() {
+        FxDispatcher dispatcher = new FxDispatcher();
+        Transport transport = new Transport();
+        assertThat(dispatcher.openChannelCount())
+                .as("no continuous channel before the VM is created").isZero();
+
+        TransportVM vm = new TransportVM(transport, dispatcher);
+        assertThat(dispatcher.openChannelCount())
+                .as("the VM opens exactly one continuous playhead channel").isEqualTo(1);
+
+        vm.dispose();
+        // The leak this guards is observationally silent within a single lifecycle
+        // (nothing publishes to the channel once the listener is gone), so assert
+        // on the dispatcher's channel set directly: dispose() must CLOSE the
+        // channel, not merely unregister the upstream listener (story 290 AC —
+        // "no leaked listeners"). A leak would accumulate across create/dispose.
+        assertThat(dispatcher.openChannelCount())
+                .as("dispose() must close the playhead channel, not leak it in the "
+                        + "long-lived dispatcher")
+                .isZero();
+
+        vm.dispose(); // idempotent
+        assertThat(dispatcher.openChannelCount()).isZero();
+    }
+
+    @Test
     void disposeUnregistersSoNoFurtherSignalsAreObserved() throws InterruptedException {
         Transport transport = new Transport();
         FxDispatcher dispatcher = new FxDispatcher();
