@@ -3,6 +3,7 @@ package com.benesquivelmusic.daw.app.ui;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
 import com.benesquivelmusic.daw.app.ui.motion.MotionManager;
+import com.benesquivelmusic.daw.core.undo.UndoHistoryListener;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 
 import javafx.animation.KeyFrame;
@@ -59,6 +60,16 @@ final class HistoryPanelController {
 
     private UndoHistoryPanel undoHistoryPanel;
     private boolean historyPanelVisible;
+    /**
+     * The history listener registered by {@link #rebuild()} and the
+     * {@link UndoManager} it is currently attached to. Tracked as a pair so
+     * each rebuild can detach from the previously-listened manager before
+     * re-registering — keeping {@code rebuild()} idempotent and preventing
+     * duplicate menu/canvas refreshes were it ever invoked without a fresh
+     * {@code UndoManager} having been swapped in first.
+     */
+    private UndoHistoryListener historyListener;
+    private UndoManager listenedUndoManager;
 
     HistoryPanelController(BorderPane rootPane,
                            javafx.scene.control.Button historyButton,
@@ -117,7 +128,20 @@ final class HistoryPanelController {
         if (undoHistoryPanel != null) {
             undoHistoryPanel.dispose();
         }
-        undoManager.get().addHistoryListener(_ -> {
+        // Read the swappable manager once so the listener and the panel below
+        // are guaranteed to share the same instance.
+        UndoManager current = undoManager.get();
+        // Detach the prior listener from the manager it was registered on
+        // before registering on the current one. Production callers swap in a
+        // fresh UndoManager just before each rebuild(), so the old listener
+        // would otherwise linger on the discarded manager; and if rebuild()
+        // were ever called without a swap, the same manager would accumulate
+        // duplicate listeners and fire the refresh callbacks once per
+        // registration on every edit.
+        if (historyListener != null && listenedUndoManager != null) {
+            listenedUndoManager.removeHistoryListener(historyListener);
+        }
+        historyListener = _ -> {
             if (javafx.application.Platform.isFxApplicationThread()) {
                 syncMenuState.run();
                 refreshArrangementCanvas.run();
@@ -127,8 +151,10 @@ final class HistoryPanelController {
                     refreshArrangementCanvas.run();
                 });
             }
-        });
-        undoHistoryPanel = new UndoHistoryPanel(undoManager.get(), fxDispatcher);
+        };
+        current.addHistoryListener(historyListener);
+        listenedUndoManager = current;
+        undoHistoryPanel = new UndoHistoryPanel(current, fxDispatcher);
         if (historyPanelVisible) {
             rootPane.setRight(undoHistoryPanel);
         }
