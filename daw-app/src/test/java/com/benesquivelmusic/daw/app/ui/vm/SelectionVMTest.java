@@ -23,7 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * (Control Synchronization Design Book §3.3, §5.5, §5.7). Unlike the model-derived
  * VMs it carries no {@link FxDispatcher} — its writer methods set the read-only
  * property wrappers synchronously on the calling FX thread — so every interaction
- * here runs inside {@link #runOnFx(Runnable)} and reads back through a thread-safe
+ * here runs inside {@link #callOnFx(FxCallable)} and reads back through a thread-safe
  * holder, never asserting on the FX thread itself.
  *
  * <p>{@link #clampTo(ProjectVM)} is the cascade's step-5 restore-and-clamp: a
