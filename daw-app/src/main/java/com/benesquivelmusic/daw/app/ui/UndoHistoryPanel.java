@@ -93,10 +93,10 @@ public final class UndoHistoryPanel extends VBox {
 
         historyListView.setOnMouseClicked(event -> {
             int selectedIndex = historyListView.getSelectionModel().getSelectedIndex();
-            // story 293: stateless echo-guard replaces the `updating` flag.
-            // refreshHistory() programmatically re-selects the current index,
-            // which re-fires this handler; short-circuit that echo by acting
-            // only when the user picked a *different* point in the history.
+            // story 293: avoid redundant goToHistoryIndex calls.
+            // Clicking the already-current history entry is a no-op; only
+            // act when the user selects a different point in the history.
+            // (Programmatic selection during refresh does not trigger mouse events.)
             if (selectedIndex >= 0 && selectedIndex != undoManager.getCurrentHistoryIndex()) {
                 undoManager.goToHistoryIndex(selectedIndex);
             }
