@@ -93,8 +93,8 @@ final class HistoryPanelController {
                            Runnable hideBrowserPanel,
                            BiConsumer<String, DawIcon> statusBar,
                            FxDispatcher fxDispatcher) {
-        this.rootPane = rootPane;
-        this.historyButton = historyButton;
+        this.rootPane = Objects.requireNonNull(rootPane, "rootPane must not be null");
+        this.historyButton = Objects.requireNonNull(historyButton, "historyButton must not be null");
         this.undoManager = Objects.requireNonNull(undoManager, "undoManager must not be null");
         this.syncMenuState = Objects.requireNonNull(syncMenuState, "syncMenuState must not be null");
         this.refreshArrangementCanvas = Objects.requireNonNull(
