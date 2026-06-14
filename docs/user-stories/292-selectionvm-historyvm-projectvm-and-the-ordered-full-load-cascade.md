@@ -129,7 +129,7 @@ Tests (assert on properties / declared order / bus events — never on rasterisa
 
 ## Implementation Note (2026-06-13)
 
-Implemented + independently verified, **uncommitted**. The 4th companion-design-book story (after
+Implemented + independently verified. The 4th companion-design-book story (after
 289/290/291) to gain production code. Built as a **test-proven seam, NOT live-wired** — mirroring
 290/291: `MainController` / `ProjectLifecycleController` / `DawMenuBarController` are **untouched**, and
 their refresh methods (`updateProjectInfo` / `updateUndoRedoState` / `syncSelectionToCanvas`, …) stay
