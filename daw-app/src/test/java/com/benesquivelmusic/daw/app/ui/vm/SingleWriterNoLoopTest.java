@@ -133,6 +133,12 @@ class SingleWriterNoLoopTest {
         if (thrown.get() instanceof Error e) {
             throw e;
         }
+        // A checked exception from the callable must still fail the test
+        // deterministically rather than letting it fall through to a null/partial
+        // result.get() that silently hides the failure.
+        if (thrown.get() != null) {
+            throw new AssertionError("work on the FX thread threw a checked exception", thrown.get());
+        }
         return result.get();
     }
 }

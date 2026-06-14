@@ -87,9 +87,9 @@ final class TransportController {
      * absent at construction time or change during the controller's life
      * (snap/grid from the view-navigation controller, count-in from the
      * metronome controller, latency from the audio-engine controller) — exactly
-     * what the former {@code Host} closed over lazily. {@code flashMidiActivity}
-     * is invoked from the MIDI receiver thread (the caller marshals via
-     * {@link javafx.application.Platform#runLater}).
+     * what the former {@code Host} closed over lazily. MIDI activity events are
+     * produced on the MIDI receiver thread; this controller marshals to the FX
+     * thread via {@link #postFx(Runnable)} before invoking {@code flashMidiActivity}.
      */
     private final BooleanSupplier snapEnabled;
     private final Supplier<GridResolution> gridResolution;
