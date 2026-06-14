@@ -14,6 +14,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import java.util.prefs.Preferences;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -41,10 +42,27 @@ class DawMenuBarControllerTest {
     }
 
     /**
+     * Builds a controller from a {@link StubHost}: the host supplies the
+     * action callbacks ({@link DawMenuBarController.MenuActions}) and its
+     * mutable state fields back the six live enablement suppliers (story 293
+     * retired the cascade-feeding {@code Host} state queries).
+     */
+    private DawMenuBarController newController(StubHost host) {
+        return new DawMenuBarController(
+                host, freshKeyBindingManager(),
+                () -> host.dirty,
+                () -> host.canUndo,
+                () -> host.canRedo,
+                () -> host.clipboard,
+                () -> host.selection,
+                () -> !host.project.getTracks().isEmpty());
+    }
+
+    /**
      * Minimal stub host that records invocations and provides configurable
      * state for menu sync tests.
      */
-    private static final class StubHost implements DawMenuBarController.Host {
+    private static final class StubHost implements DawMenuBarController.MenuActions {
         private final DawProject project =
                 new DawProject("Test", AudioFormat.STUDIO_QUALITY);
         boolean dirty;
@@ -52,7 +70,6 @@ class DawMenuBarControllerTest {
         boolean canRedo;
         boolean clipboard;
         boolean selection;
-        DawView view = DawView.ARRANGEMENT;
 
         int newProjectCalls;
         int openProjectCalls;
@@ -79,14 +96,6 @@ class DawMenuBarControllerTest {
         int toggleNotificationsCalls;
         int toggleVisualizationsCalls;
         int helpCalls;
-
-        @Override public DawProject project() { return project; }
-        @Override public boolean isProjectDirty() { return dirty; }
-        @Override public boolean canUndo() { return canUndo; }
-        @Override public boolean canRedo() { return canRedo; }
-        @Override public boolean hasClipboardContent() { return clipboard; }
-        @Override public boolean hasSelection() { return selection; }
-        @Override public DawView activeView() { return view; }
 
         @Override public void onNewProject() { newProjectCalls++; }
         @Override public void onOpenProject() { openProjectCalls++; }
@@ -144,13 +153,17 @@ class DawMenuBarControllerTest {
 
     @Test
     void shouldRejectNullHost() {
-        assertThatThrownBy(() -> new DawMenuBarController(null, freshKeyBindingManager()))
+        BooleanSupplier off = () -> false;
+        assertThatThrownBy(() -> new DawMenuBarController(
+                null, freshKeyBindingManager(), off, off, off, off, off, off))
                 .isInstanceOf(NullPointerException.class);
     }
 
     @Test
     void shouldRejectNullKeyBindingManager() {
-        assertThatThrownBy(() -> new DawMenuBarController(new StubHost(), null))
+        BooleanSupplier off = () -> false;
+        assertThatThrownBy(() -> new DawMenuBarController(
+                new StubHost(), null, off, off, off, off, off, off))
                 .isInstanceOf(NullPointerException.class);
     }
 
@@ -161,7 +174,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             MenuBar bar = controller.build();
 
             assertThat(bar.getMenus()).hasSize(5);
@@ -173,7 +186,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             MenuBar bar = controller.build();
 
             List<String> titles = bar.getMenus().stream()
@@ -188,7 +201,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             MenuBar bar = controller.build();
 
             assertThat(bar.getStyleClass()).contains("daw-menu-bar");
@@ -202,7 +215,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
 
             Menu fileMenu = controller.getMenuBar().getMenus().getFirst();
@@ -224,7 +237,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
 
             Menu editMenu = controller.getMenuBar().getMenus().get(1);
@@ -244,7 +257,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
 
             Menu editMenu = controller.getMenuBar().getMenus().get(1);
@@ -262,7 +275,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
 
             Menu editMenu = controller.getMenuBar().getMenus().get(1);
@@ -280,7 +293,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
 
             Menu editMenu = controller.getMenuBar().getMenus().get(1);
@@ -298,7 +311,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
 
             Menu editMenu = controller.getMenuBar().getMenus().get(1);
@@ -318,7 +331,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
 
             Menu pluginsMenu = controller.getMenuBar().getMenus().get(4);
@@ -340,7 +353,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
 
             Menu pluginsMenu = controller.getMenuBar().getMenus().get(4);
@@ -358,7 +371,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
 
             Menu pluginsMenu = controller.getMenuBar().getMenus().get(4);
@@ -376,7 +389,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
 
             Menu pluginsMenu = controller.getMenuBar().getMenus().get(4);
@@ -393,7 +406,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
 
             Menu pluginsMenu = controller.getMenuBar().getMenus().get(4);
@@ -418,7 +431,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
 
             Menu pluginsMenu = controller.getMenuBar().getMenus().get(4);
@@ -444,7 +457,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
 
             Menu pluginsMenu = controller.getMenuBar().getMenus().get(4);
@@ -464,7 +477,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
 
             Menu windowMenu = controller.getMenuBar().getMenus().get(5);
@@ -487,7 +500,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
 
             Menu helpMenu = controller.getMenuBar().getMenus().getLast();
@@ -508,7 +521,7 @@ class DawMenuBarControllerTest {
             StubHost host = new StubHost();
             host.dirty = false;
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
             controller.syncMenuState();
 
@@ -526,7 +539,7 @@ class DawMenuBarControllerTest {
             StubHost host = new StubHost();
             host.dirty = true;
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
             controller.syncMenuState();
 
@@ -544,7 +557,7 @@ class DawMenuBarControllerTest {
             StubHost host = new StubHost();
             host.canUndo = false;
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
             controller.syncMenuState();
 
@@ -562,7 +575,7 @@ class DawMenuBarControllerTest {
             StubHost host = new StubHost();
             host.canUndo = true;
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
             controller.syncMenuState();
 
@@ -580,7 +593,7 @@ class DawMenuBarControllerTest {
             StubHost host = new StubHost();
             host.selection = false;
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
             controller.syncMenuState();
 
@@ -602,7 +615,7 @@ class DawMenuBarControllerTest {
             StubHost host = new StubHost();
             host.clipboard = false;
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
             controller.syncMenuState();
 
@@ -620,7 +633,7 @@ class DawMenuBarControllerTest {
             StubHost host = new StubHost();
             host.clipboard = true;
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
             controller.syncMenuState();
 
@@ -639,7 +652,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
 
             Menu fileMenu = controller.getMenuBar().getMenus().getFirst();
@@ -657,7 +670,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
 
             Menu editMenu = controller.getMenuBar().getMenus().get(1);
@@ -675,7 +688,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
 
             Menu windowMenu = controller.getMenuBar().getMenus().get(5);
@@ -693,7 +706,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
 
             Menu helpMenu = controller.getMenuBar().getMenus().getLast();
@@ -713,7 +726,7 @@ class DawMenuBarControllerTest {
         runOnFxThread(() -> {
             StubHost host = new StubHost();
             DawMenuBarController controller =
-                    new DawMenuBarController(host, freshKeyBindingManager());
+                    newController(host);
             controller.build();
             controller.build();
 

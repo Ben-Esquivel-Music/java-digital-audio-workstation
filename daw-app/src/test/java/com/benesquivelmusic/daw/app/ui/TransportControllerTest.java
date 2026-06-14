@@ -4,8 +4,6 @@ import com.benesquivelmusic.daw.core.audio.AudioEngine;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
-import com.benesquivelmusic.daw.core.recording.Metronome;
-import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.transport.Transport;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
@@ -33,10 +31,11 @@ class TransportControllerTest {
 
     @Test
     void shouldCreateTransportControllerClass() {
-        // Verify the TransportController class is loadable and its Host interface is accessible
-        Class<?> hostClass = TransportController.Host.class;
-        assertThat(hostClass).isNotNull();
-        assertThat(hostClass.isInterface()).isTrue();
+        // Story 293 retired the Host interface; verify the controller class is
+        // still loadable and is the package-private final extraction it should be.
+        Class<?> controllerClass = TransportController.class;
+        assertThat(controllerClass).isNotNull();
+        assertThat(java.lang.reflect.Modifier.isFinal(controllerClass.getModifiers())).isTrue();
     }
 
     // ── Pre-Roll / Post-Roll (Story 134) ─────────────────────────────────────
@@ -54,19 +53,22 @@ class TransportControllerTest {
             Label recIndicator = new Label();
             Button play = new Button(), stop = new Button(),
                     record = new Button(), loop = new Button();
-            TransportController.Host host = new TransportController.Host() {
-                @Override public boolean isSnapEnabled() { return false; }
-                @Override public GridResolution gridResolution() { return GridResolution.QUARTER; }
-                @Override public Metronome metronome() { return null; }
-                @Override public CountInMode countInMode() { return CountInMode.OFF; }
-                @Override public void startTimeTicker() { }
-                @Override public void pauseTimeTicker() { }
-                @Override public void stopTimeTicker() { }
-                @Override public void flashMidiActivity(Track track) { }
-            };
+            // Story 293 — the Host is retired; pass direct functional deps.
+            // Values mirror the former stub: snap off, quarter grid, no count-in,
+            // no-op tickers / MIDI flash, and the former Host defaults for
+            // latency compensation (true) and reported latency (UNKNOWN).
             ref.set(new TransportController(project, engine, undo, nb,
                     statusLabel, timeDisplay, statusBarLabel, recIndicator,
-                    play, stop, record, loop, host));
+                    play, stop, record, loop,
+                    () -> false,
+                    () -> GridResolution.QUARTER,
+                    () -> CountInMode.OFF,
+                    () -> { },
+                    () -> { },
+                    () -> { },
+                    track -> { },
+                    () -> true,
+                    () -> com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN));
             latch.countDown();
         });
         assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();

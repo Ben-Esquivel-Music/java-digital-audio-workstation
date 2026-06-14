@@ -8,6 +8,9 @@ import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.audio.SourceRateMetadata;
 
 import java.util.Objects;
+import java.util.function.BiConsumer;
+import java.util.function.DoubleSupplier;
+import java.util.function.Supplier;
 import java.util.logging.Logger;
 
 /**
@@ -31,28 +34,42 @@ final class SlipToolHandler {
     private static final Logger LOG = Logger.getLogger(SlipToolHandler.class.getName());
 
     /**
-     * Callback interface for obtaining arrangement state and triggering
-     * canvas updates during a slip drag.
+     * Updates the canvas slip-preview overlay with the in-progress beat delta
+     * for the given clip. A clip of {@code null} clears the preview. The
+     * {@code hitEdge} flag triggers a visual flash.
      */
-    interface Host {
-        double pixelsPerBeat();
-        UndoManager undoManager();
-        double projectTempoBpm();
-        void refreshCanvas();
-        void showNotification(NotificationLevel level, String message);
-        /**
-         * Updates the canvas slip-preview overlay with the in-progress beat
-         * delta for the given clip. A clip of {@code null} clears the
-         * preview. The {@code hitEdge} flag triggers a visual flash.
-         */
-        void setSlipPreview(AudioClip audioClip, MidiClip midiClip,
-                            double appliedBeatDelta, boolean hitEdge);
+    @FunctionalInterface
+    interface SlipPreview {
+        void set(AudioClip audioClip, MidiClip midiClip,
+                 double appliedBeatDelta, boolean hitEdge);
+    }
+
+    /**
+     * Story 293 — direct collaborators for arrangement state and canvas
+     * updates during a slip drag, replacing the retired {@code Host}
+     * callback-up interface (CONTROL_SYNCHRONIZATION_DESIGN_BOOK §9). A plain
+     * data carrier of functional dependencies bound by the owning
+     * {@link ClipInteractionController}; not a cross-surface cascade seam.
+     *
+     * @param pixelsPerBeat    current horizontal zoom in pixels per beat
+     * @param undoManager      the live undo manager
+     * @param projectTempoBpm  current project tempo in BPM (slip source-length math)
+     * @param refreshCanvas    requests a canvas repaint
+     * @param showNotification surfaces a notification (level, message)
+     * @param setSlipPreview   updates the canvas slip-preview overlay
+     */
+    record Deps(DoubleSupplier pixelsPerBeat,
+                Supplier<UndoManager> undoManager,
+                DoubleSupplier projectTempoBpm,
+                Runnable refreshCanvas,
+                BiConsumer<NotificationLevel, String> showNotification,
+                SlipPreview setSlipPreview) {
     }
 
     /** Tags the kind of clip being slipped. */
     private enum Kind { AUDIO, MIDI }
 
-    private final Host host;
+    private final Deps deps;
 
     // ── Active drag state ────────────────────────────────────────────────────
 
@@ -62,8 +79,8 @@ final class SlipToolHandler {
     private MidiClip midiClip;
     private double anchorX;
 
-    SlipToolHandler(Host host) {
-        this.host = Objects.requireNonNull(host, "host must not be null");
+    SlipToolHandler(Deps deps) {
+        this.deps = Objects.requireNonNull(deps, "deps must not be null");
     }
 
     /** Returns {@code true} if a slip drag is currently in progress. */
@@ -80,7 +97,7 @@ final class SlipToolHandler {
         this.audioClipTrack = track;
         this.midiClip = null;
         this.anchorX = anchorX;
-        host.setSlipPreview(clip, null, 0.0, false);
+        deps.setSlipPreview().set(clip, null, 0.0, false);
         LOG.fine(() -> "Begin audio slip on '" + clip.getName() + "' at x=" + anchorX);
     }
 
@@ -91,7 +108,7 @@ final class SlipToolHandler {
         this.audioClip = null;
         this.midiClip = clip;
         this.anchorX = anchorX;
-        host.setSlipPreview(null, clip, 0.0, false);
+        deps.setSlipPreview().set(null, clip, 0.0, false);
         LOG.fine(() -> "Begin MIDI slip at x=" + anchorX);
     }
 
@@ -104,7 +121,7 @@ final class SlipToolHandler {
         if (kind == null) {
             return;
         }
-        double beatDelta = (currentX - anchorX) / host.pixelsPerBeat();
+        double beatDelta = (currentX - anchorX) / deps.pixelsPerBeat().getAsDouble();
         // Slip convention: dragging content RIGHT on the timeline should make
         // the clip's source offset DECREASE (content appears later in the
         // window, so window start must move backwards through the source).
@@ -118,16 +135,16 @@ final class SlipToolHandler {
                 // Preview delta is expressed as the visible (content) direction:
                 // a positive beatDelta means the content has been slid right,
                 // equivalent to a negative source-offset delta.
-                host.setSlipPreview(audioClip, null, -result.appliedBeatDelta(), result.hitEdge());
+                deps.setSlipPreview().set(audioClip, null, -result.appliedBeatDelta(), result.hitEdge());
             }
             case MIDI -> {
                 int requestedColumns = columnsForBeatDelta(beatDelta);
                 SlipEditService.SlipResult result = SlipEditService.buildMidiSlip(
                         midiClip, requestedColumns);
-                host.setSlipPreview(null, midiClip, result.appliedBeatDelta(), result.hitEdge());
+                deps.setSlipPreview().set(null, midiClip, result.appliedBeatDelta(), result.hitEdge());
             }
         }
-        host.refreshCanvas();
+        deps.refreshCanvas().run();
     }
 
     /**
@@ -138,7 +155,7 @@ final class SlipToolHandler {
         if (kind == null) {
             return;
         }
-        double beatDelta = (currentX - anchorX) / host.pixelsPerBeat();
+        double beatDelta = (currentX - anchorX) / deps.pixelsPerBeat().getAsDouble();
 
         switch (kind) {
             case AUDIO -> {
@@ -146,12 +163,12 @@ final class SlipToolHandler {
                 SlipEditService.SlipResult result = SlipEditService.buildAudioSlip(
                         audioClipTrack, audioClip, -beatDelta, sourceLengthBeats);
                 if (result.hasAction()) {
-                    host.undoManager().execute(result.action());
+                    deps.undoManager().get().execute(result.action());
                     LOG.fine(() -> "Completed audio slip on '" + audioClip.getName()
                             + "' by " + result.appliedBeatDelta() + " beats");
                 }
                 if (result.hitEdge()) {
-                    host.showNotification(NotificationLevel.INFO,
+                    deps.showNotification().accept(NotificationLevel.INFO,
                             "Slip clamped at source-window edge");
                 }
             }
@@ -160,28 +177,28 @@ final class SlipToolHandler {
                 SlipEditService.SlipResult result = SlipEditService.buildMidiSlip(
                         midiClip, requestedColumns);
                 if (result.hasAction()) {
-                    host.undoManager().execute(result.action());
+                    deps.undoManager().get().execute(result.action());
                     LOG.fine(() -> "Completed MIDI slip by "
                             + result.appliedBeatDelta() + " beats");
                 }
                 if (result.hitEdge()) {
-                    host.showNotification(NotificationLevel.INFO,
+                    deps.showNotification().accept(NotificationLevel.INFO,
                             "Slip clamped — notes cannot cross column 0");
                 }
             }
         }
 
         clearState();
-        host.setSlipPreview(null, null, 0.0, false);
-        host.refreshCanvas();
+        deps.setSlipPreview().set(null, null, 0.0, false);
+        deps.refreshCanvas().run();
     }
 
     /** Cancels an in-progress slip without mutating the model. */
     void cancelSlip() {
         if (kind != null) {
             clearState();
-            host.setSlipPreview(null, null, 0.0, false);
-            host.refreshCanvas();
+            deps.setSlipPreview().set(null, null, 0.0, false);
+            deps.refreshCanvas().run();
         }
     }
 
@@ -211,7 +228,7 @@ final class SlipToolHandler {
      * unbounded.
      */
     private double sourceLengthBeatsFor(AudioClip clip) {
-        double bpm = host.projectTempoBpm();
+        double bpm = deps.projectTempoBpm().getAsDouble();
         if (bpm <= 0) {
             return 0.0;
         }

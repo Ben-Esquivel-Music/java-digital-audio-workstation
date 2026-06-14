@@ -19,6 +19,13 @@ import javafx.scene.input.MouseButton;
 import javafx.scene.input.MouseEvent;
 
 import java.util.*;
+import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
+import java.util.function.DoubleConsumer;
+import java.util.function.DoubleSupplier;
+import java.util.function.IntSupplier;
+import java.util.function.Supplier;
 import java.util.logging.Logger;
 
 /**
@@ -27,8 +34,9 @@ import java.util.logging.Logger;
  *
  * <p>This controller follows the same extraction pattern used by
  * {@link TrackStripController} and {@link TransportController}: it is a
- * package-private final class with a nested {@link Host} callback interface
- * and constructor injection of all dependencies.</p>
+ * package-private final class taking a {@link Deps} record of direct functional
+ * dependencies (story 293 retired the former {@code Host} callback-up
+ * interface) and constructor injection of all dependencies.</p>
  */
 final class ClipInteractionController {
 
@@ -38,45 +46,57 @@ final class ClipInteractionController {
     static final double DEFAULT_NEW_CLIP_DURATION = 4.0;
 
     /**
-     * Callback interface implemented by the host controller to provide
-     * state and coordination methods.
+     * Story 293 — direct collaborators replacing the retired {@code Host}
+     * callback-up interface (CONTROL_SYNCHRONIZATION_DESIGN_BOOK §9). A plain
+     * data carrier of functional dependencies. This controller is init-only
+     * (not reconstructed on project load), so the swappable {@code undoManager}
+     * is a {@link Supplier} read fresh on every access; geometry getters,
+     * tool/ripple/selection state, and the action seams are all functional
+     * dependencies bound by {@link ArrangementCanvasFactory}.
+     *
+     * @param tracks           the live track list
+     * @param activeTool       the active edit tool
+     * @param undoManager      the live undo manager (swappable)
+     * @param pixelsPerBeat    horizontal zoom in pixels per beat
+     * @param scrollXBeats     horizontal scroll offset in beats
+     * @param scrollYPixels    vertical scroll offset in pixels
+     * @param trackHeight      uniform track-lane height in pixels
+     * @param snapEnabled      whether snap-to-grid is active
+     * @param gridResolution   the active grid resolution
+     * @param beatsPerBar      beats per bar
+     * @param refreshCanvas    requests a canvas repaint
+     * @param seekToPosition   seeks the transport to a beat
+     * @param selectionModel   the selection model
+     * @param updateStatusBar  writes a status-bar message
+     * @param rippleMode       the live ripple mode
+     * @param showNotification surfaces a notification (level, message)
+     * @param projectTempoBpm  project tempo in BPM (slip source-length math)
+     * @param onTimeStretchClip opens the time-stretch dialog (story 042)
+     * @param onPitchShiftClip  opens the pitch-shift dialog (story 042)
      */
-    interface Host {
-        List<Track> tracks();
-        EditTool activeTool();
-        UndoManager undoManager();
-        double pixelsPerBeat();
-        double scrollXBeats();
-        double scrollYPixels();
-        double trackHeight();
-        boolean snapEnabled();
-        GridResolution gridResolution();
-        int beatsPerBar();
-        void refreshCanvas();
-        void seekToPosition(double beat);
-        SelectionModel selectionModel();
-        void updateStatusBar(String text);
-        RippleMode rippleMode();
-        void showNotification(NotificationLevel level, String message);
-        /** Returns the current project tempo in BPM, for slip-edit source-length math. */
-        double projectTempoBpm();
-
-        /**
-         * Story 042 — Open the time-stretch dialog for the currently-selected
-         * clip(s). Invoked from the clip right-click context menu. Optional
-         * with a default no-op so existing tests/hosts compile unchanged.
-         */
-        default void onTimeStretchClip() { }
-
-        /**
-         * Story 042 — Open the pitch-shift dialog for the currently-selected
-         * clip(s). Invoked from the clip right-click context menu.
-         */
-        default void onPitchShiftClip() { }
+    record Deps(Supplier<List<Track>> tracks,
+                Supplier<EditTool> activeTool,
+                Supplier<UndoManager> undoManager,
+                DoubleSupplier pixelsPerBeat,
+                DoubleSupplier scrollXBeats,
+                DoubleSupplier scrollYPixels,
+                DoubleSupplier trackHeight,
+                BooleanSupplier snapEnabled,
+                Supplier<GridResolution> gridResolution,
+                IntSupplier beatsPerBar,
+                Runnable refreshCanvas,
+                DoubleConsumer seekToPosition,
+                Supplier<SelectionModel> selectionModel,
+                Consumer<String> updateStatusBar,
+                Supplier<RippleMode> rippleMode,
+                BiConsumer<NotificationLevel, String> showNotification,
+                DoubleSupplier projectTempoBpm,
+                Runnable onTimeStretchClip,
+                Runnable onPitchShiftClip) {
     }
 
     private final ArrangementCanvas canvas;
-    private final Host host;
+    private final Deps deps;
     private final ClipTrimHandler trimHandler;
     private final ClipFadeHandler fadeHandler;
     private final SlipToolHandler slipHandler;
@@ -137,49 +157,41 @@ final class ClipInteractionController {
     // Comp tool drag state
     private CompToolHandler compToolHandler;
 
-    ClipInteractionController(ArrangementCanvas canvas, Host host) {
+    ClipInteractionController(ArrangementCanvas canvas, Deps deps) {
         this.canvas = Objects.requireNonNull(canvas, "canvas must not be null");
-        this.host = Objects.requireNonNull(host, "host must not be null");
-        this.trimHandler = new ClipTrimHandler(new ClipTrimHandler.Host() {
-            @Override public double pixelsPerBeat() { return host.pixelsPerBeat(); }
-            @Override public double scrollXBeats() { return host.scrollXBeats(); }
-            @Override public double scrollYPixels() { return host.scrollYPixels(); }
-            @Override public double trackHeight() { return host.trackHeight(); }
-            @Override public List<Track> tracks() { return host.tracks(); }
-            @Override public UndoManager undoManager() { return host.undoManager(); }
-            @Override public boolean snapEnabled() { return host.snapEnabled(); }
-            @Override public GridResolution gridResolution() { return host.gridResolution(); }
-            @Override public int beatsPerBar() { return host.beatsPerBar(); }
-            @Override public void refreshCanvas() { host.refreshCanvas(); }
-            @Override public int trackIndexAtY(double y) { return canvas.trackIndexAtY(y); }
-        });
-        this.fadeHandler = new ClipFadeHandler(new ClipFadeHandler.Host() {
-            @Override public double pixelsPerBeat() { return host.pixelsPerBeat(); }
-            @Override public double scrollXBeats() { return host.scrollXBeats(); }
-            @Override public double scrollYPixels() { return host.scrollYPixels(); }
-            @Override public double trackHeight() { return host.trackHeight(); }
-            @Override public List<Track> tracks() { return host.tracks(); }
-            @Override public UndoManager undoManager() { return host.undoManager(); }
-            @Override public boolean snapEnabled() { return host.snapEnabled(); }
-            @Override public GridResolution gridResolution() { return host.gridResolution(); }
-            @Override public int beatsPerBar() { return host.beatsPerBar(); }
-            @Override public void refreshCanvas() { host.refreshCanvas(); }
-            @Override public int trackIndexAtY(double y) { return canvas.trackIndexAtY(y); }
-            @Override public double laneYForTrack(int trackIndex) { return canvas.computeLaneY(trackIndex); }
-        });
-        this.slipHandler = new SlipToolHandler(new SlipToolHandler.Host() {
-            @Override public double pixelsPerBeat() { return host.pixelsPerBeat(); }
-            @Override public UndoManager undoManager() { return host.undoManager(); }
-            @Override public double projectTempoBpm() { return host.projectTempoBpm(); }
-            @Override public void refreshCanvas() { host.refreshCanvas(); }
-            @Override public void showNotification(NotificationLevel level, String message) {
-                host.showNotification(level, message);
-            }
-            @Override public void setSlipPreview(AudioClip audioClip, MidiClip midiClip,
-                                                 double appliedBeatDelta, boolean hitEdge) {
-                canvas.setSlipPreview(audioClip, midiClip, appliedBeatDelta, hitEdge);
-            }
-        });
+        this.deps = Objects.requireNonNull(deps, "deps must not be null");
+        this.trimHandler = new ClipTrimHandler(new ClipTrimHandler.Deps(
+                deps.pixelsPerBeat(),
+                deps.scrollXBeats(),
+                deps.scrollYPixels(),
+                deps.trackHeight(),
+                deps.tracks(),
+                deps.undoManager(),
+                deps.snapEnabled(),
+                deps.gridResolution(),
+                deps.beatsPerBar(),
+                deps.refreshCanvas(),
+                canvas::trackIndexAtY));
+        this.fadeHandler = new ClipFadeHandler(new ClipFadeHandler.Deps(
+                deps.pixelsPerBeat(),
+                deps.scrollXBeats(),
+                deps.scrollYPixels(),
+                deps.trackHeight(),
+                deps.tracks(),
+                deps.undoManager(),
+                deps.snapEnabled(),
+                deps.gridResolution(),
+                deps.beatsPerBar(),
+                deps.refreshCanvas(),
+                canvas::trackIndexAtY,
+                canvas::computeLaneY));
+        this.slipHandler = new SlipToolHandler(new SlipToolHandler.Deps(
+                deps.pixelsPerBeat(),
+                deps.undoManager(),
+                deps.projectTempoBpm(),
+                deps.refreshCanvas(),
+                deps.showNotification(),
+                canvas::setSlipPreview));
     }
 
     /**
@@ -190,7 +202,7 @@ final class ClipInteractionController {
         canvas.setOnMouseDragged(this::onMouseDragged);
         canvas.setOnMouseReleased(this::onMouseReleased);
         canvas.setOnMouseMoved(this::onMouseMoved);
-        canvas.setSelectionModel(host.selectionModel());
+        canvas.setSelectionModel(deps.selectionModel().get());
         // Ensure the canvas can receive key events so the Esc filter fires.
         canvas.setFocusTraversable(true);
         // Esc cancels the in-progress clip drag with the cancel-revert
@@ -208,7 +220,7 @@ final class ClipInteractionController {
      * Updates the cursor on the arrangement canvas based on the active tool.
      */
     void updateCursor() {
-        Cursor cursor = switch (host.activeTool()) {
+        Cursor cursor = switch (deps.activeTool().get()) {
             case POINTER -> Cursor.DEFAULT;
             case PENCIL -> Cursor.CROSSHAIR;
             case ERASER -> Cursor.HAND;
@@ -234,7 +246,7 @@ final class ClipInteractionController {
      * Resolves the beat position at the given X pixel coordinate.
      */
     double beatAt(double x) {
-        return x / host.pixelsPerBeat() + host.scrollXBeats();
+        return x / deps.pixelsPerBeat().getAsDouble() + deps.scrollXBeats().getAsDouble();
     }
 
     /**
@@ -277,12 +289,12 @@ final class ClipInteractionController {
      * if no handle was hit.
      */
     SelectionEdge hitTestSelectionHandle(double x) {
-        SelectionModel sm = host.selectionModel();
+        SelectionModel sm = deps.selectionModel().get();
         if (!sm.hasSelection()) {
             return null;
         }
-        double leftX = (sm.getStartBeat() - host.scrollXBeats()) * host.pixelsPerBeat();
-        double rightX = (sm.getEndBeat() - host.scrollXBeats()) * host.pixelsPerBeat();
+        double leftX = (sm.getStartBeat() - deps.scrollXBeats().getAsDouble()) * deps.pixelsPerBeat().getAsDouble();
+        double rightX = (sm.getEndBeat() - deps.scrollXBeats().getAsDouble()) * deps.pixelsPerBeat().getAsDouble();
         double threshold = ArrangementCanvas.SELECTION_HANDLE_WIDTH;
         if (Math.abs(x - leftX) <= threshold) {
             return SelectionEdge.LEFT;
@@ -297,8 +309,8 @@ final class ClipInteractionController {
      * Snaps a beat position to the grid if snap-to-grid is enabled.
      */
     private double snapBeat(double beat) {
-        if (host.snapEnabled()) {
-            return SnapQuantizer.quantize(beat, host.gridResolution(), host.beatsPerBar());
+        if (deps.snapEnabled().getAsBoolean()) {
+            return SnapQuantizer.quantize(beat, deps.gridResolution().get(), deps.beatsPerBar().getAsInt());
         }
         return Math.max(0.0, beat);
     }
@@ -308,29 +320,29 @@ final class ClipInteractionController {
      * to reflect the given selection range.
      */
     private void applySelection(double startBeat, double endBeat) {
-        SelectionModel sm = host.selectionModel();
+        SelectionModel sm = deps.selectionModel().get();
         if (startBeat < endBeat) {
             sm.setSelection(startBeat, endBeat);
             canvas.setSelectionRange(true, startBeat, endBeat);
             double duration = endBeat - startBeat;
-            host.updateStatusBar(String.format(
+            deps.updateStatusBar().accept(String.format(
                     "Selection: %.2f – %.2f (%.2f beats)", startBeat, endBeat, duration));
         } else {
             sm.clearSelection();
             canvas.setSelectionRange(false, 0, 0);
-            host.updateStatusBar("");
+            deps.updateStatusBar().accept("");
         }
     }
 
     /**
      * Clears the current time selection and updates the canvas overlay and
      * status bar. Does not trigger a full canvas refresh — the caller is
-     * responsible for calling {@link Host#refreshCanvas()} if needed.
+     * responsible for invoking {@link Deps#refreshCanvas()} if needed.
      */
     private void clearTimeSelection() {
-        host.selectionModel().clearSelection();
+        deps.selectionModel().get().clearSelection();
         canvas.setSelectionRange(false, 0, 0);
-        host.updateStatusBar("");
+        deps.updateStatusBar().accept("");
     }
 
     // ── Mouse event handlers ─────────────────────────────────────────────────
@@ -345,7 +357,7 @@ final class ClipInteractionController {
 
         // ── Automation lane interaction ─────────────────────────────────────
         if (trackIndex >= 0 && canvas.isYInAutomationLane(event.getY())) {
-            Track track = host.tracks().get(trackIndex);
+            Track track = deps.tracks().get().get(trackIndex);
             AutomationParameter param = canvas.getAutomationParameter(track);
             if (param != null) {
                 AutomationLane lane = track.getAutomationData().getLane(param);
@@ -356,15 +368,15 @@ final class ClipInteractionController {
                         : AutomationLaneRenderer.hitTestBreakpoint(
                                 lane, event.getX(), event.getY(), param,
                                 autoLaneY, autoLaneH,
-                                host.pixelsPerBeat(), host.scrollXBeats());
+                                deps.pixelsPerBeat().getAsDouble(), deps.scrollXBeats().getAsDouble());
 
                 if (event.getButton() == MouseButton.SECONDARY
-                        || host.activeTool() == EditTool.ERASER) {
+                        || deps.activeTool().get() == EditTool.ERASER) {
                     // Right-click or Eraser tool → remove breakpoint
                     if (hitPoint != null) {
-                        host.undoManager().execute(
+                        deps.undoManager().get().execute(
                                 new RemoveAutomationPointAction(lane, hitPoint));
-                        host.refreshCanvas();
+                        deps.refreshCanvas().run();
                     }
                     return;
                 }
@@ -391,9 +403,9 @@ final class ClipInteractionController {
                             Math.max(0, beat), value);
                     AutomationLane addLane = track.getAutomationData()
                             .getOrCreateLane(param);
-                    host.undoManager().execute(
+                    deps.undoManager().get().execute(
                             new AddAutomationPointAction(addLane, newPoint));
-                    host.refreshCanvas();
+                    deps.refreshCanvas().run();
                 }
                 return;
             }
@@ -403,7 +415,7 @@ final class ClipInteractionController {
 
         // Right-click on a fade handle → show curve type context menu
         if (event.getButton() == MouseButton.SECONDARY
-                && host.activeTool() == EditTool.POINTER && trackIndex >= 0) {
+                && deps.activeTool().get() == EditTool.POINTER && trackIndex >= 0) {
             ClipFadeHandler.HandleHit fadeHit = fadeHandler.hitTestHandle(event.getX(), event.getY());
             if (fadeHit != null) {
                 showFadeCurveContextMenu(fadeHit, event);
@@ -414,19 +426,19 @@ final class ClipInteractionController {
         // Right-click on a clip body → show clip context menu (Story 042 —
         // entry point for Time-Stretch / Pitch-Shift dialogs).
         if (event.getButton() == MouseButton.SECONDARY
-                && host.activeTool() == EditTool.POINTER && trackIndex >= 0) {
-            Track ctxTrack = host.tracks().get(trackIndex);
+                && deps.activeTool().get() == EditTool.POINTER && trackIndex >= 0) {
+            Track ctxTrack = deps.tracks().get().get(trackIndex);
             AudioClip ctxClip = clipAt(ctxTrack, beat);
             if (ctxClip != null) {
                 // Ensure the right-clicked clip is part of the selection so
                 // the controller acts on it (mirrors common DAW behaviour).
-                SelectionModel sm = host.selectionModel();
+                SelectionModel sm = deps.selectionModel().get();
                 boolean alreadySelected = sm.getSelectedClips().stream()
                         .anyMatch(e -> e.clip() == ctxClip);
                 if (!alreadySelected) {
                     sm.clearClipSelection();
                     sm.selectClip(ctxTrack, ctxClip);
-                    host.refreshCanvas();
+                    deps.refreshCanvas().run();
                 }
                 showClipContextMenu(event);
                 return;
@@ -440,9 +452,9 @@ final class ClipInteractionController {
         // Check for slip-edit activation: Ctrl+Alt+drag inside a clip body.
         // Slip must win over trim/fade so Ctrl+Alt near an edge still slips.
         // Story 139 — docs/user-stories/139-slip-edit-within-clip.md.
-        if (host.activeTool() == EditTool.POINTER && trackIndex >= 0
+        if (deps.activeTool().get() == EditTool.POINTER && trackIndex >= 0
                 && event.isShortcutDown() && event.isAltDown()) {
-            Track slipTrack = host.tracks().get(trackIndex);
+            Track slipTrack = deps.tracks().get().get(trackIndex);
             AudioClip audioHit = clipAt(slipTrack, beat);
             if (audioHit != null) {
                 slipHandler.beginAudioSlip(slipTrack, audioHit, event.getX());
@@ -458,7 +470,7 @@ final class ClipInteractionController {
         }
 
         // Check for fade handle activation before trim edges
-        if (host.activeTool() == EditTool.POINTER && trackIndex >= 0) {
+        if (deps.activeTool().get() == EditTool.POINTER && trackIndex >= 0) {
             ClipFadeHandler.HandleHit fadeHit = fadeHandler.hitTestHandle(event.getX(), event.getY());
             if (fadeHit != null) {
                 fadeHandler.beginFade(fadeHit.clip(), fadeHit.handle());
@@ -468,7 +480,7 @@ final class ClipInteractionController {
         }
 
         // Check for trim edge activation before normal tool handling
-        if (host.activeTool() == EditTool.POINTER && trackIndex >= 0) {
+        if (deps.activeTool().get() == EditTool.POINTER && trackIndex >= 0) {
             ClipTrimHandler.EdgeHit hit = trimHandler.hitTestEdge(event.getX(), event.getY());
             if (hit != null) {
                 trimHandler.beginTrim(hit.track(), hit.clip(), hit.edge());
@@ -478,7 +490,7 @@ final class ClipInteractionController {
         }
 
         // Check for selection handle activation (pointer tool)
-        if (host.activeTool() == EditTool.POINTER) {
+        if (deps.activeTool().get() == EditTool.POINTER) {
             SelectionEdge handleHit = hitTestSelectionHandle(event.getX());
             if (handleHit != null) {
                 selectionHandleDrag = handleHit;
@@ -488,15 +500,15 @@ final class ClipInteractionController {
         }
 
         if (trackIndex < 0) {
-            if (host.activeTool() == EditTool.POINTER) {
+            if (deps.activeTool().get() == EditTool.POINTER) {
                 // Click below all tracks: start selection or clear
                 beginTimeSelectionDrag(beat, event.isShiftDown());
             }
             return;
         }
-        Track track = host.tracks().get(trackIndex);
+        Track track = deps.tracks().get().get(trackIndex);
 
-        switch (host.activeTool()) {
+        switch (deps.activeTool().get()) {
             case POINTER -> handlePointerPress(track, trackIndex, beat, event);
             case PENCIL -> handlePencilPress(track, beat);
             case ERASER -> handleEraserPress(track, beat);
@@ -509,7 +521,7 @@ final class ClipInteractionController {
     private void onMouseDragged(MouseEvent event) {
         // Automation breakpoint dragging
         if (dragAutomationPoint != null && dragAutomationLane != null) {
-            Track track = host.tracks().get(dragAutomationTrackIndex);
+            Track track = deps.tracks().get().get(dragAutomationTrackIndex);
             AutomationParameter param = canvas.getAutomationParameter(track);
             if (param != null) {
                 double autoLaneY = canvas.automationLaneY(dragAutomationTrackIndex);
@@ -522,7 +534,7 @@ final class ClipInteractionController {
                 dragAutomationPoint.setTimeInBeats(newBeat);
                 dragAutomationPoint.setValue(newValue);
                 dragAutomationLane.sortPoints();
-                host.refreshCanvas();
+                deps.refreshCanvas().run();
             }
             return;
         }
@@ -534,7 +546,7 @@ final class ClipInteractionController {
 
         if (fadeHandler.isFading()) {
             fadeHandler.updateFade(event.getX());
-            host.refreshCanvas();
+            deps.refreshCanvas().run();
             return;
         }
 
@@ -544,7 +556,7 @@ final class ClipInteractionController {
             // but does not trigger a redraw — we do a single refresh below.
             trimHandler.updateTrim(event.getX(), trackIndex);
             canvas.setTrimPreview(trimHandler.getPreviewBeat(), trimHandler.getPreviewTrackIndex());
-            host.refreshCanvas();
+            deps.refreshCanvas().run();
             return;
         }
 
@@ -569,11 +581,11 @@ final class ClipInteractionController {
             if (lo < hi) {
                 applySelection(lo, hi);
             }
-            host.refreshCanvas();
+            deps.refreshCanvas().run();
             return;
         }
 
-        if (host.activeTool() != EditTool.POINTER || dragClip == null) {
+        if (deps.activeTool().get() != EditTool.POINTER || dragClip == null) {
             return;
         }
         // Drag preview is visual only — the actual move happens on release
@@ -582,7 +594,7 @@ final class ClipInteractionController {
     private void onMouseReleased(MouseEvent event) {
         // Complete automation breakpoint drag — register undo action
         if (dragAutomationPoint != null && dragAutomationLane != null) {
-            Track track = host.tracks().get(dragAutomationTrackIndex);
+            Track track = deps.tracks().get().get(dragAutomationTrackIndex);
             AutomationParameter param = canvas.getAutomationParameter(track);
             if (param != null) {
                 double autoLaneY = canvas.automationLaneY(dragAutomationTrackIndex);
@@ -597,10 +609,10 @@ final class ClipInteractionController {
                 dragAutomationPoint.setTimeInBeats(dragAutomationOriginalBeat);
                 dragAutomationPoint.setValue(dragAutomationOriginalValue);
                 dragAutomationLane.sortPoints();
-                host.undoManager().execute(new MoveAutomationPointAction(
+                deps.undoManager().get().execute(new MoveAutomationPointAction(
                         dragAutomationLane, dragAutomationPoint,
                         newBeat, newValue));
-                host.refreshCanvas();
+                deps.refreshCanvas().run();
             } else {
                 // Lane collapsed or parameter cleared mid-drag — restore
                 // the point to its original position to avoid leaving it
@@ -608,7 +620,7 @@ final class ClipInteractionController {
                 dragAutomationPoint.setTimeInBeats(dragAutomationOriginalBeat);
                 dragAutomationPoint.setValue(dragAutomationOriginalValue);
                 dragAutomationLane.sortPoints();
-                host.refreshCanvas();
+                deps.refreshCanvas().run();
             }
             dragAutomationPoint = null;
             dragAutomationLane = null;
@@ -628,7 +640,7 @@ final class ClipInteractionController {
             double beat = Math.max(0.0, beatAt(event.getX()));
             compToolHandler.endSwipe(beat);
             compToolHandler = null;
-            host.refreshCanvas();
+            deps.refreshCanvas().run();
             updateCursor();
             return;
         }
@@ -671,21 +683,21 @@ final class ClipInteractionController {
                 List<Track> coveredTracks = tracksInYRange(y1, y2);
                 if (!coveredTracks.isEmpty()) {
                     if (rubberBandShift) {
-                        host.selectionModel().addClipsInRegion(coveredTracks, beatStart, beatEnd);
+                        deps.selectionModel().get().addClipsInRegion(coveredTracks, beatStart, beatEnd);
                     } else {
-                        host.selectionModel().selectClipsInRegion(coveredTracks, beatStart, beatEnd);
+                        deps.selectionModel().get().selectClipsInRegion(coveredTracks, beatStart, beatEnd);
                     }
                 }
             } else if (!rubberBandShift) {
                 // Click without drag (non-shift) — clear selections and seek
-                host.selectionModel().clearClipSelection();
+                deps.selectionModel().get().clearClipSelection();
                 clearTimeSelection();
                 double snappedBeat = snapBeat(beatAt(event.getX()));
-                host.seekToPosition(snappedBeat);
+                deps.seekToPosition().accept(snappedBeat);
             }
             rubberBandDragging = false;
             rubberBandShift = false;
-            host.refreshCanvas();
+            deps.refreshCanvas().run();
             return;
         }
 
@@ -699,17 +711,17 @@ final class ClipInteractionController {
             } else if (!selectionDragShift) {
                 // Click without drag (non-shift) — clear selection and seek
                 clearTimeSelection();
-                host.seekToPosition(snappedBeat);
+                deps.seekToPosition().accept(snappedBeat);
             }
             // When shift was held and lo == hi, the existing selection is
             // preserved (no-op) rather than unexpectedly cleared.
             selectionDragging = false;
             selectionDragShift = false;
-            host.refreshCanvas();
+            deps.refreshCanvas().run();
             return;
         }
 
-        if (host.activeTool() != EditTool.POINTER || dragClip == null) {
+        if (deps.activeTool().get() != EditTool.POINTER || dragClip == null) {
             return;
         }
         double beat = beatAt(event.getX());
@@ -722,15 +734,15 @@ final class ClipInteractionController {
         if (groupDrag && targetTrackIndex >= 0) {
             // Group move: move all selected clips by the same delta
             int trackDelta = targetTrackIndex - dragSourceTrackIndex;
-            List<ClipboardEntry> selected = host.selectionModel().getSelectedClips();
+            List<ClipboardEntry> selected = deps.selectionModel().get().getSelectedClips();
             if (!selected.isEmpty()
                     && (Math.abs(beatDelta) > 0.001 || trackDelta != 0)) {
                 List<Map.Entry<Track, AudioClip>> entries = new ArrayList<>();
                 for (ClipboardEntry entry : selected) {
                     entries.add(Map.entry(entry.sourceTrack(), entry.clip()));
                 }
-                host.undoManager().execute(new GroupMoveClipsAction(
-                        entries, beatDelta, trackDelta, host.tracks()));
+                deps.undoManager().get().execute(new GroupMoveClipsAction(
+                        entries, beatDelta, trackDelta, deps.tracks().get()));
                 // After cross-track move, update the selection's track mapping
                 // so that subsequent operations reference the correct tracks.
                 if (trackDelta != 0) {
@@ -738,23 +750,23 @@ final class ClipInteractionController {
                     for (Map.Entry<Track, AudioClip> e : entries) {
                         movedClips.add(e.getValue());
                     }
-                    host.selectionModel().clearClipSelection();
-                    for (Track t : host.tracks()) {
+                    deps.selectionModel().get().clearClipSelection();
+                    for (Track t : deps.tracks().get()) {
                         for (AudioClip c : t.getClips()) {
                             if (movedClips.contains(c)) {
-                                host.selectionModel().toggleClipSelection(t, c);
+                                deps.selectionModel().get().toggleClipSelection(t, c);
                             }
                         }
                     }
                 }
-                host.refreshCanvas();
+                deps.refreshCanvas().run();
             } else {
                 // Click without drag on a multi-selected clip — collapse to single selection
-                host.selectionModel().selectClip(dragSourceTrack, dragClip);
-                host.refreshCanvas();
+                deps.selectionModel().get().selectClip(dragSourceTrack, dragClip);
+                deps.refreshCanvas().run();
             }
         } else if (targetTrackIndex >= 0) {
-            Track targetTrack = host.tracks().get(targetTrackIndex);
+            Track targetTrack = deps.tracks().get().get(targetTrackIndex);
             if (targetTrack == dragSourceTrack) {
                 // Same track — only move the beat position
                 if (Math.abs(beatDelta) > 0.001) {
@@ -764,9 +776,9 @@ final class ClipInteractionController {
                 // Cross-track move: remove from source, update position, add to target
                 // (Ripple semantics do not apply to cross-track moves — the source
                 // track closes the gap only when an explicit delete occurs.)
-                host.undoManager().execute(new CrossTrackMoveAction(
+                deps.undoManager().get().execute(new CrossTrackMoveAction(
                         dragSourceTrack, targetTrack, dragClip, snappedNewStart));
-                host.refreshCanvas();
+                deps.refreshCanvas().run();
             }
         }
 
@@ -786,25 +798,25 @@ final class ClipInteractionController {
      * ripple validation rejects the edit (the user is notified in that case).
      */
     private void executeMove(AudioClip clip, Track track, double newStartBeat) {
-        RippleMode mode = host.rippleMode();
+        RippleMode mode = deps.rippleMode().get();
         if (mode == RippleMode.OFF) {
-            host.undoManager().execute(new MoveClipAction(track, clip, newStartBeat));
-            host.refreshCanvas();
+            deps.undoManager().get().execute(new MoveClipAction(track, clip, newStartBeat));
+            deps.refreshCanvas().run();
             return;
         }
         try {
-            host.undoManager().execute(RippleEditService.buildRippleMove(
-                    clip, track, newStartBeat, mode, host.tracks(),
+            deps.undoManager().get().execute(RippleEditService.buildRippleMove(
+                    clip, track, newStartBeat, mode, deps.tracks().get(),
                     dragSelectionStart, dragSelectionEnd));
-            host.refreshCanvas();
+            deps.refreshCanvas().run();
         } catch (RippleValidationException e) {
-            host.showNotification(NotificationLevel.ERROR,
+            deps.showNotification().accept(NotificationLevel.ERROR,
                     "Move cancelled — ripple would overlap clips: " + e.getMessage());
         }
     }
 
     private void onMouseMoved(MouseEvent event) {
-        if (host.activeTool() == EditTool.POINTER) {
+        if (deps.activeTool().get() == EditTool.POINTER) {
             // Check fade handles first
             ClipFadeHandler.HandleHit fadeHit = fadeHandler.hitTestHandle(event.getX(), event.getY());
             if (fadeHit != null) {
@@ -840,7 +852,7 @@ final class ClipInteractionController {
         if (clip != null) {
             // Snapshot the time selection before clearing it so executeMove
             // can still honour selection-gated ripple on mouse-release.
-            SelectionModel sm = host.selectionModel();
+            SelectionModel sm = deps.selectionModel().get();
             dragSelectionStart = sm.hasSelection()
                     ? OptionalDouble.of(sm.getStartBeat()) : OptionalDouble.empty();
             dragSelectionEnd = sm.hasSelection()
@@ -848,10 +860,10 @@ final class ClipInteractionController {
             // Click on an audio clip
             clearTimeSelection();
             if (event.isShiftDown()) {
-                host.selectionModel().toggleClipSelection(track, clip);
-                host.refreshCanvas();
-            } else if (host.selectionModel().isClipSelected(clip)
-                       && host.selectionModel().getSelectedClips().size() > 1) {
+                deps.selectionModel().get().toggleClipSelection(track, clip);
+                deps.refreshCanvas().run();
+            } else if (deps.selectionModel().get().isClipSelected(clip)
+                       && deps.selectionModel().get().getSelectedClips().size() > 1) {
                 // Clip is already part of a multi-selection — start group drag
                 // without resetting the selection
                 groupDrag = true;
@@ -862,8 +874,8 @@ final class ClipInteractionController {
                 dragClipOriginalStartBeat = clip.getStartBeat();
                 notifyAdvisorBeginClipDrag(clip, event.getScreenX(), event.getScreenY());
             } else {
-                host.selectionModel().selectClip(track, clip);
-                host.refreshCanvas();
+                deps.selectionModel().get().selectClip(track, clip);
+                deps.refreshCanvas().run();
                 groupDrag = false;
                 dragClip = clip;
                 dragSourceTrack = track;
@@ -880,11 +892,11 @@ final class ClipInteractionController {
         if (midiClip != null) {
             clearTimeSelection();
             if (event.isShiftDown()) {
-                host.selectionModel().toggleMidiClipSelection(track, midiClip);
+                deps.selectionModel().get().toggleMidiClipSelection(track, midiClip);
             } else {
-                host.selectionModel().selectMidiClip(track, midiClip);
+                deps.selectionModel().get().selectMidiClip(track, midiClip);
             }
-            host.refreshCanvas();
+            deps.refreshCanvas().run();
             LOG.fine(() -> "Pointer: selected MIDI clip on track '" + track.getName() + "' at beat " + beat);
             return;
         }
@@ -903,7 +915,7 @@ final class ClipInteractionController {
      */
     private void beginTimeSelectionDrag(double beat, boolean shiftDown) {
         double snappedBeat = snapBeat(beat);
-        SelectionModel sm = host.selectionModel();
+        SelectionModel sm = deps.selectionModel().get();
         selectionDragShift = shiftDown && sm.hasSelection();
         if (selectionDragShift) {
             // Extend selection: anchor is the farther existing edge
@@ -926,7 +938,7 @@ final class ClipInteractionController {
         }
         selectionDragging = true;
         // Seek immediately so the playhead moves to the click position
-        host.seekToPosition(snappedBeat);
+        deps.seekToPosition().accept(snappedBeat);
     }
 
     /**
@@ -944,7 +956,7 @@ final class ClipInteractionController {
         rubberBandAnchorX = x;
         rubberBandAnchorY = y;
         if (!shiftDown) {
-            host.selectionModel().clearClipSelection();
+            deps.selectionModel().get().clearClipSelection();
             clearTimeSelection();
         }
     }
@@ -957,11 +969,11 @@ final class ClipInteractionController {
         double topY = Math.min(y1, y2);
         double bottomY = Math.max(y1, y2);
         List<Track> result = new java.util.ArrayList<>();
-        for (int i = 0; i < host.tracks().size(); i++) {
+        for (int i = 0; i < deps.tracks().get().size(); i++) {
             double laneTop = canvas.computeLaneY(i);
-            double laneBottom = laneTop + host.trackHeight();
+            double laneBottom = laneTop + deps.trackHeight().getAsDouble();
             if (laneTop < bottomY && laneBottom > topY) {
-                result.add(host.tracks().get(i));
+                result.add(deps.tracks().get().get(i));
             }
         }
         return result;
@@ -972,7 +984,7 @@ final class ClipInteractionController {
      */
     private void updateSelectionHandleDrag(double x) {
         double beat = snapBeat(beatAt(x));
-        SelectionModel sm = host.selectionModel();
+        SelectionModel sm = deps.selectionModel().get();
         double start = sm.getStartBeat();
         double end = sm.getEndBeat();
         if (selectionHandleDrag == SelectionEdge.LEFT) {
@@ -986,7 +998,7 @@ final class ClipInteractionController {
         if (lo < hi) {
             applySelection(lo, hi);
         }
-        host.refreshCanvas();
+        deps.refreshCanvas().run();
     }
 
     private void handlePencilPress(Track track, double beat) {
@@ -996,8 +1008,8 @@ final class ClipInteractionController {
         }
         double startBeat = Math.max(0.0, beat);
         AudioClip newClip = new AudioClip("New Clip", startBeat, DEFAULT_NEW_CLIP_DURATION, null);
-        host.undoManager().execute(new AddClipAction(track, newClip));
-        host.refreshCanvas();
+        deps.undoManager().get().execute(new AddClipAction(track, newClip));
+        deps.refreshCanvas().run();
         LOG.fine(() -> "Pencil: created clip at beat " + startBeat);
     }
 
@@ -1006,20 +1018,20 @@ final class ClipInteractionController {
         if (clip == null) {
             return;
         }
-        SelectionModel sm = host.selectionModel();
+        SelectionModel sm = deps.selectionModel().get();
         if (sm.isClipSelected(clip) && sm.getSelectedClips().size() > 1) {
             // Group delete: remove all selected clips as a single undoable action
             List<Map.Entry<Track, AudioClip>> entries = new ArrayList<>();
             for (ClipboardEntry entry : sm.getSelectedClips()) {
                 entries.add(Map.entry(entry.sourceTrack(), entry.clip()));
             }
-            host.undoManager().execute(new CutClipsAction(entries));
+            deps.undoManager().get().execute(new CutClipsAction(entries));
             sm.clearClipSelection();
-            host.refreshCanvas();
+            deps.refreshCanvas().run();
             LOG.fine(() -> "Eraser: removed " + entries.size() + " selected clips");
         } else {
-            host.undoManager().execute(new RemoveClipAction(track, clip));
-            host.refreshCanvas();
+            deps.undoManager().get().execute(new RemoveClipAction(track, clip));
+            deps.refreshCanvas().run();
             LOG.fine(() -> "Eraser: removed clip '" + clip.getName() + "'");
         }
     }
@@ -1033,8 +1045,8 @@ final class ClipInteractionController {
         if (beat <= clip.getStartBeat() || beat >= clip.getEndBeat()) {
             return;
         }
-        host.undoManager().execute(new SplitClipAction(track, clip, beat));
-        host.refreshCanvas();
+        deps.undoManager().get().execute(new SplitClipAction(track, clip, beat));
+        deps.refreshCanvas().run();
         LOG.fine(() -> "Scissors: split clip '" + clip.getName() + "' at beat " + beat);
     }
 
@@ -1053,8 +1065,8 @@ final class ClipInteractionController {
             double tolerance = 0.5; // half a beat
             if (Math.abs(beat - boundary) <= tolerance
                     && Math.abs(boundary - right.getStartBeat()) < 0.001) {
-                host.undoManager().execute(new GlueClipsAction(track, left, right));
-                host.refreshCanvas();
+                deps.undoManager().get().execute(new GlueClipsAction(track, left, right));
+                deps.refreshCanvas().run();
                 LOG.fine(() -> "Glue: merged clips '" + left.getName()
                         + "' and '" + right.getName() + "'");
                 return;
@@ -1077,13 +1089,13 @@ final class ClipInteractionController {
         if (event.isAltDown()) {
             // TODO: derive take-lane index from pointer Y once take lanes are
             //       hit-testable; for now, solo lane 0 as the default.
-            var handler = new CompToolHandler(takeComping, host.undoManager());
+            var handler = new CompToolHandler(takeComping, deps.undoManager().get());
             handler.altClickLane(0);
-            host.refreshCanvas();
+            deps.refreshCanvas().run();
         } else {
             // TODO: derive take-lane index from pointer Y once take lanes are
             //       hit-testable; for now, swipe on lane 0 as the default.
-            compToolHandler = new CompToolHandler(takeComping, host.undoManager());
+            compToolHandler = new CompToolHandler(takeComping, deps.undoManager().get());
             compToolHandler.beginSwipe(0, clampedBeat);
         }
     }
@@ -1103,10 +1115,10 @@ final class ClipInteractionController {
                 FadeCurveType newIn = isFadeIn ? curveType : currentIn;
                 FadeCurveType newOut = isFadeIn ? currentOut : curveType;
                 if (newIn != currentIn || newOut != currentOut) {
-                    host.undoManager().execute(new FadeClipAction(
+                    deps.undoManager().get().execute(new FadeClipAction(
                             clip, clip.getFadeInBeats(), clip.getFadeOutBeats(),
                             newIn, newOut));
-                    host.refreshCanvas();
+                    deps.refreshCanvas().run();
                 }
             });
             menu.getItems().add(item);
@@ -1133,9 +1145,9 @@ final class ClipInteractionController {
         ContextMenu menu = new ContextMenu();
 
         MenuItem timeStretch = new MenuItem("Time-Stretch\u2026");
-        timeStretch.setOnAction(_ -> host.onTimeStretchClip());
+        timeStretch.setOnAction(_ -> deps.onTimeStretchClip().run());
         MenuItem pitchShift = new MenuItem("Pitch-Shift\u2026");
-        pitchShift.setOnAction(_ -> host.onPitchShiftClip());
+        pitchShift.setOnAction(_ -> deps.onPitchShiftClip().run());
 
         menu.getItems().addAll(timeStretch, pitchShift);
         menu.show(canvas, event.getScreenX(), event.getScreenY());
@@ -1184,7 +1196,7 @@ final class ClipInteractionController {
         groupDrag = false;
         dragSelectionStart = OptionalDouble.empty();
         dragSelectionEnd = OptionalDouble.empty();
-        host.refreshCanvas();
+        deps.refreshCanvas().run();
 
         if (dragVisualAdvisor != null
                 && dragVisualAdvisor.state() == DragVisualAdvisor.State.DRAGGING) {

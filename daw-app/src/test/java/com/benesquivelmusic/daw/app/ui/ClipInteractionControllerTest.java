@@ -59,30 +59,31 @@ class ClipInteractionControllerTest {
         rippleMode = RippleMode.OFF;
     }
 
-    private ClipInteractionController.Host createHost() {
-        return new ClipInteractionController.Host() {
-            @Override public List<Track> tracks() { return tracks; }
-            @Override public EditTool activeTool() { return activeTool; }
-            @Override public UndoManager undoManager() { return undoManager; }
-            @Override public double pixelsPerBeat() { return pixelsPerBeat; }
-            @Override public double scrollXBeats() { return scrollXBeats; }
-            @Override public double scrollYPixels() { return scrollYPixels; }
-            @Override public double trackHeight() { return trackHeight; }
-            @Override public boolean snapEnabled() { return false; }
-            @Override public GridResolution gridResolution() { return GridResolution.QUARTER; }
-            @Override public int beatsPerBar() { return 4; }
-            @Override public void refreshCanvas() { refreshCount++; }
-            @Override public void seekToPosition(double beat) { seekedPosition = beat; }
-            @Override public SelectionModel selectionModel() { return selectionModel; }
-            @Override public void updateStatusBar(String text) { lastStatusBarText = text; }
-            @Override public RippleMode rippleMode() {
-                return rippleMode;
-            }
-            @Override public void showNotification(NotificationLevel level, String message) {
-                // no-op in tests
-            }
-            @Override public double projectTempoBpm() { return 120.0; }
-        };
+    private ClipInteractionController.Deps createHost() {
+        // Story 293 — the production Host is retired; build a Deps record of
+        // direct functional dependencies. Suppliers read the mutable test
+        // fields live so per-test mutations (activeTool, scroll, rippleMode…)
+        // take effect, exactly as the former anonymous Host did.
+        return new ClipInteractionController.Deps(
+                () -> tracks,
+                () -> activeTool,
+                () -> undoManager,
+                () -> pixelsPerBeat,
+                () -> scrollXBeats,
+                () -> scrollYPixels,
+                () -> trackHeight,
+                () -> false,
+                () -> GridResolution.QUARTER,
+                () -> 4,
+                () -> refreshCount++,
+                beat -> seekedPosition = beat,
+                () -> selectionModel,
+                text -> lastStatusBarText = text,
+                () -> rippleMode,
+                (level, message) -> { /* no-op in tests */ },
+                () -> 120.0,
+                () -> { /* onTimeStretchClip no-op */ },
+                () -> { /* onPitchShiftClip no-op */ });
     }
 
     /**

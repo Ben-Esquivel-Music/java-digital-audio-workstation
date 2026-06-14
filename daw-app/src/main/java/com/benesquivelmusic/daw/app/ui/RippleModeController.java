@@ -16,6 +16,7 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 
 import java.util.Objects;
+import java.util.function.Supplier;
 
 /**
  * Owns the ripple-mode toolbar button, the red status-bar banner shown when
@@ -27,17 +28,16 @@ import java.util.Objects;
 final class RippleModeController {
 
     /**
-     * Host hooks into the main application: holds the project (source of
-     * truth for the ripple mode), provides UI refresh, and surfaces
-     * notifications.
+     * Story 293 — the former {@code Host} callback-up interface is retired
+     * (CONTROL_SYNCHRONIZATION_DESIGN_BOOK §9). The controller now takes its
+     * collaborators directly: a live {@link Supplier} for the swappable project
+     * (read fresh on every access so a project load is reflected without
+     * reconstruction), a {@code markDirty} action, and the
+     * {@link NotificationBar} it surfaces messages on.
      */
-    interface Host {
-        DawProject project();
-        void markProjectDirty();
-        void showNotification(NotificationLevel level, String message);
-    }
-
-    private final Host host;
+    private final Supplier<DawProject> project;
+    private final Runnable markDirty;
+    private final NotificationBar notificationBar;
     private final ToolbarStateStore toolbarStateStore;
     private final Button cyclingButton;
     private final Label bannerLabel;
@@ -50,11 +50,16 @@ final class RippleModeController {
      */
     private boolean allTracksPromptAcceptedThisSession;
 
-    RippleModeController(Host host,
+    RippleModeController(Supplier<DawProject> project,
+                         Runnable markDirty,
+                         NotificationBar notificationBar,
                          ToolbarStateStore toolbarStateStore,
                          Button cyclingButton,
                          Label bannerLabel) {
-        this.host = Objects.requireNonNull(host, "host must not be null");
+        this.project = Objects.requireNonNull(project, "project must not be null");
+        this.markDirty = Objects.requireNonNull(markDirty, "markDirty must not be null");
+        this.notificationBar = Objects.requireNonNull(
+                notificationBar, "notificationBar must not be null");
         this.toolbarStateStore = Objects.requireNonNull(
                 toolbarStateStore, "toolbarStateStore must not be null");
         this.cyclingButton = Objects.requireNonNull(
@@ -65,9 +70,9 @@ final class RippleModeController {
         refresh();
     }
 
-    /** Returns the current ripple mode read from the host project. */
+    /** Returns the current ripple mode read from the live project. */
     RippleMode mode() {
-        return host.project().getRippleMode();
+        return project.get().getRippleMode();
     }
 
     /**
@@ -85,13 +90,13 @@ final class RippleModeController {
         if (target == RippleMode.ALL_TRACKS && !confirmAllTracks()) {
             return;
         }
-        host.project().setRippleMode(target);
-        host.markProjectDirty();
+        project.get().setRippleMode(target);
+        markDirty.run();
         refresh();
         if (target == RippleMode.OFF) {
-            host.showNotification(NotificationLevel.INFO, "Ripple editing disabled");
+            notificationBar.show(NotificationLevel.INFO, "Ripple editing disabled");
         } else {
-            host.showNotification(NotificationLevel.INFO, target.displayName());
+            notificationBar.show(NotificationLevel.INFO, target.displayName());
         }
     }
 

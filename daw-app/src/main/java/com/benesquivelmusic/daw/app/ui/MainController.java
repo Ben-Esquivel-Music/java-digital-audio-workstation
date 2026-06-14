@@ -12,6 +12,14 @@ import com.benesquivelmusic.daw.app.ui.help.QuickHelpBar;
 import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.app.ui.icons.IconNode;
 import com.benesquivelmusic.daw.app.ui.marshal.FxDispatcher;
+import com.benesquivelmusic.daw.app.ui.vm.HistoryControlBinder;
+import com.benesquivelmusic.daw.app.ui.vm.HistoryVM;
+import com.benesquivelmusic.daw.app.ui.vm.ProjectVM;
+import com.benesquivelmusic.daw.app.ui.vm.TransportControlBinder;
+import com.benesquivelmusic.daw.app.ui.vm.TransportVM;
+import com.benesquivelmusic.daw.app.ui.vm.command.HistoryCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.RedoCommand;
+import com.benesquivelmusic.daw.app.ui.vm.command.UndoCommand;
 import com.benesquivelmusic.daw.app.ui.theme.ThemeManager;
 import com.benesquivelmusic.daw.core.analysis.InputLevelMonitorRegistry;
 import com.benesquivelmusic.daw.core.audio.AudioBackendFactory;
@@ -144,6 +152,14 @@ public final class MainController {
     private PluginRegistry pluginRegistry;
     private ProjectManager projectManager;
     private UndoManager undoManager;
+    // Story 293 review (#2): the imperative dirty bit that drives Save-enabled
+    // (read at the menu supplier in createMenuBar). ProjectVM.dirty (story 292's
+    // "one dirty bit") is the intended single source, but its producer —
+    // DawProject.markDirty() wired into the edit sites — and its consumers (Save /
+    // window-title binding) are story 294's charter (ProjectSurfaceWiringTest:
+    // "binds ProjectVM.name/dirty/tracks"). Until then this boolean is the live
+    // source: do NOT bind Save to ProjectVM.dirty yet — the core is almost never
+    // marked dirty by edits today, so Save would never enable.
     private boolean projectDirty;
     private AudioEngine audioEngine;
     // Story 137: registry of per-track input-level monitors used by the
@@ -201,6 +217,17 @@ public final class MainController {
     private HistoryPanelController historyPanelController;
     private AudioImportController audioImportController;
     private TempoEditController tempoEditController;
+
+    // ── Story 293: view-model layer (Control Synchronization Design Book §4.3/§4.4) ──
+    // The VMs make the controls reactive subscribers to the core model's neutral
+    // change signals (stories 290-292), retiring the imperative update*/refresh*/sync*
+    // methods. Rebuilt per project load by rebuildViewModels(); disposed on hide.
+    private HistoryVM historyVM;
+    private HistoryControlBinder historyBinder;
+    private TransportVM transportVM;
+    private ProjectVM projectVM;
+    /** Disposers for the current VM generation (binders + VM unregistration); run on rebuild + hide. */
+    private final java.util.List<Runnable> vmDisposers = new java.util.ArrayList<>();
     private ToolbarStateStore toolbarStateStore;
     private KeyBindingManager keyBindingManager;
     private CommandPaletteView commandPaletteView;
@@ -392,6 +419,95 @@ public final class MainController {
         FxDispatcher.runOnFx(fxDispatcher, work);
     }
 
+    /**
+     * Story 293 — (re)builds the view-model layer and binds the controls to it,
+     * retiring the imperative {@code update*}/{@code refresh*}/{@code sync*}
+     * methods (Control Synchronization Design Book §4.3/§4.4, §5.7). Invoked at
+     * startup and after every project load / new — the project, transport and
+     * undo manager are all swapped then — so the controls always observe the live
+     * model. The previous generation of VMs and binders is disposed first, so
+     * nothing leaks across loads (javafx-application-design §3/§4/§11).
+     */
+    private void rebuildViewModels() {
+        for (Runnable disposer : vmDisposers) {
+            disposer.run();
+        }
+        vmDisposers.clear();
+
+        FxDispatcher disp = dispatcher();
+
+        // Project — the name cells track ProjectVM.name; the arrangement placeholder +
+        // canvas track ProjectVM.tracks (§4.3, replacing updateProjectInfo() and
+        // updateArrangementPlaceholder()). Format/lock/checkpoint are not ProjectVM
+        // facts (no producer; a Non-Goal to add) and stay imperative.
+        projectVM = new ProjectVM(project, disp);
+        vmDisposers.add(projectVM::dispose);
+        applyProjectInfoLabels();
+        javafx.beans.value.ChangeListener<String> projectNameListener =
+                (obs, was, now) -> applyProjectInfoLabels();
+        projectVM.nameProperty().addListener(projectNameListener);
+        vmDisposers.add(() -> projectVM.nameProperty().removeListener(projectNameListener));
+        // Seed + bind together: the placeholder visibility AND the arrangement
+        // canvas both follow ProjectVM.tracks. A freshly built VM seeds its backing
+        // list *before* this listener is attached, so the listener does NOT fire on
+        // a project load — apply once explicitly here, or the canvas keeps rendering
+        // the previous project's tracks after File→Open / snapshot-restore (story
+        // 293 review #1). Seed and listener share one Runnable so they can't drift.
+        Runnable applyTracksToCanvas = () -> {
+            if (arrangementPlaceholder != null) {
+                arrangementPlaceholder.setVisible(projectVM.getTracks().isEmpty());
+            }
+            repaintArrangementCanvas();
+        };
+        applyTracksToCanvas.run();
+        javafx.beans.InvalidationListener projectTracksListener = obs -> applyTracksToCanvas.run();
+        projectVM.getTracks().addListener(projectTracksListener);
+        vmDisposers.add(() -> projectVM.getTracks().removeListener(projectTracksListener));
+
+        // Transport — the tempo label binds TransportVM.tempo (§4.3, replaces
+        // updateTempoDisplay()) through the canonical TransportControlBinder, so the
+        // "%.1f BPM" formatting lives in exactly one place. The label is read-only
+        // (it issues no commands), so the binder's command sink is a no-op — the
+        // read-only-binding pattern of TransportBindingTest. The playhead/loop/ruler
+        // are read from the VM by the per-frame tickArrangementOverlays() (the ruler
+        // grid has no discrete trigger).
+        transportVM = new TransportVM(project.getTransport(), disp);
+        vmDisposers.add(transportVM::dispose);
+        TransportControlBinder transportBinder = new TransportControlBinder(transportVM, command -> { });
+        transportBinder.bindTempoLabel(tempoLabel);
+        vmDisposers.add(transportBinder::dispose);
+
+        // History (undo/redo) — §6.9; replaces updateUndoRedoState()'s button poke.
+        // HistoryVM re-registers on the (swapped) undo manager, so the buttons stay
+        // correct across project loads — the binder owns disable + tooltip + action.
+        historyVM = new HistoryVM(undoManager, disp);
+        vmDisposers.add(historyVM::dispose);
+        historyBinder = new HistoryControlBinder(historyVM, this::dispatchHistoryCommand);
+        historyBinder.bindUndoButton(undoButton);
+        historyBinder.bindRedoButton(redoButton);
+        vmDisposers.add(historyBinder::dispose);
+    }
+
+    /** Routes an undo/redo intent (button, menu, or shortcut) to the existing handlers (§2.8). */
+    private void dispatchHistoryCommand(HistoryCommand command) {
+        switch (command) {
+            case UndoCommand _ -> onUndo();
+            case RedoCommand _ -> onRedo();
+        }
+    }
+
+    /**
+     * Story 293 — the menu-enablement poke that outlives the deleted
+     * {@code updateUndoRedoState()}: the undo/redo <em>buttons</em> now bind
+     * {@link HistoryVM}, but the Edit-menu items still recompute through
+     * {@link MenuEnablementPolicy} until the §6.9 VM-driven menu capstone.
+     */
+    private void syncMenuStateIfPresent() {
+        if (menuBarController != null) {
+            menuBarController.syncMenuState();
+        }
+    }
+
     @FXML
     private void initialize() {
         project = new DawProject("Untitled Project", AudioFormat.STUDIO_QUALITY);
@@ -399,12 +515,12 @@ public final class MainController {
         undoManager = new UndoManager();
         undoManager.addHistoryListener(_ -> {
             if (javafx.application.Platform.isFxApplicationThread()) {
-                updateUndoRedoState();
-                refreshArrangementCanvas();
+                syncMenuStateIfPresent();
+                repaintArrangementCanvas();
             } else {
                 postFx(() -> {
-                    updateUndoRedoState();
-                    refreshArrangementCanvas();
+                    syncMenuStateIfPresent();
+                    repaintArrangementCanvas();
                 });
             }
         });
@@ -420,7 +536,7 @@ public final class MainController {
             LOG.log(Level.WARNING, "Failed to create audio backend; playback will use UI timer only", e);
         }
         audioEngineController = new DefaultAudioEngineController(audioEngine, () -> {
-            updateProjectInfo();
+            applyProjectInfoLabels();
             // Story 129 (UI): reinstall the per-track CPU budget enforcer
             // whenever the engine is reconfigured (sample rate / buffer size
             // change in AudioSettingsDialog → applyConfiguration) so the
@@ -528,12 +644,16 @@ public final class MainController {
         animationController.applyButtonPressAnimations();
         transportController.updateStatus();
         transportController.syncLoopButtonState();
-        updateTempoDisplay();
-        updateProjectInfo();
+        applyProjectInfoLabels();
         mountLockStatusIndicator();
-        updateCheckpointStatus();
+        // Story 293 — static autosave/IO chrome, inlined from the deleted
+        // updateCheckpointStatus() (§274). ProjectVM.checkpoint has no producer until
+        // stories 295-299, so binding it would blank the cell — keep the static text.
+        checkpointLabel.setText(MESSAGES.getString("statusbar.autosave.on"));
+        ioRoutingLabel.setText(MESSAGES.getString("statusbar.io.initializing"));
         initializeStatusBarPlaceholders();
-        updateUndoRedoState();
+        syncMenuStateIfPresent();
+        rebuildViewModels();
         installIoLatencyClickHandler();
         animationController.start();
         viewNavigationController.getMixerView().setPluginRegistry(pluginRegistry);
@@ -621,6 +741,10 @@ public final class MainController {
                         commandPaletteView.setOwner(primaryStage);
                     }
                     primaryStage.setOnHidden(_ -> {
+                        // Story 293 — release the view-model layer (binders + VM
+                        // listeners + continuous channels) so nothing leaks on close.
+                        for (Runnable disposer : vmDisposers) { disposer.run(); }
+                        vmDisposers.clear();
                         disposeRenderQueue();
                         pluginViewController.dispose();
                         if (pluginFaultUiController != null) {
@@ -724,37 +848,32 @@ public final class MainController {
     }
 
     private void createTransportController() {
+        // Story 293 — direct functional dependencies replace the retired Host.
+        // These read live collaborators (view-nav, metronome, audio-engine,
+        // settings) that may be null at construction or change over the
+        // controller's life, so each is a Supplier/functional seam — mirroring
+        // what the former Host closed over lazily. The dead metronome() method
+        // is dropped (it was never invoked). flashMidiActivity is called from
+        // the MIDI receiver thread; the controller marshals it via the
+        // dispatcher.
         transportController = new TransportController(
                 project, audioEngine, undoManager, notificationBar,
                 statusLabel, timeDisplay, statusBarLabel, recIndicator,
                 playButton, stopButton, recordButton, loopButton,
-                new TransportController.Host() {
-                    @Override public boolean isSnapEnabled() {
-                        return viewNavigationController != null
-                                ? viewNavigationController.isSnapEnabled() : snapEnabled;
-                    }
-                    @Override public GridResolution gridResolution() {
-                        return viewNavigationController != null
-                                ? viewNavigationController.getGridResolution() : gridResolution;
-                    }
-                    @Override public Metronome metronome() { return metronome; }
-                    @Override public CountInMode countInMode() {
-                        return metronomeController != null
-                                ? metronomeController.getCountInMode() : CountInMode.OFF;
-                    }
-                    @Override public void startTimeTicker() { animationController.startTimeTicker(); }
-                    @Override public void pauseTimeTicker() { animationController.pauseTimeTicker(); }
-                    @Override public void stopTimeTicker() { animationController.stopTimeTicker(); }
-                    @Override public void flashMidiActivity(Track track) { flashTrackArmButton(track); }
-                    @Override public boolean isApplyLatencyCompensation() {
-                        return settingsModel.isApplyLatencyCompensation();
-                    }
-                    @Override public com.benesquivelmusic.daw.sdk.audio.RoundTripLatency reportedLatency() {
-                        return audioEngineController != null
-                                ? audioEngineController.reportedLatency()
-                                : com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN;
-                    }
-                },
+                () -> viewNavigationController != null
+                        ? viewNavigationController.isSnapEnabled() : snapEnabled,
+                () -> viewNavigationController != null
+                        ? viewNavigationController.getGridResolution() : gridResolution,
+                () -> metronomeController != null
+                        ? metronomeController.getCountInMode() : CountInMode.OFF,
+                () -> animationController.startTimeTicker(),
+                () -> animationController.pauseTimeTicker(),
+                () -> animationController.stopTimeTicker(),
+                this::flashTrackArmButton,
+                () -> settingsModel.isApplyLatencyCompensation(),
+                () -> audioEngineController != null
+                        ? audioEngineController.reportedLatency()
+                        : com.benesquivelmusic.daw.sdk.audio.RoundTripLatency.UNKNOWN,
                 dispatcher());
     }
 
@@ -906,10 +1025,9 @@ public final class MainController {
         if (trackStripController != null) {
             trackStripController.setInputLevelMonitorRegistry(inputLevelMonitorRegistry);
         }
-        updateProjectInfo();
-        updateTempoDisplay();
-        updateUndoRedoState();
-        updateArrangementPlaceholder();
+        applyProjectInfoLabels();
+        syncMenuStateIfPresent();
+        rebuildViewModels();
         if (rippleModeController != null) {
             rippleModeController.onProjectChanged();
         }
@@ -1054,29 +1172,26 @@ public final class MainController {
     }
 
     private void createTrackStripController() {
+        // Story 293 — direct functional dependencies replace the retired Host.
+        // This controller is reconstructed on every project load
+        // (handleProjectRebuild), so project/undoManager are passed by value;
+        // the action runnables and live-state suppliers route to the
+        // view-navigation / transport controllers. updateArrangementPlaceholder
+        // was a no-op (the placeholder binds ProjectVM.tracks) and is dropped.
         trackStripController = new TrackStripController(
                 project, undoManager, audioEngine, viewNavigationController.getMixerView(),
                 notificationBar, statusBarLabel, trackListPanel, rootPane,
                 clipboardManager, selectionModel,
-                new TrackStripController.Host() {
-                    @Override public void updateArrangementPlaceholder() {
-                        MainController.this.updateArrangementPlaceholder();
-                    }
-                    @Override public void updateUndoRedoState() {
-                        MainController.this.updateUndoRedoState();
-                    }
-                    @Override public void undoLastAction() { onUndo(); }
-                    @Override public void zoomIn() { viewNavigationController.onZoomIn(); }
-                    @Override public void zoomOut() { viewNavigationController.onZoomOut(); }
-                    @Override public void toggleSnap() { viewNavigationController.onToggleSnap(); }
-                    @Override public void skipToStart() { transportController.onSkipBack(); }
-                    @Override public void markProjectDirty() { projectDirty = true; }
-                    @Override public boolean isSnapEnabled() { return viewNavigationController.isSnapEnabled(); }
-                    @Override public ZoomLevel currentZoomLevel() {
-                        return viewNavigationController.getZoomLevel(viewNavigationController.getActiveView());
-                    }
-                    @Override public EditorView editorView() { return viewNavigationController.getEditorView(); }
-                });
+                this::syncMenuStateIfPresent,
+                this::onUndo,
+                () -> viewNavigationController.onZoomIn(),
+                () -> viewNavigationController.onZoomOut(),
+                () -> viewNavigationController.onToggleSnap(),
+                () -> transportController.onSkipBack(),
+                () -> projectDirty = true,
+                () -> viewNavigationController.isSnapEnabled(),
+                () -> viewNavigationController.getZoomLevel(viewNavigationController.getActiveView()),
+                () -> viewNavigationController.getEditorView());
     }
 
     private void createPluginViewController() {
@@ -1117,38 +1232,41 @@ public final class MainController {
     }
 
     private void createClipEditController() {
-        clipEditController = new ClipEditController(new ClipEditController.Host() {
-            @Override public DawProject project() { return project; }
-            @Override public UndoManager undoManager() { return undoManager; }
-            @Override public ClipboardManager clipboardManager() { return clipboardManager; }
-            @Override public SelectionModel selectionModel() { return selectionModel; }
-            @Override public void refreshArrangementCanvas() { MainController.this.refreshArrangementCanvas(); }
-            @Override public void updateUndoRedoState() { MainController.this.updateUndoRedoState(); }
-            @Override public void syncMenuState() { if (menuBarController != null) menuBarController.syncMenuState(); }
-            @Override public void markProjectDirty() { projectDirty = true; }
-            @Override public void updateStatusBar(String text, DawIcon icon) { status(text, icon); }
-            @Override public void showNotificationWithUndo(NotificationLevel level, String msg, Runnable undo) { notificationBar.showWithUndo(level, msg, undo); }
-            @Override public void showNotification(NotificationLevel level, String message) { notificationBar.show(level, message); }
-            @Override public EditorView editorView() { return viewNavigationController.getEditorView(); }
-            @Override public com.benesquivelmusic.daw.sdk.edit.RippleMode rippleMode() { return project.getRippleMode(); }
-            @Override public double gridStepBeats() {
-                GridResolution res = viewNavigationController != null
-                        ? viewNavigationController.getGridResolution() : gridResolution;
-                int beatsPerBar = project.getTransport().getTimeSignatureNumerator();
-                return res.beatsPerGrid(beatsPerBar);
-            }
-        });
+        // Story 293 — direct functional dependencies replace the retired Host.
+        // This controller is init-only (not rebuilt on project load), so the
+        // swappable project/undoManager are suppliers read live; the stable
+        // clipboard/selection models are passed by value. editorView /
+        // rippleMode / gridStepBeats read live state, so they are suppliers too.
+        clipEditController = new ClipEditController(new ClipEditController.Deps(
+                () -> project,
+                () -> undoManager,
+                clipboardManager,
+                selectionModel,
+                this::repaintArrangementCanvas,
+                this::syncMenuStateIfPresent,
+                () -> projectDirty = true,
+                this::status,
+                (level, msg, undo) -> notificationBar.showWithUndo(level, msg, undo),
+                (level, message) -> notificationBar.show(level, message),
+                () -> viewNavigationController.getEditorView(),
+                () -> project.getRippleMode(),
+                () -> {
+                    GridResolution res = viewNavigationController != null
+                            ? viewNavigationController.getGridResolution() : gridResolution;
+                    int beatsPerBar = project.getTransport().getTimeSignatureNumerator();
+                    return res.beatsPerGrid(beatsPerBar);
+                }));
     }
 
     private void createRippleModeController() {
+        // Story 293 — direct dependencies replace the retired Host. The project
+        // supplier reads the swappable field live so a project load is reflected
+        // without reconstructing the controller (it is init-only, not rebuilt in
+        // handleProjectRebuild).
         rippleModeController = new RippleModeController(
-                new RippleModeController.Host() {
-                    @Override public DawProject project() { return project; }
-                    @Override public void markProjectDirty() { projectDirty = true; }
-                    @Override public void showNotification(NotificationLevel level, String message) {
-                        notificationBar.show(level, message);
-                    }
-                },
+                () -> project,
+                () -> projectDirty = true,
+                notificationBar,
                 toolbarStateStore, rippleModeButton, rippleBannerLabel);
     }
 
@@ -1161,8 +1279,8 @@ public final class MainController {
                     @Override public TrackStripController trackStripController() { return trackStripController; }
                     @Override public MixerView mixerView() { return viewNavigationController.getMixerView(); }
                     @Override public VBox trackListPanel() { return trackListPanel; }
-                    @Override public void updateArrangementPlaceholder() { MainController.this.updateArrangementPlaceholder(); }
-                    @Override public void updateUndoRedoState() { MainController.this.updateUndoRedoState(); }
+                    @Override public void updateArrangementPlaceholder() { /* story 293: arrangementPlaceholder binds ProjectVM.tracks */ }
+                    @Override public void updateUndoRedoState() { MainController.this.syncMenuStateIfPresent(); }
                     @Override public void markProjectDirty() { projectDirty = true; }
                     @Override public void updateStatusBar(String text, DawIcon icon) { status(text, icon); }
                     @Override public void showNotification(NotificationLevel level, String message) { notificationBar.show(level, message); }
@@ -1178,9 +1296,9 @@ public final class MainController {
             @Override public MixerView mixerView() { return viewNavigationController.getMixerView(); }
             @Override public VBox trackListPanel() { return trackListPanel; }
             @Override public Stage primaryStage() { return (Stage) rootPane.getScene().getWindow(); }
-            @Override public void updateArrangementPlaceholder() { MainController.this.updateArrangementPlaceholder(); }
-            @Override public void refreshArrangementCanvas() { MainController.this.refreshArrangementCanvas(); }
-            @Override public void updateUndoRedoState() { MainController.this.updateUndoRedoState(); }
+            @Override public void updateArrangementPlaceholder() { /* story 293: arrangementPlaceholder binds ProjectVM.tracks */ }
+            @Override public void refreshArrangementCanvas() { MainController.this.repaintArrangementCanvas(); }
+            @Override public void updateUndoRedoState() { MainController.this.syncMenuStateIfPresent(); }
             @Override public void markProjectDirty() { projectDirty = true; }
             @Override public void updateStatusBar(String text, DawIcon icon) { status(text, icon); }
             @Override public void showNotification(NotificationLevel level, String message) { notificationBar.show(level, message); }
@@ -1257,16 +1375,18 @@ public final class MainController {
     }
 
     private void createHistoryPanelController() {
+        // Story 293 — direct dependencies replace the retired Host. The undo
+        // supplier reads the swappable field live (init-only controller, not
+        // rebuilt on project load; a snapshot restore swaps in a new
+        // UndoManager via applySnapshotRestoredProject).
         historyPanelController = new HistoryPanelController(
                 rootPane, historyButton,
-                new HistoryPanelController.Host() {
-                    @Override public UndoManager undoManager() { return undoManager; }
-                    @Override public void updateUndoRedoState() { MainController.this.updateUndoRedoState(); }
-                    @Override public void refreshArrangementCanvas() { MainController.this.refreshArrangementCanvas(); }
-                    @Override public boolean isBrowserPanelVisible() { return browserPanelController.isPanelVisible(); }
-                    @Override public void hideBrowserPanel() { browserPanelController.toggleBrowserPanel(); }
-                    @Override public void updateStatusBar(String text, DawIcon icon) { status(text, icon); }
-                },
+                () -> undoManager,
+                this::syncMenuStateIfPresent,
+                this::repaintArrangementCanvas,
+                () -> browserPanelController.isPanelVisible(),
+                () -> browserPanelController.toggleBrowserPanel(),
+                this::status,
                 dispatcher());
         historyPanelController.build();
     }
@@ -1670,14 +1790,17 @@ public final class MainController {
     }
 
     private void createTempoEditController() {
-        tempoEditController = new TempoEditController(tempoLabel, new TempoEditController.Host() {
-            @Override public DawProject project() { return project; }
-            @Override public UndoManager undoManager() { return undoManager; }
-            @Override public void updateUndoRedoState() { MainController.this.updateUndoRedoState(); }
-            @Override public void updateTempoDisplay() { MainController.this.updateTempoDisplay(); }
-            @Override public void updateStatusBar(String text, DawIcon icon) { status(text, icon); }
-            @Override public void showNotification(NotificationLevel level, String message) { notificationBar.show(level, message); }
-        });
+        // Story 293 — direct dependencies replace the retired Host. Project/undo
+        // suppliers read the swappable fields live (init-only controller, not
+        // rebuilt on project load); updateTempoDisplay was a no-op (tempo label
+        // binds TransportVM.tempo) and is dropped.
+        tempoEditController = new TempoEditController(
+                tempoLabel,
+                () -> project,
+                () -> undoManager,
+                this::syncMenuStateIfPresent,
+                this::status,
+                notificationBar);
         tempoEditController.install();
     }
 
@@ -1691,7 +1814,7 @@ public final class MainController {
                     @Override public EditTool activeEditTool() { return viewNavigationController.getActiveEditTool(); }
                     @Override public boolean isSnapEnabled() { return viewNavigationController.isSnapEnabled(); }
                     @Override public GridResolution gridResolution() { return viewNavigationController.getGridResolution(); }
-                    @Override public void refreshCanvas() { refreshArrangementCanvas(); }
+                    @Override public void refreshCanvas() { repaintArrangementCanvas(); }
                     @Override public void seekToPosition(double beat) { MainController.this.seekToPosition(beat); }
                     @Override public void updateStatusBar(String text) { statusBarLabel.setText(text); }
                     @Override public com.benesquivelmusic.daw.sdk.edit.RippleMode rippleMode() {
@@ -1714,25 +1837,20 @@ public final class MainController {
             clipInteractionController.setDragVisualAdvisor(
                     animationController.dragVisualAdvisor());
         }
-        refreshArrangementCanvas();
+        repaintArrangementCanvas();
         trackStripController.setArrangementCanvas(arrangementCanvas);
-        animationController.setPlayheadUpdateCallback(this::updatePlayheadFromTransport);
+        animationController.setPlayheadUpdateCallback(this::tickArrangementOverlays);
         audioImportController.installArrangementCanvasDragDrop(arrangementCanvas);
     }
 
     private void createMenuBar() {
+        // Story 293 — the menu controller's former Host mixed action dispatch
+        // with six cascade-feeding state queries. The state half is now passed
+        // as live BooleanSuppliers (read straight from the authoritative
+        // sources); the action half is the renamed MenuActions interface. The
+        // dead activeView() query is dropped.
         menuBarController = new DawMenuBarController(
-                new DawMenuBarController.Host() {
-                    @Override public DawProject project() { return project; }
-                    @Override public boolean isProjectDirty() { return projectDirty; }
-                    @Override public boolean canUndo() { return undoManager.canUndo(); }
-                    @Override public boolean canRedo() { return undoManager.canRedo(); }
-                    @Override public boolean hasClipboardContent() { return clipboardManager.hasContent(); }
-                    @Override public boolean hasSelection() { return selectionModel.hasClipSelection(); }
-                    @Override public DawView activeView() {
-                        return viewNavigationController != null
-                                ? viewNavigationController.getActiveView() : activeView;
-                    }
+                new DawMenuBarController.MenuActions() {
                     @Override public void onNewProject() { projectLifecycleController.onNewProject(); }
                     @Override public void onOpenProject() { projectLifecycleController.onOpenProject(); }
                     @Override public void onSaveProject() { projectLifecycleController.onSaveProject(); }
@@ -1794,7 +1912,15 @@ public final class MainController {
                     @Override public void onOpenImmersiveAb() { MainController.this.onOpenImmersiveAb(); }
                     @Override public void onHelp() { MainController.this.onHelp(); }
                 },
-                keyBindingManager);
+                keyBindingManager,
+                // Save-enabled reads the imperative dirty bit (see field decl);
+                // the ProjectVM.dirty binding is story 294's charter.
+                () -> projectDirty,
+                () -> undoManager.canUndo(),
+                () -> undoManager.canRedo(),
+                () -> clipboardManager.hasContent(),
+                () -> selectionModel.hasClipSelection(),
+                () -> !project.getTracks().isEmpty());
         javafx.scene.control.MenuBar bar = menuBarController.build();
         // Wire the per-user Workspaces menu (Save Current as… / Switch to…).
         // The WorkspaceManager seeds the six default workspaces on first run
@@ -2987,7 +3113,7 @@ public final class MainController {
     @FXML private void onRecord() { transportController.onRecord(); }
     @FXML private void onSkipBack() { transportController.onSkipBack(); }
     @FXML private void onSkipForward() { transportController.onSkipForward(); }
-    @FXML private void onToggleLoop() { transportController.onToggleLoop(); syncLoopRegionToCanvas(); }
+    @FXML private void onToggleLoop() { transportController.onToggleLoop(); applyLoopAndRulerGrid(); }
     @FXML private void onToggleMetronome() { metronomeController.onToggleMetronome(); }
     @FXML private void onAddAudioTrack() { trackCreationController.onAddAudioTrack(); }
     @FXML private void onAddMidiTrack() { trackCreationController.onAddMidiTrack(); }
@@ -3103,23 +3229,21 @@ public final class MainController {
     @FXML private void onUndo() {
         if (undoManager.undo()) {
             status("Undo: " + undoManager.redoDescription(), DawIcon.UNDO);
-            updateTempoDisplay();
             projectDirty = true;
         } else {
             status("Nothing to undo", DawIcon.INFO_CIRCLE);
         }
-        updateUndoRedoState();
+        syncMenuStateIfPresent();
     }
 
     @FXML private void onRedo() {
         if (undoManager.redo()) {
             status("Redo: " + undoManager.undoDescription(), DawIcon.REDO);
-            updateTempoDisplay();
             projectDirty = true;
         } else {
             status("Nothing to redo", DawIcon.INFO_CIRCLE);
         }
-        updateUndoRedoState();
+        syncMenuStateIfPresent();
     }
 
     @FXML private void onOpenSettings() {
@@ -3639,13 +3763,15 @@ public final class MainController {
     public ClipboardManager getClipboardManager() { return clipboardManager; }
     public SelectionModel getSelectionModel() { return selectionModel; }
 
-    private void updateTempoDisplay() {
-        tempoLabel.setText(String.format("%.1f BPM", project.getTransport().getTempo()));
-        // Icon dropped per UI Design Book §2.4 — labelled status displays
-        // keep text only; icon-next-to-label is forbidden.
-    }
 
-    private void updateProjectInfo() {
+    /**
+     * Story 293 — repaints the project-identity status cells. Renamed from the
+     * deleted {@code updateProjectInfo()}; driven reactively by a
+     * {@link ProjectVM#nameProperty()} subscriber (§4.3) and by the engine-reconfig
+     * callback. The audio format (kHz/bit/ch) and lock badge are not ProjectVM facts
+     * (no producer; adding one is a Non-Goal), so they are read live here.
+     */
+    private void applyProjectInfoLabels() {
         AudioFormat fmt = project.getFormat();
         // Story 274 \u2014 projectInfoLabel is the FIRST status-bar cell, so it
         // carries NO leading "\u00b7 " dot (JavaFX CSS has no :first-child, \u00a76).
@@ -3664,7 +3790,7 @@ public final class MainController {
         });
         ioRoutingLabel.setText(String.format(Locale.ROOT,
                 StatusCellLabel.CELL_SEPARATOR + "%.0f kHz I/O", fmt.sampleRate() / 1000.0));
-        refreshLockStatusIndicator();
+        repaintLockIndicator();
     }
 
     /**
@@ -3704,53 +3830,52 @@ public final class MainController {
         lockStatusIndicator = new LockStatusIndicator(dispatcher());
         int idx = bar.getChildren().indexOf(projectInfoLabel);
         bar.getChildren().add(idx + 1, lockStatusIndicator);
-        refreshLockStatusIndicator();
+        repaintLockIndicator();
 
         // Periodic refresh — ProjectLockManager has no Flow.Publisher today,
         // so a low-frequency 5 s poll is the cheapest way to surface a
         // stolen lock or a take-over without changing the core API.
         lockIndicatorTimeline = new Timeline(
-                new KeyFrame(Duration.seconds(5), _ -> refreshLockStatusIndicator()));
+                new KeyFrame(Duration.seconds(5), _ -> repaintLockIndicator()));
         lockIndicatorTimeline.setCycleCount(Timeline.INDEFINITE);
         lockIndicatorTimeline.play();
     }
 
-    /** Repaints the lock badge from the current {@code ProjectLockManager} status. */
-    private void refreshLockStatusIndicator() {
+    /**
+     * Story 293 — repaints the lock badge (renamed from the deleted
+     * {@code refreshLockStatusIndicator()}). Kept poll-based: {@code ProjectLockManager}
+     * has no push API and lock state is not a ProjectVM fact, so a pure binding is not
+     * possible; the 5 s timeline + project-info refresh drive it.
+     */
+    private void repaintLockIndicator() {
         if (lockStatusIndicator == null || projectManager == null) {
             return;
         }
         lockStatusIndicator.refresh(projectManager.getLockManager());
     }
 
-    private void updateCheckpointStatus() {
-        // Story 274 — static chrome strings from the bundle (Skill §14).
-        // checkpointLabel = autosave state; ioRoutingLabel = transient I/O
-        // init message. Both are non-first cells, dot-prefixed in the
-        // bundle value (checkpointLabel is also a StatusCellLabel, which
-        // re-asserts the dot for its ~30 dynamic writers).
-        checkpointLabel.setText(MESSAGES.getString("statusbar.autosave.on"));
-        ioRoutingLabel.setText(MESSAGES.getString("statusbar.io.initializing"));
-    }
-
-    private void updateArrangementPlaceholder() {
-        arrangementPlaceholder.setVisible(project.getTracks().isEmpty());
-        refreshArrangementCanvas();
-    }
-
-    private void refreshArrangementCanvas() {
-        if (arrangementCanvas == null) return;
-        arrangementCanvas.setTracks(project.getTracks());
-        syncLoopRegionToCanvas();
-        syncSelectionToCanvas();
-    }
-
-    private void updateUndoRedoState() {
-        undoButton.setDisable(!undoManager.canUndo());
-        redoButton.setDisable(!undoManager.canRedo());
-        undoButton.setTooltip(new Tooltip(undoManager.canUndo() ? "Undo: " + undoManager.undoDescription() + " (Ctrl+Z)" : "Nothing to undo"));
-        redoButton.setTooltip(new Tooltip(undoManager.canRedo() ? "Redo: " + undoManager.redoDescription() + " (Ctrl+Shift+Z)" : "Nothing to redo"));
-        if (menuBarController != null) menuBarController.syncMenuState();
+    /**
+     * Story 293 — the central arrangement repaint (renamed from the deleted
+     * {@code refreshArrangementCanvas()}). Track add/remove now reaches it reactively
+     * through a {@link ProjectVM#getTracks()} subscriber (§4.3); the remaining callers
+     * (clip edits, undo, selection) still invoke it directly until a full
+     * canvas-subscribes-to-ClipEvent pass (follow-on).
+     *
+     * <p>The canvas is driven from the FX-owned {@link ProjectVM#getTracks()} list,
+     * <em>not</em> the live {@link DawProject#getTracks()} view. {@code ProjectVM}
+     * snapshots the project's tracks onto the FX thread (story 292), whereas
+     * {@link ArrangementCanvas#setTracks} stores the reference and re-iterates it on
+     * every {@code redraw()}. Handing it the live core view would let a background
+     * loader thread mutate the list mid-redraw — a {@code ConcurrentModificationException}
+     * during File→Open / snapshot-restore. {@code projectVM} is built before the
+     * canvas exists (see {@code rebuildViewModels()} vs {@code createArrangementCanvas()}),
+     * so the added null-guard only short-circuits the pre-init window.</p>
+     */
+    private void repaintArrangementCanvas() {
+        if (arrangementCanvas == null || projectVM == null) return;
+        arrangementCanvas.setTracks(projectVM.getTracks());
+        applyLoopAndRulerGrid();
+        paintCanvasSelection();
     }
 
     private void seekToPosition(double beat) {
@@ -3765,14 +3890,29 @@ public final class MainController {
         if (arrangementCanvas != null) arrangementCanvas.setPlayheadBeat(position);
     }
 
-    private void updatePlayheadFromTransport() {
-        double beat = project.getTransport().getPositionInBeats();
+    /**
+     * Story 293 — the per-frame arrangement-overlay tick (renamed from the deleted
+     * {@code updatePlayheadFromTransport()}). The playhead position is read from the
+     * single source of truth ({@link TransportVM#getPlayhead()}, fed once per frame by
+     * the §4.5 dispatcher drain). The loop overlay and ruler grid are refreshed
+     * alongside it because the ruler's snap/grid display has no discrete change trigger
+     * today (it was repainted every frame); making that event-driven is a follow-on.
+     */
+    private void tickArrangementOverlays() {
+        double beat = transportVM != null
+                ? transportVM.getPlayhead()
+                : project.getTransport().getPositionInBeats();
         if (timelineRuler != null) timelineRuler.setPlayheadPositionBeats(beat);
         if (arrangementCanvas != null) arrangementCanvas.setPlayheadBeat(beat);
-        syncLoopRegionToCanvas();
+        applyLoopAndRulerGrid();
     }
 
-    private void syncLoopRegionToCanvas() {
+    /**
+     * Story 293 — paints the canvas loop overlay and the ruler snap/grid (renamed from
+     * the deleted {@code syncLoopRegionToCanvas()}). Called on the per-frame tick, on a
+     * canvas rebuild, and on a loop toggle.
+     */
+    private void applyLoopAndRulerGrid() {
         Transport transport = project.getTransport();
         if (arrangementCanvas != null) {
             arrangementCanvas.setLoopRegion(transport.isLoopEnabled(), transport.getLoopStartInBeats(), transport.getLoopEndInBeats());
@@ -3786,7 +3926,13 @@ public final class MainController {
         }
     }
 
-    private void syncSelectionToCanvas() {
+    /**
+     * Story 293 — paints the canvas time-range selection (renamed from the deleted
+     * {@code syncSelectionToCanvas()}). The range lives on {@code SelectionModel};
+     * {@code SelectionVM} carries only the track/clip/device selection, so there is no
+     * VM fact to bind — it stays an imperative paint invoked from the selection paths.
+     */
+    private void paintCanvasSelection() {
         if (arrangementCanvas != null) {
             arrangementCanvas.setSelectionRange(selectionModel.hasSelection(), selectionModel.getStartBeat(), selectionModel.getEndBeat());
         }

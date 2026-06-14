@@ -157,8 +157,30 @@ public final class AudioSettingsDialog extends DawgDialog<Void> {
     /** Optional notification sink (set by callers; defaults to no-op). */
     private NotificationListener notificationListener = _ -> { };
 
-    /** Guards combo-box value changes triggered by refresh, not user edits. */
-    private boolean suppressChangeEvents;
+    // ── Single-writer reactive listeners (story 293) ─────────────────────────
+    // Replaces the old `suppressChangeEvents` boolean. The capability-querying
+    // listeners are stored here and physically *detached* from their controls
+    // while a population method writes combo items/values, then re-attached —
+    // so a programmatic repopulation never reaches them (the §4.4 single-writer
+    // discipline) instead of reaching them and being ignored. An echo-guard
+    // does not apply here because a backend switch repopulates with genuinely
+    // different values, so listener lifecycle management is the faithful fix.
+    private ChangeListener<Object> latencyRecalcListener;
+    private ChangeListener<String> backendChangeListener;
+    private ChangeListener<String> outputDeviceChangeListener;
+    private ChangeListener<Boolean> wasapiExclusiveListener;
+    private ChangeListener<ClockSource> clockSourceChangeListener;
+
+    /**
+     * Re-entrancy depth for {@link #detachReactiveListeners()} /
+     * {@link #attachReactiveListeners()}. Population methods nest (e.g.
+     * {@code initializeFromModelAndController} calls {@code refreshDevicesForBackend}
+     * which … ), so the listeners must be removed exactly once at the outermost
+     * entry and re-added exactly once when it unwinds — never duplicated, never
+     * re-attached mid-population. This is listener-lifecycle bookkeeping, not a
+     * feedback-suppression flag.
+     */
+    private int reactiveListenerDetachDepth;
 
     /**
      * Creates a new audio settings dialog.
@@ -333,8 +355,13 @@ public final class AudioSettingsDialog extends DawgDialog<Void> {
         // applied by the DawgDialog super-constructor; tabs preserved.
         sized(DawgDialog.Size.MEDIUM);
 
-        initializeFromModelAndController();
+        // story 293: wire the reactive listeners *first* so the listener
+        // fields exist before initializeFromModelAndController() brackets its
+        // programmatic population with detach/attach. The bracket keeps the
+        // now-attached listeners from firing during the initial population, so
+        // post-construction state is identical to the old flag-guarded order.
         wireListeners();
+        initializeFromModelAndController();
 
         cpuPollTimer = new Timeline(
                 new KeyFrame(Duration.seconds(0.5), _ -> refreshCpuLoad()));
@@ -450,7 +477,7 @@ public final class AudioSettingsDialog extends DawgDialog<Void> {
     // ── Initialization ───────────────────────────────────────────────────────
 
     private void initializeFromModelAndController() {
-        suppressChangeEvents = true;
+        detachReactiveListeners();
         try {
             List<String> backends = controller != null
                     ? controller.getAvailableBackendNames()
@@ -512,21 +539,21 @@ public final class AudioSettingsDialog extends DawgDialog<Void> {
             refreshLatencyLabels();
             refreshCpuLoad();
         } finally {
-            suppressChangeEvents = false;
+            attachReactiveListeners();
         }
     }
 
     private void wireListeners() {
-        ChangeListener<Object> recalc = (_, _, _) -> {
-            if (!suppressChangeEvents) {
-                refreshLatencyLabels();
-            }
-        };
-        sampleRateCombo.valueProperty().addListener(recalc);
-        bufferSizeCombo.valueProperty().addListener(recalc);
+        // story 293: the capability-querying listeners are stored in fields so
+        // population methods can detach them around programmatic writes. They no
+        // longer test a suppress flag — while a refresh writes combo state they
+        // are simply not registered (single writer, §4.4).
+        latencyRecalcListener = (_, _, _) -> refreshLatencyLabels();
+        sampleRateCombo.valueProperty().addListener(latencyRecalcListener);
+        bufferSizeCombo.valueProperty().addListener(latencyRecalcListener);
 
-        backendCombo.valueProperty().addListener((_, _, newVal) -> {
-            if (suppressChangeEvents || newVal == null) {
+        backendChangeListener = (_, _, newVal) -> {
+            if (newVal == null) {
                 return;
             }
             refreshWasapiModeVisibility(newVal);
@@ -534,30 +561,29 @@ public final class AudioSettingsDialog extends DawgDialog<Void> {
             refreshDeviceCapabilities(currentBufferSizeOrDefault(), currentSampleRateOrDefault());
             refreshControlPanelButton();
             refreshLatencyLabels();
-        });
+        };
+        backendCombo.valueProperty().addListener(backendChangeListener);
 
-        outputDeviceCombo.valueProperty().addListener((_, _, newVal) -> {
-            if (suppressChangeEvents || newVal == null) {
+        outputDeviceChangeListener = (_, _, newVal) -> {
+            if (newVal == null) {
                 return;
             }
             refreshDeviceCapabilities(currentBufferSizeOrDefault(), currentSampleRateOrDefault());
-        });
+        };
+        outputDeviceCombo.valueProperty().addListener(outputDeviceChangeListener);
 
-        wasapiExclusiveCheck.selectedProperty().addListener((_, _, _) -> {
-            if (suppressChangeEvents) {
-                return;
-            }
-            // Toggling shared/exclusive flips the WASAPI backend's
-            // reported constraint set; story 213 requires the lists
-            // refresh on this event.
-            refreshDeviceCapabilities(currentBufferSizeOrDefault(), currentSampleRateOrDefault());
-        });
+        wasapiExclusiveListener = (_, _, _) ->
+                // Toggling shared/exclusive flips the WASAPI backend's
+                // reported constraint set; story 213 requires the lists
+                // refresh on this event.
+                refreshDeviceCapabilities(currentBufferSizeOrDefault(), currentSampleRateOrDefault());
+        wasapiExclusiveCheck.selectedProperty().addListener(wasapiExclusiveListener);
 
         testToneButton.setOnAction(_ -> onTestTone());
         openControlPanelButton.setOnAction(_ -> onOpenControlPanel());
 
-        clockSourceCombo.valueProperty().addListener((_, _, newVal) -> {
-            if (suppressChangeEvents || newVal == null || controller == null) {
+        clockSourceChangeListener = (_, _, newVal) -> {
+            if (newVal == null || controller == null) {
                 return;
             }
             // Forward the selection to the backend, then re-query buffer
@@ -575,7 +601,42 @@ public final class AudioSettingsDialog extends DawgDialog<Void> {
                 return;
             }
             refreshDeviceCapabilities(currentBufferSizeOrDefault(), currentSampleRateOrDefault());
-        });
+        };
+        clockSourceCombo.valueProperty().addListener(clockSourceChangeListener);
+    }
+
+    /**
+     * Detaches the capability-querying listeners from their controls so a
+     * programmatic repopulation (story 293 single-writer discipline) does not
+     * re-enter them. Reference-counted: only the outermost call actually
+     * removes the listeners, so nested population methods are safe and never
+     * register duplicates. Paired with {@link #attachReactiveListeners()}.
+     */
+    private void detachReactiveListeners() {
+        if (reactiveListenerDetachDepth++ == 0) {
+            sampleRateCombo.valueProperty().removeListener(latencyRecalcListener);
+            bufferSizeCombo.valueProperty().removeListener(latencyRecalcListener);
+            backendCombo.valueProperty().removeListener(backendChangeListener);
+            outputDeviceCombo.valueProperty().removeListener(outputDeviceChangeListener);
+            wasapiExclusiveCheck.selectedProperty().removeListener(wasapiExclusiveListener);
+            clockSourceCombo.valueProperty().removeListener(clockSourceChangeListener);
+        }
+    }
+
+    /**
+     * Re-attaches the listeners detached by {@link #detachReactiveListeners()}.
+     * Reference-counted so they are re-registered exactly once, when the
+     * outermost population scope unwinds — never mid-population.
+     */
+    private void attachReactiveListeners() {
+        if (--reactiveListenerDetachDepth == 0) {
+            sampleRateCombo.valueProperty().addListener(latencyRecalcListener);
+            bufferSizeCombo.valueProperty().addListener(latencyRecalcListener);
+            backendCombo.valueProperty().addListener(backendChangeListener);
+            outputDeviceCombo.valueProperty().addListener(outputDeviceChangeListener);
+            wasapiExclusiveCheck.selectedProperty().addListener(wasapiExclusiveListener);
+            clockSourceCombo.valueProperty().addListener(clockSourceChangeListener);
+        }
     }
 
     private int currentBufferSizeOrDefault() {
@@ -614,14 +675,14 @@ public final class AudioSettingsDialog extends DawgDialog<Void> {
             }
         }
 
-        suppressChangeEvents = true;
+        detachReactiveListeners();
         try {
             inputDeviceCombo.getItems().setAll(inputs);
             outputDeviceCombo.getItems().setAll(outputs);
             inputDeviceCombo.setValue(selectOrFirst(inputs, model.getAudioInputDevice()));
             outputDeviceCombo.setValue(selectOrFirst(outputs, model.getAudioOutputDevice()));
         } finally {
-            suppressChangeEvents = false;
+            attachReactiveListeners();
         }
     }
 
@@ -706,7 +767,7 @@ public final class AudioSettingsDialog extends DawgDialog<Void> {
                 ? controller.clockSources(effectiveBackendName(),
                         unwrapDefault(outputDeviceCombo.getValue()))
                 : List.of();
-        suppressChangeEvents = true;
+        detachReactiveListeners();
         try {
             clockSourceCombo.getItems().setAll(sources);
             ClockSource current = sources.stream()
@@ -721,13 +782,13 @@ public final class AudioSettingsDialog extends DawgDialog<Void> {
                             + "Internal, Word Clock, S/PDIF, ADAT, or AES."
                     : "This backend does not expose clock-source selection."));
         } finally {
-            suppressChangeEvents = false;
+            attachReactiveListeners();
         }
     }
 
     private void rebuildBufferSizeMenu(int desiredFrames) {
         List<Integer> options = currentBufferRange.expandedSizes();
-        suppressChangeEvents = true;
+        detachReactiveListeners();
         try {
             bufferSizeCombo.getItems().setAll(options);
             int selected;
@@ -744,7 +805,7 @@ public final class AudioSettingsDialog extends DawgDialog<Void> {
             }
             bufferSizeCombo.setValue(selected);
         } finally {
-            suppressChangeEvents = false;
+            attachReactiveListeners();
         }
     }
 
@@ -757,7 +818,7 @@ public final class AudioSettingsDialog extends DawgDialog<Void> {
         union.addAll(currentSupportedRates);
         List<Integer> menu = new ArrayList<>(union);
 
-        suppressChangeEvents = true;
+        detachReactiveListeners();
         try {
             sampleRateCombo.getItems().setAll(menu);
             int selected;
@@ -774,7 +835,7 @@ public final class AudioSettingsDialog extends DawgDialog<Void> {
             }
             sampleRateCombo.setValue(selected);
         } finally {
-            suppressChangeEvents = false;
+            attachReactiveListeners();
         }
     }
 
@@ -828,12 +889,12 @@ public final class AudioSettingsDialog extends DawgDialog<Void> {
         // Derive checkbox state deterministically from the backend name:
         // ticked when the name carries the " (Exclusive)" marker, unticked
         // otherwise (including when switching away from WASAPI entirely).
-        suppressChangeEvents = true;
+        detachReactiveListeners();
         try {
             wasapiExclusiveCheck.setSelected(
                     show && backendName != null && backendName.contains("Exclusive"));
         } finally {
-            suppressChangeEvents = false;
+            attachReactiveListeners();
         }
     }
 
@@ -1168,11 +1229,11 @@ public final class AudioSettingsDialog extends DawgDialog<Void> {
                 // so the user sees the actual value the driver and
                 // model agree on, not the rejected choice.
                 runOnFx(() -> {
-                    suppressChangeEvents = true;
+                    detachReactiveListeners();
                     try {
                         sampleRateCombo.setValue((int) model.getSampleRate());
                     } finally {
-                        suppressChangeEvents = false;
+                        attachReactiveListeners();
                     }
                 });
                 return;

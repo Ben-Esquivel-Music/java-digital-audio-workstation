@@ -46,6 +46,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -68,25 +70,6 @@ final class TrackStripController {
     private static final DataFormat TRACK_ID_FORMAT =
             new DataFormat("application/x-daw-track-id");
 
-    /**
-     * Callback interface implemented by the host controller to provide
-     * state access and coordination methods that remain in the top-level
-     * controller.
-     */
-    interface Host {
-        void updateArrangementPlaceholder();
-        void updateUndoRedoState();
-        void undoLastAction();
-        void zoomIn();
-        void zoomOut();
-        void toggleSnap();
-        void skipToStart();
-        void markProjectDirty();
-        boolean isSnapEnabled();
-        ZoomLevel currentZoomLevel();
-        EditorView editorView();
-    }
-
     private final DawProject project;
     private final UndoManager undoManager;
     private final AudioEngine audioEngine;
@@ -97,7 +80,29 @@ final class TrackStripController {
     private final BorderPane rootPane;
     private final ClipboardManager clipboardManager;
     private final SelectionModel selectionModel;
-    private final Host host;
+
+    /**
+     * Story 293 — direct collaborators replacing the retired {@code Host}
+     * callback-up interface (CONTROL_SYNCHRONIZATION_DESIGN_BOOK §9). This
+     * controller is reconstructed on every project load
+     * ({@code MainController.handleProjectRebuild}), so the project / undo
+     * manager are passed by value; the action runnables and live-state
+     * suppliers below are direct functional seams. {@code syncMenuState} was
+     * {@code updateUndoRedoState}; {@code undoLastAction} is wired as the undo
+     * callback on "with-undo" notifications. The former
+     * {@code updateArrangementPlaceholder()} is dropped (the placeholder now
+     * binds {@code ProjectVM.tracks}).
+     */
+    private final Runnable syncMenuState;
+    private final Runnable undoLastAction;
+    private final Runnable zoomIn;
+    private final Runnable zoomOut;
+    private final Runnable toggleSnap;
+    private final Runnable skipToStart;
+    private final Runnable markDirty;
+    private final BooleanSupplier snapEnabled;
+    private final Supplier<ZoomLevel> currentZoomLevel;
+    private final Supplier<EditorView> editorView;
     private ArrangementCanvas arrangementCanvas;
     // Story 137: when set, armed audio tracks grow a miniature clip
     // indicator in their arrangement-view header that mirrors the mixer's
@@ -143,7 +148,16 @@ final class TrackStripController {
                          BorderPane rootPane,
                          ClipboardManager clipboardManager,
                          SelectionModel selectionModel,
-                         Host host) {
+                         Runnable syncMenuState,
+                         Runnable undoLastAction,
+                         Runnable zoomIn,
+                         Runnable zoomOut,
+                         Runnable toggleSnap,
+                         Runnable skipToStart,
+                         Runnable markDirty,
+                         BooleanSupplier snapEnabled,
+                         Supplier<ZoomLevel> currentZoomLevel,
+                         Supplier<EditorView> editorView) {
         this.project = Objects.requireNonNull(project, "project must not be null");
         this.undoManager = Objects.requireNonNull(undoManager, "undoManager must not be null");
         this.audioEngine = Objects.requireNonNull(audioEngine, "audioEngine must not be null");
@@ -154,7 +168,16 @@ final class TrackStripController {
         this.rootPane = Objects.requireNonNull(rootPane, "rootPane must not be null");
         this.clipboardManager = Objects.requireNonNull(clipboardManager, "clipboardManager must not be null");
         this.selectionModel = Objects.requireNonNull(selectionModel, "selectionModel must not be null");
-        this.host = Objects.requireNonNull(host, "host must not be null");
+        this.syncMenuState = Objects.requireNonNull(syncMenuState, "syncMenuState must not be null");
+        this.undoLastAction = Objects.requireNonNull(undoLastAction, "undoLastAction must not be null");
+        this.zoomIn = Objects.requireNonNull(zoomIn, "zoomIn must not be null");
+        this.zoomOut = Objects.requireNonNull(zoomOut, "zoomOut must not be null");
+        this.toggleSnap = Objects.requireNonNull(toggleSnap, "toggleSnap must not be null");
+        this.skipToStart = Objects.requireNonNull(skipToStart, "skipToStart must not be null");
+        this.markDirty = Objects.requireNonNull(markDirty, "markDirty must not be null");
+        this.snapEnabled = Objects.requireNonNull(snapEnabled, "snapEnabled must not be null");
+        this.currentZoomLevel = Objects.requireNonNull(currentZoomLevel, "currentZoomLevel must not be null");
+        this.editorView = Objects.requireNonNull(editorView, "editorView must not be null");
     }
 
     /**
@@ -320,7 +343,7 @@ final class TrackStripController {
                         statusBarLabel.setText("Input changed: " + track.getName()
                                 + " ← " + device.name());
                         statusBarLabel.setGraphic(IconNode.of(DawIcon.INPUT, 12));
-                        host.markProjectDirty();
+                        markDirty.run();
                     });
                 }
             });
@@ -333,7 +356,7 @@ final class TrackStripController {
                         statusBarLabel.setText("MIDI input changed: " + track.getName()
                                 + " ← " + midiInfo.getName());
                         statusBarLabel.setGraphic(IconNode.of(DawIcon.MIDI, 12));
-                        host.markProjectDirty();
+                        markDirty.run();
                     });
                 }
             });
@@ -501,7 +524,7 @@ final class TrackStripController {
                     EventBusPublisher.publish(new MixerEvent.ChannelRemoved(
                             channelIdFor(track), Instant.now()));
                     trackListPanel.getChildren().remove(trackItem);
-                    host.updateArrangementPlaceholder();
+                    // story 293: arrangementPlaceholder binds ProjectVM.tracks
                     mixerView.refresh();
                 }
                 @Override public void undo() {
@@ -519,16 +542,16 @@ final class TrackStripController {
                     } else {
                         trackListPanel.getChildren().add(trackItem);
                     }
-                    host.updateArrangementPlaceholder();
+                    // story 293: arrangementPlaceholder binds ProjectVM.tracks
                     mixerView.refresh();
                 }
             });
-            host.updateUndoRedoState();
-            host.markProjectDirty();
+            syncMenuState.run();
+            markDirty.run();
             statusBarLabel.setText("Removed track: " + track.getName());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.CUT, 12));
             notificationBar.showWithUndo(NotificationLevel.SUCCESS,
-                    "Removed track: " + track.getName(), host::undoLastAction);
+                    "Removed track: " + track.getName(), undoLastAction);
             LOG.fine(() -> "Removed track: " + track.getName());
         });
 
@@ -729,7 +752,7 @@ final class TrackStripController {
                     int modelIndex = project.getTracks().indexOf(copy);
                     // trackListPanel child 0 is the "TRACKS" header, so offset by 1
                     copyTrackItem = addTrackToUI(copy, modelIndex + 1);
-                    host.updateArrangementPlaceholder();
+                    // story 293: arrangementPlaceholder binds ProjectVM.tracks
                     mixerView.refresh();
                 }
                 @Override public void undo() {
@@ -737,16 +760,16 @@ final class TrackStripController {
                     EventBusPublisher.publish(new MixerEvent.ChannelRemoved(
                             channelIdFor(copy), Instant.now()));
                     trackListPanel.getChildren().remove(copyTrackItem);
-                    host.updateArrangementPlaceholder();
+                    // story 293: arrangementPlaceholder binds ProjectVM.tracks
                     mixerView.refresh();
                 }
             });
-            host.updateUndoRedoState();
+            syncMenuState.run();
             statusBarLabel.setText("Copied: " + track.getName());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.COPY, 12));
             notificationBar.showWithUndo(NotificationLevel.SUCCESS,
-                    "Copied: " + track.getName(), host::undoLastAction);
-            host.markProjectDirty();
+                    "Copied: " + track.getName(), undoLastAction);
+            markDirty.run();
         });
 
         MenuItem pasteItem = new MenuItem("Paste Over");
@@ -777,12 +800,12 @@ final class TrackStripController {
                     result.undo(track);
                 }
             });
-            host.updateUndoRedoState();
+            syncMenuState.run();
             statusBarLabel.setText("Pasted over: " + track.getName() + " at beat " + String.format("%.1f", playhead));
             statusBarLabel.setGraphic(IconNode.of(DawIcon.PASTE, 12));
             notificationBar.showWithUndo(NotificationLevel.SUCCESS,
-                    "Pasted over: " + track.getName(), host::undoLastAction);
-            host.markProjectDirty();
+                    "Pasted over: " + track.getName(), undoLastAction);
+            markDirty.run();
         });
 
         MenuItem splitItem = new MenuItem("Split at Playhead");
@@ -836,13 +859,13 @@ final class TrackStripController {
                     newClips.clear();
                 }
             });
-            host.updateUndoRedoState();
+            syncMenuState.run();
             statusBarLabel.setText("Split: " + track.getName() + " at beat " + String.format("%.1f", playhead));
             statusBarLabel.setGraphic(IconNode.of(DawIcon.SPLIT, 12));
             notificationBar.showWithUndo(NotificationLevel.SUCCESS,
                     "Split: " + track.getName() + " at beat " + String.format("%.1f", playhead),
-                    host::undoLastAction);
-            host.markProjectDirty();
+                    undoLastAction);
+            markDirty.run();
         });
 
         MenuItem trimItem = new MenuItem("Trim to Selection");
@@ -879,12 +902,12 @@ final class TrackStripController {
                     if (result != null) result.undo();
                 }
             });
-            host.updateUndoRedoState();
+            syncMenuState.run();
             statusBarLabel.setText("Trimmed to selection: " + track.getName());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.TRIM, 12));
             notificationBar.showWithUndo(NotificationLevel.SUCCESS,
-                    "Trimmed to selection: " + track.getName(), host::undoLastAction);
-            host.markProjectDirty();
+                    "Trimmed to selection: " + track.getName(), undoLastAction);
+            markDirty.run();
         });
 
         MenuItem cropItem = new MenuItem("Crop");
@@ -913,12 +936,12 @@ final class TrackStripController {
                     result.undo(track);
                 }
             });
-            host.updateUndoRedoState();
+            syncMenuState.run();
             statusBarLabel.setText("Cropped: " + track.getName());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.CROP, 12));
             notificationBar.showWithUndo(NotificationLevel.SUCCESS,
-                    "Cropped: " + track.getName(), host::undoLastAction);
-            host.markProjectDirty();
+                    "Cropped: " + track.getName(), undoLastAction);
+            markDirty.run();
         });
 
         MenuItem moveItem = new MenuItem("Move");
@@ -957,12 +980,12 @@ final class TrackStripController {
                     }
                 }
             });
-            host.updateUndoRedoState();
+            syncMenuState.run();
             statusBarLabel.setText("Reversed: " + track.getName());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.REVERSE, 12));
             notificationBar.showWithUndo(NotificationLevel.SUCCESS,
-                    "Reversed: " + track.getName(), host::undoLastAction);
-            host.markProjectDirty();
+                    "Reversed: " + track.getName(), undoLastAction);
+            markDirty.run();
         });
 
         MenuItem selectAllItem = new MenuItem("Select All");
@@ -1008,12 +1031,12 @@ final class TrackStripController {
                     }
                 }
             });
-            host.updateUndoRedoState();
+            syncMenuState.run();
             statusBarLabel.setText("Fade in applied: " + track.getName());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.FADE_IN, 12));
             notificationBar.showWithUndo(NotificationLevel.SUCCESS,
-                    "Fade in applied: " + track.getName(), host::undoLastAction);
-            host.markProjectDirty();
+                    "Fade in applied: " + track.getName(), undoLastAction);
+            markDirty.run();
         });
 
         MenuItem fadeOutItem = new MenuItem("Fade Out");
@@ -1052,16 +1075,16 @@ final class TrackStripController {
                     }
                 }
             });
-            host.updateUndoRedoState();
+            syncMenuState.run();
             statusBarLabel.setText("Fade out applied: " + track.getName());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.FADE_OUT, 12));
             notificationBar.showWithUndo(NotificationLevel.SUCCESS,
-                    "Fade out applied: " + track.getName(), host::undoLastAction);
-            host.markProjectDirty();
+                    "Fade out applied: " + track.getName(), undoLastAction);
+            markDirty.run();
         });
 
         // ── Zoom controls (Editing category) ────────────────────────────────
-        ZoomLevel currentZoom = host.currentZoomLevel();
+        ZoomLevel currentZoom = currentZoomLevel.get();
 
         MenuItem zoomInItem = new MenuItem("Zoom In");
         zoomInItem.setGraphic(IconNode.of(DawIcon.ZOOM_IN, 14));
@@ -1071,8 +1094,8 @@ final class TrackStripController {
             Tooltip.install(zoomInItem.getGraphic(), new Tooltip("Already at maximum zoom level"));
         }
         zoomInItem.setOnAction(_ -> {
-            host.zoomIn();
-            statusBarLabel.setText("Zoom in: " + host.currentZoomLevel().toPercentageString());
+            zoomIn.run();
+            statusBarLabel.setText("Zoom in: " + currentZoomLevel.get().toPercentageString());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.ZOOM_IN, 12));
         });
 
@@ -1084,18 +1107,18 @@ final class TrackStripController {
             Tooltip.install(zoomOutItem.getGraphic(), new Tooltip("Already at minimum zoom level"));
         }
         zoomOutItem.setOnAction(_ -> {
-            host.zoomOut();
-            statusBarLabel.setText("Zoom out: " + host.currentZoomLevel().toPercentageString());
+            zoomOut.run();
+            statusBarLabel.setText("Zoom out: " + currentZoomLevel.get().toPercentageString());
             statusBarLabel.setGraphic(IconNode.of(DawIcon.ZOOM_OUT, 12));
         });
 
         // ── Snap toggle (Editing category) ──────────────────────────────────
-        MenuItem snapItem = new MenuItem(host.isSnapEnabled() ? "Snap: ON" : "Snap: OFF");
+        MenuItem snapItem = new MenuItem(snapEnabled.getAsBoolean() ? "Snap: ON" : "Snap: OFF");
         snapItem.setGraphic(IconNode.of(DawIcon.SNAP, 14));
         snapItem.setOnAction(_ -> {
-            host.toggleSnap();
-            snapItem.setText(host.isSnapEnabled() ? "Snap: ON" : "Snap: OFF");
-            statusBarLabel.setText(host.isSnapEnabled() ? "Snap to grid enabled" : "Snap to grid disabled");
+            toggleSnap.run();
+            snapItem.setText(snapEnabled.getAsBoolean() ? "Snap: ON" : "Snap: OFF");
+            statusBarLabel.setText(snapEnabled.getAsBoolean() ? "Snap to grid enabled" : "Snap to grid disabled");
             statusBarLabel.setGraphic(IconNode.of(DawIcon.SNAP, 12));
         });
 
@@ -1151,7 +1174,7 @@ final class TrackStripController {
 
         MenuItem homeItem = new MenuItem("Go to Start");
         homeItem.setGraphic(IconNode.of(DawIcon.HOME, 14));
-        homeItem.setOnAction(_ -> { host.skipToStart();
+        homeItem.setOnAction(_ -> { skipToStart.run();
             statusBarLabel.setGraphic(IconNode.of(DawIcon.HOME, 12)); });
 
         MenuItem pipItem = new MenuItem("Picture-in-Picture");
@@ -1276,7 +1299,7 @@ final class TrackStripController {
             Tooltip.install(exportMidi.getGraphic(), new Tooltip("Track is not a MIDI track"));
         }
         exportMidi.setOnAction(_ -> {
-            EditorView ev = host.editorView();
+            EditorView ev = editorView.get();
             List<MidiNote> notes = ev != null ? ev.getNotes() : List.of();
             if (notes.isEmpty()) {
                 notificationBar.show(NotificationLevel.WARNING,
@@ -1441,13 +1464,13 @@ final class TrackStripController {
             fadeOutItem.setDisable(noAudio);
             fadeOutItem.setStyle(noAudio ? "-fx-opacity: 0.5;" : "");
 
-            ZoomLevel zoom = host.currentZoomLevel();
+            ZoomLevel zoom = currentZoomLevel.get();
             zoomInItem.setDisable(!zoom.canZoomIn());
             zoomInItem.setStyle(!zoom.canZoomIn() ? "-fx-opacity: 0.5;" : "");
             zoomOutItem.setDisable(!zoom.canZoomOut());
             zoomOutItem.setStyle(!zoom.canZoomOut() ? "-fx-opacity: 0.5;" : "");
 
-            snapItem.setText(host.isSnapEnabled() ? "Snap: ON" : "Snap: OFF");
+            snapItem.setText(snapEnabled.getAsBoolean() ? "Snap: ON" : "Snap: OFF");
 
             exportWav.setDisable(noClips);
             exportWav.setStyle(noClips ? "-fx-opacity: 0.5;" : "");
@@ -1562,8 +1585,8 @@ final class TrackStripController {
                             }
                         });
                         animateDrop(trackListPanel.getChildren().get(finalTo + 1));
-                        host.updateUndoRedoState();
-                        host.markProjectDirty();
+                        syncMenuState.run();
+                        markDirty.run();
                         statusBarLabel.setText("Moved track: " + sourceTrack.getName());
                         statusBarLabel.setGraphic(IconNode.of(DawIcon.MOVE, 12));
                         success = true;
@@ -1662,8 +1685,8 @@ final class TrackStripController {
                         nameLabel.setText(oldName);
                     }
                 });
-                host.updateUndoRedoState();
-                host.markProjectDirty();
+                syncMenuState.run();
+                markDirty.run();
                 statusBarLabel.setText("Renamed track: " + oldName + " → " + newName);
                 statusBarLabel.setGraphic(IconNode.of(DawIcon.BOOKMARK, 12));
             }

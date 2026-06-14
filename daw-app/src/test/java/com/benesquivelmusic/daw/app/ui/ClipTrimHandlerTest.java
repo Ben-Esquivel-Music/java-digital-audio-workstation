@@ -41,18 +41,25 @@ class ClipTrimHandlerTest {
     }
 
     private ClipTrimHandler createHandler() {
-        return new ClipTrimHandler(new ClipTrimHandler.Host() {
-            @Override public double pixelsPerBeat() { return pixelsPerBeat; }
-            @Override public double scrollXBeats() { return scrollXBeats; }
-            @Override public double scrollYPixels() { return scrollYPixels; }
-            @Override public double trackHeight() { return trackHeight; }
-            @Override public List<Track> tracks() { return tracks; }
-            @Override public UndoManager undoManager() { return undoManager; }
-            @Override public boolean snapEnabled() { return snapEnabled; }
-            @Override public GridResolution gridResolution() { return gridResolution; }
-            @Override public int beatsPerBar() { return beatsPerBar; }
-            @Override public void refreshCanvas() { refreshCount++; }
-        });
+        // Story 293 — the handler now takes a Deps record of direct functional
+        // dependencies (the former Host is retired). Suppliers read the mutable
+        // test fields live; trackIndexAtY is an inline uniform-spacing function
+        // (the production canvas passes its lane-aware equivalent).
+        return new ClipTrimHandler(new ClipTrimHandler.Deps(
+                () -> pixelsPerBeat,
+                () -> scrollXBeats,
+                () -> scrollYPixels,
+                () -> trackHeight,
+                () -> tracks,
+                () -> undoManager,
+                () -> snapEnabled,
+                () -> gridResolution,
+                () -> beatsPerBar,
+                () -> refreshCount++,
+                y -> {
+                    int index = (int) Math.floor((y + scrollYPixels) / trackHeight);
+                    return (index < 0 || index >= tracks.size()) ? -1 : index;
+                }));
     }
 
     // ── Edge detection ───────────────────────────────────────────────────────

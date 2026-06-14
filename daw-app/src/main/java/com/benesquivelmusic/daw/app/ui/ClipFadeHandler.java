@@ -6,7 +6,14 @@ import com.benesquivelmusic.daw.core.audio.FadeCurveType;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 
+import java.util.List;
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
+import java.util.function.DoubleSupplier;
+import java.util.function.DoubleToIntFunction;
+import java.util.function.IntSupplier;
+import java.util.function.IntToDoubleFunction;
+import java.util.function.Supplier;
 import java.util.logging.Logger;
 
 /**
@@ -38,49 +45,42 @@ final class ClipFadeHandler {
     }
 
     /**
-     * Callback interface for obtaining arrangement state and triggering
-     * canvas updates.
+     * Story 293 — direct collaborators for arrangement state and canvas
+     * updates, replacing the retired {@code Host} callback-up interface
+     * (CONTROL_SYNCHRONIZATION_DESIGN_BOOK §9). A plain data carrier of
+     * functional dependencies bound by the owning
+     * {@link ClipInteractionController} to its state and the
+     * {@link ArrangementCanvas}; not a cross-surface cascade seam.
+     *
+     * @param pixelsPerBeat  current horizontal zoom in pixels per beat
+     * @param scrollXBeats   horizontal scroll offset in beats
+     * @param scrollYPixels  vertical scroll offset in pixels
+     * @param trackHeight    uniform track-lane height in pixels
+     * @param tracks         the live track list
+     * @param undoManager    the live undo manager
+     * @param snapEnabled    whether snap-to-grid is active
+     * @param gridResolution the active grid resolution
+     * @param beatsPerBar    beats per bar
+     * @param refreshCanvas  requests a canvas repaint
+     * @param trackIndexAtY  resolves the track index at a canvas Y pixel
+     * @param laneYForTrack  resolves the Y pixel offset for a track index
+     *                       (automation-lane aware on the production path)
      */
-    interface Host {
-        double pixelsPerBeat();
-        double scrollXBeats();
-        double scrollYPixels();
-        double trackHeight();
-        java.util.List<Track> tracks();
-        UndoManager undoManager();
-        boolean snapEnabled();
-        GridResolution gridResolution();
-        int beatsPerBar();
-        void refreshCanvas();
-
-        /**
-         * Resolves the track index at the given Y pixel.
-         */
-        default int trackIndexAtY(double y) {
-            double adjustedY = y + scrollYPixels();
-            int index = (int) Math.floor(adjustedY / trackHeight());
-            if (index < 0 || index >= tracks().size()) {
-                return -1;
-            }
-            return index;
-        }
-
-        /**
-         * Returns the Y pixel offset for the given track index, accounting
-         * for expanded automation lanes. The default implementation assumes
-         * uniform {@code trackHeight()} spacing; hosts that support
-         * automation lanes should override this.
-         */
-        default double laneYForTrack(int trackIndex) {
-            double y = 0;
-            for (int i = 0; i < trackIndex; i++) {
-                y += trackHeight();
-            }
-            return y - scrollYPixels();
-        }
+    record Deps(DoubleSupplier pixelsPerBeat,
+                DoubleSupplier scrollXBeats,
+                DoubleSupplier scrollYPixels,
+                DoubleSupplier trackHeight,
+                Supplier<List<Track>> tracks,
+                Supplier<UndoManager> undoManager,
+                BooleanSupplier snapEnabled,
+                Supplier<GridResolution> gridResolution,
+                IntSupplier beatsPerBar,
+                Runnable refreshCanvas,
+                DoubleToIntFunction trackIndexAtY,
+                IntToDoubleFunction laneYForTrack) {
     }
 
-    private final Host host;
+    private final Deps deps;
 
     // ── Drag state ───────────────────────────────────────────────────────────
 
@@ -91,8 +91,8 @@ final class ClipFadeHandler {
     private FadeCurveType originalFadeInCurveType;
     private FadeCurveType originalFadeOutCurveType;
 
-    ClipFadeHandler(Host host) {
-        this.host = Objects.requireNonNull(host, "host must not be null");
+    ClipFadeHandler(Deps deps) {
+        this.deps = Objects.requireNonNull(deps, "deps must not be null");
     }
 
     /**
@@ -120,17 +120,17 @@ final class ClipFadeHandler {
         if (trackIndex < 0) {
             return null;
         }
-        Track track = host.tracks().get(trackIndex);
+        Track track = deps.tracks().get().get(trackIndex);
 
-        double laneY = host.laneYForTrack(trackIndex);
+        double laneY = deps.laneYForTrack().applyAsDouble(trackIndex);
         double clipTopY = laneY + CLIP_INSET;
 
         for (AudioClip clip : track.getClips()) {
-            double clipX = (clip.getStartBeat() - host.scrollXBeats()) * host.pixelsPerBeat();
-            double clipWidth = clip.getDurationBeats() * host.pixelsPerBeat();
+            double clipX = (clip.getStartBeat() - deps.scrollXBeats().getAsDouble()) * deps.pixelsPerBeat().getAsDouble();
+            double clipWidth = clip.getDurationBeats() * deps.pixelsPerBeat().getAsDouble();
 
             // Fade-in handle: top-left corner
-            double fadeInWidth = clip.getFadeInBeats() * host.pixelsPerBeat();
+            double fadeInWidth = clip.getFadeInBeats() * deps.pixelsPerBeat().getAsDouble();
             double handleX = clipX + fadeInWidth;
             if (x >= handleX - HANDLE_SIZE_PIXELS / 2.0
                     && x <= handleX + HANDLE_SIZE_PIXELS / 2.0
@@ -140,7 +140,7 @@ final class ClipFadeHandler {
             }
 
             // Fade-out handle: top-right corner
-            double fadeOutWidth = clip.getFadeOutBeats() * host.pixelsPerBeat();
+            double fadeOutWidth = clip.getFadeOutBeats() * deps.pixelsPerBeat().getAsDouble();
             double handleOutX = clipX + clipWidth - fadeOutWidth;
             if (x >= handleOutX - HANDLE_SIZE_PIXELS / 2.0
                     && x <= handleOutX + HANDLE_SIZE_PIXELS / 2.0
@@ -182,10 +182,8 @@ final class ClipFadeHandler {
         if (fadeClip == null) {
             return;
         }
-        double beat = beatAt(x);
-        if (host.snapEnabled()) {
-            beat = SnapQuantizer.quantize(beat, host.gridResolution(), host.beatsPerBar());
-        }
+        double beat = SnapQuantizer.snapIfEnabled(beatAt(x), deps.snapEnabled().getAsBoolean(),
+                deps.gridResolution().get(), deps.beatsPerBar().getAsInt());
         applyFade(beat);
     }
 
@@ -200,10 +198,8 @@ final class ClipFadeHandler {
             return;
         }
 
-        double beat = beatAt(x);
-        if (host.snapEnabled()) {
-            beat = SnapQuantizer.quantize(beat, host.gridResolution(), host.beatsPerBar());
-        }
+        double beat = SnapQuantizer.snapIfEnabled(beatAt(x), deps.snapEnabled().getAsBoolean(),
+                deps.gridResolution().get(), deps.beatsPerBar().getAsInt());
 
         // Compute the new fade values from the final mouse position
         double newFadeIn;
@@ -226,7 +222,7 @@ final class ClipFadeHandler {
         boolean fadeInChanged = Math.abs(newFadeIn - originalFadeInBeats) > 0.001;
         boolean fadeOutChanged = Math.abs(newFadeOut - originalFadeOutBeats) > 0.001;
         if (fadeInChanged || fadeOutChanged) {
-            host.undoManager().execute(new FadeClipAction(
+            deps.undoManager().get().execute(new FadeClipAction(
                     fadeClip, newFadeIn, newFadeOut,
                     fadeClip.getFadeInCurveType(), fadeClip.getFadeOutCurveType()));
             LOG.fine(() -> "Completed fade drag: " + fadeHandle + " on '" + fadeClip.getName()
@@ -234,7 +230,7 @@ final class ClipFadeHandler {
         }
 
         clearState();
-        host.refreshCanvas();
+        deps.refreshCanvas().run();
     }
 
     /**
@@ -248,7 +244,7 @@ final class ClipFadeHandler {
             fadeClip.setFadeInCurveType(originalFadeInCurveType);
             fadeClip.setFadeOutCurveType(originalFadeOutCurveType);
             clearState();
-            host.refreshCanvas();
+            deps.refreshCanvas().run();
         }
     }
 
@@ -333,11 +329,11 @@ final class ClipFadeHandler {
     }
 
     private int trackIndexAt(double y) {
-        return host.trackIndexAtY(y);
+        return deps.trackIndexAtY().applyAsInt(y);
     }
 
     private double beatAt(double x) {
-        return x / host.pixelsPerBeat() + host.scrollXBeats();
+        return x / deps.pixelsPerBeat().getAsDouble() + deps.scrollXBeats().getAsDouble();
     }
 
     private static String curveLabel(FadeCurveType curveType) {

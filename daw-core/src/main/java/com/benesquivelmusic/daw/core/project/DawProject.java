@@ -578,6 +578,10 @@ public final class DawProject {
             previousParent.removeChildTrack(track);
         }
         folder.addChildTrack(track);
+        // Announce the structural change like addTrack/removeTrack/moveTrack do,
+        // so reactive consumers (ProjectVM.tracks → the arrangement canvas) repaint
+        // for a folder re-nesting (story 293 review #4).
+        notifyChange(ChangeKind.TRACKS);
     }
 
     /**
@@ -594,6 +598,9 @@ public final class DawProject {
             throw new IllegalStateException("track is not in a folder");
         }
         parent.removeChildTrack(track);
+        // Announce the structural change so reactive consumers (ProjectVM.tracks →
+        // the arrangement canvas) repaint for the folder removal (story 293 review #4).
+        notifyChange(ChangeKind.TRACKS);
     }
 
     // ── Track group support ─────────────────────────────────────────────────
