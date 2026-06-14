@@ -10,6 +10,7 @@ import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
 import com.benesquivelmusic.daw.core.recording.TakeGroup;
 
 import java.util.*;
+import java.util.function.Consumer;
 
 /**
  * Represents a single track in the DAW project.
@@ -18,11 +19,75 @@ import java.util.*;
  * pan, mute, solo, and armed (record-ready) state. Audio clips recorded
  * or imported onto this track are managed via {@link #addClip(AudioClip)},
  * {@link #removeClip(AudioClip)}, and {@link #getClips()}.</p>
+ *
+ * <h2>Toolkit-neutral change notification</h2>
+ *
+ * <p>Per the Control Synchronization Design Book (§1.3, §2.5, §3.2) the track
+ * exposes a <em>toolkit-neutral</em> notification seam: observers register a
+ * {@link Consumer}&lt;{@link ChangeKind}&gt; via
+ * {@link #addChangeListener(Consumer)} and are invoked <strong>after</strong>
+ * each field mutation completes, so an observer that re-reads the track in its
+ * callback always sees the post-mutation value. The signal carries only a small
+ * {@link ChangeKind} tag describing <em>what</em> slice changed — never a
+ * state-bearing delta and, critically, never a {@code javafx.beans.*} type: the
+ * core stays JavaFX-free so the view-model adapter
+ * ({@code daw-app/.../ui/vm/TrackVM}) is the sole bridge to FX Properties
+ * (§9 rejection list). Notification is lock-free and allocation-free (an
+ * immutable listener-snapshot array, read once and iterated by index); the
+ * only sanctioned cross-thread sink is the view-model's lock-free,
+ * single-reader buffer (§4.1, §4.6).</p>
  */
 public final class Track {
 
     /** Sentinel value indicating no input device has been assigned. */
     public static final int NO_INPUT_DEVICE = -1;
+
+    /**
+     * The kind of track slice that a change notification refers to.
+     *
+     * <p>An observer registered via {@link Track#addChangeListener(Consumer)}
+     * re-reads only the affected slice from the track when it receives the
+     * matching tag (Control Synchronization Design Book §3.2, §3.4).</p>
+     */
+    public enum ChangeKind {
+        /** The {@linkplain Track#getName() display name} changed. */
+        NAME,
+        /** The {@linkplain Track#getVolume() volume} changed. */
+        VOLUME,
+        /** The {@linkplain Track#getPan() pan position} changed. */
+        PAN,
+        /** The {@linkplain Track#isMuted() muted} flag changed. */
+        MUTE,
+        /** The {@linkplain Track#isSolo() solo} flag changed. */
+        SOLO,
+        /** The {@linkplain Track#isArmed() armed (record-ready)} flag changed. */
+        ARM
+    }
+
+    /**
+     * Mutex guarding mutations to {@link #registeredListeners}. Held only while a
+     * listener is added or removed — never on the {@link #notifyChange} path.
+     */
+    private final Object listenerLock = new Object();
+
+    /**
+     * The canonical observer list, mutated only under {@link #listenerLock}.
+     * {@link #listenerSnapshot} is rebuilt from it on each add/remove so the hot
+     * notify path never touches this list.
+     */
+    private final List<Consumer<ChangeKind>> registeredListeners = new ArrayList<>();
+
+    /**
+     * An immutable snapshot of {@link #registeredListeners}, replaced wholesale
+     * (never mutated in place) on each add/remove. {@link #notifyChange(ChangeKind)}
+     * reads this {@code volatile} reference once into a local and iterates the array
+     * by index, so the notify path takes no lock and allocates nothing — and is
+     * immune to a listener being added or removed mid-notify (reentrantly or from
+     * another thread), because the captured array reference stays stable while a
+     * mutation swaps in a fresh array.
+     */
+    @SuppressWarnings("unchecked")
+    private volatile Consumer<ChangeKind>[] listenerSnapshot = (Consumer<ChangeKind>[]) new Consumer<?>[0];
 
     private final String id;
     private final TrackType type;
@@ -97,6 +162,7 @@ public final class Track {
     /** Sets the display name. */
     public void setName(String name) {
         this.name = Objects.requireNonNull(name, "name must not be null");
+        notifyChange(ChangeKind.NAME);
     }
 
     /** Returns the color assigned to this track. */
@@ -130,6 +196,7 @@ public final class Track {
             throw new IllegalArgumentException("volume must be between 0.0 and 1.0: " + volume);
         }
         this.volume = volume;
+        notifyChange(ChangeKind.VOLUME);
     }
 
     /** Returns the pan position (−1.0 = full left, 0.0 = center, 1.0 = full right). */
@@ -148,6 +215,7 @@ public final class Track {
             throw new IllegalArgumentException("pan must be between -1.0 and 1.0: " + pan);
         }
         this.pan = pan;
+        notifyChange(ChangeKind.PAN);
     }
 
     /** Returns whether this track is muted. */
@@ -158,6 +226,7 @@ public final class Track {
     /** Sets the muted state. */
     public void setMuted(boolean muted) {
         this.muted = muted;
+        notifyChange(ChangeKind.MUTE);
     }
 
     /** Returns whether this track is soloed. */
@@ -168,6 +237,7 @@ public final class Track {
     /** Sets the solo state. */
     public void setSolo(boolean solo) {
         this.solo = solo;
+        notifyChange(ChangeKind.SOLO);
     }
 
     /** Returns whether this track is armed for recording. */
@@ -178,6 +248,7 @@ public final class Track {
     /** Sets the armed (record-ready) state. */
     public void setArmed(boolean armed) {
         this.armed = armed;
+        notifyChange(ChangeKind.ARM);
     }
 
     /** Returns whether this track's phase is inverted. */
@@ -736,5 +807,70 @@ public final class Track {
             copy.addClip(clip.duplicate());
         }
         return copy;
+    }
+
+    // ── Toolkit-neutral change notification ────────────────────────────────
+
+    /**
+     * Registers a toolkit-neutral change observer that is invoked
+     * <strong>after</strong> each track field mutation completes, carrying the
+     * {@link ChangeKind} tag of the slice that changed.
+     *
+     * <p>Because the callback fires post-mutation, an observer that re-reads the
+     * track inside its callback always sees the new value (Control
+     * Synchronization Design Book §3.2). The observer must do only lock-free,
+     * non-blocking work — the sanctioned sink is the view-model's lock-free,
+     * single-reader buffer (§4.1, §4.6).</p>
+     *
+     * @param listener the observer to register; must not be {@code null}
+     * @return a removal token; run it to unregister the observer (mirrors the
+     *         {@code DockManager.addListener} convention)
+     * @throws NullPointerException if {@code listener} is {@code null}
+     */
+    public Runnable addChangeListener(Consumer<ChangeKind> listener) {
+        Objects.requireNonNull(listener, "listener must not be null");
+        synchronized (listenerLock) {
+            registeredListeners.add(listener);
+            listenerSnapshot = snapshotOf(registeredListeners);
+        }
+        return () -> removeChangeListener(listener);
+    }
+
+    /**
+     * Removes a previously {@linkplain #addChangeListener(Consumer) registered}
+     * observer. Equivalent to running the token returned by
+     * {@code addChangeListener}. Safe to call with an unregistered listener
+     * (no-op).
+     *
+     * @param listener the observer to remove; must not be {@code null}
+     * @throws NullPointerException if {@code listener} is {@code null}
+     */
+    public void removeChangeListener(Consumer<ChangeKind> listener) {
+        Objects.requireNonNull(listener, "listener must not be null");
+        synchronized (listenerLock) {
+            if (registeredListeners.remove(listener)) {
+                listenerSnapshot = snapshotOf(registeredListeners);
+            }
+        }
+    }
+
+    /**
+     * Notifies every registered observer of a change. Reads the
+     * {@link #listenerSnapshot} reference once into a local and iterates that array
+     * by index, so no lock is taken, no iterator is allocated, and a concurrent or
+     * reentrant {@code add}/{@code remove} (which swaps in a fresh array) cannot
+     * shrink the array being iterated.
+     */
+    private void notifyChange(ChangeKind kind) {
+        Consumer<ChangeKind>[] snapshot = listenerSnapshot; // read volatile once → stable local
+        for (Consumer<ChangeKind> listener : snapshot) {    // array for-each allocates no iterator
+            listener.accept(kind);
+        }
+    }
+
+    /** Builds a fresh immutable snapshot array from the canonical observer list. */
+    @SuppressWarnings("unchecked")
+    private static Consumer<ChangeKind>[] snapshotOf(List<Consumer<ChangeKind>> listeners) {
+        return listeners.toArray((Consumer<ChangeKind>[]) new Consumer<?>[listeners.size()]);
     }
 }

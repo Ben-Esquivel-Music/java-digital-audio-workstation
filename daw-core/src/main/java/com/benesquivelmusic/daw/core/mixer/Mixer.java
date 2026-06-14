@@ -324,9 +324,15 @@ public final class Mixer {
      * {@link com.benesquivelmusic.daw.core.audio.AudioGraphScheduler} to
      * decide when to apply the solo-mute predicate; soloing a return bus
      * silences non-soloed, non-solo-safe tracks just like soloing a track.
+     *
+     * <p>This is the single source of truth for the project-wide solo picture,
+     * so the view-model layer ({@code daw-app}'s {@code TrackChannelRegistry})
+     * derives each channel's effective-mute from this method rather than
+     * replicating the scan — a replica that omitted return buses would silently
+     * diverge from the engine whenever a return bus is soloed.</p>
      */
     @RealTimeSafe
-    boolean isAnySolo() {
+    public boolean isAnySolo() {
         for (MixerChannel channel : channels) {
             if (channel.isSolo()) {
                 return true;
