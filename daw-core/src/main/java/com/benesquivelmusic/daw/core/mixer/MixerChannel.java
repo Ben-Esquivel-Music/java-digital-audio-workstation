@@ -11,6 +11,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 /**
  * Represents a single channel strip in the mixer.
@@ -25,11 +26,72 @@ import java.util.UUID;
  * <p>Each channel provides up to {@value #MAX_INSERT_SLOTS} insert effect slots.
  * Insert effects are applied in order via an internal {@link EffectsChain}.
  * Individual inserts can be bypassed, reordered, added, or removed.</p>
+ *
+ * <h2>Toolkit-neutral change notification</h2>
+ *
+ * <p>Per the Control Synchronization Design Book (§1.3, §2.5, §3.2) the channel
+ * exposes a <em>toolkit-neutral</em> notification seam: observers register a
+ * {@link Consumer}&lt;{@link ChangeKind}&gt; via
+ * {@link #addChangeListener(Consumer)} and are invoked <strong>after</strong>
+ * each field mutation completes, so an observer that re-reads the channel in its
+ * callback always sees the post-mutation value. The signal carries only a small
+ * {@link ChangeKind} tag describing <em>what</em> slice changed — never a
+ * state-bearing delta and, critically, never a {@code javafx.beans.*} type: the
+ * core stays JavaFX-free so the view-model adapter
+ * ({@code daw-app/.../ui/vm/MixerChannelVM}) is the sole bridge to FX Properties
+ * (§9 rejection list). Notification is lock-free and allocation-free (an
+ * immutable listener-snapshot array, read once and iterated by index); the
+ * only sanctioned cross-thread sink is the view-model's lock-free,
+ * single-reader buffer (§4.1, §4.6).</p>
  */
 public final class MixerChannel {
 
     /** Maximum number of insert effect slots per channel. */
     public static final int MAX_INSERT_SLOTS = 8;
+
+    /**
+     * The kind of mixer-channel slice that a change notification refers to.
+     *
+     * <p>An observer registered via
+     * {@link MixerChannel#addChangeListener(Consumer)} re-reads only the affected
+     * slice from the channel when it receives the matching tag (Control
+     * Synchronization Design Book §3.2, §3.4).</p>
+     */
+    public enum ChangeKind {
+        /** The {@linkplain MixerChannel#getVolume() volume} changed. */
+        VOLUME,
+        /** The {@linkplain MixerChannel#getPan() pan position} changed. */
+        PAN,
+        /** The {@linkplain MixerChannel#isMuted() muted} flag changed. */
+        MUTE,
+        /** The {@linkplain MixerChannel#isSolo() solo} flag changed. */
+        SOLO
+    }
+
+    /**
+     * Mutex guarding mutations to {@link #registeredListeners}. Held only while a
+     * listener is added or removed — never on the {@link #notifyChange} path.
+     */
+    private final Object listenerLock = new Object();
+
+    /**
+     * The canonical observer list, mutated only under {@link #listenerLock}.
+     * {@link #listenerSnapshot} is rebuilt from it on each add/remove so the hot
+     * notify path never touches this list.
+     */
+    private final List<Consumer<ChangeKind>> registeredListeners = new ArrayList<>();
+
+    /**
+     * An immutable snapshot of {@link #registeredListeners}, replaced wholesale
+     * (never mutated in place) on each add/remove. {@link #notifyChange(ChangeKind)}
+     * reads this {@code volatile} reference once into a local and iterates the array
+     * by index, so the notify path takes no lock and allocates nothing — and is
+     * immune to a listener being added or removed mid-notify (reentrantly or from
+     * another thread), because the captured array reference stays stable while a
+     * mutation swaps in a fresh array.
+     */
+    @SuppressWarnings("unchecked")
+    private volatile Consumer<ChangeKind>[] listenerSnapshot = (Consumer<ChangeKind>[]) new Consumer<?>[0];
 
     private final UUID id;
     private final String name;
@@ -118,6 +180,7 @@ public final class MixerChannel {
             throw new IllegalArgumentException("volume must be between 0.0 and 1.0: " + volume);
         }
         this.volume = volume;
+        notifyChange(ChangeKind.VOLUME);
     }
 
     /** Returns the pan position (−1.0 to 1.0). */
@@ -131,6 +194,7 @@ public final class MixerChannel {
             throw new IllegalArgumentException("pan must be between -1.0 and 1.0: " + pan);
         }
         this.pan = pan;
+        notifyChange(ChangeKind.PAN);
     }
 
     /** Returns whether this channel is muted. */
@@ -141,6 +205,7 @@ public final class MixerChannel {
     /** Sets the muted state. */
     public void setMuted(boolean muted) {
         this.muted = muted;
+        notifyChange(ChangeKind.MUTE);
     }
 
     /** Returns whether this channel is soloed. */
@@ -151,6 +216,7 @@ public final class MixerChannel {
     /** Sets the solo state. */
     public void setSolo(boolean solo) {
         this.solo = solo;
+        notifyChange(ChangeKind.SOLO);
     }
 
     /**
@@ -542,5 +608,70 @@ public final class MixerChannel {
         if (callback != null) {
             callback.run();
         }
+    }
+
+    // ── Toolkit-neutral change notification ────────────────────────────────
+
+    /**
+     * Registers a toolkit-neutral change observer that is invoked
+     * <strong>after</strong> each channel field mutation completes, carrying the
+     * {@link ChangeKind} tag of the slice that changed.
+     *
+     * <p>Because the callback fires post-mutation, an observer that re-reads the
+     * channel inside its callback always sees the new value (Control
+     * Synchronization Design Book §3.2). The observer must do only lock-free,
+     * non-blocking work — the sanctioned sink is the view-model's lock-free,
+     * single-reader buffer (§4.1, §4.6).</p>
+     *
+     * @param listener the observer to register; must not be {@code null}
+     * @return a removal token; run it to unregister the observer (mirrors the
+     *         {@code DockManager.addListener} convention)
+     * @throws NullPointerException if {@code listener} is {@code null}
+     */
+    public Runnable addChangeListener(Consumer<ChangeKind> listener) {
+        Objects.requireNonNull(listener, "listener must not be null");
+        synchronized (listenerLock) {
+            registeredListeners.add(listener);
+            listenerSnapshot = snapshotOf(registeredListeners);
+        }
+        return () -> removeChangeListener(listener);
+    }
+
+    /**
+     * Removes a previously {@linkplain #addChangeListener(Consumer) registered}
+     * observer. Equivalent to running the token returned by
+     * {@code addChangeListener}. Safe to call with an unregistered listener
+     * (no-op).
+     *
+     * @param listener the observer to remove; must not be {@code null}
+     * @throws NullPointerException if {@code listener} is {@code null}
+     */
+    public void removeChangeListener(Consumer<ChangeKind> listener) {
+        Objects.requireNonNull(listener, "listener must not be null");
+        synchronized (listenerLock) {
+            if (registeredListeners.remove(listener)) {
+                listenerSnapshot = snapshotOf(registeredListeners);
+            }
+        }
+    }
+
+    /**
+     * Notifies every registered observer of a change. Reads the
+     * {@link #listenerSnapshot} reference once into a local and iterates that array
+     * by index, so no lock is taken, no iterator is allocated, and a concurrent or
+     * reentrant {@code add}/{@code remove} (which swaps in a fresh array) cannot
+     * shrink the array being iterated.
+     */
+    private void notifyChange(ChangeKind kind) {
+        Consumer<ChangeKind>[] snapshot = listenerSnapshot; // read volatile once → stable local
+        for (Consumer<ChangeKind> listener : snapshot) {    // array for-each allocates no iterator
+            listener.accept(kind);
+        }
+    }
+
+    /** Builds a fresh immutable snapshot array from the canonical observer list. */
+    @SuppressWarnings("unchecked")
+    private static Consumer<ChangeKind>[] snapshotOf(List<Consumer<ChangeKind>> listeners) {
+        return listeners.toArray((Consumer<ChangeKind>[]) new Consumer<?>[listeners.size()]);
     }
 }

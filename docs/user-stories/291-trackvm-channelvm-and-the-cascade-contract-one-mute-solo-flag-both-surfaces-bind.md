@@ -121,3 +121,96 @@ Tests (assert on properties / cascade phase order / `ChangeKind` — never on ra
   `research-daw` (§1 modular, §3 real-time / lock-free), `dawg-annotations-reflection` (`@RealTimeSafe`).
 - Build/verify: `mvn -pl daw-core -am test -Dtest=CoreTrackSignal* -Dsurefire.failIfNoSpecifiedTests=false`
   then `mvn -pl daw-app -am test -Dtest=TrackVMChannelVM*,MuteSoloCascade*,MuteButtonBinding*,ChannelCommandEvent* -Dsurefire.failIfNoSpecifiedTests=false`.
+
+## Implementation Note (2026-06-13)
+
+Delivered. The Stage-3 slice — core change signal (`Track` + `MixerChannel`) → view-model
+(`TrackVM`/`ChannelVM`) → registry-coordinated effective-mute → command cascade → control binding — is
+implemented and the third companion-book story (after 289, 290) to land production code. Like story 290 it
+is a **test-proven seam, not yet live-wired** (see Scope below).
+
+As built:
+
+- **Core seams** (`daw-core/.../track/Track.java`, `daw-core/.../mixer/MixerChannel.java`, both
+  JavaFX-free): each gained its OWN nested `enum ChangeKind` (`Track`: `NAME, VOLUME, PAN, MUTE, SOLO,
+  ARM`; `MixerChannel`: `VOLUME, PAN, MUTE, SOLO` — its `name` is `final`, and it has no arm flag) plus
+  `addChangeListener(Consumer<ChangeKind>)` → `Runnable` removal token / `removeChangeListener`, firing
+  **after** each field mutation through the same lock-free, allocation-free `volatile` listener-snapshot
+  array story 290 added to `Transport` (no `@RealTimeSafe` annotation, so the RT-safe contract test is
+  unaffected). `CoreTrackSignalTest` / `CoreMixerChannelSignalTest` run with no JavaFX on the classpath
+  (§2.5, §9).
+- **View-models** (`daw-app/.../ui/vm/`): `TrackVM` (read-only `name`/`muted`/`soloed`/`armed` +
+  `trackId()`), `ChannelVM` (read-only `volume`/`pan`/`meterLevel`/derived `effectiveMute`), each the
+  **single writer** of its `ReadOnly*Property` views, updated from the core signal through the story-289
+  `FxDispatcher`. `TrackChannelRegistry` pairs a `TrackVM` with a `ChannelVM` by their shared id (the
+  `addTrack` `channelId==trackId` invariant, **derived** from the project's authoritative ids — never
+  assumed), keeps aux/return/cue/VCA channels standalone with no track peer (the carve-out), and owns the
+  one cross-channel concern a single VM cannot compute: each channel's `effectiveMute`
+  (`muted || (anySolo && !solo && !soloSafe)`, the audio engine's exact gate from `Mixer`), recomputed
+  project-wide on the FX thread whenever any channel's mute/solo signals.
+- **Commands** (`daw-app/.../ui/vm/command/`): sealed `TrackCommand` (ToggleMute / ToggleSolo / ToggleArm
+  / SetChannelVolume / SetChannelPan) over a `TrackIntentHandler` seam; `CoreTrackIntentHandler` runs
+  VALIDATE (an idempotent no-op gate) → MUTATE → ANNOUNCE.
+- **Binder** (`TrackControlBinder`): binds the lane mute/solo/arm buttons (`:active` pseudo-class) and a
+  `MixerChannelStrip` to the **same** `TrackVM` flags — the §1.3 "one flag, both surfaces" join — and a
+  linear fader/pan control to the `ChannelVM`; gestures raise commands, never write back (§4.4).
+
+**The §1.3 fix — mute/solo unified across two model projections.** The tree carried two unsynchronised
+flags: `Track.muted/solo` (the arrangement lane and persistence) and `MixerChannel.muted/solo` (what the
+audio engine reads; the pre-existing undoable `ToggleMuteAction`/`ToggleSoloAction` on `MixerChannel` had
+no production callers). `CoreTrackIntentHandler.toggleMute`/`toggleSolo` now mutate **both** the `Track`
+(the authority for `TrackVM`/persistence) and its paired `MixerChannel` (found via
+`DawProject.getMixerChannelForTrack`, honouring the carve-out by reading the project's authoritative map
+rather than assuming the id equivalence) and announce **both** a `TrackEvent` and the matching
+`MixerEvent`, so the two surfaces, persistence, and the engine never diverge. Arm is track-only; volume
+and pan are channel-only.
+
+Tests: `CoreTrackSignalTest` / `CoreMixerChannelSignalTest` (daw-core, 10 each, incl. a discriminating
+one-listener-removes-another-mid-notification case), `TrackVMChannelVMTest`, `MuteSoloCascadeTest`,
+`MuteButtonBindingTest`, `ChannelCommandEventTest` (daw-app). daw-core suite green (6030); full daw-app
+reactor green (2572).
+
+Scoped items recorded rather than dropped silently (consistent with the Non-Goals and story 290's
+precedent):
+
+- **Not live-wired, by design.** As with `TransportVM` after story 290, the VM/command/binder layer is
+  proven by tests but not yet bound into the live `TrackStripController` / `MixerView` / `MainController`
+  (whose mute/solo handlers still call `track.setMuted(...)` inline) — that rewiring, undo capture, and
+  the PROJECT/`dirty` phase are **stories 292/293**. The existing undoable mute/solo/volume actions remain
+  for that wiring.
+- **`ChannelVM.meterLevel`** uses a `ContinuousDoubleChannel` with no live audio producer yet — the
+  `daw-core` metering tap is a later stage, exactly as stories 289/290 noted for the playhead.
+- **dB-fader ↔ linear conversion** is deferred: `TrackControlBinder.bindFader`/`bindPan` operate on a
+  linear `DoubleProperty`; the `MixerChannelStrip` dB fader's conversion lands with the live wiring (293).
+
+### Code review (2026-06-13) — dispositions
+
+A high-effort review surfaced four findings. After checking each against the story-290 precedent
+(`TransportControlBinder`/`TransportVM`), the `MixerChannelStrip` API, and the core event surface, all are
+either the deliberate existing convention or coupled to story-293's live wiring; the slice is a
+test-proven, not-live-wired seam, so **no production code was changed** (user decision, 2026-06-13). Each
+substantive finding is carried forward as a concrete 293 TODO:
+
+- **[#3 — by convention, no change] `TrackControlBinder.onAction` overwrites a button's handler and
+  `dispose()` nulls it.** This is the identical pattern in `TransportControlBinder.onAction` (story 290):
+  the binder *owns* the control's action. Restoring a prior handler would fork a bare convention, so it is
+  intentionally left as-is.
+- **[#1 → 293] Fader/pan raise a command on every `DoubleProperty` change, not on commit-on-release.** The
+  binder deliberately targets a *plain* `DoubleProperty`, which carries no Enter/focus-loss/release event
+  (unlike `bindTempoField`'s `TextField`), so "raised on commit, never per drag-tick" (the
+  `SetChannelVolumeCommand`/`SetChannelPanCommand` contract) cannot be honoured until 293 binds the
+  concrete control. 293 must gate on the real release signal (e.g. `Slider.valueChangingProperty()` /
+  pointer-release for the knob) so a fast drag raises one command and the async VM→control republish
+  (`dispatcher.onFx`) cannot snap the control back to a stale intermediate value. The current
+  value-equality echo guard already prevents *spurious commands*; only the live visual snap-back remains.
+- **[#2 → 293] `TrackChannelRegistry` is a one-shot snapshot of the project taken in its constructor.** A
+  track / channel / return-bus added or removed afterward is not observed, so pairing and project-wide
+  `effectiveMute` (incl. a newly-soloed return bus) go stale. The story-283 bus already carries the
+  triggers (`TrackEvent.Added/Removed`, `MixerEvent.ChannelAdded/ChannelRemoved`); 293, which owns the
+  registry's construction lifecycle, must subscribe to them to add/remove/re-pair VMs and re-seed
+  effective-mute.
+- **[#4 → 293] `ChannelVM.effectiveMute` (and `meterLevel`) are computed but reach no control.**
+  `MixerChannelStrip` exposes only `muted`/`soloed`/`armed`/`pan`/`faderDb` — no effective-mute (dimmed)
+  or meter property — so there is nothing to bind to yet. 293 must add those strip visuals and a
+  `TrackControlBinder` method that mirrors `effectiveMuteProperty()` / `meterLevelProperty()` onto them, so
+  a channel silenced solely by another's solo shows as dimmed and the meter animates.
