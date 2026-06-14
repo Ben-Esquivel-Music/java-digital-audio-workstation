@@ -145,8 +145,7 @@ super-type (`permits DawEvent, UiEvent`) that both families extend, with the
 The one existing bus now carries `UiEvent` too, without `UiEvent` being a `DawEvent` (the Non-Goal).
 `DawEvent`'s `permits` is byte-for-byte unchanged (pinned by `UiEventSealingTest` via
 `getPermittedSubclasses()`). **Flagged for pre-commit review — this is the only change that modifies
-shared bus infrastructure** (4 `EventBus` signatures + `DefaultEventBus` generics + `EventBusPublisher
-.publish`); every existing publisher/subscriber compiles unchanged (a `DawEvent` *is-a* `BusEvent`), and
+shared bus infrastructure** (4 `EventBus` signatures + `DefaultEventBus` generics + `EventBusPublisher.publish`); every existing publisher/subscriber compiles unchanged (a `DawEvent` *is-a* `BusEvent`), and
 the full daw-sdk (1037) + daw-core (6040) suites pass with zero regressions. New: `BusEvent`, `UiEvent`
 (`SelectionChanged`, `UndoStateChanged` records), `UiEventSealingTest` (6).
 
