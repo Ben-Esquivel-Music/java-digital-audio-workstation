@@ -3860,10 +3860,20 @@ public final class MainController {
      * through a {@link ProjectVM#getTracks()} subscriber (§4.3); the remaining callers
      * (clip edits, undo, selection) still invoke it directly until a full
      * canvas-subscribes-to-ClipEvent pass (follow-on).
+     *
+     * <p>The canvas is driven from the FX-owned {@link ProjectVM#getTracks()} list,
+     * <em>not</em> the live {@link DawProject#getTracks()} view. {@code ProjectVM}
+     * snapshots the project's tracks onto the FX thread (story 292), whereas
+     * {@link ArrangementCanvas#setTracks} stores the reference and re-iterates it on
+     * every {@code redraw()}. Handing it the live core view would let a background
+     * loader thread mutate the list mid-redraw — a {@code ConcurrentModificationException}
+     * during File→Open / snapshot-restore. {@code projectVM} is built before the
+     * canvas exists (see {@code rebuildViewModels()} vs {@code createArrangementCanvas()}),
+     * so the added null-guard only short-circuits the pre-init window.</p>
      */
     private void repaintArrangementCanvas() {
-        if (arrangementCanvas == null) return;
-        arrangementCanvas.setTracks(project.getTracks());
+        if (arrangementCanvas == null || projectVM == null) return;
+        arrangementCanvas.setTracks(projectVM.getTracks());
         applyLoopAndRulerGrid();
         paintCanvasSelection();
     }
