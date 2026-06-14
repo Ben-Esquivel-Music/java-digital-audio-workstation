@@ -95,10 +95,12 @@ public final class ProjectVM {
         this.dispatcher = Objects.requireNonNull(dispatcher, "dispatcher must not be null");
 
         // Seed every property with the current state so a control binding shows
-        // the correct value before the first signal arrives.
+        // the correct value before the first signal arrives. getTracks() is a
+        // *live* unmodifiable view, so snapshot it (as the TRACKS branch does)
+        // in case the project is still being populated on another thread.
         name.set(project.getName());
         dirty.set(project.isDirty());
-        tracksBacking.setAll(project.getTracks());
+        tracksBacking.setAll(List.copyOf(project.getTracks()));
 
         this.unregister = project.addChangeListener(this::onCoreChange);
     }

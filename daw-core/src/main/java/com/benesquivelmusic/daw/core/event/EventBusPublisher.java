@@ -21,7 +21,7 @@ import java.util.Objects;
  * startup via {@link #setDefault(EventBus)}; tests that don't care
  * about events simply leave the bus unset and every {@link #publish}
  * call becomes a no-op. Producers always call
- * {@link #publish(DawEvent)} — they never thread-marshal; the
+ * {@link #publish(BusEvent)} — they never thread-marshal; the
  * per-subscription {@code DispatchMode} on each
  * {@link EventBus#on(Class, com.benesquivelmusic.daw.sdk.event.DispatchMode,
  * java.util.function.Consumer)} call is the consumer's choice.</p>
