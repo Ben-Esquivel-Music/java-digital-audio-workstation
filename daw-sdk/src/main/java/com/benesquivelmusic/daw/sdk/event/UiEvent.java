@@ -46,8 +46,10 @@ public sealed interface UiEvent extends BusEvent
 
     /**
      * Emitted when the UI selection changes — a different track, clip, or device
-     * becomes selected, the selection is cleared, or the edit tool changes
-     * (Control Synchronization Design Book §5.5). Subscribers (the inspector,
+     * becomes selected or the selection is cleared (Control Synchronization
+     * Design Book §5.5). Edit-tool changes do <em>not</em> raise this event: the
+     * tool is bound directly (§2.7, {@code SelectionVM#setTool}), so it never
+     * reaches {@code CoreSelectionIntentHandler}'s announce step. Subscribers (the inspector,
      * the menu-enablement policy, the canvas highlight, the mixer focus) re-read
      * the current selection from {@code SelectionVM}; the event itself is a bare
      * notification.
