@@ -337,7 +337,7 @@ final class ClipInteractionController {
     /**
      * Clears the current time selection and updates the canvas overlay and
      * status bar. Does not trigger a full canvas refresh — the caller is
-     * responsible for calling {@link Host#refreshCanvas()} if needed.
+     * responsible for invoking {@link Deps#refreshCanvas()} if needed.
      */
     private void clearTimeSelection() {
         deps.selectionModel().get().clearSelection();
