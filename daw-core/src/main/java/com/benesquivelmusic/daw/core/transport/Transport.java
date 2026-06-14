@@ -1,10 +1,9 @@
 package com.benesquivelmusic.daw.core.transport;
 
+import com.benesquivelmusic.daw.core.concurrent.ChangeNotifier;
 import com.benesquivelmusic.daw.sdk.transport.PreRollPostRoll;
 import com.benesquivelmusic.daw.sdk.transport.PunchRegion;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Objects;
 import java.util.function.Consumer;
 
@@ -62,30 +61,13 @@ public final class Transport {
     }
 
     /**
-     * Mutex guarding mutations to {@link #registeredListeners}. Held only while a
-     * listener is added or removed — never on the {@link #notifyChange} path.
+     * Backs the toolkit-neutral {@code Consumer<ChangeKind>} change signal — the
+     * register / unregister / lock-free notify mechanism lives in the shared
+     * {@link ChangeNotifier}. {@link ChangeNotifier#fire} allocates nothing, so it
+     * is safe to invoke from the {@code @RealTimeSafe} render path via
+     * {@link #advancePosition(double)}.
      */
-    private final Object listenerLock = new Object();
-
-    /**
-     * The canonical observer list, mutated only under {@link #listenerLock}.
-     * {@link #listenerSnapshot} is rebuilt from it on each add/remove so the hot
-     * notify path never touches this list.
-     */
-    private final List<Consumer<ChangeKind>> registeredListeners = new ArrayList<>();
-
-    /**
-     * An immutable snapshot of {@link #registeredListeners}, replaced wholesale
-     * (never mutated in place) on each add/remove. {@link #notifyChange(ChangeKind)}
-     * reads this {@code volatile} reference once into a local and iterates the array
-     * by index, so the notify path takes no lock and allocates nothing — and is
-     * immune to a listener being added or removed mid-notify (reentrantly or from
-     * another thread), because the captured array reference stays stable while a
-     * mutation swaps in a fresh array. Safe to invoke from the {@code @RealTimeSafe}
-     * render path via {@link #advancePosition(double)}.
-     */
-    @SuppressWarnings("unchecked")
-    private volatile Consumer<ChangeKind>[] listenerSnapshot = (Consumer<ChangeKind>[]) new Consumer<?>[0];
+    private final ChangeNotifier<ChangeKind> changes = new ChangeNotifier<>();
 
     private TransportState state = TransportState.STOPPED;
     private double positionInBeats = 0.0;
@@ -499,12 +481,7 @@ public final class Transport {
      * @throws NullPointerException if {@code listener} is {@code null}
      */
     public Runnable addChangeListener(Consumer<ChangeKind> listener) {
-        Objects.requireNonNull(listener, "listener must not be null");
-        synchronized (listenerLock) {
-            registeredListeners.add(listener);
-            listenerSnapshot = snapshotOf(registeredListeners);
-        }
-        return () -> removeChangeListener(listener);
+        return changes.add(listener);
     }
 
     /**
@@ -517,32 +494,15 @@ public final class Transport {
      * @throws NullPointerException if {@code listener} is {@code null}
      */
     public void removeChangeListener(Consumer<ChangeKind> listener) {
-        Objects.requireNonNull(listener, "listener must not be null");
-        synchronized (listenerLock) {
-            if (registeredListeners.remove(listener)) {
-                listenerSnapshot = snapshotOf(registeredListeners);
-            }
-        }
+        changes.remove(listener);
     }
 
     /**
-     * Notifies every registered observer of a change. Reads the
-     * {@link #listenerSnapshot} reference once into a local and iterates that array
-     * by index, so no lock is taken, no iterator is allocated, and a concurrent or
-     * reentrant {@code add}/{@code remove} (which swaps in a fresh array) cannot
-     * shrink the array being iterated — safe to call from the {@code @RealTimeSafe}
+     * Notifies registered observers of a change — delegates to the allocation-free
+     * {@link ChangeNotifier#fire}, so it stays safe on the {@code @RealTimeSafe}
      * render path.
      */
     private void notifyChange(ChangeKind kind) {
-        Consumer<ChangeKind>[] snapshot = listenerSnapshot; // read volatile once → stable local
-        for (Consumer<ChangeKind> listener : snapshot) {    // array for-each allocates no iterator
-            listener.accept(kind);
-        }
-    }
-
-    /** Builds a fresh immutable snapshot array from the canonical observer list. */
-    @SuppressWarnings("unchecked")
-    private static Consumer<ChangeKind>[] snapshotOf(List<Consumer<ChangeKind>> listeners) {
-        return listeners.toArray((Consumer<ChangeKind>[]) new Consumer<?>[listeners.size()]);
+        changes.fire(kind);
     }
 }

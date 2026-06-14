@@ -55,6 +55,14 @@ import java.time.Instant;
  * new event stream to the old listener callbacks until every call site
  * has migrated.</p>
  *
+ * <p>{@code DawEvent} is one of the two families carried by the typed
+ * {@link EventBus}; it shares the {@link BusEvent} super-type with the UI-only
+ * {@link UiEvent} family so a single bus can carry both (story 292). This
+ * {@code permits} clause is the engine domain and stays closed to it — UI-only
+ * facts go to {@link UiEvent}, never here.</p>
+ *
+ * @see BusEvent
+ * @see UiEvent
  * @see TransportEvent
  * @see MixerEvent
  * @see TrackEvent
@@ -64,7 +72,7 @@ import java.time.Instant;
  * @see PluginEvent
  * @see com.benesquivelmusic.daw.sdk.audio.XrunEvent
  */
-public sealed interface DawEvent
+public sealed interface DawEvent extends BusEvent
         permits TransportEvent,
                 MixerEvent,
                 TrackEvent,
