@@ -1,6 +1,7 @@
 package com.benesquivelmusic.daw.core.project;
 
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
+import com.benesquivelmusic.daw.core.concurrent.ChangeNotifier;
 import com.benesquivelmusic.daw.core.marker.MarkerManager;
 import com.benesquivelmusic.daw.core.mixer.ChannelLinkManager;
 import com.benesquivelmusic.daw.core.mixer.CueBusManager;
@@ -24,6 +25,7 @@ import com.benesquivelmusic.daw.sdk.edit.RippleMode;
 import com.benesquivelmusic.daw.sdk.visualization.LoudnessTarget;
 
 import java.util.*;
+import java.util.function.Consumer;
 
 /**
  * Represents an entire DAW project/session.
@@ -49,7 +51,7 @@ public final class DawProject {
     private final BedBusManager bedBusManager = new BedBusManager();
     private RoomConfiguration roomConfiguration;
     private ProjectMetadata metadata;
-    private boolean dirty;
+    private volatile boolean dirty;
 
     /**
      * Tracks the mixer channel associated with each track, keyed by track ID.
@@ -74,6 +76,45 @@ public final class DawProject {
      * "no saved layouts; fall back to the Default built-in".
      */
     private String layoutJson;
+
+    // ── Toolkit-neutral change-notification seam (story 292) ─────────────────
+
+    /**
+     * The kinds of {@link DawProject} change a
+     * {@link #addChangeListener(Consumer) listener} is notified of. A neutral
+     * {@code Consumer<ChangeKind>} signal — never a {@code javafx.beans.Property}
+     * — mirroring the seam on {@code Track} / {@code Transport} /
+     * {@code MixerChannel} (stories 290/291), so {@code daw-core} stays
+     * JavaFX-free while {@code daw-app}'s {@code ProjectVM} can observe
+     * project-level facts (Control Synchronization Design Book §2.5, §3.2, §9).
+     */
+    public enum ChangeKind {
+        /** The {@linkplain #getName() project name} changed. */
+        NAME,
+        /** The {@linkplain #isDirty() unsaved-changes (dirty) flag} changed. */
+        DIRTY,
+        /**
+         * The {@linkplain #getTracks() track list} changed — a track was added,
+         * removed, moved, or duplicated.
+         */
+        TRACKS
+    }
+
+    /**
+     * Backs the toolkit-neutral {@code Consumer<ChangeKind>} change signal — the
+     * register / unregister / lock-free notify mechanism lives in the shared
+     * {@link ChangeNotifier}.
+     */
+    private final ChangeNotifier<ChangeKind> changes = new ChangeNotifier<>();
+
+    /**
+     * Guards the {@link #dirty}-flag transition so a concurrent
+     * {@link #markDirty()} / {@link #markClean()} cannot interleave and lose a state
+     * change (and its {@link ChangeKind#DIRTY} signal). The {@code dirty} field is
+     * {@code volatile} so {@link #isDirty()} reads the latest value without taking
+     * this lock; the listener notification fires outside the lock.
+     */
+    private final Object dirtyLock = new Object();
 
     /**
      * Creates a new DAW project.
@@ -101,6 +142,7 @@ public final class DawProject {
     public void setName(String name) {
         this.name = Objects.requireNonNull(name, "name must not be null");
         this.metadata = metadata.withName(name);
+        notifyChange(ChangeKind.NAME);
     }
 
     /** Returns the audio format. */
@@ -138,6 +180,7 @@ public final class DawProject {
         if (!mixer.getChannels().contains(channel)) {
             mixer.addChannel(channel);
         }
+        notifyChange(ChangeKind.TRACKS);
     }
 
     private static UUID parseUuidOrRandom(String s) {
@@ -190,6 +233,7 @@ public final class DawProject {
             if (channel != null) {
                 mixer.removeChannel(channel);
             }
+            notifyChange(ChangeKind.TRACKS);
         }
         return removed;
     }
@@ -215,6 +259,7 @@ public final class DawProject {
         Track track = tracks.remove(fromIndex);
         tracks.add(toIndex, track);
         mixer.moveChannel(fromIndex, toIndex);
+        notifyChange(ChangeKind.TRACKS);
     }
 
     /**
@@ -261,6 +306,7 @@ public final class DawProject {
         channel.setColor(copy.getColor());
         trackChannelMap.put(copy.getId(), channel);
         mixer.addChannel(channel);
+        notifyChange(ChangeKind.TRACKS);
         return copy;
     }
 
@@ -423,17 +469,72 @@ public final class DawProject {
     }
 
     /**
-     * Marks the project as having unsaved changes.
+     * Marks the project as having unsaved changes. Fires {@link ChangeKind#DIRTY}
+     * exactly once on the clean&rarr;dirty transition (idempotent while already
+     * dirty). The check-and-set runs under {@link #dirtyLock} so a concurrent
+     * {@link #markClean()} cannot interleave and drop the transition; the signal is
+     * fired outside the lock (a listener callback is never run while holding it).
      */
     public void markDirty() {
-        this.dirty = true;
+        synchronized (dirtyLock) {
+            if (dirty) {
+                return;
+            }
+            dirty = true;
+        }
+        notifyChange(ChangeKind.DIRTY);
     }
 
     /**
-     * Marks the project as clean (all changes saved).
+     * Marks the project as clean (all changes saved). Fires {@link ChangeKind#DIRTY}
+     * exactly once on the dirty&rarr;clean transition (idempotent while already
+     * clean), under the same {@link #dirtyLock} guard as {@link #markDirty()}.
      */
     public void markClean() {
-        this.dirty = false;
+        synchronized (dirtyLock) {
+            if (!dirty) {
+                return;
+            }
+            dirty = false;
+        }
+        notifyChange(ChangeKind.DIRTY);
+    }
+
+    // ── Change-listener registration (story 292) ─────────────────────────────
+
+    /**
+     * Registers a toolkit-neutral change listener notified after every
+     * {@link ChangeKind name / dirty / tracks} change. The listener may be
+     * invoked on whichever thread performed the mutation; a UI listener must
+     * marshal onto the FX thread itself (the {@code ProjectVM} does so through
+     * the story-289 {@code FxDispatcher}). Mirrors the seam on {@code Track} /
+     * {@code Transport} / {@code MixerChannel}.
+     *
+     * @param listener the listener to add; must not be {@code null}
+     * @return a {@link Runnable} removal token — running it (equivalently,
+     *         calling {@link #removeChangeListener(Consumer)}) unregisters the
+     *         listener
+     * @throws NullPointerException if {@code listener} is {@code null}
+     */
+    public Runnable addChangeListener(Consumer<ChangeKind> listener) {
+        return changes.add(listener);
+    }
+
+    /**
+     * Unregisters a previously {@linkplain #addChangeListener(Consumer) added}
+     * listener. A listener that was never added (or was already removed) is
+     * silently ignored.
+     *
+     * @param listener the listener to remove; must not be {@code null}
+     * @throws NullPointerException if {@code listener} is {@code null}
+     */
+    public void removeChangeListener(Consumer<ChangeKind> listener) {
+        changes.remove(listener);
+    }
+
+    /** Notifies registered listeners of a change — delegates to {@link ChangeNotifier#fire}. */
+    private void notifyChange(ChangeKind kind) {
+        changes.fire(kind);
     }
 
     // ── Folder track support ────────────────────────────────────────────────

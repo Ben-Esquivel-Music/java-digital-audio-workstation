@@ -126,3 +126,79 @@ Tests (assert on properties / declared order / bus events — never on rasterisa
   `research-daw` (§1 modular, §3 real-time / lock-free), `dawg-annotations-reflection` (`@RealTimeSafe`).
 - Build/verify: `mvn -pl daw-sdk -am test -Dtest=UiEventSealing* -Dsurefire.failIfNoSpecifiedTests=false`
   then `mvn -pl daw-app -am test -Dtest=SelectionVM*,HistoryVM*,ProjectVM*,ProjectLoadCascadeOrder*,SelectionUndoEvent* -Dsurefire.failIfNoSpecifiedTests=false`.
+
+## Implementation Note (2026-06-13)
+
+Implemented + independently verified. The 4th companion-design-book story (after
+289/290/291) to gain production code. Built as a **test-proven seam, NOT live-wired** — mirroring
+290/291: `MainController` / `ProjectLifecycleController` / `DawMenuBarController` are **untouched**, and
+their refresh methods (`updateProjectInfo` / `updateUndoRedoState` / `syncSelectionToCanvas`, …) stay
+live. Retiring the god controller and wiring the cascade/binders/VMs into the live project-open path is
+**story 293** (the explicit Non-Goals here).
+
+### daw-sdk — the `UiEvent` family + the bus widening (the load-bearing decision)
+
+The story's "sibling `UiEvent` family" + "do **not** touch `DawEvent`'s `permits`" + "prefer reusing the
+existing bus over a third bus" + "a small generic widening" resolved to a new sealed **`BusEvent`**
+super-type (`permits DawEvent, UiEvent`) that both families extend, with the
+`EventBus` / `DefaultEventBus` / `EventBusPublisher` type bound **widened from `DawEvent` to `BusEvent`**.
+The one existing bus now carries `UiEvent` too, without `UiEvent` being a `DawEvent` (the Non-Goal).
+`DawEvent`'s `permits` is byte-for-byte unchanged (pinned by `UiEventSealingTest` via
+`getPermittedSubclasses()`). **Flagged for pre-commit review — this is the only change that modifies
+shared bus infrastructure** (4 `EventBus` signatures + `DefaultEventBus` generics + `EventBusPublisher.publish`); every existing publisher/subscriber compiles unchanged (a `DawEvent` *is-a* `BusEvent`), and
+the full daw-sdk (1037) + daw-core (6040) suites pass with zero regressions. New: `BusEvent`, `UiEvent`
+(`SelectionChanged`, `UndoStateChanged` records), `UiEventSealingTest` (6).
+
+### daw-core — the `DawProject` change seam
+
+Mirrors the `Track` / `Transport` / `MixerChannel` seam exactly (`volatile Consumer<ChangeKind>[]`
+snapshot, lock-free + allocation-free notify, no `javafx`, no `@RealTimeSafe`): `enum ChangeKind {NAME,
+DIRTY, TRACKS}` + `addChangeListener` / `removeChangeListener`, firing **after** `setName` (NAME),
+`markDirty` / `markClean` (DIRTY — **fire-on-change**, so an idempotent `markDirty` announces nothing),
+and `addTrack` / `removeTrack` / `moveTrack` / `duplicateTrack` (TRACKS). `CoreDawProjectSignalTest` (10,
+incl. the discriminating remove-a-listener-mid-notify case). No project UUID / checkpoint added —
+`DawProject` owns neither.
+
+### daw-app — the VM / command / cascade / binder layer (`ui/vm/` + `ui/vm/command/`)
+
+- **`ProjectVM`** (model-derived, mirrors `TrackVM`): `name` / `dirty` / `tracks` (unmodifiable
+  `ObservableList<Track>`) from the `DawProject` signal via `FxDispatcher`; `checkpoint`
+  **forward-declared** (seeded `""`, no producer yet — the session-status strip is 295-299, mirroring
+  story 291's `ChannelVM.meterLevel`).
+- **`HistoryVM`** (projection of `UndoManager` through its older `UndoHistoryListener`):
+  `canUndo` / `canRedo` / `undoLabel` / `redoLabel`, marshalled via `FxDispatcher`. Per-load lifetime (a
+  fresh `UndoManager` is installed per load → dispose + rebuild). Does **not** publish — the handler
+  announces (mirrors 290/291).
+- **`SelectionVM`** (UI-authoritative — **no core model, no dispatcher**): `selectedTrack` /
+  `selectedClip` / `selectedDevice` / `tool` read-only props; writer methods set synchronously on the FX
+  thread (selection only ever originates there). `clampTo(ProjectVM)` is the §5.7 step-5 clamp (clears a
+  selected track absent from the loaded project). `clip` / `device` are `Object` (no shared supertype;
+  their clamp + surfaces are story 294).
+- **`ProjectLoadCascade`**: an `enum Phase {TEAR_DOWN, BUILD_VMS, REBUILD_VIEWS, BIND_CONTINUOUS,
+  RESTORE_SELECTION, ANNOUNCE}` sequencer — `run()` executes injected per-phase `Runnable`s strictly in
+  enum order and records `executedPhases()`. The §1.6 fix: the **order is the contract** (293 supplies
+  the real per-phase steps — VM rebuild, view rebuild, selection clamp, announce).
+- **Commands** (separate-file records, mirroring 290/291): sealed `SelectionCommand` (SelectTrack /
+  SelectClip / SelectDevice / SetTool / ClearSelection) + `SelectionIntentHandler` +
+  `CoreSelectionIntentHandler` (VALIDATE idempotent → MUTATE the VM → ANNOUNCE `SelectionChanged`; a
+  **tool change is bound directly per §2.7 and announces nothing**); sealed `HistoryCommand` (Undo /
+  Redo) + `HistoryIntentHandler` + `CoreHistoryIntentHandler` (VALIDATE `canUndo`/`canRedo` → undo/redo
+  → ANNOUNCE `UndoStateChanged`).
+- **`HistoryControlBinder`**: binds undo/redo buttons' `disable` + tooltip and Edit-menu items'
+  `disable` + text to `HistoryVM`; clicks raise commands (mirrors `TransportControlBinder`).
+
+### Tests + verification
+
+`SelectionVMTest` (7) / `HistoryVMTest` (5) / `ProjectVMTest` (7) / `ProjectLoadCascadeOrderTest` (4) /
+`SelectionUndoEventTest` (4) — all **discriminating** and FX-thread-safe (results captured into holders
+and asserted off the FX thread, never inside a `runLater`). **43 new tests green** (sdk 6 + core 10 +
+app 27), verified on disk and re-run independently; full daw-sdk **1037**, daw-core **6040**, and the
+daw-app reactor are green. No `module-info` change (same-package test access, as 290/291 established). No
+new bus event types beyond `UiEvent`.
+
+### Deferred (NOT gaps — later-story scope)
+
+God-controller retirement + live wiring of the cascade / binders / VMs into `MainController` /
+`ProjectLifecycleController` / `DawMenuBarController` = **293**; inspector / clip-editor / plugin-chain
+selection-surface binding + clip/device clamp = **294**; the `checkpoint` / session-status producer =
+**295-299**. A distinct `ToolChanged` event and `ThemeChanged` are deferred (§5.5, §7).

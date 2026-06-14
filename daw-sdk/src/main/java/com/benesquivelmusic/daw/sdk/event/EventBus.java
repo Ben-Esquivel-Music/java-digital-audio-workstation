@@ -4,7 +4,9 @@ import java.util.concurrent.Flow;
 import java.util.function.Consumer;
 
 /**
- * Central, typed publish/subscribe channel for {@link DawEvent}s.
+ * Central, typed publish/subscribe channel for {@link BusEvent}s — both the
+ * engine-domain {@link DawEvent} family and the UI-only {@link UiEvent} family
+ * ride the one bus (story 292).
  *
  * <p>The bus replaces the per-emitter ad-hoc listener lists used in
  * earlier iterations of the engine. Emitters call {@link #publish}
@@ -52,7 +54,7 @@ public interface EventBus {
      *
      * @param event the event to publish; must not be {@code null}
      */
-    void publish(DawEvent event);
+    void publish(BusEvent event);
 
     /**
      * Returns a {@link Flow.Publisher} that emits every event whose
@@ -77,7 +79,7 @@ public interface EventBus {
      * @param <E>  the event type
      * @return a per-call publisher emitting events of the requested type
      */
-    <E extends DawEvent> Flow.Publisher<E> subscribe(Class<E> type);
+    <E extends BusEvent> Flow.Publisher<E> subscribe(Class<E> type);
 
     /**
      * Convenience subscription that invokes {@code handler} on every
@@ -88,7 +90,7 @@ public interface EventBus {
      * @param <E>     the event type
      * @return a handle that, when closed, cancels the subscription
      */
-    default <E extends DawEvent> Subscription on(Class<E> type, Consumer<? super E> handler) {
+    default <E extends BusEvent> Subscription on(Class<E> type, Consumer<? super E> handler) {
         return on(type, DispatchMode.ON_CALLER_THREAD, handler);
     }
 
@@ -102,7 +104,7 @@ public interface EventBus {
      * @param <E>     the event type
      * @return a handle that, when closed, cancels the subscription
      */
-    <E extends DawEvent> Subscription on(Class<E> type,
+    <E extends BusEvent> Subscription on(Class<E> type,
                                          DispatchMode mode,
                                          Consumer<? super E> handler);
 

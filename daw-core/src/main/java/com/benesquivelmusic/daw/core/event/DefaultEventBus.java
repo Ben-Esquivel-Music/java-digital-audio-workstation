@@ -1,6 +1,6 @@
 package com.benesquivelmusic.daw.core.event;
 
-import com.benesquivelmusic.daw.sdk.event.DawEvent;
+import com.benesquivelmusic.daw.sdk.event.BusEvent;
 import com.benesquivelmusic.daw.sdk.event.DispatchMode;
 import com.benesquivelmusic.daw.sdk.event.EventBus;
 import com.benesquivelmusic.daw.sdk.event.EventBusMetrics;
@@ -61,7 +61,7 @@ public final class DefaultEventBus implements EventBus {
 
     private final int bufferCapacity;
     private final Executor uiExecutor;
-    private final Map<Class<? extends DawEvent>, OverflowStrategy> strategyByType;
+    private final Map<Class<? extends BusEvent>, OverflowStrategy> strategyByType;
     private final OverflowStrategy defaultStrategy;
     private final ExecutorService dispatcher;
     private final List<Sub<?>> subs = new CopyOnWriteArrayList<>();
@@ -73,7 +73,7 @@ public final class DefaultEventBus implements EventBus {
         private int bufferCapacity = DEFAULT_BUFFER_CAPACITY;
         private Executor uiExecutor;
         private OverflowStrategy defaultStrategy = OverflowStrategy.DROP_OLDEST;
-        private final Map<Class<? extends DawEvent>, OverflowStrategy> strategies = new HashMap<>();
+        private final Map<Class<? extends BusEvent>, OverflowStrategy> strategies = new HashMap<>();
 
         /** Sets the per-subscription bounded-buffer capacity (default {@value #DEFAULT_BUFFER_CAPACITY}). */
         public Builder bufferCapacity(int capacity) {
@@ -100,7 +100,7 @@ public final class DefaultEventBus implements EventBus {
         }
 
         /** Registers a per-event-type overflow strategy override. */
-        public Builder overflowStrategy(Class<? extends DawEvent> type, OverflowStrategy strategy) {
+        public Builder overflowStrategy(Class<? extends BusEvent> type, OverflowStrategy strategy) {
             Objects.requireNonNull(type, "type");
             Objects.requireNonNull(strategy, "strategy");
             strategies.put(type, strategy);
@@ -135,7 +135,7 @@ public final class DefaultEventBus implements EventBus {
     }
 
     @Override
-    public void publish(DawEvent event) {
+    public void publish(BusEvent event) {
         Objects.requireNonNull(event, "event");
         if (closed.get()) {
             return;
@@ -166,7 +166,7 @@ public final class DefaultEventBus implements EventBus {
     }
 
     @Override
-    public <E extends DawEvent> Flow.Publisher<E> subscribe(Class<E> type) {
+    public <E extends BusEvent> Flow.Publisher<E> subscribe(Class<E> type) {
         Objects.requireNonNull(type, "type");
         if (closed.get()) {
             throw new IllegalStateException("EventBus is closed");
@@ -174,7 +174,7 @@ public final class DefaultEventBus implements EventBus {
         return downstream -> attachFlowSubscriber(type, downstream);
     }
 
-    private <E extends DawEvent> void attachFlowSubscriber(Class<E> type,
+    private <E extends BusEvent> void attachFlowSubscriber(Class<E> type,
                                                            Flow.Subscriber<? super E> downstream) {
         Objects.requireNonNull(downstream, "subscriber");
         if (closed.get()) {
@@ -206,7 +206,7 @@ public final class DefaultEventBus implements EventBus {
     }
 
     @Override
-    public <E extends DawEvent> Subscription on(Class<E> type,
+    public <E extends BusEvent> Subscription on(Class<E> type,
                                                 DispatchMode mode,
                                                 Consumer<? super E> handler) {
         Objects.requireNonNull(type, "type");
@@ -253,7 +253,7 @@ public final class DefaultEventBus implements EventBus {
     // Per-subscription worker
     // -----------------------------------------------------------------
 
-    private static final class Sub<E extends DawEvent> {
+    private static final class Sub<E extends BusEvent> {
         private final Class<E> type;
         private final int capacity;
         private final DispatchMode mode;
@@ -262,7 +262,7 @@ public final class DefaultEventBus implements EventBus {
         private final Metrics metrics;
         @SuppressWarnings("rawtypes")
         private final Consumer handler;
-        private final Deque<DawEvent> buffer = new ArrayDeque<>();
+        private final Deque<BusEvent> buffer = new ArrayDeque<>();
         private final ReentrantLock lock = new ReentrantLock();
         private final java.util.concurrent.locks.Condition notFull = lock.newCondition();
         private final java.util.concurrent.locks.Condition notEmpty = lock.newCondition();
@@ -302,7 +302,7 @@ public final class DefaultEventBus implements EventBus {
             metrics.unregisterSubscription(id);
         }
 
-        void tryEnqueue(DawEvent event, OverflowStrategy strategy) {
+        void tryEnqueue(BusEvent event, OverflowStrategy strategy) {
             if (cancelled.get() || !type.isInstance(event)) {
                 return;
             }
@@ -310,7 +310,7 @@ public final class DefaultEventBus implements EventBus {
             try {
                 if (buffer.size() >= capacity) {
                     if (strategy == OverflowStrategy.DROP_OLDEST) {
-                        DawEvent dropped = buffer.pollFirst();
+                        BusEvent dropped = buffer.pollFirst();
                         if (dropped != null) {
                             metrics.recordDropped(dropped.getClass());
                         }
@@ -332,7 +332,7 @@ public final class DefaultEventBus implements EventBus {
         @SuppressWarnings("unchecked")
         private void runLoop() {
             while (!cancelled.get()) {
-                DawEvent next;
+                BusEvent next;
                 lock.lock();
                 try {
                     while (buffer.isEmpty() && !cancelled.get()) {

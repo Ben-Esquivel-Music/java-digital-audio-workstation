@@ -1,28 +1,34 @@
 package com.benesquivelmusic.daw.core.event;
 
+import com.benesquivelmusic.daw.sdk.event.BusEvent;
 import com.benesquivelmusic.daw.sdk.event.DawEvent;
 import com.benesquivelmusic.daw.sdk.event.EventBus;
+import com.benesquivelmusic.daw.sdk.event.UiEvent;
 
 import java.util.Objects;
 
 /**
  * Story 283 — process-wide publisher seam for the typed
  * {@link EventBus} so that {@code UndoableAction} classes (and any
- * other model-mutating callers) can publish {@link DawEvent}s without
- * each one taking a constructor dependency on the bus.
+ * other model-mutating callers) can publish {@link BusEvent}s without
+ * each one taking a constructor dependency on the bus. The bus carries
+ * both families under {@link BusEvent}: {@link DawEvent} domain facts
+ * (the original story-283 producers) and, since story 292, {@link UiEvent}
+ * UI-only facts published by the {@code SelectionVM}/{@code HistoryVM}
+ * command handlers.
  *
  * <p>The application wires a single {@link EventBus} instance at
  * startup via {@link #setDefault(EventBus)}; tests that don't care
  * about events simply leave the bus unset and every {@link #publish}
  * call becomes a no-op. Producers always call
- * {@link #publish(DawEvent)} — they never thread-marshal; the
+ * {@link #publish(BusEvent)} — they never thread-marshal; the
  * per-subscription {@code DispatchMode} on each
  * {@link EventBus#on(Class, com.benesquivelmusic.daw.sdk.event.DispatchMode,
  * java.util.function.Consumer)} call is the consumer's choice.</p>
  *
  * <p>This class is the <em>only</em> publisher facade in the engine —
- * action classes call {@link #publish} directly, not a typed wrapper
- * per event family. The bus reference is read once at publish time
+ * action classes (and the UI command handlers) call {@link #publish}
+ * directly, not a typed wrapper per event family. The bus reference is read once at publish time
  * (volatile) so a hot-swap via {@link #setDefault(EventBus)} from a
  * test never tears.</p>
  */
@@ -72,7 +78,7 @@ public final class EventBusPublisher {
      * @param event the event to publish; must not be {@code null}
      * @throws NullPointerException if {@code event} is {@code null}
      */
-    public static void publish(DawEvent event) {
+    public static void publish(BusEvent event) {
         Objects.requireNonNull(event, "event must not be null");
         EventBus current = bus;
         if (current != null) {
