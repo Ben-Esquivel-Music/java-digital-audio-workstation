@@ -23,9 +23,10 @@ import java.util.Optional;
  * <p>Extracted from {@link DawMenuBarController} so menu construction
  * (geometry, ordering, icons, accelerators) is separated from the
  * enable-state synchronization handled by {@link MenuEnablementPolicy}
- * and the action dispatch handled by the {@link DawMenuBarController.Host}
- * callback. This keeps the public {@code DawMenuBarController} below the
- * project's ~200-line soft cap for controller classes.</p>
+ * and the action dispatch handled by the
+ * {@link DawMenuBarController.MenuActions} callback. This keeps the public
+ * {@code DawMenuBarController} below the project's ~200-line soft cap for
+ * controller classes.</p>
  *
  * <p>Construction is a one-shot operation: each call to {@link #build}
  * returns a fresh {@link Result} containing the populated menus plus
@@ -37,10 +38,10 @@ final class MenuConstructionService {
     /** Icon size for menu-item graphics. */
     static final double MENU_ICON_SIZE = DawMenuBarController.MENU_ICON_SIZE;
 
-    private final DawMenuBarController.Host host;
+    private final DawMenuBarController.MenuActions host;
     private final KeyBindingManager keyBindingManager;
 
-    MenuConstructionService(DawMenuBarController.Host host,
+    MenuConstructionService(DawMenuBarController.MenuActions host,
                             KeyBindingManager keyBindingManager) {
         this.host = Objects.requireNonNull(host, "host must not be null");
         this.keyBindingManager = Objects.requireNonNull(keyBindingManager,

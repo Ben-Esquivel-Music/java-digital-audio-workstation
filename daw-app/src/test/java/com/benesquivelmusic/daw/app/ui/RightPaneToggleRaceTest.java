@@ -91,8 +91,15 @@ class RightPaneToggleRaceTest {
             BrowserPanelController browserCtl =
                     new BrowserPanelController(browserPanel, browserButton, root);
             browserCtl.initialize();
+            UndoManager undoManager = new UndoManager();
             HistoryPanelController historyCtl =
-                    new HistoryPanelController(root, historyButton, new StubHost(browserCtl));
+                    new HistoryPanelController(root, historyButton,
+                            () -> undoManager,
+                            () -> { /* no-op */ },
+                            () -> { /* no-op */ },
+                            browserCtl::isPanelVisible,
+                            browserCtl::toggleBrowserPanel,
+                            (text, icon) -> { /* no-op */ });
             historyCtl.build();
 
             // Open history (synchronous install + fade-in).
@@ -154,8 +161,15 @@ class RightPaneToggleRaceTest {
             BrowserPanelController browserCtl =
                     new BrowserPanelController(browserPanel, browserButton, root);
             browserCtl.initialize();
+            UndoManager undoManager = new UndoManager();
             HistoryPanelController historyCtl =
-                    new HistoryPanelController(root, historyButton, new StubHost(browserCtl));
+                    new HistoryPanelController(root, historyButton,
+                            () -> undoManager,
+                            () -> { /* no-op */ },
+                            () -> { /* no-op */ },
+                            browserCtl::isPanelVisible,
+                            browserCtl::toggleBrowserPanel,
+                            (text, icon) -> { /* no-op */ });
             historyCtl.build();
 
             // Open browser (synchronous install + fade-in).
@@ -297,23 +311,5 @@ class RightPaneToggleRaceTest {
     @FunctionalInterface
     private interface FxAction {
         void run() throws Exception;
-    }
-
-    /** Minimal Host implementing only the methods the toggle path exercises. */
-    private static final class StubHost implements HistoryPanelController.Host {
-        private final BrowserPanelController browserCtl;
-        private final UndoManager undoManager = new UndoManager();
-
-        StubHost(BrowserPanelController browserCtl) {
-            this.browserCtl = browserCtl;
-        }
-
-        @Override public UndoManager undoManager() { return undoManager; }
-        @Override public void updateUndoRedoState() { /* no-op */ }
-        @Override public void refreshArrangementCanvas() { /* no-op */ }
-        @Override public boolean isBrowserPanelVisible() { return browserCtl.isPanelVisible(); }
-        @Override public void hideBrowserPanel() { browserCtl.toggleBrowserPanel(); }
-        @Override public void updateStatusBar(String text,
-                com.benesquivelmusic.daw.app.ui.icons.DawIcon icon) { /* no-op */ }
     }
 }

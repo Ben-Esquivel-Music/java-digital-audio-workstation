@@ -12,6 +12,10 @@ import javafx.scene.layout.BorderPane;
 import javafx.util.Duration;
 
 import java.util.List;
+import java.util.Objects;
+import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 import java.util.logging.Logger;
 
 /**
@@ -28,18 +32,22 @@ final class HistoryPanelController {
 
     private static final Logger LOG = Logger.getLogger(HistoryPanelController.class.getName());
 
-    interface Host {
-        UndoManager undoManager();
-        void updateUndoRedoState();
-        void refreshArrangementCanvas();
-        boolean isBrowserPanelVisible();
-        void hideBrowserPanel();
-        void updateStatusBar(String text, DawIcon icon);
-    }
-
     private final BorderPane rootPane;
     private final javafx.scene.control.Button historyButton;
-    private final Host host;
+    /**
+     * Story 293 — direct collaborators replacing the retired {@code Host}
+     * callback-up interface (CONTROL_SYNCHRONIZATION_DESIGN_BOOK §9). The undo
+     * manager arrives via a live {@link Supplier} (this controller is init-only
+     * and is not reconstructed on project load, so the supplier reads the
+     * swappable field fresh each time — e.g. after a snapshot restore swaps in a
+     * new {@code UndoManager}).
+     */
+    private final Supplier<UndoManager> undoManager;
+    private final Runnable syncMenuState;
+    private final Runnable refreshArrangementCanvas;
+    private final BooleanSupplier browserPanelVisible;
+    private final Runnable hideBrowserPanel;
+    private final BiConsumer<String, DawIcon> statusBar;
     /**
      * The FX-thread marshalling seam (story 289), injected on the production
      * path and threaded into every {@link UndoHistoryPanel} this controller
@@ -54,17 +62,37 @@ final class HistoryPanelController {
 
     HistoryPanelController(BorderPane rootPane,
                            javafx.scene.control.Button historyButton,
-                           Host host) {
-        this(rootPane, historyButton, host, FxDispatcher.getDefault());
+                           Supplier<UndoManager> undoManager,
+                           Runnable syncMenuState,
+                           Runnable refreshArrangementCanvas,
+                           BooleanSupplier browserPanelVisible,
+                           Runnable hideBrowserPanel,
+                           BiConsumer<String, DawIcon> statusBar) {
+        this(rootPane, historyButton, undoManager, syncMenuState,
+                refreshArrangementCanvas, browserPanelVisible, hideBrowserPanel,
+                statusBar, FxDispatcher.getDefault());
     }
 
     HistoryPanelController(BorderPane rootPane,
                            javafx.scene.control.Button historyButton,
-                           Host host,
+                           Supplier<UndoManager> undoManager,
+                           Runnable syncMenuState,
+                           Runnable refreshArrangementCanvas,
+                           BooleanSupplier browserPanelVisible,
+                           Runnable hideBrowserPanel,
+                           BiConsumer<String, DawIcon> statusBar,
                            FxDispatcher fxDispatcher) {
         this.rootPane = rootPane;
         this.historyButton = historyButton;
-        this.host = host;
+        this.undoManager = Objects.requireNonNull(undoManager, "undoManager must not be null");
+        this.syncMenuState = Objects.requireNonNull(syncMenuState, "syncMenuState must not be null");
+        this.refreshArrangementCanvas = Objects.requireNonNull(
+                refreshArrangementCanvas, "refreshArrangementCanvas must not be null");
+        this.browserPanelVisible = Objects.requireNonNull(
+                browserPanelVisible, "browserPanelVisible must not be null");
+        this.hideBrowserPanel = Objects.requireNonNull(
+                hideBrowserPanel, "hideBrowserPanel must not be null");
+        this.statusBar = Objects.requireNonNull(statusBar, "statusBar must not be null");
         // May be null in a pure-unit context; postFx() / UndoHistoryPanel fall
         // back to the static seam, preserving today's behaviour byte-for-byte.
         this.fxDispatcher = fxDispatcher;
@@ -80,7 +108,7 @@ final class HistoryPanelController {
     }
 
     void build() {
-        undoHistoryPanel = new UndoHistoryPanel(host.undoManager(), fxDispatcher);
+        undoHistoryPanel = new UndoHistoryPanel(undoManager.get(), fxDispatcher);
         historyButton.setOnAction(_ -> toggleHistoryPanel());
         LOG.fine("Built undo history panel");
     }
@@ -89,18 +117,18 @@ final class HistoryPanelController {
         if (undoHistoryPanel != null) {
             undoHistoryPanel.dispose();
         }
-        host.undoManager().addHistoryListener(_ -> {
+        undoManager.get().addHistoryListener(_ -> {
             if (javafx.application.Platform.isFxApplicationThread()) {
-                host.updateUndoRedoState();
-                host.refreshArrangementCanvas();
+                syncMenuState.run();
+                refreshArrangementCanvas.run();
             } else {
                 postFx(() -> {
-                    host.updateUndoRedoState();
-                    host.refreshArrangementCanvas();
+                    syncMenuState.run();
+                    refreshArrangementCanvas.run();
                 });
             }
         });
-        undoHistoryPanel = new UndoHistoryPanel(host.undoManager(), fxDispatcher);
+        undoHistoryPanel = new UndoHistoryPanel(undoManager.get(), fxDispatcher);
         if (historyPanelVisible) {
             rootPane.setRight(undoHistoryPanel);
         }
@@ -113,8 +141,8 @@ final class HistoryPanelController {
         // the panel is shown/removed at once with no opacity fade.
         boolean animate = MotionManager.getDefault().isAnimationAllowed();
         if (historyPanelVisible) {
-            if (host.isBrowserPanelVisible()) {
-                host.hideBrowserPanel();
+            if (browserPanelVisible.getAsBoolean()) {
+                hideBrowserPanel.run();
             }
             rootPane.setRight(undoHistoryPanel);
             if (animate) {
@@ -124,7 +152,7 @@ final class HistoryPanelController {
             } else {
                 undoHistoryPanel.setOpacity(1.0);
             }
-            host.updateStatusBar("Undo History panel opened", DawIcon.HISTORY);
+            statusBar.accept("Undo History panel opened", DawIcon.HISTORY);
         } else {
             if (animate) {
                 final var fadingPanel = undoHistoryPanel;
@@ -149,7 +177,7 @@ final class HistoryPanelController {
             } else {
                 rootPane.setRight(null);
             }
-            host.updateStatusBar("Undo History panel closed", DawIcon.HISTORY);
+            statusBar.accept("Undo History panel closed", DawIcon.HISTORY);
         }
         updateHistoryButtonActiveState();
     }

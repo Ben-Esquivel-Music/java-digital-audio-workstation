@@ -38,4 +38,24 @@ public final class SnapQuantizer {
         double snapped = Math.round(positionInBeats / gridSize) * gridSize;
         return Math.max(0.0, snapped);
     }
+
+    /**
+     * Returns {@code positionInBeats} quantized via
+     * {@link #quantize(double, GridResolution, int)} when {@code snapEnabled},
+     * otherwise the raw position unchanged. Hoisted (story 293 review #7) so the
+     * gesture handlers (clip move / trim / fade) express the snap-or-pass
+     * decision in one place instead of repeating the {@code if (snapEnabled) …}
+     * block; callers that also need a lower bound clamp the pass-through result
+     * themselves (the quantized branch is already {@code ≥ 0}).
+     *
+     * @param positionInBeats the raw beat position
+     * @param snapEnabled     whether snap-to-grid is active
+     * @param resolution      the active grid resolution (used only when snapping)
+     * @param beatsPerBar     beats per bar (used only when snapping)
+     * @return the quantized position when snapping, else {@code positionInBeats}
+     */
+    public static double snapIfEnabled(double positionInBeats, boolean snapEnabled,
+                                       GridResolution resolution, int beatsPerBar) {
+        return snapEnabled ? quantize(positionInBeats, resolution, beatsPerBar) : positionInBeats;
+    }
 }

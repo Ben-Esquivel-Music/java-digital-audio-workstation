@@ -1,10 +1,10 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.plugin.BuiltInDawPlugin;
-import com.benesquivelmusic.daw.core.project.DawProject;
 import javafx.scene.control.MenuBar;
 
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
 import java.util.logging.Logger;
 
 /**
@@ -18,9 +18,18 @@ import java.util.logging.Logger;
  *       (geometry, ordering, icons, accelerators).</li>
  *   <li>{@link MenuEnablementPolicy} — pure-logic mapping from project
  *       state to menu item enable/disable flags.</li>
- *   <li>{@link Host} callback — owns action dispatch and project state
- *       queries.</li>
+ *   <li>{@link MenuActions} callback — owns action dispatch (menu / click /
+ *       key are one intent, CONTROL_SYNCHRONIZATION_DESIGN_BOOK §2.8).</li>
  * </ul>
+ *
+ * <p>Story 293 — the former {@code Host} interface mixed action dispatch with
+ * six cascade-feeding state-query methods. Per
+ * CONTROL_SYNCHRONIZATION_DESIGN_BOOK §9 ("Callback-up Host interfaces for
+ * cross-surface updates → use publish/subscribe") the state-query half is
+ * retired: {@link #syncMenuState()} now reads enablement from live
+ * {@link BooleanSupplier}s the controller is constructed with, and the residual
+ * action interface is renamed {@link MenuActions} (it is legitimate intent
+ * routing, not a cascade Host).</p>
  *
  * <p>This controller is now a thin facade that wires those collaborators
  * together. Dark-theme styling is achieved via the
@@ -34,18 +43,15 @@ public final class DawMenuBarController {
     static final double MENU_ICON_SIZE = 14;
 
     /**
-     * Callback interface for menu actions. Implemented by the host
-     * controller that owns the project and UI state.
+     * Callback interface for menu actions — one method per user intent. A
+     * transport/edit/view action triggered from a menu, a toolbar click, or a
+     * keyboard shortcut all converge on the same method
+     * (CONTROL_SYNCHRONIZATION_DESIGN_BOOK §2.8). Story 293 renamed this from
+     * {@code Host} and removed the cascade-feeding state-query methods (those
+     * are now constructor {@link BooleanSupplier}s read by
+     * {@link #syncMenuState()}).
      */
-    interface Host {
-        DawProject project();
-        boolean isProjectDirty();
-        boolean canUndo();
-        boolean canRedo();
-        boolean hasClipboardContent();
-        boolean hasSelection();
-        DawView activeView();
-
+    interface MenuActions {
         // File actions
         void onNewProject();
         void onOpenProject();
@@ -134,22 +140,55 @@ public final class DawMenuBarController {
         void onHelp();
     }
 
-    private final Host host;
     private final MenuConstructionService constructionService;
     private final MenuBar menuBar;
+
+    /**
+     * Story 293 — the cascade-feeding state queries that the former {@code Host}
+     * exposed are now live {@link BooleanSupplier}s. {@link #syncMenuState()}
+     * reads them straight from the authoritative sources (undo manager,
+     * clipboard, selection model, project dirty flag, project track list) so the
+     * menu enablement is derived, never poked across surfaces.
+     */
+    private final BooleanSupplier projectDirty;
+    private final BooleanSupplier canUndo;
+    private final BooleanSupplier canRedo;
+    private final BooleanSupplier hasClipboardContent;
+    private final BooleanSupplier hasSelection;
+    private final BooleanSupplier hasTracks;
 
     private MenuConstructionService.SyncableItems syncableItems;
 
     /**
      * Creates a new menu bar controller.
      *
-     * @param host              the host providing actions and state queries
-     * @param keyBindingManager the key binding manager for shortcut display
+     * @param actions             the menu action dispatch callback
+     * @param keyBindingManager   the key binding manager for shortcut display
+     * @param projectDirty        live "project has unsaved changes" query
+     * @param canUndo             live "undo available" query
+     * @param canRedo             live "redo available" query
+     * @param hasClipboardContent live "clipboard has content" query
+     * @param hasSelection        live "a clip selection exists" query
+     * @param hasTracks           live "project has at least one track" query
      */
-    public DawMenuBarController(Host host, KeyBindingManager keyBindingManager) {
-        this.host = Objects.requireNonNull(host, "host must not be null");
-        this.constructionService = new MenuConstructionService(host,
+    public DawMenuBarController(MenuActions actions,
+                                KeyBindingManager keyBindingManager,
+                                BooleanSupplier projectDirty,
+                                BooleanSupplier canUndo,
+                                BooleanSupplier canRedo,
+                                BooleanSupplier hasClipboardContent,
+                                BooleanSupplier hasSelection,
+                                BooleanSupplier hasTracks) {
+        Objects.requireNonNull(actions, "actions must not be null");
+        this.constructionService = new MenuConstructionService(actions,
                 Objects.requireNonNull(keyBindingManager, "keyBindingManager must not be null"));
+        this.projectDirty = Objects.requireNonNull(projectDirty, "projectDirty must not be null");
+        this.canUndo = Objects.requireNonNull(canUndo, "canUndo must not be null");
+        this.canRedo = Objects.requireNonNull(canRedo, "canRedo must not be null");
+        this.hasClipboardContent = Objects.requireNonNull(
+                hasClipboardContent, "hasClipboardContent must not be null");
+        this.hasSelection = Objects.requireNonNull(hasSelection, "hasSelection must not be null");
+        this.hasTracks = Objects.requireNonNull(hasTracks, "hasTracks must not be null");
         this.menuBar = new MenuBar();
         this.menuBar.getStyleClass().add("daw-menu-bar");
         this.menuBar.setUseSystemMenuBar(false);
@@ -189,12 +228,12 @@ public final class DawMenuBarController {
         }
         MenuEnablementPolicy.MenuEnablement enablement = MenuEnablementPolicy.compute(
                 new MenuEnablementPolicy.MenuState(
-                        host.isProjectDirty(),
-                        host.canUndo(),
-                        host.canRedo(),
-                        host.hasClipboardContent(),
-                        host.hasSelection(),
-                        !host.project().getTracks().isEmpty()));
+                        projectDirty.getAsBoolean(),
+                        canUndo.getAsBoolean(),
+                        canRedo.getAsBoolean(),
+                        hasClipboardContent.getAsBoolean(),
+                        hasSelection.getAsBoolean(),
+                        hasTracks.getAsBoolean()));
 
         syncableItems.saveItem().setDisable(enablement.saveDisabled());
         syncableItems.exportSessionItem().setDisable(enablement.exportSessionDisabled());

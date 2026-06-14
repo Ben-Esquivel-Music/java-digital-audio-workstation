@@ -28,6 +28,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalDouble;
+import java.util.function.BiConsumer;
+import java.util.function.DoubleSupplier;
+import java.util.function.Supplier;
 
 /**
  * Handles clip clipboard operations (copy, cut, paste, duplicate, delete)
@@ -38,46 +41,74 @@ import java.util.OptionalDouble;
  */
 final class ClipEditController {
 
-    interface Host {
-        com.benesquivelmusic.daw.core.project.DawProject project();
-        UndoManager undoManager();
-        ClipboardManager clipboardManager();
-        SelectionModel selectionModel();
-        void refreshArrangementCanvas();
-        void updateUndoRedoState();
-        void syncMenuState();
-        void markProjectDirty();
-        void updateStatusBar(String text, DawIcon icon);
-        void showNotificationWithUndo(NotificationLevel level, String message, Runnable undoCallback);
-        void showNotification(NotificationLevel level, String message);
-        EditorView editorView();
-        RippleMode rippleMode();
-        /** Returns the grid step in beats, used by keyboard slip shortcuts. */
-        double gridStepBeats();
+    /** Surfaces a notification with an inline Undo affordance. */
+    @FunctionalInterface
+    interface NotificationWithUndo {
+        void show(NotificationLevel level, String message, Runnable undoCallback);
     }
 
-    private final Host host;
+    /**
+     * Story 293 — direct collaborators replacing the retired {@code Host}
+     * callback-up interface (CONTROL_SYNCHRONIZATION_DESIGN_BOOK §9). A plain
+     * data carrier of functional dependencies. This controller is init-only
+     * (never reconstructed on project load), so the swappable {@code project} /
+     * {@code undoManager} are {@link Supplier}s read fresh on every access; the
+     * stable clipboard / selection models are passed by value. {@code editorView}
+     * / {@code gridStepBeats} read live view-navigation state, and
+     * {@code rippleMode} derives from the live project — all suppliers.
+     *
+     * @param project                authoritative project (live, swappable)
+     * @param undoManager            the undo manager (live, swappable)
+     * @param clipboardManager       the app clipboard (stable)
+     * @param selectionModel         the selection model (stable)
+     * @param refreshArrangementCanvas repaints the arrangement canvas
+     * @param syncMenuState          rebuilds full menu enablement (undo/redo
+     *                               buttons bind {@code HistoryVM} since story 293)
+     * @param markProjectDirty       marks the project dirty
+     * @param updateStatusBar        writes a status-bar message (text, icon)
+     * @param showNotificationWithUndo surfaces a notification with inline Undo
+     * @param showNotification       surfaces a plain notification (level, message)
+     * @param editorView             the live editor view
+     * @param rippleMode             the live ripple mode
+     * @param gridStepBeats          grid step in beats (keyboard slip shortcuts)
+     */
+    record Deps(Supplier<com.benesquivelmusic.daw.core.project.DawProject> project,
+                Supplier<UndoManager> undoManager,
+                ClipboardManager clipboardManager,
+                SelectionModel selectionModel,
+                Runnable refreshArrangementCanvas,
+                Runnable syncMenuState,
+                Runnable markProjectDirty,
+                BiConsumer<String, DawIcon> updateStatusBar,
+                NotificationWithUndo showNotificationWithUndo,
+                BiConsumer<NotificationLevel, String> showNotification,
+                Supplier<EditorView> editorView,
+                Supplier<RippleMode> rippleMode,
+                DoubleSupplier gridStepBeats) {
+    }
 
-    ClipEditController(Host host) {
-        this.host = host;
+    private final Deps deps;
+
+    ClipEditController(Deps deps) {
+        this.deps = Objects.requireNonNull(deps, "deps must not be null");
     }
 
     void onCopy() {
-        List<ClipboardEntry> selected = host.selectionModel().getSelectedClips();
+        List<ClipboardEntry> selected = deps.selectionModel().getSelectedClips();
         if (selected.isEmpty()) {
             return;
         }
-        host.clipboardManager().copyClips(selected);
-        host.syncMenuState();
-        host.updateStatusBar("Copied " + selected.size() + " clip(s)", DawIcon.COPY);
+        deps.clipboardManager().copyClips(selected);
+        deps.syncMenuState().run();
+        deps.updateStatusBar().accept("Copied " + selected.size() + " clip(s)", DawIcon.COPY);
     }
 
     void onCut() {
-        List<ClipboardEntry> selected = host.selectionModel().getSelectedClips();
+        List<ClipboardEntry> selected = deps.selectionModel().getSelectedClips();
         if (selected.isEmpty()) {
             return;
         }
-        host.clipboardManager().copyClips(selected);
+        deps.clipboardManager().copyClips(selected);
         List<Map.Entry<Track, AudioClip>> entries = new ArrayList<>();
         for (ClipboardEntry entry : selected) {
             entries.add(Map.entry(entry.sourceTrack(), entry.clip()));
@@ -86,16 +117,16 @@ final class ClipEditController {
         if (action == null) {
             return; // ripple validation failed — notification already shown
         }
-        host.undoManager().execute(action);
-        host.selectionModel().clearClipSelection();
-        host.refreshArrangementCanvas();
-        host.updateUndoRedoState();
-        host.updateStatusBar("Cut " + entries.size() + " clip(s)", DawIcon.CUT);
-        host.markProjectDirty();
+        deps.undoManager().get().execute(action);
+        deps.selectionModel().clearClipSelection();
+        deps.refreshArrangementCanvas().run();
+        deps.syncMenuState().run();
+        deps.updateStatusBar().accept("Cut " + entries.size() + " clip(s)", DawIcon.CUT);
+        deps.markProjectDirty().run();
     }
 
     void onPaste() {
-        ClipboardManager clipboard = host.clipboardManager();
+        ClipboardManager clipboard = deps.clipboardManager();
         if (!clipboard.hasContent()) {
             return;
         }
@@ -103,8 +134,8 @@ final class ClipEditController {
         if (entries.isEmpty()) {
             return;
         }
-        double playhead = host.project().getTransport().getPositionInBeats();
-        List<Track> currentTracks = host.project().getTracks();
+        double playhead = deps.project().get().getTransport().getPositionInBeats();
+        List<Track> currentTracks = deps.project().get().getTracks();
         List<Map.Entry<Track, AudioClip>> sourceEntries = new ArrayList<>();
         for (ClipboardEntry entry : entries) {
             Track resolved = resolveTrack(entry.sourceTrack(), currentTracks);
@@ -115,16 +146,16 @@ final class ClipEditController {
         if (sourceEntries.isEmpty()) {
             return;
         }
-        host.undoManager().execute(new PasteClipsAction(sourceEntries, null, playhead));
-        host.refreshArrangementCanvas();
-        host.updateUndoRedoState();
-        host.updateStatusBar("Pasted " + sourceEntries.size() + " clip(s) at beat "
+        deps.undoManager().get().execute(new PasteClipsAction(sourceEntries, null, playhead));
+        deps.refreshArrangementCanvas().run();
+        deps.syncMenuState().run();
+        deps.updateStatusBar().accept("Pasted " + sourceEntries.size() + " clip(s) at beat "
                 + String.format("%.1f", playhead), DawIcon.PASTE);
-        host.markProjectDirty();
+        deps.markProjectDirty().run();
     }
 
     void onDuplicate() {
-        List<ClipboardEntry> selected = host.selectionModel().getSelectedClips();
+        List<ClipboardEntry> selected = deps.selectionModel().getSelectedClips();
         if (selected.isEmpty()) {
             return;
         }
@@ -132,21 +163,21 @@ final class ClipEditController {
         for (ClipboardEntry entry : selected) {
             entries.add(Map.entry(entry.sourceTrack(), entry.clip()));
         }
-        host.undoManager().execute(new DuplicateClipsAction(entries));
-        host.refreshArrangementCanvas();
-        host.updateUndoRedoState();
-        host.updateStatusBar("Duplicated " + entries.size() + " clip(s)", null);
-        host.markProjectDirty();
+        deps.undoManager().get().execute(new DuplicateClipsAction(entries));
+        deps.refreshArrangementCanvas().run();
+        deps.syncMenuState().run();
+        deps.updateStatusBar().accept("Duplicated " + entries.size() + " clip(s)", null);
+        deps.markProjectDirty().run();
     }
 
     /** Slips the selection one grid step to the left. */
     void onSlipLeftByGrid() {
-        onSlipSelectionByBeats(-host.gridStepBeats());
+        onSlipSelectionByBeats(-deps.gridStepBeats().getAsDouble());
     }
 
     /** Slips the selection one grid step to the right. */
     void onSlipRightByGrid() {
-        onSlipSelectionByBeats(host.gridStepBeats());
+        onSlipSelectionByBeats(deps.gridStepBeats().getAsDouble());
     }
 
     /** Slips the selection one sample to the left (Ctrl+Shift+Left). */
@@ -177,7 +208,7 @@ final class ClipEditController {
         if (beatDelta == 0.0) {
             return;
         }
-        SelectionModel sm = host.selectionModel();
+        SelectionModel sm = deps.selectionModel();
         List<ClipboardEntry> audioEntries = sm.getSelectedClips();
         java.util.Map<MidiClip, Track> midiEntries = sm.getSelectedMidiClips();
         if (audioEntries.isEmpty() && midiEntries.isEmpty()) {
@@ -194,7 +225,7 @@ final class ClipEditController {
             SlipEditService.SlipResult result = SlipEditService.buildAudioSlip(
                     entry.sourceTrack(), clip, -beatDelta, sourceLengthBeats);
             if (result.hasAction()) {
-                host.undoManager().execute(result.action());
+                deps.undoManager().get().execute(result.action());
                 applied++;
             }
             if (result.hitEdge()) {
@@ -206,7 +237,7 @@ final class ClipEditController {
             SlipEditService.SlipResult result = SlipEditService.buildMidiSlip(
                     clip, columnDelta);
             if (result.hasAction()) {
-                host.undoManager().execute(result.action());
+                deps.undoManager().get().execute(result.action());
                 applied++;
             }
             if (result.hitEdge()) {
@@ -217,12 +248,12 @@ final class ClipEditController {
             return;
         }
         if (anyHitEdge) {
-            host.showNotification(NotificationLevel.INFO,
+            deps.showNotification().accept(NotificationLevel.INFO,
                     "Slip clamped at source-window edge");
         }
-        host.refreshArrangementCanvas();
-        host.updateUndoRedoState();
-        host.markProjectDirty();
+        deps.refreshArrangementCanvas().run();
+        deps.syncMenuState().run();
+        deps.markProjectDirty().run();
     }
 
     /**
@@ -232,7 +263,7 @@ final class ClipEditController {
      * as unbounded.
      */
     private double sourceLengthBeatsFor(AudioClip clip) {
-        double bpm = host.project().getTransport().getTempo();
+        double bpm = deps.project().get().getTransport().getTempo();
         if (bpm <= 0) {
             return 0.0;
         }
@@ -254,10 +285,10 @@ final class ClipEditController {
      * {@code Ctrl+Shift+Left/Right}.</p>
      */
     private double sampleStepBeats() {
-        var transport = host.project().getTransport();
+        var transport = deps.project().get().getTransport();
         double playheadBeat = transport.getPositionInBeats();
         double bpm = transport.getTempoMap().getTempoAtBeat(playheadBeat);
-        double sampleRate = host.project().getFormat().sampleRate();
+        double sampleRate = deps.project().get().getFormat().sampleRate();
         if (bpm <= 0.0 || sampleRate <= 0.0) {
             return 0.0;
         }
@@ -299,7 +330,7 @@ final class ClipEditController {
         if (ctx == null) {
             return;
         }
-        NudgeSettings settings = host.project().getNudgeSettings();
+        NudgeSettings settings = deps.project().get().getNudgeSettings();
         double beatDelta = NudgeService.beatsFor(settings, ctx, directionMultiplier);
         applyNudge(entries, beatDelta, settings, directionMultiplier);
     }
@@ -330,10 +361,10 @@ final class ClipEditController {
         if (action == null) {
             return;
         }
-        host.undoManager().execute(action);
-        host.refreshArrangementCanvas();
-        host.updateUndoRedoState();
-        host.markProjectDirty();
+        deps.undoManager().get().execute(action);
+        deps.refreshArrangementCanvas().run();
+        deps.syncMenuState().run();
+        deps.markProjectDirty().run();
 
         String dir = directionMultiplier >= 0 ? "right" : "left";
         double mag = Math.abs(directionMultiplier);
@@ -346,7 +377,7 @@ final class ClipEditController {
         if (Math.abs(Math.abs(appliedBeatDelta) - Math.abs(beatDelta)) > 1.0e-9) {
             statusText += String.format(" (clamped to %s)", formatBeatDelta(appliedBeatDelta));
         }
-        host.updateStatusBar(statusText, null);
+        deps.updateStatusBar().accept(statusText, null);
     }
 
     private static String formatBeatDelta(double beatDelta) {
@@ -362,7 +393,7 @@ final class ClipEditController {
      * time selection. Returns an empty list if nothing is selectable.
      */
     private List<java.util.Map.Entry<Track, AudioClip>> resolveNudgeTargets() {
-        SelectionModel sm = host.selectionModel();
+        SelectionModel sm = deps.selectionModel();
         List<ClipboardEntry> selected = sm.getSelectedClips();
         if (!selected.isEmpty()) {
             List<java.util.Map.Entry<Track, AudioClip>> entries =
@@ -381,7 +412,7 @@ final class ClipEditController {
             double e = sm.getEndBeat();
             if (s < e) {
                 List<java.util.Map.Entry<Track, AudioClip>> entries = new ArrayList<>();
-                for (Track t : host.project().getTracks()) {
+                for (Track t : deps.project().get().getTracks()) {
                     for (AudioClip c : t.getClips()) {
                         if (c.getStartBeat() < e && c.getEndBeat() > s) {
                             entries.add(java.util.Map.entry(t, c));
@@ -400,14 +431,14 @@ final class ClipEditController {
      * built (e.g. zero tempo).
      */
     private NudgeService.TimingContext buildTimingContext() {
-        var transport = host.project().getTransport();
+        var transport = deps.project().get().getTransport();
         // Use the tempo at the current playhead beat so tempo-map changes
         // (e.g. accelerando) affect FRAMES/MILLISECONDS nudges correctly,
         // mirroring sampleStepBeats().
         double playheadBeat = transport.getPositionInBeats();
         double bpm = transport.getTempoMap().getTempoAtBeat(playheadBeat);
-        double sampleRate = host.project().getFormat().sampleRate();
-        double gridStep = host.gridStepBeats();
+        double sampleRate = deps.project().get().getFormat().sampleRate();
+        double gridStep = deps.gridStepBeats().getAsDouble();
         double barBeats = transport.getTimeSignatureNumerator();
         if (bpm <= 0.0 || sampleRate <= 0.0 || gridStep <= 0.0 || barBeats <= 0.0) {
             return null;
@@ -433,7 +464,7 @@ final class ClipEditController {
     }
 
     void onDeleteSelection() {
-        List<ClipboardEntry> selected = host.selectionModel().getSelectedClips();
+        List<ClipboardEntry> selected = deps.selectionModel().getSelectedClips();
         if (selected.isEmpty()) {
             return;
         }
@@ -445,12 +476,12 @@ final class ClipEditController {
         if (action == null) {
             return; // ripple validation failed — notification already shown
         }
-        host.undoManager().execute(action);
-        host.selectionModel().clearClipSelection();
-        host.refreshArrangementCanvas();
-        host.updateUndoRedoState();
-        host.updateStatusBar("Deleted " + entries.size() + " clip(s)", null);
-        host.markProjectDirty();
+        deps.undoManager().get().execute(action);
+        deps.selectionModel().clearClipSelection();
+        deps.refreshArrangementCanvas().run();
+        deps.syncMenuState().run();
+        deps.updateStatusBar().accept("Deleted " + entries.size() + " clip(s)", null);
+        deps.markProjectDirty().run();
     }
 
     /**
@@ -461,24 +492,24 @@ final class ClipEditController {
      */
     private UndoableAction buildDeleteAction(
             List<Map.Entry<Track, AudioClip>> entries, String verb) {
-        RippleMode mode = host.rippleMode();
+        RippleMode mode = deps.rippleMode().get();
         if (mode == RippleMode.OFF) {
             return new CutClipsAction(entries);
         }
         SelectionBounds selection = rippleSelection(entries);
         try {
             return RippleEditService.buildRippleDelete(
-                    entries, mode, host.project().getTracks(),
+                    entries, mode, deps.project().get().getTracks(),
                     selection.start(), selection.end());
         } catch (RippleValidationException e) {
-            host.showNotification(NotificationLevel.ERROR,
+            deps.showNotification().accept(NotificationLevel.ERROR,
                     verb + " cancelled — ripple would overlap clips: " + e.getMessage());
             return null;
         }
     }
 
     private SelectionBounds rippleSelection(List<Map.Entry<Track, AudioClip>> entries) {
-        SelectionModel selectionModel = host.selectionModel();
+        SelectionModel selectionModel = deps.selectionModel();
         if (!selectionModel.hasSelection()) {
             return SelectionBounds.NONE;
         }
@@ -501,13 +532,13 @@ final class ClipEditController {
     // ── Editor audio handle actions ─────────────────────────────────────────
 
     void onEditorTrim() {
-        EditorView editorView = host.editorView();
+        EditorView editorView = deps.editorView().get();
         Track track = editorView.getSelectedTrack();
         if (track == null || track.getClips().isEmpty()) {
             return;
         }
         List<AudioClip> clips = track.getClips();
-        host.undoManager().execute(new UndoableAction() {
+        deps.undoManager().get().execute(new UndoableAction() {
             private final List<double[]> savedState = new ArrayList<>();
             {
                 for (AudioClip clip : clips) {
@@ -536,22 +567,22 @@ final class ClipEditController {
                 }
             }
         });
-        host.updateUndoRedoState();
+        deps.syncMenuState().run();
         editorView.getWaveformDisplay().refresh();
-        host.showNotificationWithUndo(NotificationLevel.SUCCESS,
-                "Trimmed: " + track.getName(), () -> host.undoManager().undo());
-        host.markProjectDirty();
+        deps.showNotificationWithUndo().show(NotificationLevel.SUCCESS,
+                "Trimmed: " + track.getName(), () -> deps.undoManager().get().undo());
+        deps.markProjectDirty().run();
     }
 
     void onEditorFadeIn() {
-        EditorView editorView = host.editorView();
+        EditorView editorView = deps.editorView().get();
         Track track = editorView.getSelectedTrack();
         if (track == null || track.getClips().isEmpty()) {
             return;
         }
         List<AudioClip> clips = track.getClips();
         double defaultFadeBeats = 2.0;
-        host.undoManager().execute(new UndoableAction() {
+        deps.undoManager().get().execute(new UndoableAction() {
             private final List<double[]> savedFades = new ArrayList<>();
             {
                 for (AudioClip clip : clips) {
@@ -570,22 +601,22 @@ final class ClipEditController {
                 }
             }
         });
-        host.updateUndoRedoState();
+        deps.syncMenuState().run();
         editorView.getWaveformDisplay().refresh();
-        host.showNotificationWithUndo(NotificationLevel.SUCCESS,
-                "Fade in applied: " + track.getName(), () -> host.undoManager().undo());
-        host.markProjectDirty();
+        deps.showNotificationWithUndo().show(NotificationLevel.SUCCESS,
+                "Fade in applied: " + track.getName(), () -> deps.undoManager().get().undo());
+        deps.markProjectDirty().run();
     }
 
     void onEditorFadeOut() {
-        EditorView editorView = host.editorView();
+        EditorView editorView = deps.editorView().get();
         Track track = editorView.getSelectedTrack();
         if (track == null || track.getClips().isEmpty()) {
             return;
         }
         List<AudioClip> clips = track.getClips();
         double defaultFadeBeats = 2.0;
-        host.undoManager().execute(new UndoableAction() {
+        deps.undoManager().get().execute(new UndoableAction() {
             private final List<double[]> savedFades = new ArrayList<>();
             {
                 for (AudioClip clip : clips) {
@@ -604,11 +635,11 @@ final class ClipEditController {
                 }
             }
         });
-        host.updateUndoRedoState();
+        deps.syncMenuState().run();
         editorView.getWaveformDisplay().refresh();
-        host.showNotificationWithUndo(NotificationLevel.SUCCESS,
-                "Fade out applied: " + track.getName(), () -> host.undoManager().undo());
-        host.markProjectDirty();
+        deps.showNotificationWithUndo().show(NotificationLevel.SUCCESS,
+                "Fade out applied: " + track.getName(), () -> deps.undoManager().get().undo());
+        deps.markProjectDirty().run();
     }
 
     // ── Time-stretch / Pitch-shift (Story 042) ───────────────────────────────
@@ -657,7 +688,7 @@ final class ClipEditController {
         Objects.requireNonNull(prompter, "prompter must not be null");
         List<AudioClip> clips = collectSelectedAudioClips();
         if (clips.isEmpty()) {
-            host.showNotification(NotificationLevel.INFO,
+            deps.showNotification().accept(NotificationLevel.INFO,
                     "Select an audio clip to time-stretch");
             return;
         }
@@ -669,7 +700,7 @@ final class ClipEditController {
         TimeStretchClipDialog.Result r = result.get();
         applyAsCompound(clips, "Time Stretch " + clips.size() + " Clip(s)",
                 clip -> new TimeStretchClipAction(clip, r.ratio(), r.quality()));
-        host.updateStatusBar(String.format(java.util.Locale.ROOT,
+        deps.updateStatusBar().accept(String.format(java.util.Locale.ROOT,
                 "Time-stretched %d clip(s) by %.3f×", clips.size(), r.ratio()), null);
     }
 
@@ -685,7 +716,7 @@ final class ClipEditController {
         Objects.requireNonNull(prompter, "prompter must not be null");
         List<AudioClip> clips = collectSelectedAudioClips();
         if (clips.isEmpty()) {
-            host.showNotification(NotificationLevel.INFO,
+            deps.showNotification().accept(NotificationLevel.INFO,
                     "Select an audio clip to pitch-shift");
             return;
         }
@@ -698,7 +729,7 @@ final class ClipEditController {
         StretchQuality quality = r.quality();
         applyAsCompound(clips, "Pitch Shift " + clips.size() + " Clip(s)",
                 clip -> new PitchShiftClipAction(clip, total, quality));
-        host.updateStatusBar(String.format(java.util.Locale.ROOT,
+        deps.updateStatusBar().accept(String.format(java.util.Locale.ROOT,
                 "Pitch-shifted %d clip(s) by %+.2f semitones", clips.size(), total), null);
     }
 
@@ -707,7 +738,7 @@ final class ClipEditController {
      * clips. Returns an empty list when nothing is selected.
      */
     private List<AudioClip> collectSelectedAudioClips() {
-        List<ClipboardEntry> selected = host.selectionModel().getSelectedClips();
+        List<ClipboardEntry> selected = deps.selectionModel().getSelectedClips();
         if (selected.isEmpty()) {
             return List.of();
         }
@@ -735,10 +766,10 @@ final class ClipEditController {
             }
             action = new CompoundUndoableAction(description, children);
         }
-        host.undoManager().execute(action);
-        host.refreshArrangementCanvas();
-        host.updateUndoRedoState();
-        host.markProjectDirty();
+        deps.undoManager().get().execute(action);
+        deps.refreshArrangementCanvas().run();
+        deps.syncMenuState().run();
+        deps.markProjectDirty().run();
     }
 
     /**
@@ -751,7 +782,7 @@ final class ClipEditController {
         if (meta != null && meta.framesPerChannel() > 0 && meta.nativeRateHz() > 0) {
             return (double) meta.framesPerChannel() / meta.nativeRateHz();
         }
-        double bpm = host.project().getTransport().getTempo();
+        double bpm = deps.project().get().getTransport().getTempo();
         if (bpm > 0) {
             return clip.getDurationBeats() * 60.0 / bpm;
         }

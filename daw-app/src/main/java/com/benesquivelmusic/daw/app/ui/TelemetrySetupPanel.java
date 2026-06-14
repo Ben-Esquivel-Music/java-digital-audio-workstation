@@ -130,11 +130,21 @@ public final class TelemetrySetupPanel extends ScrollPane implements Dockable {
     private final RoomModesPanel roomModesPanel;
 
     /**
-     * {@code true} while the panel is programmatically writing dimension
-     * fields from the auto-size solver. Used to suppress the
-     * "manual edit disengages auto-size" listener during our own writes.
+     * The exact text each dimension field was last written with
+     * programmatically by {@link #writeAutoSizeToDimensionFields()} (story
+     * 293). Replaces the old {@code programmaticDimensionUpdate} boolean with a
+     * <em>one-shot</em> echo token: {@link #writeAutoSizeToDimensionFields()}
+     * arms the token immediately before writing, and the dimension text-listener
+     * consumes it (resets to {@code null}) on the single matching fire — so the
+     * solver's own write does not disengage {@link #autoSizeActive}, yet a later
+     * genuine user edit that happens to retype the same value is no longer
+     * mistaken for an echo and still disengages auto-size (story 293 review #3).
+     * A {@code null} token never matches, so by default every edit counts as a
+     * user edit.
      */
-    private boolean programmaticDimensionUpdate = false;
+    private String lastProgrammaticWidthText = null;
+    private String lastProgrammaticLengthText = null;
+    private String lastProgrammaticHeightText = null;
 
     /**
      * {@code true} while the UI is in auto-size mode — i.e. the user has
@@ -402,22 +412,31 @@ public final class TelemetrySetupPanel extends ScrollPane implements Dockable {
         });
 
         // ── Validate on text change and update RT60 ──────────────────
+        // story 293: stateless echo-guard — a write that matches the text
+        // the auto-size solver itself last wrote is its own echo and must
+        // not disengage auto-size; any other change is a genuine user edit.
         widthField.textProperty().addListener((observable, oldValue, newValue) -> {
-            if (!programmaticDimensionUpdate) {
+            if (java.util.Objects.equals(newValue, lastProgrammaticWidthText)) {
+                lastProgrammaticWidthText = null; // consume the one-shot echo token (#3)
+            } else {
                 autoSizeActive = false;
             }
             validateInputs();
             updateRt60Display();
         });
         lengthField.textProperty().addListener((observable, oldValue, newValue) -> {
-            if (!programmaticDimensionUpdate) {
+            if (java.util.Objects.equals(newValue, lastProgrammaticLengthText)) {
+                lastProgrammaticLengthText = null; // consume the one-shot echo token (#3)
+            } else {
                 autoSizeActive = false;
             }
             validateInputs();
             updateRt60Display();
         });
         heightField.textProperty().addListener((observable, oldValue, newValue) -> {
-            if (!programmaticDimensionUpdate) {
+            if (java.util.Objects.equals(newValue, lastProgrammaticHeightText)) {
+                lastProgrammaticHeightText = null; // consume the one-shot echo token (#3)
+            } else {
                 autoSizeActive = false;
             }
             validateInputs();
@@ -1915,17 +1934,21 @@ public final class TelemetrySetupPanel extends ScrollPane implements Dockable {
         if (dims == null) {
             return;
         }
-        programmaticDimensionUpdate = true;
-        try {
-            widthField.setText(String.format("%.1f", dims.width()));
-            lengthField.setText(String.format("%.1f", dims.length()));
-            heightField.setText(String.format("%.1f", dims.height()));
-            widthSlider.setValue(dims.width());
-            lengthSlider.setValue(dims.length());
-            heightSlider.setValue(dims.height());
-        } finally {
-            programmaticDimensionUpdate = false;
-        }
+        // story 293: record each value as the field's last-programmatic text
+        // *before* writing it, so the synchronous text-listener recognises
+        // its own echo and keeps auto-size engaged (see field javadoc).
+        String widthText = String.format("%.1f", dims.width());
+        String lengthText = String.format("%.1f", dims.length());
+        String heightText = String.format("%.1f", dims.height());
+        lastProgrammaticWidthText = widthText;
+        widthField.setText(widthText);
+        lastProgrammaticLengthText = lengthText;
+        lengthField.setText(lengthText);
+        lastProgrammaticHeightText = heightText;
+        heightField.setText(heightText);
+        widthSlider.setValue(dims.width());
+        lengthSlider.setValue(dims.length());
+        heightSlider.setValue(dims.height());
         validateInputs();
         updateRt60Display();
     }

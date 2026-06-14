@@ -1,14 +1,12 @@
 package com.benesquivelmusic.daw.app.ui;
 
 import com.benesquivelmusic.daw.core.project.DawProject;
-import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.undo.UndoManager;
 import com.benesquivelmusic.daw.sdk.edit.RippleMode;
 import javafx.scene.Parent;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 
-import java.util.List;
 import java.util.function.Consumer;
 
 /**
@@ -56,32 +54,32 @@ final class ArrangementCanvasFactory {
         }
         ruler.addSeekListener(seekConsumer::accept);
 
+        // Story 293 — the ClipInteractionController's former Host is retired;
+        // adapt this factory's host into a Deps record of direct functional
+        // dependencies. Geometry getters read the live canvas; tool/snap/grid/
+        // ripple/selection read the factory host; the swappable undo manager is
+        // read live via host::undoManager.
         ClipInteractionController clipInteraction = new ClipInteractionController(canvas,
-                new ClipInteractionController.Host() {
-                    @Override public List<Track> tracks() { return host.project().getTracks(); }
-                    @Override public EditTool activeTool() { return host.activeEditTool(); }
-                    @Override public UndoManager undoManager() { return host.undoManager(); }
-                    @Override public double pixelsPerBeat() { return canvas.getPixelsPerBeat(); }
-                    @Override public double scrollXBeats() { return canvas.getScrollXBeats(); }
-                    @Override public double scrollYPixels() { return canvas.getScrollYPixels(); }
-                    @Override public double trackHeight() { return canvas.getTrackHeight(); }
-                    @Override public boolean snapEnabled() { return host.isSnapEnabled(); }
-                    @Override public GridResolution gridResolution() { return host.gridResolution(); }
-                    @Override public int beatsPerBar() { return host.project().getTransport().getTimeSignatureNumerator(); }
-                    @Override public void refreshCanvas() { host.refreshCanvas(); }
-                    @Override public void seekToPosition(double beat) { host.seekToPosition(beat); }
-                    @Override public SelectionModel selectionModel() { return host.selectionModel(); }
-                    @Override public void updateStatusBar(String text) { host.updateStatusBar(text); }
-                    @Override public RippleMode rippleMode() { return host.rippleMode(); }
-                    @Override public void showNotification(NotificationLevel level, String message) {
-                        host.showNotification(level, message);
-                    }
-                    @Override public double projectTempoBpm() {
-                        return host.project().getTransport().getTempo();
-                    }
-                    @Override public void onTimeStretchClip() { host.onTimeStretchClip(); }
-                    @Override public void onPitchShiftClip() { host.onPitchShiftClip(); }
-                });
+                new ClipInteractionController.Deps(
+                        () -> host.project().getTracks(),
+                        host::activeEditTool,
+                        host::undoManager,
+                        canvas::getPixelsPerBeat,
+                        canvas::getScrollXBeats,
+                        canvas::getScrollYPixels,
+                        canvas::getTrackHeight,
+                        host::isSnapEnabled,
+                        host::gridResolution,
+                        () -> host.project().getTransport().getTimeSignatureNumerator(),
+                        host::refreshCanvas,
+                        host::seekToPosition,
+                        host::selectionModel,
+                        host::updateStatusBar,
+                        host::rippleMode,
+                        host::showNotification,
+                        () -> host.project().getTransport().getTempo(),
+                        host::onTimeStretchClip,
+                        host::onPitchShiftClip));
         clipInteraction.install();
 
         return new Result(canvas, ruler, clipInteraction);

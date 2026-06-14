@@ -79,7 +79,6 @@ public final class KeyboardProcessorView extends VBox {
     private final KeyboardProcessor.KeyboardEventListener keyboardListener;
     private final AnimationTimer playbackTimer;
     private int lastPressedNote = -1;
-    private boolean updatingControls;
 
     // Controls
     private final ComboBox<KeyboardPreset> presetCombo;
@@ -132,10 +131,22 @@ public final class KeyboardProcessorView extends VBox {
         velocitySlider.setPrefWidth(150);
         velocitySlider.setTooltip(new Tooltip("Note velocity"));
         velocitySlider.valueProperty().addListener((_, _, newValue) -> {
-            if (updatingControls) {
+            // story 293: stateless echo-guard replaces the `updatingControls`
+            // flag. A programmatic push (onPresetChanged) writes the value the
+            // processor's preset already carries, so the echo short-circuits;
+            // only a genuine user drag to a new velocity mutates the preset.
+            // Round (not truncate) and snap the thumb onto whole velocities so a
+            // sub-unit drag can't leave the slider and the preset disagreeing
+            // (story 293 review #6); the snap re-enters once and terminates.
+            int candidate = (int) Math.round(newValue.doubleValue());
+            if (newValue.doubleValue() != candidate) {
+                velocitySlider.setValue(candidate);
                 return;
             }
-            processor.setPreset(processor.getPreset().withDefaultVelocity(newValue.intValue()));
+            if (candidate == processor.getPreset().defaultVelocity()) {
+                return;
+            }
+            processor.setPreset(processor.getPreset().withDefaultVelocity(candidate));
         });
 
         Label velLabel = new Label("Velocity:");
@@ -239,35 +250,36 @@ public final class KeyboardProcessorView extends VBox {
     private void onPresetChanged() {
         KeyboardPreset selected = presetCombo.getValue();
         if (selected != null) {
+            // Push the new preset to the processor first, so the three
+            // control writes below land as echoes of the processor's own
+            // current state — each listener's stateless echo-guard (story
+            // 293) then short-circuits instead of re-pushing the preset.
             processor.setPreset(selected);
-            updatingControls = true;
-            try {
-                velocitySlider.setValue(selected.defaultVelocity());
-                curveCombo.getSelectionModel().select(selected.velocityCurve());
-                transposeSpinner.getValueFactory().setValue(selected.transpose());
-            } finally {
-                updatingControls = false;
-            }
+            velocitySlider.setValue(selected.defaultVelocity());
+            curveCombo.getSelectionModel().select(selected.velocityCurve());
+            transposeSpinner.getValueFactory().setValue(selected.transpose());
             resizeCanvas();
             paintKeyboard();
         }
     }
 
     private void onCurveChanged() {
-        if (updatingControls) {
-            return;
-        }
+        // story 293: stateless echo-guard replaces the `updatingControls`
+        // flag — a programmatic re-selection (onPresetChanged) picks the
+        // curve the processor already holds, so it no-ops here.
         VelocityCurve curve = curveCombo.getValue();
-        if (curve != null) {
+        if (curve != null && curve != processor.getPreset().velocityCurve()) {
             processor.setPreset(processor.getPreset().withVelocityCurve(curve));
         }
     }
 
     private void onTransposeChanged(int newValue) {
-        if (updatingControls) {
-            return;
+        // story 293: stateless echo-guard replaces the `updatingControls`
+        // flag — a programmatic spinner write (onPresetChanged) sets the
+        // transpose the processor already holds, so it no-ops here.
+        if (newValue != processor.getPreset().transpose()) {
+            processor.setPreset(processor.getPreset().withTranspose(newValue));
         }
-        processor.setPreset(processor.getPreset().withTranspose(newValue));
     }
 
     private void onRecordToggle() {

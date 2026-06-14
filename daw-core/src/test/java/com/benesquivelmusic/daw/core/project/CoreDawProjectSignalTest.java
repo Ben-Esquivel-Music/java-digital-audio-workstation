@@ -123,6 +123,38 @@ class CoreDawProjectSignalTest {
     }
 
     @Test
+    void moveTrackToFolderFiresTracksSignal() {
+        // story 293 review #4: a folder re-nesting is a structural change, so it
+        // must announce TRACKS like add/remove/move — the reactive arrangement
+        // canvas (ProjectVM.tracks) repaints off this signal.
+        DawProject project = newProject();
+        Track folder = project.createFolderTrack("Drums");
+        Track kick = project.createAudioTrack("Kick");
+        List<ChangeKind> kinds = new ArrayList<>();
+        project.addChangeListener(kinds::add);
+
+        project.moveTrackToFolder(kick, folder);
+
+        assertThat(kinds).containsExactly(ChangeKind.TRACKS);
+        assertThat(kick.getParentTrack()).isEqualTo(folder);
+    }
+
+    @Test
+    void removeTrackFromFolderFiresTracksSignal() {
+        DawProject project = newProject();
+        Track folder = project.createFolderTrack("Drums");
+        Track kick = project.createAudioTrack("Kick");
+        project.moveTrackToFolder(kick, folder);
+        List<ChangeKind> kinds = new ArrayList<>();
+        project.addChangeListener(kinds::add);
+
+        project.removeTrackFromFolder(kick);
+
+        assertThat(kinds).containsExactly(ChangeKind.TRACKS);
+        assertThat(kick.getParentTrack()).isNull();
+    }
+
+    @Test
     void removalTokenUnregistersTheListener() {
         DawProject project = newProject();
         List<ChangeKind> kinds = new ArrayList<>();

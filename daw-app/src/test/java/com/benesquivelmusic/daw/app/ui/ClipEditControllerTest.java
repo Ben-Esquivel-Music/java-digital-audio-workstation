@@ -1,6 +1,5 @@
 package com.benesquivelmusic.daw.app.ui;
 
-import com.benesquivelmusic.daw.app.ui.icons.DawIcon;
 import com.benesquivelmusic.daw.core.audio.AudioClip;
 import com.benesquivelmusic.daw.core.audio.AudioFormat;
 import com.benesquivelmusic.daw.core.midi.MidiClip;
@@ -38,7 +37,7 @@ class ClipEditControllerTest {
         selectionModel.selectClip(track, removed);
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         controller.onDeleteSelection();
 
@@ -69,7 +68,7 @@ class ClipEditControllerTest {
         selectionModel.selectClip(track, clip);
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         // gridStepBeats() = 1.0 in TestHost — +1 beat right = -1 beat offset.
         controller.onSlipRightByGrid();
@@ -92,7 +91,7 @@ class ClipEditControllerTest {
         selectionModel.selectClip(track, clip);
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         // −1 beat left on timeline → +1 beat source offset.
         controller.onSlipLeftByGrid();
@@ -115,7 +114,7 @@ class ClipEditControllerTest {
         selectionModel.selectClip(track, clip);
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         double oneSampleInBeats =
                 project.getTransport().getTempoMap()
@@ -141,7 +140,7 @@ class ClipEditControllerTest {
         selectionModel.selectClip(track, clip);
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         controller.onSlipRightByGrid();
         assertThat(clip.getSourceOffsetBeats()).isCloseTo(4.0, within(1e-6));
@@ -166,7 +165,7 @@ class ClipEditControllerTest {
         selectionModel.selectClip(track, clip);
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         controller.onSlipRightByGrid();
 
@@ -191,7 +190,7 @@ class ClipEditControllerTest {
         selectionModel.selectMidiClip(track, midiClip);
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         // gridStepBeats() = 1.0 → +4 columns (0.25 beats per column).
         controller.onSlipRightByGrid();
@@ -218,7 +217,7 @@ class ClipEditControllerTest {
         selectionModel.selectMidiClip(track, midiClip);
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         controller.onSlipLeftByFine();
 
@@ -243,7 +242,7 @@ class ClipEditControllerTest {
         // No clip selected.
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         controller.onSlipRightByGrid();
         controller.onSlipLeftByFine();
@@ -268,7 +267,7 @@ class ClipEditControllerTest {
         selectionModel.selectClip(track, clip);
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         // Default NudgeSettings = 1 grid step; gridStepBeats() = 1.0 in TestHost.
         controller.onNudgeRight();
@@ -293,7 +292,7 @@ class ClipEditControllerTest {
         selectionModel.selectClip(track, clip);
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         controller.onNudgeLeftLarge(); // -10 * 1 grid step = -10 beats
 
@@ -314,7 +313,7 @@ class ClipEditControllerTest {
         selectionModel.selectClip(track, clip);
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         controller.onNudgeRightSample();
 
@@ -341,7 +340,7 @@ class ClipEditControllerTest {
         selectionModel.toggleClipSelection(track, c3);
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         controller.onNudgeRight();
 
@@ -373,7 +372,7 @@ class ClipEditControllerTest {
         selectionModel.setSelection(4.0, 10.0);
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         controller.onNudgeRight();
 
@@ -395,7 +394,7 @@ class ClipEditControllerTest {
         selectionModel.selectClip(track, c);
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         // 10× nudge left = -10 beats but must clamp at 0.
         controller.onNudgeLeftLarge();
@@ -415,7 +414,7 @@ class ClipEditControllerTest {
         SelectionModel selectionModel = new SelectionModel();
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         controller.onNudgeRight();
         controller.onNudgeLeftSample();
@@ -439,7 +438,7 @@ class ClipEditControllerTest {
         selectionModel.selectClip(track, clip);
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         controller.onTimeStretchSelected(_ -> java.util.Optional.of(
                 new TimeStretchClipDialog.Result(2.0,
@@ -470,7 +469,7 @@ class ClipEditControllerTest {
         selectionModel.selectClip(track, clip);
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         controller.onTimeStretchSelected(_ -> java.util.Optional.of(
                 new TimeStretchClipDialog.Result(1.5,
@@ -493,7 +492,7 @@ class ClipEditControllerTest {
         selectionModel.selectClip(track, clip);
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         controller.onTimeStretchSelected(_ -> java.util.Optional.empty());
 
@@ -514,7 +513,7 @@ class ClipEditControllerTest {
         selectionModel.selectClip(track, clip);
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         // +5 semitones and +50 cents → +5.5 semitones combined.
         controller.onPitchShiftSelected(() -> java.util.Optional.of(
@@ -545,7 +544,7 @@ class ClipEditControllerTest {
         selectionModel.toggleClipSelection(track, c);
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         controller.onPitchShiftSelected(() -> java.util.Optional.of(
                 new PitchShiftClipDialog.Result(3, 0, com.benesquivelmusic.daw.core.audio.StretchQuality.MEDIUM)));
@@ -580,7 +579,7 @@ class ClipEditControllerTest {
         selectionModel.toggleClipSelection(track, b);
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         controller.onTimeStretchSelected(_ -> java.util.Optional.of(
                 new TimeStretchClipDialog.Result(0.75,
@@ -607,7 +606,7 @@ class ClipEditControllerTest {
         SelectionModel selectionModel = new SelectionModel();
 
         TestHost host = new TestHost(project, undoManager, selectionModel);
-        ClipEditController controller = new ClipEditController(host);
+        ClipEditController controller = new ClipEditController(host.deps());
 
         boolean[] prompted = {false};
         controller.onTimeStretchSelected(_ -> { prompted[0] = true; return java.util.Optional.empty(); });
@@ -619,7 +618,13 @@ class ClipEditControllerTest {
         assertThat(host.lastNotificationMessage).contains("time-stretch");
     }
 
-    private static final class TestHost implements ClipEditController.Host {
+    /**
+     * Story 293 — the production {@code Host} interface is retired. This is a
+     * plain test helper that builds a {@link ClipEditController.Deps} record of
+     * direct functional dependencies and captures the last notification for the
+     * slip-edge / time-stretch assertions.
+     */
+    private static final class TestHost {
         private final DawProject project;
         private final UndoManager undoManager;
         private final SelectionModel selectionModel;
@@ -635,22 +640,24 @@ class ClipEditControllerTest {
             this.selectionModel = selectionModel;
         }
 
-        @Override public DawProject project() { return project; }
-        @Override public UndoManager undoManager() { return undoManager; }
-        @Override public ClipboardManager clipboardManager() { return clipboardManager; }
-        @Override public SelectionModel selectionModel() { return selectionModel; }
-        @Override public void refreshArrangementCanvas() { }
-        @Override public void updateUndoRedoState() { }
-        @Override public void syncMenuState() { }
-        @Override public void markProjectDirty() { }
-        @Override public void updateStatusBar(String text, DawIcon icon) { }
-        @Override public void showNotificationWithUndo(NotificationLevel level, String message, Runnable undoCallback) { }
-        @Override public void showNotification(NotificationLevel level, String message) {
-            this.lastNotificationLevel = level;
-            this.lastNotificationMessage = message;
+        ClipEditController.Deps deps() {
+            return new ClipEditController.Deps(
+                    () -> project,
+                    () -> undoManager,
+                    clipboardManager,
+                    selectionModel,
+                    () -> { },
+                    () -> { },
+                    () -> { },
+                    (text, icon) -> { },
+                    (level, message, undoCallback) -> { },
+                    (level, message) -> {
+                        this.lastNotificationLevel = level;
+                        this.lastNotificationMessage = message;
+                    },
+                    () -> null,
+                    project::getRippleMode,
+                    () -> 1.0);
         }
-        @Override public EditorView editorView() { return null; }
-        @Override public RippleMode rippleMode() { return project.getRippleMode(); }
-        @Override public double gridStepBeats() { return 1.0; }
     }
 }

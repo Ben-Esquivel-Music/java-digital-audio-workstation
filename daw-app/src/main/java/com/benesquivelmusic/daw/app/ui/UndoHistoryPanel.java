@@ -41,7 +41,6 @@ public final class UndoHistoryPanel extends VBox {
     private final ListView<String> historyListView;
     private final ObservableList<String> historyItems;
     private final UndoHistoryListener listener;
-    private boolean updating;
     /**
      * The FX-thread marshalling seam (story 289), injected on the production
      * path. May be {@code null} in a pure-unit context (the compatibility
@@ -94,7 +93,11 @@ public final class UndoHistoryPanel extends VBox {
 
         historyListView.setOnMouseClicked(event -> {
             int selectedIndex = historyListView.getSelectionModel().getSelectedIndex();
-            if (selectedIndex >= 0 && !updating) {
+            // story 293: stateless echo-guard replaces the `updating` flag.
+            // refreshHistory() programmatically re-selects the current index,
+            // which re-fires this handler; short-circuit that echo by acting
+            // only when the user picked a *different* point in the history.
+            if (selectedIndex >= 0 && selectedIndex != undoManager.getCurrentHistoryIndex()) {
                 undoManager.goToHistoryIndex(selectedIndex);
             }
         });
@@ -144,22 +147,17 @@ public final class UndoHistoryPanel extends VBox {
      * Re-reads the undo/redo history from the manager and updates the list.
      */
     void refreshHistory() {
-        updating = true;
-        try {
-            List<UndoableAction> history = undoManager.getHistory();
-            historyItems.clear();
-            for (UndoableAction action : history) {
-                historyItems.add(action.description());
-            }
-            int currentIndex = undoManager.getCurrentHistoryIndex();
-            if (currentIndex >= 0 && currentIndex < historyItems.size()) {
-                historyListView.getSelectionModel().select(currentIndex);
-                historyListView.scrollTo(currentIndex);
-            } else {
-                historyListView.getSelectionModel().clearSelection();
-            }
-        } finally {
-            updating = false;
+        List<UndoableAction> history = undoManager.getHistory();
+        historyItems.clear();
+        for (UndoableAction action : history) {
+            historyItems.add(action.description());
+        }
+        int currentIndex = undoManager.getCurrentHistoryIndex();
+        if (currentIndex >= 0 && currentIndex < historyItems.size()) {
+            historyListView.getSelectionModel().select(currentIndex);
+            historyListView.scrollTo(currentIndex);
+        } else {
+            historyListView.getSelectionModel().clearSelection();
         }
     }
 

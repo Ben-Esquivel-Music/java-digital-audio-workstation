@@ -51,6 +51,7 @@ public final class BinauralMonitorPluginView extends VBox {
     private final Button importButton;
     private final Button manageButton;
     private Consumer<HrtfProfileLibrary.ProfileEntry> profileSelectionListener;
+    // story 293: justified survivor — gates an outbound side-effect (project-dirty / host callback) during programmatic restore & refresh, NOT a self-cascade, so intentionally retained.
     private boolean suppressNotification;
 
     /**

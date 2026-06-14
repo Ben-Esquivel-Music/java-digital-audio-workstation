@@ -12,7 +12,6 @@ import com.benesquivelmusic.daw.core.midi.RecordMidiNotesAction;
 import com.benesquivelmusic.daw.core.project.DawProject;
 import com.benesquivelmusic.daw.core.recording.CountInMode;
 import com.benesquivelmusic.daw.core.recording.InputMonitoringMode;
-import com.benesquivelmusic.daw.core.recording.Metronome;
 import com.benesquivelmusic.daw.core.recording.RecordingPipeline;
 import com.benesquivelmusic.daw.core.track.Track;
 import com.benesquivelmusic.daw.core.track.TrackType;
@@ -46,6 +45,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -54,58 +56,14 @@ import java.util.logging.Logger;
  *
  * <p>Extracted from {@link MainController} to isolate transport behavior
  * into a dedicated, independently testable class. Time-ticker animation
- * is delegated to {@link AnimationController} via the {@link Host}
- * callback interface. All dependencies are received via constructor
- * injection.</p>
+ * is delegated to {@link AnimationController} via the {@code startTimeTicker}
+ * / {@code pauseTimeTicker} / {@code stopTimeTicker} runnables. All
+ * dependencies are received via constructor injection (story 293 retired the
+ * former {@code Host} callback-up interface).</p>
  */
 final class TransportController {
 
     private static final Logger LOG = Logger.getLogger(TransportController.class.getName());
-
-    /**
-     * Callback interface implemented by the host controller to provide
-     * state that remains in the top-level controller.
-     */
-    interface Host {
-        boolean isSnapEnabled();
-        GridResolution gridResolution();
-        Metronome metronome();
-        CountInMode countInMode();
-        void startTimeTicker();
-        void pauseTimeTicker();
-        void stopTimeTicker();
-
-        /**
-         * Flashes a MIDI activity indicator on the given track's strip.
-         * Called from the MIDI receiver thread via {@link javafx.application.Platform#runLater}.
-         *
-         * @param track the track that received MIDI activity
-         */
-        void flashMidiActivity(Track track);
-
-        /**
-         * Returns whether the recording pipeline should compensate for the
-         * driver's reported round-trip latency on captured takes. Reads the
-         * "Apply latency compensation to recorded takes" toggle from
-         * {@link SettingsModel}.
-         *
-         * @return {@code true} when compensation is enabled
-         */
-        default boolean isApplyLatencyCompensation() {
-            return true;
-        }
-
-        /**
-         * Returns the driver-reported round-trip latency for the currently
-         * opened audio stream. Delegates to
-         * {@link AudioEngineController#reportedLatency()}.
-         *
-         * @return the reported latency; never {@code null}
-         */
-        default RoundTripLatency reportedLatency() {
-            return RoundTripLatency.UNKNOWN;
-        }
-    }
 
     private final DawProject project;
     private final AudioEngine audioEngine;
@@ -119,7 +77,29 @@ final class TransportController {
     private final Button stopButton;
     private final Button recordButton;
     private final Button loopButton;
-    private final Host host;
+
+    /**
+     * Story 293 — direct collaborators replacing the retired {@code Host}
+     * callback-up interface (CONTROL_SYNCHRONIZATION_DESIGN_BOOK §9). Although
+     * this controller is reconstructed on every project load (so the project /
+     * undo manager are passed by value), these collaborators are
+     * {@link Supplier}/functional seams because they read state that may be
+     * absent at construction time or change during the controller's life
+     * (snap/grid from the view-navigation controller, count-in from the
+     * metronome controller, latency from the audio-engine controller) — exactly
+     * what the former {@code Host} closed over lazily. {@code flashMidiActivity}
+     * is invoked from the MIDI receiver thread (the caller marshals via
+     * {@link javafx.application.Platform#runLater}).
+     */
+    private final BooleanSupplier snapEnabled;
+    private final Supplier<GridResolution> gridResolution;
+    private final Supplier<CountInMode> countInMode;
+    private final Runnable startTimeTicker;
+    private final Runnable pauseTimeTicker;
+    private final Runnable stopTimeTicker;
+    private final Consumer<Track> flashMidiActivity;
+    private final BooleanSupplier applyLatencyCompensation;
+    private final Supplier<RoundTripLatency> reportedLatency;
 
     /**
      * The FX-thread marshalling seam (story 289). Injected on the production
@@ -187,10 +167,20 @@ final class TransportController {
                         Button stopButton,
                         Button recordButton,
                         Button loopButton,
-                        Host host) {
+                        BooleanSupplier snapEnabled,
+                        Supplier<GridResolution> gridResolution,
+                        Supplier<CountInMode> countInMode,
+                        Runnable startTimeTicker,
+                        Runnable pauseTimeTicker,
+                        Runnable stopTimeTicker,
+                        Consumer<Track> flashMidiActivity,
+                        BooleanSupplier applyLatencyCompensation,
+                        Supplier<RoundTripLatency> reportedLatency) {
         this(project, audioEngine, undoManager, notificationBar, statusLabel,
                 timeDisplay, statusBarLabel, recIndicator, playButton, stopButton,
-                recordButton, loopButton, host, FxDispatcher.getDefault());
+                recordButton, loopButton, snapEnabled, gridResolution, countInMode,
+                startTimeTicker, pauseTimeTicker, stopTimeTicker, flashMidiActivity,
+                applyLatencyCompensation, reportedLatency, FxDispatcher.getDefault());
     }
 
     TransportController(DawProject project,
@@ -205,7 +195,15 @@ final class TransportController {
                         Button stopButton,
                         Button recordButton,
                         Button loopButton,
-                        Host host,
+                        BooleanSupplier snapEnabled,
+                        Supplier<GridResolution> gridResolution,
+                        Supplier<CountInMode> countInMode,
+                        Runnable startTimeTicker,
+                        Runnable pauseTimeTicker,
+                        Runnable stopTimeTicker,
+                        Consumer<Track> flashMidiActivity,
+                        BooleanSupplier applyLatencyCompensation,
+                        Supplier<RoundTripLatency> reportedLatency,
                         FxDispatcher fxDispatcher) {
         this.project = Objects.requireNonNull(project, "project must not be null");
         this.audioEngine = Objects.requireNonNull(audioEngine, "audioEngine must not be null");
@@ -219,7 +217,16 @@ final class TransportController {
         this.stopButton = Objects.requireNonNull(stopButton, "stopButton must not be null");
         this.recordButton = Objects.requireNonNull(recordButton, "recordButton must not be null");
         this.loopButton = Objects.requireNonNull(loopButton, "loopButton must not be null");
-        this.host = Objects.requireNonNull(host, "host must not be null");
+        this.snapEnabled = Objects.requireNonNull(snapEnabled, "snapEnabled must not be null");
+        this.gridResolution = Objects.requireNonNull(gridResolution, "gridResolution must not be null");
+        this.countInMode = Objects.requireNonNull(countInMode, "countInMode must not be null");
+        this.startTimeTicker = Objects.requireNonNull(startTimeTicker, "startTimeTicker must not be null");
+        this.pauseTimeTicker = Objects.requireNonNull(pauseTimeTicker, "pauseTimeTicker must not be null");
+        this.stopTimeTicker = Objects.requireNonNull(stopTimeTicker, "stopTimeTicker must not be null");
+        this.flashMidiActivity = Objects.requireNonNull(flashMidiActivity, "flashMidiActivity must not be null");
+        this.applyLatencyCompensation = Objects.requireNonNull(
+                applyLatencyCompensation, "applyLatencyCompensation must not be null");
+        this.reportedLatency = Objects.requireNonNull(reportedLatency, "reportedLatency must not be null");
         // May be null in a pure-unit context; postFx() falls back to the
         // static seam, preserving today's behaviour byte-for-byte.
         this.fxDispatcher = fxDispatcher;
@@ -265,7 +272,7 @@ final class TransportController {
                     "Audio device error: " + e.getMessage());
         }
         project.getTransport().play();
-        host.startTimeTicker();
+        startTimeTicker.run();
         updateStatus();
         statusBarLabel.setText("Playing...");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.PLAY_CIRCLE, 12));
@@ -344,7 +351,7 @@ final class TransportController {
         }
 
         audioEngine.stopAudioOutput();
-        host.stopTimeTicker();
+        stopTimeTicker.run();
         updateStatus();
         timeDisplay.setText("00:00:00.0");
         if (statusBarLabel.getText() == null
@@ -369,7 +376,7 @@ final class TransportController {
         Transport transport = project.getTransport();
         transport.finishPostRoll();
         audioEngine.stopAudioOutput();
-        host.stopTimeTicker();
+        stopTimeTicker.run();
         updateStatus();
         timeDisplay.setText("00:00:00.0");
         statusBarLabel.setText("Stopped");
@@ -383,7 +390,7 @@ final class TransportController {
     private void doPause() {
         project.getTransport().pause();
         audioEngine.pauseAudioOutput();
-        host.pauseTimeTicker();
+        pauseTimeTicker.run();
         updateStatus();
         statusBarLabel.setText("Paused");
         statusBarLabel.setGraphic(IconNode.of(DawIcon.PAUSE_CIRCLE, 12));
@@ -416,7 +423,7 @@ final class TransportController {
             }
         }
 
-        CountInMode countIn = host.countInMode();
+        CountInMode countIn = countInMode.get();
 
         // Start audio recording pipeline for non-MIDI armed tracks
         if (!armedAudioTracks.isEmpty()) {
@@ -436,8 +443,8 @@ final class TransportController {
             recordingPipeline = new RecordingPipeline(
                     audioEngine, project.getTransport(), project.getFormat(), outputDir,
                     armedAudioTracks, countIn, InputMonitoringMode.OFF, null);
-            recordingPipeline.setReportedLatency(host.reportedLatency());
-            recordingPipeline.setApplyLatencyCompensation(host.isApplyLatencyCompensation());
+            recordingPipeline.setReportedLatency(reportedLatency.get());
+            recordingPipeline.setApplyLatencyCompensation(applyLatencyCompensation.getAsBoolean());
             recordingPipeline.start();
 
             // Open audio input stream with the first armed audio track's input device
@@ -471,7 +478,7 @@ final class TransportController {
             project.getTransport().record();
         }
 
-        host.startTimeTicker();
+        startTimeTicker.run();
         updateStatus();
         int trackCount = armedTracks.size();
         statusBarLabel.setText("Recording — " + trackCount + " track"
@@ -493,7 +500,7 @@ final class TransportController {
             // Keep the ticker running while playing/recording; it will update the
             // time display on the next tick to reflect the new position.
         } else {
-            host.stopTimeTicker();
+            stopTimeTicker.run();
             timeDisplay.setText("00:00:00.0");
         }
         statusBarLabel.setText("Skipped to beginning");
@@ -504,8 +511,8 @@ final class TransportController {
         Transport transport = project.getTransport();
         double jump = 4.0 * transport.getTimeSignatureNumerator();
         double newPosition = transport.getPositionInBeats() + jump;
-        if (host.isSnapEnabled()) {
-            newPosition = SnapQuantizer.quantize(newPosition, host.gridResolution(),
+        if (snapEnabled.getAsBoolean()) {
+            newPosition = SnapQuantizer.quantize(newPosition, gridResolution.get(),
                     transport.getTimeSignatureNumerator());
         }
         transport.setPositionInBeats(newPosition);
@@ -561,7 +568,7 @@ final class TransportController {
                     "Audio device error: " + e.getMessage());
         }
         double shift = project.getTransport().playWithPreRoll();
-        host.startTimeTicker();
+        startTimeTicker.run();
         updateStatus();
         if (shift > 0) {
             statusBarLabel.setText(String.format(
@@ -763,7 +770,7 @@ final class TransportController {
             // flash is marshalled onto the FX thread through the FxDispatcher
             // seam (story 289; Control Synchronization Design Book §1.5, §4.5).
             recorder.addEventListener(_ -> postFx(
-                    () -> host.flashMidiActivity(track)));
+                    () -> flashMidiActivity.accept(track)));
 
             try {
                 recorder.startRecording();
