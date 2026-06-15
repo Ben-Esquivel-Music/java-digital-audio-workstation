@@ -330,6 +330,9 @@ public final class ProjectHubView extends BorderPane {
         // Scan on a virtual thread; retain the disk-usage breakdown for the
         // detail strip, apply onto the card, and refresh the strip if selected.
         Thread t = scanner.scan(dir, r -> {
+            if (!pathByCard.containsKey(card)) {
+                return;
+            }
             usageByCard.put(card, r.diskUsage());
             card.applyScanResult(r);
             // The scan replaced the seeded directory name with the metadata name,
