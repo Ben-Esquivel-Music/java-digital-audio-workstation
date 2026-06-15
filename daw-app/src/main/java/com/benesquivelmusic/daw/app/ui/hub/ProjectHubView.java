@@ -693,8 +693,9 @@ public final class ProjectHubView extends BorderPane {
             setRowsVisible(true);
             placeholder.setVisible(false);
             placeholder.setManaged(false);
-            revealButton.setDisable(false);
-            openButton.setDisable(false);
+            boolean isArchive = dir != null && dir.toString().toLowerCase(Locale.ROOT).endsWith(".dawz");
+            revealButton.setDisable(dir == null);
+            openButton.setDisable(dir == null || isArchive);
         }
 
         private void setRowsVisible(boolean on) {
