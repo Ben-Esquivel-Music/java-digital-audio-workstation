@@ -41,10 +41,10 @@ import java.util.Optional;
  * <p>Mirrors {@link ProjectManager#openProject(Path)}: if the file content
  * starts with {@code <?xml} or {@code <daw-project} it is parsed as XML (the
  * {@code <metadata><name>/<created-at>/<last-modified></metadata>} elements,
- * exactly as {@link ProjectDeserializer} reads them); otherwise it is parsed as
- * the legacy text format ({@code name=}/{@code created_at=}/{@code last_modified=}
- * lines, exactly as {@link ProjectManager}'s legacy {@code parseProjectFile}
- * does).</p>
+ * consistent with {@link ProjectDeserializer}; otherwise it parses the legacy
+ * text keys ({@code name=}/{@code created_at=}/{@code last_modified=}) used by
+ * {@link ProjectManager}'s legacy {@code parseProjectFile}, but with this
+ * reader's own fallback semantics (dir name / file mtime) documented below.</p>
  */
 public final class ProjectMetadataReader {
 
